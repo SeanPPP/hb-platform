@@ -50,6 +50,7 @@ import {
   batchUpdateDetailAction,
   batchUpdateDetails,
   batchUpsertDetails,
+  checkProducts,
   deleteDetails,
   getCheckProductsJob,
   getPasteDetailsJob,
@@ -58,6 +59,7 @@ import {
   getInvoiceDetails,
   getUpdateHqProductsJob,
   getUpdateToStorePricesJob,
+  pasteDetails,
   startCheckProductsJob,
   startPasteDetailsJob,
   startUpdateHqProductsJob,
@@ -404,6 +406,11 @@ function getUpdateHqProductsFailure(error: unknown): UpdateHqProductsResult | un
     hqDiscountRatesUpdated: Number(candidate.hqDiscountRatesUpdated ?? 0),
     errors: normalizeEnsureHqErrors(candidate.errors),
   }
+}
+
+function isMissingBackgroundJobEndpoint(error: unknown) {
+  // 关键位置：后端后台 job API 分批发布时，404 代表当前环境尚未支持新端点，可回退旧同步接口避免前台操作直接失败。
+  return error instanceof RequestError && error.status === 404
 }
 
 function buildUpdatePriceFields(values: Record<string, unknown>): UpdateToStorePricesFields {
@@ -1127,9 +1134,9 @@ export default function InvoiceEditPage() {
       message.warning(t('posAdmin.invoiceDetail.noValidData', '未检测到有效数据'))
       return
     }
+    const submittedInvoiceGuid = invoiceGuid
     setPasteLoading(true)
     try {
-      const submittedInvoiceGuid = invoiceGuid
       const job = await startPasteDetailsJob({
         invoiceGuid: submittedInvoiceGuid,
         mode: pasteMode,
@@ -1185,6 +1192,25 @@ export default function InvoiceEditPage() {
         }
       })()
     } catch (error) {
+      if (isMissingBackgroundJobEndpoint(error)) {
+        // 后端后台粘贴 job 未发布时兼容旧同步接口，避免用户确认后直接看到 404 失败。
+        try {
+          const result = await pasteDetails({
+            invoiceGuid: submittedInvoiceGuid,
+            mode: pasteMode,
+            items: parsed,
+          })
+          setPasteVisible(false)
+          setPasteText('')
+          message.success(formatPasteDetailsResult(result))
+          if (canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid)) {
+            await loadDetails()
+          }
+        } catch (fallbackError) {
+          message.error(fallbackError instanceof Error ? fallbackError.message : t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'))
+        }
+        return
+      }
       message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.pasteFailed', '粘贴数据失败'))
     } finally {
       setPasteLoading(false)
@@ -1643,12 +1669,13 @@ export default function InvoiceEditPage() {
       message.warning(t('posAdmin.invoiceDetail.noDetailToDetect', '没有明细数据可检测'))
       return
     }
+    const submittedInvoiceGuid = invoiceGuid
+    const detailGuids = selectedRowKeys.length > 0 ? selectedRowKeys.map(String) : undefined
     setChecking(true)
     try {
-      const submittedInvoiceGuid = invoiceGuid
       const job = await startCheckProductsJob({
         invoiceGuid: submittedInvoiceGuid,
-        detailGuids: selectedRowKeys.length > 0 ? selectedRowKeys.map(String) : undefined,
+        detailGuids,
       })
       activeCheckProductsJobIdRef.current = job.jobId
       notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.checkProductsJobSubmitted', '商品检测任务已提交'))
@@ -1705,6 +1732,31 @@ export default function InvoiceEditPage() {
         }
       })()
     } catch (error) {
+      if (isMissingBackgroundJobEndpoint(error)) {
+        // 后端后台商品检测 job 未发布时兼容旧同步接口，避免商品检测按钮在当前环境直接失败。
+        try {
+          const result = await checkProducts({
+            invoiceGuid: submittedInvoiceGuid,
+            detailGuids,
+          })
+          const description = t('posAdmin.invoiceDetail.detectCompleteMsg', '检测完成：共 {{total}}条，商品存在 {{productExists}}条，不存在 {{productNotExists}}条，条码正常 {{barcodeNormal}}条，异常 {{barcodeAbnormal}}条', result.summary)
+          message.success(description)
+          if (canApplyCheckProductsJobResult({
+            currentInvoiceGuid: currentInvoiceGuidRef.current,
+            submittedInvoiceGuid,
+            status: 'Succeeded',
+            hasResult: true,
+          })) {
+            applyCheckProductsResponse(result)
+            await loadDetails()
+          }
+        } catch (fallbackError) {
+          message.error(fallbackError instanceof Error ? fallbackError.message : t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'))
+        } finally {
+          setChecking(false)
+        }
+        return
+      }
       message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.detectFailed', '商品检测失败'))
       setChecking(false)
     }

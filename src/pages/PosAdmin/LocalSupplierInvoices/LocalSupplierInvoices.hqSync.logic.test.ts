@@ -315,8 +315,17 @@ async function main() {
     assert(editPageSource.includes('startCheckProductsJob({'), '商品检测应创建后台任务')
     assert(editPageSource.includes('getPasteDetailsJob(') && editPageSource.includes('getPasteDetailsJob(submittedInvoiceGuid, jobId)'), '粘贴任务应按提交时的发票 id 和 jobId 查询最终状态')
     assert(editPageSource.includes('getCheckProductsJob(') && editPageSource.includes('getCheckProductsJob(submittedInvoiceGuid, jobId)'), '商品检测任务应按提交时的发票 id 和 jobId 查询最终状态')
-    assert(!editPageSource.includes('const result = await pasteDetails({'), '粘贴确认不应再直接等待同步长请求')
-    assert(!editPageSource.includes('const result: CheckProductsResponse = await checkProducts({'), '商品检测不应再直接等待同步长请求')
+    assert(editPageSource.includes('isMissingBackgroundJobEndpoint(error)'), '后端 job 接口未发布返回 404 时应识别为可兼容场景')
+    assert(editPageSource.includes('await pasteDetails({'), '粘贴 job 创建接口 404 时应回退旧同步接口，避免弹窗操作直接失败')
+    assert(editPageSource.includes('await checkProducts({'), '商品检测 job 创建接口 404 时应回退旧同步接口，避免商品检测直接失败')
+    assert(
+      editPageSource.indexOf('await pasteDetails({') > editPageSource.indexOf('isMissingBackgroundJobEndpoint(error)'),
+      '粘贴旧同步接口只能作为 job 创建 404 的兼容回退',
+    )
+    assert(
+      editPageSource.indexOf('await checkProducts({') > editPageSource.indexOf('isMissingBackgroundJobEndpoint(error)'),
+      '商品检测旧同步接口只能作为 job 创建 404 的兼容回退',
+    )
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.pasteJobSubmitted'"), '粘贴任务提交后应提示后台执行')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.checkProductsJobSubmitted'"), '商品检测任务提交后应提示后台执行')
     assert(editPageSource.includes('canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid)'), '粘贴任务完成后应确认仍在同一张进货单再刷新')
