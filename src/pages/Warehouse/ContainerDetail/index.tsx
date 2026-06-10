@@ -921,35 +921,6 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const showPushToHqResult = (
-    result: PushProductsToHqResult,
-    selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
-    resultKind: 'success' | 'failed' = 'success',
-  ) => {
-    const content = renderPushToHqResultContent(result, selection)
-
-    if (resultKind === 'failed') {
-      Modal.error({
-        title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
-        content,
-      })
-      return
-    }
-
-    if ((result.errors ?? []).length || (result.failedCount ?? 0) > 0) {
-      Modal.warning({
-        title: t('posAdmin.products.pushToHqPartialSucceeded', '发送到 HQ 部分成功'),
-        content,
-      })
-      return
-    }
-
-    Modal.success({
-      title: t('posAdmin.products.pushToHqSucceeded', '发送到 HQ 完成'),
-      content,
-    })
-  }
-
   const renderPushToHqResultContent = (
     result: PushProductsToHqResult,
     selection: ReturnType<typeof buildContainerDetailHqPushSelection>,
@@ -1022,7 +993,6 @@ export default function ContainerDetailPage() {
         description: renderPushToHqResultContent(result, selection),
         duration: 0,
       })
-      showPushToHqResult(result, selection, 'failed')
       return
     }
 
@@ -1033,7 +1003,6 @@ export default function ContainerDetailPage() {
         description: renderPushToHqResultContent(result, selection),
         duration: 0,
       })
-      showPushToHqResult(result, selection)
       return
     }
 
@@ -1043,7 +1012,6 @@ export default function ContainerDetailPage() {
       description: renderPushToHqResultContent(result, selection),
       duration: 0,
     })
-    showPushToHqResult(result, selection)
   }
 
   const pollPushToHqJob = (
@@ -1053,7 +1021,6 @@ export default function ContainerDetailPage() {
   ) => {
     if (initialJob.status === 'Succeeded' || initialJob.status === 'Failed') {
       notifyPushToHqJobFinished(initialJob, selection, pushToHqNotificationKey)
-      void loadData()
       return
     }
 
@@ -1065,7 +1032,6 @@ export default function ContainerDetailPage() {
     void poller.promise
       .then((job) => {
         notifyPushToHqJobFinished(job, selection, pushToHqNotificationKey)
-        return loadData()
       })
       .catch((error) => {
         const errorResult = extractPushToHqErrorResult(error)
@@ -1076,7 +1042,6 @@ export default function ContainerDetailPage() {
             description: renderPushToHqResultContent(errorResult, selection),
             duration: 0,
           })
-          showPushToHqResult(errorResult, selection, 'failed')
         } else {
           notification.error({
             key: pushToHqNotificationKey,
@@ -1132,7 +1097,12 @@ export default function ContainerDetailPage() {
     } catch (error) {
       const errorResult = extractPushToHqErrorResult(error)
       if (errorResult) {
-        showPushToHqResult(errorResult, selection, 'failed')
+        // 发送 HQ 的结果统一收敛到右上角通知，避免弹窗打断表格编辑状态。
+        notification.error({
+          message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'),
+          description: renderPushToHqResultContent(errorResult, selection),
+          duration: 0,
+        })
       } else {
         message.error(error instanceof Error ? error.message : t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败'))
       }
@@ -1166,7 +1136,7 @@ export default function ContainerDetailPage() {
 
   const showCreateProductsJobResult = (job: ContainerProductCreationJob) => {
     const result = job.result
-    const content = (
+    const description = (
       <Space direction="vertical" size={8}>
         <Typography.Text>
           {t('containers.text.createProductsJobSummary', '创建 {{created}}，跳过 {{skipped}}，失败 {{failed}}', {
@@ -1192,24 +1162,27 @@ export default function ContainerDetailPage() {
     )
 
     if (job.status === 'Failed') {
-      Modal.error({
-        title: t('containers.messages.createProductsJobFailed', '创建新商品失败'),
-        content,
+      notification.error({
+        message: t('containers.messages.createProductsJobFailed', '创建新商品失败'),
+        description,
+        duration: 0,
       })
       return
     }
 
     if (result.failedCount > 0 || result.errors.length > 0 || result.skippedCount > 0) {
-      Modal.warning({
-        title: t('containers.messages.createProductsJobPartialSucceeded', '创建新商品部分完成'),
-        content,
+      notification.warning({
+        message: t('containers.messages.createProductsJobPartialSucceeded', '创建新商品部分完成'),
+        description,
+        duration: 0,
       })
       return
     }
 
-    Modal.success({
-      title: t('containers.messages.createProductsJobSucceeded', '创建新商品完成'),
-      content,
+    notification.success({
+      message: t('containers.messages.createProductsJobSucceeded', '创建新商品完成'),
+      description,
+      duration: 0,
     })
   }
 
@@ -1257,7 +1230,6 @@ export default function ContainerDetailPage() {
         : job
       showCreateProductsJobResult(finalJob)
       setSelectedRowKeys([])
-      await loadData()
     } catch (error) {
       message.error(error instanceof Error ? error.message : t('containers.messages.createProductFailed', '创建新商品失败'))
     } finally {

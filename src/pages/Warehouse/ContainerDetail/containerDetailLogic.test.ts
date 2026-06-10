@@ -1142,9 +1142,15 @@ assertEqual(pageSource.includes('const pushToHqLoadingRef = useRef(false)'), tru
 assertEqual(pageSource.includes('releasePushToHqLoading()'), true, '发送到 HQ job 提交成功后应立即解除按钮 loading')
 assertEqual(pageSource.includes("notification.info({") && pageSource.includes("key: pushToHqNotificationKey"), true, '发送到 HQ job 提交后应展示后台执行通知')
 assertEqual(pageSource.includes("notification.success({") && pageSource.includes("notification.warning({") && pageSource.includes("notification.error({"), true, '发送到 HQ job 终态应按成功、部分成功和失败展示通知')
+const pushToHqPollingSource = pageSource.slice(
+  pageSource.indexOf('const pollPushToHqJob = ('),
+  pageSource.indexOf('const handlePushSelectedProductsToHq = async () => {'),
+)
+assertEqual(pushToHqPollingSource.includes('loadData()'), false, '发送到 HQ job 终态不应重新加载货柜明细表格')
+assertEqual(pushToHqPollingSource.includes('showPushToHqResult'), false, '发送到 HQ job 终态只使用右上角通知，不应再弹结果 Modal')
 assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), true, '选中明细包含新商品时应给出友好 warning')
-assertEqual(pageSource.includes("showPushToHqResult(errorResult, selection, 'failed')"), true, '后端明确失败时应进入失败结果弹窗路径')
-assertEqual(pageSource.includes("title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败弹窗而不是部分成功')
+assertEqual(pageSource.includes('发送 HQ 的结果统一收敛到右上角通知'), true, '发送到 HQ 提交失败也应使用右上角通知承载结果')
+assertEqual(pageSource.includes("message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败通知而不是部分成功')
 assertEqual(pageSource.includes('result.warehouseInventoriesCreated'), true, '结果弹窗应展示仓库库存新增统计')
 assertEqual(pageSource.includes('result.warehouseInventoriesUpdated'), true, '结果弹窗应展示仓库库存更新统计')
 assertEqual(pageSource.includes('result.storeRetailPricesCreated'), true, '结果弹窗应展示分店价格新增统计')
@@ -1166,6 +1172,12 @@ assertEqual(
   true,
   '创建新商品应轮询后台 job 直到终态',
 )
+const createProductsJobSource = pageSource.slice(
+  pageSource.indexOf('const showCreateProductsJobResult = (job: ContainerProductCreationJob) => {'),
+  pageSource.indexOf('const updateExistingPurchase = async () => {'),
+)
+assertEqual(createProductsJobSource.includes('loadData()'), false, '批量创建新商品后台任务终态不应自动刷新货柜明细表格')
+assertEqual(createProductsJobSource.includes('Modal.'), false, '批量创建新商品后台任务终态只使用右上角通知，不应再弹结果 Modal')
 assertEqual(
   pageSource.includes("createPushProductsToHqJob") && pageSource.includes("getPushProductsToHqJob"),
   true,
