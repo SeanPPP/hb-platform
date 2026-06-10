@@ -18,6 +18,7 @@ import {
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
+import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import {
   StoreOrderInvoiceEmailPollingTimeoutError,
@@ -143,7 +144,7 @@ export default function StoreOrderInvoicePage() {
   const id = route?.params.id || ''
   const navigate = useNavigate()
   const printRootRef = useRef<HTMLDivElement | null>(null)
-  // 记录当前发票已完成首次加载，保活 Tab 恢复时保留打印内容并静默刷新。
+  // 记录当前发票已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
   const loadedOrderIdRef = useRef<string | null>(null)
   const visibleOrderIdRef = useRef<string | null>(null)
   const stopInvoiceEmailPollingRef = useRef<(() => void) | null>(null)
@@ -219,6 +220,15 @@ export default function StoreOrderInvoicePage() {
           setLoading(false)
         }
       }
+    }
+
+    // 保活 Tab 切回同订单且页面仍有可见内容时，直接复用现有发票数据。
+    if (shouldSkipDetailAutoReload({
+      requestedDetailId: id,
+      loadedDetailId: loadedOrderIdRef.current,
+      visibleDetailId: visibleOrderIdRef.current,
+    })) {
+      return
     }
 
     const shouldShowInitialLoading = shouldShowStoreOrderDetailInitialLoading({

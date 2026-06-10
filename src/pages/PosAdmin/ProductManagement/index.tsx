@@ -11,6 +11,7 @@ import {
   SafetyCertificateOutlined,
   SearchOutlined,
   SettingOutlined,
+  TranslationOutlined,
 } from '@ant-design/icons'
 import {
   Button,
@@ -84,6 +85,7 @@ import {
 } from '../../../services/productCategoryService'
 import { checkIntegrity, fixIntegrity } from '../../../services/productIntegrityService'
 import { getActiveStores } from '../../../services/storeService'
+import { batchTranslate } from '../../../services/translationService'
 import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { RequestError } from '../../../utils/request'
@@ -148,6 +150,29 @@ const SUPPLIER_IMAGE_BATCH_POLL_INTERVAL_MS = 2000
 const SUPPLIER_IMAGE_BATCH_TIMEOUT_MS = 30 * 60 * 1000
 const PRODUCT_IMAGE_FALLBACK = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMjAiIHk9IjI0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjY2NjIj7ml6DnvKk8L3RleHQ+PC9zdmc+'
 const DEFAULT_PRODUCT_IMAGE_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200'
+const CHINESE_TEXT_PATTERN = /[\u4e00-\u9fff]/
+
+function containsChineseText(value?: string) {
+  return Boolean(value && CHINESE_TEXT_PATTERN.test(value))
+}
+
+function buildProductNameTranslationUpdates(
+  rows: ProductRow[],
+  translations: Record<string, string>,
+): BatchUpdatePosProductDto[] {
+  return rows.reduce<BatchUpdatePosProductDto[]>((updates, row) => {
+    const originalName = row.productName.trim()
+    const translatedName = translations[originalName]?.trim()
+    // 批量翻译会覆盖商品名称，提交前过滤空结果、未变化结果和仍包含中文的结果。
+    if (translatedName && translatedName !== originalName && !containsChineseText(translatedName)) {
+      updates.push({
+        productCode: row.productCode,
+        productName: translatedName,
+      })
+    }
+    return updates
+  }, [])
+}
 
 function readActiveProductHqSyncJob(): ActiveProductHqSyncJob | null {
   if (typeof window === 'undefined') return null
@@ -331,6 +356,7 @@ export default function ProductManagementPage() {
 
   const [batchEditVisible, setBatchEditVisible] = useState(false)
   const [batchEditForm] = Form.useForm()
+  const [translating, setTranslating] = useState(false)
   const [imageBatchVisible, setImageBatchVisible] = useState(false)
   const [imageBatchLoading, setImageBatchLoading] = useState(false)
   const [imageBatchForm] = Form.useForm()
@@ -1600,6 +1626,47 @@ export default function ProductManagementPage() {
     setImageBatchVisible(true)
   }
 
+  const handleBatchTranslate = async () => {
+    if (!ensureCanManagePosProducts()) return
+    if (!selectedRowKeys.length) {
+      message.warning(t('posAdmin.products.selectProductsFirst', '请先选择商品'))
+      return
+    }
+
+    const selectedRows = data.filter((row) => selectedRowKeys.includes(row.key))
+    // 只翻译当前页选中的中文商品名，去重后减少翻译接口压力。
+    const names = Array.from(new Set(selectedRows.map((row) => row.productName.trim()).filter((name) => name && containsChineseText(name))))
+    if (!names.length) {
+      message.warning(t('posAdmin.products.noNamesToTranslate', '没有可翻译的商品名称'))
+      return
+    }
+
+    try {
+      setTranslating(true)
+      const translations = await batchTranslate(names)
+      const updates = buildProductNameTranslationUpdates(selectedRows, translations)
+      if (!updates.length) {
+        message.warning(t('posAdmin.products.noValidTranslatedNames', '没有可保存的英文翻译结果'))
+        return
+      }
+
+      const result = await batchUpdateProducts(updates)
+      message.success(t('posAdmin.products.batchTranslateSuccess', '成功翻译 {{count}} 个商品名称', { count: result.successCount }))
+      if (result.failedCount > 0) {
+        message.warning(t('posAdmin.products.batchUpdatePartialFailed', '{{count}} 个商品更新失败', { count: result.failedCount }))
+      }
+      if (updates.length < selectedRows.length) {
+        message.warning(t('posAdmin.products.invalidTranslatedNamesSkipped', '有 {{count}} 条翻译结果仍包含中文或无变化，已跳过', { count: selectedRows.length - updates.length }))
+      }
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('posAdmin.products.batchTranslateFailed', '批量翻译失败'))
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   const handleImageBatchSave = async () => {
     if (!ensureCanManagePosProducts()) return
     try {
@@ -2619,6 +2686,14 @@ export default function ProductManagementPage() {
                 </Button>
                 <Button icon={<FileImageOutlined />} onClick={openImageBatch}>
                   {t('posAdmin.products.batchImageUpdate', '图片批量修改')}
+                </Button>
+                <Button
+                  icon={<TranslationOutlined />}
+                  loading={translating}
+                  disabled={!selectedRowKeys.length || translating}
+                  onClick={handleBatchTranslate}
+                >
+                  {t('posAdmin.products.batchTranslate', '批量翻译')}
                 </Button>
                 <Button onClick={openBatchEdit} disabled={!selectedRowKeys.length || categoryLoadFailed}>
                   {t('posAdmin.products.batchEdit', '批量编辑')}

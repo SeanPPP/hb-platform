@@ -4,6 +4,7 @@ import type {
   BatchExecuteActionsResult,
   BatchEditFields,
   BatchResultDto,
+  CheckProductsJobResult,
   CheckInvoiceNoRequest,
   CheckInvoiceNoResponse,
   CheckProductsRequest,
@@ -18,6 +19,7 @@ import type {
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
   PasteDetailsRequest,
+  PasteDetailsJobResult,
   ProductsByBarcodeResponse,
   UpdateHqProductsJobResult,
   UpdateHqProductsRequest,
@@ -99,11 +101,42 @@ export async function checkProducts(data: CheckProductsRequest): Promise<CheckPr
   return unwrapApiData(response)
 }
 
+export async function startCheckProductsJob(data: CheckProductsRequest): Promise<CheckProductsJobResult> {
+  const response = await request.post<ApiResponse<CheckProductsJobResult>>(`${API_BASE}/check-products/jobs`, data)
+  assertApiSuccess(response, '创建商品检测任务失败')
+  return unwrapApiData(response)
+}
+
+export async function getCheckProductsJob(invoiceGuid: string, jobId: string): Promise<CheckProductsJobResult> {
+  const response = await request.get<ApiResponse<CheckProductsJobResult>>(
+    `${API_BASE}/${invoiceGuid}/check-products/jobs/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询商品检测任务失败')
+  return unwrapApiData(response)
+}
+
 export async function pasteDetails(data: PasteDetailsRequest): Promise<BatchResultDto> {
   const response = await request.post<ApiResponse<BatchResultDto>>(`${API_BASE}/${data.invoiceGuid}/details/paste`, {
     mode: data.mode,
     items: data.items,
   })
+  return unwrapApiData(response)
+}
+
+export async function startPasteDetailsJob(data: PasteDetailsRequest): Promise<PasteDetailsJobResult> {
+  const response = await request.post<ApiResponse<PasteDetailsJobResult>>(`${API_BASE}/${data.invoiceGuid}/details/paste/jobs`, {
+    mode: data.mode,
+    items: data.items,
+  })
+  assertApiSuccess(response, '创建粘贴明细任务失败')
+  return unwrapApiData(response)
+}
+
+export async function getPasteDetailsJob(invoiceGuid: string, jobId: string): Promise<PasteDetailsJobResult> {
+  const response = await request.get<ApiResponse<PasteDetailsJobResult>>(
+    `${API_BASE}/${invoiceGuid}/details/paste/jobs/${encodeURIComponent(jobId)}`,
+  )
+  assertApiSuccess(response, '查询粘贴明细任务失败')
   return unwrapApiData(response)
 }
 

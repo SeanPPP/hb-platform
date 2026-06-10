@@ -3,7 +3,11 @@ import type {
   ComingSoonHomeContainer,
   ComingSoonHomeContainerSummary,
   ComingSoonHomeProduct,
+  ContainerDetailBatchActionResult,
+  ContainerDetailBatchScope,
   ContainerDetail,
+  ContainerDetailQuery,
+  ContainerDetailQueryResult,
   CreateContainerRequest,
   DateFilterOption,
   ContainerListResponse,
@@ -149,6 +153,84 @@ export async function getContainerProducts(containerGuid: string): Promise<Conta
   ensureSuccess(response.success ?? response.isSuccess, response.message, '获取货柜商品列表失败')
 
   return response.data ?? []
+}
+
+export async function queryContainerProducts(
+  containerGuid: string,
+  query: Omit<ContainerDetailQuery, 'containerGuid'> & Partial<Pick<ContainerDetailQuery, 'containerGuid'>>,
+  signal?: AbortSignal,
+): Promise<ContainerDetailQueryResult> {
+  const { containerGuid: _ignoredContainerGuid, ...queryBody } = query
+  const response = await request<ApiResponse<ContainerDetailQueryResult> | { success?: boolean; isSuccess?: boolean; message?: string; data?: ContainerDetailQueryResult }>(
+    `${API_BASE}/${encodeURIComponent(containerGuid)}/products/query`,
+    {
+      method: 'POST',
+      data: {
+        // 后端契约要求 body 内也携带货柜 GUID，避免路由参数和查询体脱节。
+        containerGuid,
+        ...queryBody,
+      },
+      signal,
+    },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '查询货柜商品明细失败')
+
+  if (!response.data) {
+    throw new Error('查询货柜商品明细失败')
+  }
+
+  return response.data
+}
+
+async function postContainerDetailAction<TBody extends object>(
+  containerGuid: string,
+  action: string,
+  body: TBody,
+  fallbackMessage: string,
+): Promise<ContainerDetailBatchActionResult> {
+  const response = await request<ApiResponse<ContainerDetailBatchActionResult> | { success?: boolean; isSuccess?: boolean; message?: string; data?: ContainerDetailBatchActionResult }>(
+    `${API_BASE}/${encodeURIComponent(containerGuid)}/actions/${action}`,
+    {
+      method: 'POST',
+      data: body,
+    },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, fallbackMessage)
+
+  return response.data ?? { totalUpdated: 0 }
+}
+
+export async function applyContainerFloatRateByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+  floatRate: number,
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'apply-float-rate', {
+    ...scope,
+    // 批量写接口使用统一 scope；未勾选时 scope.query 代表当前筛选结果全量。
+    floatRate,
+  }, '批量调浮率失败')
+}
+
+export async function applyContainerPricesByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+  prices: { importPrice?: number | null; oemPrice?: number | null },
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'apply-prices', {
+    ...scope,
+    importPrice: prices.importPrice,
+    oemPrice: prices.oemPrice,
+  }, '批量改价失败')
+}
+
+export async function recalculateContainerCostsByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'recalculate-costs', scope, '重算成本失败')
 }
 
 export async function getContainerDetail(containerGuid: string): Promise<ContainerMain> {

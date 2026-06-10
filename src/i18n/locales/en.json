@@ -128,6 +128,7 @@
       "englishName": "English Name",
       "productType": "Type",
       "newProduct": "New Product",
+      "matchType": "Match Type",
       "containerPieces": "Container Pieces",
       "containerQuantity": "Container Qty",
       "domesticPrice": "Domestic Price",
@@ -137,6 +138,11 @@
       "importPrice": "Import Price",
       "oemPrice": "OEM Price",
       "warehouseStatus": "Warehouse Status"
+    },
+    "matchTypes": {
+      "productCode": "Product Code",
+      "supplierItem": "Supplier Code + Item No.",
+      "unmatched": "Unmatched"
     },
     "columns": {
       "index": "No.",
@@ -228,6 +234,7 @@
       "hqTranslationFailed": "Failed to translate HQ data",
       "hqTranslationResultSummary": "{{candidates}} candidates, {{translated}} translated, {{skipped}} skipped, {{failed}} failed",
       "noEligibleNewProducts": "No eligible new products",
+      "createProductsMissingChineseName": "Double-click the Product Name column and enter a Chinese product name before creating new products: {{items}}",
       "newProductsCreated": "Created {{count}} new products",
       "noExistingProductsToUpdate": "No existing products to update",
       "noPurchasePriceDiff": "No valid product price to update",
@@ -1732,6 +1739,12 @@
       "batchUpdateSuccess": "Successfully updated {{count}} products",
       "batchUpdateFailed": "Batch update failed",
       "batchUpdatePartialFailed": "{{count}} products failed to update",
+      "batchTranslate": "Batch Translate",
+      "batchTranslateSuccess": "Successfully translated {{count}} product names",
+      "batchTranslateFailed": "Batch translate failed",
+      "noNamesToTranslate": "No product names to translate",
+      "noValidTranslatedNames": "No valid English translation results to save",
+      "invalidTranslatedNamesSkipped": "{{count}} translation results still contain Chinese or did not change and were skipped",
       "batchEditFailed": "Batch edit failed",
       "confirmBatchEnable": "Enable selected products?",
       "confirmBatchDisable": "Disable selected products?",

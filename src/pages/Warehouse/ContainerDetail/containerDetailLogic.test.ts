@@ -5,9 +5,15 @@ import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailColumnState,
+  buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
+  buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
+  buildContainerDetailMatchStatusUpdates,
+  buildContainerDetailSaveFailureKeys,
+  getContainerDetailRemoteQueryResetState,
+  findContainerDetailRowsMissingChineseName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
@@ -16,8 +22,11 @@ import {
   calculateContainerDetailTransportCost,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
+  mergeContainerDetailLoadedItems,
   getContainerDetailEnglishName,
+  getContainerDetailMatchType,
   getContainerDetailProductCode,
+  getContainerDetailCreateProductRowLabel,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
   isContainerDetailSortField,
@@ -69,6 +78,16 @@ assertEqual(
   getContainerDetailEnglishName(rows[0]),
   'Detail Strawberry',
   '英文名称展示应优先读取货柜明细字段',
+)
+assertDeepEqual(
+  buildContainerDetailSaveFailureKeys('row-1', { 商品名称: '皮带' }),
+  ['row-1:商品名称'],
+  '明细保存失败 key 应区分商品名称字段，避免被同一行其它保存清除',
+)
+assertDeepEqual(
+  buildContainerDetailSaveFailureKeys('row-1', { 备注: '已确认' }),
+  ['row-1:备注'],
+  '同一行备注保存应使用独立失败 key，不能清除商品名称保存失败状态',
 )
 
 assertDeepEqual(
@@ -212,6 +231,7 @@ const columnStateRows: ContainerDetail[] = [
     英文名称: 'Plastic Cup Hook',
     商品类型: '普通商品',
     是否新商品: false,
+    matchType: 'productCode',
     装柜件数: 8,
     装柜数量: 1152,
     国内价格: 12,
@@ -229,6 +249,7 @@ const columnStateRows: ContainerDetail[] = [
     商品名称: '魔方珠子',
     商品类型: '套装商品',
     是否新商品: true,
+    matchType: 'unmatched',
     装柜件数: 30,
     装柜数量: 4320,
     国内价格: 0,
@@ -245,6 +266,7 @@ const columnStateRows: ContainerDetail[] = [
     hguid: 'column-203',
     商品类型: '套装子商品',
     是否新商品: false,
+    matchType: 'supplierItem',
     装柜件数: 2,
     装柜数量: 480,
     国内价格: 5.5,
@@ -268,14 +290,139 @@ assertDeepEqual(columnState({ englishName: 'triangle' }), ['column-203'], '英�
 assertDeepEqual(columnState({ remark: '补价格' }), ['column-202'], '备注列头过滤应支持文本包含匹配')
 assertDeepEqual(columnState({ productTypes: ['set', 'setChild'] }), ['column-202', 'column-203'], '商品类型列头过滤应支持多选枚举')
 assertDeepEqual(columnState({ newProductStates: ['new'] }), ['column-202'], '新商品列头过滤应支持筛出新商品')
+assertDeepEqual(columnState({ matchTypes: ['supplierItem'] }), ['column-203'], '匹配方式列头过滤应支持供应商编码加货号匹配')
 assertDeepEqual(columnState({ warehouseStatus: ['inactive'] }), ['column-202', 'column-203'], '仓库状态列头过滤应把非 true 视为下架')
 assertDeepEqual(columnState({ containerQuantity: { min: 500, max: 2000 } }), ['column-201'], '装柜数量列头范围过滤应同时支持最小值和最大值')
 assertDeepEqual(columnState({ domesticPrice: { min: 0, max: 0 } }), ['column-202'], '数字列头范围过滤应正确匹配 0 值')
 assertDeepEqual(columnState({ transportCost: { min: 0 } }), ['column-201', 'column-203'], '数字列头范围过滤应排除空值')
 assertDeepEqual(columnState({ oemPrice: { min: 2 } }, { field: 'containerPieces', order: 'ascend' }), ['column-203', 'column-201'], '列头过滤后排序应只作用于过滤后的可见行')
 assertDeepEqual(columnState({}, { field: 'itemNumber', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '货号排序应按文本升序且保持稳定输出')
+assertDeepEqual(
+  applyContainerDetailColumnState([
+    { id: 211, hguid: 'sort-211', 商品信息: { 货号: 'HB2' } },
+    { id: 212, hguid: 'sort-212', 商品信息: { 货号: '' } },
+    { id: 213, hguid: 'sort-213', 商品信息: { 货号: 'HB10' } },
+    { id: 214, hguid: 'sort-214', 商品信息: { 货号: 'HB2' } },
+  ], {}, { field: 'itemNumber', order: 'ascend' }).map((row) => row.hguid),
+  ['sort-211', 'sort-214', 'sort-213', 'sort-212'],
+  '货号升序应按自然排序、空货号排最后，并保持相同货号原始顺序',
+)
 assertDeepEqual(columnState({}, { field: 'transportCost', order: 'ascend' }), ['column-203', 'column-201', 'column-202'], '数字排序应把空值排在最后')
 assertDeepEqual(columnState({}, { field: 'warehouseStatus', order: 'descend' }), ['column-201', 'column-202', 'column-203'], '仓库状态排序应支持上架优先且同值保持原始顺序')
+assertDeepEqual(columnState({}, { field: 'matchType', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '匹配方式排序应按商品编码、供应商货号、未匹配稳定排序')
+
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-QUERY',
+    filters: {
+      itemNumber: ' HB308 ',
+      barcode: '',
+      productName: ' 梳子 ',
+      englishName: ' Grooming ',
+      remark: ' 需确认 ',
+      productTypes: ['normal', 'set'],
+      newProductStates: ['new'],
+      matchTypes: ['productCode', 'supplierItem'],
+      warehouseStatus: ['active'],
+      containerPieces: { min: 1, max: 8 },
+      containerQuantity: { min: 0, max: 1200 },
+      domesticPrice: { min: 2.5 },
+      floatRate: { max: 1.3 },
+      transportCost: { min: 0 },
+      warehouseImportPrice: { max: 9.99 },
+      importPrice: { min: 1.11, max: 3.33 },
+      oemPrice: { min: 4.44, max: 5.55 },
+    },
+    selectedTags: ['all', 'new', 'inactive'],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageNumber: 3,
+    pageSize: 80,
+  }),
+  {
+    containerGuid: 'CONTAINER-QUERY',
+    pageNumber: 3,
+    pageSize: 80,
+    itemNumber: 'HB308',
+    productName: '梳子',
+    englishName: 'Grooming',
+    remark: '需确认',
+    productTypes: ['normal', 'set'],
+    newProductStates: ['new'],
+    matchTypes: ['productCode', 'supplierItem'],
+    warehouseStatus: ['active'],
+    containerPiecesMin: 1,
+    containerPiecesMax: 8,
+    containerQuantityMin: 0,
+    containerQuantityMax: 1200,
+    domesticPriceMin: 2.5,
+    floatRateMax: 1.3,
+    transportCostMin: 0,
+    warehouseImportPriceMax: 9.99,
+    importPriceMin: 1.11,
+    importPriceMax: 3.33,
+    oemPriceMin: 4.44,
+    oemPriceMax: 5.55,
+    selectedTags: ['new', 'inactive'],
+    sortBy: 'itemNumber',
+    sortOrder: 'ascend',
+  },
+  '远程查询参数应由列筛选、tag、排序和分页状态生成，并裁剪空文本与 all tag',
+)
+
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-NO-SORT',
+    filters: { barcode: ' 9300 ' },
+    selectedTags: [],
+    pageNumber: 1,
+    pageSize: 50,
+  }),
+  {
+    containerGuid: 'CONTAINER-NO-SORT',
+    pageNumber: 1,
+    pageSize: 50,
+    barcode: '9300',
+  },
+  '远程查询参数没有排序和 tag 时不应提交空字段',
+)
+
+assertDeepEqual(
+  mergeContainerDetailLoadedItems(
+    [
+      { id: 401, hguid: 'merge-401', 商品名称: '旧 401' },
+      { id: 402, hguid: 'merge-402', 商品名称: '旧 402' },
+    ],
+    [
+      { id: 402, hguid: 'merge-402', 商品名称: '新 402' },
+      { id: 403, hguid: 'merge-403', 商品名称: '新 403' },
+    ],
+  ).map((row) => ({ hguid: row.hguid, name: row.商品名称 })),
+  [
+    { hguid: 'merge-401', name: '旧 401' },
+    { hguid: 'merge-402', name: '新 402' },
+    { hguid: 'merge-403', name: '新 403' },
+  ],
+  '懒加载追加明细时应按 hguid 去重并用新页数据覆盖重复行',
+)
+
+assertDeepEqual(
+  mergeContainerDetailLoadedItems(
+    [{ id: 501, hguid: '', 商品名称: '无 GUID 旧行' }],
+    [{ id: 501, hguid: '', 商品名称: '无 GUID 新行' }],
+  ).map((row) => row.商品名称),
+  ['无 GUID 旧行', '无 GUID 新行'],
+  '缺少 hguid 的明细不能被误判为同一行',
+)
+
+assertDeepEqual(
+  getContainerDetailRemoteQueryResetState({ selectedRowKeys: ['a', 'b'] }),
+  {
+    selectedRowKeys: [],
+    loadedItems: [],
+    pageNumber: 1,
+  },
+  '远程 query 变化时应重置选择、已加载明细和页码',
+)
 const sortableFields: ContainerDetailSortField[] = [
   'itemNumber',
   'barcode',
@@ -283,6 +430,7 @@ const sortableFields: ContainerDetailSortField[] = [
   'englishName',
   'productType',
   'newProduct',
+  'matchType',
   'containerPieces',
   'containerQuantity',
   'domesticPrice',
@@ -311,6 +459,60 @@ assertEqual(
   getContainerDetailProductCode({ id: 302, hguid: 'code-302', 商品编码: '   ', 商品信息: { 商品编码: '   ' } }),
   undefined,
   '商品编码解析应把空白编码视为缺失',
+)
+assertEqual(
+  getContainerDetailCreateProductRowLabel({
+    id: 311,
+    hguid: 'label-311',
+    商品编码: 'P-LABEL',
+    商品信息: { 货号: 'HB308-031' },
+  }),
+  'HB308-031',
+  '创建新商品中文名提示应优先使用货号定位行',
+)
+assertEqual(
+  getContainerDetailCreateProductRowLabel({
+    id: 312,
+    hguid: 'label-312',
+    商品编码: 'P-LABEL',
+  }),
+  'P-LABEL',
+  '创建新商品中文名提示在缺少货号时应使用商品编码定位行',
+)
+assertEqual(
+  getContainerDetailCreateProductRowLabel({
+    id: 313,
+    hguid: 'label-313',
+  }),
+  'label-313',
+  '创建新商品中文名提示在缺少货号和商品编码时应使用明细 GUID 定位行',
+)
+assertDeepEqual(
+  findContainerDetailRowsMissingChineseName([
+    { id: 314, hguid: 'name-314', 是否新商品: true, 商品名称: '皮带', 商品信息: { 货号: 'HB308-030' } },
+    { id: 315, hguid: 'name-315', 是否新商品: true, 商品名称: 'belt', 商品信息: { 货号: 'HB308-031' } },
+    { id: 316, hguid: 'name-316', 是否新商品: true, 商品名称: '   ', 商品信息: { 货号: 'HB308-032' } },
+    { id: 317, hguid: 'name-317', 是否新商品: false, 商品名称: 'belt', 商品信息: { 货号: 'HB308-033' } },
+  ]),
+  [
+    { hguid: 'name-315', label: 'HB308-031', productName: 'belt' },
+    { hguid: 'name-316', label: 'HB308-032', productName: '' },
+  ],
+  '创建新商品前应只拦截新商品中缺少中文商品名的明细，纯英文和空值都应失败',
+)
+assertEqual(getContainerDetailMatchType({ id: 306, hguid: 'match-306', matchType: 'productCode' }), 'productCode', '匹配方式应优先读取前端归一化字段')
+assertEqual(getContainerDetailMatchType({ id: 307, hguid: 'match-307', MatchType: 'SupplierItem' }), 'supplierItem', '匹配方式应兼容后端 PascalCase 字段')
+assertEqual(getContainerDetailMatchType({ id: 308, hguid: 'match-308', 是否新商品: true }), 'unmatched', '缺少匹配方式的新商品应显示未匹配')
+assertEqual(getContainerDetailMatchType({ id: 309, hguid: 'match-309', 是否新商品: false }), 'unmatched', '缺少匹配方式的已有商品不能默认显示商品编码匹配')
+assertEqual(
+  getContainerDetailMatchType({
+    id: 310,
+    hguid: 'match-310',
+    MatchType: 'ProductCode',
+    商品信息: { 商品编码: 'HB013-108', 货号: 'HB013-108' },
+  }),
+  'productCode',
+  '后端明确返回 ProductCode 时应展示商品编码匹配',
 )
 assertDeepEqual(
   applyContainerDetailWarehouseStatusByProductCodes([
@@ -343,7 +545,34 @@ assertEqual(
 
 const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
+const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts', 'utf8')
 const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
+
+assertEqual(
+  pageSource.includes("const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }"),
+  true,
+  '货柜明细页应声明货号升序默认排序',
+)
+assertEqual(
+  pageSource.includes('useState<ContainerDetailSortState>(DEFAULT_CONTAINER_DETAIL_SORT)'),
+  true,
+  '货柜明细页初始排序应默认使用货号升序',
+)
+assertEqual(
+  pageSource.includes('setSortState(DEFAULT_CONTAINER_DETAIL_SORT)'),
+  true,
+  '清空表格排序或列状态时应恢复货号升序默认排序',
+)
+assertEqual(
+  pageSource.includes('const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false)'),
+  true,
+  '只读贴牌价格快览列应默认关闭',
+)
+assertEqual(
+  pageSource.includes('showReadonlyOemPrice ? [readonlyOemPriceColumn] : []'),
+  true,
+  '只读贴牌价格快览列应只在开关打开时插入表格列',
+)
 
 const matchedPriceContainer = { 汇率: 4.5, 运费: 100, 总体积: 10 }
 const matchedPriceRows: ContainerDetail[] = [
@@ -395,6 +624,7 @@ const matchedPriceRows: ContainerDetail[] = [
     id: 705,
     hguid: 'match-price-705',
     商品编码: 'P-CODE-FIRST',
+    localSupplierCode: '200',
     商品信息: { 货号: 'ITEM-FALLBACK', 条形码: 'BAR-FALLBACK' },
     贴牌价格: 0,
     装柜件数: 4,
@@ -422,6 +652,13 @@ const matchedPriceRows: ContainerDetail[] = [
     进口价格: 0,
     商品名称: '旧合计商品',
   },
+  {
+    id: 708,
+    hguid: 'match-price-708',
+    商品信息: { 条形码: 'BARCODE-ONLY' },
+    国内价格: undefined,
+    贴牌价格: undefined,
+  },
 ]
 
 const matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
@@ -434,8 +671,205 @@ const matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
     { ItemNumber: 'ITEM-FALLBACK', ProductName: '不应使用的货号匹配', WarehouseOEMPrice: 1.1, PackingQuantity: 99 },
     { ItemNumber: 'HB138-066', ProductName: '金/黑框混30X40', DomesticOEMPrice: 15.5, PackingQuantity: 24 },
     { ProductCode: 'P-STALE-TOTALS', ProductName: '旧合计商品', WarehouseDomesticPrice: 5, PackingQuantity: 5, WarehouseVolume: 0.5 },
+    { Barcode: 'BARCODE-ONLY', ProductName: '条码不应兜底', WarehouseDomesticPrice: 9.9, WarehouseOEMPrice: 8.8 },
   ] satisfies DetectionResult[],
   matchedPriceContainer,
+)
+
+assertDeepEqual(
+  buildContainerDetailDetectionItems([
+    { id: 901, hguid: 'detect-901', 商品信息: { 商品编码: '59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B', 货号: 'HB013-108', 条形码: '9528501322108' } },
+    { id: 902, hguid: 'detect-902', 商品编码: 'P-CODE', localSupplierCode: '200', 商品信息: { 货号: 'ITEM-902' } },
+    { id: 903, hguid: 'detect-903', 商品信息: { 条形码: 'BARCODE-ONLY' } },
+    { id: 904, hguid: 'detect-904', 商品信息: { 商品编码: 'HB013-108', 货号: 'HB013-108', 条形码: '9528501322108' } },
+  ]),
+  [
+    { ProductCode: '59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B', ItemNumber: 'HB013-108', SupplierCode: '200' },
+    { ProductCode: 'P-CODE', ItemNumber: 'ITEM-902', SupplierCode: '200' },
+    { ProductCode: 'HB013-108', ItemNumber: 'HB013-108', SupplierCode: '200' },
+  ],
+  '匹配检测项应同时提交商品编码和供应商 200 + 货号，且不提交条码兜底',
+)
+
+assertDeepEqual(
+  buildContainerDetailMatchedDomesticDataUpdates(
+    [
+      {
+        id: 904,
+        hguid: 'match-price-904',
+        商品编码: '59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B',
+        商品信息: { 货号: 'HB013-108', 条形码: '9528501322108' },
+        是否新商品: true,
+      },
+    ],
+    [
+      { ProductCode: 'G091539', ItemNumber: 'HB013-108', SupplierCode: '200', ProductName: 'FOLDABLE BROOM SET' },
+      { Barcode: '9528501322108', ProductName: '条码不应兜底' },
+    ] satisfies DetectionResult[],
+    matchedPriceContainer,
+  ),
+  [
+    {
+      hguid: 'match-price-904',
+      matchType: 'supplierItem',
+      是否新商品: false,
+      商品名称: 'FOLDABLE BROOM SET',
+    },
+  ],
+  '商品编码不一致但供应商 200 + HB 货号命中时，应按供应商货号匹配而不是商品编码匹配',
+)
+
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 905,
+        hguid: 'match-status-905',
+        商品编码: 'P-SAME',
+        localSupplierCode: '200',
+        商品信息: { 货号: 'HB013-108', 条形码: '9528501322108' },
+        是否新商品: true,
+      },
+    ],
+    [
+      { ProductCode: 'P-SAME', ProductName: 'FOLDABLE BROOM SET', WarehouseDomesticPrice: 13, WarehouseOEMPrice: 11.99 },
+      { Barcode: '9528501322108', ProductName: '条码不应兜底', WarehouseDomesticPrice: 99 },
+    ] satisfies DetectionResult[],
+  ),
+  [
+    {
+      hguid: 'match-status-905',
+      matchType: 'productCode',
+      是否新商品: false,
+    },
+  ],
+  '真实商品编码一致时，加载态只读匹配校正应标记商品编码匹配且不生成价格写库字段',
+)
+
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 9051,
+        hguid: 'match-status-9051',
+        商品编码: 'P-SAME',
+        localSupplierCode: '200',
+        商品信息: { 货号: 'HB013-108', 条形码: '9528501322108' },
+        MatchType: 'ProductCode',
+        是否新商品: false,
+      },
+    ],
+    [
+      {
+        ProductCode: 'P-SAME',
+        ItemNumber: 'HB013-108',
+        matchType: 'both',
+        ProductName: '扫把',
+      },
+    ] satisfies DetectionResult[],
+  ),
+  [
+    {
+      hguid: 'match-status-9051',
+      matchType: 'productCode',
+      是否新商品: false,
+    },
+  ],
+  '后端返回 both 且商品编码也命中时，应优先展示商品编码匹配',
+)
+
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 9052,
+        hguid: 'match-status-9052',
+        商品编码: '59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B',
+        商品信息: { 货号: 'HB013-108', 条形码: '9528501322108' },
+        是否新商品: true,
+      },
+    ],
+    [
+      {
+        productCode: '59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B',
+        itemNumber: 'HB013-108',
+        exists: true,
+        matchType: 'item_number',
+        productName: '套扫',
+      },
+    ] satisfies DetectionResult[],
+  ),
+  [
+    {
+      hguid: 'match-status-9052',
+      matchType: 'supplierItem',
+      是否新商品: false,
+    },
+  ],
+  '后端返回 item_number 时，即使结果包含 productCode，也应展示货号匹配',
+)
+
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 906,
+        hguid: 'match-status-906',
+        商品编码: '59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B',
+        商品信息: { 货号: 'HB013-108', 条形码: '9528501322108' },
+        是否新商品: true,
+      },
+    ],
+    [
+      {
+        ProductCode: 'G091539',
+        ItemNumber: 'HB013-108',
+        SupplierCode: '200',
+        MatchType: 'ProductCode',
+        ProductName: 'FOLDABLE BROOM SET',
+      },
+      { Barcode: '9528501322108', ProductName: '条码不应兜底', WarehouseDomesticPrice: 99 },
+    ] satisfies DetectionResult[],
+  ),
+  [
+    {
+      hguid: 'match-status-906',
+      matchType: 'supplierItem',
+      是否新商品: false,
+    },
+  ],
+  '即使后端回传 ProductCode 提示，只要真实商品编码不同且 200 + 货号命中，展示匹配方式也应以供应商货号为准',
+)
+
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 907,
+        hguid: 'match-status-907',
+        商品信息: { 商品编码: 'HB013-108', 货号: 'HB013-108', 条形码: '9528501322108' },
+        MatchType: 'ProductCode',
+        是否新商品: false,
+      },
+    ],
+    [
+      {
+        ProductCode: 'HB013-108',
+        ItemNumber: 'HB013-108',
+        SupplierCode: '200',
+        MatchType: 'ProductCode',
+        ProductName: 'FOLDABLE BROOM SET',
+      },
+    ] satisfies DetectionResult[],
+  ),
+  [
+    {
+      hguid: 'match-status-907',
+      matchType: 'productCode',
+      是否新商品: false,
+    },
+  ],
+  '商品编码命中时，即使同时带有供应商 200 + 货号，也应展示商品编码匹配',
 )
 
 assertDeepEqual(
@@ -443,6 +877,8 @@ assertDeepEqual(
   [
     {
       hguid: 'match-price-701',
+      matchType: 'productCode',
+      是否新商品: false,
       国内价格: 11.6,
       贴牌价格: 6.99,
       商品名称: '新商品名',
@@ -457,6 +893,8 @@ assertDeepEqual(
     },
     {
       hguid: 'match-price-702',
+      matchType: 'productCode',
+      是否新商品: false,
       商品名称: '覆盖名称',
       英文名称: 'Override English',
       单件装箱数: 24,
@@ -469,6 +907,8 @@ assertDeepEqual(
     },
     {
       hguid: 'match-price-703',
+      matchType: 'supplierItem',
+      是否新商品: false,
       国内价格: 5.5,
       贴牌价格: 2.2,
       商品名称: '货号匹配商品',
@@ -483,6 +923,8 @@ assertDeepEqual(
     },
     {
       hguid: 'match-price-705',
+      matchType: 'productCode',
+      是否新商品: false,
       贴牌价格: 7.7,
       商品名称: '商品编码优先商品',
       单件装箱数: 8,
@@ -490,6 +932,8 @@ assertDeepEqual(
     },
     {
       hguid: 'match-price-706',
+      matchType: 'supplierItem',
+      是否新商品: false,
       贴牌价格: 15.5,
       商品名称: '金/黑框混30X40',
       单件装箱数: 24,
@@ -497,6 +941,8 @@ assertDeepEqual(
     },
     {
       hguid: 'match-price-707',
+      matchType: 'productCode',
+      是否新商品: false,
       合计装柜体积: 1,
       合计装柜金额: 50,
       运输成本: 1,
@@ -513,9 +959,49 @@ assertEqual(
   '货柜明细应独立显示仓库当前进货价格列',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(targetRows, detected, container)'),
+  pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)') &&
+  pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()'),
   true,
-  '页面应调用匹配国内数据 helper 并沿用当前目标行范围',
+  '页面应调用匹配国内数据 helper，未勾选时按当前筛选结果全量处理',
+)
+assertEqual(
+  pageSource.includes('findContainerDetailRowsMissingChineseName(targetRows)') &&
+    pageSource.includes("'containers.messages.createProductsMissingChineseName'") &&
+    pageSource.includes('missingChineseNameRows.map((row) => row.label).join'),
+  true,
+  '创建新商品前应拦截缺少中文商品名的新商品，并在提示中带出可定位的货号或编码',
+)
+assertEqual(
+  pageSource.includes('editingProductNameRowKey') &&
+    pageSource.includes('startEditingProductName(row)') &&
+    pageSource.includes('commitProductNameEdit(row)') &&
+    pageSource.includes("saveRowPatch(row, { 商品名称: productName })"),
+  true,
+  '商品名称列应支持双击进入编辑，并复用明细保存接口写回中文商品名',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-product-name-editable') &&
+    pageStyleSource.includes('.container-detail-product-name-input'),
+  true,
+  '商品名称双击编辑应有稳定样式类，避免输入态改变表格布局',
+)
+assertEqual(
+  pageSource.includes('const detectionItems = buildContainerDetailDetectionItems(scopedRows)'),
+  true,
+  '页面匹配国内数据检测请求应复用统一检测项 helper',
+)
+assertEqual(
+  containerDetailLogicSource.includes("SupplierCode: '200'") && !containerDetailLogicSource.includes('Barcode: getContainerDetailBarcode(row)'),
+  true,
+  '匹配国内数据检测请求应固定供应商编码 200 且不再提交条码兜底',
+)
+assertEqual(
+  pageSource.includes('void reconcileLoadedMatchStatus(result.items, currentRequestId)') &&
+    pageSource.includes('products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))') &&
+    pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
+    pageSource.includes('加载态只校正表格展示状态，不写库'),
+  true,
+  '页面加载后应对当前懒加载块只读校正匹配状态，避免旧错误 MatchType 留在表格中且避免写库',
 )
 assertEqual(
   pageSource.includes('SkipRelatedProductSync: true'),
@@ -548,9 +1034,10 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[itemNumberFilter, productTypeFilter, selectedTagFilters, columnFilters, sortState]'),
+  pageSource.includes('[active, detailQueryKey]') &&
+    pageSource.includes('detailQueryKey 已包含货柜、筛选、排序和 tag'),
   true,
-  '清空已选明细的 effect 应监听顶部筛选、列头过滤和列头排序',
+  '清空已选明细的 effect 应监听 active 和远程查询 key，覆盖顶部筛选、列头过滤和列头排序',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -809,9 +1296,15 @@ assertEqual(pageSource.includes('const pushToHqLoadingRef = useRef(false)'), tru
 assertEqual(pageSource.includes('releasePushToHqLoading()'), true, '发送到 HQ job 提交成功后应立即解除按钮 loading')
 assertEqual(pageSource.includes("notification.info({") && pageSource.includes("key: pushToHqNotificationKey"), true, '发送到 HQ job 提交后应展示后台执行通知')
 assertEqual(pageSource.includes("notification.success({") && pageSource.includes("notification.warning({") && pageSource.includes("notification.error({"), true, '发送到 HQ job 终态应按成功、部分成功和失败展示通知')
+const pushToHqPollingSource = pageSource.slice(
+  pageSource.indexOf('const pollPushToHqJob = ('),
+  pageSource.indexOf('const handlePushSelectedProductsToHq = async () => {'),
+)
+assertEqual(pushToHqPollingSource.includes('loadData()'), false, '发送到 HQ job 终态不应重新加载货柜明细表格')
+assertEqual(pushToHqPollingSource.includes('showPushToHqResult'), false, '发送到 HQ job 终态只使用右上角通知，不应再弹结果 Modal')
 assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), true, '选中明细包含新商品时应给出友好 warning')
-assertEqual(pageSource.includes("showPushToHqResult(errorResult, selection, 'failed')"), true, '后端明确失败时应进入失败结果弹窗路径')
-assertEqual(pageSource.includes("title: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败弹窗而不是部分成功')
+assertEqual(pageSource.includes('发送 HQ 的结果统一收敛到右上角通知'), true, '发送到 HQ 提交失败也应使用右上角通知承载结果')
+assertEqual(pageSource.includes("message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败通知而不是部分成功')
 assertEqual(pageSource.includes('result.warehouseInventoriesCreated'), true, '结果弹窗应展示仓库库存新增统计')
 assertEqual(pageSource.includes('result.warehouseInventoriesUpdated'), true, '结果弹窗应展示仓库库存更新统计')
 assertEqual(pageSource.includes('result.storeRetailPricesCreated'), true, '结果弹窗应展示分店价格新增统计')
@@ -833,6 +1326,12 @@ assertEqual(
   true,
   '创建新商品应轮询后台 job 直到终态',
 )
+const createProductsJobSource = pageSource.slice(
+  pageSource.indexOf('const showCreateProductsJobResult = (job: ContainerProductCreationJob) => {'),
+  pageSource.indexOf('const updateExistingPurchase = async () => {'),
+)
+assertEqual(createProductsJobSource.includes('loadData()'), false, '批量创建新商品后台任务终态不应自动刷新货柜明细表格')
+assertEqual(createProductsJobSource.includes('Modal.'), false, '批量创建新商品后台任务终态只使用右上角通知，不应再弹结果 Modal')
 assertEqual(
   pageSource.includes("createPushProductsToHqJob") && pageSource.includes("getPushProductsToHqJob"),
   true,
@@ -895,6 +1394,29 @@ assertEqual(
   pageSource.includes('createProductsLoadingRef.current'),
   true,
   '创建新商品应使用 ref 锁防止连续点击重复提交',
+)
+assertEqual(
+  pageSource.includes('pendingDetailSavePromisesRef') &&
+    pageSource.includes('failedDetailSaveKeysRef') &&
+    pageSource.includes('buildContainerDetailSaveFailureKeys(saveKey, patch)') &&
+    pageSource.includes('flushPendingDetailSaves') &&
+    pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingChineseNameRows = findContainerDetailRowsMissingChineseName(targetRows)') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const job = await createContainerProductCreationJob({'),
+  true,
+  '创建新商品前必须等待货柜明细保存完成，避免页面已显示中文名但后台 job 读取旧库值',
+)
+assertEqual(
+  pageSource.includes('pendingDetailSaveCount > 0') &&
+    pageSource.includes('disabled: createProductsLoading || pendingDetailSaveCount > 0'),
+  true,
+  '创建新商品入口应在明细保存中禁用，避免保存竞态',
+)
+assertEqual(
+  pageSource.includes('handleDetailSaveError') &&
+    pageSource.includes('.catch(handleDetailSaveError)'),
+  true,
+  '行内保存的 fire-and-forget 调用应捕获失败，避免未处理 Promise 拒绝',
 )
 assertEqual(
   pageSource.includes('await createProduct({'),
@@ -1089,9 +1611,9 @@ assertEqual(
   '页面应提供重算成本的手动处理入口',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailFloatRateUpdates(targetRows, container)'),
+  pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
   true,
-  '重算成本应基于当前最终可见目标行和货柜信息计算更新',
+  '重算成本应按当前筛选 scope 交给后端计算更新',
 )
 assertEqual(
   pageSource.includes('dataSource={displayRows}'),
@@ -1099,9 +1621,11 @@ assertEqual(
   '货柜明细表格应使用列头过滤和排序后的 displayRows',
 )
 assertEqual(
-  pageSource.includes('applyContainerDetailColumnState(filteredRows, columnFilters, sortState)'),
+  pageSource.includes('buildContainerDetailQuery({') &&
+    pageSource.includes('filters: remoteColumnFilters') &&
+    pageSource.includes('sortState'),
   true,
-  '顶部筛选结果应继续叠加列头过滤和排序生成 displayRows',
+  '顶部筛选、列头过滤和排序应转换为服务端查询条件',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -1165,10 +1689,11 @@ assertEqual(
   '批量和行内仓库状态更新都应复用同商品编码本地更新 helper',
 )
 assertEqual(
-  pageSource.includes('const updates = targetRows') &&
-    pageSource.includes('const productCodes = targetRows'),
+  pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope()') &&
+    pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
+    pageSource.includes('const productCodes = scopedRows'),
   true,
-  '应用价格和批量上下架应在未选择时作用于最终可见行',
+  '应用价格应使用服务端 scope，批量上下架未选择时应作用于当前筛选结果全量',
 )
 assertEqual(
   pageSource.includes('data-column-key="image"') || pageSource.includes('data-column-key="index"'),
@@ -1181,21 +1706,19 @@ assertEqual(
   '单行保存浮率应使用原始行计算变化，不能提前覆盖浮率导致不写库',
 )
 assertEqual(
-  pageSource.includes('await batchUpdateDetails(updates)'),
+  pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
   true,
-  '重算成本应通过明细批量更新接口写回后端',
+  '重算成本应通过服务端 scope 接口写回后端',
 )
 assertEqual(
-  pageSource.includes('applyDetailUpdatesToRows(updates)'),
+  pageSource.includes("await loadDetailChunk(1, 'reset')"),
   true,
-  '重算成本写回成功后应同步更新本地行状态',
+  '重算成本写回成功后应重载当前查询首块',
 )
 assertEqual(pageSource.includes('缺少运费，无法重算成本'), true, '缺少运费时应提示 warning 且不写库')
 assertEqual(pageSource.includes('缺少总体积，无法重算成本'), true, '缺少总体积时应提示 warning 且不写库')
-assertEqual(pageSource.includes('没有可重算的明细'), true, '无目标行时应提示 warning 且不写库')
-assertEqual(pageSource.includes('没有可写回的成本更新'), true, '没有生成更新时应提示 warning 且不写库')
 assertEqual(
-  pageSource.includes("message.success(t('containers.messages.detailsUpdated', { count: updates.length }))"),
+  pageSource.includes("message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))"),
   true,
   '重算成本成功后应提示更新条数',
 )
@@ -1207,6 +1730,23 @@ assertEqual(
     pageSource.includes("fixed: 'left'"),
   true,
   '货号列应固定在左侧，横向滚动时保持可见',
+)
+const barcodeColumnSource = pageSource.slice(
+  pageSource.indexOf("renderColumnTitle('barcode', t('containers.fields.barcode'))"),
+  pageSource.indexOf("title: renderColumnTitle('productName'"),
+)
+assertEqual(
+  barcodeColumnSource.includes("fixed: 'left'"),
+  true,
+  '条码列应固定在左侧，横向滚动时保持可见',
+)
+assertEqual(
+  barcodeColumnSource.includes('showReadonlyOemPrice ? [readonlyOemPriceColumn] : []') &&
+    pageSource.includes("const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number]") &&
+    pageSource.includes('renderNumericCell(formatNumber(row.贴牌价格))') &&
+    !pageSource.slice(pageSource.indexOf('const readonlyOemPriceColumn'), pageSource.indexOf('const baseColumns')).includes('<InputNumber'),
+  true,
+  '条码列后应按开关插入只读贴牌价格列，便于横向滚动前快速核价',
 )
 assertEqual(
   pageSource.includes('rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}') &&
@@ -1233,10 +1773,12 @@ assertEqual(
   '货柜明细表格应按当前显示顺序给偶数视觉行添加隔行色 class',
 )
 assertEqual(
-  pageSource.includes('pageSize: 500') &&
-    pageSource.includes("pageSizeOptions: ['50', '100', '500', '1000']"),
+  pageSource.includes('const CONTAINER_DETAIL_PAGE_SIZE = 50') &&
+    pageSource.includes('pagination={false}') &&
+    pageSource.includes('virtual') &&
+    pageSource.includes('onScroll={handleDetailTableScroll}'),
   true,
-  '货柜明细分页默认应显示 500 条，并保留常用分页大小选项',
+  '货柜明细应关闭可见分页器，使用 50 条内部懒加载块和虚拟滚动',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
@@ -1324,14 +1866,15 @@ assertEqual(
   '未选中的统计标签应有弱化样式，保留颜色同时避免和选中态混淆',
 )
 assertEqual(
-  pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
-    pageSource.includes('const currentRequestId = containerDetailLoadRequestIdRef.current + 1') &&
-    pageSource.includes('containerDetailLoadRequestIdRef.current = currentRequestId'),
+  pageSource.includes('const headerLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('detailAbortControllerRef.current?.abort()'),
   true,
-  '货柜详情加载应使用递增 request id 标记当前请求，避免旧请求覆盖新页面',
+  '货柜详情头部和明细加载应分别使用 request id 与 AbortController 防止旧请求覆盖新页面',
 )
 assertEqual(
-  pageSource.includes('if (containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
+  pageSource.includes('if (headerLoadRequestIdRef.current !== currentRequestId)') &&
+    pageSource.includes('if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
     pageSource.includes('return'),
   true,
   '货柜详情过期请求完成或失败后应直接忽略，不能写入 state 或弹失败提示',

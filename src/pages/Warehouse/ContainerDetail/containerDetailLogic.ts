@@ -1,4 +1,4 @@
-import type { ContainerDetail, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailQuery, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqItem, PushProductsToHqResult } from '../../../types/posProduct'
 
 export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
@@ -7,6 +7,7 @@ export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
 type ContainerDetailSelectableTagFilter = Exclude<ContainerDetailTagFilter, 'all'>
 export type ContainerDetailProductTypeFilter = 'normal' | 'set' | 'setChild'
 export type ContainerDetailNewProductFilter = 'new' | 'existing'
+export type ContainerDetailMatchTypeFilter = 'productCode' | 'supplierItem' | 'unmatched'
 export type ContainerDetailWarehouseStatusFilter = 'active' | 'inactive'
 export type ContainerDetailSortOrder = 'ascend' | 'descend'
 export type ContainerDetailSortField =
@@ -16,6 +17,7 @@ export type ContainerDetailSortField =
   | 'englishName'
   | 'productType'
   | 'newProduct'
+  | 'matchType'
   | 'containerPieces'
   | 'containerQuantity'
   | 'domesticPrice'
@@ -34,6 +36,7 @@ const containerDetailSortFields = new Set<string>([
   'englishName',
   'productType',
   'newProduct',
+  'matchType',
   'containerPieces',
   'containerQuantity',
   'domesticPrice',
@@ -72,6 +75,7 @@ export interface ContainerDetailColumnFilters {
   englishName?: string
   productTypes?: ContainerDetailProductTypeFilter[]
   newProductStates?: ContainerDetailNewProductFilter[]
+  matchTypes?: ContainerDetailMatchTypeFilter[]
   containerPieces?: ContainerDetailNumberRangeFilter
   containerQuantity?: ContainerDetailNumberRangeFilter
   domesticPrice?: ContainerDetailNumberRangeFilter
@@ -91,6 +95,27 @@ export interface ContainerDetailSortState {
 
 export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
+}
+
+export function getContainerDetailCreateProductRowLabel(row: ContainerDetail) {
+  return getContainerDetailItemNumber(row) ?? getContainerDetailProductCode(row) ?? row.hguid
+}
+
+export function findContainerDetailRowsMissingChineseName(rows: ContainerDetail[]) {
+  return rows
+    .filter((row) => row.是否新商品)
+    .map((row) => {
+      const productName = getContainerDetailProductName(row)?.trim() ?? ''
+      return {
+        hguid: row.hguid,
+        label: getContainerDetailCreateProductRowLabel(row),
+        productName,
+        hasChineseName: containsChineseText(productName),
+      }
+    })
+    // 创建仓库新商品依赖中文商品名，避免把英文名误当作可创建的中文名。
+    .filter((row) => !row.hasChineseName)
+    .map(({ hguid, label, productName }) => ({ hguid, label, productName }))
 }
 
 export function getContainerDetailEnglishName(row: ContainerDetail) {
@@ -113,6 +138,24 @@ export function getContainerDetailBarcode(row: ContainerDetail) {
 
 export function getContainerDetailProductCode(row: ContainerDetail) {
   return row.商品编码?.trim() || row.商品信息?.商品编码?.trim() || undefined
+}
+
+export function getContainerDetailMatchType(row: ContainerDetail): ContainerDetailMatchTypeFilter {
+  const raw = row.matchType ?? row.MatchType
+  const normalized = raw?.trim().toLowerCase()
+  if (normalized === 'productcode' || normalized === 'product_code' || normalized === '商品编码') {
+    return 'productCode'
+  }
+  if (
+    normalized === 'supplieritem' ||
+    normalized === 'supplier_item' ||
+    normalized === 'item_number' ||
+    normalized === 'itemnumber' ||
+    normalized === '供应商编码+货号' ||
+    normalized === '货号匹配'
+  ) return 'supplierItem'
+  if (normalized === 'unmatched' || normalized === '未匹配') return 'unmatched'
+  return 'unmatched'
 }
 
 export function getContainerDetailProductTypeFilterKey(row: ContainerDetail): ContainerDetailProductTypeFilter {
@@ -156,6 +199,14 @@ export function mergeContainerDetailPatch(row: ContainerDetail, patch: Partial<C
   }
 
   return next
+}
+
+export function buildContainerDetailSaveFailureKeys(rowKey: string, patch: object) {
+  const fields = Object.keys(patch).filter((key) => key !== 'hguid').sort()
+  if (!fields.length) {
+    return [`${rowKey}:__row__`]
+  }
+  return fields.map((field) => `${rowKey}:${field}`)
 }
 
 export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {
@@ -250,6 +301,8 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return getContainerDetailProductTypeFilterKey(row)
     case 'newProduct':
       return row.是否新商品 ? 1 : 0
+    case 'matchType':
+      return getContainerDetailMatchType(row)
     case 'containerPieces':
       return row.装柜件数
     case 'containerQuantity':
@@ -298,6 +351,7 @@ export function applyContainerDetailColumnState(
     matchesTextFilter(row.备注, filters.remark) &&
     matchesOneOf(getContainerDetailProductTypeFilterKey(row), filters.productTypes) &&
     matchesOneOf(row.是否新商品 ? 'new' : 'existing', filters.newProductStates) &&
+    matchesOneOf(getContainerDetailMatchType(row), filters.matchTypes) &&
     matchesOneOf(getContainerDetailWarehouseStatusFilterKey(row), filters.warehouseStatus) &&
     matchesNumberRange(row.装柜件数, filters.containerPieces) &&
     matchesNumberRange(row.装柜数量, filters.containerQuantity) &&
@@ -322,6 +376,150 @@ export function applyContainerDetailColumnState(
       return sortState.order === 'ascend' ? result : -result
     })
     .map((item) => item.row)
+}
+
+export interface BuildContainerDetailQueryOptions {
+  containerGuid: string
+  filters: ContainerDetailColumnFilters
+  selectedTags: ContainerDetailTagFilter[]
+  sortState?: ContainerDetailSortState
+  pageNumber: number
+  pageSize: number
+}
+
+function assignQueryValue<K extends keyof ContainerDetailQuery>(
+  target: ContainerDetailQuery,
+  key: K,
+  value: ContainerDetailQuery[K],
+) {
+  target[key] = value
+}
+
+function assignTrimmedText<K extends keyof ContainerDetailQuery>(
+  target: ContainerDetailQuery,
+  key: K,
+  value?: string,
+) {
+  const normalized = value?.trim()
+  if (normalized) {
+    assignQueryValue(target, key, normalized as ContainerDetailQuery[K])
+  }
+}
+
+function assignNonEmptyArray<K extends keyof ContainerDetailQuery, V>(
+  target: ContainerDetailQuery,
+  key: K,
+  value?: V[],
+) {
+  if (value?.length) {
+    assignQueryValue(target, key, [...value] as unknown as ContainerDetailQuery[K])
+  }
+}
+
+function assignNumberRange(
+  target: ContainerDetailQuery,
+  minKey: keyof ContainerDetailQuery,
+  maxKey: keyof ContainerDetailQuery,
+  range?: ContainerDetailNumberRangeFilter,
+) {
+  // 0 是有效筛选值，不能用 truthy 判断丢掉。
+  if (range?.min != null) {
+    assignQueryValue(target, minKey, range.min as ContainerDetailQuery[typeof minKey])
+  }
+  if (range?.max != null) {
+    assignQueryValue(target, maxKey, range.max as ContainerDetailQuery[typeof maxKey])
+  }
+}
+
+export function buildContainerDetailQuery({
+  containerGuid,
+  filters,
+  selectedTags,
+  sortState,
+  pageNumber,
+  pageSize,
+}: BuildContainerDetailQueryOptions): ContainerDetailQuery {
+  const query: ContainerDetailQuery = {
+    containerGuid,
+    pageNumber,
+    pageSize,
+  }
+
+  assignTrimmedText(query, 'itemNumber', filters.itemNumber)
+  assignTrimmedText(query, 'barcode', filters.barcode)
+  assignTrimmedText(query, 'productName', filters.productName)
+  assignTrimmedText(query, 'englishName', filters.englishName)
+  assignTrimmedText(query, 'remark', filters.remark)
+  assignNonEmptyArray(query, 'productTypes', filters.productTypes)
+  assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
+  assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
+  assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
+
+  assignNumberRange(query, 'containerPiecesMin', 'containerPiecesMax', filters.containerPieces)
+  assignNumberRange(query, 'containerQuantityMin', 'containerQuantityMax', filters.containerQuantity)
+  assignNumberRange(query, 'domesticPriceMin', 'domesticPriceMax', filters.domesticPrice)
+  assignNumberRange(query, 'floatRateMin', 'floatRateMax', filters.floatRate)
+  assignNumberRange(query, 'transportCostMin', 'transportCostMax', filters.transportCost)
+  assignNumberRange(query, 'warehouseImportPriceMin', 'warehouseImportPriceMax', filters.warehouseImportPrice)
+  assignNumberRange(query, 'importPriceMin', 'importPriceMax', filters.importPrice)
+  assignNumberRange(query, 'oemPriceMin', 'oemPriceMax', filters.oemPrice)
+
+  const remoteTags = selectedTags.filter((tag) => tag !== 'all')
+  assignNonEmptyArray(query, 'selectedTags', remoteTags)
+
+  if (sortState) {
+    query.sortBy = sortState.field
+    query.sortOrder = sortState.order
+  }
+
+  return query
+}
+
+export function mergeContainerDetailLoadedItems(
+  loadedItems: ContainerDetail[],
+  nextItems: ContainerDetail[],
+): ContainerDetail[] {
+  const merged = [...loadedItems]
+  const indexByGuid = new Map<string, number>()
+
+  merged.forEach((item, index) => {
+    if (item.hguid) {
+      indexByGuid.set(item.hguid, index)
+    }
+  })
+
+  nextItems.forEach((item) => {
+    const existingIndex = item.hguid ? indexByGuid.get(item.hguid) : undefined
+    if (existingIndex == null) {
+      if (item.hguid) {
+        indexByGuid.set(item.hguid, merged.length)
+      }
+      merged.push(item)
+      return
+    }
+
+    // 重复明细保留原位置，但以后端最新页数据覆盖，避免编辑后刷新显示旧值。
+    merged[existingIndex] = item
+  })
+
+  return merged
+}
+
+export interface ContainerDetailRemoteQueryResetState<Key = string> {
+  selectedRowKeys: Key[]
+  loadedItems: ContainerDetail[]
+  pageNumber: number
+}
+
+export function getContainerDetailRemoteQueryResetState<Key = string>(
+  _state?: Partial<ContainerDetailRemoteQueryResetState<Key>>,
+): ContainerDetailRemoteQueryResetState<Key> {
+  // 远程查询条件变化后，旧选择和旧分页块都不再代表当前结果集。
+  return {
+    selectedRowKeys: [],
+    loadedItems: [],
+    pageNumber: 1,
+  }
 }
 
 export function applyContainerDetailWarehouseStatusByProductCodes(
@@ -574,8 +772,14 @@ interface ContainerDetailDetectedPrice {
   productCode?: string
   ItemNumber?: string
   itemNumber?: string
+  SupplierCode?: string
+  supplierCode?: string
   Barcode?: string
   barcode?: string
+  Exists?: boolean
+  exists?: boolean
+  MatchType?: string
+  matchType?: string
   ProductName?: string
   productName?: string
   name?: string
@@ -604,12 +808,42 @@ interface ContainerDetailDetectedPrice {
   volume?: number
 }
 
+export interface ContainerDetailDetectionItem {
+  ProductCode?: string
+  ItemNumber?: string
+  SupplierCode?: string
+}
+
 function isMissingPrice(value?: number) {
   return value == null || value <= 0
 }
 
 function normalizeMatchKey(value?: string) {
   return value?.trim().toUpperCase()
+}
+
+function getContainerDetailDetectionProductCode(row: ContainerDetail) {
+  const productCode = getContainerDetailProductCode(row)
+  return productCode
+}
+
+function buildSupplierItemMatchKey(supplierCode?: string, itemNumber?: string) {
+  const normalizedSupplierCode = normalizeMatchKey(supplierCode)
+  const normalizedItemNumber = normalizeMatchKey(itemNumber)
+  return normalizedSupplierCode && normalizedItemNumber
+    ? `${normalizedSupplierCode}:${normalizedItemNumber}`
+    : undefined
+}
+
+export function buildContainerDetailDetectionItems(rows: ContainerDetail[]): ContainerDetailDetectionItem[] {
+  return rows
+    .map((row) => ({
+      // 检测同时携带商品编码和固定供应商 200 + 货号，由匹配结果决定最终展示方式。
+      ProductCode: getContainerDetailDetectionProductCode(row),
+      ItemNumber: getContainerDetailItemNumber(row),
+      SupplierCode: '200',
+    }))
+    .filter((item) => item.ProductCode || item.ItemNumber)
 }
 
 function getDetectedDomesticPrice(item: ContainerDetailDetectedPrice) {
@@ -649,19 +883,82 @@ function calculateContainerDetailTotalVolume(row: ContainerDetail) {
 
 function buildDetectedPriceMaps(items: ContainerDetailDetectedPrice[]) {
   const productCodeMap = new Map<string, ContainerDetailDetectedPrice>()
-  const itemNumberMap = new Map<string, ContainerDetailDetectedPrice>()
-  const barcodeMap = new Map<string, ContainerDetailDetectedPrice>()
+  const supplierItemMap = new Map<string, ContainerDetailDetectedPrice>()
 
   items.forEach((item) => {
+    if ((item.Exists ?? item.exists) === false) return
     const productCode = normalizeMatchKey(item.productCode ?? item.ProductCode)
-    const itemNumber = normalizeMatchKey(item.itemNumber ?? item.ItemNumber)
-    const barcode = normalizeMatchKey(item.barcode ?? item.Barcode)
+    // 后端旧版本可能不回传 SupplierCode；本入口请求固定为 200，因此按 200 兼容旧响应。
+    const supplierItemKey = buildSupplierItemMatchKey(item.supplierCode ?? item.SupplierCode ?? '200', item.itemNumber ?? item.ItemNumber)
     if (productCode) productCodeMap.set(productCode, item)
-    if (itemNumber) itemNumberMap.set(itemNumber, item)
-    if (barcode) barcodeMap.set(barcode, item)
+    if (supplierItemKey) supplierItemMap.set(supplierItemKey, item)
   })
 
-  return { productCodeMap, itemNumberMap, barcodeMap }
+  return { productCodeMap, supplierItemMap }
+}
+
+interface ContainerDetailDetectedMatch {
+  item: ContainerDetailDetectedPrice
+  matchType: ContainerDetailMatchTypeFilter
+}
+
+function getDetectedMatchType(item: ContainerDetailDetectedPrice) {
+  return item.matchType ?? item.MatchType
+}
+
+function isDetectedItemNumberMatch(item: ContainerDetailDetectedPrice) {
+  const normalized = getDetectedMatchType(item)?.trim().toLowerCase()
+  return normalized === 'item_number' || normalized === 'itemnumber' || normalized === 'supplieritem' || normalized === 'supplier_item'
+}
+
+function resolveContainerDetailDetectedMatch(
+  row: ContainerDetail,
+  detectedMaps: ReturnType<typeof buildDetectedPriceMaps>,
+): ContainerDetailDetectedMatch | undefined {
+  const itemNumber = normalizeMatchKey(getContainerDetailItemNumber(row))
+  const supplierItemKey = buildSupplierItemMatchKey('200', itemNumber)
+  const detectionProductCode = normalizeMatchKey(getContainerDetailDetectionProductCode(row))
+
+  // 商品编码能匹配时优先展示商品编码匹配；只有没有商品编码命中时才落到供应商+货号。
+  const productCodeMatch = detectionProductCode ? detectedMaps.productCodeMap.get(detectionProductCode) : undefined
+  if (productCodeMatch) {
+    return {
+      item: productCodeMatch,
+      matchType: isDetectedItemNumberMatch(productCodeMatch) ? 'supplierItem' : 'productCode',
+    }
+  }
+
+  // 商品编码未命中时，200 + 货号命中才展示为供应商货号匹配。
+  const supplierItemMatch = supplierItemKey ? detectedMaps.supplierItemMap.get(supplierItemKey) : undefined
+  if (supplierItemMatch) {
+    return {
+      item: supplierItemMatch,
+      matchType: 'supplierItem',
+    }
+  }
+
+  return undefined
+}
+
+export function buildContainerDetailMatchStatusUpdates(
+  rows: ContainerDetail[],
+  detectedItems: ContainerDetailDetectedPrice[],
+): UpdateContainerDetailRequest[] {
+  const detectedMaps = buildDetectedPriceMaps(detectedItems)
+
+  return rows
+    .map((row): UpdateContainerDetailRequest | null => {
+      if (!row.hguid) return null
+      const match = resolveContainerDetailDetectedMatch(row, detectedMaps)
+      if (!match) return null
+
+      return {
+        hguid: row.hguid,
+        matchType: match.matchType,
+        是否新商品: false,
+      }
+    })
+    .filter((update): update is UpdateContainerDetailRequest => update !== null)
 }
 
 export function buildContainerDetailMatchedPriceUpdates(
@@ -677,23 +974,19 @@ export function buildContainerDetailMatchedDomesticDataUpdates(
   detectedItems: ContainerDetailDetectedPrice[],
   container?: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null,
 ): UpdateContainerDetailRequest[] {
-  const { productCodeMap, itemNumberMap, barcodeMap } = buildDetectedPriceMaps(detectedItems)
+  const detectedMaps = buildDetectedPriceMaps(detectedItems)
 
   return rows
     .map((row): UpdateContainerDetailRequest | null => {
       if (!row.hguid) return null
 
-      const productCode = normalizeMatchKey(getContainerDetailProductCode(row))
-      const itemNumber = normalizeMatchKey(getContainerDetailItemNumber(row))
-      const barcode = normalizeMatchKey(getContainerDetailBarcode(row))
-      const match =
-        (productCode ? productCodeMap.get(productCode) : undefined) ??
-        (itemNumber ? itemNumberMap.get(itemNumber) : undefined) ??
-        (barcode ? barcodeMap.get(barcode) : undefined)
-
-      if (!match) return null
+      const detectedMatch = resolveContainerDetailDetectedMatch(row, detectedMaps)
+      if (!detectedMatch) return null
 
       const update: UpdateContainerDetailRequest = { hguid: row.hguid }
+      const match = detectedMatch.item
+      update.matchType = detectedMatch.matchType
+      update.是否新商品 = false
       const domesticPrice = getDetectedDomesticPrice(match)
       const oemPrice = getDetectedOemPrice(match)
       const productName = getDetectedProductName(match)

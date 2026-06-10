@@ -11,6 +11,7 @@ import { StoreOrderFlowStatus } from '../../../types/storeOrder'
 import type { StoreDto } from '../../../types/store'
 import type { StoreOrderDetail } from '../../../types/storeOrder'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
+import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { buildDocumentFileName, collectElementBreakOffsets, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
 import { buildPickingListExcelData, formatInnerPackCount } from './pickingListLogic'
@@ -30,7 +31,7 @@ export default function PickingListPage() {
   const id = route?.params.id || ''
   const navigate = useNavigate()
   const printRootRef = useRef<HTMLDivElement | null>(null)
-  // 记录当前配货单已完成首次加载，保活 Tab 恢复时保留打印内容并静默刷新。
+  // 记录当前配货单已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
   const loadedOrderIdRef = useRef<string | null>(null)
   const visibleOrderIdRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -98,6 +99,15 @@ export default function PickingListPage() {
           setLoading(false)
         }
       }
+    }
+
+    // 保活 Tab 切回同订单且页面仍有可见内容时，直接复用现有打印数据。
+    if (shouldSkipDetailAutoReload({
+      requestedDetailId: id,
+      loadedDetailId: loadedOrderIdRef.current,
+      visibleDetailId: visibleOrderIdRef.current,
+    })) {
+      return
     }
 
     const shouldShowInitialLoading = shouldShowStoreOrderDetailInitialLoading({
