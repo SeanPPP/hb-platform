@@ -1546,6 +1546,7 @@ export default function ContainerDetailPage() {
     {
       title: renderColumnTitle('barcode', t('containers.fields.barcode')),
       width: 170,
+      fixed: 'left',
       ...makeSortProps('barcode'),
       ...textFilterProps('barcode', t('containers.placeholders.filterBarcode', '条码过滤')),
       render: (_, row) => {
@@ -1570,6 +1571,14 @@ export default function ContainerDetailPage() {
           </Space>
         ) : '--'
       },
+    },
+    {
+      // 只读快览列：贴牌价格靠近固定条码显示，方便横向滚动时核对条码和价格；实际编辑仍使用后面的价格编辑列。
+      title: renderCompactHeader(t('containers.fields.oemPrice')),
+      width: 96,
+      fixed: 'left',
+      align: 'right',
+      render: (_, row) => renderNumericCell(formatNumber(row.贴牌价格)),
     },
     {
       title: renderColumnTitle('productName', t('containers.fields.productName')),

@@ -1564,6 +1564,22 @@ assertEqual(
   true,
   '货号列应固定在左侧，横向滚动时保持可见',
 )
+const barcodeColumnSource = pageSource.slice(
+  pageSource.indexOf("renderColumnTitle('barcode', t('containers.fields.barcode'))"),
+  pageSource.indexOf("title: renderColumnTitle('productName'"),
+)
+assertEqual(
+  barcodeColumnSource.includes("fixed: 'left'"),
+  true,
+  '条码列应固定在左侧，横向滚动时保持可见',
+)
+assertEqual(
+  barcodeColumnSource.includes("title: renderCompactHeader(t('containers.fields.oemPrice'))") &&
+    barcodeColumnSource.includes('renderNumericCell(formatNumber(row.贴牌价格))') &&
+    !barcodeColumnSource.includes('<InputNumber'),
+  true,
+  '条码列后应显示只读贴牌价格列，便于横向滚动前快速核价',
+)
 assertEqual(
   pageSource.includes('rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, fixed: !viewport.isSmallPortrait }}') &&
     pageSource.includes("baseColumns.map((column) => ({ ...column, fixed: undefined }))"),
