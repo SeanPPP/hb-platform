@@ -106,6 +106,7 @@
       "resetColumnFilter": "重置",
       "clearColumnFilters": "清空列过滤",
       "exportOptions": "导出选项",
+      "resetColumns": "重置列",
       "selectExportColumns": "选择导出列",
       "exportSelectedColumns": "按所选列导出",
       "selectAllExportColumns": "全选",
@@ -135,6 +136,7 @@
       "newProduct": "新商品",
       "matchType": "匹配方式",
       "containerPieces": "装柜件数",
+      "middlePackQuantity": "中包数",
       "containerQuantity": "装柜数量",
       "domesticPrice": "国内价格",
       "floatRate": "调整浮率",
@@ -216,6 +218,7 @@
       "loadDetailFailed": "加载货柜明细失败",
       "headerSaveSuccess": "货柜信息已保存",
       "headerSaveFailed": "保存货柜信息失败",
+      "columnOrderReset": "列顺序已恢复默认",
       "enterFloatRate": "请输入调整浮率",
       "detailsUpdated": "已更新 {{count}} 条明细",
       "enterImportOrOemPrice": "请输入进口价格或贴牌价格",
@@ -255,7 +258,8 @@
     "productTypes": {
       "normal": "普通商品",
       "set": "套装商品",
-      "setChild": "套装子商品"
+      "setChild": "套装子商品",
+      "multiCode": "多码商品"
     },
     "tags": {
       "new": "新",
