@@ -172,6 +172,26 @@
   background: #fafafa;
 }
 
+.store-order-excel-paste-button:not(:disabled) {
+  border-color: #1677ff;
+  color: #1677ff;
+}
+
+.store-order-excel-paste-button:not(:disabled):hover {
+  border-color: #4096ff;
+  color: #4096ff;
+}
+
+.store-order-save-edited-lines-button:not(:disabled) {
+  border-color: #389e0d;
+  color: #389e0d;
+}
+
+.store-order-save-edited-lines-button:not(:disabled):hover {
+  border-color: #52c41a;
+  color: #52c41a;
+}
+
 .store-order-detail-table .ant-input-number {
   width: 60px;
   max-width: 64px;

@@ -18,6 +18,8 @@ import {
   findContainerDetailRowsMissingChineseName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
+  buildContainerDetailExportRow,
+  buildContainerDetailExportRows,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   calculateContainerDetailImportPrice,
@@ -31,12 +33,16 @@ import {
   getContainerDetailCreateProductRowLabel,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
+  getContainerDetailExportColumns,
+  getNextContainerDetailEditableCell,
   isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
+  type ContainerDetailExportColumnKey,
   type ContainerDetailSortField,
   type ContainerDetailSortState,
 } from './containerDetailLogic'
@@ -76,6 +82,99 @@ const rows: ContainerDetail[] = [
     },
   },
 ]
+
+assertDeepEqual(
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  ['itemNumber', 'productName', 'containerPieces', 'containerQuantity', 'oemPrice'],
+  '货柜明细默认导出列应为货号、名称、件数、装柜数量、零售价',
+)
+
+const customExportColumnKeys: ContainerDetailExportColumnKey[] = ['oemPrice', 'itemNumber', 'containerQuantity']
+assertDeepEqual(
+  getContainerDetailExportColumns(customExportColumnKeys).map((column) => column.key),
+  ['oemPrice', 'itemNumber', 'containerQuantity'],
+  '货柜明细自定义导出列应按用户选择顺序输出',
+)
+
+const exportRow = buildContainerDetailExportRow({
+  id: 101,
+  hguid: 'export-101',
+  商品名称: '明细名称',
+  英文名称: 'Detail Name',
+  商品类型: '普通商品',
+  是否新商品: true,
+  matchType: 'productCode',
+  装柜件数: 3,
+  装柜数量: 720,
+  国内价格: 2.3,
+  调整浮率: 1.2,
+  运输成本: 0.08,
+  warehouseImportPrice: 0.52,
+  进口价格: 0.67,
+  贴牌价格: 3.5,
+  warehouseIsActive: true,
+  备注: '优先上架',
+  商品信息: {
+    货号: 'HB291-005',
+    条形码: '9525812910005',
+    商品名称: '商品信息名称',
+    英文名称: 'Product Info Name',
+    零售价格: 9.99,
+  },
+})
+assertDeepEqual(
+  {
+    itemNumber: exportRow.itemNumber,
+    productName: exportRow.productName,
+    containerPieces: exportRow.containerPieces,
+    containerQuantity: exportRow.containerQuantity,
+    matchType: exportRow.matchType,
+    oemPrice: exportRow.oemPrice,
+    warehouseStatus: exportRow.warehouseStatus,
+  },
+  {
+    itemNumber: 'HB291-005',
+    productName: '明细名称',
+    containerPieces: 3,
+    containerQuantity: 720,
+    matchType: '商品编码匹配',
+    oemPrice: 3.5,
+    warehouseStatus: '上架',
+  },
+  '货柜明细导出行应优先读取页面展示字段，且零售价应映射贴牌价格',
+)
+
+assertDeepEqual(
+  buildContainerDetailExportRows([
+    {
+      id: 102,
+      hguid: 'export-empty',
+      warehouseIsActive: undefined,
+    },
+  ]),
+  [
+    {
+      itemNumber: '',
+      barcode: '',
+      productName: '',
+      englishName: '',
+      productType: '普通商品',
+      newProduct: '否',
+      matchType: '未匹配',
+      containerPieces: 0,
+      containerQuantity: 0,
+      domesticPrice: 0,
+      floatRate: 0,
+      transportCost: 0,
+      warehouseImportPrice: 0,
+      importPrice: 0,
+      oemPrice: 0,
+      warehouseStatus: '下架',
+      remark: '',
+    },
+  ],
+  '货柜明细导出行缺失字段时应使用稳定空值或 0，避免 Excel 导出报错',
+)
 
 assertEqual(
   getContainerDetailEnglishName(rows[0]),
@@ -189,6 +288,60 @@ const clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
 
 assertEqual(clearedRows[0].英文名称, undefined, '清除后本地行明细级英文名称应为空')
 assertEqual(clearedRows[0].商品信息?.英文名称, undefined, '清除后本地行商品信息英文名称应为空')
+
+const editableRowKeys = ['row-1', 'row-2', 'row-3']
+const editableColumnKeys = ['englishName', 'floatRate', 'importPrice', 'oemPrice', 'remark']
+
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'up'),
+  { rowKey: 'row-1', columnKey: 'floatRate' },
+  '方向键上应移动到上一行同一编辑列',
+)
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'down'),
+  { rowKey: 'row-3', columnKey: 'floatRate' },
+  '方向键下应移动到下一行同一编辑列',
+)
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'left'),
+  { rowKey: 'row-2', columnKey: 'englishName' },
+  '方向键左应移动到同一行前一个编辑列',
+)
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'right'),
+  { rowKey: 'row-2', columnKey: 'importPrice' },
+  '方向键右应移动到同一行后一个编辑列',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-1', 'englishName', editableRowKeys, editableColumnKeys, 'up'),
+  null,
+  '第一行按上不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-3', 'remark', editableRowKeys, editableColumnKeys, 'down'),
+  null,
+  '最后一行按下不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-2', 'englishName', editableRowKeys, editableColumnKeys, 'left'),
+  null,
+  '首个编辑列按左不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-2', 'remark', editableRowKeys, editableColumnKeys, 'right'),
+  null,
+  '最后一个编辑列按右不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('missing-row', 'floatRate', editableRowKeys, editableColumnKeys, 'down'),
+  null,
+  '当前行不存在时不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-2', 'missing-column', editableRowKeys, editableColumnKeys, 'right'),
+  null,
+  '当前列不存在时不应移动',
+)
 
 const tagRows: ContainerDetail[] = [
   { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },

@@ -22,19 +22,18 @@ export interface ExportResult {
 }
 
 export interface ContainerDetailExportItem {
-  imageUrl?: string
-  itemNumber: string
-  barcode: string
-  productName: string
-  isNewProduct: boolean
-  containerQuantity: number
-  domesticPrice: number
-  transportCost: number
-  importPrice: number
-  oemPrice: number
+  [key: string]: string | number | boolean | undefined
+}
+
+export interface ContainerDetailExportColumn {
+  header: string
+  key: string
+  width: number
+  valueType?: 'text' | 'number' | 'money'
 }
 
 export interface ContainerExportOptions {
+  columns?: ContainerDetailExportColumn[]
   includeImages?: boolean
   fileName?: string
   onProgress?: (progress: number, message: string) => void
@@ -359,17 +358,25 @@ export async function exportContainerDetailsToExcel(
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('货柜明细')
 
-  worksheet.columns = [
-    { header: '货号', key: 'itemNumber', width: 18 },
-    { header: '条码', key: 'barcode', width: 22 },
-    { header: '商品名称', key: 'productName', width: 36 },
-    { header: '新商品', key: 'isNewProduct', width: 10 },
-    { header: '装柜数量', key: 'containerQuantity', width: 12 },
-    { header: '国内价格', key: 'domesticPrice', width: 12 },
-    { header: '运输成本', key: 'transportCost', width: 12 },
-    { header: '进口价格', key: 'importPrice', width: 12 },
-    { header: '贴牌价格', key: 'oemPrice', width: 12 },
-  ]
+  const columns = options.columns?.length
+    ? options.columns
+    : [
+        { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' as const },
+        { header: '条码', key: 'barcode', width: 22, valueType: 'text' as const },
+        { header: '商品名称', key: 'productName', width: 36, valueType: 'text' as const },
+        { header: '新商品', key: 'isNewProduct', width: 10, valueType: 'text' as const },
+        { header: '装柜数量', key: 'containerQuantity', width: 12, valueType: 'number' as const },
+        { header: '国内价格', key: 'domesticPrice', width: 12, valueType: 'money' as const },
+        { header: '运输成本', key: 'transportCost', width: 12, valueType: 'money' as const },
+        { header: '进口价格', key: 'importPrice', width: 12, valueType: 'money' as const },
+        { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' as const },
+      ]
+
+  worksheet.columns = columns.map((column) => ({
+    header: column.header,
+    key: column.key,
+    width: column.width,
+  }))
 
   const headerRow = worksheet.getRow(1)
   headerRow.height = 28
@@ -385,19 +392,24 @@ export async function exportContainerDetailsToExcel(
 
   options.onProgress?.(20, '正在写入货柜明细...')
   items.forEach((item, index) => {
-    worksheet.addRow({
-      ...item,
-      isNewProduct: item.isNewProduct ? '是' : '否',
-    })
+    worksheet.addRow(item)
     if (index % 100 === 0) {
       options.onProgress?.(20 + Math.floor((index / Math.max(items.length, 1)) * 70), `正在处理第 ${index + 1}/${items.length} 条...`)
     }
   })
 
-  ;['domesticPrice', 'transportCost', 'importPrice', 'oemPrice'].forEach((key) => {
-    worksheet.getColumn(key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
+  columns.filter((column) => column.valueType === 'money').forEach((column) => {
+    worksheet.getColumn(column.key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
       if (rowNumber > 1) {
         cell.numFmt = '$#,##0.00'
+      }
+    })
+  })
+
+  columns.filter((column) => column.valueType === 'number').forEach((column) => {
+    worksheet.getColumn(column.key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
+      if (rowNumber > 1) {
+        cell.numFmt = '#,##0.####'
       }
     })
   })

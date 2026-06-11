@@ -10,6 +10,7 @@ import {
   type ImportFromDomesticItem,
 } from '../../../services/warehouseProductService'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
+import './compact.css'
 
 function formatPrice(value?: number) {
   if (value === undefined || value === null) {
@@ -143,13 +144,13 @@ export default function ImportFromDomesticModal({
       {
         title: t('warehouse.importDomestic.image', '图片'),
         dataIndex: 'productImage',
-        width: 90,
+        width: 58,
         render: (value: string | undefined, record) => (
           <Image
             src={value}
             alt={record.productName}
-            width={44}
-            height={44}
+            width={36}
+            height={36}
             style={{ borderRadius: 4, objectFit: 'cover' }}
             fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
           />
@@ -158,42 +159,40 @@ export default function ImportFromDomesticModal({
       {
         title: t('productImport.hbProductNoCol', '货号'),
         dataIndex: 'itemNumber',
-        width: 160,
+        width: 112,
       },
       {
         title: t('domesticProducts.barcode', '条码'),
         dataIndex: 'barcode',
-        width: 160,
+        width: 126,
         render: (value?: string) => value || '--',
       },
       {
         title: t('domesticProducts.productName', '商品名称'),
         dataIndex: 'productName',
-        width: 220,
-        ellipsis: true,
+        width: 160,
+        render: (value?: string) => value ? <div className="warehouse-import-domestic-two-line">{value}</div> : '--',
       },
       {
         title: t('productCreation.type', '类型'),
         dataIndex: 'productType',
-        width: 100,
+        width: 76,
         render: (value: number) => ProductTypeLabels[value as keyof typeof ProductTypeLabels] || '--',
       },
       {
         title: t('domesticProducts.supplier', '供应商'),
         dataIndex: 'supplierName',
-        width: 180,
-        ellipsis: true,
-        render: (value?: string) => value || '--',
+        width: 132,
+        render: (value?: string) => value ? <div className="warehouse-import-domestic-two-line">{value}</div> : '--',
       },
       {
         title: t('domesticProducts.domesticPrice', '国内价'),
         dataIndex: 'domesticPrice',
-        width: 120,
+        width: 80,
         render: (_value, record) => (
           <InputNumber
             min={0}
             precision={2}
-            style={{ width: '100%' }}
             value={editablePrices[record.productCode]?.domesticPrice ?? record.domesticPrice}
             onChange={(value) =>
               setEditablePrices((current) => ({
@@ -210,12 +209,11 @@ export default function ImportFromDomesticModal({
       {
         title: t('warehouse.retail', '零售'),
         dataIndex: 'oemPrice',
-        width: 120,
+        width: 80,
         render: (_value, record) => (
           <InputNumber
             min={0}
             precision={2}
-            style={{ width: '100%' }}
             value={editablePrices[record.productCode]?.oemPrice ?? record.oemPrice}
             onChange={(value) =>
               setEditablePrices((current) => ({
@@ -232,12 +230,11 @@ export default function ImportFromDomesticModal({
       {
         title: t('warehouse.importPrice', '进口价'),
         dataIndex: 'importPrice',
-        width: 120,
+        width: 80,
         render: (_value, record) => (
           <InputNumber
             min={0}
             precision={2}
-            style={{ width: '100%' }}
             value={editablePrices[record.productCode]?.importPrice ?? record.importPrice}
             onChange={(value) =>
               setEditablePrices((current) => ({
@@ -254,12 +251,11 @@ export default function ImportFromDomesticModal({
       {
         title: t('warehouse.volume', '体积'),
         dataIndex: 'volume',
-        width: 120,
+        width: 78,
         render: (_value, record) => (
           <InputNumber
             min={0}
             precision={4}
-            style={{ width: '100%' }}
             value={editablePrices[record.productCode]?.volume ?? record.volume}
             onChange={(value) =>
               setEditablePrices((current) => ({
@@ -276,7 +272,7 @@ export default function ImportFromDomesticModal({
       {
         title: t('warehouse.structure', '结构'),
         key: 'flags',
-        width: 140,
+        width: 78,
         render: (_, record) => (
           <Space size={[4, 4]} wrap>
             {record.hasSetProducts ? <Tag color="gold">{t('productCreation.set', '套装')}</Tag> : null}
@@ -380,6 +376,7 @@ export default function ImportFromDomesticModal({
       title={t('warehouse.importFromDomestic', '从国内导入')}
       open={open}
       width={1400}
+      wrapClassName="warehouse-import-domestic-modal"
       destroyOnClose
       okText={t('warehouse.importDomestic.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
@@ -387,12 +384,12 @@ export default function ImportFromDomesticModal({
       onCancel={onCancel}
       onOk={() => void handleImport()}
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Space wrap>
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <Space wrap size={8}>
           <Input.Search
             allowClear
             placeholder={t('warehouse.searchProduct', '搜索货号 / 条码 / 商品名称')}
-            style={{ width: 320 }}
+            style={{ width: 260 }}
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
             onSearch={(value) => void loadItems({ page: 1, searchText: value })}
@@ -412,7 +409,7 @@ export default function ImportFromDomesticModal({
           </Button>
         </Space>
 
-        <Space size={24}>
+        <Space size={16}>
           <span>{t('warehouse.importDomestic.pendingImport', '待导入')}: {total}</span>
           <span>{t('warehouse.importDomestic.selected', '已选中')}: {selectedRowKeys.length}</span>
           {selectedRowKeys.length ? (
@@ -428,7 +425,9 @@ export default function ImportFromDomesticModal({
         </Space>
 
         <Table
+          className="warehouse-import-domestic-compact-table"
           rowKey="productCode"
+          size="small"
           virtual
           loading={loading}
           columns={columns}
@@ -437,7 +436,7 @@ export default function ImportFromDomesticModal({
             selectedRowKeys,
             onChange: setSelectedRowKeys,
             preserveSelectedRowKeys: true,
-            columnWidth: 64,
+            columnWidth: 42,
           }}
           pagination={{
             current: page,
@@ -446,7 +445,8 @@ export default function ImportFromDomesticModal({
             showSizeChanger: true,
             onChange: (nextPage, nextPageSize) => void loadItems({ page: nextPage, pageSize: nextPageSize }),
           }}
-          scroll={{ x: 1340, y: 520 }}
+          // 紧凑样式只服务当前弹窗：保留 20/page，但提高可视行数并减少横向滚动压力。
+          scroll={{ x: 1120, y: 560 }}
         />
       </Space>
     </Modal>

@@ -38,6 +38,10 @@ const containerProductPickerSource = readFileSync(containerProductPickerFile, 'u
 const printCssSource = readFileSync(printCssFile, 'utf8')
 const packageSource = readFileSync(packageFile, 'utf8')
 const detailMainTableSource = detailSource.slice(detailSource.indexOf('const columns: ColumnsType<StoreOrderDetailLine>'))
+const detailKeyboardHandlerSource = detailSource.slice(
+  detailSource.indexOf('const handleDetailInputKeyDown'),
+  detailSource.indexOf('const handleCompleteOrder'),
+)
 
 function readCssRule(source: string, selector: string) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -240,6 +244,63 @@ async function main() {
     assert(compactCssSource.includes('align-items: center'), '详情主表内部 flex 元素缺少居中对齐')
   })
   if (detailTableVerticalAlignFailure) failures.push(detailTableVerticalAlignFailure)
+
+  const detailBulkSaveFailure = await runTest('详情页应提供整单保存且只提交已修改明细行', () => {
+    assert(detailSource.includes('handleSaveEditedLines'), '详情页缺少整单保存处理函数')
+    assert(detailSource.includes('getEditedLinePayloads()'), '整单保存应从已修改行生成 payload')
+    assert(detailSource.includes('batchUpdateStoreOrderLines({'), '整单保存应复用明细批量保存接口')
+    assert(detailSource.includes("t('storeOrders.detail.saveEditedLines'"), '详情页缺少整单保存按钮文案')
+    assert(detailSource.includes('disabled={isReadonlyOrder || editedLineCount === 0}'), '整单保存应在只读或无修改时禁用')
+    assert(detailSource.includes('setEditingRows((current) => {') && detailSource.includes('savedDetailGUIDs'), '整单保存成功后应清理已保存行编辑状态')
+  })
+  if (detailBulkSaveFailure) failures.push(detailBulkSaveFailure)
+
+  const importPriceConfirmFailure = await runTest('详情页保存进口价变更前应提示同步仓库商品表和分店表', () => {
+    assert(detailSource.includes('confirmImportPriceSync'), '详情页缺少进口价同步确认 helper')
+    assert(detailSource.includes("t('storeOrders.detail.importPriceSyncConfirmTitle'"), '进口价同步确认缺少标题文案')
+    assert(detailSource.includes("t('storeOrders.detail.importPriceSyncConfirmContent'"), '进口价同步确认缺少内容文案')
+    assert(detailSource.includes('Checkbox') && detailSource.includes('defaultChecked'), '进口价同步确认应提供默认勾选的 Checkbox')
+    assert(detailSource.includes("t('storeOrders.detail.syncImportPriceCheckbox'"), '进口价同步确认缺少勾选文案')
+    assert(detailSource.includes('getEditedLinePayloads(syncImportPrice)'), '整单保存应按勾选状态决定是否提交进口价')
+    assert(detailSource.includes('syncImportPrice ? importPrice : undefined'), '单行保存应按勾选状态决定是否提交进口价')
+    assert(detailSource.includes('hasImportPriceChanged(line)'), '单行保存应判断进口价是否变更')
+    assert(detailSource.includes('payloads.some((item) => item.importPriceChanged)'), '整单保存应判断本次是否包含进口价变更')
+  })
+  if (importPriceConfirmFailure) failures.push(importPriceConfirmFailure)
+
+  const detailActionButtonColorFailure = await runTest('详情页整单保存和 Excel 粘贴按钮应使用不同颜色', () => {
+    assert(detailSource.includes('store-order-excel-paste-button'), 'Excel 粘贴按钮应有专用颜色 class')
+    assert(detailSource.includes('store-order-save-edited-lines-button'), '整单保存按钮应有专用颜色 class')
+    assert(compactCssSource.includes('.store-order-excel-paste-button'), '紧凑样式缺少 Excel 粘贴按钮颜色')
+    assert(compactCssSource.includes('.store-order-save-edited-lines-button'), '紧凑样式缺少整单保存按钮颜色')
+  })
+  if (detailActionButtonColorFailure) failures.push(detailActionButtonColorFailure)
+
+  const keyboardNavigationFailure = await runTest('详情页明细输入框应支持键盘方向键和 Enter 移动焦点', () => {
+    assert(detailSource.includes('detailInputRefs'), '详情页缺少明细输入框 ref map')
+    assert(detailSource.includes('registerDetailInput'), '详情页缺少明细输入框注册函数')
+    assert(detailSource.includes('focusDetailInput'), '详情页缺少明细输入框聚焦函数')
+    assert(detailSource.includes('handleDetailInputKeyDown'), '详情页缺少键盘导航处理函数')
+    assert(detailSource.includes("event.key === 'ArrowRight'"), '键盘导航应处理 ArrowRight')
+    assert(detailSource.includes("event.key === 'ArrowLeft'"), '键盘导航应处理 ArrowLeft')
+    assert(detailSource.includes("event.key === 'ArrowDown'") && detailSource.includes("event.key === 'Enter'"), '键盘导航应处理 ArrowDown 和 Enter')
+    assert(detailSource.includes("event.key === 'ArrowUp'"), '键盘导航应处理 ArrowUp')
+    assert(detailSource.includes("field === 'allocQuantity' ? 'importPrice' : 'allocQuantity'"), '左右键应在发货数和进口价之间移动')
+    assert(detailMainTableSource.includes('onKeyDown={(event) => handleDetailInputKeyDown(event, record.detailGUID, \'allocQuantity\')}'), '发货数输入框应绑定键盘导航')
+    assert(detailMainTableSource.includes('onKeyDown={(event) => handleDetailInputKeyDown(event, record.detailGUID, \'importPrice\')}'), '进口价输入框应绑定键盘导航')
+    assert(!detailKeyboardHandlerSource.includes('updateStoreOrderLine') && !detailKeyboardHandlerSource.includes('batchUpdateStoreOrderLines'), '键盘移动不应自动调用保存接口')
+  })
+  if (keyboardNavigationFailure) failures.push(keyboardNavigationFailure)
+
+  const amountLabelsFailure = await runTest('详情页顶部金额应显示预计销售额、订单金额 ex GST 和 GST 10%', () => {
+    assert(detailSource.includes('estimatedSalesAmount'), '详情页缺少预计销售额计算')
+    assert(detailSource.includes('gstAmount'), '详情页缺少 GST 10% 计算')
+    assert(detailSource.includes('line.price') && detailSource.includes('line.allocQuantity'), '预计销售额应按贴牌价和当前发货数计算')
+    assert(detailSource.includes("label={t('storeOrders.orderAmountLabel')}") && detailSource.includes('formatAmount(estimatedSalesAmount)'), '订单金额位置应改为显示预计销售额')
+    assert(detailSource.includes("label={t('storeOrders.importAmountLabel')}") && detailSource.includes('formatAmount(detail.totalImportAmount)'), '订单金额 ex GST 应沿用 totalImportAmount')
+    assert(detailSource.includes("label={t('storeOrders.gstAmountLabel')}") && detailSource.includes('formatAmount(gstAmount)'), '详情页应新增 GST 10% 显示')
+  })
+  if (amountLabelsFailure) failures.push(amountLabelsFailure)
 
   const packageScriptFailure = await runTest('订货明细标准测试脚本应包含紧凑 UI 约束', () => {
     assert(packageSource.includes('storeOrderCompactUi.logic.test.ts'), 'test:store-order-detail 应接入 storeOrderCompactUi.logic.test.ts')

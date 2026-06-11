@@ -14,6 +14,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Empty,
   Grid,
@@ -35,8 +36,9 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
+import type { InputNumberRef } from 'rc-input-number'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -133,6 +135,15 @@ function formatVolume(value?: number) {
 
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
+type DetailEditableField = 'allocQuantity' | 'importPrice'
+
+interface EditedLinePayload {
+  detailGUID: string
+  productCode: string
+  quantity?: number
+  importPrice?: number
+  importPriceChanged: boolean
+}
 
 function toNumber(value?: number | null) {
   return Number(value ?? 0)
@@ -632,6 +643,7 @@ export default function StoreOrderDetailPage() {
   const lastLoadedDetailQueryKeyRef = useRef<string | null>(null)
   const lastLoadedStoresQueryKeyRef = useRef<string | null>(null)
   const stopPasteReplacePollingRef = useRef<(() => void) | null>(null)
+  const detailInputRefs = useRef<Record<string, InputNumberRef | null>>({})
   const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
   const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
@@ -952,6 +964,20 @@ export default function StoreOrderDetailPage() {
     ) ??
     0
 
+  const estimatedSalesAmount = useMemo(
+    () =>
+      detail?.items.reduce((sum, line) => {
+        const allocQuantity = editingRows[line.detailGUID]?.allocQuantity ?? line.allocQuantity ?? 0
+        return sum + Number(line.price ?? 0) * Number(allocQuantity)
+      }, 0) ?? 0,
+    [detail?.items, editingRows],
+  )
+
+  const gstAmount = useMemo(
+    () => Number((Number(detail?.totalImportAmount ?? 0) * 0.1).toFixed(2)),
+    [detail?.totalImportAmount],
+  )
+
   const validPastePreviewCount = useMemo(
     () => buildPasteSubmitItems(pastePreviewItems).length,
     [pastePreviewItems],
@@ -971,6 +997,39 @@ export default function StoreOrderDetailPage() {
     () => detail?.items.filter((item) => selectedLineKeys.includes(item.detailGUID)) ?? [],
     [detail?.items, selectedLineKeys],
   )
+
+  const getEditedLinePayloads = (syncImportPrice = true) =>
+    (detail?.items ?? []).reduce<EditedLinePayload[]>((payloads, line) => {
+      const edited = editingRows[line.detailGUID]
+      if (!edited) {
+        return payloads
+      }
+
+      const allocQuantityChanged =
+        edited.allocQuantity !== undefined && Number(edited.allocQuantity) !== Number(line.allocQuantity ?? 0)
+      const importPriceChanged =
+        edited.importPrice !== undefined && Number(edited.importPrice) !== Number(line.importPrice ?? 0)
+
+      if (!allocQuantityChanged && !importPriceChanged) {
+        return payloads
+      }
+
+      if (importPriceChanged && !syncImportPrice && !allocQuantityChanged) {
+        return payloads
+      }
+
+      payloads.push({
+        detailGUID: line.detailGUID,
+        productCode: line.productCode,
+        quantity: allocQuantityChanged ? edited.allocQuantity : undefined,
+        importPrice: importPriceChanged && syncImportPrice ? edited.importPrice : undefined,
+        importPriceChanged,
+      })
+
+      return payloads
+    }, [])
+
+  const editedLineCount = useMemo(() => getEditedLinePayloads().length, [detail?.items, editingRows])
 
   const statSummary = useMemo(() => {
     const items = detail?.items ?? []
@@ -1023,6 +1082,36 @@ export default function StoreOrderDetailPage() {
     message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
     return false
   }
+
+  const hasImportPriceChanged = (line: StoreOrderDetailLine) => {
+    const edited = editingRows[line.detailGUID]
+    return edited?.importPrice !== undefined && Number(edited.importPrice) !== Number(line.importPrice ?? 0)
+  }
+
+  const confirmImportPriceSync = () =>
+    new Promise<boolean | null>((resolve) => {
+      let syncImportPrice = true
+      Modal.confirm({
+        title: t('storeOrders.detail.importPriceSyncConfirmTitle'),
+        content: (
+          <Space direction="vertical" size={8}>
+            <Typography.Text>{t('storeOrders.detail.importPriceSyncConfirmContent')}</Typography.Text>
+            <Checkbox
+              defaultChecked
+              onChange={(event) => {
+                syncImportPrice = event.target.checked
+              }}
+            >
+              {t('storeOrders.detail.syncImportPriceCheckbox')}
+            </Checkbox>
+          </Space>
+        ),
+        okText: t('common.confirm'),
+        cancelText: t('common.cancel'),
+        onOk: () => resolve(syncImportPrice),
+        onCancel: () => resolve(null),
+      })
+    })
 
   const handleSaveHeader = async () => {
     if (!detail) {
@@ -1187,19 +1276,98 @@ export default function StoreOrderDetailPage() {
       return
     }
 
+    let syncImportPrice = true
+    if (hasImportPriceChanged(line)) {
+      const syncChoice = await confirmImportPriceSync()
+      if (syncChoice === null) {
+        return
+      }
+      syncImportPrice = syncChoice
+      if (!syncImportPrice && (edited?.allocQuantity === undefined || Number(edited.allocQuantity) === Number(line.allocQuantity ?? 0))) {
+        return
+      }
+    }
+
     setLineActionLoading(true)
     try {
       await updateStoreOrderLine({
         orderGUID: detail.orderGUID,
         productCode: line.productCode,
         allocQuantity,
-        importPrice,
+        importPrice: syncImportPrice ? importPrice : undefined,
       })
       message.success(t('storeOrders.detail.lineSaved'))
       await loadDetail(false)
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.lineSaveFailed'))
+    } finally {
+      setLineActionLoading(false)
+    }
+  }
+
+  const handleSaveEditedLines = async () => {
+    if (!detail) {
+      return
+    }
+    if (!ensureOrderEditable()) {
+      return
+    }
+
+    const payloads = getEditedLinePayloads()
+    if (!payloads.length) {
+      message.warning(t('storeOrders.detail.noEditedLines'))
+      return
+    }
+
+    const invalidQuantity = payloads.find((item) => item.quantity !== undefined && item.quantity < 0)
+    if (invalidQuantity) {
+      message.warning(t('storeOrders.detail.allocQtyNonNegative'))
+      return
+    }
+
+    let syncImportPrice = true
+    if (payloads.some((item) => item.importPriceChanged)) {
+      const syncChoice = await confirmImportPriceSync()
+      if (syncChoice === null) {
+        return
+      }
+      syncImportPrice = syncChoice
+      if (!syncImportPrice) {
+        const nextPayloads = getEditedLinePayloads(syncImportPrice)
+        if (!nextPayloads.length) {
+          return
+        }
+        payloads.splice(0, payloads.length, ...nextPayloads)
+      }
+      if (!syncImportPrice && !payloads.length) {
+        return
+      }
+    }
+
+    setLineActionLoading(true)
+    try {
+      await batchUpdateStoreOrderLines({
+        orderGUID: detail.orderGUID,
+        items: payloads.map((item) => ({
+          productCode: item.productCode,
+          quantity: item.quantity,
+          importPrice: item.importPrice,
+        })),
+      })
+      message.success(t('storeOrders.detail.editedLinesSaved', { count: payloads.length }))
+      const savedDetailGUIDs = new Set(payloads.map((item) => item.detailGUID))
+      setEditingRows((current) => {
+        const next = { ...current }
+        savedDetailGUIDs.forEach((detailGUID) => {
+          delete next[detailGUID]
+        })
+        return next
+      })
+      await loadDetail(false)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.batchUpdateFailed'))
     } finally {
       setLineActionLoading(false)
     }
@@ -1448,6 +1616,71 @@ export default function StoreOrderDetailPage() {
     setPastePreviewItems((current) => current.map((item) => (item.rowIndex === rowIndex ? { ...item, action } : item)))
   }
 
+  const getDetailInputKey = (detailGUID: string, field: DetailEditableField) => `${detailGUID}:${field}`
+
+  const registerDetailInput = (detailGUID: string, field: DetailEditableField, node: InputNumberRef | null) => {
+    const key = getDetailInputKey(detailGUID, field)
+    if (node) {
+      detailInputRefs.current[key] = node
+      return
+    }
+    delete detailInputRefs.current[key]
+  }
+
+  const focusDetailInput = (detailGUID: string, field: DetailEditableField) => {
+    detailInputRefs.current[getDetailInputKey(detailGUID, field)]?.focus?.()
+  }
+
+  const handleDetailInputKeyDown = (
+    event: KeyboardEvent<HTMLInputElement>,
+    detailGUID: string,
+    field: DetailEditableField,
+  ) => {
+    if (
+      event.key !== 'ArrowRight' &&
+      event.key !== 'ArrowLeft' &&
+      event.key !== 'ArrowDown' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'Enter'
+    ) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    const rows = detail?.items ?? []
+    const currentIndex = rows.findIndex((item) => item.detailGUID === detailGUID)
+    if (currentIndex < 0) {
+      return
+    }
+
+    let nextIndex = currentIndex
+    let nextField: DetailEditableField = field
+
+    if (event.key === 'ArrowRight') {
+      nextField = field === 'allocQuantity' ? 'importPrice' : 'allocQuantity'
+      nextIndex = field === 'allocQuantity' ? currentIndex : currentIndex + 1
+    }
+    if (event.key === 'ArrowLeft') {
+      nextField = field === 'importPrice' ? 'allocQuantity' : 'importPrice'
+      nextIndex = field === 'importPrice' ? currentIndex : currentIndex - 1
+    }
+    if (event.key === 'ArrowDown' || event.key === 'Enter') {
+      nextIndex = currentIndex + 1
+    }
+    if (event.key === 'ArrowUp') {
+      nextIndex = currentIndex - 1
+    }
+
+    const nextRow = rows[nextIndex]
+    if (!nextRow) {
+      return
+    }
+
+    focusDetailInput(nextRow.detailGUID, nextField)
+  }
+
   const handleCompleteOrder = async () => {
     if (!detail) {
       return
@@ -1656,12 +1889,14 @@ export default function StoreOrderDetailPage() {
       width: 70,
       render: (value: number | undefined, record) => (
         <InputNumber
+          ref={(node) => registerDetailInput(record.detailGUID, 'allocQuantity', node)}
           min={0}
           precision={0}
           disabled={isReadonlyOrder}
           status={getQuantityHighlight(record)}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.allocQuantity ?? value ?? 0}
+          onKeyDown={(event) => handleDetailInputKeyDown(event, record.detailGUID, 'allocQuantity')}
           onChange={(nextValue) =>
             setEditingRows((current) => ({
               ...current,
@@ -1680,12 +1915,14 @@ export default function StoreOrderDetailPage() {
       width: 70,
       render: (value: number | undefined, record) => (
         <InputNumber
+          ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
           disabled={isReadonlyOrder}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.importPrice ?? value}
+          onKeyDown={(event) => handleDetailInputKeyDown(event, record.detailGUID, 'importPrice')}
           onChange={(nextValue) =>
             setEditingRows((current) => ({
               ...current,
@@ -1970,8 +2207,9 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.shipQtyLabel')}>{totalAllocQuantity}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatVolume(totalOrderVolume)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatVolume(totalAllocVolume)}</Descriptions.Item>
-                <Descriptions.Item label={t('storeOrders.orderAmountLabel')}>{formatAmount(detail.totalAmount)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.orderAmountLabel')}>{formatAmount(estimatedSalesAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.importAmountLabel')}>{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.gstAmountLabel')}>{formatAmount(gstAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.freightLabel')}>
                   <InputNumber
                     min={0}
@@ -2087,6 +2325,7 @@ export default function StoreOrderDetailPage() {
                   </Button>
                   <Button
                     icon={<CopyOutlined />}
+                    className="store-order-excel-paste-button"
                     disabled={isReadonlyOrder}
                     onClick={() => {
                       resetPasteState('allocQuantity')
@@ -2094,6 +2333,15 @@ export default function StoreOrderDetailPage() {
                     }}
                   >
                     {t('storeOrders.excelPaste')}
+                  </Button>
+                  <Button
+                    icon={<SaveOutlined />}
+                    className="store-order-save-edited-lines-button"
+                    loading={lineActionLoading}
+                    disabled={isReadonlyOrder || editedLineCount === 0}
+                    onClick={() => void handleSaveEditedLines()}
+                  >
+                    {t('storeOrders.detail.saveEditedLines')}
                   </Button>
                   <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                     {t('storeOrders.batchModify')}

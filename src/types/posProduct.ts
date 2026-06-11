@@ -67,6 +67,7 @@ export interface BatchUpdatePosProductDto {
   categoryGuid?: string
   localSupplierCode?: string
   productName?: string
+  englishName?: string
   unitWeight?: number
 }
 

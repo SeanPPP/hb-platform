@@ -1,4 +1,4 @@
-import { ClearOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClearOutlined, DeleteOutlined, PlusOutlined, TranslationOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Image, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -7,8 +7,9 @@ import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { assignProductsToContainer, checkContainerConflicts, getContainerList } from '../../../services/containerService'
 import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales } from '../../../services/domesticProductImportService'
+import { batchTranslate } from '../../../services/translationService'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
-import { buildAssignContainerItems, calculateStatistics, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
+import { applyProductImportNameTranslations, buildAssignContainerItems, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
 import { DuplicateDialog } from './DuplicateDialog'
 import './styles.css'
@@ -46,6 +47,7 @@ export default function ProductImportPage() {
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false)
   const [containers, setContainers] = useState<any[]>([])
   const [loadingContainers, setLoadingContainers] = useState(false)
+  const [translating, setTranslating] = useState(false)
   const [selectedContainerId, setSelectedContainerId] = useState('')
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false)
   const [conflictItems, setConflictItems] = useState<Array<{ productCode: string; existingPieces?: number }>>([])
@@ -213,6 +215,47 @@ export default function ProductImportPage() {
     setState((prev) => ({ ...prev, products: mergedProducts, selectedIds: [], needsDetection: true, statistics: calculateStatistics(mergedProducts, []) }))
     message.success(t('productImport.mergeSuccess', '成功合并重复数据，共 {{count}} 组', { count: duplicateGroups.length }))
   }, [state.products, duplicateGroups])
+
+  const handleBatchTranslate = useCallback(async () => {
+    const selectedIdSet = new Set(state.selectedIds)
+    const targetProducts = state.selectedIds.length > 0
+      ? state.products.filter((product) => selectedIdSet.has(product.id))
+      : state.products
+    const names = Array.from(new Set(targetProducts
+      .map((product) => product.newProduct.productName.trim())
+      .filter((name) => name && containsChineseText(name))))
+
+    if (names.length === 0) {
+      message.warning(t('productImport.noNamesToTranslate', '没有可翻译的商品名称'))
+      return
+    }
+
+    try {
+      setTranslating(true)
+      const translations = await batchTranslate(names)
+      const result = applyProductImportNameTranslations(state.products, translations, state.selectedIds)
+
+      if (result.appliedCount === 0) {
+        message.warning(t('productImport.noValidTranslatedNames', '没有可保存的英文翻译结果'))
+        return
+      }
+
+      setState((prev) => ({
+        ...prev,
+        products: result.products,
+        needsDetection: true,
+        statistics: calculateStatistics(result.products, prev.selectedIds),
+      }))
+      message.success(t('productImport.batchTranslateSuccess', '成功翻译 {{count}} 个商品名称', { count: result.appliedCount }))
+      if (result.skippedCount > 0) {
+        message.warning(t('productImport.invalidTranslatedNamesSkipped', '有 {{count}} 条翻译结果仍包含中文或无变化，已跳过', { count: result.skippedCount }))
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('productImport.batchTranslateFailed', '批量翻译失败'))
+    } finally {
+      setTranslating(false)
+    }
+  }, [state.products, state.selectedIds, t])
 
   const handleBatchCreate = useCallback(async () => {
     const newProducts = state.products.filter((p) => p.status === 'new')
@@ -838,6 +881,7 @@ export default function ProductImportPage() {
         <Space wrap size="small">
           <Button icon={<PlusOutlined />} onClick={() => addEmptyRows(10)}>{t('productImport.addEmptyRows', '添加空行(10)')}</Button>
           <Button onClick={deleteSelectedRows} disabled={state.selectedIds.length === 0}>{t('productImport.deleteSelected', '删除选中')}</Button>
+          <Button icon={<TranslationOutlined />} onClick={handleBatchTranslate} disabled={translating || state.products.length === 0} loading={translating}>{t('productImport.batchTranslate', '批量翻译')}</Button>
           <Button type="primary" onClick={handleDetect} disabled={state.detecting || !state.supplier} loading={state.detecting}>{t('productImport.detectMatch', '检测匹配')}</Button>
           {!state.needsDetection && (
             <>

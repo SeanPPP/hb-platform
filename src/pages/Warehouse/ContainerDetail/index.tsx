@@ -27,6 +27,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Descriptions,
   Dropdown,
@@ -46,13 +47,13 @@ import {
   message,
   notification,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -104,6 +105,7 @@ import {
   buildContainerDetailClearEnglishNameUpdates,
   buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
+  buildContainerDetailExportRows,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
@@ -113,6 +115,7 @@ import {
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingChineseName,
+  getContainerDetailExportColumns,
   getContainerDetailBarcode,
   getContainerDetailEnglishName,
   getContainerDetailItemNumber,
@@ -122,13 +125,18 @@ import {
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
+  getNextContainerDetailEditableCell,
   isContainerDetailSortField,
   mergeContainerDetailColumnOrder,
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
   rollbackContainerDetailWarehouseStatuses,
+  CONTAINER_DETAIL_EXPORT_COLUMNS,
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
+  type ContainerDetailExportColumnKey,
   type ContainerDetailMatchTypeFilter,
   type ContainerDetailNewProductFilter,
   type ContainerDetailNumberRangeFilter,
@@ -267,6 +275,7 @@ const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
 const CONTAINER_DETAIL_PAGE_SIZE = 50
 const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v1'
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
+const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   all: 0,
   new: 0,
@@ -275,6 +284,23 @@ const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   abnormalImport: 0,
   active: 0,
   inactive: 0,
+}
+
+type ContainerDetailEditableColumnKey = typeof CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS[number]
+type ContainerDetailFocusableCell = {
+  focus: (options?: FocusOptions) => void
+  select?: () => void
+}
+
+const containerDetailEditableDirectionByKey: Partial<Record<string, ContainerDetailEditableCellDirection>> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+}
+
+function buildContainerDetailEditableCellKey(rowKeyValue: string, columnKey: ContainerDetailEditableColumnKey) {
+  return `${rowKeyValue}:${columnKey}`
 }
 
 function getContainerDetailViewport() {
@@ -394,6 +420,8 @@ export default function ContainerDetailPage() {
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportColumnModalOpen, setExportColumnModalOpen] = useState(false)
+  const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
@@ -407,6 +435,9 @@ export default function ContainerDetailPage() {
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
+  const detailTableRef = useRef<TableRef | null>(null)
+  const editableCellRefs = useRef<Map<string, ContainerDetailFocusableCell>>(new Map())
+  const pendingEditableCellFocusKeyRef = useRef<string | null>(null)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     实际到货日期?: Dayjs | null
@@ -641,6 +672,68 @@ export default function ContainerDetailPage() {
     [filteredRows],
   )
 
+  const setEditableCellRef = (
+    rowKeyValue: string,
+    columnKey: ContainerDetailEditableColumnKey,
+    cell: ContainerDetailFocusableCell | null,
+  ) => {
+    const cellKey = buildContainerDetailEditableCellKey(rowKeyValue, columnKey)
+    if (cell) {
+      editableCellRefs.current.set(cellKey, cell)
+      if (pendingEditableCellFocusKeyRef.current === cellKey) {
+        pendingEditableCellFocusKeyRef.current = null
+        window.requestAnimationFrame(() => {
+          cell.focus()
+          cell.select?.()
+        })
+      }
+      return
+    }
+    editableCellRefs.current.delete(cellKey)
+  }
+
+  const handleEditableCellKeyDown = (
+    row: ContainerDetail,
+    columnKey: ContainerDetailEditableColumnKey,
+    event: KeyboardEvent<HTMLElement>,
+  ) => {
+    const direction = containerDetailEditableDirectionByKey[event.key]
+    if (!direction || event.nativeEvent.isComposing) {
+      return
+    }
+
+    const currentRowKey = rowKey(row)
+    const nextCell = getNextContainerDetailEditableCell(
+      currentRowKey,
+      columnKey,
+      displayRows.map(rowKey),
+      CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS,
+      direction,
+    )
+    if (!nextCell) {
+      return
+    }
+
+    const nextCellKey = buildContainerDetailEditableCellKey(
+      nextCell.rowKey,
+      nextCell.columnKey as ContainerDetailEditableColumnKey,
+    )
+    event.preventDefault()
+    event.currentTarget.blur()
+    pendingEditableCellFocusKeyRef.current = nextCellKey
+    detailTableRef.current?.scrollTo?.({ key: nextCell.rowKey })
+    window.requestAnimationFrame(() => {
+      // 方向键只切换焦点；当前输入值继续复用 blur 保存链路落库。
+      const targetCell = editableCellRefs.current.get(nextCellKey)
+      if (!targetCell) {
+        return
+      }
+      pendingEditableCellFocusKeyRef.current = null
+      targetCell.focus()
+      targetCell.select?.()
+    })
+  }
+
   const tagStats = remoteTagStats
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
@@ -661,6 +754,14 @@ export default function ContainerDetailPage() {
   const tagSelectOptions = useMemo(
     () => tagStatOptions.filter((option) => option.value !== 'all').map(({ value, label }) => ({ value, label })),
     [tagStatOptions],
+  )
+
+  const exportColumnOptions = useMemo(
+    () => CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => ({
+      label: t(column.labelKey, column.fallbackLabel),
+      value: column.key,
+    })),
+    [t],
   )
 
   const setTagFiltersFromSelect = (values: ContainerDetailTagFilter[]) => {
@@ -1504,8 +1605,27 @@ export default function ContainerDetailPage() {
     })
   }
 
-  const exportExcel = async () => {
+  const confirmExportAllRows = () => new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: t('containers.modals.exportAllDetailsTitle', '导出全部匹配商品'),
+      content: t(
+        'containers.modals.exportAllDetailsContent',
+        '未选择商品，将按当前筛选和排序导出全部匹配商品，共 {{count}} 条。是否继续？',
+        { count: detailItemsTotal },
+      ),
+      okText: t('common.confirm', '确认'),
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
+  const exportExcel = async (columnKeys: ContainerDetailExportColumnKey[] = DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS) => {
     if (!ensureTargetRowsVisible()) return
+    if (!selectedRowKeys.length) {
+      const confirmed = await confirmExportAllRows()
+      if (!confirmed) return
+    }
     const exportRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
     if (!exportRows.length) {
       message.warning(t('containers.messages.noDataToExport'))
@@ -1513,19 +1633,15 @@ export default function ContainerDetailPage() {
     }
     setExporting(true)
     try {
-      const items: ContainerDetailExportItem[] = exportRows.map((row) => ({
-        imageUrl: row.商品信息?.商品图片,
-        itemNumber: row.商品信息?.货号 || '',
-        barcode: row.商品信息?.条形码 || '',
-        productName: getContainerDetailProductName(row) || '',
-        isNewProduct: Boolean(row.是否新商品),
-        containerQuantity: row.装柜数量 || 0,
-        domesticPrice: row.国内价格 || 0,
-        transportCost: row.运输成本 || 0,
-        importPrice: row.进口价格 || 0,
-        oemPrice: row.贴牌价格 || 0,
-      }))
+      const exportColumns = getContainerDetailExportColumns(columnKeys)
+      const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(exportRows)
       await exportContainerDetailsToExcel(items, {
+        columns: exportColumns.map((column) => ({
+          header: t(column.labelKey, column.fallbackLabel),
+          key: column.key,
+          width: column.width,
+          valueType: column.valueType,
+        })),
         fileName: `${container?.货柜编号 || t('containers.detailTitle')}_${t('containers.export.detailSuffix')}`,
         onProgress: (progress) => setExportProgress(progress),
       })
@@ -1829,12 +1945,14 @@ export default function ContainerDetailPage() {
       ...textFilterProps('englishName', t('containers.placeholders.filterEnglishName', '英文名称过滤')),
       render: (_, row) => access.canEditContainer ? (
         <Input.TextArea
+          ref={(cell) => setEditableCellRef(rowKey(row), 'englishName', cell)}
           className="container-detail-english-name-input"
           value={getContainerDetailEnglishName(row) ?? ''}
           autoSize={{ minRows: 1, maxRows: 2 }}
           style={{ resize: 'none' }}
           onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
           onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value }).catch(handleDetailSaveError)}
+          onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
         />
       ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
     },
@@ -1905,7 +2023,9 @@ export default function ContainerDetailPage() {
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'floatRate', cell)}
             value={row.调整浮率}
+            keyboard={false}
             precision={4}
             style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
@@ -1913,6 +2033,7 @@ export default function ContainerDetailPage() {
               const value = event.target.value ? Number(event.target.value) : undefined
               void saveFloatRatePatch(row, value).catch(handleDetailSaveError)
             }}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'floatRate', event)}
           />
         ) : renderNumericCell(formatNumber(row.调整浮率, 4)),
     },
@@ -1944,12 +2065,15 @@ export default function ContainerDetailPage() {
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'importPrice', cell)}
             value={row.进口价格}
+            keyboard={false}
             min={0}
             precision={2}
             style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
             onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
           />
         ) : renderNumericCell(formatNumber(row.进口价格)),
     },
@@ -1961,7 +2085,19 @@ export default function ContainerDetailPage() {
       ...makeSortProps('oemPrice'),
       ...numberFilterProps('oemPrice'),
       render: (_value, row) =>
-        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)} /> : renderNumericCell(formatNumber(row.贴牌价格)),
+        access.canEditContainer ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'oemPrice', cell)}
+            value={row.贴牌价格}
+            keyboard={false}
+            min={0}
+            precision={2}
+            style={{ width: 78 }}
+            onChange={(value) => patchRow(rowKey(row), { 贴牌价格: value == null ? undefined : Number(value) })}
+            onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
+          />
+        ) : renderNumericCell(formatNumber(row.贴牌价格)),
     },
     {
       title: renderColumnTitle('warehouseStatus', t('containers.fields.warehouseStatus')),
@@ -1999,7 +2135,15 @@ export default function ContainerDetailPage() {
       ...makeSortProps('remark'),
       ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
       render: (_, row) =>
-        access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)} /> : row.备注 || '--',
+        access.canEditContainer ? (
+          <Input
+            ref={(cell) => setEditableCellRef(rowKey(row), 'remark', cell)}
+            value={row.备注 ?? ''}
+            onChange={(event) => patchRow(rowKey(row), { 备注: event.target.value })}
+            onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'remark', event)}
+          />
+        ) : row.备注 || '--',
     },
   ]
 
@@ -2188,7 +2332,21 @@ export default function ContainerDetailPage() {
                   </Space>
                 </Space>
                 <Space wrap>
-                  <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>{t('common.export')}</Button>
+                  <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>
+                    {t('common.export')}
+                  </Button>
+                  <Dropdown
+                    menu={{
+                      items: [
+                        { key: 'columns', label: t('containers.actions.selectExportColumns', '选择导出列') },
+                      ],
+                      onClick: ({ key }) => {
+                        if (key === 'columns') setExportColumnModalOpen(true)
+                      },
+                    }}
+                  >
+                    <Button>{t('containers.actions.exportOptions', '导出选项')}</Button>
+                  </Dropdown>
                   {access.canEditContainer ? (
                     <Button loading={hqTranslating} onClick={() => void translateHqData()}>
                       {t('containers.actions.translateHqData')}
@@ -2306,6 +2464,7 @@ export default function ContainerDetailPage() {
               <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
                 <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
                   <Table
+                    ref={detailTableRef}
                     className="container-detail-table"
                     rowKey={rowKey}
                     rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}
@@ -2339,6 +2498,39 @@ export default function ContainerDetailPage() {
           </Card>
         </Space>
       </Spin>
+      <Modal
+        title={t('containers.modals.exportColumnsTitle', '选择导出列')}
+        open={exportColumnModalOpen}
+        okText={t('containers.actions.exportSelectedColumns', '按所选列导出')}
+        cancelText={t('common.cancel')}
+        okButtonProps={{ disabled: selectedExportColumnKeys.length === 0, loading: exporting }}
+        onOk={() => {
+          setExportColumnModalOpen(false)
+          void exportExcel(selectedExportColumnKeys)
+        }}
+        onCancel={() => setExportColumnModalOpen(false)}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {selectedRowKeys.length
+              ? t('containers.text.exportSelectedRowsHint', '将导出已选择的 {{count}} 个商品。', { count: selectedRowKeys.length })
+              : t('containers.text.exportAllRowsHint', '未选择商品时，将按当前筛选和排序导出全部匹配商品。')}
+          </Typography.Text>
+          <Space wrap>
+            <Button size="small" onClick={() => setSelectedExportColumnKeys(CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.key))}>
+              {t('containers.actions.selectAllExportColumns', '全选')}
+            </Button>
+            <Button size="small" onClick={() => setSelectedExportColumnKeys(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)}>
+              {t('containers.actions.resetDefaultExportColumns', '恢复默认')}
+            </Button>
+          </Space>
+          <Checkbox.Group
+            value={selectedExportColumnKeys}
+            options={exportColumnOptions}
+            onChange={(values) => setSelectedExportColumnKeys(values as ContainerDetailExportColumnKey[])}
+          />
+        </Space>
+      </Modal>
       </div>
     </PageContainer>
   )

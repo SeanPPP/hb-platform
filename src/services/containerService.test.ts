@@ -1,5 +1,6 @@
 import {
   batchUpdateDetails,
+  createContainer,
   getComingSoonContainerProducts,
   getComingSoonContainerSummaries,
   queryContainerProducts,
@@ -91,6 +92,42 @@ try {
     updatePayload,
     'updateContainer should send container status with the header update payload',
   )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: false,
+      message: '货柜编号 CSNU6209359 在装柜日期 2026-05-29 已存在',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  await assertRejects(
+    () => createContainer({ 货柜编号: 'CSNU6209359', 装柜日期: '2026-05-29' }),
+    '货柜编号 CSNU6209359 在装柜日期 2026-05-29 已存在',
+    'createContainer 应透传后端货柜编号和装柜日期组合重复提示',
+  )
+  assertEqual(capturedUrl, '/api/react/v1/containers', 'createContainer 应调用 React 货柜创建接口')
+  assertEqual(capturedInit?.method, 'POST', 'createContainer 应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    { 货柜编号: 'CSNU6209359', 装柜日期: '2026-05-29' },
+    'createContainer 应继续发送货柜编号和装柜日期给后端组合判重',
+  )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
 
   const detailUpdates: UpdateContainerDetailRequest[] = [
     { hguid: 'D-CLEAR-EN', ClearEnglishName: true },
