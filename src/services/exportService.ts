@@ -25,16 +25,31 @@ export interface ContainerDetailExportItem {
   [key: string]: string | number | boolean | undefined
 }
 
+export type ContainerDetailExportValueType = 'text' | 'number' | 'integer' | 'money' | 'volume'
+
 export interface ContainerDetailExportColumn {
   header: string
   key: string
   width: number
-  valueType?: 'text' | 'number' | 'money'
+  valueType?: ContainerDetailExportValueType
+  currencySymbol?: '$' | '¥'
+}
+
+export interface ContainerExportSummaryCell {
+  label: string
+  value: string | number
+  valueType?: ContainerDetailExportValueType
+}
+
+export interface ContainerExportSummary {
+  title: string
+  rows: ContainerExportSummaryCell[][]
 }
 
 export interface ContainerExportOptions {
   columns?: ContainerDetailExportColumn[]
   includeImages?: boolean
+  summary?: ContainerExportSummary
   fileName?: string
   onProgress?: (progress: number, message: string) => void
 }
@@ -358,29 +373,56 @@ export async function exportContainerDetailsToExcel(
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('货柜明细')
 
+  populateContainerDetailsWorksheet(worksheet, items, options)
+  options.onProgress?.(95, '正在生成 Excel 文件...')
+  const buffer = await workbook.xlsx.writeBuffer()
+
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${options.fileName || '货柜明细'}_${new Date().toISOString().split('T')[0]}.xlsx`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  options.onProgress?.(100, '导出完成')
+}
+
+export function populateContainerDetailsWorksheet(
+  worksheet: ExcelJS.Worksheet,
+  items: ContainerDetailExportItem[],
+  options: ContainerExportOptions = {},
+) {
   const columns = options.columns?.length
     ? options.columns
     : [
+        { header: '序号', key: 'index', width: 8, valueType: 'integer' as const },
         { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' as const },
-        { header: '条码', key: 'barcode', width: 22, valueType: 'text' as const },
-        { header: '商品名称', key: 'productName', width: 36, valueType: 'text' as const },
-        { header: '新商品', key: 'isNewProduct', width: 10, valueType: 'text' as const },
-        { header: '装柜数量', key: 'containerQuantity', width: 12, valueType: 'number' as const },
-        { header: '国内价格', key: 'domesticPrice', width: 12, valueType: 'money' as const },
-        { header: '运输成本', key: 'transportCost', width: 12, valueType: 'money' as const },
-        { header: '进口价格', key: 'importPrice', width: 12, valueType: 'money' as const },
+        { header: '中文名称', key: 'productName', width: 36, valueType: 'text' as const },
+        { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' as const },
+        { header: '件数', key: 'containerPieces', width: 12, valueType: 'integer' as const },
+        { header: '总装柜数', key: 'containerQuantity', width: 12, valueType: 'integer' as const },
+        { header: '单件体积', key: 'unitVolume', width: 12, valueType: 'volume' as const },
+        { header: '总体积', key: 'totalVolume', width: 12, valueType: 'volume' as const },
+        { header: '中包数', key: 'middlePackQuantity', width: 12, valueType: 'integer' as const },
+        { header: '国内价格', key: 'domesticPrice', width: 12, valueType: 'money' as const, currencySymbol: '¥' as const },
         { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' as const },
       ]
 
   worksheet.columns = columns.map((column) => ({
-    header: column.header,
     key: column.key,
     width: column.width,
   }))
 
-  const headerRow = worksheet.getRow(1)
+  const headerRowNumber = writeContainerExportSummary(worksheet, columns.length, options.summary)
+  const headerRow = worksheet.getRow(headerRowNumber)
   headerRow.height = 28
-  headerRow.eachCell((cell) => {
+  columns.forEach((column, index) => {
+    const cell = headerRow.getCell(index + 1)
+    cell.value = column.header
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
     cell.fill = {
       type: 'pattern',
@@ -398,36 +440,72 @@ export async function exportContainerDetailsToExcel(
     }
   })
 
-  columns.filter((column) => column.valueType === 'money').forEach((column) => {
+  columns.forEach((column) => {
+    const numFmt = getContainerExportColumnNumberFormat(column)
+    if (!numFmt) return
     worksheet.getColumn(column.key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
-      if (rowNumber > 1) {
-        cell.numFmt = '$#,##0.00'
+      if (rowNumber > headerRowNumber) {
+        cell.numFmt = numFmt
       }
     })
   })
 
-  columns.filter((column) => column.valueType === 'number').forEach((column) => {
-    worksheet.getColumn(column.key).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
-      if (rowNumber > 1) {
-        cell.numFmt = '#,##0.####'
+  worksheet.views = [{ state: 'frozen', ySplit: headerRowNumber }]
+  return { headerRowNumber, dataStartRowNumber: headerRowNumber + 1 }
+}
+
+function writeContainerExportSummary(
+  worksheet: ExcelJS.Worksheet,
+  columnCount: number,
+  summary?: ContainerExportSummary,
+) {
+  if (!summary) {
+    return 1
+  }
+
+  const titleRow = worksheet.getRow(1)
+  titleRow.getCell(1).value = summary.title
+  titleRow.getCell(1).font = { bold: true, size: 14 }
+  titleRow.getCell(1).alignment = { vertical: 'middle' }
+  titleRow.height = 24
+  worksheet.mergeCells(1, 1, 1, Math.max(columnCount, 1))
+
+  summary.rows.forEach((summaryRow, rowIndex) => {
+    const row = worksheet.getRow(rowIndex + 2)
+    summaryRow.forEach((item, itemIndex) => {
+      const labelCell = row.getCell(itemIndex * 2 + 1)
+      const valueCell = row.getCell(itemIndex * 2 + 2)
+      labelCell.value = item.label
+      labelCell.font = { bold: true }
+      labelCell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFEAF3FF' },
       }
+      valueCell.value = item.value
+      const valueNumFmt = getContainerExportNumberFormat(item.valueType)
+      if (valueNumFmt) {
+        valueCell.numFmt = valueNumFmt
+      }
+      labelCell.alignment = { horizontal: 'center', vertical: 'middle' }
+      valueCell.alignment = { horizontal: 'left', vertical: 'middle' }
     })
   })
 
-  worksheet.views = [{ state: 'frozen', ySplit: 1 }]
-  options.onProgress?.(95, '正在生成 Excel 文件...')
-  const buffer = await workbook.xlsx.writeBuffer()
+  // 主表信息后留一行空白，让导出的明细表头在视觉上和主表区分开。
+  return summary.rows.length + 3
+}
 
-  const blob = new Blob([buffer], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${options.fileName || '货柜明细'}_${new Date().toISOString().split('T')[0]}.xlsx`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-  options.onProgress?.(100, '导出完成')
+function getContainerExportNumberFormat(valueType?: ContainerDetailExportValueType, currencySymbol: '$' | '¥' = '$') {
+  if (valueType === 'integer') return '#,##0'
+  if (valueType === 'money') return `${currencySymbol}#,##0.00`
+  if (valueType === 'volume') return '#,##0.0000'
+  if (valueType === 'number') return '#,##0.####'
+  return undefined
+}
+
+function getContainerExportColumnNumberFormat(column: ContainerDetailExportColumn) {
+  // 国内价格导出按人民币显示；其它金额列默认沿用美元格式。
+  const currencySymbol = column.currencySymbol ?? (column.key === 'domesticPrice' ? '¥' : '$')
+  return getContainerExportNumberFormat(column.valueType, currencySymbol)
 }
