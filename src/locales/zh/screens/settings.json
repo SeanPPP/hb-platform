@@ -117,7 +117,11 @@
     "updateConfigurationDisabledTitle": "OTA 配置未启用",
     "updateConfigurationDisabledMessage": "当前安装包未启用 OTA 更新，请检查 updates.url、runtimeVersion 和原生配置后重新构建。",
     "updateCheckFailedTitle": "检查更新失败",
-    "updateCheckFailedMessage": "检查更新失败，请稍后重试。"
+    "updateCheckFailedMessage": "检查更新失败，请稍后重试。",
+    "autoUpdateReadyTitle": "发现新版本",
+    "autoUpdateReadyMessage": "新版本已下载完成，重启 App 后生效。",
+    "autoUpdateRestartAction": "立即重启",
+    "autoUpdateLaterAction": "稍后"
   },
   "messages": {
     "profileLoginRequired": "请先使用账号登录，再打开个人信息。"

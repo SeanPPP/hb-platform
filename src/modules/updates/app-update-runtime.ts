@@ -34,3 +34,8 @@ export async function checkAndDownloadAppUpdate(): Promise<AppUpdateCheckResult>
   await Updates.fetchUpdateAsync();
   return { status: "downloaded" };
 }
+
+export async function reloadAppToApplyUpdate(): Promise<void> {
+  // 更新包已下载后由用户确认重启，避免在扫码、保存等操作中突然重载 App。
+  await Updates.reloadAsync();
+}

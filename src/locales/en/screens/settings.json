@@ -117,7 +117,11 @@
     "updateConfigurationDisabledTitle": "OTA is not enabled",
     "updateConfigurationDisabledMessage": "This build has OTA updates disabled. Check updates.url, runtimeVersion, and native configuration before rebuilding.",
     "updateCheckFailedTitle": "Update check failed",
-    "updateCheckFailedMessage": "Failed to check for updates. Please try again later."
+    "updateCheckFailedMessage": "Failed to check for updates. Please try again later.",
+    "autoUpdateReadyTitle": "Update ready",
+    "autoUpdateReadyMessage": "A new update has been downloaded. Restart the app to apply it.",
+    "autoUpdateRestartAction": "Restart now",
+    "autoUpdateLaterAction": "Later"
   },
   "messages": {
     "profileLoginRequired": "Sign in with an account before opening your profile."
