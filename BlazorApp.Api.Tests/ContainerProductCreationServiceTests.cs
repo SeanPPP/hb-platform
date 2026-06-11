@@ -181,6 +181,32 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_SkipsRowsWithInvalidRetailPrice()
+    {
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-INVALID-RETAIL", "C001", "P-INVALID-RETAIL", "普通商品", 1.2m, 0m);
+        await InsertDomesticProductAsync("P-INVALID-RETAIL", "HB-INVALID-RETAIL", "无零售价商品", "No Retail Price", 0);
+
+        var service = CreateService();
+
+        var result = await service.ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-invalid-retail",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-INVALID-RETAIL" },
+            }
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Contains(result.Skipped, item =>
+            item.DetailHguid == "D-INVALID-RETAIL"
+            && item.ReasonCode == "INVALID_OEM_PRICE"
+            && item.Message == "零售价必须大于 0"
+        );
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SkipsDuplicateProductCodeAndSetWithoutRelation()
     {
         await _db.Insertable(new Product

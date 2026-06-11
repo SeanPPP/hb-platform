@@ -295,7 +295,7 @@ namespace BlazorApp.Api.Services.React
 
             if (!row.OEMPrice.HasValue || row.OEMPrice.Value <= 0)
             {
-                AddSkipped(result, productCode, itemNumber, row.DetailHguid, "INVALID_OEM_PRICE", "贴牌价格必须大于 0");
+                AddSkipped(result, productCode, itemNumber, row.DetailHguid, "INVALID_OEM_PRICE", "零售价必须大于 0");
                 return false;
             }
 
