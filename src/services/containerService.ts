@@ -5,6 +5,7 @@ import type {
   ComingSoonHomeProduct,
   ContainerDetailBatchActionResult,
   ContainerDetailBatchScope,
+  ContainerDomesticSetCodeItem,
   ContainerDetail,
   ContainerDetailQuery,
   ContainerDetailQueryResult,
@@ -15,6 +16,8 @@ import type {
   ContainerQueryRequest,
   HqTranslationResult,
   SyncResult,
+  UpdateContainerDomesticSetCodePriceItem,
+  UpdateContainerDomesticSetCodePricesResult,
   UpdateContainerDetailRequest,
   UpdateContainerRequest,
 } from '../types/container'
@@ -183,6 +186,38 @@ export async function queryContainerProducts(
   return response.data
 }
 
+export async function getContainerDomesticSetCodes(productCode: string, signal?: AbortSignal): Promise<ContainerDomesticSetCodeItem[]> {
+  const response = await request<ApiResponse<ContainerDomesticSetCodeItem[]> | { success?: boolean; isSuccess?: boolean; message?: string; data?: ContainerDomesticSetCodeItem[] }>(
+    `${API_BASE}/products/${encodeURIComponent(productCode)}/domestic-set-codes`,
+    {
+      method: 'GET',
+      signal,
+    },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '获取套装多码数据失败')
+  return response.data ?? []
+}
+
+export async function updateContainerDomesticSetCodePrices(
+  productCode: string,
+  items: UpdateContainerDomesticSetCodePriceItem[],
+): Promise<UpdateContainerDomesticSetCodePricesResult> {
+  const response = await request<ApiResponse<UpdateContainerDomesticSetCodePricesResult> | { success?: boolean; isSuccess?: boolean; message?: string; data?: UpdateContainerDomesticSetCodePricesResult }>(
+    `${API_BASE}/products/${encodeURIComponent(productCode)}/domestic-set-codes/prices`,
+    {
+      method: 'PATCH',
+      data: {
+        // 只回写国内套装表价格字段，不同步仓库/POS 多码表。
+        items,
+      },
+    },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '保存套装多码价格失败')
+  return response.data ?? { updatedCount: 0 }
+}
+
 async function postContainerDetailAction<TBody extends object>(
   containerGuid: string,
   action: string,
@@ -304,6 +339,7 @@ export async function batchUpdateDetails(
       ClearEnglishName: item.ClearEnglishName,
       贴牌价格: item.贴牌价格,
       单件装箱数: item.单件装箱数,
+      中包数: item.中包数,
       单件体积: item.单件体积,
       装柜数量: item.装柜数量,
       合计装柜体积: item.合计装柜体积,

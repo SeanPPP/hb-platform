@@ -19,6 +19,7 @@ export type ContainerDetailSortField =
   | 'newProduct'
   | 'matchType'
   | 'containerPieces'
+  | 'middlePackQuantity'
   | 'containerQuantity'
   | 'domesticPrice'
   | 'floatRate'
@@ -37,25 +38,19 @@ export type ContainerDetailTableColumnKey =
 
 export type ContainerDetailEditableCellDirection = 'up' | 'down' | 'left' | 'right'
 export type ContainerDetailExportColumnKey =
+  | 'index'
   | 'itemNumber'
-  | 'barcode'
   | 'productName'
   | 'englishName'
-  | 'productType'
-  | 'newProduct'
-  | 'matchType'
   | 'containerPieces'
   | 'containerQuantity'
+  | 'unitVolume'
+  | 'totalVolume'
+  | 'middlePackQuantity'
   | 'domesticPrice'
-  | 'floatRate'
-  | 'transportCost'
-  | 'warehouseImportPrice'
-  | 'importPrice'
   | 'oemPrice'
-  | 'warehouseStatus'
-  | 'remark'
 
-export type ContainerDetailExportValueType = 'text' | 'number' | 'money'
+export type ContainerDetailExportValueType = 'text' | 'integer' | 'money' | 'volume'
 
 export interface ContainerDetailExportColumnDefinition {
   key: ContainerDetailExportColumnKey
@@ -67,33 +62,33 @@ export interface ContainerDetailExportColumnDefinition {
 
 export type ContainerDetailExportRow = Record<ContainerDetailExportColumnKey, string | number>
 
-// 默认导出列按业务常用核对顺序排列；“零售价”按需求固定取货柜明细贴牌价格。
+// 默认导出列固定为业务核对模板，避免用户误导出旧字段顺序。
 export const DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS: ContainerDetailExportColumnKey[] = [
+  'index',
   'itemNumber',
   'productName',
+  'englishName',
   'containerPieces',
   'containerQuantity',
+  'unitVolume',
+  'totalVolume',
+  'middlePackQuantity',
+  'domesticPrice',
   'oemPrice',
 ]
 
 export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinition[] = [
+  { key: 'index', labelKey: 'containers.export.indexColumn', fallbackLabel: '序号', width: 8, valueType: 'integer' },
   { key: 'itemNumber', labelKey: 'containers.fields.itemNumber', fallbackLabel: '货号', width: 18, valueType: 'text' },
-  { key: 'barcode', labelKey: 'containers.fields.barcode', fallbackLabel: '条码', width: 22, valueType: 'text' },
-  { key: 'productName', labelKey: 'containers.fields.productName', fallbackLabel: '商品名称', width: 36, valueType: 'text' },
+  { key: 'productName', labelKey: 'containers.export.chineseNameColumn', fallbackLabel: '中文名称', width: 36, valueType: 'text' },
   { key: 'englishName', labelKey: 'containers.fields.englishName', fallbackLabel: '英文名称', width: 36, valueType: 'text' },
-  { key: 'productType', labelKey: 'containers.fields.productType', fallbackLabel: '类型', width: 14, valueType: 'text' },
-  { key: 'newProduct', labelKey: 'containers.fields.newProduct', fallbackLabel: '新商品', width: 10, valueType: 'text' },
-  { key: 'matchType', labelKey: 'containers.fields.matchType', fallbackLabel: '匹配方式', width: 18, valueType: 'text' },
-  { key: 'containerPieces', labelKey: 'containers.fields.containerPieces', fallbackLabel: '装柜件数', width: 12, valueType: 'number' },
-  { key: 'containerQuantity', labelKey: 'containers.fields.containerQuantity', fallbackLabel: '装柜数量', width: 12, valueType: 'number' },
+  { key: 'containerPieces', labelKey: 'containers.export.piecesColumn', fallbackLabel: '件数', width: 12, valueType: 'integer' },
+  { key: 'containerQuantity', labelKey: 'containers.export.totalQuantityColumn', fallbackLabel: '总装柜数', width: 12, valueType: 'integer' },
+  { key: 'unitVolume', labelKey: 'containers.export.unitVolumeColumn', fallbackLabel: '单件体积', width: 12, valueType: 'volume' },
+  { key: 'totalVolume', labelKey: 'containers.export.totalVolumeColumn', fallbackLabel: '总体积', width: 12, valueType: 'volume' },
+  { key: 'middlePackQuantity', labelKey: 'containers.fields.middlePackQuantity', fallbackLabel: '中包数', width: 12, valueType: 'integer' },
   { key: 'domesticPrice', labelKey: 'containers.fields.domesticPrice', fallbackLabel: '国内价格', width: 12, valueType: 'money' },
-  { key: 'floatRate', labelKey: 'containers.fields.floatRate', fallbackLabel: '调整浮率', width: 12, valueType: 'number' },
-  { key: 'transportCost', labelKey: 'containers.fields.transportCost', fallbackLabel: '运输成本', width: 12, valueType: 'money' },
-  { key: 'warehouseImportPrice', labelKey: 'containers.fields.warehouseImportPrice', fallbackLabel: '仓库当前进货价格', width: 18, valueType: 'money' },
-  { key: 'importPrice', labelKey: 'containers.fields.importPrice', fallbackLabel: '进口价格', width: 12, valueType: 'money' },
-  { key: 'oemPrice', labelKey: 'containers.export.retailPriceColumn', fallbackLabel: '零售价', width: 12, valueType: 'money' },
-  { key: 'warehouseStatus', labelKey: 'containers.fields.warehouseStatus', fallbackLabel: '仓库状态', width: 12, valueType: 'text' },
-  { key: 'remark', labelKey: 'containers.fields.remark', fallbackLabel: '备注', width: 24, valueType: 'text' },
+  { key: 'oemPrice', labelKey: 'containers.fields.oemPrice', fallbackLabel: '贴牌价格', width: 12, valueType: 'money' },
 ]
 
 const containerDetailSortFields = new Set<string>([
@@ -105,6 +100,7 @@ const containerDetailSortFields = new Set<string>([
   'newProduct',
   'matchType',
   'containerPieces',
+  'middlePackQuantity',
   'containerQuantity',
   'domesticPrice',
   'floatRate',
@@ -180,6 +176,19 @@ export function moveContainerDetailColumnOrder(
   return nextOrder
 }
 
+export function isContainerDetailColumnOrderCustomized(
+  currentOrder: readonly ContainerDetailTableColumnKey[],
+  defaultOrder: readonly ContainerDetailTableColumnKey[],
+) {
+  if (!currentOrder.length) {
+    return false
+  }
+  if (currentOrder.length !== defaultOrder.length) {
+    return true
+  }
+  return currentOrder.some((key, index) => key !== defaultOrder[index])
+}
+
 export function getNextContainerDetailEditableCell(
   currentRowKey: string,
   currentColumnKey: string,
@@ -229,6 +238,7 @@ export interface ContainerDetailColumnFilters {
   newProductStates?: ContainerDetailNewProductFilter[]
   matchTypes?: ContainerDetailMatchTypeFilter[]
   containerPieces?: ContainerDetailNumberRangeFilter
+  middlePackQuantity?: ContainerDetailNumberRangeFilter
   containerQuantity?: ContainerDetailNumberRangeFilter
   domesticPrice?: ContainerDetailNumberRangeFilter
   floatRate?: ContainerDetailNumberRangeFilter
@@ -310,8 +320,13 @@ export function getContainerDetailMatchType(row: ContainerDetail): ContainerDeta
   return 'unmatched'
 }
 
+export function getContainerDetailProductType(row: ContainerDetail) {
+  // 商品类型以国内商品表关联信息为准，货柜明细快照字段仅作为历史数据兜底。
+  return row.商品信息?.商品类型 || row.商品类型 || '普通商品'
+}
+
 export function getContainerDetailProductTypeFilterKey(row: ContainerDetail): ContainerDetailProductTypeFilter {
-  const type = row.商品类型 || row.商品信息?.商品类型 || '普通商品'
+  const type = getContainerDetailProductType(row)
   if (type === '套装商品') return 'set'
   if (type === '套装子商品') return 'setChild'
   return 'normal'
@@ -321,11 +336,21 @@ export function getContainerDetailWarehouseStatusFilterKey(row: ContainerDetail)
   return row.warehouseIsActive === true ? 'active' : 'inactive'
 }
 
-function getContainerDetailExportMatchTypeLabel(row: ContainerDetail) {
-  const matchType = getContainerDetailMatchType(row)
-  if (matchType === 'productCode') return '商品编码匹配'
-  if (matchType === 'supplierItem') return '供应商编码+货号'
-  return '未匹配'
+export function resolveContainerDetailOemPrice(row: ContainerDetail): number | undefined {
+  const warehouseOemPrice = row.warehouseOEMPrice ?? row.WarehouseOEMPrice
+  // 展示、导出和 HQ 发送优先使用仓库商品贴牌价；明细贴牌价仅作兜底和本页编辑保存值。
+  if (typeof warehouseOemPrice === 'number' && Number.isFinite(warehouseOemPrice) && warehouseOemPrice > 0) {
+    return warehouseOemPrice
+  }
+  return row.贴牌价格
+}
+
+export function getContainerDetailOemPriceSource(row: ContainerDetail): 'warehouse' | 'detail' | 'none' {
+  const warehouseOemPrice = row.warehouseOEMPrice ?? row.WarehouseOEMPrice
+  if (typeof warehouseOemPrice === 'number' && Number.isFinite(warehouseOemPrice) && warehouseOemPrice > 0) {
+    return 'warehouse'
+  }
+  return row.贴牌价格 == null ? 'none' : 'detail'
 }
 
 export function getContainerDetailExportColumns(
@@ -346,26 +371,29 @@ export function getContainerDetailExportColumns(
   return columns
 }
 
-export function buildContainerDetailExportRow(row: ContainerDetail): ContainerDetailExportRow {
+function getContainerDetailUnitVolume(row: ContainerDetail) {
+  return row.单件体积 ?? row.商品信息?.单件体积 ?? 0
+}
+
+function getContainerDetailTotalVolume(row: ContainerDetail) {
+  const unitVolume = getContainerDetailUnitVolume(row)
+  // 优先使用后端已落库的合计体积；缺失时按件数和单件体积生成导出兜底值。
+  return row.合计装柜体积 ?? ((row.装柜件数 ?? 0) * unitVolume)
+}
+
+export function buildContainerDetailExportRow(row: ContainerDetail, index = 0): ContainerDetailExportRow {
   return {
+    index: index + 1,
     itemNumber: getContainerDetailItemNumber(row) ?? '',
-    barcode: getContainerDetailBarcode(row) ?? '',
     productName: getContainerDetailProductName(row) ?? '',
     englishName: getContainerDetailEnglishName(row) ?? '',
-    productType: row.商品类型 || row.商品信息?.商品类型 || '普通商品',
-    newProduct: row.是否新商品 ? '是' : '否',
-    matchType: getContainerDetailExportMatchTypeLabel(row),
     containerPieces: row.装柜件数 ?? 0,
     containerQuantity: row.装柜数量 ?? 0,
+    unitVolume: getContainerDetailUnitVolume(row),
+    totalVolume: getContainerDetailTotalVolume(row),
+    middlePackQuantity: row.中包数 ?? 0,
     domesticPrice: row.国内价格 ?? 0,
-    floatRate: row.调整浮率 ?? 0,
-    transportCost: row.运输成本 ?? 0,
-    warehouseImportPrice: row.warehouseImportPrice ?? 0,
-    importPrice: row.进口价格 ?? 0,
-    // 业务确认：导出“零售价”使用货柜明细的贴牌价格，不读取商品主数据零售价格。
-    oemPrice: row.贴牌价格 ?? 0,
-    warehouseStatus: row.warehouseIsActive === true ? '上架' : '下架',
-    remark: row.备注 ?? '',
+    oemPrice: resolveContainerDetailOemPrice(row) ?? 0,
   }
 }
 
@@ -416,7 +444,10 @@ export function buildContainerDetailSaveFailureKeys(rowKey: string, patch: objec
 export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {
   if (filter === 'new') return Boolean(row.是否新商品)
   if (filter === 'existing') return !row.是否新商品
-  if (filter === 'noOemPrice') return Boolean(row.是否新商品) && (!row.贴牌价格 || row.贴牌价格 <= 0)
+  if (filter === 'noOemPrice') {
+    const oemPrice = resolveContainerDetailOemPrice(row)
+    return Boolean(row.是否新商品) && (!oemPrice || oemPrice <= 0)
+  }
   if (filter === 'abnormalImport') return !row.进口价格 || row.进口价格 <= 0
   if (filter === 'active') return row.warehouseIsActive === true
   if (filter === 'inactive') return row.warehouseIsActive !== true
@@ -509,6 +540,8 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return getContainerDetailMatchType(row)
     case 'containerPieces':
       return row.装柜件数
+    case 'middlePackQuantity':
+      return row.中包数
     case 'containerQuantity':
       return row.装柜数量
     case 'domesticPrice':
@@ -522,7 +555,7 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
     case 'importPrice':
       return row.进口价格
     case 'oemPrice':
-      return row.贴牌价格
+      return resolveContainerDetailOemPrice(row)
     case 'warehouseStatus':
       return row.warehouseIsActive === true ? 1 : 0
     case 'remark':
@@ -558,13 +591,14 @@ export function applyContainerDetailColumnState(
     matchesOneOf(getContainerDetailMatchType(row), filters.matchTypes) &&
     matchesOneOf(getContainerDetailWarehouseStatusFilterKey(row), filters.warehouseStatus) &&
     matchesNumberRange(row.装柜件数, filters.containerPieces) &&
+    matchesNumberRange(row.中包数, filters.middlePackQuantity) &&
     matchesNumberRange(row.装柜数量, filters.containerQuantity) &&
     matchesNumberRange(row.国内价格, filters.domesticPrice) &&
     matchesNumberRange(row.调整浮率, filters.floatRate) &&
     matchesNumberRange(row.运输成本, filters.transportCost) &&
     matchesNumberRange(row.warehouseImportPrice, filters.warehouseImportPrice) &&
     matchesNumberRange(row.进口价格, filters.importPrice) &&
-    matchesNumberRange(row.贴牌价格, filters.oemPrice)
+    matchesNumberRange(resolveContainerDetailOemPrice(row), filters.oemPrice)
   ))
 
   if (!sortState) return filtered
@@ -660,6 +694,7 @@ export function buildContainerDetailQuery({
   assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
 
   assignNumberRange(query, 'containerPiecesMin', 'containerPiecesMax', filters.containerPieces)
+  assignNumberRange(query, 'middlePackQuantityMin', 'middlePackQuantityMax', filters.middlePackQuantity)
   assignNumberRange(query, 'containerQuantityMin', 'containerQuantityMax', filters.containerQuantity)
   assignNumberRange(query, 'domesticPriceMin', 'domesticPriceMax', filters.domesticPrice)
   assignNumberRange(query, 'floatRateMin', 'floatRateMax', filters.floatRate)
@@ -939,6 +974,26 @@ export function calculateContainerDetailImportPrice(
   }
 
   return roundToDigits(((row.国内价格 / exchangeRate + (transportCost ?? 0)) * floatRate * 10) / 11, 2)
+}
+
+export function calculateContainerSetCodePurchasePrice(
+  mainPurchasePrice: number | null | undefined,
+  itemRetailPrice: number | null | undefined,
+  totalRetailPrice: number | null | undefined,
+) {
+  if (
+    mainPurchasePrice == null ||
+    mainPurchasePrice <= 0 ||
+    itemRetailPrice == null ||
+    itemRetailPrice < 0 ||
+    totalRetailPrice == null ||
+    totalRetailPrice <= 0
+  ) {
+    return undefined
+  }
+
+  // 套装子项进货价按子项售价占比，从货柜明细当前主商品进口价中分摊。
+  return roundToDigits((mainPurchasePrice * itemRetailPrice) / totalRetailPrice, 2)
 }
 
 export function buildContainerDetailFloatRateUpdates(
@@ -1273,6 +1328,7 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
     const englishName = getContainerDetailEnglishName(row)?.trim()
     const barcode = row.商品信息?.条形码?.trim()
     const imageUrl = row.商品图片?.trim() || row.商品信息?.商品图片?.trim()
+    const oemPrice = resolveContainerDetailOemPrice(row)
     if (!productCode && !(localSupplierCode && itemNumber)) {
       missingProductCodeCount += 1
       return
@@ -1290,7 +1346,7 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
       productCodes.push(productCode)
     }
 
-    // 发送候选项时保留货柜明细里的供应商、货号和价格，交由后端决定如何定位 HQ 记录。
+    // 发送候选项时保留供应商、货号和有效价格；贴牌价读取仓库商品优先、明细兜底。
     items.push({
       productCode: productCode || undefined,
       localSupplierCode,
@@ -1301,7 +1357,7 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
       imageUrl,
       domesticPrice: row.国内价格 == null ? undefined : Number(row.国内价格),
       importPrice: row.进口价格 == null ? undefined : Number(row.进口价格),
-      oemPrice: row.贴牌价格 == null ? undefined : Number(row.贴牌价格),
+      oemPrice: oemPrice == null ? undefined : Number(oemPrice),
       isNewProduct,
     })
   })

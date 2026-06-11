@@ -3,9 +3,11 @@ import {
   createContainer,
   getComingSoonContainerProducts,
   getComingSoonContainerSummaries,
+  getContainerDomesticSetCodes,
   queryContainerProducts,
   syncContainersFromHq,
   translateHqProductNamesByContainerNumber,
+  updateContainerDomesticSetCodePrices,
   updateContainer,
 } from './containerService'
 import type { UpdateContainerDetailRequest, UpdateContainerRequest } from '../types/container'
@@ -130,7 +132,7 @@ try {
   }) as typeof fetch
 
   const detailUpdates: UpdateContainerDetailRequest[] = [
-    { hguid: 'D-CLEAR-EN', ClearEnglishName: true },
+    { hguid: 'D-CLEAR-EN', ClearEnglishName: true, 中包数: 12 },
   ]
   await batchUpdateDetails(detailUpdates)
 
@@ -142,8 +144,8 @@ try {
   assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true }],
-    'batchUpdateDetails should send the explicit English-name clear marker',
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, 中包数: 12 }],
+    'batchUpdateDetails should send the explicit English-name clear marker and middle pack quantity',
   )
 
   const abortController = new AbortController()
@@ -406,6 +408,100 @@ try {
     products.find((item) => item.itemNumber === 'HB10')?.retailPrice,
     1.99,
     'Coming Soon 单货柜商品应映射商品建议零售价',
+  )
+
+  const setCodeAbortController = new AbortController()
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: [
+        {
+          productCode: 'P/套装',
+          setProductCode: 'SET-1',
+          setItemNumber: 'HB137-480-01',
+          barcode: '9525811370252',
+          retailPrice: 11.47,
+          purchasePrice: 3.04,
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const setCodes = await getContainerDomesticSetCodes('P/套装', setCodeAbortController.signal)
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/products/P%2F%E5%A5%97%E8%A3%85/domestic-set-codes',
+    'getContainerDomesticSetCodes 应按商品编码编码后请求国内套装明细',
+  )
+  assertEqual(capturedInit?.method, 'GET', 'getContainerDomesticSetCodes 应使用 GET')
+  assertEqual(capturedInit?.signal, setCodeAbortController.signal, 'getContainerDomesticSetCodes 应透传 AbortSignal')
+  assertDeepEqual(
+    setCodes,
+    [{
+      productCode: 'P/套装',
+      setProductCode: 'SET-1',
+      setItemNumber: 'HB137-480-01',
+      barcode: '9525811370252',
+      retailPrice: 11.47,
+      purchasePrice: 3.04,
+    }],
+    'getContainerDomesticSetCodes 应返回 data 内国内套装明细',
+  )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: { updatedCount: 1 },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const updateSetCodeResult = await updateContainerDomesticSetCodePrices('P/套装', [
+    { setProductCode: 'SET-1', retailPrice: 12.34, purchasePrice: 4.56 },
+  ])
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/products/P%2F%E5%A5%97%E8%A3%85/domestic-set-codes/prices',
+    'updateContainerDomesticSetCodePrices 应按商品编码编码后请求价格回写接口',
+  )
+  assertEqual(capturedInit?.method, 'PATCH', 'updateContainerDomesticSetCodePrices 应使用 PATCH')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    { items: [{ setProductCode: 'SET-1', retailPrice: 12.34, purchasePrice: 4.56 }] },
+    'updateContainerDomesticSetCodePrices 应只发送套装编码和价格字段',
+  )
+  assertDeepEqual(updateSetCodeResult, { updatedCount: 1 }, 'updateContainerDomesticSetCodePrices 应返回更新数量')
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: false,
+      message: '保存失败',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  await assertRejects(
+    () => updateContainerDomesticSetCodePrices('P-FAIL', [{ setProductCode: 'SET-FAIL', retailPrice: 1, purchasePrice: 2 }]),
+    '保存失败',
+    'updateContainerDomesticSetCodePrices 应透传后端失败消息',
   )
 } finally {
   globalThis.fetch = originalFetch

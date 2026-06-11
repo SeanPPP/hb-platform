@@ -47,6 +47,7 @@ export interface ContainerDetail {
   商品类型?: string
   套装数量?: number
   装柜件数?: number
+  中包数?: number
   装柜数量?: number
   国内价格?: number
   调整浮率?: number
@@ -63,6 +64,7 @@ export interface ContainerDetail {
   IsActive?: boolean
   warehouseImportPrice?: number
   warehouseOEMPrice?: number
+  WarehouseOEMPrice?: number
   warehouseIsActive?: boolean
   matchType?: 'productCode' | 'supplierItem' | 'unmatched'
   MatchType?: string
@@ -90,6 +92,8 @@ export interface ContainerDetailQuery {
   warehouseStatus?: ContainerDetailQueryWarehouseStatus[]
   containerPiecesMin?: number
   containerPiecesMax?: number
+  middlePackQuantityMin?: number
+  middlePackQuantityMax?: number
   containerQuantityMin?: number
   containerQuantityMax?: number
   domesticPriceMin?: number
@@ -126,6 +130,31 @@ export interface ContainerDetailQueryResult {
   pageSize: number
   hasMore: boolean
   tagStats: ContainerDetailTagStats
+}
+
+export interface ContainerDomesticSetCodeItem {
+  productCode?: string
+  itemNumber?: string
+  productType?: number
+  setProductCode?: string
+  setItemNumber?: string
+  barcode?: string
+  retailPrice?: number
+  purchasePrice?: number
+}
+
+export interface UpdateContainerDomesticSetCodePriceItem {
+  setProductCode?: string
+  retailPrice?: number | null
+  purchasePrice?: number | null
+}
+
+export interface UpdateContainerDomesticSetCodePricesRequest {
+  items: UpdateContainerDomesticSetCodePriceItem[]
+}
+
+export interface UpdateContainerDomesticSetCodePricesResult {
+  updatedCount: number
 }
 
 export interface ContainerDetailBatchScope {
@@ -181,6 +210,7 @@ export interface UpdateContainerDetailRequest {
   ClearEnglishName?: boolean
   贴牌价格?: number
   单件装箱数?: number
+  中包数?: number
   单件体积?: number
   装柜数量?: number
   合计装柜体积?: number

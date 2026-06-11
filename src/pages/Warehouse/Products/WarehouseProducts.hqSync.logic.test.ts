@@ -117,7 +117,7 @@ async function main() {
 
     const columnsSection = extractSection(
       pageSource,
-      'const columns = useMemo',
+      'const baseColumns = useMemo',
       'return (<>',
     )
     assert(
@@ -157,7 +157,7 @@ async function main() {
 
     const columnsSection = extractSection(
       pageSource,
-      'const columns = useMemo',
+      'const baseColumns = useMemo',
       'return (<>',
     )
     assert(
@@ -201,6 +201,247 @@ async function main() {
   })
   if (productDetailsModalFailure) failures.push(productDetailsModalFailure)
 
+  const minOrderQuantityColumnFailure = await runTest('仓库商品列表应以 MinOrderQuantity 作为中包数列来源', () => {
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'return (<>',
+    )
+
+    assert(
+      columnsSection.includes("title: t('warehouse.middlePackQuantity', '中包数')") &&
+        columnsSection.includes("dataIndex: 'minOrderQuantity'"),
+      '主表应新增中包数列，并绑定 WarehouseProduct.MinOrderQuantity 归一后的 minOrderQuantity',
+    )
+    assert(
+      !columnsSection.includes("dataIndex: 'middlePackQty'"),
+      '主表中包数列不能绑定 middlePackQty，避免与 MiddlePackQuantity 来源混淆',
+    )
+  })
+  if (minOrderQuantityColumnFailure) failures.push(minOrderQuantityColumnFailure)
+
+  const batchEditFailure = await runTest('仓库商品页应支持按选中商品批量修改常用字段', () => {
+    assert(
+      pageSource.includes('batchUpdateWarehouseProducts'),
+      '页面应引入仓库商品批量更新服务',
+    )
+    assert(
+      pageSource.includes('interface BatchEditFormValues') &&
+        pageSource.includes('minOrderQuantity?: number'),
+      '页面应声明批量编辑表单，并使用 minOrderQuantity 表示中包数',
+    )
+
+    const saveSection = extractSection(
+      pageSource,
+      'const handleBatchEditSave = async () => {',
+      'const handleToggleSingleActive',
+    )
+    assert(
+      saveSection.includes('MinOrderQuantity: values.minOrderQuantity') &&
+        saveSection.includes('PackingQuantity: values.packingQuantity') &&
+        saveSection.includes('batchUpdateWarehouseProducts(items)'),
+      '批量保存应把中包数提交为 MinOrderQuantity，并复用仓库商品批量更新服务',
+    )
+    assert(
+      saveSection.includes('只传用户填写的字段') &&
+        saveSection.includes('WarehouseProduct.MinOrderQuantity'),
+      '批量 payload 构造处应有中文注释说明中包数字段来源和避免误覆盖',
+    )
+
+    const toolbarSection = extractSection(
+      pageSource,
+      '<PageContainer title={t(\'warehouse.productManagement\')}',
+      '<Card>',
+    )
+    assert(
+      toolbarSection.includes("t('warehouse.batchEdit', '批量修改')") &&
+        toolbarSection.includes('onClick={openBatchEdit}'),
+      '工具栏应提供批量修改按钮',
+    )
+
+    const modalSection = extractSection(
+      pageSource,
+      '<Modal title={t(\'warehouse.batchEditTitle\'',
+      '<ImportFromDomesticModal',
+    )
+    assert(
+      modalSection.includes('name="domesticPrice"') &&
+        modalSection.includes('name="oemPrice"') &&
+        modalSection.includes('name="importPrice"') &&
+        modalSection.includes('name="packingQuantity"') &&
+        modalSection.includes('name="minOrderQuantity"') &&
+        modalSection.includes('name="unitVolume"') &&
+        modalSection.includes('name="isActive"'),
+      '批量修改弹窗应包含价格、装箱数、中包数、体积和上下架字段',
+    )
+  })
+  if (batchEditFailure) failures.push(batchEditFailure)
+
+  const draggableColumnsFailure = await runTest('仓库商品表格应支持拖拽列头并持久化列顺序', () => {
+    assert(
+      pageSource.includes('DndContext') &&
+        pageSource.includes('SortableContext') &&
+        pageSource.includes('useSortable') &&
+        pageSource.includes('horizontalListSortingStrategy'),
+      '商品管理表头列拖拽应复用 @dnd-kit 横向排序能力',
+    )
+    assert(
+      pageSource.includes("const WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.warehouseProducts.columnOrder.v1'") &&
+        pageSource.includes('localStorage.setItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY') &&
+        pageSource.includes('mergeWarehouseProductColumnOrder('),
+      '商品管理列顺序应保存到独立 localStorage key，并兼容列增删',
+    )
+    assert(
+      pageSource.includes('components={{ header: { cell: DraggableHeaderCell } }}') &&
+        pageSource.includes('<SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>') &&
+        pageSource.includes('<DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>'),
+      '商品管理表格应接入可拖拽表头 cell 与横向 SortableContext',
+    )
+    assert(
+      pageSource.includes('const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]') &&
+        pageSource.includes('rowSelection={{') &&
+        !pageSource.includes("columnOrder.includes('selection')"),
+      '商品管理选择列仍应由 rowSelection 管理，不能进入业务列拖拽顺序',
+    )
+  })
+  if (draggableColumnsFailure) failures.push(draggableColumnsFailure)
+
+  const defaultColumnOrderFailure = await runTest('仓库商品表格默认列顺序应按截图并支持重置列', () => {
+    const defaultOrderSection = extractSection(
+      pageSource,
+      'const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER',
+      '] as const',
+    )
+    const expectedOrder = [
+      "'rowNumber'",
+      "'itemNumber'",
+      "'productImage'",
+      "'domesticSupplierCode'",
+      "'nameEn'",
+      "'minOrderQuantity'",
+      "'domesticPrice'",
+      "'importPrice'",
+      "'labelPrice'",
+      "'isActive'",
+      "'productType'",
+      "'barcode'",
+      "'name'",
+      "'packingQty'",
+      "'volume'",
+      "'localSupplierCode'",
+      "'updatedAt'",
+      "'updatedBy'",
+      "'action'",
+    ]
+    let lastIndex = -1
+    for (const key of expectedOrder) {
+      const nextIndex = defaultOrderSection.indexOf(key)
+      assert(nextIndex > lastIndex, `默认列顺序应包含并按截图排列 ${key}`)
+      lastIndex = nextIndex
+    }
+    assert(
+      !defaultOrderSection.includes("'selection'"),
+      '默认列顺序不能包含 selection，选择列仍由 rowSelection 管理',
+    )
+
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    assert(
+      columnsSection.indexOf("key: 'nameEn'") < columnsSection.indexOf("key: 'minOrderQuantity'") &&
+        columnsSection.indexOf("key: 'minOrderQuantity'") < columnsSection.indexOf("key: 'domesticPrice'") &&
+        columnsSection.indexOf("key: 'barcode'") < columnsSection.indexOf("key: 'name'"),
+      'baseColumns 应按截图默认顺序排列，避免默认顺序依赖历史代码顺序',
+    )
+    assert(
+      pageSource.includes('const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]') &&
+        pageSource.includes('mergeWarehouseProductColumnOrder(current.length ? current : savedOrder, WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER)'),
+      '列顺序初始化应以显式默认顺序为准，并兼容 localStorage 旧缓存',
+    )
+
+    const resetSection = extractSection(
+      pageSource,
+      'const handleResetColumnOrder = () => {',
+      'const orderedColumns = useMemo',
+    )
+    assert(
+      resetSection.includes('localStorage.removeItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY)') &&
+        resetSection.includes('setColumnOrder([...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER])') &&
+        resetSection.includes('选择列仍由 Ant Design rowSelection 管理'),
+      '重置列逻辑应清除列顺序缓存，恢复默认业务列顺序，并保留中文注释说明选择列边界',
+    )
+    assert(
+      pageSource.includes("t('warehouse.resetColumns', '重置列')") &&
+        pageSource.includes('onClick={handleResetColumnOrder}') &&
+        pageSource.includes('disabled={!isColumnOrderCustomized}'),
+      '筛选工具栏应提供重置列按钮，并仅在列顺序自定义后启用',
+    )
+    assert(
+      pageSource.includes('rowSelection={{') &&
+        !pageSource.includes("WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = ['selection'"),
+      '重置列功能不能改变 rowSelection 管理选择列的方式',
+    )
+  })
+  if (defaultColumnOrderFailure) failures.push(defaultColumnOrderFailure)
+
+  const compactTableFailure = await runTest('仓库商品主表应使用紧凑行高、媒体尺寸和列宽', () => {
+    assert(
+      pageSource.includes('const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60'),
+      '商品管理主表行高应压缩到紧凑值 60px',
+    )
+    assert(
+      pageSource.includes('.warehouse-products-table .ant-table-thead > tr > th,') &&
+        pageSource.includes('padding: 4px 6px !important') &&
+        pageSource.includes('.warehouse-products-table .ant-table-column-title') &&
+        pageSource.includes('-webkit-line-clamp: 2'),
+      '商品管理主表应使用紧凑单元格 padding，且表头标题允许两行截断',
+    )
+    assert(
+      pageSource.includes('min-height: 48px') &&
+        pageSource.includes('max-height: 48px') &&
+        pageSource.includes('width: 36px') &&
+        pageSource.includes('height: 36px') &&
+        pageSource.includes('max-height: 42px !important'),
+      '商品图片和条码预览应使用紧凑尺寸，减少行内占用空间',
+    )
+
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'return (<>',
+    )
+    assert(
+      columnsSection.includes("key: 'productImage'") &&
+        columnsSection.includes('width: 64') &&
+        columnsSection.includes('<Image src={value} alt="" width={36} height={36}') &&
+        columnsSection.includes("key: 'isActive'") &&
+        columnsSection.includes('width: 92') &&
+        columnsSection.includes("key: 'productType'") &&
+        columnsSection.includes("key: 'domesticPrice'") &&
+        columnsSection.includes('width: 82') &&
+        columnsSection.includes("key: 'packingQty'") &&
+        columnsSection.includes('width: 96') &&
+        columnsSection.includes("key: 'minOrderQuantity'") &&
+        columnsSection.includes("dataIndex: 'minOrderQuantity'") &&
+        columnsSection.includes('width: 84'),
+      '图片、状态、商品类型、价格、装箱数和中包数等关键列应使用压缩列宽，且中包数仍绑定 minOrderQuantity',
+    )
+    assert(
+      columnsSection.includes('BarcodePreview value={value} textMaxWidth={150} compactCopy') &&
+        pageSource.includes('scroll={{ x: 2130, y: 620 }}'),
+      '条码列和表格横向滚动宽度应按紧凑布局更新',
+    )
+    assert(
+      pageSource.includes('components={{ header: { cell: DraggableHeaderCell } }}') &&
+        pageSource.includes('rowSelection={{') &&
+        pageSource.includes('const orderedColumns = useMemo'),
+      '紧凑显示不能移除拖拽列头、rowSelection 或 orderedColumns',
+    )
+  })
+  if (compactTableFailure) failures.push(compactTableFailure)
+
   const adminOnlyButtonFailure = await runTest('页面应仅对 Admin 渲染从 HQ 同步按钮', () => {
     assert(
       pageSource.includes('CloudSyncOutlined'),
@@ -219,7 +460,7 @@ async function main() {
     const syncSection = extractSection(
       pageSource,
       'const handleSyncWarehouseProductsFromHq = () => {',
-      'const columns = useMemo',
+      'const baseColumns = useMemo',
     )
 
     assert(
@@ -245,7 +486,7 @@ async function main() {
     const syncSection = extractSection(
       pageSource,
       'const handleSyncWarehouseProductsFromHq = () => {',
-      'const columns = useMemo',
+      'const baseColumns = useMemo',
     )
 
     assert(
@@ -267,7 +508,7 @@ async function main() {
     const syncSection = extractSection(
       pageSource,
       'const handleSyncWarehouseProductsFromHq = () => {',
-      'const columns = useMemo',
+      'const baseColumns = useMemo',
     )
 
     assert(

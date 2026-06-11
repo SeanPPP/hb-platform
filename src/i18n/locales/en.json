@@ -106,6 +106,7 @@
       "resetColumnFilter": "Reset",
       "clearColumnFilters": "Clear Column Filters",
       "exportOptions": "Export Options",
+      "resetColumns": "Reset Columns",
       "selectExportColumns": "Select Export Columns",
       "exportSelectedColumns": "Export Selected Columns",
       "selectAllExportColumns": "Select All",
@@ -135,6 +136,7 @@
       "newProduct": "New Product",
       "matchType": "Match Type",
       "containerPieces": "Container Pieces",
+      "middlePackQuantity": "Middle Pack Qty",
       "containerQuantity": "Container Qty",
       "domesticPrice": "Domestic Price",
       "floatRate": "Float Rate",
@@ -216,6 +218,7 @@
       "loadDetailFailed": "Failed to load container details",
       "headerSaveSuccess": "Container information saved",
       "headerSaveFailed": "Failed to save container information",
+      "columnOrderReset": "Column order reset to default",
       "enterFloatRate": "Enter float rate",
       "detailsUpdated": "Updated {{count}} details",
       "enterImportOrOemPrice": "Enter import price or OEM price",
@@ -255,7 +258,8 @@
     "productTypes": {
       "normal": "Normal Product",
       "set": "Set Product",
-      "setChild": "Set Child Product"
+      "setChild": "Set Child Product",
+      "multiCode": "Multi-code Product"
     },
     "tags": {
       "new": "New",
