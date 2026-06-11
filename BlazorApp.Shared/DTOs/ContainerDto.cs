@@ -140,6 +140,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? 装柜件数 { get; set; }
 
         /// <summary>
+        /// 中包数（仓库商品最小订货量）
+        /// </summary>
+        public decimal? 中包数 { get; set; }
+
+        /// <summary>
         /// 装柜数量
         /// </summary>
         public decimal? 装柜数量 { get; set; }
@@ -291,6 +296,36 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 货柜明细中查看国内套装多码价格的只读项
+    /// </summary>
+    public class ContainerDomesticSetCodeDto
+    {
+        public string? ProductCode { get; set; }
+        public string? ItemNumber { get; set; }
+        public int? ProductType { get; set; }
+        public string? SetProductCode { get; set; }
+        public string? SetItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? PurchasePrice { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细弹窗批量更新国内套装多码价格请求
+    /// </summary>
+    public class UpdateContainerDomesticSetCodePricesRequestDto
+    {
+        public List<UpdateContainerDomesticSetCodePriceItemDto> Items { get; set; } = new();
+    }
+
+    public class UpdateContainerDomesticSetCodePriceItemDto
+    {
+        public string? SetProductCode { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? PurchasePrice { get; set; }
+    }
+
+    /// <summary>
     /// 货柜明细数字区间筛选
     /// </summary>
     public class ContainerDetailNumberRangeDto
@@ -319,6 +354,9 @@ namespace BlazorApp.Shared.DTOs
         public ContainerDetailNumberRangeDto? ContainerPieces { get; set; }
         public decimal? ContainerPiecesMin { get; set; }
         public decimal? ContainerPiecesMax { get; set; }
+        public ContainerDetailNumberRangeDto? MiddlePackQuantity { get; set; }
+        public decimal? MiddlePackQuantityMin { get; set; }
+        public decimal? MiddlePackQuantityMax { get; set; }
         public ContainerDetailNumberRangeDto? ContainerQuantity { get; set; }
         public decimal? ContainerQuantityMin { get; set; }
         public decimal? ContainerQuantityMax { get; set; }
@@ -452,6 +490,11 @@ namespace BlazorApp.Shared.DTOs
         /// 单件装箱数
         /// </summary>
         public decimal? 单件装箱数 { get; set; }
+
+        /// <summary>
+        /// 中包数（写回仓库商品最小订货量）
+        /// </summary>
+        public decimal? 中包数 { get; set; }
 
         /// <summary>
         /// 单件体积

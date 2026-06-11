@@ -35,6 +35,20 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(ContainerDetailQueryDto request);
 
         /// <summary>
+        /// 获取国内套装多码价格明细（货柜明细弹窗专用）。
+        /// </summary>
+        Task<List<ContainerDomesticSetCodeDto>> GetDomesticSetCodesAsync(string productCode);
+
+        /// <summary>
+        /// 批量回写国内套装多码价格（仅更新价格字段）。
+        /// </summary>
+        Task<int> UpdateDomesticSetCodePricesAsync(
+            string productCode,
+            UpdateContainerDomesticSetCodePricesRequestDto request,
+            string updatedBy
+        );
+
+        /// <summary>
         /// 获取符合条件的所有货柜商品明细列表（React）
         /// </summary>
         Task<List<ContainerDetailDto>> GetFilteredContainerProductsAsync(ContainerQueryRequest request);

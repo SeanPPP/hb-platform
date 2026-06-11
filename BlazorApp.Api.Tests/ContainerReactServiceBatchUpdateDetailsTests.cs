@@ -311,6 +311,61 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsAsync_已匹配商品中包数变化_应同步仓库和国内中包数且不改明细装箱数()
+    {
+        await SeedDetailAndProductAsync("D-MIN-ORDER", "P-MIN-ORDER", englishName: "Old English", middlePackQuantity: 6);
+        await SeedRelatedPriceRowsAsync("P-MIN-ORDER", minOrderQuantity: 6, packingQuantity: 24);
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-MIN-ORDER", 中包数 = 12m },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-MIN-ORDER");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-MIN-ORDER");
+        var domesticProduct = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-MIN-ORDER");
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Null(detail.PackingQuantity);
+        Assert.Equal(12, warehouseProduct.MinOrderQuantity);
+        Assert.Equal(24, warehouseProduct.PackingQuantity);
+        Assert.Equal(12, domesticProduct.MiddlePackQuantity);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_未匹配商品中包数变化_应只更新国内中包数且不创建仓库商品()
+    {
+        await SeedDetailAndProductAsync("D-MIN-UNMATCHED", "P-MIN-UNMATCHED", englishName: "Old English", middlePackQuantity: 6);
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-MIN-UNMATCHED", 中包数 = 14m },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-MIN-UNMATCHED");
+        var domesticProduct = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-MIN-UNMATCHED");
+        var warehouseProductCount = await _localDb.Queryable<WarehouseProduct>()
+            .Where(x => x.ProductCode == "P-MIN-UNMATCHED")
+            .CountAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Null(detail.PackingQuantity);
+        Assert.Equal(14, domesticProduct.MiddlePackQuantity);
+        Assert.Equal(0, warehouseProductCount);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_统计字段变化_应同步刷新货柜主表汇总()
     {
         await _localDb.Insertable(
@@ -539,7 +594,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     private async Task SeedDetailAndProductAsync(
         string detailCode,
         string productCode,
-        string? englishName
+        string? englishName,
+        int? middlePackQuantity = null
     )
     {
         await SeedDetailAsync(detailCode, productCode);
@@ -550,12 +606,17 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 HBProductNo = productCode,
                 ProductName = $"商品 {productCode}",
                 EnglishProductName = englishName,
+                MiddlePackQuantity = middlePackQuantity,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();
     }
 
-    private async Task SeedRelatedPriceRowsAsync(string productCode)
+    private async Task SeedRelatedPriceRowsAsync(
+        string productCode,
+        int? minOrderQuantity = null,
+        int? packingQuantity = null
+    )
     {
         await _localDb.Insertable(
             new WarehouseProduct
@@ -563,6 +624,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 ProductCode = productCode,
                 ImportPrice = 1.11m,
                 OEMPrice = 2.22m,
+                MinOrderQuantity = minOrderQuantity,
+                PackingQuantity = packingQuantity,
                 IsActive = true,
             }
         ).ExecuteCommandAsync();

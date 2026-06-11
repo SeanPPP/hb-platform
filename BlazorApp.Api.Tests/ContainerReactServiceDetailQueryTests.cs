@@ -40,6 +40,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             typeof(Container),
             typeof(ContainerDetail),
             typeof(DomesticProduct),
+            typeof(DomesticSetProduct),
             typeof(WarehouseProduct),
             typeof(Product),
             typeof(StoreRetailPrice)
@@ -66,7 +67,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
     {
         await SeedContainerAsync("C-QUERY", "CSLU6099486");
         await SeedDetailAsync("D-1", "C-QUERY", "P-1", "HB010", isActive: true, oemPrice: 3m, importPrice: 2m, localExists: true);
-        await SeedDetailAsync("D-2", "C-QUERY", "P-2", "HB002", isActive: false, oemPrice: 0m, importPrice: 0m, localExists: false);
+        await SeedDetailAsync("D-2", "C-QUERY", "P-2", "HB002", isActive: false, oemPrice: 0m, importPrice: 0m, localExists: false, minOrderQuantity: 12);
         await SeedDetailAsync("D-3", "C-QUERY", "P-3", "HB001", isActive: true, oemPrice: 4m, importPrice: 5m, localExists: true);
         var service = CreateService();
 
@@ -87,6 +88,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         Assert.Equal(2, result.PageSize);
         Assert.True(result.HasMore);
         Assert.Equal(new[] { "HB001", "HB002" }, result.Items.Select(x => x.商品信息?.货号).ToArray());
+        Assert.Equal(12m, result.Items.Single(x => x.HGUID == "D-2").中包数);
         Assert.Equal(3, result.TagStats.All);
         Assert.Equal(1, result.TagStats.New);
         Assert.Equal(2, result.TagStats.Existing);
@@ -94,6 +96,159 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         Assert.Equal(1, result.TagStats.AbnormalImport);
         Assert.Equal(2, result.TagStats.Active);
         Assert.Equal(1, result.TagStats.Inactive);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_中包数应仓库优先并用国内中包数兜底筛选排序()
+    {
+        await SeedContainerAsync("C-MIDDLE-PACK", "CSLU6099488");
+        await SeedDetailAsync("D-MIDDLE-WAREHOUSE", "C-MIDDLE-PACK", "P-MIDDLE-WAREHOUSE", "HB300", minOrderQuantity: 8, middlePackQuantity: 4);
+        await SeedDetailAsync("D-MIDDLE-DOMESTIC", "C-MIDDLE-PACK", "P-MIDDLE-DOMESTIC", "HB100", minOrderQuantity: null, middlePackQuantity: 12);
+        await SeedDetailAsync("D-MIDDLE-LOW", "C-MIDDLE-PACK", "P-MIDDLE-LOW", "HB200", minOrderQuantity: null, middlePackQuantity: 2);
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-MIDDLE-PACK",
+                PageNumber = 1,
+                PageSize = 50,
+                MiddlePackQuantityMin = 5,
+                SortBy = "middlePackQuantity",
+                SortOrder = "descend",
+            }
+        );
+
+        Assert.Equal(new[] { "D-MIDDLE-DOMESTIC", "D-MIDDLE-WAREHOUSE" }, result.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal(12m, result.Items[0].中包数);
+        Assert.Equal(8m, result.Items[1].中包数);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_商品类型应以国内商品表为准展示筛选排序()
+    {
+        await SeedContainerAsync("C-PRODUCT-TYPE", "CSLU6099489");
+        await SeedDetailAsync("D-TYPE-SET", "C-PRODUCT-TYPE", "P-TYPE-SET", "HB137-480", domesticProductType: 1);
+        await SeedDetailAsync("D-TYPE-NORMAL", "C-PRODUCT-TYPE", "P-TYPE-NORMAL", "HB137-470", domesticProductType: 0);
+        var service = CreateService();
+
+        var displayResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                ItemNumber = "HB137-480",
+            }
+        );
+
+        var displayItem = Assert.Single(displayResult.Items);
+        Assert.Equal("普通商品", displayItem.商品类型);
+        Assert.Equal("套装商品", displayItem.商品信息?.商品类型);
+
+        var setResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                ProductTypes = new List<string> { "set" },
+            }
+        );
+
+        Assert.Equal(new[] { "HB137-480" }, setResult.Items.Select(x => x.商品信息?.货号).ToArray());
+
+        var normalForSetItemResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                ItemNumber = "HB137-480",
+                ProductTypes = new List<string> { "normal" },
+            }
+        );
+
+        Assert.Empty(normalForSetItemResult.Items);
+
+        var sortedResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "productType",
+                SortOrder = "ascend",
+            }
+        );
+
+        Assert.Equal(new[] { "D-TYPE-NORMAL", "D-TYPE-SET" }, sortedResult.Items.Select(x => x.HGUID).ToArray());
+    }
+
+    [Fact]
+    public async Task GetDomesticSetCodesAsync_应从国内套装表返回条码价格和进货价()
+    {
+        await SeedDetailAsync("D-SET-CODES", "C-SET-CODES", "P-SET-CODES", "HB500", domesticProductType: 1);
+        await SeedDomesticSetProductAsync("SET-2", "P-SET-CODES", "HB500", "HB500-02", "952700000002", domesticPrice: 12m, oemPrice: null, importPrice: 5m);
+        await SeedDomesticSetProductAsync("SET-1", "P-SET-CODES", "HB500", "HB500-01", "952700000001", domesticPrice: 10m, oemPrice: 8.8m, importPrice: 4.5m);
+        var service = CreateService();
+
+        var result = await service.GetDomesticSetCodesAsync("P-SET-CODES");
+
+        Assert.Equal(new[] { "HB500-01", "HB500-02" }, result.Select(x => x.SetItemNumber).ToArray());
+        Assert.Equal("P-SET-CODES", result[0].ProductCode);
+        Assert.Equal("HB500", result[0].ItemNumber);
+        Assert.Equal(1, result[0].ProductType);
+        Assert.Equal("952700000001", result[0].Barcode);
+        Assert.Equal(8.8m, result[0].RetailPrice);
+        Assert.Equal(4.5m, result[0].PurchasePrice);
+        Assert.Equal(12m, result[1].RetailPrice);
+    }
+
+    [Fact]
+    public async Task GetDomesticSetCodesAsync_商品不存在或无套装明细时返回空列表()
+    {
+        await SeedDetailAsync("D-NO-SET-CODES", "C-NO-SET-CODES", "P-NO-SET-CODES", "HB501", domesticProductType: 1);
+        var service = CreateService();
+
+        Assert.Empty(await service.GetDomesticSetCodesAsync("P-NO-SET-CODES"));
+        Assert.Empty(await service.GetDomesticSetCodesAsync("P-MISSING"));
+    }
+
+    [Fact]
+    public async Task UpdateDomesticSetCodePricesAsync_只回写国内套装价格字段且限制商品归属()
+    {
+        await SeedDetailAsync("D-SET-PRICE", "C-SET-PRICE", "P-SET-PRICE", "HB502", domesticProductType: 1);
+        await SeedDetailAsync("D-OTHER-SET-PRICE", "C-SET-PRICE", "P-OTHER-SET-PRICE", "HB503", domesticProductType: 1);
+        await SeedDomesticSetProductAsync("SET-PRICE-1", "P-SET-PRICE", "HB502", "HB502-01", "952700000101", domesticPrice: 13m, oemPrice: 9.9m, importPrice: 5.5m);
+        await SeedDomesticSetProductAsync("SET-PRICE-OTHER", "P-OTHER-SET-PRICE", "HB503", "HB503-01", "952700000201", domesticPrice: 23m, oemPrice: 19.9m, importPrice: 15.5m);
+        var service = CreateService();
+
+        var updated = await service.UpdateDomesticSetCodePricesAsync(
+            "P-SET-PRICE",
+            new UpdateContainerDomesticSetCodePricesRequestDto
+            {
+                Items = new List<UpdateContainerDomesticSetCodePriceItemDto>
+                {
+                    new() { SetProductCode = "SET-PRICE-1", RetailPrice = 11.1m, PurchasePrice = 6.6m },
+                    new() { SetProductCode = "SET-PRICE-OTHER", RetailPrice = 99m, PurchasePrice = 88m },
+                },
+            },
+            "tester"
+        );
+
+        Assert.Equal(1, updated);
+        var changed = await _localDb.Queryable<DomesticSetProduct>().FirstAsync(x => x.SetProductCode == "SET-PRICE-1");
+        Assert.Equal(11.1m, changed.OEMPrice);
+        Assert.Equal(6.6m, changed.ImportPrice);
+        Assert.Equal(13m, changed.DomesticPrice);
+        Assert.Equal("HB502-01", changed.SetProductNo);
+        Assert.Equal("952700000101", changed.SetBarcode);
+        Assert.Equal("tester", changed.UpdatedBy);
+
+        var unchanged = await _localDb.Queryable<DomesticSetProduct>().FirstAsync(x => x.SetProductCode == "SET-PRICE-OTHER");
+        Assert.Equal(19.9m, unchanged.OEMPrice);
+        Assert.Equal(15.5m, unchanged.ImportPrice);
     }
 
     [Fact]
@@ -155,7 +310,11 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         bool isActive = true,
         decimal? oemPrice = 1m,
         decimal? importPrice = 1m,
-        bool localExists = true
+        bool localExists = true,
+        int? minOrderQuantity = null,
+        int? middlePackQuantity = null,
+        int domesticProductType = 0,
+        string detailProductType = "普通商品"
     )
     {
         await _localDb.Insertable(
@@ -164,7 +323,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 DetailCode = detailCode,
                 ContainerCode = containerCode,
                 ProductCode = productCode,
-                ProductType = "普通商品",
+                ProductType = detailProductType,
                 LoadingPieces = 1m,
                 LoadingQuantity = 10m,
                 DomesticPrice = 8m,
@@ -186,6 +345,8 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 ProductName = $"商品 {itemNumber}",
                 EnglishProductName = $"Product {itemNumber}",
                 ProductImage = $"https://example.test/{itemNumber}.jpg",
+                MiddlePackQuantity = middlePackQuantity,
+                ProductType = domesticProductType,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();
@@ -196,6 +357,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 ProductCode = productCode,
                 ImportPrice = importPrice,
                 OEMPrice = oemPrice,
+                MinOrderQuantity = minOrderQuantity,
                 IsActive = isActive,
             }
         ).ExecuteCommandAsync();
@@ -212,6 +374,33 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 }
             ).ExecuteCommandAsync();
         }
+    }
+
+    private async Task SeedDomesticSetProductAsync(
+        string setProductCode,
+        string productCode,
+        string productNo,
+        string setProductNo,
+        string setBarcode,
+        decimal? domesticPrice,
+        decimal? oemPrice,
+        decimal? importPrice
+    )
+    {
+        await _localDb.Insertable(
+            new DomesticSetProduct
+            {
+                SetProductCode = setProductCode,
+                ProductCode = productCode,
+                ProductNo = productNo,
+                SetProductNo = setProductNo,
+                SetBarcode = setBarcode,
+                DomesticPrice = domesticPrice,
+                OEMPrice = oemPrice,
+                ImportPrice = importPrice,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
     }
 
     private ContainerReactService CreateService()
