@@ -18,6 +18,11 @@ interface DownloadPdfOptions {
   avoidBreakOffsets?: number[]
 }
 
+interface PagedPdfOptions {
+  createCanvasContextErrorMessage?: string
+  pageSelector?: string
+}
+
 export const PDF_IMAGE_FORMAT = 'JPEG'
 export const PDF_IMAGE_MIME_TYPE = 'image/jpeg'
 export const PDF_IMAGE_QUALITY = 0.95
@@ -197,6 +202,45 @@ async function createPdfDocumentFromElement(element: HTMLElement, options?: Down
   return pdf
 }
 
+async function createPdfDocumentFromPages(root: HTMLElement, options?: PagedPdfOptions) {
+  const pageSelector = options?.pageSelector || '.store-order-pdf-page'
+  const pages = Array.from(root.querySelectorAll<HTMLElement>(pageSelector))
+  const pageElements = pages.length > 0 ? pages : [root]
+  const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
+  const pdf = new jsPDF('p', 'mm', 'a4')
+
+  for (const [pageIndex, pageElement] of pageElements.entries()) {
+    const canvas = await html2canvas(pageElement, {
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+    })
+    const context = canvas.getContext('2d')
+    if (!context) {
+      // 分页 PDF 逐页渲染，任何一页拿不到画布上下文都要中断，避免输出坏 PDF。
+      throw new Error(options?.createCanvasContextErrorMessage || '创建 PDF 临时画布失败')
+    }
+
+    if (pageIndex > 0) {
+      pdf.addPage()
+    }
+
+    const imageData = getPdfSliceImageData(canvas)
+    pdf.addImage(imageData, PDF_IMAGE_FORMAT, 0, 0, 210, 297)
+  }
+
+  return pdf
+}
+
+function cleanupPdfPrintFrame(frame: HTMLIFrameElement, url: string) {
+  // Blob URL 和临时 iframe 都只服务本次打印，清理可避免连续打印时泄漏内存。
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url)
+    frame.remove()
+  }, 60_000)
+}
+
 export async function createElementPdfBase64(element: HTMLElement, options?: DownloadPdfOptions) {
   const pdf = await createPdfDocumentFromElement(element, options)
   const pdfDataUri = pdf.output('datauristring') as string
@@ -208,4 +252,36 @@ export async function downloadElementAsPdf(element: HTMLElement, fileName: strin
   const pdf = await createPdfDocumentFromElement(element, options)
 
   pdf.save(fileName)
+}
+
+export async function downloadElementPagesAsPdf(element: HTMLElement, fileName: string, options?: PagedPdfOptions) {
+  const pdf = await createPdfDocumentFromPages(element, options)
+
+  pdf.save(fileName)
+}
+
+export async function printElementPagesAsPdf(element: HTMLElement, options?: PagedPdfOptions) {
+  const pdf = await createPdfDocumentFromPages(element, options)
+  const blob = pdf.output('blob') as Blob
+  const url = URL.createObjectURL(blob)
+  const frame = document.createElement('iframe')
+
+  frame.style.position = 'fixed'
+  frame.style.right = '0'
+  frame.style.bottom = '0'
+  frame.style.width = '0'
+  frame.style.height = '0'
+  frame.style.border = '0'
+  frame.src = url
+  frame.onload = () => {
+    try {
+      // 打印临时 PDF 而不是当前 HTML，避开浏览器自动 URL、标题和日期页脚。
+      frame.contentWindow?.focus()
+      frame.contentWindow?.print()
+    } finally {
+      cleanupPdfPrintFrame(frame, url)
+    }
+  }
+
+  document.body.appendChild(frame)
 }

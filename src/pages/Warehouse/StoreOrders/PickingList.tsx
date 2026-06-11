@@ -13,8 +13,8 @@ import type { StoreOrderDetail } from '../../../types/storeOrder'
 import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
-import { buildDocumentFileName, collectElementBreakOffsets, downloadElementAsPdf, formatCurrency, formatPrintDate } from './printUtils'
-import { buildPickingListExcelData, formatInnerPackCount } from './pickingListLogic'
+import { buildDocumentFileName, downloadElementPagesAsPdf, formatCurrency, formatPrintDate, printElementPagesAsPdf } from './printUtils'
+import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount } from './pickingListLogic'
 import './print.css'
 
 function formatVolume(value?: number) {
@@ -31,6 +31,7 @@ export default function PickingListPage() {
   const id = route?.params.id || ''
   const navigate = useNavigate()
   const printRootRef = useRef<HTMLDivElement | null>(null)
+  const pdfRootRef = useRef<HTMLDivElement | null>(null)
   // 记录当前配货单已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
   const loadedOrderIdRef = useRef<string | null>(null)
   const visibleOrderIdRef = useRef<string | null>(null)
@@ -159,6 +160,10 @@ export default function PickingListPage() {
     }, 0)
   }, [order])
 
+  const pdfPages = useMemo(() => {
+    return buildPickingListPdfPages(sortedItems, Boolean(order))
+  }, [order, sortedItems])
+
   const handleBeforePrint = async () => {
     if (!order) {
       return true
@@ -180,10 +185,16 @@ export default function PickingListPage() {
   }
 
   const handlePrint = async () => {
+    if (!pdfRootRef.current || !order) {
+      return
+    }
+
     setPrinting(true)
     try {
       await handleBeforePrint()
-      window.print()
+      await printElementPagesAsPdf(pdfRootRef.current, {
+        createCanvasContextErrorMessage: t('warehouse.pickingList.createPdfCanvasFailed'),
+      })
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.pickingList.printFailed'))
@@ -193,15 +204,15 @@ export default function PickingListPage() {
   }
 
   const handleDownload = async () => {
-    if (!printRootRef.current || !order) {
+    if (!pdfRootRef.current || !order) {
       return
     }
 
     setDownloading(true)
     try {
       await handleBeforePrint()
-      await downloadElementAsPdf(
-        printRootRef.current,
+      await downloadElementPagesAsPdf(
+        pdfRootRef.current,
         buildDocumentFileName(
           t('warehouse.pickingList.fileName'),
           store?.storeName || order.storeCode,
@@ -214,11 +225,6 @@ export default function PickingListPage() {
         ),
         {
           createCanvasContextErrorMessage: t('warehouse.pickingList.createPdfCanvasFailed'),
-          avoidBreakOffsets: collectElementBreakOffsets(
-            printRootRef.current,
-            '.store-order-picking-table tbody tr',
-            '.store-order-picking-footer',
-          ),
         },
       )
     } catch (error) {
@@ -464,6 +470,106 @@ export default function PickingListPage() {
             <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
           </div>
         </div>
+      </div>
+
+      <div ref={pdfRootRef} className="store-order-pdf-root" aria-hidden="true">
+        {pdfPages.map((page, pageIndex) => (
+          <div key={`${page.startIndex}-${pageIndex}`} className="store-order-pdf-page store-order-picking-paper">
+            <div className="store-order-pdf-page-body">
+              <table className="store-order-picking-table">
+                <colgroup>
+                  <col className="col-index" />
+                  <col className="col-item" />
+                  <col className="col-location" />
+                  <col className="col-product" />
+                  <col className="col-price" />
+                  <col className="col-price" />
+                  <col className="col-inner-pack" />
+                  <col className="col-qty" />
+                  <col className="col-send-qty" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <td colSpan={9} className="store-order-picking-header-cell">
+                      <div className="store-order-picking-header">
+                        <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
+                        <div className="store-order-picking-meta">
+                          <div>
+                            <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
+                            {orderNoText}
+                          </div>
+                          <div>
+                            <strong>{t('warehouse.pickingList.printTime')}</strong>
+                            {formatPrintDate(undefined, true, printLocale)}
+                          </div>
+                          <div>
+                            <strong>{t('warehouse.pickingList.storeLabel')}</strong>
+                            {displayStoreText}
+                          </div>
+                          <div>
+                            <strong>{t('warehouse.pickingList.orderDate')}</strong>
+                            {formatPrintDate(order.orderDate, false, printLocale)}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <th className="col-index">#</th>
+                    <th className="col-item">{t('column.itemNumber')}</th>
+                    <th className="col-location">{t('column.location')}</th>
+                    <th className="col-product">{t('column.productName')}</th>
+                    <th className="col-price">{t('column.importPrice')}</th>
+                    <th className="col-price">{t('column.rrp')}</th>
+                    <th className="col-inner-pack">{t('warehouse.pickingList.innerPackShort')}</th>
+                    <th className="col-qty">{t('warehouse.pickingList.orderQtyShort')}</th>
+                    <th className="col-send-qty">{t('column.allocQuantity')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {page.items.map((item, index) => (
+                    <tr key={item.detailGUID}>
+                      <td className="col-index">{page.startIndex + index + 1}</td>
+                      <td className="col-item">{item.itemNumber || '--'}</td>
+                      <td className="col-location">{item.locationCode || '--'}</td>
+                      <td className="col-product">
+                        <div className="store-order-picking-name">{item.productName || '--'}</div>
+                      </td>
+                      <td className="col-price">{formatCurrency(item.importPrice)}</td>
+                      <td className="col-price">{item.rrp !== undefined && item.rrp !== null ? formatCurrency(item.rrp) : ''}</td>
+                      <td className="col-inner-pack">
+                        {/* PDF 分页复用同一套包数计算，避免屏幕和 PDF 内容不一致。 */}
+                        {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
+                      </td>
+                      <td className="col-qty">{item.quantity}</td>
+                      <td className="col-send-qty">{item.allocQuantity || ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {page.showSummary ? (
+                <div className="store-order-picking-footer">
+                  {order.remarks ? (
+                    <div className="store-order-picking-remarks">
+                      {t('warehouse.pickingList.remarks', { remarks: order.remarks })}
+                    </div>
+                  ) : null}
+                  <div className="store-order-picking-totals">
+                    <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
+                    <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
+                    <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>
+                    <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="store-order-pdf-page-number">
+              {`第 ${pageIndex + 1} / ${pdfPages.length} 页`}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )

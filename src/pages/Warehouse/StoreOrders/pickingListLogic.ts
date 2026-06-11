@@ -41,8 +41,55 @@ export interface PickingListExcelData {
   totalRows: Array<[string, string | number]>
 }
 
+export interface PickingListPdfPaginationOptions {
+  pageHeightMm?: number
+  pagePaddingTopMm?: number
+  pagePaddingBottomMm?: number
+  headerHeightMm?: number
+  tableHeaderHeightMm?: number
+  footerHeightMm?: number
+  rowHeightMm?: number
+  finalSummaryHeightMm?: number
+}
+
+export interface PickingListPdfPage {
+  items: StoreOrderDetailLine[]
+  startIndex: number
+  hasHeader: true
+  footerKind: 'pageNumber'
+  showSummary: boolean
+}
+
+const DEFAULT_PDF_PAGINATION_OPTIONS: Required<PickingListPdfPaginationOptions> = {
+  pageHeightMm: 297,
+  pagePaddingTopMm: 6,
+  pagePaddingBottomMm: 12,
+  headerHeightMm: 20,
+  tableHeaderHeightMm: 10,
+  footerHeightMm: 12,
+  // 默认行高按实际打印预览校准，让普通明细页容纳 28 行，减少页尾空白。
+  rowHeightMm: 8.4,
+  finalSummaryHeightMm: 22,
+}
+
 function formatExcelCurrency(value?: number) {
   return Number(Number(value ?? 0).toFixed(2))
+}
+
+function resolvePickingListRowsPerPdfPage(
+  options: Required<PickingListPdfPaginationOptions>,
+  shouldReserveSummarySpace: boolean,
+) {
+  const summaryHeight = shouldReserveSummarySpace ? options.finalSummaryHeightMm : 0
+  const availableHeight = options.pageHeightMm
+    - options.pagePaddingTopMm
+    - options.pagePaddingBottomMm
+    - options.headerHeightMm
+    - options.tableHeaderHeightMm
+    - options.footerHeightMm
+    - summaryHeight
+
+  return Math.max(1, Math.floor(availableHeight / options.rowHeightMm))
 }
 
 // 统一管理配货单的派生展示逻辑，避免组件里散落业务格式化判断。
@@ -118,4 +165,58 @@ export function buildPickingListExcelData(
       [texts.totalOrderVolumeLabel, meta.totalOrderVolumeText],
     ],
   }
+}
+
+export function buildPickingListPdfPages(
+  items: StoreOrderDetailLine[],
+  hasSummary: boolean,
+  paginationOptions: PickingListPdfPaginationOptions = {},
+): PickingListPdfPage[] {
+  const options = {
+    ...DEFAULT_PDF_PAGINATION_OPTIONS,
+    ...paginationOptions,
+  }
+  const regularRowsPerPage = resolvePickingListRowsPerPdfPage(options, false)
+  const summaryRowsPerPage = resolvePickingListRowsPerPdfPage(options, hasSummary)
+  const pages: PickingListPdfPage[] = []
+
+  let startIndex = 0
+  while (startIndex < items.length) {
+    const remaining = items.length - startIndex
+    const canFitRestWithSummary = remaining <= summaryRowsPerPage
+    const shouldSplitBeforeSummary = hasSummary && !canFitRestWithSummary && remaining <= regularRowsPerPage
+    // 尾页需要显示备注和汇总时，最多只放汇总页容量；否则 26-28 行会挤占汇总区。
+    const rowsForPage = canFitRestWithSummary
+      ? summaryRowsPerPage
+      : shouldSplitBeforeSummary
+        ? Math.max(1, remaining - summaryRowsPerPage)
+        : regularRowsPerPage
+    const pageItems = items.slice(startIndex, startIndex + rowsForPage)
+
+    pages.push({
+      items: pageItems,
+      startIndex,
+      hasHeader: true,
+      footerKind: 'pageNumber',
+      showSummary: hasSummary && canFitRestWithSummary,
+    })
+    startIndex += pageItems.length
+  }
+
+  if (pages.length === 0) {
+    pages.push({
+      items: [],
+      startIndex: 0,
+      hasHeader: true,
+      footerKind: 'pageNumber',
+      showSummary: hasSummary,
+    })
+  }
+
+  // 最后一页必须承载备注和汇总，避免汇总区在 PDF 中被切断或丢失。
+  pages.forEach((page, pageIndex) => {
+    page.showSummary = hasSummary && pageIndex === pages.length - 1
+  })
+
+  return pages
 }

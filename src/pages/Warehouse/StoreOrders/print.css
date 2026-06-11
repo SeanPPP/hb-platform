@@ -194,6 +194,50 @@
   gap: 8px;
 }
 
+.store-order-pdf-root {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 210mm;
+  background: #fff;
+  pointer-events: none;
+}
+
+.store-order-pdf-page {
+  position: relative;
+  width: 210mm;
+  height: 297mm;
+  margin: 0;
+  background: #fff;
+  box-sizing: border-box;
+  overflow: hidden;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.store-order-pdf-page.store-order-picking-paper {
+  padding: 6mm 5mm 12mm;
+}
+
+.store-order-pdf-page-body {
+  height: 100%;
+  padding-bottom: 12mm;
+  box-sizing: border-box;
+}
+
+.store-order-pdf-page-number {
+  position: absolute;
+  right: 5mm;
+  bottom: 4mm;
+  left: 5mm;
+  border-top: 1px solid #ddd;
+  padding-top: 2mm;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #333;
+}
+
 .store-order-invoice-paper {
   padding: 12mm 10mm 18mm;
   position: relative;
