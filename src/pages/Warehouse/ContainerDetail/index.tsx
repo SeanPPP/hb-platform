@@ -119,7 +119,7 @@ import {
   calculateContainerSetCodePurchasePrice,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
-  findContainerDetailRowsMissingChineseName,
+  findContainerDetailRowsMissingProductName,
   getContainerDetailExportColumns,
   getContainerDetailBarcode,
   getContainerDetailEnglishName,
@@ -1762,12 +1762,12 @@ export default function ContainerDetailPage() {
       message.error(error instanceof Error ? error.message : t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试'))
       return
     }
-    const missingChineseNameRows = findContainerDetailRowsMissingChineseName(targetRows)
-    if (missingChineseNameRows.length) {
+    const missingProductNameRows = findContainerDetailRowsMissingProductName(targetRows)
+    if (missingProductNameRows.length) {
       message.warning(t(
-        'containers.messages.createProductsMissingChineseName',
-        '请双击商品名称列填写中文商品名后再创建新商品：{{items}}',
-        { items: missingChineseNameRows.map((row) => row.label).join('、') },
+        'containers.messages.createProductsMissingProductName',
+        '请填写商品名称后再创建新商品：{{items}}',
+        { items: missingProductNameRows.map((row) => row.label).join('、') },
       ))
       return
     }

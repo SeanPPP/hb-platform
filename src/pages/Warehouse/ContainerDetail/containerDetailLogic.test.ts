@@ -16,7 +16,7 @@ import {
   buildContainerDetailSaveFailureKeys,
   moveContainerDetailColumnOrder,
   getContainerDetailRemoteQueryResetState,
-  findContainerDetailRowsMissingChineseName,
+  findContainerDetailRowsMissingProductName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailExportRow,
@@ -750,17 +750,17 @@ assertEqual(
   '创建新商品中文名提示在缺少货号和商品编码时应使用明细 GUID 定位行',
 )
 assertDeepEqual(
-  findContainerDetailRowsMissingChineseName([
+  findContainerDetailRowsMissingProductName([
     { id: 314, hguid: 'name-314', 是否新商品: true, 商品名称: '皮带', 商品信息: { 货号: 'HB308-030' } },
     { id: 315, hguid: 'name-315', 是否新商品: true, 商品名称: 'belt', 商品信息: { 货号: 'HB308-031' } },
+    { id: 318, hguid: 'name-318', 是否新商品: true, 商品名称: '22-36,3PCS', 商品信息: { 货号: 'HB137-480' } },
     { id: 316, hguid: 'name-316', 是否新商品: true, 商品名称: '   ', 商品信息: { 货号: 'HB308-032' } },
     { id: 317, hguid: 'name-317', 是否新商品: false, 商品名称: 'belt', 商品信息: { 货号: 'HB308-033' } },
   ]),
   [
-    { hguid: 'name-315', label: 'HB308-031', productName: 'belt' },
     { hguid: 'name-316', label: 'HB308-032', productName: '' },
   ],
-  '创建新商品前应只拦截新商品中缺少中文商品名的明细，纯英文和空值都应失败',
+  '创建新商品前应只拦截新商品中商品名称为空的明细，非中文名称也应通过',
 )
 assertEqual(getContainerDetailMatchType({ id: 306, hguid: 'match-306', matchType: 'productCode' }), 'productCode', '匹配方式应优先读取前端归一化字段')
 assertEqual(getContainerDetailMatchType({ id: 307, hguid: 'match-307', MatchType: 'SupplierItem' }), 'supplierItem', '匹配方式应兼容后端 PascalCase 字段')
@@ -1264,11 +1264,11 @@ assertEqual(
   '页面应调用匹配国内数据 helper，未勾选时按当前筛选结果全量处理',
 )
 assertEqual(
-  pageSource.includes('findContainerDetailRowsMissingChineseName(targetRows)') &&
-    pageSource.includes("'containers.messages.createProductsMissingChineseName'") &&
-    pageSource.includes('missingChineseNameRows.map((row) => row.label).join'),
+  pageSource.includes('findContainerDetailRowsMissingProductName(targetRows)') &&
+    pageSource.includes("'containers.messages.createProductsMissingProductName'") &&
+    pageSource.includes('missingProductNameRows.map((row) => row.label).join'),
   true,
-  '创建新商品前应拦截缺少中文商品名的新商品，并在提示中带出可定位的货号或编码',
+  '创建新商品前应拦截商品名称为空的新商品，并在提示中带出可定位的货号或编码',
 )
 assertEqual(
   pageSource.includes('editingProductNameRowKey') &&
@@ -1704,7 +1704,7 @@ assertEqual(
     pageSource.includes('buildContainerDetailSaveFailureKeys(saveKey, patch)') &&
     pageSource.includes('flushPendingDetailSaves') &&
     pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
-    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingChineseNameRows = findContainerDetailRowsMissingChineseName(targetRows)') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingProductNameRows = findContainerDetailRowsMissingProductName(targetRows)') &&
     pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const job = await createContainerProductCreationJob({'),
   true,
   '创建新商品前必须等待货柜明细保存完成，避免页面已显示中文名但后台 job 读取旧库值',

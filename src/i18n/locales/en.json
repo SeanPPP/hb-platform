@@ -245,7 +245,7 @@
       "hqTranslationFailed": "Failed to translate HQ data",
       "hqTranslationResultSummary": "{{candidates}} candidates, {{translated}} translated, {{skipped}} skipped, {{failed}} failed",
       "noEligibleNewProducts": "No eligible new products",
-      "createProductsMissingChineseName": "Double-click the Product Name column and enter a Chinese product name before creating new products: {{items}}",
+      "createProductsMissingProductName": "Enter a product name before creating new products: {{items}}",
       "newProductsCreated": "Created {{count}} new products",
       "noExistingProductsToUpdate": "No existing products to update",
       "noPurchasePriceDiff": "No valid product price to update",
