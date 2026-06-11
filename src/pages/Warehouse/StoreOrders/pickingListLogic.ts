@@ -67,8 +67,8 @@ const DEFAULT_PDF_PAGINATION_OPTIONS: Required<PickingListPdfPaginationOptions> 
   headerHeightMm: 20,
   tableHeaderHeightMm: 10,
   footerHeightMm: 12,
-  // 默认行高按实际打印预览校准，让普通明细页容纳 28 行，减少页尾空白。
-  rowHeightMm: 8.4,
+  // 默认行高按实际打印预览校准，让普通明细页容纳 29 行，减少页尾空白。
+  rowHeightMm: 8.17,
   finalSummaryHeightMm: 22,
 }
 
@@ -92,9 +92,17 @@ function resolvePickingListRowsPerPdfPage(
   return Math.max(1, Math.floor(availableHeight / options.rowHeightMm))
 }
 
-function resolveRowsBeforeSummaryPage(remaining: number, regularRowsPerPage: number) {
-  // 尾页允许少量明细，优先让倒数第二页满排，同时保证汇总页不超过容量。
-  return Math.min(regularRowsPerPage, Math.max(1, remaining - 1))
+function resolveRowsBeforeSummaryPage(
+  remaining: number,
+  regularRowsPerPage: number,
+  summaryRowsPerPage: number,
+  shortSummaryTailRows: number,
+) {
+  // 尾页 1-2 行时可挤回前页；否则倒数第二页满排，最后一页保留剩余明细和汇总。
+  const rowsBeforeSummaryPage = Math.min(regularRowsPerPage, Math.max(1, remaining - 1))
+  const summaryRows = remaining - rowsBeforeSummaryPage
+  const maxMergedSummaryRows = summaryRowsPerPage + shortSummaryTailRows
+  return summaryRows <= shortSummaryTailRows && remaining <= maxMergedSummaryRows ? remaining : rowsBeforeSummaryPage
 }
 
 // 统一管理配货单的派生展示逻辑，避免组件里散落业务格式化判断。
@@ -183,6 +191,7 @@ export function buildPickingListPdfPages(
   }
   const regularRowsPerPage = resolvePickingListRowsPerPdfPage(options, false)
   const summaryRowsPerPage = resolvePickingListRowsPerPdfPage(options, hasSummary)
+  const shortSummaryTailRows = 2
   const pages: PickingListPdfPage[] = []
 
   let startIndex = 0
@@ -190,11 +199,11 @@ export function buildPickingListPdfPages(
     const remaining = items.length - startIndex
     const canFitRestWithSummary = remaining <= summaryRowsPerPage
     const shouldBalanceTailPages = hasSummary && !canFitRestWithSummary && remaining <= regularRowsPerPage + summaryRowsPerPage
-    // 尾页需要显示备注和汇总时，倒数第二页尽量满排，最后一页可以少。
+    // 尾页需要显示备注和汇总时，短尾可挤回前页；否则倒数第二页尽量满排。
     const rowsForPage = canFitRestWithSummary
       ? summaryRowsPerPage
       : shouldBalanceTailPages
-        ? resolveRowsBeforeSummaryPage(remaining, regularRowsPerPage)
+        ? resolveRowsBeforeSummaryPage(remaining, regularRowsPerPage, summaryRowsPerPage, shortSummaryTailRows)
         : regularRowsPerPage
     const pageItems = items.slice(startIndex, startIndex + rowsForPage)
 

@@ -219,7 +219,7 @@ runTest('配货单 PDF 每页应带页头元数据且页脚只承载页码', () 
   })
 })
 
-runTest('配货单 PDF 默认分页每页应放 28 行并保留页码空间', () => {
+runTest('配货单 PDF 默认分页每页应放 29 行并保留页码空间', () => {
   const items = Array.from({ length: 31 }, (_, index) => ({
     ...excelItems[0],
     detailGUID: `footer-safe-${index}`,
@@ -227,26 +227,26 @@ runTest('配货单 PDF 默认分页每页应放 28 行并保留页码空间', ()
   }))
   const pages = buildPickingListPdfPages(items, false)
 
-  assertEqual(pages[0].items.length, 28, '默认 PDF 分页首张 A4 应容纳 28 行明细')
+  assertEqual(pages[0].items.length, 29, '默认 PDF 分页首张 A4 应容纳 29 行明细')
   assertEqual(pages.length >= 2, true, '31 行明细不应继续挤在同一页导致页码重叠')
 })
 
 runTest('配货单 PDF 带汇总的尾页应优先让倒数第二页满排', () => {
   const cases: Array<[number, number[]]> = [
-    [26, [25, 1]],
-    [27, [26, 1]],
-    [28, [27, 1]],
+    [26, [26]],
+    [27, [27]],
+    [28, [28]],
     [29, [28, 1]],
-    [30, [28, 2]],
-    [31, [28, 3]],
-    [53, [28, 25]],
-    [54, [28, 25, 1]],
-    [55, [28, 26, 1]],
-    [56, [28, 27, 1]],
-    [81, [28, 28, 25]],
-    [82, [28, 28, 25, 1]],
-    [83, [28, 28, 26, 1]],
-    [84, [28, 28, 27, 1]],
+    [30, [29, 1]],
+    [31, [29, 2]],
+    [32, [29, 3]],
+    [55, [29, 26]],
+    [56, [29, 27]],
+    [57, [29, 28]],
+    [58, [29, 28, 1]],
+    [84, [29, 29, 26]],
+    [85, [29, 29, 27]],
+    [86, [29, 29, 28]],
   ]
 
   for (const [itemCount, expectedPageSizes] of cases) {
@@ -260,7 +260,7 @@ runTest('配货单 PDF 带汇总的尾页应优先让倒数第二页满排', () 
 
     assertDeepEqual(pages.map((page) => page.items.length), expectedPageSizes, `${itemCount} 行时应优先让倒数第二页满排`)
     assertEqual(summaryPage.showSummary, true, `${itemCount} 行时最后一页应显示汇总`)
-    assertEqual(summaryPage.items.length <= 25, true, `${itemCount} 行时汇总页明细不应挤占汇总区域`)
+    assertEqual(summaryPage.items.length <= 28, true, `${itemCount} 行时短尾合并后的汇总页不应超过 28 行`)
   }
 })
 
