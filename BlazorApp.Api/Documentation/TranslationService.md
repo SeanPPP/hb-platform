@@ -13,7 +13,7 @@
 
 ### 2. 单个文本翻译
 - **方法**: `TranslateToEnglishAsync(string chineseText)`
-- 支持多种翻译API（Kimi、百度、Google、Azure）
+- 支持多种翻译API（DeepSeek、Kimi、百度、Google、Azure）
 - 自动缓存翻译结果
 - 翻译失败时降级到模拟翻译
 
@@ -36,7 +36,16 @@
 ```json
 {
   "Translation": {
-    "Provider": "kimi",  // 可选值: kimi, baidu, google, azure, mock
+    "Provider": "deepseek",  // 可选值: deepseek, kimi, baidu, google, azure, mock
+    "DeepSeek": {
+      "ApiKey": "your-deepseek-api-key",
+      "Model": "deepseek-v4-flash",
+      "Endpoint": "https://api.deepseek.com/chat/completions",
+      "BatchSize": 100,
+      "BatchDelayMs": 100,
+      "EnableParallelProcessing": false,
+      "MaxConcurrentBatches": 1
+    },
     "Kimi": {
       "ApiKey": "your-kimi-api-key",
       "Model": "moonshot-v1-8k",
@@ -56,6 +65,13 @@
     }
   }
 }
+```
+
+生产环境不要把真实密钥提交到仓库，请通过 `.env`、服务器环境变量或密钥管理服务注入：
+
+```bash
+Translation__Provider=deepseek
+Translation__DeepSeek__ApiKey=REDACTED
 ```
 
 ## 在ContainerService中的应用

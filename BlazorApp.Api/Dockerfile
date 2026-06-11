@@ -65,7 +65,8 @@ ENV ConnectionString=REDACTED
 ENV ConnectionString=REDACTED
 ENV ConnectionString=REDACTED
 ENV Jwt__Key=""
-ENV Translation__Kimi__ApiKey=REDACTED
+ENV Translation__Provider="deepseek"
+ENV Translation__DeepSeek__ApiKey=REDACTED
 
 # 健康检查配置 - 使用容器内部 5002 端口
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -85,7 +86,8 @@ ENTRYPOINT ["dotnet", "BlazorApp.Api.dll"]
 # docker run -d -p 5002:5002 --name hb-api \
 #   -e "ConnectionString=REDACTED
 #   -e "Jwt__Key=your-jwt-secret-key" \
-#   -e "Translation__Kimi__ApiKey=REDACTED
+#   -e "Translation__Provider=deepseek" \
+#   -e "Translation__DeepSeek__ApiKey=REDACTED
 #   hb-platform-api:latest
 #
 # 端口说明：

@@ -23,7 +23,8 @@ services:
       - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
       - Cookie__Secure=${COOKIE_SECURE:-true}
       - Cookie__SameSite=${COOKIE_SAMESITE:-Lax}
-      - Translation__Kimi__ApiKey=REDACTED
+      - Translation__Provider=deepseek
+      - Translation__DeepSeek__ApiKey=REDACTED
       - TencentCloud__SecretId=${TENCENT_SECRET_ID}
       - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
       - TencentCloud__BucketName=${TENCENT_BUCKET_NAME}

@@ -48,6 +48,23 @@ namespace BlazorApp.Api.Services
             return ChineseRegex.IsMatch(text);
         }
 
+        private bool IsValidEnglishTranslation(string sourceText, string? translatedText)
+        {
+            var normalizedSource = sourceText.Trim();
+            var normalizedTranslation = translatedText?.Trim();
+
+            // 只把真正的英文译文视为有效结果，避免把原中文或含中文结果写入缓存。
+            return !string.IsNullOrEmpty(normalizedTranslation)
+                && !string.Equals(normalizedTranslation, normalizedSource, StringComparison.Ordinal)
+                && !ContainsChinese(normalizedTranslation);
+        }
+
+        private sealed class TranslationProviderConfigurationException : InvalidOperationException
+        {
+            public TranslationProviderConfigurationException(string message)
+                : base(message) { }
+        }
+
         /// <summary>
         /// 异步检测文本是否包含中文字符
         /// </summary>
@@ -81,11 +98,17 @@ namespace BlazorApp.Api.Services
                 // 调用翻译API
                 var translation = await CallTranslationApiAsync(chineseText);
 
-                if (!string.IsNullOrEmpty(translation))
+                if (IsValidEnglishTranslation(chineseText, translation))
                 {
-                    // 缓存翻译结果
+                    // 只有有效英文译文才写入缓存，避免后续批量翻译读到原中文。
                     await CacheTranslationAsync(chineseText, translation);
                     _logger.LogInformation($"翻译完成: {chineseText} -> {translation}");
+                    return translation;
+                }
+
+                if (!string.IsNullOrWhiteSpace(translation))
+                {
+                    _logger.LogWarning($"翻译结果不是有效英文，返回原文且不缓存: {chineseText} -> {translation}");
                     return translation;
                 }
 
@@ -93,9 +116,19 @@ namespace BlazorApp.Api.Services
                 _logger.LogWarning($"翻译失败，返回原文: {chineseText}");
                 return chineseText;
             }
+            catch (TranslationProviderConfigurationException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"翻译过程中发生错误: {chineseText}");
+                var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
+                if (!string.Equals(provider, "mock", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw;
+                }
+
                 return chineseText; // 翻译失败时返回原文
             }
         }
@@ -181,11 +214,23 @@ namespace BlazorApp.Api.Services
                 // 批量调用翻译API
                 var translations = await CallBatchTranslationApiAsync(uncachedTexts);
 
-                // 将翻译结果添加到总结果中，并缓存
+                // 将翻译结果添加到总结果中；只有有效英文结果才进入缓存。
                 foreach (var kvp in translations)
                 {
                     results[kvp.Key] = kvp.Value;
-                    await CacheTranslationAsync(kvp.Key, kvp.Value);
+
+                    if (IsValidEnglishTranslation(kvp.Key, kvp.Value))
+                    {
+                        await CacheTranslationAsync(kvp.Key, kvp.Value);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "跳过无效英文翻译缓存: {ChineseText} -> {EnglishText}",
+                            kvp.Key,
+                            kvp.Value
+                        );
+                    }
                 }
 
                 // 对于未成功翻译的文本，返回原文
@@ -199,13 +244,24 @@ namespace BlazorApp.Api.Services
                 }
 
                 _logger.LogInformation(
-                    $"批量翻译完成，成功翻译 {translations.Count} 个新文本，总共返回 {results.Count} 个结果"
+                    "批量翻译完成，有效翻译 {TranslatedCount} 个新文本，总共返回 {ResultCount} 个结果",
+                    translations.Count(kvp => IsValidEnglishTranslation(kvp.Key, kvp.Value)),
+                    results.Count
                 );
                 return results;
+            }
+            catch (TranslationProviderConfigurationException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量翻译失败");
+                var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
+                if (!string.Equals(provider, "mock", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw;
+                }
 
                 // 即使出错也要返回已翻译的内容，未翻译的返回原文
                 foreach (
@@ -233,6 +289,21 @@ namespace BlazorApp.Api.Services
             try
             {
                 _translationCache.TryGetValue(chineseText, out var translation);
+                if (
+                    !string.IsNullOrEmpty(translation)
+                    && !IsValidEnglishTranslation(chineseText, translation)
+                )
+                {
+                    // 旧版本可能缓存了原中文或含中文结果，读取时清理，确保后续重新调用真实翻译。
+                    _translationCache.Remove(chineseText);
+                    _logger.LogWarning(
+                        "清理无效英文翻译缓存: {ChineseText} -> {EnglishText}",
+                        chineseText,
+                        translation
+                    );
+                    return null;
+                }
+
                 return translation;
             }
             finally
@@ -285,12 +356,12 @@ namespace BlazorApp.Api.Services
         /// </summary>
         private async Task<string> CallTranslationApiAsync(string text, string targetLanguage)
         {
+            var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
             try
             {
-                var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
-
                 return provider.ToLower() switch
                 {
+                    "deepseek" => await CallDeepSeekApiAsync(text, targetLanguage),
                     "kimi" => await CallKimiApiAsync(text, targetLanguage),
                     "baidu" when targetLanguage == "en" => await CallBaiduApiAsync(text),
                     "google" when targetLanguage == "en" => await CallGoogleApiAsync(text),
@@ -298,9 +369,18 @@ namespace BlazorApp.Api.Services
                     _ => await CallMockApiAsync(text, targetLanguage),
                 };
             }
+            catch (TranslationProviderConfigurationException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "调用翻译API失败: {Text}", text);
+                if (!string.Equals(provider, "mock", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{GetProviderDisplayName(provider)} 翻译调用失败。", ex);
+                }
+
                 return await CallMockApiAsync(text, targetLanguage); // 降级到模拟翻译
             }
         }
@@ -312,12 +392,12 @@ namespace BlazorApp.Api.Services
             List<string> texts
         )
         {
+            var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
             try
             {
-                var provider = _configuration.GetValue<string>("Translation:Provider") ?? "mock";
-
                 return provider.ToLower() switch
                 {
+                    "deepseek" => await CallDeepSeekBatchApiAsync(texts),
                     "kimi" => await CallKimiBatchApiAsync(texts),
                     "baidu" => await CallBaiduBatchApiAsync(texts),
                     "google" => await CallGoogleBatchApiAsync(texts),
@@ -325,9 +405,18 @@ namespace BlazorApp.Api.Services
                     _ => await CallMockBatchApiAsync(texts),
                 };
             }
+            catch (TranslationProviderConfigurationException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "调用批量翻译API失败: {Count} 个文本", texts.Count);
+                if (!string.Equals(provider, "mock", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{GetProviderDisplayName(provider)} 批量翻译调用失败。", ex);
+                }
+
                 return await CallMockBatchApiAsync(texts); // 降级到模拟翻译
             }
         }
@@ -338,6 +427,13 @@ namespace BlazorApp.Api.Services
         private async Task<string> CallMockApiAsync(string text)
         {
             return await CallMockApiAsync(text, "en");
+        }
+
+        private static string GetProviderDisplayName(string provider)
+        {
+            return provider.Equals("deepseek", StringComparison.OrdinalIgnoreCase)
+                ? "DeepSeek"
+                : provider;
         }
 
         /// <summary>
@@ -517,6 +613,367 @@ namespace BlazorApp.Api.Services
             return results;
         }
 
+        private static string? ExtractChatCompletionContent(string result)
+        {
+            // DeepSeek 与 Kimi 都兼容 chat/completions 响应结构，统一从首个 choice 读取译文。
+            using var jsonDocument = JsonDocument.Parse(result);
+            return jsonDocument
+                .RootElement.GetProperty("choices")[0]
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString();
+        }
+
+        private static void SetBearerToken(HttpClient client, string apiKey)
+        {
+            // 每次调用前刷新 Authorization，确保配置变更或测试注入时不会沿用旧 token。
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        }
+
+        /// <summary>
+        /// 调用DeepSeek翻译API并指定目标语言
+        /// </summary>
+        private async Task<string> CallDeepSeekApiAsync(string text, string targetLanguage)
+        {
+            var apiKey = _configuration.GetValue<string>("Translation:DeepSeek:ApiKey");
+            var model =
+                _configuration.GetValue<string>("Translation:DeepSeek:Model") ?? "deepseek-v4-flash";
+            var endpoint =
+                _configuration.GetValue<string>("Translation:DeepSeek:Endpoint")
+                ?? "https://api.deepseek.com/chat/completions";
+
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                throw new TranslationProviderConfigurationException(
+                    "DeepSeek ApiKey 未配置，请通过环境变量 Translation__DeepSeek__ApiKey 注入。"
+                );
+            }
+
+            try
+            {
+                SetBearerToken(_httpClient, apiKey);
+
+                var requestBody = new
+                {
+                    model = model,
+                    messages = new[]
+                    {
+                        new
+                        {
+                            role = "user",
+                            content =
+                                targetLanguage == "zh"
+                                    ? $"把这段邮件内容翻译成中文，只返回翻译结果，不要其他说明：{text}"
+                                    : $"把这段邮件内容翻译成英文，只返回翻译结果，不要其他说明：{text}",
+                        },
+                    },
+                    temperature = 0.1,
+                    max_tokens = 1000,
+                    stream = false,
+                };
+
+                var json = JsonSerializer.Serialize(requestBody);
+                var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+
+                _logger.LogDebug("调用DeepSeek API翻译: {Text}", text);
+
+                var response = await _httpClient.PostAsync(endpoint, httpContent);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError(
+                        "DeepSeek API调用失败，状态码: {StatusCode}, 内容: {Content}",
+                        response.StatusCode,
+                        errorContent
+                    );
+                    throw new InvalidOperationException(
+                        $"DeepSeek API 调用失败，状态码: {response.StatusCode}"
+                    );
+                }
+
+                var result = await response.Content.ReadAsStringAsync();
+                _logger.LogDebug("DeepSeek API返回结果: {Result}", result);
+
+                var translation = ExtractChatCompletionContent(result);
+
+                if (!string.IsNullOrEmpty(translation))
+                {
+                    translation = translation.Trim().Trim('"').Trim();
+                    _logger.LogInformation(
+                        "DeepSeek翻译成功: {SourceText} -> {Translation}",
+                        text,
+                        translation
+                    );
+                    return translation;
+                }
+
+                _logger.LogWarning("DeepSeek API返回空翻译结果");
+                throw new InvalidOperationException("DeepSeek API 返回空翻译结果。");
+            }
+            catch (TranslationProviderConfigurationException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "调用DeepSeek API时发生异常: {Text}", text);
+                throw new InvalidOperationException("DeepSeek 翻译调用失败。", ex);
+            }
+        }
+
+        /// <summary>
+        /// 批量调用DeepSeek翻译API
+        /// </summary>
+        private async Task<Dictionary<string, string>> CallDeepSeekBatchApiAsync(List<string> texts)
+        {
+            var results = new Dictionary<string, string>();
+
+            if (!texts.Any())
+                return results;
+
+            var apiKey = _configuration.GetValue<string>("Translation:DeepSeek:ApiKey");
+            var model =
+                _configuration.GetValue<string>("Translation:DeepSeek:Model") ?? "deepseek-v4-flash";
+            var endpoint =
+                _configuration.GetValue<string>("Translation:DeepSeek:Endpoint")
+                ?? "https://api.deepseek.com/chat/completions";
+
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                throw new TranslationProviderConfigurationException(
+                    "DeepSeek ApiKey 未配置，请通过环境变量 Translation__DeepSeek__ApiKey 注入。"
+                );
+            }
+
+            try
+            {
+                var batchSize = Math.Max(
+                    1,
+                    _configuration.GetValue<int>("Translation:DeepSeek:BatchSize", 100)
+                );
+                var batches = new List<List<string>>();
+
+                for (int i = 0; i < texts.Count; i += batchSize)
+                {
+                    batches.Add(texts.Skip(i).Take(batchSize).ToList());
+                }
+
+                _logger.LogInformation(
+                    "将 {TotalCount} 个文本分为 {BatchCount} 批处理，每批最多 {BatchSize} 个",
+                    texts.Count,
+                    batches.Count,
+                    batchSize
+                );
+
+                SetBearerToken(_httpClient, apiKey);
+
+                var enableParallel = _configuration.GetValue<bool>(
+                    "Translation:DeepSeek:EnableParallelProcessing",
+                    false
+                );
+                var maxConcurrent = Math.Max(
+                    1,
+                    _configuration.GetValue<int>("Translation:DeepSeek:MaxConcurrentBatches", 1)
+                );
+                var batchDelayMs = Math.Max(
+                    0,
+                    _configuration.GetValue<int>("Translation:DeepSeek:BatchDelayMs", 100)
+                );
+
+                if (enableParallel && batches.Count > 1)
+                {
+                    _logger.LogInformation(
+                        "使用DeepSeek并行处理，最大并发数: {MaxConcurrent}",
+                        maxConcurrent
+                    );
+                    results = await ProcessBatchesInParallelAsync(
+                        _httpClient,
+                        batches,
+                        model,
+                        endpoint,
+                        maxConcurrent,
+                        ProcessDeepSeekBatchAsync
+                    );
+                }
+                else
+                {
+                    _logger.LogInformation("使用DeepSeek串行处理");
+                    results = await ProcessBatchesSequentiallyAsync(
+                        _httpClient,
+                        batches,
+                        model,
+                        endpoint,
+                        batchDelayMs,
+                        ProcessDeepSeekBatchAsync
+                    );
+                }
+
+                _logger.LogInformation(
+                    "DeepSeek批量翻译完成: 有效翻译 {TranslatedCount} 个文本，返回 {ResultCount} 个结果",
+                    results.Count(kvp => IsValidEnglishTranslation(kvp.Key, kvp.Value)),
+                    results.Count
+                );
+                return results;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "调用DeepSeek批量翻译API时发生异常，文本数量: {Count}",
+                    texts.Count
+                );
+                throw new InvalidOperationException("DeepSeek 批量翻译调用失败。", ex);
+            }
+        }
+
+        /// <summary>
+        /// 处理单个批次的DeepSeek翻译
+        /// </summary>
+        private async Task<Dictionary<string, string>> ProcessDeepSeekBatchAsync(
+            HttpClient client,
+            List<string> texts,
+            string model,
+            string endpoint
+        )
+        {
+            var results = new Dictionary<string, string>();
+
+            try
+            {
+                // 批量提示词强制编号输出，避免模型省略或重排商品名称。
+                var combinedText = string.Join(
+                    "\n---\n",
+                    texts.Select((text, index) => $"{index + 1}. {text}")
+                );
+                var prompt =
+                    $"请把下面用---分隔的{texts.Count}个中文商品名称翻译成英文商品名称。保留数字、规格、单位、颜色和型号；不要返回中文，不要返回原文，不要添加解释；必须逐行按“编号. 英文结果”的格式返回：\n{combinedText}";
+
+                var requestBody = new
+                {
+                    model = model,
+                    messages = new[] { new { role = "user", content = prompt } },
+                    temperature = 0.1,
+                    max_tokens = Math.Max(2000, texts.Count * 50),
+                    stream = false,
+                };
+
+                var json = JsonSerializer.Serialize(requestBody);
+                var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+
+                _logger.LogDebug("调用DeepSeek批量翻译API，批次文本数量: {Count}", texts.Count);
+
+                var response = await client.PostAsync(endpoint, httpContent);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError(
+                        "DeepSeek批量翻译API调用失败，状态码: {StatusCode}, 内容: {Content}",
+                        response.StatusCode,
+                        errorContent
+                    );
+                    throw new InvalidOperationException(
+                        $"DeepSeek 批量翻译 API 调用失败，状态码: {response.StatusCode}"
+                    );
+                }
+
+                var result = await response.Content.ReadAsStringAsync();
+                _logger.LogDebug("DeepSeek批量翻译API返回结果: {Result}", result);
+
+                var translationResult = ExtractChatCompletionContent(result);
+
+                if (!string.IsNullOrEmpty(translationResult))
+                {
+                    var lines = translationResult.Split(
+                        '\n',
+                        StringSplitOptions.RemoveEmptyEntries
+                    );
+
+                    foreach (var line in lines)
+                    {
+                        var trimmedLine = line.Trim();
+                        var match = System.Text.RegularExpressions.Regex.Match(
+                            trimmedLine,
+                            @"^(\d+)\.\s*(.+)$"
+                        );
+                        if (match.Success)
+                        {
+                            var numberStr = match.Groups[1].Value;
+                            var translation = match.Groups[2].Value.Trim().Trim('"').Trim();
+
+                            if (
+                                int.TryParse(numberStr, out var number)
+                                && number > 0
+                                && number <= texts.Count
+                            )
+                            {
+                                var originalText = texts[number - 1];
+
+                                if (IsValidEnglishTranslation(originalText, translation))
+                                {
+                                    results[originalText] = translation;
+                                    _logger.LogDebug(
+                                        "DeepSeek翻译匹配成功: [{Number}] {Chinese} → {English}",
+                                        number,
+                                        originalText,
+                                        translation
+                                    );
+                                }
+                                else
+                                {
+                                    results[originalText] = originalText;
+                                    _logger.LogWarning(
+                                        "DeepSeek返回无效英文译文，保留原文: [{Number}] {Chinese} -> {English}",
+                                        number,
+                                        originalText,
+                                        translation
+                                    );
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning(
+                                    "DeepSeek编号超出范围或无效: {Number}, 总数: {Count}",
+                                    number,
+                                    texts.Count
+                                );
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogDebug("无法解析DeepSeek编号格式的行: {Line}", trimmedLine);
+                        }
+                    }
+
+                    foreach (var text in texts)
+                    {
+                        if (!results.ContainsKey(text))
+                        {
+                            results[text] = text;
+                            _logger.LogWarning("文本未被翻译（DeepSeek跳过）: {Chinese}", text);
+                        }
+                    }
+
+                    _logger.LogInformation(
+                        "DeepSeek批次翻译完成: 有效翻译 {TranslatedCount} 个文本，返回 {ResultCount} 个结果",
+                        results.Count(kvp => IsValidEnglishTranslation(kvp.Key, kvp.Value)),
+                        results.Count
+                    );
+                    return results;
+                }
+
+                _logger.LogWarning("DeepSeek批量翻译API返回空结果");
+                throw new InvalidOperationException("DeepSeek 批量翻译 API 返回空结果。");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "处理DeepSeek批次翻译时发生异常，文本数量: {Count}", texts.Count);
+                throw new InvalidOperationException("处理 DeepSeek 批量翻译结果失败。", ex);
+            }
+        }
+
         /// <summary>
         /// 调用Kimi翻译API
         /// </summary>
@@ -585,13 +1042,7 @@ namespace BlazorApp.Api.Services
                 var result = await response.Content.ReadAsStringAsync();
                 _logger.LogDebug("Kimi API返回结果: {Result}", result);
 
-                // 解析Kimi API响应
-                var jsonDocument = JsonDocument.Parse(result);
-                var translation = jsonDocument
-                    .RootElement.GetProperty("choices")[0]
-                    .GetProperty("message")
-                    .GetProperty("content")
-                    .GetString();
+                var translation = ExtractChatCompletionContent(result);
 
                 if (!string.IsNullOrEmpty(translation))
                 {
@@ -685,7 +1136,8 @@ namespace BlazorApp.Api.Services
                         batches,
                         model,
                         endpoint,
-                        maxConcurrent
+                        maxConcurrent,
+                        ProcessKimiBatchAsync
                     );
                 }
                 else
@@ -696,11 +1148,16 @@ namespace BlazorApp.Api.Services
                         batches,
                         model,
                         endpoint,
-                        batchDelayMs
+                        batchDelayMs,
+                        ProcessKimiBatchAsync
                     );
                 }
 
-                _logger.LogInformation("Kimi批量翻译完成: 总共 {Count} 个文本", results.Count);
+                _logger.LogInformation(
+                    "Kimi批量翻译完成: 有效翻译 {TranslatedCount} 个文本，返回 {ResultCount} 个结果",
+                    results.Count(kvp => IsValidEnglishTranslation(kvp.Key, kvp.Value)),
+                    results.Count
+                );
                 return results;
             }
             catch (Exception ex)
@@ -734,7 +1191,7 @@ namespace BlazorApp.Api.Services
                     texts.Select((text, index) => $"{index + 1}. {text}")
                 );
                 var prompt =
-                    $"请把下面用---分隔的{texts.Count}个中文文本翻译成英文，保持原来的编号格式，每行一个翻译结果：\n{combinedText}";
+                    $"请把下面用---分隔的{texts.Count}个中文商品名称翻译成英文商品名称。保留数字、规格、单位、颜色和型号；不要返回中文，不要返回原文，不要添加解释；必须逐行按“编号. 英文结果”的格式返回：\n{combinedText}";
 
                 var requestBody = new
                 {
@@ -766,13 +1223,7 @@ namespace BlazorApp.Api.Services
                 var result = await response.Content.ReadAsStringAsync();
                 _logger.LogDebug("Kimi批量翻译API返回结果: {Result}", result);
 
-                // 解析Kimi API响应
-                var jsonDocument = JsonDocument.Parse(result);
-                var translationResult = jsonDocument
-                    .RootElement.GetProperty("choices")[0]
-                    .GetProperty("message")
-                    .GetProperty("content")
-                    .GetString();
+                var translationResult = ExtractChatCompletionContent(result);
 
                 if (!string.IsNullOrEmpty(translationResult))
                 {
@@ -807,10 +1258,7 @@ namespace BlazorApp.Api.Services
                                 var index = number - 1; // 编号从1开始，索引从0开始
                                 var originalText = texts[index];
 
-                                if (
-                                    !string.IsNullOrEmpty(translation)
-                                    && translation != originalText
-                                )
+                                if (IsValidEnglishTranslation(originalText, translation))
                                 {
                                     results[originalText] = translation;
                                     _logger.LogDebug(
@@ -824,9 +1272,10 @@ namespace BlazorApp.Api.Services
                                 {
                                     results[originalText] = originalText;
                                     _logger.LogWarning(
-                                        "翻译无效或与原文相同: [{Number}] {Chinese}",
+                                        "Kimi返回无效英文译文，保留原文: [{Number}] {Chinese} -> {English}",
                                         number,
-                                        originalText
+                                        originalText,
+                                        translation
                                     );
                                 }
                             }
@@ -991,14 +1440,15 @@ namespace BlazorApp.Api.Services
             List<List<string>> batches,
             string model,
             string endpoint,
-            int batchDelayMs
+            int batchDelayMs,
+            Func<HttpClient, List<string>, string, string, Task<Dictionary<string, string>>> processBatchAsync
         )
         {
             var results = new Dictionary<string, string>();
 
             foreach (var batch in batches)
             {
-                var batchResults = await ProcessKimiBatchAsync(client, batch, model, endpoint);
+                var batchResults = await processBatchAsync(client, batch, model, endpoint);
                 foreach (var kvp in batchResults)
                 {
                     results[kvp.Key] = kvp.Value;
@@ -1022,7 +1472,8 @@ namespace BlazorApp.Api.Services
             List<List<string>> batches,
             string model,
             string endpoint,
-            int maxConcurrent
+            int maxConcurrent,
+            Func<HttpClient, List<string>, string, string, Task<Dictionary<string, string>>> processBatchAsync
         )
         {
             var results = new Dictionary<string, string>();
@@ -1035,7 +1486,7 @@ namespace BlazorApp.Api.Services
                 await semaphore.WaitAsync();
                 try
                 {
-                    return await ProcessKimiBatchAsync(client, batch, model, endpoint);
+                    return await processBatchAsync(client, batch, model, endpoint);
                 }
                 finally
                 {
