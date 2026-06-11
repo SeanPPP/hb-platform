@@ -119,6 +119,7 @@ import {
   calculateContainerSetCodePurchasePrice,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
+  findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
   getContainerDetailExportColumns,
   getContainerDetailBarcode,
@@ -819,6 +820,14 @@ export default function ContainerDetailPage() {
       return
     }
     editableCellRefs.current.delete(cellKey)
+  }
+
+  const blurActiveContainerDetailEditableCell = () => {
+    const activeElement = document.activeElement
+    if (activeElement instanceof HTMLElement) {
+      // 创建新商品前主动结束当前输入，确保 InputNumber 的 blur 保存链路先落库。
+      activeElement.blur()
+    }
   }
 
   const handleEditableCellKeyDown = (
@@ -1787,6 +1796,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.noEligibleNewProducts'))
       return
     }
+    blurActiveContainerDetailEditableCell()
     try {
       await flushPendingDetailSaves()
     } catch (error) {
@@ -1799,6 +1809,15 @@ export default function ContainerDetailPage() {
         'containers.messages.createProductsMissingProductName',
         '请填写商品名称后再创建新商品：{{items}}',
         { items: missingProductNameRows.map((row) => row.label).join('、') },
+      ))
+      return
+    }
+    const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(targetRows)
+    if (missingRetailPriceRows.length) {
+      message.warning(t(
+        'containers.messages.createProductsMissingRetailPrice',
+        '请填写大于 0 的零售价后再创建新商品：{{items}}',
+        { items: missingRetailPriceRows.map((row) => row.label).join('、') },
       ))
       return
     }

@@ -16,6 +16,7 @@ import {
   buildContainerDetailSaveFailureKeys,
   moveContainerDetailColumnOrder,
   getContainerDetailRemoteQueryResetState,
+  findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
@@ -761,6 +762,20 @@ assertDeepEqual(
     { hguid: 'name-316', label: 'HB308-032', productName: '' },
   ],
   '创建新商品前应只拦截新商品中商品名称为空的明细，非中文名称也应通过',
+)
+assertDeepEqual(
+  findContainerDetailRowsMissingCreateProductRetailPrice([
+    { id: 319, hguid: 'price-319', 是否新商品: true, 贴牌价格: 25, 商品信息: { 货号: 'HB137-480' } },
+    { id: 320, hguid: 'price-320', 是否新商品: true, 贴牌价格: 0, 商品信息: { 货号: 'HB137-481' } },
+    { id: 321, hguid: 'price-321', 是否新商品: true, 商品信息: { 货号: 'HB137-482' } },
+    { id: 322, hguid: 'price-322', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 26, 商品信息: { 货号: 'HB137-483' } },
+    { id: 323, hguid: 'price-323', 是否新商品: false, 贴牌价格: 0, 商品信息: { 货号: 'HB137-484' } },
+  ]),
+  [
+    { hguid: 'price-320', label: 'HB137-481', retailPrice: 0 },
+    { hguid: 'price-321', label: 'HB137-482', retailPrice: undefined },
+  ],
+  '创建新商品前应只拦截新商品中零售价不大于 0 的明细，页面有效零售价和仓库零售价都应通过',
 )
 assertEqual(getContainerDetailMatchType({ id: 306, hguid: 'match-306', matchType: 'productCode' }), 'productCode', '匹配方式应优先读取前端归一化字段')
 assertEqual(getContainerDetailMatchType({ id: 307, hguid: 'match-307', MatchType: 'SupplierItem' }), 'supplierItem', '匹配方式应兼容后端 PascalCase 字段')
@@ -1702,12 +1717,15 @@ assertEqual(
   pageSource.includes('pendingDetailSavePromisesRef') &&
     pageSource.includes('failedDetailSaveKeysRef') &&
     pageSource.includes('buildContainerDetailSaveFailureKeys(saveKey, patch)') &&
+    pageSource.includes('blurActiveContainerDetailEditableCell()') &&
     pageSource.includes('flushPendingDetailSaves') &&
     pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
+    pageSource.indexOf('blurActiveContainerDetailEditableCell()') < pageSource.indexOf('await flushPendingDetailSaves()') &&
     pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingProductNameRows = findContainerDetailRowsMissingProductName(targetRows)') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(targetRows)') &&
     pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const job = await createContainerProductCreationJob({'),
   true,
-  '创建新商品前必须等待货柜明细保存完成，避免页面已显示中文名但后台 job 读取旧库值',
+  '创建新商品前必须先触发编辑单元格 blur 并等待货柜明细保存完成，避免后台 job 读取旧值',
 )
 assertEqual(
   pageSource.includes('pendingDetailSaveCount > 0') &&

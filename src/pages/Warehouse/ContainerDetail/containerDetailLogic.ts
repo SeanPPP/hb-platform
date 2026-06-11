@@ -279,6 +279,21 @@ export function findContainerDetailRowsMissingProductName(rows: ContainerDetail[
     .map(({ hguid, label, productName }) => ({ hguid, label, productName }))
 }
 
+export function findContainerDetailRowsMissingCreateProductRetailPrice(rows: ContainerDetail[]) {
+  return rows
+    .filter((row) => row.是否新商品)
+    .map((row) => {
+      const retailPrice = resolveContainerDetailOemPrice(row)
+      return {
+        hguid: row.hguid,
+        label: getContainerDetailCreateProductRowLabel(row),
+        retailPrice,
+      }
+    })
+    // 创建仓库新商品会把该价格写入商品主表、仓库商品和分店零售价，必须为有效正数。
+    .filter((row) => !(typeof row.retailPrice === 'number' && Number.isFinite(row.retailPrice) && row.retailPrice > 0))
+}
+
 export function getContainerDetailEnglishName(row: ContainerDetail) {
   return row.英文名称 ?? row.商品信息?.英文名称
 }
