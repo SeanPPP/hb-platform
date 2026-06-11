@@ -71,6 +71,30 @@ async function main() {
   })
   if (translationFailure) failures.push(translationFailure)
 
+  const detailSaveTranslationFailure = await runTest('订货明细保存和金额显示应有中英文文案', () => {
+    assert(zhSource.includes('"saveEditedLines": "整单保存"'), '中文文案缺少整单保存')
+    assert(enSource.includes('"saveEditedLines": "Save All Lines"'), '英文文案缺少整单保存')
+    assert(zhSource.includes('"importPriceSyncConfirmTitle": "确认同步进口价"'), '中文文案缺少进口价同步确认标题')
+    assert(enSource.includes('"importPriceSyncConfirmTitle": "Confirm Import Price Sync"'), '英文文案缺少进口价同步确认标题')
+    assert(
+      zhSource.includes('"importPriceSyncConfirmContent": "进口价保存后会同步写入仓库商品表和分店表，请确认是否继续。"'),
+      '中文文案缺少进口价同步确认内容',
+    )
+    assert(
+      enSource.includes('"importPriceSyncConfirmContent": "After saving, import prices will sync to warehouse products and store products. Continue?"'),
+      '英文文案缺少进口价同步确认内容',
+    )
+    assert(zhSource.includes('"syncImportPriceCheckbox": "同步进口价到仓库商品表和分店表"'), '中文文案缺少同步进口价勾选项')
+    assert(enSource.includes('"syncImportPriceCheckbox": "Sync import price to warehouse products and store products"'), '英文文案缺少同步进口价勾选项')
+    assert(zhSource.includes('"orderAmountLabel": "预计销售额"'), '中文订单金额标签应改为预计销售额')
+    assert(enSource.includes('"orderAmountLabel": "Estimated Sales"'), '英文订单金额标签应改为 Estimated Sales')
+    assert(zhSource.includes('"importAmountLabel": "订单金额 ex GST"'), '中文进口金额标签应改为订单金额 ex GST')
+    assert(enSource.includes('"importAmountLabel": "Order Amount ex GST"'), '英文进口金额标签应改为 Order Amount ex GST')
+    assert(zhSource.includes('"gstAmountLabel": "GST 10%"'), '中文文案缺少 GST 10%')
+    assert(enSource.includes('"gstAmountLabel": "GST 10%"'), '英文文案缺少 GST 10%')
+  })
+  if (detailSaveTranslationFailure) failures.push(detailSaveTranslationFailure)
+
   const editabilityStateFailure = await runTest('详情页应复用订单状态权限派生函数', () => {
     assert(
       detailSource.includes("import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'") &&
