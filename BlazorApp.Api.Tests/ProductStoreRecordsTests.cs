@@ -571,6 +571,27 @@ public sealed class ProductStoreRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateAsync_批量翻译应同时写入商品名称和英文名称()
+    {
+        await SeedProductAsync("P-BATCH-TRANSLATE", "A-BATCH-TRANSLATE");
+
+        var response = await CreateService("translator").BatchUpdateAsync(new List<BatchUpdateProductReactDto>
+        {
+            new()
+            {
+                ProductCode = "P-BATCH-TRANSLATE",
+                ProductName = "250g Shaping Clay Reddish Brown",
+                EnglishName = "250g Shaping Clay Reddish Brown",
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-BATCH-TRANSLATE");
+        Assert.Equal("250g Shaping Clay Reddish Brown", product.ProductName);
+        Assert.Equal("250g Shaping Clay Reddish Brown", product.EnglishName);
+    }
+
+    [Fact]
     public async Task CreateWithPrices_LocalSupplierCode为空时默认写入200到商品和分店价格()
     {
         await SeedStoreAsync("S01", "分店一");

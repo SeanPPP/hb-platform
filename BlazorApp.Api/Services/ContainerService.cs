@@ -455,24 +455,33 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                _logger.LogInformation("开始创建货柜: {ContainerNumber}", dto.货柜编号);
+                var containerNumber = dto.货柜编号.Trim();
+                var loadingDate = dto.装柜日期?.Date;
+                _logger.LogInformation("开始创建货柜: {ContainerNumber}", containerNumber);
 
-                // 检查货柜编号是否已存在
-                var exists = await _localContext.Db.Queryable<Container>()
-                    .Where(x => x.ContainerNumber == dto.货柜编号)
-                    .AnyAsync();
+                // 货柜编号允许重复，只限制同一编号在同一装柜日期重复创建。
+                var existsQuery = _localContext.Db.Queryable<Container>()
+                    .Where(x => x.ContainerNumber == containerNumber);
+                existsQuery = loadingDate.HasValue
+                    ? existsQuery.Where(x =>
+                        x.LoadingDate >= loadingDate.Value
+                        && x.LoadingDate < loadingDate.Value.AddDays(1)
+                    )
+                    : existsQuery.Where(x => x.LoadingDate == null);
+                var exists = await existsQuery.AnyAsync();
 
                 if (exists)
                 {
-                    throw new InvalidOperationException($"货柜编号 {dto.货柜编号} 已存在");
+                    var loadingDateText = loadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
+                    throw new InvalidOperationException($"货柜编号 {containerNumber} 在装柜日期 {loadingDateText} 已存在");
                 }
 
                 // 创建新货柜
                 var container = new Container
                 {
                     ContainerCode = Guid.NewGuid().ToString(), // 生成新的GUID
-                    ContainerNumber = dto.货柜编号,
-                    LoadingDate = dto.装柜日期,
+                    ContainerNumber = containerNumber,
+                    LoadingDate = loadingDate,
                     EstimatedArrivalDate = dto.预计到岸日期,
                     ActualArrivalDate = null,
                     ExchangeRate = dto.汇率,
