@@ -176,14 +176,14 @@ namespace BlazorApp.Api.Services.React
             return values != null && values.Count > 0;
         }
 
-        private static string NormalizeProductTypeFilter(string value)
+        private static string MapDomesticProductTypeLabel(int? productType)
         {
-            return value switch
+            // 货柜明细商品类型展示以国内商品表为准，明细表 ProductType 只保留为历史快照字段。
+            return productType switch
             {
-                "normal" => "普通商品",
-                "set" => "套装商品",
-                "setChild" => "套装子商品",
-                _ => value,
+                1 => "套装商品",
+                2 => "多码商品",
+                _ => "普通商品",
             };
         }
 
@@ -229,8 +229,13 @@ namespace BlazorApp.Api.Services.React
 
             if (HasAny(request.ProductTypes))
             {
-                var productTypes = request.ProductTypes.Select(NormalizeProductTypeFilter).ToList();
-                query = query.Where((cd, wp, dp, lp) => productTypes.Contains(cd.ProductType ?? "普通商品"));
+                var productTypes = request.ProductTypes;
+                query = query.Where((cd, wp, dp, lp) =>
+                    (productTypes.Contains("normal") && dp.ProductType == 0)
+                    || (productTypes.Contains("set") && dp.ProductType == 1)
+                    // 旧前端仍保留 setChild 筛选值；本次不扩展多码枚举，继续兼容历史明细快照字段。
+                    || (productTypes.Contains("setChild") && cd.ProductType == "套装子商品")
+                );
             }
             if (HasAny(request.NewProductStates))
             {
@@ -286,6 +291,14 @@ namespace BlazorApp.Api.Services.React
 
             var containerPiecesMin = request.ContainerPiecesMin ?? request.ContainerPieces?.Min;
             var containerPiecesMax = request.ContainerPiecesMax ?? request.ContainerPieces?.Max;
+            var middlePackQuantityMinValue = request.MiddlePackQuantityMin ?? request.MiddlePackQuantity?.Min;
+            var middlePackQuantityMaxValue = request.MiddlePackQuantityMax ?? request.MiddlePackQuantity?.Max;
+            var middlePackQuantityMin = middlePackQuantityMinValue.HasValue
+                ? (int?)Math.Ceiling(middlePackQuantityMinValue.Value)
+                : null;
+            var middlePackQuantityMax = middlePackQuantityMaxValue.HasValue
+                ? (int?)Math.Floor(middlePackQuantityMaxValue.Value)
+                : null;
             var containerQuantityMin = request.ContainerQuantityMin ?? request.ContainerQuantity?.Min;
             var containerQuantityMax = request.ContainerQuantityMax ?? request.ContainerQuantity?.Max;
             var domesticPriceMin = request.DomesticPriceMin ?? request.DomesticPrice?.Min;
@@ -305,6 +318,10 @@ namespace BlazorApp.Api.Services.React
                 query = query.Where((cd, wp, dp, lp) => cd.LoadingPieces >= containerPiecesMin);
             if (containerPiecesMax != null)
                 query = query.Where((cd, wp, dp, lp) => cd.LoadingPieces <= containerPiecesMax);
+            if (middlePackQuantityMin != null)
+                query = query.Where((cd, wp, dp, lp) => (wp.MinOrderQuantity ?? dp.MiddlePackQuantity) >= middlePackQuantityMin);
+            if (middlePackQuantityMax != null)
+                query = query.Where((cd, wp, dp, lp) => (wp.MinOrderQuantity ?? dp.MiddlePackQuantity) <= middlePackQuantityMax);
             if (containerQuantityMin != null)
                 query = query.Where((cd, wp, dp, lp) => cd.LoadingQuantity >= containerQuantityMin);
             if (containerQuantityMax != null)
@@ -351,8 +368,9 @@ namespace BlazorApp.Api.Services.React
                 "barcode" => query.OrderBy((cd, wp, dp, lp) => dp.Barcode, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "productName" => query.OrderBy((cd, wp, dp, lp) => dp.ProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "englishName" => query.OrderBy((cd, wp, dp, lp) => dp.EnglishProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "productType" => query.OrderBy((cd, wp, dp, lp) => cd.ProductType, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "productType" => query.OrderBy((cd, wp, dp, lp) => dp.ProductType, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerPieces" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingPieces, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "middlePackQuantity" => query.OrderBy((cd, wp, dp, lp) => wp.MinOrderQuantity ?? dp.MiddlePackQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerQuantity" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "domesticPrice" => query.OrderBy((cd, wp, dp, lp) => cd.DomesticPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "floatRate" => query.OrderBy((cd, wp, dp, lp) => cd.AdjustmentRate, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
@@ -610,6 +628,7 @@ namespace BlazorApp.Api.Services.React
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
                                 装柜件数 = cd.LoadingPieces,
+                                中包数 = wp.MinOrderQuantity ?? dp.MiddlePackQuantity,
                                 装柜数量 = cd.LoadingQuantity,
                                 国内价格 = cd.DomesticPrice,
                                 调整浮率 = cd.AdjustmentRate,
@@ -632,6 +651,8 @@ namespace BlazorApp.Api.Services.React
                                     英文名称 = dp.EnglishProductName,
                                     商品图片 = dp.ProductImage,
                                     条形码 = dp.Barcode,
+                                    // SqlSugar 投影内不能调用 C# helper，这里映射需与 MapDomesticProductTypeLabel 保持一致。
+                                    商品类型 = dp.ProductType == 1 ? "套装商品" : dp.ProductType == 2 ? "多码商品" : "普通商品",
                                 },
                                 // 仓库商品的价格和上下架状态
                                 WarehouseImportPrice = wp.ImportPrice,
@@ -702,6 +723,7 @@ namespace BlazorApp.Api.Services.React
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
                                 装柜件数 = cd.LoadingPieces,
+                                中包数 = wp.MinOrderQuantity ?? dp.MiddlePackQuantity,
                                 装柜数量 = cd.LoadingQuantity,
                                 国内价格 = cd.DomesticPrice,
                                 调整浮率 = cd.AdjustmentRate,
@@ -729,7 +751,8 @@ namespace BlazorApp.Api.Services.React
                                     商品规格 = dp.ProductSpecification,
                                     单件装箱数 = cd.PackingQuantity,
                                     单件体积 = cd.UnitVolume,
-                                    商品类型 = cd.ProductType,
+                                    // SqlSugar 投影内不能调用 C# helper，这里映射需与 MapDomesticProductTypeLabel 保持一致。
+                                    商品类型 = dp.ProductType == 1 ? "套装商品" : dp.ProductType == 2 ? "多码商品" : "普通商品",
                                     套装数量 = cd.SetQuantity,
                                 },
                             }
@@ -757,6 +780,126 @@ namespace BlazorApp.Api.Services.React
                 );
                 throw;
             }
+        }
+
+        public async Task<List<ContainerDomesticSetCodeDto>> GetDomesticSetCodesAsync(
+            string productCode
+        )
+        {
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                return new List<ContainerDomesticSetCodeDto>();
+            }
+
+            var product = await _context
+                .Db.Queryable<DomesticProduct>()
+                .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                .FirstAsync();
+            if (product == null)
+            {
+                return new List<ContainerDomesticSetCodeDto>();
+            }
+
+            // 货柜明细弹窗必须读取国内套装表，不能使用仓库/POS 多码价格快照。
+            return await _context
+                .Db.Queryable<DomesticSetProduct>()
+                .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+                .OrderBy(item => item.SetProductNo)
+                .Select(item => new ContainerDomesticSetCodeDto
+                {
+                    ProductCode = item.ProductCode,
+                    ItemNumber = product.HBProductNo,
+                    ProductType = product.ProductType,
+                    SetProductCode = item.SetProductCode,
+                    SetItemNumber = item.SetProductNo,
+                    Barcode = item.SetBarcode,
+                    RetailPrice = item.OEMPrice ?? item.DomesticPrice,
+                    PurchasePrice = item.ImportPrice,
+                })
+                .ToListAsync();
+        }
+
+        public async Task<int> UpdateDomesticSetCodePricesAsync(
+            string productCode,
+            UpdateContainerDomesticSetCodePricesRequestDto request,
+            string updatedBy
+        )
+        {
+            if (string.IsNullOrWhiteSpace(productCode) || request.Items.Count == 0)
+            {
+                return 0;
+            }
+
+            var setProductCodes = request
+                .Items.Select(item => item.SetProductCode)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct()
+                .ToList();
+            if (setProductCodes.Count == 0)
+            {
+                return 0;
+            }
+
+            var existingItems = await _context
+                .Db.Queryable<DomesticSetProduct>()
+                .Where(item =>
+                    item.ProductCode == productCode
+                    && setProductCodes.Contains(item.SetProductCode)
+                    && !item.IsDeleted
+                )
+                .ToListAsync();
+            var existingMap = existingItems.ToDictionary(item => item.SetProductCode);
+            var now = DateTime.UtcNow;
+            var changedItems = new List<DomesticSetProduct>();
+
+            foreach (var update in request.Items)
+            {
+                if (
+                    string.IsNullOrWhiteSpace(update.SetProductCode)
+                    || !existingMap.TryGetValue(update.SetProductCode, out var item)
+                )
+                {
+                    continue;
+                }
+
+                var changed = false;
+                // 货柜明细弹窗的“价格”回写国内套装表 OEMPrice，不覆盖 DomesticPrice。
+                if (item.OEMPrice != update.RetailPrice)
+                {
+                    item.OEMPrice = update.RetailPrice;
+                    changed = true;
+                }
+                if (item.ImportPrice != update.PurchasePrice)
+                {
+                    item.ImportPrice = update.PurchasePrice;
+                    changed = true;
+                }
+                if (changed)
+                {
+                    item.UpdatedAt = now;
+                    item.UpdatedBy = string.IsNullOrWhiteSpace(updatedBy) ? "system" : updatedBy;
+                    changedItems.Add(item);
+                }
+            }
+
+            if (changedItems.Count == 0)
+            {
+                return 0;
+            }
+
+            await _context
+                .Db.Updateable(changedItems)
+                .UpdateColumns(item => new
+                {
+                    item.OEMPrice,
+                    item.ImportPrice,
+                    item.UpdatedAt,
+                    item.UpdatedBy,
+                })
+                .WhereColumns(item => new { item.SetProductCode })
+                .ExecuteCommandAsync();
+
+            return changedItems.Count;
         }
 
         /// <summary>
@@ -1085,6 +1228,30 @@ namespace BlazorApp.Api.Services.React
                     productMap = products.ToDictionary(p => p.ProductCode, p => p);
                 }
 
+                var warehouseProductMap = new Dictionary<string, WarehouseProduct>();
+                if (productCodes.Count > 0)
+                {
+                    var warehouseProducts = await _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .ToListAsync();
+                    warehouseProductMap = warehouseProducts.ToDictionary(p => p.ProductCode, p => p);
+                }
+
+                var matchedLocalProductCodes = new HashSet<string>();
+                if (productCodes.Count > 0)
+                {
+                    var matchedProducts = await _context
+                        .Db.Queryable<Product>()
+                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .Select(p => p.ProductCode)
+                        .ToListAsync();
+                    matchedLocalProductCodes = matchedProducts
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .ToHashSet();
+                }
+
                 var productNameUpdates = validDetailUpdates
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.Update.商品名称)
@@ -1128,6 +1295,50 @@ namespace BlazorApp.Api.Services.React
 
                 var changedProducts = new List<DomesticProduct>();
                 var changedProductCodes = new HashSet<string>();
+                var changedMiddlePackWarehouseProducts = new Dictionary<string, WarehouseProduct>();
+
+                foreach (var item in validDetailUpdates)
+                {
+                    if (!item.Update.中包数.HasValue)
+                    {
+                        continue;
+                    }
+
+                    if (!productMap.TryGetValue(item.ProductCode!, out var product))
+                    {
+                        continue;
+                    }
+
+                    // 中包数的主数据来源是国内商品表；仓库有值时仅作为显示优先级和已匹配商品同步字段。
+                    var nextMiddlePackQuantity = (int)item.Update.中包数.Value;
+                    var middlePackChanged = false;
+                    if (product.MiddlePackQuantity != nextMiddlePackQuantity)
+                    {
+                        product.MiddlePackQuantity = nextMiddlePackQuantity;
+                        if (changedProductCodes.Add(item.ProductCode!))
+                        {
+                            changedProducts.Add(product);
+                        }
+                        middlePackChanged = true;
+                    }
+
+                    if (
+                        matchedLocalProductCodes.Contains(item.ProductCode!)
+                        && warehouseProductMap.TryGetValue(item.ProductCode!, out var warehouseProduct)
+                        && warehouseProduct.MinOrderQuantity != nextMiddlePackQuantity
+                    )
+                    {
+                        warehouseProduct.MinOrderQuantity = nextMiddlePackQuantity;
+                        changedMiddlePackWarehouseProducts[item.ProductCode!] = warehouseProduct;
+                        middlePackChanged = true;
+                    }
+
+                    if (middlePackChanged)
+                    {
+                        updatedRequestGuids.Add(item.Update.HGUID);
+                    }
+                }
+
                 foreach (var productUpdate in productNameUpdates)
                 {
                     if (!productMap.TryGetValue(productUpdate.ProductCode, out var product))
@@ -1182,8 +1393,10 @@ namespace BlazorApp.Api.Services.React
 
                     if (productChanged)
                     {
-                        changedProducts.Add(product);
-                        changedProductCodes.Add(productUpdate.ProductCode);
+                        if (changedProductCodes.Add(productUpdate.ProductCode))
+                        {
+                            changedProducts.Add(product);
+                        }
                     }
                 }
 
@@ -1200,7 +1413,11 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // 开启事务，确保多表更新的原子性
-                if (changedDetails.Count > 0 || changedProducts.Count > 0)
+                if (
+                    changedDetails.Count > 0
+                    || changedProducts.Count > 0
+                    || changedMiddlePackWarehouseProducts.Count > 0
+                )
                 {
                     await _context.Db.Ado.BeginTranAsync();
                     try
@@ -1233,17 +1450,32 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
 
-                        // 第三步：同步更新国内商品表的名称信息
+                        // 第三步：同步更新国内商品表的名称和中包数。
                         if (changedProducts.Count > 0)
                         {
                             await _context
                                 .Db.Updateable(changedProducts)
-                                .UpdateColumns(x => new { x.ProductName, x.EnglishProductName })
+                                .UpdateColumns(x => new
+                                {
+                                    x.ProductName,
+                                    x.EnglishProductName,
+                                    x.MiddlePackQuantity,
+                                })
                                 .WhereColumns(x => new { x.ProductCode })
                                 .ExecuteCommandAsync();
                         }
 
-                        // 第四步：同步已有商品的价格和上下架状态到关联表
+                        // 第四步：已匹配本地商品时，同步中包数到仓库商品表；未匹配商品不创建仓库商品。
+                        if (changedMiddlePackWarehouseProducts.Count > 0)
+                        {
+                            await _context
+                                .Db.Updateable(changedMiddlePackWarehouseProducts.Values.ToList())
+                                .UpdateColumns(x => new { x.MinOrderQuantity })
+                                .WhereColumns(x => new { x.ProductCode })
+                                .ExecuteCommandAsync();
+                        }
+
+                        // 第五步：同步已有商品的价格和上下架状态到关联表
                         // 通过 productMap 判断商品是否为已有商品（商品表中已存在）
                         var existingProductUpdates = updates
                             .Where(u =>

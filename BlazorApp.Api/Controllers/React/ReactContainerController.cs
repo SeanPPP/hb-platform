@@ -345,6 +345,71 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取国内套装多码价格明细（货柜明细弹窗专用）
+        /// </summary>
+        [HttpGet("products/{productCode}/domestic-set-codes")]
+        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        public async Task<IActionResult> GetDomesticSetCodes(string productCode)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    return BadRequest(new { success = false, message = "商品编码不能为空" });
+                }
+
+                var result = await _containerReactService.GetDomesticSetCodesAsync(productCode);
+                return Ok(new { success = true, data = result, message = "获取国内套装明细成功" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取国内套装明细失败, ProductCode: {ProductCode}", productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 回写国内套装多码价格（仅价格字段）
+        /// </summary>
+        [HttpPatch("products/{productCode}/domestic-set-codes/prices")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> UpdateDomesticSetCodePrices(
+            string productCode,
+            [FromBody] UpdateContainerDomesticSetCodePricesRequestDto? request
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    return BadRequest(new { success = false, message = "商品编码不能为空" });
+                }
+
+                request ??= new UpdateContainerDomesticSetCodePricesRequestDto();
+                var updatedBy = User.Identity?.Name ?? "system";
+                var updatedCount = await _containerReactService.UpdateDomesticSetCodePricesAsync(
+                    productCode,
+                    request,
+                    updatedBy
+                );
+
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = new { updatedCount },
+                        message = "保存成功",
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "回写国内套装多码价格失败, ProductCode: {ProductCode}", productCode);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取符合条件的所有货柜商品明细列表（React专用）
         /// </summary>
         /// <param name="request">查询请求</param>
