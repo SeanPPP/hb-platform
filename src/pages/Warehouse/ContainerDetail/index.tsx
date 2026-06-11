@@ -46,13 +46,13 @@ import {
   message,
   notification,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -122,12 +122,14 @@ import {
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
+  getNextContainerDetailEditableCell,
   isContainerDetailSortField,
   mergeContainerDetailColumnOrder,
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
   rollbackContainerDetailWarehouseStatuses,
+  type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
   type ContainerDetailMatchTypeFilter,
   type ContainerDetailNewProductFilter,
@@ -267,6 +269,7 @@ const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
 const CONTAINER_DETAIL_PAGE_SIZE = 50
 const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v1'
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
+const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   all: 0,
   new: 0,
@@ -275,6 +278,23 @@ const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   abnormalImport: 0,
   active: 0,
   inactive: 0,
+}
+
+type ContainerDetailEditableColumnKey = typeof CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS[number]
+type ContainerDetailFocusableCell = {
+  focus: (options?: FocusOptions) => void
+  select?: () => void
+}
+
+const containerDetailEditableDirectionByKey: Partial<Record<string, ContainerDetailEditableCellDirection>> = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+}
+
+function buildContainerDetailEditableCellKey(rowKeyValue: string, columnKey: ContainerDetailEditableColumnKey) {
+  return `${rowKeyValue}:${columnKey}`
 }
 
 function getContainerDetailViewport() {
@@ -407,6 +427,9 @@ export default function ContainerDetailPage() {
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
+  const detailTableRef = useRef<TableRef | null>(null)
+  const editableCellRefs = useRef<Map<string, ContainerDetailFocusableCell>>(new Map())
+  const pendingEditableCellFocusKeyRef = useRef<string | null>(null)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     实际到货日期?: Dayjs | null
@@ -640,6 +663,68 @@ export default function ContainerDetailPage() {
     () => filteredRows,
     [filteredRows],
   )
+
+  const setEditableCellRef = (
+    rowKeyValue: string,
+    columnKey: ContainerDetailEditableColumnKey,
+    cell: ContainerDetailFocusableCell | null,
+  ) => {
+    const cellKey = buildContainerDetailEditableCellKey(rowKeyValue, columnKey)
+    if (cell) {
+      editableCellRefs.current.set(cellKey, cell)
+      if (pendingEditableCellFocusKeyRef.current === cellKey) {
+        pendingEditableCellFocusKeyRef.current = null
+        window.requestAnimationFrame(() => {
+          cell.focus()
+          cell.select?.()
+        })
+      }
+      return
+    }
+    editableCellRefs.current.delete(cellKey)
+  }
+
+  const handleEditableCellKeyDown = (
+    row: ContainerDetail,
+    columnKey: ContainerDetailEditableColumnKey,
+    event: KeyboardEvent<HTMLElement>,
+  ) => {
+    const direction = containerDetailEditableDirectionByKey[event.key]
+    if (!direction || event.nativeEvent.isComposing) {
+      return
+    }
+
+    const currentRowKey = rowKey(row)
+    const nextCell = getNextContainerDetailEditableCell(
+      currentRowKey,
+      columnKey,
+      displayRows.map(rowKey),
+      CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS,
+      direction,
+    )
+    if (!nextCell) {
+      return
+    }
+
+    const nextCellKey = buildContainerDetailEditableCellKey(
+      nextCell.rowKey,
+      nextCell.columnKey as ContainerDetailEditableColumnKey,
+    )
+    event.preventDefault()
+    event.currentTarget.blur()
+    pendingEditableCellFocusKeyRef.current = nextCellKey
+    detailTableRef.current?.scrollTo?.({ key: nextCell.rowKey })
+    window.requestAnimationFrame(() => {
+      // 方向键只切换焦点；当前输入值继续复用 blur 保存链路落库。
+      const targetCell = editableCellRefs.current.get(nextCellKey)
+      if (!targetCell) {
+        return
+      }
+      pendingEditableCellFocusKeyRef.current = null
+      targetCell.focus()
+      targetCell.select?.()
+    })
+  }
 
   const tagStats = remoteTagStats
 
@@ -1829,12 +1914,14 @@ export default function ContainerDetailPage() {
       ...textFilterProps('englishName', t('containers.placeholders.filterEnglishName', '英文名称过滤')),
       render: (_, row) => access.canEditContainer ? (
         <Input.TextArea
+          ref={(cell) => setEditableCellRef(rowKey(row), 'englishName', cell)}
           className="container-detail-english-name-input"
           value={getContainerDetailEnglishName(row) ?? ''}
           autoSize={{ minRows: 1, maxRows: 2 }}
           style={{ resize: 'none' }}
           onChange={(event) => patchRow(rowKey(row), { 英文名称: event.target.value })}
           onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value }).catch(handleDetailSaveError)}
+          onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
         />
       ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
     },
@@ -1905,7 +1992,9 @@ export default function ContainerDetailPage() {
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'floatRate', cell)}
             value={row.调整浮率}
+            keyboard={false}
             precision={4}
             style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
@@ -1913,6 +2002,7 @@ export default function ContainerDetailPage() {
               const value = event.target.value ? Number(event.target.value) : undefined
               void saveFloatRatePatch(row, value).catch(handleDetailSaveError)
             }}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'floatRate', event)}
           />
         ) : renderNumericCell(formatNumber(row.调整浮率, 4)),
     },
@@ -1944,12 +2034,15 @@ export default function ContainerDetailPage() {
       render: (_value, row) =>
         access.canEditContainer ? (
           <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'importPrice', cell)}
             value={row.进口价格}
+            keyboard={false}
             min={0}
             precision={2}
             style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
             onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
           />
         ) : renderNumericCell(formatNumber(row.进口价格)),
     },
@@ -1961,7 +2054,19 @@ export default function ContainerDetailPage() {
       ...makeSortProps('oemPrice'),
       ...numberFilterProps('oemPrice'),
       render: (_value, row) =>
-        access.canEditContainer ? <InputNumber defaultValue={row.贴牌价格} min={0} precision={2} style={{ width: 78 }} onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)} /> : renderNumericCell(formatNumber(row.贴牌价格)),
+        access.canEditContainer ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'oemPrice', cell)}
+            value={row.贴牌价格}
+            keyboard={false}
+            min={0}
+            precision={2}
+            style={{ width: 78 }}
+            onChange={(value) => patchRow(rowKey(row), { 贴牌价格: value == null ? undefined : Number(value) })}
+            onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
+          />
+        ) : renderNumericCell(formatNumber(row.贴牌价格)),
     },
     {
       title: renderColumnTitle('warehouseStatus', t('containers.fields.warehouseStatus')),
@@ -1999,7 +2104,15 @@ export default function ContainerDetailPage() {
       ...makeSortProps('remark'),
       ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
       render: (_, row) =>
-        access.canEditContainer ? <Input defaultValue={row.备注} onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)} /> : row.备注 || '--',
+        access.canEditContainer ? (
+          <Input
+            ref={(cell) => setEditableCellRef(rowKey(row), 'remark', cell)}
+            value={row.备注 ?? ''}
+            onChange={(event) => patchRow(rowKey(row), { 备注: event.target.value })}
+            onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'remark', event)}
+          />
+        ) : row.备注 || '--',
     },
   ]
 
@@ -2306,6 +2419,7 @@ export default function ContainerDetailPage() {
               <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
                 <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
                   <Table
+                    ref={detailTableRef}
                     className="container-detail-table"
                     rowKey={rowKey}
                     rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}

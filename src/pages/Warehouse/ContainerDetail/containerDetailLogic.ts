@@ -35,6 +35,8 @@ export type ContainerDetailTableColumnKey =
   | 'readonlyOemPrice'
   | ContainerDetailSortField
 
+export type ContainerDetailEditableCellDirection = 'up' | 'down' | 'left' | 'right'
+
 const containerDetailSortFields = new Set<string>([
   'itemNumber',
   'barcode',
@@ -117,6 +119,41 @@ export function moveContainerDetailColumnOrder(
   const [moved] = nextOrder.splice(fromIndex, 1)
   nextOrder.splice(toIndex, 0, moved)
   return nextOrder
+}
+
+export function getNextContainerDetailEditableCell(
+  currentRowKey: string,
+  currentColumnKey: string,
+  rowKeys: readonly string[],
+  columnKeys: readonly string[],
+  direction: ContainerDetailEditableCellDirection,
+) {
+  const rowIndex = rowKeys.indexOf(currentRowKey)
+  const columnIndex = columnKeys.indexOf(currentColumnKey)
+  if (rowIndex < 0 || columnIndex < 0) {
+    return null
+  }
+
+  const nextRowIndex = direction === 'up'
+    ? rowIndex - 1
+    : direction === 'down'
+      ? rowIndex + 1
+      : rowIndex
+  const nextColumnIndex = direction === 'left'
+    ? columnIndex - 1
+    : direction === 'right'
+      ? columnIndex + 1
+      : columnIndex
+  const nextRowKey = rowKeys[nextRowIndex]
+  const nextColumnKey = columnKeys[nextColumnIndex]
+  if (!nextRowKey || !nextColumnKey) {
+    return null
+  }
+
+  return {
+    rowKey: nextRowKey,
+    columnKey: nextColumnKey,
+  }
 }
 
 export interface ContainerDetailNumberRangeFilter {

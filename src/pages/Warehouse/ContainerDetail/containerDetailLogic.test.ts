@@ -31,6 +31,7 @@ import {
   getContainerDetailCreateProductRowLabel,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
+  getNextContainerDetailEditableCell,
   isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
@@ -189,6 +190,60 @@ const clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
 
 assertEqual(clearedRows[0].英文名称, undefined, '清除后本地行明细级英文名称应为空')
 assertEqual(clearedRows[0].商品信息?.英文名称, undefined, '清除后本地行商品信息英文名称应为空')
+
+const editableRowKeys = ['row-1', 'row-2', 'row-3']
+const editableColumnKeys = ['englishName', 'floatRate', 'importPrice', 'oemPrice', 'remark']
+
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'up'),
+  { rowKey: 'row-1', columnKey: 'floatRate' },
+  '方向键上应移动到上一行同一编辑列',
+)
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'down'),
+  { rowKey: 'row-3', columnKey: 'floatRate' },
+  '方向键下应移动到下一行同一编辑列',
+)
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'left'),
+  { rowKey: 'row-2', columnKey: 'englishName' },
+  '方向键左应移动到同一行前一个编辑列',
+)
+assertDeepEqual(
+  getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'right'),
+  { rowKey: 'row-2', columnKey: 'importPrice' },
+  '方向键右应移动到同一行后一个编辑列',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-1', 'englishName', editableRowKeys, editableColumnKeys, 'up'),
+  null,
+  '第一行按上不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-3', 'remark', editableRowKeys, editableColumnKeys, 'down'),
+  null,
+  '最后一行按下不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-2', 'englishName', editableRowKeys, editableColumnKeys, 'left'),
+  null,
+  '首个编辑列按左不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-2', 'remark', editableRowKeys, editableColumnKeys, 'right'),
+  null,
+  '最后一个编辑列按右不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('missing-row', 'floatRate', editableRowKeys, editableColumnKeys, 'down'),
+  null,
+  '当前行不存在时不应移动',
+)
+assertEqual(
+  getNextContainerDetailEditableCell('row-2', 'missing-column', editableRowKeys, editableColumnKeys, 'right'),
+  null,
+  '当前列不存在时不应移动',
+)
 
 const tagRows: ContainerDetail[] = [
   { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },
