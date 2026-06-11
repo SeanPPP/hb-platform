@@ -113,6 +113,7 @@ import {
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
+  buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
@@ -161,7 +162,6 @@ import {
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 import './index.css'
 
-type ProductTypeFilter = 'all' | 'normal' | 'set' | 'setChild'
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'warehouseImportPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
@@ -226,11 +226,11 @@ function getSetCodeRowKey(item: ContainerDomesticSetCodeItem) {
   return item.setProductCode || item.barcode || item.setItemNumber || ''
 }
 
-function getProductTypeFilterLabel(value: ProductTypeFilter, t: TFunction) {
-  const map: Record<ProductTypeFilter, string> = {
-    all: 'common.all',
+function getProductTypeFilterLabel(value: ContainerDetailProductTypeFilter, t: TFunction) {
+  const map: Record<ContainerDetailProductTypeFilter, string> = {
     normal: 'containers.productTypes.normal',
     set: 'containers.productTypes.set',
+    multi: 'containers.productTypes.multiCode',
     setChild: 'containers.productTypes.setChild',
   }
   return t(map[value])
@@ -371,6 +371,10 @@ const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   abnormalImport: 0,
   active: 0,
   inactive: 0,
+  normal: 0,
+  set: 0,
+  multi: 0,
+  setChild: 0,
 }
 
 type ContainerDetailEditableColumnKey = typeof CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS[number]
@@ -490,7 +494,6 @@ export default function ContainerDetailPage() {
   const [rows, setRows] = useState<ContainerDetail[]>([])
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
-  const [productTypeFilter, setProductTypeFilter] = useState<ProductTypeFilter>('all')
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [columnFilters, setColumnFilters] = useState<ContainerDetailColumnFilters>({})
   // 默认按货号升序展示，保证每次打开货柜明细时列表顺序稳定。
@@ -559,19 +562,10 @@ export default function ContainerDetailPage() {
     setCodeAbortControllerRef.current?.abort()
   }, [])
 
-  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => {
-    const productTypeFilters = productTypeFilter === 'all'
-      ? columnFilters.productTypes
-      : columnFilters.productTypes?.length
-        ? columnFilters.productTypes.filter((value) => value === productTypeFilter)
-        : [productTypeFilter]
-
-    return {
-      ...columnFilters,
-      itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber,
-      productTypes: productTypeFilters,
-    }
-  }, [columnFilters, itemNumberFilter, productTypeFilter])
+  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => ({
+    ...columnFilters,
+    itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber,
+  }), [columnFilters, itemNumberFilter])
 
   const detailQuery = useMemo(() => buildContainerDetailQuery({
     containerGuid,
@@ -688,7 +682,7 @@ export default function ContainerDetailPage() {
       setDetailItemsTotal(result.itemsTotal)
       setDetailPageNumber(result.pageNumber)
       setDetailHasMore(result.hasMore)
-      setRemoteTagStats(result.tagStats)
+      setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
       if (mode === 'reset') {
         lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
       }
@@ -872,12 +866,24 @@ export default function ContainerDetailPage() {
     })
   }
 
-  const tagStats = remoteTagStats
+  const localProductTypeStats = useMemo(() => buildContainerDetailTagStats(rows), [rows])
+  const tagStats: ContainerDetailTagStats = useMemo(() => ({
+    ...remoteTagStats,
+    // 商品类型统计由前端按当前已加载明细实时计算，后端仍只负责已有业务 tag 统计。
+    normal: localProductTypeStats.normal,
+    set: localProductTypeStats.set,
+    multi: localProductTypeStats.multi,
+    setChild: localProductTypeStats.setChild,
+  }), [localProductTypeStats, remoteTagStats])
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
     { value: 'new', label: t('containers.tags.newProduct'), color: 'cyan' },
     { value: 'existing', label: t('containers.tags.existingProduct'), color: 'purple' },
+    { value: 'normal', label: t('containers.productTypes.normal'), color: 'default' },
+    { value: 'set', label: t('containers.productTypes.set'), color: 'blue' },
+    { value: 'multi', label: t('containers.productTypes.multiCode'), color: 'purple' },
+    { value: 'setChild', label: t('containers.productTypes.setChild'), color: 'orange' },
     { value: 'noOemPrice', label: t('containers.filters.missingOemPrice'), color: 'orange' },
     { value: 'abnormalImport', label: t('containers.filters.abnormalImportPrice'), color: 'red' },
     { value: 'active', label: t('common.activeUpper'), color: 'success' },
@@ -2452,7 +2458,7 @@ export default function ContainerDetailPage() {
       title: renderColumnTitle('productType', t('containers.fields.productType')),
       width: 92,
       ...makeSortProps('productType'),
-      ...enumFilterProps('productTypes', (['normal', 'set', 'setChild'] as ContainerDetailProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))),
+      ...enumFilterProps('productTypes', (['normal', 'set', 'multi', 'setChild'] as ContainerDetailProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))),
       render: (_, row) => renderProductTypeTag(row),
     },
     {
@@ -2742,12 +2748,6 @@ export default function ContainerDetailPage() {
               <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Space wrap>
                   <Input value={itemNumberFilter} allowClear prefix={<SearchOutlined />} placeholder={t('containers.placeholders.filterItemNumber')} style={{ width: 180 }} onChange={(event) => setItemNumberFilter(event.target.value)} />
-                  <Select
-                    value={productTypeFilter}
-                    style={{ width: 140 }}
-                    onChange={setProductTypeFilter}
-                    options={(['all', 'normal', 'set', 'setChild'] as ProductTypeFilter[]).map((value) => ({ value, label: getProductTypeFilterLabel(value, t) }))}
-                  />
                   <Select
                     mode="multiple"
                     value={selectedTagFilters}

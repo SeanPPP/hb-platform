@@ -11,12 +11,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
-import { getDomesticProductSetItems, getSupplierOptions, updateDomesticProductSetItems, } from '../../../services/domesticProductService';
+import { getSupplierOptions, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
+import { batchCreateSetCodes, batchDelete as batchDeleteSetCodes, batchUpdateBarcodes as batchUpdateSetBarcodes, batchUpdatePrices as batchUpdateSetPrices, batchUpdateStatus as batchUpdateSetStatus, getGridData as getSetCodeGridData, } from '../../../services/multiCodeSetService';
 import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { useAuthStore } from '../../../store/auth';
-import type { DomesticProductSetItem, SupplierOption, } from '../../../types/domesticProduct';
+import type { SupplierOption, } from '../../../types/domesticProduct';
 import { ProductType, ProductTypeLabels } from '../../../types/domesticProduct';
+import type { MulticodeSetItem } from '../../../types/multiCodeSet';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
@@ -395,56 +397,52 @@ function SetItemsModal({ open, loading, saving, product, items, canEdit, onCance
     loading: boolean;
     saving: boolean;
     product: WarehouseProductListItem | null;
-    items: DomesticProductSetItem[];
+    items: MulticodeSetItem[];
     canEdit: boolean;
     onCancel: () => void;
     onAddRow: () => void;
     onRemoveRow: (rowId: string) => void;
-    onChangeField: (rowId: string, field: keyof DomesticProductSetItem, value: string | number | undefined) => void;
+    onChangeField: (rowId: string, field: keyof MulticodeSetItem, value: string | number | boolean | undefined) => void;
     onSubmit: () => void;
 }) {
     const { t } = useTranslation();
-    const columns: ColumnsType<DomesticProductSetItem> = [
-        {
-            title: t('domesticProducts.productName'),
-            dataIndex: 'productName',
-            render: (_, record) => (<Input value={record.productName} disabled={!canEdit} onChange={(event) => onChangeField(record.id, 'productName', event.target.value)}/>),
-        },
+    const isNewSetCode = (record: MulticodeSetItem) => record.id?.startsWith('new_') ?? false;
+    const columns: ColumnsType<MulticodeSetItem> = [
         {
             title: t('warehouse.setProductNo'),
-            dataIndex: 'setProductNo',
+            dataIndex: 'setItemNumber',
             width: 180,
-            render: (_, record) => (<Input value={record.setProductNo} disabled={!canEdit} onChange={(event) => onChangeField(record.id, 'setProductNo', event.target.value)}/>),
+            render: (_, record) => (<Input value={record.setItemNumber} disabled={!canEdit || !isNewSetCode(record)} onChange={(event) => onChangeField(record.id!, 'setItemNumber', event.target.value)}/>),
         },
         {
             title: t('domesticProducts.barcode'),
             dataIndex: 'setBarcode',
             width: 180,
-            render: (_, record) => (<Input value={record.setBarcode} disabled={!canEdit} onChange={(event) => onChangeField(record.id, 'setBarcode', event.target.value)}/>),
+            render: (_, record) => (<Input value={record.setBarcode} disabled={!canEdit} onChange={(event) => onChangeField(record.id!, 'setBarcode', event.target.value)}/>),
         },
         {
-            title: t('domesticProducts.domesticPrice'),
-            dataIndex: 'domesticPrice',
+            title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'),
+            dataIndex: 'setPurchasePrice',
             width: 120,
-            render: (_, record) => (<InputNumber min={0} precision={2} value={record.domesticPrice} disabled={!canEdit} style={{ width: '100%' }} onChange={(value) => onChangeField(record.id, 'domesticPrice', value ?? undefined)}/>),
+            render: (_, record) => (<InputNumber min={0} precision={2} value={record.setPurchasePrice} disabled={!canEdit} style={{ width: '100%' }} onChange={(value) => onChangeField(record.id!, 'setPurchasePrice', value ?? undefined)}/>),
         },
         {
-            title: t('warehouse.importPrice'),
-            dataIndex: 'importPrice',
+            title: t('posAdmin.invoiceDetail.retailPrice', '零售价'),
+            dataIndex: 'setRetailPrice',
             width: 120,
-            render: (_, record) => (<InputNumber min={0} precision={2} value={record.importPrice} disabled={!canEdit} style={{ width: '100%' }} onChange={(value) => onChangeField(record.id, 'importPrice', value ?? undefined)}/>),
+            render: (_, record) => (<InputNumber min={0} precision={2} value={record.setRetailPrice} disabled={!canEdit} style={{ width: '100%' }} onChange={(value) => onChangeField(record.id!, 'setRetailPrice', value ?? undefined)}/>),
         },
         {
-            title: t('productCreation.privateLabelPrice'),
-            dataIndex: 'oemPrice',
+            title: t('column.status', '状态'),
+            dataIndex: 'isActive',
             width: 120,
-            render: (_, record) => (<InputNumber min={0} precision={2} value={record.oemPrice} disabled={!canEdit} style={{ width: '100%' }} onChange={(value) => onChangeField(record.id, 'oemPrice', value ?? undefined)}/>),
+            render: (_, record) => (<Switch checked={record.isActive ?? true} disabled={!canEdit} checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)} onChange={(checked) => onChangeField(record.id!, 'isActive', checked)}/>),
         },
         {
             title: t('common.action'),
             key: 'action',
             width: 90,
-            render: (_, record) => canEdit ? (<Button danger type="link" onClick={() => onRemoveRow(record.id)}>
+            render: (_, record) => canEdit ? (<Button danger type="link" onClick={() => onRemoveRow(record.id!)}>
             {t('common.delete')}
           </Button>) : null,
         },
@@ -496,7 +494,8 @@ export default function WarehouseProductsPage() {
     const [setItemsLoading, setSetItemsLoading] = useState(false);
     const [setItemsSaving, setSetItemsSaving] = useState(false);
     const [currentSetProduct, setCurrentSetProduct] = useState<WarehouseProductListItem | null>(null);
-    const [setItemsDraft, setSetItemsDraft] = useState<DomesticProductSetItem[]>([]);
+    const [setItemsDraft, setSetItemsDraft] = useState<MulticodeSetItem[]>([]);
+    const [deletedSetCodeIds, setDeletedSetCodeIds] = useState<string[]>([]);
     const [batchActionLoading, setBatchActionLoading] = useState(false);
     const [batchEditOpen, setBatchEditOpen] = useState(false);
     const [batchEditSaving, setBatchEditSaving] = useState(false);
@@ -872,9 +871,10 @@ export default function WarehouseProductsPage() {
         setSetItemsOpen(true);
         setSetItemsLoading(true);
         setSetItemsDraft([]);
+        setDeletedSetCodeIds([]);
         try {
-            const items = await getDomesticProductSetItems(record.productCode);
-            setSetItemsDraft(items);
+            const result = await getSetCodeGridData({ productCode: record.productCode, pageIndex: 1, pageSize: 200 });
+            setSetItemsDraft(result.items ?? []);
         }
         catch (error) {
             console.error(error);
@@ -890,13 +890,61 @@ export default function WarehouseProductsPage() {
         if (!currentSetProduct) {
             return;
         }
+        const invalidSetCodeItem = setItemsDraft.find((item) => !item.setBarcode?.trim() ||
+            item.setPurchasePrice === undefined ||
+            item.setPurchasePrice === null ||
+            item.setRetailPrice === undefined ||
+            item.setRetailPrice === null);
+        if (invalidSetCodeItem) {
+            message.error(t('warehouse.invalidSetCodeDetail', '套装明细条码、进货价和零售价不能为空'));
+            return;
+        }
         try {
             setSetItemsSaving(true);
-            await updateDomesticProductSetItems(currentSetProduct.productCode, setItemsDraft);
+            const newItems = setItemsDraft.filter((item) => item.id?.startsWith('new_'));
+            const existingItems = setItemsDraft.filter((item) => item.id && !item.id.startsWith('new_'));
+            // 仓库套装明细按 product-set-codes 分批保存，避免继续写入国内采购商品的 set-items 表。
+            if (newItems.length) {
+                await batchCreateSetCodes({
+                    items: newItems.map((item) => ({
+                        productCode: currentSetProduct.productCode,
+                        setItemNumber: item.setItemNumber?.trim() || undefined,
+                        setBarcode: item.setBarcode!.trim(),
+                        setPurchasePrice: item.setPurchasePrice,
+                        setRetailPrice: item.setRetailPrice,
+                        isActive: item.isActive ?? true,
+                    })),
+                });
+            }
+            if (existingItems.length) {
+                await batchUpdateSetBarcodes({
+                    items: existingItems.map((item) => ({
+                        id: item.id!,
+                        setBarcode: item.setBarcode!.trim(),
+                    })),
+                });
+                await batchUpdateSetPrices({
+                    items: existingItems.map((item) => ({
+                        id: item.id!,
+                        setPurchasePrice: item.setPurchasePrice,
+                        setRetailPrice: item.setRetailPrice,
+                    })),
+                });
+                await batchUpdateSetStatus({
+                    items: existingItems.map((item) => ({
+                        id: item.id!,
+                        isActive: item.isActive ?? true,
+                    })),
+                });
+            }
+            if (deletedSetCodeIds.length) {
+                await batchDeleteSetCodes({ ids: deletedSetCodeIds });
+            }
             message.success(t('warehouse.setItemsUpdated'));
             setSetItemsOpen(false);
             setCurrentSetProduct(null);
             setSetItemsDraft([]);
+            setDeletedSetCodeIds([]);
             void loadData();
         }
         catch (error) {
@@ -1367,14 +1415,24 @@ export default function WarehouseProductsPage() {
             setSetItemsOpen(false);
             setCurrentSetProduct(null);
             setSetItemsDraft([]);
+            setDeletedSetCodeIds([]);
         }} onAddRow={() => {
             setSetItemsDraft((current) => [
                 ...current,
                 {
-                    id: `temp_${Date.now()}_${Math.random()}`,
+                    id: `new_${Date.now()}_${Math.random()}`,
+                    productCode: currentSetProduct?.productCode || '',
+                    setItemNumber: '',
+                    setBarcode: '',
+                    setPurchasePrice: currentSetProduct?.importPrice,
+                    setRetailPrice: currentSetProduct?.labelPrice,
+                    isActive: true,
                 },
             ]);
         }} onRemoveRow={(rowId) => {
+            if (!rowId.startsWith('new_')) {
+                setDeletedSetCodeIds((current) => [...current, rowId]);
+            }
             setSetItemsDraft((current) => current.filter((item) => item.id !== rowId));
         }} onChangeField={(rowId, field, value) => {
             setSetItemsDraft((current) => current.map((item) => (item.id === rowId ? { ...item, [field]: value } : item)));

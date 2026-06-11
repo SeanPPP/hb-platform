@@ -1,11 +1,11 @@
 import type { ContainerDetail, ContainerDetailQuery, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqItem, PushProductsToHqResult } from '../../../types/posProduct'
 
-export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
+export type ContainerDetailProductTypeFilter = 'normal' | 'set' | 'multi' | 'setChild'
+export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive' | ContainerDetailProductTypeFilter
 
 export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
 type ContainerDetailSelectableTagFilter = Exclude<ContainerDetailTagFilter, 'all'>
-export type ContainerDetailProductTypeFilter = 'normal' | 'set' | 'setChild'
 export type ContainerDetailNewProductFilter = 'new' | 'existing'
 export type ContainerDetailMatchTypeFilter = 'productCode' | 'supplierItem' | 'unmatched'
 export type ContainerDetailWarehouseStatusFilter = 'active' | 'inactive'
@@ -342,6 +342,7 @@ export function getContainerDetailProductType(row: ContainerDetail) {
 export function getContainerDetailProductTypeFilterKey(row: ContainerDetail): ContainerDetailProductTypeFilter {
   const type = getContainerDetailProductType(row)
   if (type === '套装商品') return 'set'
+  if (type === '多码商品') return 'multi'
   if (type === '套装子商品') return 'setChild'
   return 'normal'
 }
@@ -458,6 +459,9 @@ export function buildContainerDetailSaveFailureKeys(rowKey: string, patch: objec
 export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: ContainerDetailTagFilter) {
   if (filter === 'new') return Boolean(row.是否新商品)
   if (filter === 'existing') return !row.是否新商品
+  if (isContainerDetailProductTypeTag(filter)) {
+    return getContainerDetailProductTypeFilterKey(row) === filter
+  }
   if (filter === 'noOemPrice') {
     const oemPrice = resolveContainerDetailOemPrice(row)
     return Boolean(row.是否新商品) && (!oemPrice || oemPrice <= 0)
@@ -470,9 +474,26 @@ export function matchesContainerDetailTagFilter(row: ContainerDetail, filter: Co
 
 const containerDetailTagFilterGroups: ContainerDetailSelectableTagFilter[][] = [
   ['new', 'existing'],
+  ['normal', 'set', 'multi', 'setChild'],
   ['noOemPrice', 'abnormalImport'],
   ['active', 'inactive'],
 ]
+
+const containerDetailProductTypeTags: ContainerDetailProductTypeFilter[] = ['normal', 'set', 'multi', 'setChild']
+
+function isContainerDetailProductTypeTag(tag: ContainerDetailTagFilter): tag is ContainerDetailProductTypeFilter {
+  return containerDetailProductTypeTags.includes(tag as ContainerDetailProductTypeFilter)
+}
+
+function mergeProductTypeFilters(
+  columnFilters: ContainerDetailProductTypeFilter[] | undefined,
+  selectedTags: ContainerDetailTagFilter[],
+) {
+  const tagFilters = selectedTags.filter(isContainerDetailProductTypeTag)
+  if (!tagFilters.length) return columnFilters
+  // 商品类型统计 tag 和列头筛选共用 productTypes 参数；去重后交给后端做远程过滤。
+  return Array.from(new Set([...(columnFilters ?? []), ...tagFilters]))
+}
 
 export function matchesContainerDetailSelectedTags(row: ContainerDetail, selectedTags: ContainerDetailTagFilter[]) {
   const selected = selectedTags.filter((tag): tag is ContainerDetailSelectableTagFilter => tag !== 'all')
@@ -495,6 +516,10 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     abnormalImport: 0,
     active: 0,
     inactive: 0,
+    normal: 0,
+    set: 0,
+    multi: 0,
+    setChild: 0,
   }
 
   rows.forEach((row) => {
@@ -505,6 +530,8 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     if (matchesContainerDetailTagFilter(row, 'abnormalImport')) stats.abnormalImport += 1
     if (matchesContainerDetailTagFilter(row, 'active')) stats.active += 1
     if (matchesContainerDetailTagFilter(row, 'inactive')) stats.inactive += 1
+    const productType = getContainerDetailProductTypeFilterKey(row)
+    stats[productType] += 1
   })
 
   return stats
@@ -702,7 +729,7 @@ export function buildContainerDetailQuery({
   assignTrimmedText(query, 'productName', filters.productName)
   assignTrimmedText(query, 'englishName', filters.englishName)
   assignTrimmedText(query, 'remark', filters.remark)
-  assignNonEmptyArray(query, 'productTypes', filters.productTypes)
+  assignNonEmptyArray(query, 'productTypes', mergeProductTypeFilters(filters.productTypes, selectedTags))
   assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
   assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
   assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
@@ -717,7 +744,7 @@ export function buildContainerDetailQuery({
   assignNumberRange(query, 'importPriceMin', 'importPriceMax', filters.importPrice)
   assignNumberRange(query, 'oemPriceMin', 'oemPriceMax', filters.oemPrice)
 
-  const remoteTags = selectedTags.filter((tag) => tag !== 'all')
+  const remoteTags = selectedTags.filter((tag) => tag !== 'all' && !isContainerDetailProductTypeTag(tag))
   assignNonEmptyArray(query, 'selectedTags', remoteTags)
 
   if (sortState) {

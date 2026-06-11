@@ -35,6 +35,7 @@ import {
   getContainerDetailProductCode,
   getContainerDetailCreateProductRowLabel,
   getContainerDetailProductType,
+  getContainerDetailProductTypeFilterKey,
   getContainerDetailOemPriceSource,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
@@ -440,9 +441,9 @@ assertEqual(
 
 const tagRows: ContainerDetail[] = [
   { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },
-  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 2, 进口价格: 0, warehouseIsActive: false },
-  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true },
-  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined },
+  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 2, 进口价格: 0, warehouseIsActive: false, 商品信息: { 商品类型: '套装商品' } },
+  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true, 商品信息: { 商品类型: '多码商品' } },
+  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined, 商品类型: '套装子商品' },
 ]
 
 assertDeepEqual(
@@ -455,8 +456,12 @@ assertDeepEqual(
     abnormalImport: 2,
     active: 2,
     inactive: 2,
+    normal: 1,
+    set: 1,
+    multi: 1,
+    setChild: 1,
   },
-  '统计栏应按当前基础结果统计全部、新商品、已有商品、缺贴牌价、进口价异常和上下架数量',
+  '统计栏应按当前基础结果统计全部、新商品、已有商品、缺贴牌价、进口价异常、上下架和商品类型数量',
 )
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], 'new'), true, '新商品 tag 应匹配是否新商品行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'new'), false, '新商品 tag 不应匹配已有商品行')
@@ -467,10 +472,15 @@ assertEqual(matchesContainerDetailTagFilter(tagRows[1], 'abnormalImport'), true,
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'all'), true, '全部 tag 应匹配所有行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'active'), true, '上架 tag 应匹配 warehouseIsActive 为 true 的行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[3], 'inactive'), true, '下架 tag 应匹配 warehouseIsActive 非 true 的行')
+assertEqual(matchesContainerDetailTagFilter(tagRows[1], 'set'), true, '套装商品统计 tag 应匹配国内商品表类型')
+assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'multi'), true, '多码商品统计 tag 应匹配多码类型')
+assertEqual(matchesContainerDetailTagFilter(tagRows[3], 'setChild'), true, '套装子商品统计 tag 应匹配明细兜底类型')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[0], []), true, '未选择 tag 时应显示全部行')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['new', 'inactive']), true, '新商品与下架属于不同分组，应同时满足')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['new', 'inactive']), false, '新商品但已上架时不应命中新商品加下架组合')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[2], ['new', 'existing']), true, '新商品和已有商品同组多选应按 OR 匹配')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[2], ['set', 'multi']), true, '商品类型统计 tag 同组多选应按 OR 匹配')
+assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['multi', 'inactive']), false, '商品类型未命中时即使上下架命中也应被过滤')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[3], ['noOemPrice', 'abnormalImport']), true, '异常类 tag 同组多选应按 OR 匹配')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[1], ['noOemPrice', 'abnormalImport', 'inactive']), true, '异常类 OR 后应继续与上下架分组 AND')
 assertEqual(matchesContainerDetailSelectedTags(tagRows[0], ['noOemPrice', 'abnormalImport', 'inactive']), false, '命中异常类但未命中下架时应被过滤')
@@ -546,6 +556,7 @@ assertDeepEqual(columnState({ englishName: 'triangle' }), ['column-203'], '英�
 assertDeepEqual(columnState({ remark: '补价格' }), ['column-202'], '备注列头过滤应支持文本包含匹配')
 assertDeepEqual(columnState({ productTypes: ['set', 'setChild'] }), ['column-203'], '商品类型列头过滤应优先读取国内商品表类型并支持多选枚举')
 assertDeepEqual(columnState({ productTypes: ['normal'] }), ['column-201', 'column-202'], '国内商品表类型覆盖明细旧类型时应按国内商品表类型过滤')
+assertEqual(getContainerDetailProductTypeFilterKey({ id: 204, hguid: 'column-204', 商品信息: { 商品类型: '多码商品' } }), 'multi', '商品类型过滤键应支持多码商品')
 assertDeepEqual(columnState({ newProductStates: ['new'] }), ['column-202'], '新商品列头过滤应支持筛出新商品')
 assertDeepEqual(columnState({ matchTypes: ['supplierItem'] }), ['column-203'], '匹配方式列头过滤应支持供应商编码加货号匹配')
 assertDeepEqual(columnState({ warehouseStatus: ['inactive'] }), ['column-202', 'column-203'], '仓库状态列头过滤应把非 true 视为下架')
@@ -646,6 +657,24 @@ assertDeepEqual(
     barcode: '9300',
   },
   '远程查询参数没有排序和 tag 时不应提交空字段',
+)
+
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-TYPE-TAGS',
+    filters: { productTypes: ['normal'] },
+    selectedTags: ['multi', 'setChild', 'inactive'],
+    pageNumber: 1,
+    pageSize: 50,
+  }),
+  {
+    containerGuid: 'CONTAINER-TYPE-TAGS',
+    pageNumber: 1,
+    pageSize: 50,
+    productTypes: ['normal', 'multi', 'setChild'],
+    selectedTags: ['inactive'],
+  },
+  '商品类型统计 tag 应转换为 productTypes 参数，且不混入 selectedTags',
 )
 
 assertDeepEqual(
@@ -1362,6 +1391,16 @@ assertEqual(
   pageSource.includes("{ value: 'new', label: t('containers.tags.newProduct'), color: 'cyan' }"),
   true,
   '新商品统计项应使用不同于全部标签的颜色',
+)
+assertEqual(
+  pageSource.includes("{ value: 'multi', label: t('containers.productTypes.multiCode'), color: 'purple' }"),
+  true,
+  '统计 tag 应包含多码商品类型入口',
+)
+assertEqual(
+  pageSource.includes('productTypeFilter'),
+  false,
+  '顶部独立商品类型下拉已取消，商品类型过滤应通过统计 tag 和列头筛选完成',
 )
 assertEqual(
   pageSource.includes('color={option.color}'),

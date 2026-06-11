@@ -71,7 +71,7 @@ export interface ContainerDetail {
 }
 
 export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
-export type ContainerDetailQueryProductType = 'normal' | 'set' | 'setChild'
+export type ContainerDetailQueryProductType = 'normal' | 'set' | 'multi' | 'setChild'
 export type ContainerDetailQueryNewProductState = 'new' | 'existing'
 export type ContainerDetailQueryMatchType = 'productCode' | 'supplierItem' | 'unmatched'
 export type ContainerDetailQueryWarehouseStatus = 'active' | 'inactive'

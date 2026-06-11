@@ -201,6 +201,77 @@ async function main() {
   })
   if (productDetailsModalFailure) failures.push(productDetailsModalFailure)
 
+  const warehouseProductSetCodesFailure = await runTest('仓库套装明细弹窗应读取并保存 product-set-codes 明细', () => {
+    assert(
+      pageSource.includes("from '../../../services/multiCodeSetService'") &&
+        pageSource.includes('getGridData as getSetCodeGridData') &&
+        pageSource.includes('batchCreateSetCodes') &&
+        pageSource.includes('batchUpdateBarcodes as batchUpdateSetBarcodes') &&
+        pageSource.includes('batchUpdatePrices as batchUpdateSetPrices') &&
+        pageSource.includes('batchDelete as batchDeleteSetCodes'),
+      '仓库商品页应使用 product-set-codes 服务维护套装/多码明细',
+    )
+    assert(
+      !pageSource.includes('getDomesticProductSetItems') &&
+        !pageSource.includes('updateDomesticProductSetItems') &&
+        !pageSource.includes('DomesticProductSetItem'),
+      '仓库商品页不能继续引用国内采购 set-items 服务和类型',
+    )
+
+    const modalSection = extractSection(
+      pageSource,
+      'function SetItemsModal',
+      'export default function WarehouseProductsPage',
+    )
+    assert(
+      modalSection.includes('items: MulticodeSetItem[]') &&
+        modalSection.includes("dataIndex: 'setItemNumber'") &&
+        modalSection.includes("dataIndex: 'setBarcode'") &&
+        modalSection.includes("dataIndex: 'setPurchasePrice'") &&
+        modalSection.includes("dataIndex: 'setRetailPrice'") &&
+        modalSection.includes("dataIndex: 'isActive'"),
+      '弹窗列应使用 product-set-codes 的货号、条码、进货价、零售价和状态字段',
+    )
+
+    const openSection = extractSection(
+      pageSource,
+      'const handleOpenSetItems = async (record: WarehouseProductListItem) => {',
+      'const handleSaveSetItems = async () => {',
+    )
+    assert(
+      openSection.includes('getSetCodeGridData({ productCode: record.productCode') &&
+        openSection.includes('setSetItemsDraft(result.items ?? [])'),
+      '打开仓库套装弹窗时应按当前仓库商品 productCode 读取 product-set-codes grid',
+    )
+
+    const saveSection = extractSection(
+      pageSource,
+      'const handleSaveSetItems = async () => {',
+      'const handleExport = async () => {',
+    )
+    assert(
+      saveSection.includes('batchCreateSetCodes({') &&
+        saveSection.includes('batchUpdateSetBarcodes({') &&
+        saveSection.includes('batchUpdateSetPrices({') &&
+        saveSection.includes('batchDeleteSetCodes({ ids: deletedSetCodeIds })'),
+      '保存仓库套装弹窗时应分别处理新增、已有更新和删除的 product-set-codes 明细',
+    )
+    assert(
+      saveSection.includes('invalidSetCodeItem') &&
+        saveSection.includes("message.error(t('warehouse.invalidSetCodeDetail'") &&
+        saveSection.includes('item.setBarcode?.trim()') &&
+        saveSection.includes('item.setPurchasePrice === undefined') &&
+        saveSection.includes('item.setRetailPrice === undefined'),
+      '保存前应校验套装明细条码、进货价和零售价，避免空新增或清空字段静默失败',
+    )
+    assert(
+      saveSection.indexOf('batchDeleteSetCodes({ ids: deletedSetCodeIds })') >
+        saveSection.indexOf('batchUpdateSetStatus({'),
+      '删除已有明细必须放在新增和更新之后，避免后续接口失败时先删数据',
+    )
+  })
+  if (warehouseProductSetCodesFailure) failures.push(warehouseProductSetCodesFailure)
+
   const minOrderQuantityColumnFailure = await runTest('仓库商品列表应以 MinOrderQuantity 作为中包数列来源', () => {
     const columnsSection = extractSection(
       pageSource,
