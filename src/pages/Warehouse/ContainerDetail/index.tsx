@@ -522,6 +522,7 @@ export default function ContainerDetailPage() {
   const [setCodeSaving, setSetCodeSaving] = useState(false)
   const [setCodePriceEdits, setSetCodePriceEdits] = useState<ContainerSetCodePriceEdits>({})
   const [setCodeManualPurchasePriceKeys, setSetCodeManualPurchasePriceKeys] = useState<Set<string>>(() => new Set())
+  const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
@@ -530,6 +531,9 @@ export default function ContainerDetailPage() {
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
   const detailTableRef = useRef<TableRef | null>(null)
+  const lastDetailTableScrollTopRef = useRef(0)
+  const wasContainerDetailTabActiveRef = useRef(active)
+  const detailTableRestoreFrameRef = useRef<number | null>(null)
   const editableCellRefs = useRef<Map<string, ContainerDetailFocusableCell>>(new Map())
   const pendingEditableCellFocusKeyRef = useRef<string | null>(null)
   const [headerEditing, setHeaderEditing] = useState(false)
@@ -661,6 +665,7 @@ export default function ContainerDetailPage() {
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = controller
       lastLoadedContainerDetailSuccessRef.current = null
+      lastDetailTableScrollTopRef.current = 0
       setDetailLoading(true)
       setRows([])
       setSelectedRowKeys([])
@@ -756,6 +761,32 @@ export default function ContainerDetailPage() {
     // detailQueryKey 已包含货柜、筛选、排序和 tag，避免依赖对象引用导致重复请求。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, detailQueryKey])
+
+  useEffect(() => {
+    const wasActive = wasContainerDetailTabActiveRef.current
+    wasContainerDetailTabActiveRef.current = active
+
+    if (!active || wasActive || rows.length === 0) {
+      return
+    }
+
+    const scrollTop = lastDetailTableScrollTopRef.current
+    const renderFrame = window.requestAnimationFrame(() => {
+      // KeepAlive 隐藏节点恢复时，AntD 虚拟表格可能沿用隐藏状态下的测量结果；切回后重挂载表格让 body 重新计算高度。
+      setDetailTableRenderKey((value) => value + 1)
+      detailTableRestoreFrameRef.current = window.requestAnimationFrame(() => {
+        detailTableRef.current?.scrollTo?.({ top: scrollTop })
+      })
+    })
+    detailTableRestoreFrameRef.current = renderFrame
+
+    return () => {
+      if (detailTableRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(detailTableRestoreFrameRef.current)
+        detailTableRestoreFrameRef.current = null
+      }
+    }
+  }, [active, containerGuid, rows.length])
 
   const baseFilteredRows = useMemo(() => {
     return rows
@@ -2069,6 +2100,7 @@ export default function ContainerDetailPage() {
 
   const handleDetailTableScroll = (event: UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget
+    lastDetailTableScrollTopRef.current = target.scrollTop
     if (target.scrollTop + target.clientHeight >= target.scrollHeight - 96) {
       void loadNextDetailChunk()
     }
@@ -2869,6 +2901,7 @@ export default function ContainerDetailPage() {
               <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
                 <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
                   <Table
+                    key={`${containerGuid}-${detailTableRenderKey}`}
                     ref={detailTableRef}
                     className="container-detail-table"
                     rowKey={rowKey}

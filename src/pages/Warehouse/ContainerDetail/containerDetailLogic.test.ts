@@ -2217,6 +2217,25 @@ assertEqual(
   '货柜明细应关闭可见分页器，使用 50 条内部懒加载块和虚拟滚动',
 )
 assertEqual(
+  pageSource.includes('const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)') &&
+    pageSource.includes('const lastDetailTableScrollTopRef = useRef(0)') &&
+    pageSource.includes('const wasContainerDetailTabActiveRef = useRef(active)') &&
+    pageSource.includes('if (!active || wasActive || rows.length === 0)') &&
+    pageSource.includes('window.requestAnimationFrame(() => {') &&
+    pageSource.includes('setDetailTableRenderKey((value) => value + 1)') &&
+    pageSource.includes('detailTableRef.current?.scrollTo?.({ top: scrollTop })') &&
+    pageSource.includes('key={`${containerGuid}-${detailTableRenderKey}`}'),
+  true,
+  '货柜明细 Tab 切回时应重挂载 AntD 虚拟表格并恢复滚动位置，避免 KeepAlive 隐藏后 body 空白',
+)
+assertEqual(
+  pageSource.includes('lastDetailTableScrollTopRef.current = target.scrollTop') &&
+    pageSource.includes('target.scrollTop + target.clientHeight >= target.scrollHeight - 96') &&
+    pageSource.includes('void loadNextDetailChunk()'),
+  true,
+  '货柜明细表格滚动处理应同时保存滚动位置并保留触底加载下一块',
+)
+assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
   true,
   '货柜明细表头应通过专属样式保持垂直居中',

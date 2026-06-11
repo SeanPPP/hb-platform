@@ -332,6 +332,15 @@ async function main() {
       '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
     )
     assert(
+      containerDetailSource.includes('setDetailTableRenderKey((value) => value + 1)') &&
+        containerDetailSource.includes('detailTableRef.current?.scrollTo?.({ top: scrollTop })') &&
+        containerDetailSource.indexOf('setDetailTableRenderKey((value) => value + 1)') >
+          containerDetailSource.indexOf('if (!active || wasActive || rows.length === 0)') &&
+        containerDetailSource.indexOf("loadDetailChunk(1, 'reset')") <
+          containerDetailSource.indexOf('setDetailTableRenderKey((value) => value + 1)'),
+      '货柜明细 Tab 切回已有数据时应只恢复虚拟表格测量，不能通过重新加载明细修复空白',
+    )
+    assert(
       localSupplierInvoiceDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
         localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef') &&
         localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef') &&
