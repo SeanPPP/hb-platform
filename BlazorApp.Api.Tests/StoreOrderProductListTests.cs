@@ -280,6 +280,107 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchLookupProductsAsync_MatchesInactiveProductAndWarehouseRowsButKeepsDeletedRowsHidden()
+    {
+        await SeedProductAsync("P-INACTIVE-PRODUCT", "ITEM-INACTIVE-PRODUCT", isActive: false);
+        await SeedWarehouseProductAsync("P-INACTIVE-PRODUCT");
+        await SeedProductAsync("P-INACTIVE-WAREHOUSE", "ITEM-INACTIVE-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-INACTIVE-WAREHOUSE", isActive: false);
+        await SeedProductAsync("P-DELETED-PRODUCT", "ITEM-DELETED-PRODUCT", isDeleted: true);
+        await SeedWarehouseProductAsync("P-DELETED-PRODUCT");
+        await SeedProductAsync("P-DELETED-WAREHOUSE", "ITEM-DELETED-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-DELETED-WAREHOUSE", isDeleted: true);
+
+        var result = await CreateService().BatchLookupProductsAsync(new StoreOrderBatchLookupRequestDto
+        {
+            Codes = new List<string>
+            {
+                "ITEM-INACTIVE-PRODUCT",
+                "ITEM-INACTIVE-WAREHOUSE",
+                "ITEM-DELETED-PRODUCT",
+                "ITEM-DELETED-WAREHOUSE",
+            },
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            "P-INACTIVE-PRODUCT",
+            result.Data.Single(item => item.LookupCode == "ITEM-INACTIVE-PRODUCT").Product?.ProductCode
+        );
+        Assert.Equal(
+            "P-INACTIVE-WAREHOUSE",
+            result.Data.Single(item => item.LookupCode == "ITEM-INACTIVE-WAREHOUSE").Product?.ProductCode
+        );
+        Assert.Null(result.Data.Single(item => item.LookupCode == "ITEM-DELETED-PRODUCT").Product);
+        Assert.Null(result.Data.Single(item => item.LookupCode == "ITEM-DELETED-WAREHOUSE").Product);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_HandlesReplaceAppendSkipAndInvalidQuantities()
+    {
+        await SeedStoreOrderAsync("ORDER-PASTE-ACTION");
+        await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-REPLACE", "ITEM-REPLACE", quantity: 5m, allocQuantity: 2m);
+        await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-APPEND", "ITEM-APPEND", quantity: 4m, allocQuantity: 6m);
+        await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-SKIP", "ITEM-SKIP", quantity: 3m, allocQuantity: 7m);
+        await SeedProductAsync("P-NEW-ZERO", "ITEM-NEW-ZERO");
+        await SeedWarehouseProductAsync("P-NEW-ZERO");
+        await SeedProductAsync("P-NEW-VALID", "ITEM-NEW-VALID");
+        await SeedWarehouseProductAsync("P-NEW-VALID");
+
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PASTE-ACTION",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P-REPLACE", Quantity = 10m, Action = "replace" },
+                new() { ProductCode = "P-APPEND", Quantity = 5m, Action = "append" },
+                new() { ProductCode = "P-SKIP", Quantity = 99m, Action = "skip" },
+                new() { ProductCode = "P-NEW-ZERO", Quantity = 0m, Action = "replace" },
+                new() { ProductCode = "P-NEW-VALID", Quantity = 8m, Action = "append" },
+            },
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var rows = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(row => row.OrderGUID == "ORDER-PASTE-ACTION")
+            .ToListAsync();
+
+        Assert.Equal(10m, rows.Single(row => row.ProductCode == "P-REPLACE").AllocQuantity);
+        Assert.Equal(11m, rows.Single(row => row.ProductCode == "P-APPEND").AllocQuantity);
+        Assert.Equal(7m, rows.Single(row => row.ProductCode == "P-SKIP").AllocQuantity);
+        Assert.DoesNotContain(rows, row => row.ProductCode == "P-NEW-ZERO");
+        Assert.Equal(8m, rows.Single(row => row.ProductCode == "P-NEW-VALID").AllocQuantity);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_ReturnsFailureForUnknownExplicitAction()
+    {
+        await SeedStoreOrderAsync("ORDER-PASTE-UNKNOWN");
+        await SeedOrderLineAsync("ORDER-PASTE-UNKNOWN", "P-UNKNOWN", "ITEM-UNKNOWN", quantity: 4m, allocQuantity: 6m);
+
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PASTE-UNKNOWN",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P-UNKNOWN", Quantity = 99m, Action = "mystery" },
+            },
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("Unsupported paste action", result.Message);
+
+        var row = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PASTE-UNKNOWN" && item.ProductCode == "P-UNKNOWN")
+            .FirstAsync();
+        Assert.Equal(6m, row.AllocQuantity);
+    }
+
+    [Fact]
     public async Task 首页预热轻量查询_不执行Count且只取首屏商品()
     {
         for (var index = 1; index <= 25; index++)
@@ -948,7 +1049,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         string productCode,
         bool isDeleted = false,
         decimal oemPrice = 10m,
-        decimal importPrice = 7m
+        decimal importPrice = 7m,
+        bool isActive = true
     )
     {
         await _db.Insertable(new WarehouseProduct
@@ -958,7 +1060,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             ImportPrice = importPrice,
             StockQuantity = 20,
             MinOrderQuantity = 1,
-            IsActive = true,
+            IsActive = isActive,
             IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }

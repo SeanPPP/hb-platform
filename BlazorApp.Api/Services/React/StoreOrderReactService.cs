@@ -883,9 +883,7 @@ namespace BlazorApp.Api.Services.React
                     .LeftJoin<ProductGrade>(
                         (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
                     )
-                    .Where(
-                        (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
-                    )
+                    .Where((p, wp, wc, pg) => !p.IsDeleted && !wp.IsDeleted)
                     .Where(
                         (p, wp, wc, pg) =>
                             (p.ItemNumber != null && codes.Contains(p.ItemNumber))
@@ -3400,6 +3398,15 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
+                if (request.Items.Any(item => !IsSupportedPasteAction(item.Action)))
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Unsupported paste action",
+                    };
+                }
+
                 foreach (
                     var item in request.Items.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
                 )
@@ -3919,8 +3926,21 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var targetQuantity = item.Quantity;
+            var action = NormalizePasteAction(item.Action);
             var now = DateTime.Now;
             var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+            if (
+                string.Equals(
+                    action,
+                    StoreOrderPasteActions.Skip,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || targetQuantity <= 0
+            )
+            {
+                return;
+            }
 
             var warehouseProduct = await _db.Queryable<WarehouseProduct>()
                 .Where(wp => wp.ProductCode == item.ProductCode)
@@ -3948,11 +3968,6 @@ namespace BlazorApp.Api.Services.React
                 .Where(d => d.OrderGUID == order.OrderGUID && d.ProductCode == item.ProductCode)
                 .FirstAsync();
 
-            if (detail == null && targetQuantity <= 0)
-            {
-                return;
-            }
-
             if (detail == null)
             {
                 detail = new WareHouseOrderDetails
@@ -3979,6 +3994,26 @@ namespace BlazorApp.Api.Services.React
                 detail.ImportPrice = item.ImportPrice.Value;
             }
 
+            var nextQuantity = targetQuantity;
+            if (
+                string.Equals(
+                    action,
+                    StoreOrderPasteActions.Append,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                // 追加必须基于数据库当前明细值，避免前端预览数据过期导致覆盖用户刚改的数量。
+                nextQuantity =
+                    string.Equals(
+                        targetField,
+                        StoreOrderPasteTargetFields.Quantity,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                        ? (detail.Quantity ?? 0) + targetQuantity
+                        : (detail.AllocQuantity ?? 0) + targetQuantity;
+            }
+
             if (
                 string.Equals(
                     targetField,
@@ -3987,11 +4022,11 @@ namespace BlazorApp.Api.Services.React
                 )
             )
             {
-                detail.Quantity = targetQuantity;
+                detail.Quantity = nextQuantity;
             }
             else
             {
-                detail.AllocQuantity = targetQuantity;
+                detail.AllocQuantity = nextQuantity;
             }
 
             var allocQuantity = detail.AllocQuantity ?? 0;
@@ -4021,6 +4056,62 @@ namespace BlazorApp.Api.Services.React
             {
                 await _db.Insertable(detail).ExecuteCommandAsync();
             }
+        }
+
+        private static string NormalizePasteAction(string? action)
+        {
+            if (string.IsNullOrWhiteSpace(action))
+            {
+                return StoreOrderPasteActions.Replace;
+            }
+
+            if (
+                string.Equals(
+                    action,
+                    StoreOrderPasteActions.Append,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return StoreOrderPasteActions.Append;
+            }
+
+            if (
+                string.Equals(
+                    action,
+                    StoreOrderPasteActions.Skip,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return StoreOrderPasteActions.Skip;
+            }
+
+            return StoreOrderPasteActions.Replace;
+        }
+
+        private static bool IsSupportedPasteAction(string? action)
+        {
+            if (string.IsNullOrWhiteSpace(action))
+            {
+                return true;
+            }
+
+            return string.Equals(
+                    action,
+                    StoreOrderPasteActions.Replace,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || string.Equals(
+                    action,
+                    StoreOrderPasteActions.Append,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || string.Equals(
+                    action,
+                    StoreOrderPasteActions.Skip,
+                    StringComparison.OrdinalIgnoreCase
+                );
         }
 
         private async Task AddOrUpdateDetailAsync(

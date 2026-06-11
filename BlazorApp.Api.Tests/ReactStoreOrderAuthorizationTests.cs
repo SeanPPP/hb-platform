@@ -1591,6 +1591,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         IReadOnlyCollection<string>? roleNames = null,
         Mock<IStoreOrderSyncJobService>? jobService = null,
         Mock<IStoreOrderInvoiceEmailJobService>? invoiceEmailJobService = null,
+        Mock<IStoreOrderPasteReplaceJobService>? pasteReplaceJobService = null,
         Mock<IStoreOrderInvoiceEmailTextTranslationService>? invoiceEmailTextTranslationService = null,
         Mock<IUserService>? userService = null,
         SqlSugarContext? dbContext = null
@@ -1609,6 +1610,10 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             (
                 invoiceEmailJobService
                 ?? new Mock<IStoreOrderInvoiceEmailJobService>(MockBehavior.Strict)
+            ).Object,
+            (
+                pasteReplaceJobService
+                ?? new Mock<IStoreOrderPasteReplaceJobService>(MockBehavior.Strict)
             ).Object,
             (
                 invoiceEmailTextTranslationService

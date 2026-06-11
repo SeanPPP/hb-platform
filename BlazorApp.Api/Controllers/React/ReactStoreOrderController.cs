@@ -30,6 +30,7 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ICurrentUserManageableStoreScopeService _storeScopeService;
         private readonly IStoreOrderSyncJobService _storeOrderSyncJobService;
         private readonly IStoreOrderInvoiceEmailJobService _invoiceEmailJobService;
+        private readonly IStoreOrderPasteReplaceJobService _pasteReplaceJobService;
         private readonly IStoreOrderInvoiceEmailTextTranslationService _invoiceEmailTextTranslationService;
 
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
@@ -115,6 +116,7 @@ namespace BlazorApp.Api.Controllers.React
             ICurrentUserManageableStoreScopeService storeScopeService,
             IStoreOrderSyncJobService storeOrderSyncJobService,
             IStoreOrderInvoiceEmailJobService invoiceEmailJobService,
+            IStoreOrderPasteReplaceJobService pasteReplaceJobService,
             IStoreOrderInvoiceEmailTextTranslationService invoiceEmailTextTranslationService
         )
         {
@@ -127,6 +129,7 @@ namespace BlazorApp.Api.Controllers.React
             _storeScopeService = storeScopeService;
             _storeOrderSyncJobService = storeOrderSyncJobService;
             _invoiceEmailJobService = invoiceEmailJobService;
+            _pasteReplaceJobService = pasteReplaceJobService;
             _invoiceEmailTextTranslationService = invoiceEmailTextTranslationService;
         }
 
@@ -1440,6 +1443,71 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "PasteReplaceOrderLines failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 创建 Excel 粘贴覆盖订单行后台 job
+        /// </summary>
+        [HttpPost("line/paste-replace/jobs")]
+        public async Task<IActionResult> CreatePasteReplaceOrderLinesJob(
+            [FromBody] PasteReplaceOrderLinesDto request
+        )
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var job = await _pasteReplaceJobService.StartJobAsync(
+                    request,
+                    HttpContext.RequestAborted
+                );
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CreatePasteReplaceOrderLinesJob failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取 Excel 粘贴覆盖订单行后台 job 状态
+        /// </summary>
+        [HttpGet("line/paste-replace/jobs/{jobId}")]
+        public async Task<IActionResult> GetPasteReplaceOrderLinesJob(string jobId)
+        {
+            try
+            {
+                var job = await _pasteReplaceJobService.GetJobAsync(
+                    jobId,
+                    HttpContext.RequestAborted
+                );
+                if (job == null)
+                {
+                    return NotFound(new { success = false, message = "任务不存在" });
+                }
+
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    ?? await RequireOrderScopeAsync(job.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                return Ok(new { success = true, data = job });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetPasteReplaceOrderLinesJob failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
