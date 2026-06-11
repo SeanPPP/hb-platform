@@ -517,6 +517,7 @@ namespace BlazorApp.Shared.DTOs
     public string ProductCode { get; set; } = string.Empty;
     public decimal Quantity { get; set; }
     public decimal? ImportPrice { get; set; }
+    public string? Action { get; set; }
   }
 
   /// <summary>
@@ -541,6 +542,13 @@ namespace BlazorApp.Shared.DTOs
   {
     public const string Quantity = "quantity";
     public const string AllocQuantity = "allocQuantity";
+  }
+
+  public static class StoreOrderPasteActions
+  {
+    public const string Replace = "replace";
+    public const string Append = "append";
+    public const string Skip = "skip";
   }
 
   /// <summary>
@@ -1049,6 +1057,76 @@ public class StoreOrderInvoiceEmailJobDto
     /// 完成时间
     /// </summary>
     public DateTime? CompletedAt { get; set; }
+}
+
+namespace BlazorApp.Shared.DTOs
+{
+    /// <summary>
+    /// Excel 粘贴导入后台 job 状态常量
+    /// </summary>
+    public static class StoreOrderPasteReplaceJobStatusConstants
+    {
+        public const string Queued = "Queued";
+        public const string Running = "Running";
+        public const string Succeeded = "Succeeded";
+        public const string Failed = "Failed";
+    }
+
+    /// <summary>
+    /// Excel 粘贴导入后台 job 状态
+    /// </summary>
+    public class StoreOrderPasteReplaceJobDto
+    {
+        /// <summary>
+        /// job 标识
+        /// </summary>
+        public string JobId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// job 状态
+        /// </summary>
+        public string Status { get; set; } = StoreOrderPasteReplaceJobStatusConstants.Queued;
+
+        /// <summary>
+        /// 后端执行消息
+        /// </summary>
+        public string Message { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 订单 GUID
+        /// </summary>
+        public string OrderGUID { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 写入目标字段
+        /// </summary>
+        public string TargetField { get; set; } = StoreOrderPasteTargetFields.Quantity;
+
+        /// <summary>
+        /// 前端提交的总行数
+        /// </summary>
+        public int TotalCount { get; set; }
+
+        /// <summary>
+        /// 实际提交给同步导入服务的行数
+        /// </summary>
+        public int ImportedCount { get; set; }
+
+        /// <summary>
+        /// 被后端跳过的行数
+        /// </summary>
+        public int SkippedCount { get; set; }
+
+        /// <summary>
+        /// 创建时间
+        /// </summary>
+        public DateTime CreatedAt { get; set; }
+
+        /// <summary>
+        /// 完成时间
+        /// </summary>
+        public DateTime? CompletedAt { get; set; }
+    }
 }
 
 /// <summary>
