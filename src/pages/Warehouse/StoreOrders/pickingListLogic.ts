@@ -92,6 +92,13 @@ function resolvePickingListRowsPerPdfPage(
   return Math.max(1, Math.floor(availableHeight / options.rowHeightMm))
 }
 
+function resolveRowsBeforeSummaryPage(remaining: number, regularRowsPerPage: number, summaryRowsPerPage: number) {
+  // 尾部两页均衡拆分，避免为了保护汇总区而产生 1-3 行的孤立页面。
+  const balancedRows = Math.ceil(remaining / 2)
+  const rowsNeededBeforeSummary = remaining - summaryRowsPerPage
+  return Math.min(regularRowsPerPage, Math.max(balancedRows, rowsNeededBeforeSummary))
+}
+
 // 统一管理配货单的派生展示逻辑，避免组件里散落业务格式化判断。
 export function formatInnerPackCount(orderQuantity: number, minOrderQuantity?: number) {
   if (!Number.isFinite(orderQuantity)) {
@@ -184,12 +191,12 @@ export function buildPickingListPdfPages(
   while (startIndex < items.length) {
     const remaining = items.length - startIndex
     const canFitRestWithSummary = remaining <= summaryRowsPerPage
-    const shouldSplitBeforeSummary = hasSummary && !canFitRestWithSummary && remaining <= regularRowsPerPage
-    // 尾页需要显示备注和汇总时，最多只放汇总页容量；否则 26-28 行会挤占汇总区。
+    const shouldBalanceTailPages = hasSummary && !canFitRestWithSummary && remaining <= regularRowsPerPage + summaryRowsPerPage
+    // 尾页需要显示备注和汇总时，最后两页均衡拆分，兼顾汇总空间和页面观感。
     const rowsForPage = canFitRestWithSummary
       ? summaryRowsPerPage
-      : shouldSplitBeforeSummary
-        ? Math.max(1, remaining - summaryRowsPerPage)
+      : shouldBalanceTailPages
+        ? resolveRowsBeforeSummaryPage(remaining, regularRowsPerPage, summaryRowsPerPage)
         : regularRowsPerPage
     const pageItems = items.slice(startIndex, startIndex + rowsForPage)
 
