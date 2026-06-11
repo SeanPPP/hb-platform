@@ -1,7 +1,7 @@
 import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
 import fs from 'node:fs'
 import path from 'node:path'
-import { buildPickingListExcelData, formatInnerPackCount } from './pickingListLogic'
+import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount } from './pickingListLogic'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -175,6 +175,102 @@ runTest('配货单打印应取消固定 30 行分页并交给 A4 打印流填满
   assertEqual(pickingListSource.includes('buildPickingPrintPages'), false, '打印组件不应按固定行数预切页')
 })
 
+runTest('配货单 PDF 分页应按 A4 可用高度计算并为最后一页保留汇总区域', () => {
+  const items = Array.from({ length: 8 }, (_, index) => ({
+    ...excelItems[0],
+    detailGUID: `pdf-detail-${index}`,
+    itemNumber: `PDF-${index}`,
+  }))
+  const pages = buildPickingListPdfPages(items, true, {
+    pageHeightMm: 100,
+    pagePaddingTopMm: 5,
+    pagePaddingBottomMm: 5,
+    headerHeightMm: 10,
+    tableHeaderHeightMm: 5,
+    footerHeightMm: 5,
+    rowHeightMm: 10,
+    finalSummaryHeightMm: 20,
+  })
+
+  assertDeepEqual(
+    pages.map((page) => page.items.length),
+    [7, 1],
+    '尾页需要汇总时应优先让倒数第二页满排，最后一页可以少',
+  )
+  assertEqual(pages[0].showSummary, false, '非末页不应显示备注和汇总')
+  assertEqual(pages[1].showSummary, true, '最后一页应显示备注和汇总')
+})
+
+runTest('配货单 PDF 每页应带页头元数据且页脚只承载页码', () => {
+  const pages = buildPickingListPdfPages(excelItems, true, {
+    pageHeightMm: 70,
+    pagePaddingTopMm: 5,
+    pagePaddingBottomMm: 5,
+    headerHeightMm: 10,
+    tableHeaderHeightMm: 5,
+    footerHeightMm: 5,
+    rowHeightMm: 10,
+    finalSummaryHeightMm: 10,
+  })
+
+  pages.forEach((page) => {
+    assertEqual(page.hasHeader, true, '每个 PDF 分页都应渲染业务页头')
+    assertEqual(page.footerKind, 'pageNumber', 'PDF 页脚只能显示页码')
+  })
+})
+
+runTest('配货单 PDF 默认分页每页应放 29 行并保留页码空间', () => {
+  const items = Array.from({ length: 31 }, (_, index) => ({
+    ...excelItems[0],
+    detailGUID: `footer-safe-${index}`,
+    itemNumber: `SAFE-${index}`,
+  }))
+  const pages = buildPickingListPdfPages(items, false)
+
+  assertEqual(pages[0].items.length, 29, '默认 PDF 分页首张 A4 应容纳 29 行明细')
+  assertEqual(pages.length >= 2, true, '31 行明细不应继续挤在同一页导致页码重叠')
+})
+
+runTest('配货单 PDF 带汇总的尾页应优先让倒数第二页满排', () => {
+  const cases: Array<[number, number[]]> = [
+    [26, [26]],
+    [27, [27]],
+    [28, [28]],
+    [29, [28, 1]],
+    [30, [29, 1]],
+    [31, [29, 2]],
+    [32, [29, 3]],
+    [55, [29, 26]],
+    [56, [29, 27]],
+    [57, [29, 28]],
+    [58, [29, 28, 1]],
+    [84, [29, 29, 26]],
+    [85, [29, 29, 27]],
+    [86, [29, 29, 28]],
+  ]
+
+  for (const [itemCount, expectedPageSizes] of cases) {
+    const items = Array.from({ length: itemCount }, (_, index) => ({
+      ...excelItems[0],
+      detailGUID: `summary-safe-${itemCount}-${index}`,
+      itemNumber: `SUMMARY-${itemCount}-${index}`,
+    }))
+    const pages = buildPickingListPdfPages(items, true)
+    const summaryPage = pages[pages.length - 1]
+
+    assertDeepEqual(pages.map((page) => page.items.length), expectedPageSizes, `${itemCount} 行时应优先让倒数第二页满排`)
+    assertEqual(summaryPage.showSummary, true, `${itemCount} 行时最后一页应显示汇总`)
+    assertEqual(summaryPage.items.length <= 28, true, `${itemCount} 行时短尾合并后的汇总页不应超过 28 行`)
+  }
+})
+
+runTest('配货单 PDF 打印路径应使用分页 PDF 且不再直接打印 HTML 页面', () => {
+  const pickingListSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx'), 'utf8')
+  assertEqual(pickingListSource.includes('printElementPagesAsPdf'), true, '打印按钮应走分页 PDF 打印')
+  assertEqual(pickingListSource.includes('downloadElementPagesAsPdf'), true, '下载按钮应走分页 PDF 下载')
+  assertEqual(pickingListSource.includes('window.print()'), false, '配货单不应再直接调用浏览器 HTML 打印')
+})
+
 function readCssRule(source: string, selector: string) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const match = source.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`))
@@ -239,7 +335,7 @@ runTest('配货单打印列宽应按草图重新分配并保留 colgroup', () =>
   assertEqual(readCssWidth(readCssRule(printCssSource, '.store-order-picking-table .col-send-qty')), 5.5, '发货数列应为 5.5%')
   assertEqual(pickingListSource.includes('<colgroup>'), true, '固定表格布局应使用 colgroup 明确列宽')
   assertDeepEqual(
-    Array.from(pickingListSource.matchAll(/<col className="([^"]+)" \/>/g), (match) => match[1]),
+    Array.from(pickingListSource.matchAll(/<col className="([^"]+)" \/>/g), (match) => match[1]).slice(0, 9),
     ['col-index', 'col-item', 'col-location', 'col-product', 'col-price', 'col-price', 'col-inner-pack', 'col-qty', 'col-send-qty'],
     'colgroup 应按表头顺序定义 9 列，并包含两列价格列',
   )
@@ -331,6 +427,17 @@ runTest('配货单打印应绑定专用 A4 页面边距', () => {
     true,
     '配货单纸张元素应绑定命名页面',
   )
+})
+
+runTest('配货单 PDF 页码区域应有独立底部留白', () => {
+  const printCssSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/print.css'), 'utf8')
+  const pageRule = readCssRule(printCssSource, '.store-order-pdf-page.store-order-picking-paper')
+  const bodyRule = readCssRule(printCssSource, '.store-order-pdf-page-body')
+  const pageNumberRule = readCssRule(printCssSource, '.store-order-pdf-page-number')
+
+  assertEqual(/padding:\s*6mm 5mm 12mm/.test(pageRule), true, 'PDF 页面底部应预留 12mm')
+  assertEqual(/padding-bottom:\s*12mm/.test(bodyRule), true, 'PDF 内容区底部应避开页码')
+  assertEqual(/bottom:\s*4mm/.test(pageNumberRule), true, '页码应固定在底部留白区域内')
 })
 
 console.log('pickingListLogic.test: ok')

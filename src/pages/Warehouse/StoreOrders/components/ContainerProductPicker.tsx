@@ -260,6 +260,16 @@ export default function ContainerProductPicker({
       render: (value?: number) => (value === undefined || value === null ? '--' : value.toFixed(2)),
     },
     {
+      title: t('column.retailPrice'),
+      dataIndex: '零售价格',
+      width: 90,
+      // 零售价只展示商品主数据，加入订单时不写入订单明细。
+      render: (_, record) => {
+        const value = record.商品信息?.零售价格
+        return value === undefined || value === null ? '--' : Number(value).toFixed(2)
+      },
+    },
+    {
       title: t('column.containerQty'),
       dataIndex: '装柜数量',
       width: 100,

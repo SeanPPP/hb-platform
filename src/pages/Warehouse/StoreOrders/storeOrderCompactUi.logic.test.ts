@@ -25,6 +25,7 @@ const detailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/
 const compactCssFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/compact.css')
 const pickingListFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx')
 const invoiceFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Invoice.tsx')
+const containerProductPickerFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/components/ContainerProductPicker.tsx')
 const printCssFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/print.css')
 const packageFile = path.resolve(process.cwd(), 'package.json')
 
@@ -33,6 +34,7 @@ const detailSource = readFileSync(detailFile, 'utf8')
 const compactCssSource = readFileSync(compactCssFile, 'utf8')
 const pickingListSource = readFileSync(pickingListFile, 'utf8')
 const invoiceSource = readFileSync(invoiceFile, 'utf8')
+const containerProductPickerSource = readFileSync(containerProductPickerFile, 'utf8')
 const printCssSource = readFileSync(printCssFile, 'utf8')
 const packageSource = readFileSync(packageFile, 'utf8')
 const detailMainTableSource = detailSource.slice(detailSource.indexOf('const columns: ColumnsType<StoreOrderDetailLine>'))
@@ -133,6 +135,21 @@ async function main() {
     assert(detailSource.includes("{ value: 'active', label: t('common.activeUpper') }") && detailSource.includes("{ value: 'inactive', label: t('common.inactiveUpper') }"), '批量修改状态下拉应使用上架/下架')
   })
   if (detailProductStatusCopyFailure) failures.push(detailProductStatusCopyFailure)
+
+  const containerPickerRetailPriceFailure = await runTest('货柜选品弹窗商品表格应展示零售价列', () => {
+    const retailPriceColumn = readColumnBlock(containerProductPickerSource, '零售价格')
+    const importPricePosition = containerProductPickerSource.indexOf("title: t('column.importPrice')")
+    const retailPricePosition = containerProductPickerSource.indexOf("title: t('column.retailPrice')")
+    const containerQtyPosition = containerProductPickerSource.indexOf("title: t('column.containerQty')")
+
+    assert(retailPricePosition > importPricePosition, '零售价列应位于进口价列之后')
+    assert(retailPricePosition < containerQtyPosition, '零售价列应位于货柜数量列之前')
+    assert(retailPriceColumn.includes("title: t('column.retailPrice')"), '零售价列应使用 column.retailPrice 翻译')
+    assert(retailPriceColumn.includes('record.商品信息?.零售价格'), '零售价列应读取商品信息中的零售价格')
+    assert(retailPriceColumn.includes("value === undefined || value === null ? '--' : Number(value).toFixed(2)"), '零售价列缺失显示 --，有效值应保留两位')
+    assert(!containerProductPickerSource.includes('retailPrice:'), '货柜选品加入订单 payload 不应写入零售价')
+  })
+  if (containerPickerRetailPriceFailure) failures.push(containerPickerRetailPriceFailure)
 
   const densityFailure = await runTest('详情页主明细表关键字段应压缩到首屏优先显示', () => {
     const imageColumn = readColumnBlock(detailMainTableSource, 'productImage')

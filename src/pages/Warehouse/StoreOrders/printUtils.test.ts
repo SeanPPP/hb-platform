@@ -7,6 +7,8 @@ import {
   getPdfSliceImageData,
   paintPdfSlice,
 } from './printUtils'
+import fs from 'node:fs'
+import path from 'node:path'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
   const actualText = JSON.stringify(actual)
@@ -124,6 +126,23 @@ runTest('PDF 切片绘制应先铺白底再绘制原图切片', () => {
     ],
     '绘制顺序和参数应锁住白底 JPEG 切片逻辑',
   )
+})
+
+runTest('分页 PDF 应逐页渲染 A4 页面并写入 jsPDF', () => {
+  const printUtilsSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/printUtils.ts'), 'utf8')
+  assertEqual(printUtilsSource.includes('createPdfDocumentFromPages'), true, '应提供分页 PDF 生成函数')
+  assertEqual(printUtilsSource.includes("querySelectorAll<HTMLElement>(pageSelector)"), true, '分页 PDF 应按页面选择器逐页读取 DOM')
+  assertEqual(printUtilsSource.includes('pdf.addPage()'), true, '分页 PDF 多页时应追加 PDF 页面')
+  assertEqual(printUtilsSource.includes('pdf.addImage(imageData, PDF_IMAGE_FORMAT, 0, 0, 210, 297)'), true, '每个分页应按 A4 尺寸写入 PDF')
+})
+
+runTest('分页 PDF 打印应使用临时 Blob URL 并清理资源', () => {
+  const printUtilsSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/printUtils.ts'), 'utf8')
+  assertEqual(printUtilsSource.includes("pdf.output('blob')"), true, '打印 PDF 应输出 Blob')
+  assertEqual(printUtilsSource.includes('URL.createObjectURL(blob)'), true, '打印 PDF 应创建临时 URL')
+  assertEqual(printUtilsSource.includes('frame.contentWindow?.print()'), true, '打印 PDF 应触发 iframe 打印')
+  assertEqual(printUtilsSource.includes('URL.revokeObjectURL(url)'), true, '打印完成后应清理临时 URL')
+  assertEqual(printUtilsSource.includes('frame.remove()'), true, '打印完成后应移除临时 iframe')
 })
 
 console.log('printUtils.test: ok')
