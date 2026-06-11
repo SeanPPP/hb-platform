@@ -65,6 +65,7 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail));
         Assert.NotNull(detail.商品信息);
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail.商品信息!));
+        Assert.Equal("套装商品", detail.商品信息!.商品类型);
     }
 
     [Fact]
@@ -86,6 +87,7 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail));
         Assert.NotNull(detail.商品信息);
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail.商品信息!));
+        Assert.Equal("套装商品", detail.商品信息!.商品类型);
     }
 
     public void Dispose()
@@ -146,6 +148,7 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
                 HBProductNo = "HB-001",
                 ProductName = "测试商品",
                 EnglishProductName = "Test Product",
+                ProductType = 1,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();
