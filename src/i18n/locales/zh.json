@@ -3732,6 +3732,7 @@
     "gstAmountLabel": "GST 10%",
     "freightLabel": "运费",
     "addressLabel": "地址",
+    "contactEmailLabel": "联系邮箱",
     "skuCountLabel": "SKU 数",
     "remarksLabel": "备注",
     "orderDetailSection": "订单明细",

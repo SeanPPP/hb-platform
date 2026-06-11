@@ -3732,6 +3732,7 @@
     "gstAmountLabel": "GST 10%",
     "freightLabel": "Freight",
     "addressLabel": "Address",
+    "contactEmailLabel": "Contact Email",
     "skuCountLabel": "SKU Count",
     "remarksLabel": "Remarks",
     "orderDetailSection": "Order Detail",
