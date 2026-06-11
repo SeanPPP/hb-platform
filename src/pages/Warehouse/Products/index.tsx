@@ -1,19 +1,24 @@
 ﻿import { CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
+import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { SorterResult } from 'antd/es/table/interface';
+import type { CSSProperties, HTMLAttributes } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
 import { getDomesticProductSetItems, getSupplierOptions, updateDomesticProductSetItems, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
-import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
+import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
 import { useAuthStore } from '../../../store/auth';
 import type { DomesticProductSetItem, SupplierOption, } from '../../../types/domesticProduct';
 import { ProductType, ProductTypeLabels } from '../../../types/domesticProduct';
 import { copyTextToClipboard } from '../../../utils/clipboard';
+import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
@@ -36,6 +41,15 @@ interface ProductFormValues {
     remarks?: string;
     productImage?: string;
     isActive: boolean;
+}
+interface BatchEditFormValues {
+    domesticPrice?: number;
+    oemPrice?: number;
+    importPrice?: number;
+    packingQuantity?: number;
+    minOrderQuantity?: number;
+    unitVolume?: number;
+    isActive?: boolean;
 }
 const getStatusOptions = (t: ReturnType<typeof useTranslation>['t']) => [
     { value: true, label: getShelfStatusLabel(true, t) },
@@ -86,8 +100,15 @@ function getProductTypeOptions(t: ReturnType<typeof useTranslation>['t']) {
         label: getProductTypeLabel(Number(value) as ProductType, t),
     }));
 }
-const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 80;
+const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60;
 const warehouseProductsTableStyle = `
+  /* 主表紧凑模式压缩行高、间距和媒体尺寸，减少首屏横向滚动。 */
+  .warehouse-products-table .ant-table-thead > tr > th,
+  .warehouse-products-table .ant-table-tbody > tr > td {
+    padding: 4px 6px !important;
+    line-height: 1.2;
+  }
+
   .warehouse-products-table .ant-table-tbody > tr > td {
     height: ${WAREHOUSE_TABLE_ROW_MAX_HEIGHT}px;
     max-height: ${WAREHOUSE_TABLE_ROW_MAX_HEIGHT}px;
@@ -98,10 +119,19 @@ const warehouseProductsTableStyle = `
     white-space: nowrap;
   }
 
+  .warehouse-products-table .ant-table-column-title {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    line-height: 1.15;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
   .warehouse-products-table .warehouse-products-image-cell,
   .warehouse-products-table .warehouse-products-barcode-cell {
-    min-height: 64px;
-    max-height: 64px;
+    min-height: 48px;
+    max-height: 48px;
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -109,15 +139,15 @@ const warehouseProductsTableStyle = `
 
   .warehouse-products-table .warehouse-products-image-cell .ant-image,
   .warehouse-products-table .warehouse-products-image-cell img {
-    width: 44px;
-    height: 44px;
+    width: 36px;
+    height: 36px;
     display: block;
   }
 
   .warehouse-products-table .warehouse-products-barcode-cell svg,
   .warehouse-products-table .warehouse-products-barcode-cell canvas,
   .warehouse-products-table .warehouse-products-barcode-cell img {
-    max-height: 56px !important;
+    max-height: 42px !important;
   }
 
   .warehouse-products-table .warehouse-products-supplier-cell {
@@ -133,8 +163,8 @@ const warehouseProductsTableStyle = `
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
-    line-height: 20px;
-    padding-block: 2px;
+    line-height: 18px;
+    padding-block: 1px;
   }
 
   .warehouse-products-table .warehouse-products-text-2line {
@@ -143,8 +173,14 @@ const warehouseProductsTableStyle = `
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
-    line-height: 20px;
+    line-height: 18px;
     word-break: break-word;
+  }
+
+  .warehouse-products-table .warehouse-products-draggable-header {
+    display: inline-flex;
+    align-items: center;
+    cursor: move;
   }
 `;
 function formatDateTime(value?: string, language?: string) {
@@ -178,6 +214,54 @@ const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.act
 const WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID = 'warehouse-products-hq-sync';
 const WAREHOUSE_PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000;
 const WAREHOUSE_PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+const WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.warehouseProducts.columnOrder.v1';
+const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = [
+    'rowNumber',
+    'itemNumber',
+    'productImage',
+    'domesticSupplierCode',
+    'nameEn',
+    'minOrderQuantity',
+    'domesticPrice',
+    'importPrice',
+    'labelPrice',
+    'isActive',
+    'productType',
+    'barcode',
+    'name',
+    'packingQty',
+    'volume',
+    'localSupplierCode',
+    'updatedAt',
+    'updatedBy',
+    'action',
+] as const;
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+    'data-column-key'?: string;
+}
+function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+    const columnKey = props['data-column-key'];
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging, } = useSortable({
+        id: columnKey ?? '__warehouse-product-static-column__',
+        disabled: !columnKey,
+    });
+    if (!columnKey) {
+        return <th style={style} {...props}>{children}</th>;
+    }
+    const headerStyle: CSSProperties = {
+        ...style,
+        transform: CSS.Translate.toString(transform),
+        transition,
+        cursor: 'move',
+        zIndex: isDragging ? 3 : style?.zIndex,
+        opacity: isDragging ? 0.85 : style?.opacity,
+    };
+    return (<th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>
+      <div className="warehouse-products-draggable-header">
+        {children}
+      </div>
+    </th>);
+}
 function readActiveWarehouseProductHqSyncJob(): ActiveWarehouseProductHqSyncJob | null {
     if (typeof window === 'undefined') {
         return null;
@@ -381,6 +465,7 @@ export default function WarehouseProductsPage() {
     const { t, i18n } = useTranslation();
     const productTypeOptions = getProductTypeOptions(t);
     const [form] = Form.useForm<ProductFormValues>();
+    const [batchEditForm] = Form.useForm<BatchEditFormValues>();
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
@@ -413,14 +498,22 @@ export default function WarehouseProductsPage() {
     const [currentSetProduct, setCurrentSetProduct] = useState<WarehouseProductListItem | null>(null);
     const [setItemsDraft, setSetItemsDraft] = useState<DomesticProductSetItem[]>([]);
     const [batchActionLoading, setBatchActionLoading] = useState(false);
+    const [batchEditOpen, setBatchEditOpen] = useState(false);
+    const [batchEditSaving, setBatchEditSaving] = useState(false);
     const [togglingProductCodes, setTogglingProductCodes] = useState<string[]>([]);
     const [exportFailDetailOpen, setExportFailDetailOpen] = useState(false);
     const [exportFailDetail, setExportFailDetail] = useState<ExportResult['failedProductImages']>([]);
     const [syncingFromHq, setSyncingFromHq] = useState(false);
     const [activeHqSyncJob, setActiveHqSyncJob] = useState<ActiveWarehouseProductHqSyncJob | null>(null);
+    const [columnOrder, setColumnOrder] = useState<WarehouseProductTableColumnKey[]>([]);
     const stopHqSyncJobPollingRef = useRef<(() => void) | null>(null);
     const isMountedRef = useRef(true);
     const loadDataRef = useRef<((overrides?: Partial<WarehouseProductsTableQuery>) => Promise<void>) | null>(null);
+    const columnDragSensors = useSensors(useSensor(PointerSensor, {
+        activationConstraint: {
+            distance: 6,
+        },
+    }));
     const { access } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => ({
@@ -696,6 +789,62 @@ export default function WarehouseProductsPage() {
             setBatchActionLoading(false);
         }
     };
+    const openBatchEdit = () => {
+        if (!selectedRowKeys.length) {
+            message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
+            return;
+        }
+        batchEditForm.resetFields();
+        setBatchEditOpen(true);
+    };
+    const handleBatchEditSave = async () => {
+        if (!selectedRowKeys.length) {
+            message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
+            return;
+        }
+        try {
+            const values = await batchEditForm.validateFields();
+            const hasChanges = Object.values(values).some((value) => value !== undefined && value !== null);
+            if (!hasChanges) {
+                message.warning(t('warehouse.batchEditNoChanges', '请至少填写一个修改字段'));
+                return;
+            }
+            setBatchEditSaving(true);
+            const items = selectedRowKeys.map((code) => {
+                const rawItem: WarehouseProductBatchUpdateItem = {
+                    ProductCode: String(code),
+                    DomesticPrice: values.domesticPrice,
+                    OEMPrice: values.oemPrice,
+                    ImportPrice: values.importPrice,
+                    PackingQuantity: values.packingQuantity,
+                    // 只传用户填写的字段，避免批量误覆盖；中包数来源为 WarehouseProduct.MinOrderQuantity。
+                    MinOrderQuantity: values.minOrderQuantity,
+                    Volume: values.unitVolume,
+                    IsActive: values.isActive,
+                };
+                return Object.fromEntries(Object.entries(rawItem).filter(([, value]) => value !== undefined && value !== null)) as WarehouseProductBatchUpdateItem;
+            });
+            const result = await batchUpdateWarehouseProducts(items);
+            message.success(result.message || t('warehouse.batchEditSuccess', '批量修改成功'));
+            if ((result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0) > 0) {
+                message.warning(t('warehouse.batchUpdatePartialFailed', '{{count}} 个商品更新失败', { count: result.failedCount ?? result.FailedCount ?? result.failed ?? result.Failed ?? 0 }));
+            }
+            setBatchEditOpen(false);
+            batchEditForm.resetFields();
+            setSelectedRowKeys([]);
+            void loadData({ page });
+        }
+        catch (error) {
+            if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+                return;
+            }
+            console.error(error);
+            message.error(error instanceof Error ? error.message : t('warehouse.batchEditFailed', '批量修改失败'));
+        }
+        finally {
+            setBatchEditSaving(false);
+        }
+    };
     const handleToggleSingleActive = async (record: WarehouseProductListItem, nextIsActive: boolean) => {
         try {
             setTogglingProductCodes((current) => [...current, record.productCode]);
@@ -876,12 +1025,13 @@ export default function WarehouseProductsPage() {
             },
         });
     };
-    const columns = useMemo<ColumnsType<WarehouseProductListItem>>(() => [
-        { title: '#', dataIndex: 'rowNumber', width: 30, fixed: 'left' },
+    const baseColumns = useMemo<ColumnsType<WarehouseProductListItem>>(() => [
+        { key: 'rowNumber', title: '#', dataIndex: 'rowNumber', width: 30, fixed: 'left' },
         {
+            key: 'itemNumber',
             title: t('column.hbItemNumber'),
             dataIndex: 'itemNumber',
-            width: 120,
+            width: 112,
             fixed: 'left',
             sorter: true,
             render: (value: string) => value ? (<Space size={4}>
@@ -892,17 +1042,19 @@ export default function WarehouseProductsPage() {
             </Space>) : ('--'),
         },
         {
+            key: 'productImage',
             title: t('column.image'),
             dataIndex: 'productImage',
-            width: 80,
+            width: 64,
             render: (value: string | undefined) => (<div className="warehouse-products-image-cell">
-            <Image src={value} alt="" width={44} height={44} style={{ borderRadius: 4, objectFit: 'cover' }} fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="/>
+            <Image src={value} alt="" width={36} height={36} style={{ borderRadius: 4, objectFit: 'cover' }} fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="/>
           </div>),
         },
         {
+            key: 'domesticSupplierCode',
             title: t('column.supplier'),
             dataIndex: 'domesticSupplierCode',
-            width: 150,
+            width: 132,
             sorter: true,
             render: (_value, record) => record.domesticSupplierCode || record.domesticSupplierName ? (<div className="warehouse-products-supplier-cell">
               <Tag color="blue">
@@ -911,100 +1063,120 @@ export default function WarehouseProductsPage() {
             </div>) : ('--'),
         },
         {
+            key: 'nameEn',
+            title: t('column.englishName'),
+            dataIndex: 'nameEn',
+            width: 176,
+            render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
+        },
+        {
+            key: 'minOrderQuantity',
+            title: t('warehouse.middlePackQuantity', '中包数'),
+            dataIndex: 'minOrderQuantity',
+            width: 84,
+            render: (value: number | undefined) => value !== undefined && value !== null ? value : '--',
+        },
+        {
+            key: 'domesticPrice',
+            title: t('column.domesticPrice'),
+            dataIndex: 'domesticPrice',
+            width: 82,
+            render: (value: number | undefined) => formatPrice(value),
+        },
+        {
+            key: 'importPrice',
+            title: t('column.importPrice'),
+            dataIndex: 'importPrice',
+            width: 82,
+            render: (value: number | undefined) => formatPrice(value),
+        },
+        {
+            key: 'labelPrice',
+            title: t('column.oemPrice'),
+            dataIndex: 'labelPrice',
+            width: 82,
+            render: (value: number | undefined) => formatPrice(value),
+        },
+        {
+            key: 'isActive',
+            title: t('column.status'),
+            dataIndex: 'isActive',
+            width: 92,
+            render: (value: boolean, record) => (<Switch checked={value} checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
+        },
+        {
+            key: 'productType',
+            title: t('column.productType'),
+            dataIndex: 'productType',
+            width: 92,
+            render: (value: ProductType) => <Tag color={getProductTypeTagColor(value)}>{getProductTypeLabel(value, t)}</Tag>,
+        },
+        {
+            key: 'barcode',
+            title: t('column.barcode'),
+            dataIndex: 'barcode',
+            width: 156,
+            render: (value: string | undefined) => value ? (<div className="warehouse-products-barcode-cell">
+              <BarcodePreview value={value} textMaxWidth={150} compactCopy/>
+            </div>) : ('--'),
+        },
+        {
+            key: 'name',
             title: t('column.productName'),
             dataIndex: 'name',
-            width: 200,
+            width: 176,
             sorter: true,
             render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
         },
         {
-            title: t('column.englishName'),
-            dataIndex: 'nameEn',
-            width: 200,
-            render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
-        },
-        {
-            title: t('column.barcode'),
-            dataIndex: 'barcode',
-            width: 180,
-            render: (value: string | undefined) => value ? (<div className="warehouse-products-barcode-cell">
-              <BarcodePreview value={value} textMaxWidth={180} compactCopy/>
-            </div>) : ('--'),
-        },
-        {
-            title: t('column.status'),
-            dataIndex: 'isActive',
-            width: 110,
-            render: (value: boolean, record) => (<Switch checked={value} checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
-        },
-        {
-            title: t('column.productType'),
-            dataIndex: 'productType',
-            width: 120,
-            render: (value: ProductType) => <Tag color={getProductTypeTagColor(value)}>{getProductTypeLabel(value, t)}</Tag>,
-        },
-        {
-            title: t('column.domesticPrice'),
-            dataIndex: 'domesticPrice',
-            width: 100,
-            render: (value: number | undefined) => formatPrice(value),
-        },
-        {
-            title: t('column.oemPrice'),
-            dataIndex: 'labelPrice',
-            width: 100,
-            render: (value: number | undefined) => formatPrice(value),
-        },
-        {
-            title: t('column.importPrice'),
-            dataIndex: 'importPrice',
-            width: 100,
-            render: (value: number | undefined) => formatPrice(value),
-        },
-        {
+            key: 'packingQty',
             title: t('column.packingQuantity'),
             dataIndex: 'packingQty',
-            width: 140,
+            width: 96,
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
               <span>{value}</span>
               {record.isPackingQtyFallback ? <Tag color="gold">{t('warehouse.domestic')}</Tag> : <Tag color="green">{t('warehouse.warehouse')}</Tag>}
             </Space>) : ('--'),
         },
         {
+            key: 'volume',
             title: t('column.volume'),
             dataIndex: 'volume',
-            width: 140,
+            width: 96,
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
               <span>{value}</span>
               {record.isVolumeFallback ? <Tag color="gold">{t('warehouse.domestic')}</Tag> : <Tag color="green">{t('warehouse.warehouse')}</Tag>}
             </Space>) : ('--'),
         },
         {
+            key: 'localSupplierCode',
             title: t('column.localSupplier'),
             dataIndex: 'localSupplierCode',
-            width: 180,
+            width: 150,
             sorter: true,
             render: (_value, record) => record.localSupplierName ? (<div className="warehouse-products-supplier-cell">
               <Tag color="purple">{record.localSupplierName}</Tag>
             </div>) : ('--'),
         },
         {
+            key: 'updatedAt',
             title: t('column.updateTime'),
             dataIndex: 'updatedAt',
-            width: 180,
+            width: 150,
             sorter: true,
             render: (value: string | undefined) => formatDateTime(value, i18n.language),
         },
         {
+            key: 'updatedBy',
             title: t('column.updater'),
             dataIndex: 'updatedBy',
-            width: 140,
+            width: 96,
             render: (value: string | undefined) => value || '--',
         },
         {
-            title: t('column.action'),
             key: 'action',
-            width: 220,
+            title: t('column.action'),
+            width: 190,
             fixed: 'right',
             render: (_, record) => (<Space size={0}>
             {access.canWriteProduct ? (<Button type="link" icon={<EditOutlined />} onClick={() => handleOpenEdit(record)}>
@@ -1020,6 +1192,65 @@ export default function WarehouseProductsPage() {
           </Space>),
         },
     ], [access.canWriteProduct, i18n.language, togglingProductCodes]);
+    const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER];
+    useEffect(() => {
+        setColumnOrder((current) => {
+            let savedOrder: unknown[] | null = null;
+            if (!current.length && typeof window !== 'undefined') {
+                try {
+                    const raw = localStorage.getItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY);
+                    savedOrder = raw ? JSON.parse(raw) : null;
+                }
+                catch {
+                    savedOrder = null;
+                }
+            }
+            // 列顺序只管理业务列；选择列继续由 rowSelection 管理，新增/删除列在这里自动兼容。
+            const nextOrder = mergeWarehouseProductColumnOrder(current.length ? current : savedOrder, WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER);
+            if (current.length === nextOrder.length && current.every((key, index) => key === nextOrder[index])) {
+                return current;
+            }
+            return nextOrder;
+        });
+    }, [draggableColumnKeys.join('|')]);
+    const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
+        if (!over || active.id === over.id)
+            return;
+        setColumnOrder((current) => {
+            const nextOrder = moveWarehouseProductColumnOrder(current, active.id, over.id);
+            try {
+                localStorage.setItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(nextOrder));
+            }
+            catch {
+                // localStorage 不可用时不影响当前页面内拖拽排序。
+            }
+            return nextOrder;
+        });
+    };
+    const isColumnOrderCustomized = isWarehouseProductColumnOrderCustomized(columnOrder, WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER);
+    const handleResetColumnOrder = () => {
+        try {
+            localStorage.removeItem(WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY);
+        }
+        catch {
+            // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+        }
+        // 重置只影响业务列顺序；选择列仍由 Ant Design rowSelection 管理。
+        setColumnOrder([...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER]);
+    };
+    const orderedColumns = useMemo(() => {
+        const activeOrder = columnOrder.length ? columnOrder : draggableColumnKeys;
+        const columnMap = new Map(baseColumns.map((column) => [String(column.key), column]));
+        return activeOrder
+            .map((key) => columnMap.get(key))
+            .filter((column): column is ColumnsType<WarehouseProductListItem>[number] => Boolean(column))
+            .map((column) => ({
+            ...column,
+            onHeaderCell: () => ({
+                'data-column-key': String(column.key),
+            }),
+        })) as ColumnsType<WarehouseProductListItem>;
+    }, [baseColumns, columnOrder, draggableColumnKeys.join('|')]);
     return (<>
       <style>{warehouseProductsTableStyle}</style>
       <PageContainer title={t('warehouse.productManagement')} subtitle={t('warehouse.productManagementSubtitle')} extra={<Space wrap>
@@ -1051,6 +1282,9 @@ export default function WarehouseProductsPage() {
                 {t('warehouse.batchDeactivate')}
               </Button>
             </Popconfirm>) : null}
+          {access.canWriteProduct ? (<Button loading={batchEditSaving} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
+              {t('warehouse.batchEdit', '批量修改')}
+            </Button>) : null}
           {access.canWriteProduct ? (<Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
               {t('warehouse.createProduct')}
             </Button>) : null}
@@ -1086,33 +1320,40 @@ export default function WarehouseProductsPage() {
         }}>
             {t('common.reset')}
           </Button>
+          <Button icon={<ReloadOutlined />} disabled={!isColumnOrderCustomized} onClick={handleResetColumnOrder}>
+            {t('warehouse.resetColumns', '重置列')}
+          </Button>
         </Space>
 
-          <Table className="warehouse-products-table" rowKey="productCode" virtual loading={loading} columns={columns} dataSource={data} rowSelection={{
-            fixed: true,
-            columnWidth: 56,
-            selectedRowKeys,
-            onChange: setSelectedRowKeys,
-        }} scroll={{ x: 2200, y: 620 }} pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-        }} onChange={(pagination: TablePaginationConfig, _, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[]) => {
-            const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
-            const nextSortField = typeof nextSorter?.field === 'string' ? nextSorter.field : sortField;
-            const nextSortOrder = nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
-                ? nextSorter.order
-                : sortOrder;
-            setSortField(nextSortField);
-            setSortOrder(nextSortOrder);
-            void loadData({
-                page: pagination.current || 1,
-                pageSize: pagination.pageSize || pageSize,
-                sortField: nextSortField,
-                sortOrder: nextSortOrder,
-            });
-        }}/>
+          <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+            <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+              <Table className="warehouse-products-table" rowKey="productCode" virtual loading={loading} components={{ header: { cell: DraggableHeaderCell } }} columns={orderedColumns} dataSource={data} rowSelection={{
+                fixed: true,
+                columnWidth: 56,
+                selectedRowKeys,
+                onChange: setSelectedRowKeys,
+            }} scroll={{ x: 2130, y: 620 }} pagination={{
+                current: page,
+                pageSize,
+                total,
+                showSizeChanger: true,
+            }} onChange={(pagination: TablePaginationConfig, _, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[]) => {
+                const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+                const nextSortField = typeof nextSorter?.field === 'string' ? nextSorter.field : sortField;
+                const nextSortOrder = nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
+                    ? nextSorter.order
+                    : sortOrder;
+                setSortField(nextSortField);
+                setSortOrder(nextSortOrder);
+                void loadData({
+                    page: pagination.current || 1,
+                    pageSize: pagination.pageSize || pageSize,
+                    sortField: nextSortField,
+                    sortOrder: nextSortOrder,
+                });
+            }}/>
+            </SortableContext>
+          </DndContext>
         </Card>
 
       <ProductFormModal open={modalOpen} saving={saving} editingItem={editingItem} suppliers={suppliers} form={form} onCancel={handleCloseModal} onSubmit={() => void handleSave()}/>
@@ -1138,6 +1379,45 @@ export default function WarehouseProductsPage() {
         }} onChangeField={(rowId, field, value) => {
             setSetItemsDraft((current) => current.map((item) => (item.id === rowId ? { ...item, [field]: value } : item)));
         }} onSubmit={() => void handleSaveSetItems()}/>
+
+      <Modal title={t('warehouse.batchEditTitle', '批量修改 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchEditOpen} width={680} destroyOnClose okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchEditSaving} onCancel={() => {
+            setBatchEditOpen(false);
+            batchEditForm.resetFields();
+        }} onOk={() => void handleBatchEditSave()}>
+        <Form form={batchEditForm} layout="vertical" preserve={false}>
+          <Typography.Paragraph type="secondary">
+            {t('warehouse.batchEditEmptyHint', '留空不修改')}
+          </Typography.Paragraph>
+          <Space size={16} style={{ display: 'flex' }} align="start">
+            <Form.Item name="domesticPrice" label={t('domesticProducts.domesticPrice')} style={{ flex: 1 }}>
+              <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+            <Form.Item name="oemPrice" label={t('productCreation.privateLabelPrice')} style={{ flex: 1 }}>
+              <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+            <Form.Item name="importPrice" label={t('warehouse.importPrice')} style={{ flex: 1 }}>
+              <InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+          </Space>
+          <Space size={16} style={{ display: 'flex' }} align="start">
+            <Form.Item name="packingQuantity" label={t('warehouse.packingQuantity')} style={{ flex: 1 }}>
+              <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+            <Form.Item name="minOrderQuantity" label={t('warehouse.middlePackQuantity', '中包数')} style={{ flex: 1 }}>
+              <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+            <Form.Item name="unitVolume" label={t('warehouse.volume')} style={{ flex: 1 }}>
+              <InputNumber min={0} precision={4} style={{ width: '100%' }} placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')}/>
+            </Form.Item>
+          </Space>
+          <Form.Item name="isActive" label={t('warehouse.isListed')}>
+            <Select placeholder={t('warehouse.batchEditKeepEmpty', '留空不修改')} allowClear>
+              <Select.Option value={true}>{getShelfStatusLabel(true, t)}</Select.Option>
+              <Select.Option value={false}>{getShelfStatusLabel(false, t)}</Select.Option>
+            </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <ImportFromDomesticModal open={importFromDomesticOpen} onCancel={() => setImportFromDomesticOpen(false)} onSuccess={() => void loadData({ page: 1 })}/>
 

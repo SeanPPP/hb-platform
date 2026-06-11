@@ -286,6 +286,8 @@ export interface WarehouseProductBatchUpdateItem {
   OEMPrice?: number
   ImportPrice?: number
   Volume?: number
+  PackingQuantity?: number
+  MinOrderQuantity?: number
   IsActive?: boolean
 }
 
