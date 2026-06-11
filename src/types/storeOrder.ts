@@ -310,6 +310,7 @@ export interface StoreOrderProductListResult {
 }
 
 export type StoreOrderPasteTargetField = 'quantity' | 'allocQuantity'
+export type StoreOrderPasteAction = 'replace' | 'append' | 'skip'
 
 export interface StoreOrderBatchLookupItem {
   lookupCode: string
@@ -428,6 +429,21 @@ export interface StoreOrderInvoiceEmailJobResult {
   completedAt?: string
 }
 
+export type StoreOrderPasteReplaceJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
+
+export interface StoreOrderPasteReplaceJobResult {
+  jobId: string
+  status: StoreOrderPasteReplaceJobStatus
+  message?: string
+  orderGUID?: string
+  targetField?: StoreOrderPasteTargetField
+  totalCount?: number
+  importedCount?: number
+  skippedCount?: number
+  createdAt?: string
+  completedAt?: string
+}
+
 export interface StoreOrderBatchLookupPayload {
   codes: string[]
 }
@@ -439,5 +455,6 @@ export interface PasteReplaceStoreOrderLinesPayload {
     productCode: string
     quantity: number
     importPrice?: number
+    action?: StoreOrderPasteAction
   }>
 }

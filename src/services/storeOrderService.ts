@@ -15,6 +15,7 @@ import type {
   StoreOrderSyncJobResult,
   StoreOrderSyncJobStatus,
   StoreOrderInvoiceEmailJobResult,
+  StoreOrderPasteReplaceJobResult,
   StoreOrderBatchStatusUpdatePayload,
   StoreOrderBranchOption,
   StoreOrderDetail,
@@ -308,6 +309,40 @@ function normalizeStoreOrderInvoiceEmailJobResult(
   }
 }
 
+function normalizeStoreOrderPasteReplaceJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): StoreOrderPasteReplaceJobResult {
+  const rawPayload = isRecord(payload) ? payload : null
+  const result = normalizeResult<Record<string, unknown> | null>(payload)
+  const job = isRecord(result) ? result : {}
+  const success = rawPayload && typeof rawPayload.success === 'boolean' ? rawPayload.success : undefined
+  const message =
+    typeof job.message === 'string'
+      ? job.message
+      : rawPayload && typeof rawPayload.message === 'string'
+        ? rawPayload.message
+        : undefined
+  const status = typeof job.status === 'string'
+    ? normalizeStoreOrderSyncJobStatus(job.status)
+    : success === false
+      ? 'Failed'
+      : 'Running'
+
+  return {
+    jobId: typeof job.jobId === 'string' ? job.jobId : fallbackJobId,
+    status,
+    message,
+    orderGUID: typeof job.orderGUID === 'string' ? job.orderGUID : undefined,
+    targetField: job.targetField === 'allocQuantity' || job.targetField === 'quantity' ? job.targetField : undefined,
+    totalCount: typeof job.totalCount === 'number' ? job.totalCount : undefined,
+    importedCount: typeof job.importedCount === 'number' ? job.importedCount : undefined,
+    skippedCount: typeof job.skippedCount === 'number' ? job.skippedCount : undefined,
+    createdAt: typeof job.createdAt === 'string' ? job.createdAt : undefined,
+    completedAt: typeof job.completedAt === 'string' ? job.completedAt : undefined,
+  }
+}
+
 export async function getStoreOrderList(query: StoreOrderListQuery) {
   const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/list`, {
     method: 'POST',
@@ -535,6 +570,26 @@ export async function pasteReplaceStoreOrderLines(payload: PasteReplaceStoreOrde
     method: 'POST',
     data: payload,
   })
+}
+
+export async function createStoreOrderPasteReplaceJob(payload: PasteReplaceStoreOrderLinesPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/paste-replace/jobs`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeStoreOrderPasteReplaceJobResult(response)
+}
+
+export async function getStoreOrderPasteReplaceJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/line/paste-replace/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderPasteReplaceJobResult(response, jobId)
 }
 
 export async function updateStoreOrderLine(payload: UpdateStoreOrderLinePayload) {

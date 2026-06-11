@@ -31,6 +31,7 @@ import {
   Tooltip,
   Typography,
   message,
+  notification,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder, SorterResult } from 'antd/es/table/interface'
@@ -52,10 +53,12 @@ import {
   batchUpdateStoreOrderLines,
   batchUpdateStoreOrderProductStatus,
   completeStoreOrder,
+  createStoreOrderPasteReplaceJob,
   getStoreOrderDetail,
+  getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
+  getStoreOrderPasteReplaceJob,
   getStoreOrderProducts,
-  pasteReplaceStoreOrderLines,
   removeStoreOrderLine,
   startPickingStoreOrder,
   updateStoreOrderHeader,
@@ -68,7 +71,6 @@ import {
 import type { StoreDto } from '../../../types/store'
 import type { LocalSupplierDto } from '../../../types/localSupplier'
 import type {
-  StoreOrderBatchLookupItem,
   StoreOrderDetail,
   StoreOrderDetailLine,
   StoreOrderDetailQuery,
@@ -84,6 +86,22 @@ import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { resolveStoreContactDraftValue } from './storeOrderStoreContact'
+import {
+  buildPasteSubmitItems,
+  createPastePreviewItems,
+  filterPastePreviewItems,
+  formatPastePreviewQuantity,
+  parseStoreOrderPasteRows,
+  setExistingPastePreviewAction,
+  type StoreOrderPasteAction,
+  type StoreOrderPastePreviewFilter,
+  type StoreOrderPastePreviewItem,
+} from './pastePreview'
+import {
+  StoreOrderPasteReplacePollingCancelledError,
+  StoreOrderPasteReplacePollingTimeoutError,
+  createStoreOrderPasteReplaceJobPoller,
+} from './pasteReplaceJobPolling'
 import './compact.css'
 
 function formatDateTime(value?: string) {
@@ -200,17 +218,6 @@ interface BatchEditModalProps {
     importPrice?: number
     isActive?: boolean
   }) => Promise<void>
-}
-
-interface ParsedPasteItem {
-  itemNumber: string
-  quantity: number
-  price?: number
-}
-
-interface PastePreviewItem extends ParsedPasteItem {
-  product?: StoreOrderProductItem
-  valid: boolean
 }
 
 function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: ProductPickerModalProps) {
@@ -624,6 +631,7 @@ export default function StoreOrderDetailPage() {
   const visibleDetailIdRef = useRef<string | null>(null)
   const lastLoadedDetailQueryKeyRef = useRef<string | null>(null)
   const lastLoadedStoresQueryKeyRef = useRef<string | null>(null)
+  const stopPasteReplacePollingRef = useRef<(() => void) | null>(null)
   const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
   const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
@@ -649,8 +657,8 @@ export default function StoreOrderDetailPage() {
     quantity: 1,
     price: -1,
   })
-  const [parsedPasteItems, setParsedPasteItems] = useState<ParsedPasteItem[]>([])
-  const [pastePreviewItems, setPastePreviewItems] = useState<PastePreviewItem[]>([])
+  const [pastePreviewItems, setPastePreviewItems] = useState<StoreOrderPastePreviewItem[]>([])
+  const [pastePreviewFilter, setPastePreviewFilter] = useState<StoreOrderPastePreviewFilter>('all')
   const [parsingPaste, setParsingPaste] = useState(false)
   const [submittingPaste, setSubmittingPaste] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
@@ -870,6 +878,13 @@ export default function StoreOrderDetailPage() {
     }
   }, [containerPickerOpen])
 
+  useEffect(() => {
+    return () => {
+      stopPasteReplacePollingRef.current?.()
+      stopPasteReplacePollingRef.current = null
+    }
+  }, [id])
+
   const handleOpenContainerPicker = async () => {
     if (!detail?.orderGUID) {
       return
@@ -938,7 +953,17 @@ export default function StoreOrderDetailPage() {
     0
 
   const validPastePreviewCount = useMemo(
-    () => pastePreviewItems.filter((item) => item.valid).length,
+    () => buildPasteSubmitItems(pastePreviewItems).length,
+    [pastePreviewItems],
+  )
+
+  const filteredPastePreviewItems = useMemo(
+    () => filterPastePreviewItems(pastePreviewItems, pastePreviewFilter),
+    [pastePreviewFilter, pastePreviewItems],
+  )
+
+  const existingPastePreviewCount = useMemo(
+    () => pastePreviewItems.filter((item) => item.status === 'existing' && item.valid).length,
     [pastePreviewItems],
   )
 
@@ -1275,11 +1300,14 @@ export default function StoreOrderDetailPage() {
       quantity: 1,
       price: -1,
     })
-    setParsedPasteItems([])
     setPastePreviewItems([])
+    setPastePreviewFilter('all')
   }
 
   const handleParsePasteData = async () => {
+    if (!detail) {
+      return
+    }
     if (!pasteData.trim()) {
       message.warning(t('storeOrders.detail.pasteExcelFirst'))
       return
@@ -1287,65 +1315,30 @@ export default function StoreOrderDetailPage() {
 
     setParsingPaste(true)
     try {
-      const rows = pasteData
-        .split(/\r?\n/)
-        .map((row) => row.trim())
-        .filter(Boolean)
-
-      const items: ParsedPasteItem[] = []
-
-      rows.forEach((row) => {
-        const cols = row.split('\t').map((col) => col.trim())
-        const itemNumber = cols[columnMapping.itemNumber] || cols[0]
-        if (!itemNumber) {
-          return
-        }
-
-        const rawQuantity = columnMapping.quantity >= 0 ? cols[columnMapping.quantity] : undefined
-        const parsedQuantity = rawQuantity === undefined ? Number.NaN : Number.parseInt(rawQuantity, 10)
-        const quantity = Number.isFinite(parsedQuantity) && parsedQuantity >= 0 ? parsedQuantity : 1
-
-        const rawPrice = columnMapping.price >= 0 ? cols[columnMapping.price] : undefined
-        const parsedPrice = rawPrice === undefined ? Number.NaN : Number.parseFloat(rawPrice)
-
-        items.push({
-          itemNumber,
-          quantity,
-          price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
-        })
-      })
+      const items = parseStoreOrderPasteRows(pasteData, columnMapping)
 
       if (!items.length) {
         message.warning(t('storeOrders.detail.noValidPasteItems'))
-        setParsedPasteItems([])
         setPastePreviewItems([])
         return
       }
 
-      setParsedPasteItems(items)
-
-      const lookupResult = await batchLookupStoreOrderProducts({
-        codes: Array.from(new Set(items.map((item) => item.itemNumber.trim()).filter(Boolean))),
-      })
-      const productMap = new Map<string, StoreOrderProductItem>()
-
-      lookupResult.forEach((entry: StoreOrderBatchLookupItem) => {
-        if (entry.lookupCode && entry.product) {
-          productMap.set(entry.lookupCode.trim().toLowerCase(), entry.product)
-        }
-      })
-
-      const preview = items.map((item) => {
-        const product = productMap.get(item.itemNumber.trim().toLowerCase())
-        return {
-          ...item,
-          product,
-          valid: Boolean(product),
-        }
-      })
+      const [lookupResult, fullDetail] = await Promise.all([
+        batchLookupStoreOrderProducts({
+          codes: Array.from(new Set(items.map((item) => item.itemNumber.trim()).filter(Boolean))),
+        }),
+        getStoreOrderDetailFull(detail.orderGUID),
+      ])
+      const existingLines = (fullDetail?.items ?? []).map((item) => ({
+        productCode: item.productCode,
+        quantity: item.quantity,
+        allocQuantity: item.allocQuantity,
+      }))
+      const preview = createPastePreviewItems(items, lookupResult, existingLines)
 
       setPastePreviewItems(preview)
-      message.success(t('storeOrders.detail.pasteParseSuccess', { total: items.length, valid: preview.filter((item) => item.valid).length }))
+      setPastePreviewFilter('all')
+      message.success(t('storeOrders.detail.pasteParseSuccess', { total: items.length, valid: buildPasteSubmitItems(preview).length }))
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.pasteParseFailed'))
@@ -1362,20 +1355,7 @@ export default function StoreOrderDetailPage() {
       return
     }
 
-    const validItems: Array<{ productCode: string; quantity: number; importPrice?: number }> = []
-
-    parsedPasteItems.forEach((item) => {
-      const matched = pastePreviewItems.find((preview) => preview.itemNumber === item.itemNumber && preview.valid)
-      if (!matched?.product) {
-        return
-      }
-
-      validItems.push({
-        productCode: matched.product.productCode,
-        quantity: item.quantity,
-        importPrice: item.price,
-      })
-    })
+    const validItems = buildPasteSubmitItems(pastePreviewItems)
 
     if (!validItems.length) {
       message.warning(t('storeOrders.detail.noValidImportProducts'))
@@ -1384,21 +1364,88 @@ export default function StoreOrderDetailPage() {
 
     setSubmittingPaste(true)
     try {
-      await pasteReplaceStoreOrderLines({
-        orderGUID: detail.orderGUID,
+      const orderGUID = detail.orderGUID
+      stopPasteReplacePollingRef.current?.()
+      stopPasteReplacePollingRef.current = null
+
+      const createdJob = await createStoreOrderPasteReplaceJob({
+        orderGUID,
         targetField: pasteTargetField,
         items: validItems,
       })
-      message.success(t('storeOrders.pasteUpdateSuccess', { count: validItems.length }))
+      if (!createdJob.jobId) {
+        message.error(createdJob.message || t('storeOrders.detail.pasteImportFailed'))
+        return
+      }
+
+      // 后端批量导入改为后台 job，前端只负责等待终态并刷新当前订单。
+      const poller = createStoreOrderPasteReplaceJobPoller({
+        jobId: createdJob.jobId,
+        getJob: getStoreOrderPasteReplaceJob,
+      })
+      stopPasteReplacePollingRef.current = poller.stop
+
       setPasteModalOpen(false)
       resetPasteState(pasteTargetField)
-      await loadDetail(false)
+      message.success(t('storeOrders.detail.pasteJobSubmitted', '导入任务已提交，完成后会自动提示结果。'))
+
+      void poller.promise
+        .then(async (result) => {
+          if (stopPasteReplacePollingRef.current === poller.stop) {
+            stopPasteReplacePollingRef.current = null
+          }
+
+          if (result.status === 'Failed') {
+            notification.error({
+              message: t('storeOrders.detail.pasteImportFailed'),
+              description: result.message,
+            })
+            return
+          }
+
+          notification.success({
+            message: t('storeOrders.pasteUpdateSuccess', { count: result.importedCount ?? validItems.length }),
+            description: result.skippedCount
+              ? t('storeOrders.detail.pasteSkippedCount', '已跳过 {{count}} 行', { count: result.skippedCount })
+              : undefined,
+          })
+          if (visibleDetailIdRef.current === orderGUID) {
+            await loadDetail(false)
+          }
+        })
+        .catch((error) => {
+          if (error instanceof StoreOrderPasteReplacePollingCancelledError) {
+            return
+          }
+          if (stopPasteReplacePollingRef.current === poller.stop) {
+            stopPasteReplacePollingRef.current = null
+          }
+          if (error instanceof StoreOrderPasteReplacePollingTimeoutError) {
+            notification.warning({
+              message: t('storeOrders.detail.pasteImportTimeout', 'Excel 粘贴导入仍在后台执行'),
+              description: t('storeOrders.detail.pasteImportTimeoutDesc', '后台任务仍可能继续执行，请稍后刷新订单明细确认结果。'),
+            })
+            return
+          }
+          notification.error({
+            message: t('storeOrders.detail.pasteImportFailed'),
+            description: error instanceof Error ? error.message : undefined,
+          })
+        })
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.pasteImportFailed'))
     } finally {
       setSubmittingPaste(false)
     }
+  }
+
+  const handleSetExistingPastePreviewAction = (action: StoreOrderPasteAction) => {
+    setPastePreviewItems((current) => setExistingPastePreviewAction(current, action))
+  }
+
+  const handleChangePastePreviewAction = (rowIndex: number, action: StoreOrderPasteAction) => {
+    setPastePreviewItems((current) => current.map((item) => (item.rowIndex === rowIndex ? { ...item, action } : item)))
   }
 
   const handleCompleteOrder = async () => {
@@ -2303,21 +2350,68 @@ export default function StoreOrderDetailPage() {
 
                 {pastePreviewItems.length ? (
                   <div>
-                    <Typography.Text strong>{t('storeOrders.detail.previewResult', { valid: validPastePreviewCount, total: pastePreviewItems.length })}</Typography.Text>
-                    <Table<PastePreviewItem>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap size={[12, 8]} style={{ justifyContent: 'space-between', width: '100%' }}>
+                        <Typography.Text strong>{t('storeOrders.detail.previewResult', { valid: validPastePreviewCount, total: pastePreviewItems.length })}</Typography.Text>
+                        <Radio.Group
+                          size="small"
+                          value={pastePreviewFilter}
+                          onChange={(event) => setPastePreviewFilter(event.target.value as StoreOrderPastePreviewFilter)}
+                        >
+                          <Radio.Button value="all">{t('storeOrders.detail.pasteFilterAll', '全部')}</Radio.Button>
+                          <Radio.Button value="importable">{t('storeOrders.detail.pasteFilterImportable', '可导入')}</Radio.Button>
+                          <Radio.Button value="invalid">{t('storeOrders.detail.pasteFilterInvalid', '异常')}</Radio.Button>
+                          <Radio.Button value="unmatched">{t('storeOrders.detail.pasteFilterUnmatched', '未匹配')}</Radio.Button>
+                          <Radio.Button value="existing">{t('storeOrders.detail.pasteFilterExisting', '已存在')}</Radio.Button>
+                        </Radio.Group>
+                      </Space>
+                      <Space wrap size={[8, 8]}>
+                        <Typography.Text type="secondary">
+                          {t('storeOrders.detail.pasteExistingCount', '已存在 {{count}} 行', { count: existingPastePreviewCount })}
+                        </Typography.Text>
+                        <Button size="small" disabled={!existingPastePreviewCount} onClick={() => handleSetExistingPastePreviewAction('replace')}>
+                          {t('storeOrders.detail.pasteActionReplaceAll', '全部覆盖')}
+                        </Button>
+                        <Button size="small" disabled={!existingPastePreviewCount} onClick={() => handleSetExistingPastePreviewAction('append')}>
+                          {t('storeOrders.detail.pasteActionAppendAll', '全部追加')}
+                        </Button>
+                        <Button size="small" disabled={!existingPastePreviewCount} onClick={() => handleSetExistingPastePreviewAction('skip')}>
+                          {t('storeOrders.detail.pasteActionSkipAll', '全部跳过')}
+                        </Button>
+                      </Space>
+                    </Space>
+                    <Table<StoreOrderPastePreviewItem>
                       size="small"
-                      rowKey={(record, index) => `${record.itemNumber}-${index ?? 0}`}
+                      rowKey={(record) => `${record.itemNumber}-${record.rowIndex}`}
                       style={{ marginTop: 8 }}
-                      dataSource={pastePreviewItems}
-                      pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                      dataSource={filteredPastePreviewItems}
+                      pagination={false}
                       scroll={{ y: 280 }}
                       columns={[
                         {
+                          title: '#',
+                          key: 'rowIndex',
+                          width: 48,
+                          align: 'center',
+                          // 显示 Excel 原始行号，筛选后也能快速定位粘贴文本中的异常行。
+                          render: (_, record) => record.rowIndex + 1,
+                        },
+                        {
                           title: t('column.status'),
-                          dataIndex: 'valid',
-                          width: 90,
-                          render: (value: boolean) =>
-                            value ? <Tag color="success">{t('storeOrders.detail.valid')}</Tag> : <Tag color="error">{t('storeOrders.detail.unmatched')}</Tag>,
+                          dataIndex: 'status',
+                          width: 100,
+                          render: (_, record) => {
+                            if (record.status === 'invalidQuantity') {
+                              return <Tag color="warning">{t('storeOrders.detail.invalidQuantity', '数量异常')}</Tag>
+                            }
+                            if (record.status === 'unmatched') {
+                              return <Tag color="error">{t('storeOrders.detail.unmatched')}</Tag>
+                            }
+                            if (record.status === 'existing') {
+                              return <Tag color="processing">{t('storeOrders.detail.existingLine', '已存在')}</Tag>
+                            }
+                            return <Tag color="success">{t('storeOrders.detail.valid')}</Tag>
+                          },
                         },
                         {
                           title: t('column.itemNumber'),
@@ -2331,9 +2425,40 @@ export default function StoreOrderDetailPage() {
                           render: (_, record) => record.product?.productName || '--',
                         },
                         {
+                          title: t('storeOrders.detail.currentQuantity', '当前数量'),
+                          key: 'existingQuantity',
+                          width: 100,
+                          render: (_, record) => {
+                            const value = pasteTargetField === 'allocQuantity' ? record.existingAllocQuantity : record.existingQuantity
+                            return value === undefined ? '--' : value
+                          },
+                        },
+                        {
                           title: pasteTargetField === 'allocQuantity' ? t('column.shipQuantity') : t('column.orderQuantity'),
                           dataIndex: 'quantity',
                           width: 110,
+                          render: (_, record) => formatPastePreviewQuantity(record),
+                        },
+                        {
+                          title: t('storeOrders.detail.pasteAction', '处理方式'),
+                          dataIndex: 'action',
+                          width: 130,
+                          render: (value: StoreOrderPasteAction, record) =>
+                            record.valid ? (
+                              <Select
+                                size="small"
+                                style={{ width: 112 }}
+                                value={value}
+                                options={[
+                                  { value: 'replace', label: t('storeOrders.detail.pasteActionReplace', '覆盖') },
+                                  { value: 'append', label: t('storeOrders.detail.pasteActionAppend', '追加') },
+                                  { value: 'skip', label: t('storeOrders.detail.pasteActionSkip', '跳过') },
+                                ]}
+                                onChange={(nextValue) => handleChangePastePreviewAction(record.rowIndex, nextValue)}
+                              />
+                            ) : (
+                              '--'
+                            ),
                         },
                         {
                           title: t('column.importPriceShort'),

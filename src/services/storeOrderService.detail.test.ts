@@ -1,8 +1,10 @@
 import {
+  createStoreOrderPasteReplaceJob,
   getStoreOrderDetail,
   getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
   getStoreOrderInvoiceEmailJob,
+  getStoreOrderPasteReplaceJob,
   sendStoreOrderInvoiceEmail,
   translateStoreOrderInvoiceEmailText,
   updateStoreOrderStatus,
@@ -119,6 +121,185 @@ try {
       ],
     },
     '订货明细接口应保留服务端返回的当前页 items 与 itemsTotal',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'paste-job-1',
+          status: 'Queued',
+          message: 'Excel 粘贴导入任务已提交',
+          orderGUID: 'order-1',
+          targetField: 'quantity',
+          totalCount: 3,
+          importedCount: 2,
+          skippedCount: 1,
+          createdAt: '2026-06-11T00:00:00Z',
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await createStoreOrderPasteReplaceJob({
+    orderGUID: 'order-1',
+    targetField: 'quantity',
+    items: [
+      {
+        productCode: 'P001',
+        quantity: 2,
+        action: 'replace',
+      },
+    ],
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/line/paste-replace/jobs', 'Excel 粘贴导入 job 创建接口路径应保持不变')
+  assertEqual(capturedMethod, 'POST', 'Excel 粘贴导入 job 创建接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      targetField: 'quantity',
+      items: [
+        {
+          productCode: 'P001',
+          quantity: 2,
+          action: 'replace',
+        },
+      ],
+    },
+    'Excel 粘贴导入 job 创建接口应发送原始 payload',
+  )
+  assertDeepEqual(
+    result,
+    {
+      jobId: 'paste-job-1',
+      status: 'Queued',
+      message: 'Excel 粘贴导入任务已提交',
+      orderGUID: 'order-1',
+      targetField: 'quantity',
+      totalCount: 3,
+      importedCount: 2,
+      skippedCount: 1,
+      createdAt: '2026-06-11T00:00:00Z',
+      completedAt: undefined,
+    },
+    'Excel 粘贴导入 job 创建接口应归一化响应',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        success: false,
+        message: 'Excel 粘贴导入任务创建失败',
+        data: null,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )) as typeof fetch
+
+  const result = await createStoreOrderPasteReplaceJob({
+    orderGUID: 'order-1',
+    targetField: 'allocQuantity',
+    items: [],
+  })
+
+  assertDeepEqual(
+    result,
+    {
+      jobId: '',
+      status: 'Failed',
+      message: 'Excel 粘贴导入任务创建失败',
+      orderGUID: undefined,
+      targetField: undefined,
+      totalCount: undefined,
+      importedCount: undefined,
+      skippedCount: undefined,
+      createdAt: undefined,
+      completedAt: undefined,
+    },
+    'Excel 粘贴导入 job 外层失败响应应归一化为 Failed 并保留 message',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'paste/job with spaces',
+          status: 'Succeeded',
+          message: 'Excel 粘贴导入完成',
+          orderGUID: 'order-1',
+          targetField: 'allocQuantity',
+          totalCount: 4,
+          importedCount: 3,
+          skippedCount: 1,
+          completedAt: '2026-06-11T00:01:00Z',
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await getStoreOrderPasteReplaceJob('paste/job with spaces')
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/line/paste-replace/jobs/paste%2Fjob%20with%20spaces',
+    'Excel 粘贴导入 job 查询接口应编码 jobId',
+  )
+  assertEqual(capturedMethod, 'GET', 'Excel 粘贴导入 job 查询接口应使用 GET')
+  assertDeepEqual(
+    result,
+    {
+      jobId: 'paste/job with spaces',
+      status: 'Succeeded',
+      message: 'Excel 粘贴导入完成',
+      orderGUID: 'order-1',
+      targetField: 'allocQuantity',
+      totalCount: 4,
+      importedCount: 3,
+      skippedCount: 1,
+      createdAt: undefined,
+      completedAt: '2026-06-11T00:01:00Z',
+    },
+    'Excel 粘贴导入 job 查询接口应归一化完成结果',
   )
 } finally {
   globalThis.fetch = originalFetch
