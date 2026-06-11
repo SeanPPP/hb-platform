@@ -135,6 +135,46 @@ export function updateCalculatedFields(product: ProductImportItem): ProductImpor
   }
 }
 
+export function containsChineseText(value: string): boolean {
+  return /[\u3400-\u9fff]/.test(value)
+}
+
+export function applyProductImportNameTranslations(
+  products: ProductImportItem[],
+  translations: Record<string, string>,
+  selectedIds: string[] = [],
+): { products: ProductImportItem[]; appliedCount: number; skippedCount: number } {
+  const selectedSet = new Set(selectedIds)
+  const hasSelection = selectedSet.size > 0
+  let appliedCount = 0
+  let skippedCount = 0
+
+  const nextProducts = products.map((product) => {
+    if (hasSelection && !selectedSet.has(product.id)) return product
+
+    const originalName = product.newProduct.productName.trim()
+    const translatedName = translations[originalName]?.trim()
+    if (!originalName || !containsChineseText(originalName)) return product
+
+    // 只把有效英文翻译写入英文名称；保存/检测链路仍沿用页面现有数据结构。
+    if (!translatedName || translatedName === originalName || containsChineseText(translatedName)) {
+      skippedCount += 1
+      return product
+    }
+
+    appliedCount += 1
+    return {
+      ...product,
+      newProduct: {
+        ...product.newProduct,
+        englishName: translatedName,
+      },
+    }
+  })
+
+  return { products: nextProducts, appliedCount, skippedCount }
+}
+
 export function validateProduct(product: ProductImportItem, mode: string): { [field: string]: string } {
   const errors: { [field: string]: string } = {}
   if (!product.newProduct.productCode?.trim()) errors.productCode = '货号不能为空'

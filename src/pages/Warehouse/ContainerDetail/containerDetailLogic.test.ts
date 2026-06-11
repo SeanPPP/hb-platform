@@ -18,6 +18,8 @@ import {
   findContainerDetailRowsMissingChineseName,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
+  buildContainerDetailExportRow,
+  buildContainerDetailExportRows,
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   calculateContainerDetailImportPrice,
@@ -31,13 +33,16 @@ import {
   getContainerDetailCreateProductRowLabel,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
+  getContainerDetailExportColumns,
   getNextContainerDetailEditableCell,
   isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
+  type ContainerDetailExportColumnKey,
   type ContainerDetailSortField,
   type ContainerDetailSortState,
 } from './containerDetailLogic'
@@ -77,6 +82,99 @@ const rows: ContainerDetail[] = [
     },
   },
 ]
+
+assertDeepEqual(
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  ['itemNumber', 'productName', 'containerPieces', 'containerQuantity', 'oemPrice'],
+  '货柜明细默认导出列应为货号、名称、件数、装柜数量、零售价',
+)
+
+const customExportColumnKeys: ContainerDetailExportColumnKey[] = ['oemPrice', 'itemNumber', 'containerQuantity']
+assertDeepEqual(
+  getContainerDetailExportColumns(customExportColumnKeys).map((column) => column.key),
+  ['oemPrice', 'itemNumber', 'containerQuantity'],
+  '货柜明细自定义导出列应按用户选择顺序输出',
+)
+
+const exportRow = buildContainerDetailExportRow({
+  id: 101,
+  hguid: 'export-101',
+  商品名称: '明细名称',
+  英文名称: 'Detail Name',
+  商品类型: '普通商品',
+  是否新商品: true,
+  matchType: 'productCode',
+  装柜件数: 3,
+  装柜数量: 720,
+  国内价格: 2.3,
+  调整浮率: 1.2,
+  运输成本: 0.08,
+  warehouseImportPrice: 0.52,
+  进口价格: 0.67,
+  贴牌价格: 3.5,
+  warehouseIsActive: true,
+  备注: '优先上架',
+  商品信息: {
+    货号: 'HB291-005',
+    条形码: '9525812910005',
+    商品名称: '商品信息名称',
+    英文名称: 'Product Info Name',
+    零售价格: 9.99,
+  },
+})
+assertDeepEqual(
+  {
+    itemNumber: exportRow.itemNumber,
+    productName: exportRow.productName,
+    containerPieces: exportRow.containerPieces,
+    containerQuantity: exportRow.containerQuantity,
+    matchType: exportRow.matchType,
+    oemPrice: exportRow.oemPrice,
+    warehouseStatus: exportRow.warehouseStatus,
+  },
+  {
+    itemNumber: 'HB291-005',
+    productName: '明细名称',
+    containerPieces: 3,
+    containerQuantity: 720,
+    matchType: '商品编码匹配',
+    oemPrice: 3.5,
+    warehouseStatus: '上架',
+  },
+  '货柜明细导出行应优先读取页面展示字段，且零售价应映射贴牌价格',
+)
+
+assertDeepEqual(
+  buildContainerDetailExportRows([
+    {
+      id: 102,
+      hguid: 'export-empty',
+      warehouseIsActive: undefined,
+    },
+  ]),
+  [
+    {
+      itemNumber: '',
+      barcode: '',
+      productName: '',
+      englishName: '',
+      productType: '普通商品',
+      newProduct: '否',
+      matchType: '未匹配',
+      containerPieces: 0,
+      containerQuantity: 0,
+      domesticPrice: 0,
+      floatRate: 0,
+      transportCost: 0,
+      warehouseImportPrice: 0,
+      importPrice: 0,
+      oemPrice: 0,
+      warehouseStatus: '下架',
+      remark: '',
+    },
+  ],
+  '货柜明细导出行缺失字段时应使用稳定空值或 0，避免 Excel 导出报错',
+)
 
 assertEqual(
   getContainerDetailEnglishName(rows[0]),

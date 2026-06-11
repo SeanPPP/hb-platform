@@ -104,7 +104,12 @@
       "clearFilters": "清空",
       "applyColumnFilter": "应用",
       "resetColumnFilter": "重置",
-      "clearColumnFilters": "清空列过滤"
+      "clearColumnFilters": "清空列过滤",
+      "exportOptions": "导出选项",
+      "selectExportColumns": "选择导出列",
+      "exportSelectedColumns": "按所选列导出",
+      "selectAllExportColumns": "全选",
+      "resetDefaultExportColumns": "恢复默认"
     },
     "fields": {
       "containerNumber": "货柜编号",
@@ -191,7 +196,10 @@
       "batchEditEnglishNameTitle": "批量修改英文名称",
       "clearEnglishNamesTitle": "清除英文名称",
       "clearEnglishNamesContent": "确认清除当前目标 {{count}} 条明细对应商品的英文名称？此操作会影响同一商品在其它页面的英文名称显示。",
-      "hqTranslationResultTitle": "HQ 数据翻译结果"
+      "hqTranslationResultTitle": "HQ 数据翻译结果",
+      "exportAllDetailsTitle": "导出全部匹配商品",
+      "exportAllDetailsContent": "未选择商品，将按当前筛选和排序导出全部匹配商品，共 {{count}} 条。是否继续？",
+      "exportColumnsTitle": "选择导出列"
     },
     "messages": {
       "loadListFailed": "加载货柜列表失败",
@@ -265,13 +273,16 @@
       "selectedFilters": "已选过滤",
       "selectedFirst": "选中优先",
       "allDisplayed": "全部显示",
-      "hqTranslationSamples": "翻译样例"
+      "hqTranslationSamples": "翻译样例",
+      "exportSelectedRowsHint": "将导出已选择的 {{count}} 个商品。",
+      "exportAllRowsHint": "未选择商品时，将按当前筛选和排序导出全部匹配商品。"
     },
     "empty": {
       "noImage": "无图"
     },
     "export": {
-      "detailSuffix": "商品明细"
+      "detailSuffix": "商品明细",
+      "retailPriceColumn": "零售价"
     }
   },
   "lang": {
@@ -3225,6 +3236,12 @@
     "detectMatch": "检测匹配",
     "batchCreate": "批量新建",
     "batchUpdate": "批量更新",
+    "batchTranslate": "批量翻译",
+    "batchTranslateSuccess": "成功翻译 {{count}} 个商品名称",
+    "batchTranslateFailed": "批量翻译失败",
+    "noNamesToTranslate": "没有可翻译的商品名称",
+    "noValidTranslatedNames": "没有可保存的英文翻译结果",
+    "invalidTranslatedNamesSkipped": "有 {{count}} 条翻译结果仍包含中文或无变化，已跳过",
     "dataModifiedDetect": "⚠️ 数据已修改，请先执行\"检测匹配\"",
     "selectContainer": "请选择货柜",
     "loadContainersFailed": "加载货柜列表失败",

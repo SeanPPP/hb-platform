@@ -163,11 +163,12 @@ function buildProductNameTranslationUpdates(
   return rows.reduce<BatchUpdatePosProductDto[]>((updates, row) => {
     const originalName = row.productName.trim()
     const translatedName = translations[originalName]?.trim()
-    // 批量翻译会覆盖商品名称，提交前过滤空结果、未变化结果和仍包含中文的结果。
+    // 批量翻译会同时覆盖商品名称和英文名称，提交前过滤空结果、未变化结果和仍包含中文的结果。
     if (translatedName && translatedName !== originalName && !containsChineseText(translatedName)) {
       updates.push({
         productCode: row.productCode,
         productName: translatedName,
+        englishName: translatedName,
       })
     }
     return updates

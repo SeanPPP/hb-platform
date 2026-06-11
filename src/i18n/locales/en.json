@@ -104,7 +104,12 @@
       "clearFilters": "Clear",
       "applyColumnFilter": "Apply",
       "resetColumnFilter": "Reset",
-      "clearColumnFilters": "Clear Column Filters"
+      "clearColumnFilters": "Clear Column Filters",
+      "exportOptions": "Export Options",
+      "selectExportColumns": "Select Export Columns",
+      "exportSelectedColumns": "Export Selected Columns",
+      "selectAllExportColumns": "Select All",
+      "resetDefaultExportColumns": "Reset Default"
     },
     "fields": {
       "containerNumber": "Container No.",
@@ -191,7 +196,10 @@
       "batchEditEnglishNameTitle": "Batch Edit English Name",
       "clearEnglishNamesTitle": "Clear English Names",
       "clearEnglishNamesContent": "Clear English names for products linked to the current {{count}} target details? This affects the same products anywhere else they are shown.",
-      "hqTranslationResultTitle": "HQ Translation Result"
+      "hqTranslationResultTitle": "HQ Translation Result",
+      "exportAllDetailsTitle": "Export All Matching Products",
+      "exportAllDetailsContent": "No products are selected. Export all matching products using the current filters and sorting, {{count}} rows total. Continue?",
+      "exportColumnsTitle": "Select Export Columns"
     },
     "messages": {
       "loadListFailed": "Failed to load container list",
@@ -265,13 +273,16 @@
       "selectedFilters": "Selected Filters",
       "selectedFirst": "Selected First",
       "allDisplayed": "All Displayed",
-      "hqTranslationSamples": "Translation Samples"
+      "hqTranslationSamples": "Translation Samples",
+      "exportSelectedRowsHint": "Export the selected {{count}} products.",
+      "exportAllRowsHint": "If no products are selected, all matching products will be exported using the current filters and sorting."
     },
     "empty": {
       "noImage": "No Image"
     },
     "export": {
-      "detailSuffix": "Product Details"
+      "detailSuffix": "Product Details",
+      "retailPriceColumn": "Retail Price"
     }
   },
   "lang": {
@@ -3225,6 +3236,12 @@
     "detectMatch": "检测匹配",
     "batchCreate": "批量新建",
     "batchUpdate": "批量更新",
+    "batchTranslate": "Batch Translate",
+    "batchTranslateSuccess": "Successfully translated {{count}} product names",
+    "batchTranslateFailed": "Batch translate failed",
+    "noNamesToTranslate": "No product names to translate",
+    "noValidTranslatedNames": "No valid English translation results to save",
+    "invalidTranslatedNamesSkipped": "{{count}} translation results still contain Chinese or did not change and were skipped",
     "dataModifiedDetect": "⚠️ 数据已修改，请先执行\"检测匹配\"",
     "selectContainer": "Select Container",
     "loadContainersFailed": "Failed to load containers",

@@ -866,8 +866,13 @@ async function main() {
     assert(
       pageSource.includes('const result = await batchUpdateProducts(updates)') &&
         pageSource.includes('productCode: row.productCode') &&
-        pageSource.includes('productName: translatedName'),
-      '批量翻译应通过批量更新接口提交 productCode 和翻译后的 productName',
+        pageSource.includes('productName: translatedName') &&
+        pageSource.includes('englishName: translatedName'),
+      '批量翻译应通过批量更新接口提交 productCode、翻译后的 productName 和 englishName',
+    )
+    assert(
+      typeSource.includes('englishName?: string'),
+      '批量更新商品 DTO 应声明 englishName 字段以同步写入后端 EnglishName',
     )
     assert(
       pageSource.includes("t('posAdmin.products.batchTranslate', '批量翻译')") &&

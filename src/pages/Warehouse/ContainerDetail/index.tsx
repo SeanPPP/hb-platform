@@ -27,6 +27,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Descriptions,
   Dropdown,
@@ -104,6 +105,7 @@ import {
   buildContainerDetailClearEnglishNameUpdates,
   buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
+  buildContainerDetailExportRows,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
@@ -113,6 +115,7 @@ import {
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingChineseName,
+  getContainerDetailExportColumns,
   getContainerDetailBarcode,
   getContainerDetailEnglishName,
   getContainerDetailItemNumber,
@@ -129,8 +132,11 @@ import {
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
   rollbackContainerDetailWarehouseStatuses,
+  CONTAINER_DETAIL_EXPORT_COLUMNS,
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
+  type ContainerDetailExportColumnKey,
   type ContainerDetailMatchTypeFilter,
   type ContainerDetailNewProductFilter,
   type ContainerDetailNumberRangeFilter,
@@ -414,6 +420,8 @@ export default function ContainerDetailPage() {
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportColumnModalOpen, setExportColumnModalOpen] = useState(false)
+  const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
@@ -746,6 +754,14 @@ export default function ContainerDetailPage() {
   const tagSelectOptions = useMemo(
     () => tagStatOptions.filter((option) => option.value !== 'all').map(({ value, label }) => ({ value, label })),
     [tagStatOptions],
+  )
+
+  const exportColumnOptions = useMemo(
+    () => CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => ({
+      label: t(column.labelKey, column.fallbackLabel),
+      value: column.key,
+    })),
+    [t],
   )
 
   const setTagFiltersFromSelect = (values: ContainerDetailTagFilter[]) => {
@@ -1589,8 +1605,27 @@ export default function ContainerDetailPage() {
     })
   }
 
-  const exportExcel = async () => {
+  const confirmExportAllRows = () => new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: t('containers.modals.exportAllDetailsTitle', '导出全部匹配商品'),
+      content: t(
+        'containers.modals.exportAllDetailsContent',
+        '未选择商品，将按当前筛选和排序导出全部匹配商品，共 {{count}} 条。是否继续？',
+        { count: detailItemsTotal },
+      ),
+      okText: t('common.confirm', '确认'),
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
+  const exportExcel = async (columnKeys: ContainerDetailExportColumnKey[] = DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS) => {
     if (!ensureTargetRowsVisible()) return
+    if (!selectedRowKeys.length) {
+      const confirmed = await confirmExportAllRows()
+      if (!confirmed) return
+    }
     const exportRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
     if (!exportRows.length) {
       message.warning(t('containers.messages.noDataToExport'))
@@ -1598,19 +1633,15 @@ export default function ContainerDetailPage() {
     }
     setExporting(true)
     try {
-      const items: ContainerDetailExportItem[] = exportRows.map((row) => ({
-        imageUrl: row.商品信息?.商品图片,
-        itemNumber: row.商品信息?.货号 || '',
-        barcode: row.商品信息?.条形码 || '',
-        productName: getContainerDetailProductName(row) || '',
-        isNewProduct: Boolean(row.是否新商品),
-        containerQuantity: row.装柜数量 || 0,
-        domesticPrice: row.国内价格 || 0,
-        transportCost: row.运输成本 || 0,
-        importPrice: row.进口价格 || 0,
-        oemPrice: row.贴牌价格 || 0,
-      }))
+      const exportColumns = getContainerDetailExportColumns(columnKeys)
+      const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(exportRows)
       await exportContainerDetailsToExcel(items, {
+        columns: exportColumns.map((column) => ({
+          header: t(column.labelKey, column.fallbackLabel),
+          key: column.key,
+          width: column.width,
+          valueType: column.valueType,
+        })),
         fileName: `${container?.货柜编号 || t('containers.detailTitle')}_${t('containers.export.detailSuffix')}`,
         onProgress: (progress) => setExportProgress(progress),
       })
@@ -2301,7 +2332,21 @@ export default function ContainerDetailPage() {
                   </Space>
                 </Space>
                 <Space wrap>
-                  <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>{t('common.export')}</Button>
+                  <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>
+                    {t('common.export')}
+                  </Button>
+                  <Dropdown
+                    menu={{
+                      items: [
+                        { key: 'columns', label: t('containers.actions.selectExportColumns', '选择导出列') },
+                      ],
+                      onClick: ({ key }) => {
+                        if (key === 'columns') setExportColumnModalOpen(true)
+                      },
+                    }}
+                  >
+                    <Button>{t('containers.actions.exportOptions', '导出选项')}</Button>
+                  </Dropdown>
                   {access.canEditContainer ? (
                     <Button loading={hqTranslating} onClick={() => void translateHqData()}>
                       {t('containers.actions.translateHqData')}
@@ -2453,6 +2498,39 @@ export default function ContainerDetailPage() {
           </Card>
         </Space>
       </Spin>
+      <Modal
+        title={t('containers.modals.exportColumnsTitle', '选择导出列')}
+        open={exportColumnModalOpen}
+        okText={t('containers.actions.exportSelectedColumns', '按所选列导出')}
+        cancelText={t('common.cancel')}
+        okButtonProps={{ disabled: selectedExportColumnKeys.length === 0, loading: exporting }}
+        onOk={() => {
+          setExportColumnModalOpen(false)
+          void exportExcel(selectedExportColumnKeys)
+        }}
+        onCancel={() => setExportColumnModalOpen(false)}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {selectedRowKeys.length
+              ? t('containers.text.exportSelectedRowsHint', '将导出已选择的 {{count}} 个商品。', { count: selectedRowKeys.length })
+              : t('containers.text.exportAllRowsHint', '未选择商品时，将按当前筛选和排序导出全部匹配商品。')}
+          </Typography.Text>
+          <Space wrap>
+            <Button size="small" onClick={() => setSelectedExportColumnKeys(CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.key))}>
+              {t('containers.actions.selectAllExportColumns', '全选')}
+            </Button>
+            <Button size="small" onClick={() => setSelectedExportColumnKeys(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)}>
+              {t('containers.actions.resetDefaultExportColumns', '恢复默认')}
+            </Button>
+          </Space>
+          <Checkbox.Group
+            value={selectedExportColumnKeys}
+            options={exportColumnOptions}
+            onChange={(values) => setSelectedExportColumnKeys(values as ContainerDetailExportColumnKey[])}
+          />
+        </Space>
+      </Modal>
       </div>
     </PageContainer>
   )
