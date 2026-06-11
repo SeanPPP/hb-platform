@@ -130,6 +130,14 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         await SeedContainerAsync("C-PRODUCT-TYPE", "CSLU6099489");
         await SeedDetailAsync("D-TYPE-SET", "C-PRODUCT-TYPE", "P-TYPE-SET", "HB137-480", domesticProductType: 1);
         await SeedDetailAsync("D-TYPE-NORMAL", "C-PRODUCT-TYPE", "P-TYPE-NORMAL", "HB137-470", domesticProductType: 0);
+        await SeedDetailAsync("D-TYPE-MULTI", "C-PRODUCT-TYPE", "P-TYPE-MULTI", "HB137-481", domesticProductType: 2);
+        await SeedDetailAsync(
+            "D-TYPE-SET-CHILD",
+            "C-PRODUCT-TYPE",
+            "P-TYPE-SET-CHILD",
+            "HB137-482",
+            detailProductType: "套装子商品"
+        );
         var service = CreateService();
 
         var displayResult = await service.QueryContainerDetailsAsync(
@@ -158,6 +166,30 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
 
         Assert.Equal(new[] { "HB137-480" }, setResult.Items.Select(x => x.商品信息?.货号).ToArray());
 
+        var multiResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                ProductTypes = new List<string> { "multi" },
+            }
+        );
+
+        Assert.Equal(new[] { "HB137-481" }, multiResult.Items.Select(x => x.商品信息?.货号).ToArray());
+
+        var setChildResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                ProductTypes = new List<string> { "setChild" },
+            }
+        );
+
+        Assert.Equal(new[] { "HB137-482" }, setChildResult.Items.Select(x => x.商品信息?.货号).ToArray());
+
         var normalForSetItemResult = await service.QueryContainerDetailsAsync(
             new ContainerDetailQueryDto
             {
@@ -182,7 +214,10 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             }
         );
 
-        Assert.Equal(new[] { "D-TYPE-NORMAL", "D-TYPE-SET" }, sortedResult.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal(
+            new[] { "D-TYPE-NORMAL", "D-TYPE-SET-CHILD", "D-TYPE-SET", "D-TYPE-MULTI" },
+            sortedResult.Items.Select(x => x.HGUID).ToArray()
+        );
     }
 
     [Fact]

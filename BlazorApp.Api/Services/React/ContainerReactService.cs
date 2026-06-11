@@ -233,7 +233,8 @@ namespace BlazorApp.Api.Services.React
                 query = query.Where((cd, wp, dp, lp) =>
                     (productTypes.Contains("normal") && dp.ProductType == 0)
                     || (productTypes.Contains("set") && dp.ProductType == 1)
-                    // 旧前端仍保留 setChild 筛选值；本次不扩展多码枚举，继续兼容历史明细快照字段。
+                    || (productTypes.Contains("multi") && dp.ProductType == 2)
+                    // 套装子项仍取货柜明细历史快照字段，国内商品表中不会作为独立商品类型维护。
                     || (productTypes.Contains("setChild") && cd.ProductType == "套装子商品")
                 );
             }

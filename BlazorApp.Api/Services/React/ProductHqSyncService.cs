@@ -1479,15 +1479,69 @@ namespace BlazorApp.Api.Services.React
                 .Where(row => row.H商品编码 != null && productCodes.Contains(row.H商品编码))
                 .Select(row => new DIC_一品多码表
                 {
+                    ID = row.ID,
+                    HGUID = row.HGUID,
                     H商品编码 = row.H商品编码,
                     H多码商品编号 = row.H多码商品编号,
+                    H多条形码 = row.H多条形码,
                 })
                 .ToListAsync();
-            var existingKeys = existingRows
-                .Select(row => BuildProductSetCodeBusinessKey(row.H商品编码, row.H多码商品编号))
-                .Where(key => key != null)
-                .Select(key => key!)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingByBusinessKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildProductSetCodeBusinessKey(row.H商品编码, row.H多码商品编号),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var existingByGuidKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildProductSetCodeBusinessKey(row.H商品编码, row.HGUID),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var existingByBarcodeKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildProductSetCodeBusinessKey(row.H商品编码, row.H多条形码),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var allocatedProductSetPurchasePrices = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            foreach (
+                var group in productSetCodes
+                    .Select(row => new
+                    {
+                        ProductCode = NormalizeCode(row.ProductCode),
+                        SetCode = row,
+                    })
+                    .Where(item => item.ProductCode != null && productByCode.ContainsKey(item.ProductCode))
+                    .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+            )
+            {
+                var product = productByCode[group.Key];
+                // HQ 一品多码进货价以本地主商品进货价为总额，按全局套装子码零售价比例分摊。
+                var allocations = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
+                    group.Select(item => item.SetCode),
+                    product.PurchasePrice,
+                    setCode => setCode.SetProductCode,
+                    setCode => setCode.SetRetailPrice
+                );
+                foreach (var allocation in allocations)
+                {
+                    var key = BuildProductSetCodeBusinessKey(group.Key, allocation.Key);
+                    if (key != null)
+                    {
+                        allocatedProductSetPurchasePrices[key] = allocation.Value;
+                    }
+                }
+            }
 
             var inserts = new List<DIC_一品多码表>();
             foreach (var setCode in productSetCodes)
@@ -1505,17 +1559,36 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                var hqSetCode = MapProductSetCodeToHq(setCode, product);
-                if (!existingKeys.Contains(key))
+                allocatedProductSetPurchasePrices.TryGetValue(key, out var allocatedPurchasePrice);
+                var hqSetCode = MapProductSetCodeToHq(
+                    setCode,
+                    product,
+                    allocatedProductSetPurchasePrices.ContainsKey(key) ? allocatedPurchasePrice : null
+                );
+                var guidKey = BuildProductSetCodeBusinessKey(productCode, hqSetCode.HGUID);
+                var barcodeKey = BuildProductSetCodeBusinessKey(productCode, hqSetCode.H多条形码);
+                var existing =
+                    existingByBusinessKey.GetValueOrDefault(key)
+                    ?? (guidKey == null ? null : existingByGuidKey.GetValueOrDefault(guidKey))
+                    ?? (barcodeKey == null ? null : existingByBarcodeKey.GetValueOrDefault(barcodeKey));
+                if (existing == null)
                 {
                     inserts.Add(hqSetCode);
-                    existingKeys.Add(key);
+                    existingByBusinessKey[key] = hqSetCode;
+                    if (guidKey != null)
+                    {
+                        existingByGuidKey[guidKey] = hqSetCode;
+                    }
+                    if (barcodeKey != null)
+                    {
+                        existingByBarcodeKey[barcodeKey] = hqSetCode;
+                    }
                     continue;
                 }
 
-                    await hqDb.Updateable<DIC_一品多码表>()
-                        .SetColumns(row => new DIC_一品多码表
-                        {
+                await hqDb.Updateable<DIC_一品多码表>()
+                    .SetColumns(row => new DIC_一品多码表
+                    {
                         H供应商编码 = hqSetCode.H供应商编码,
                         H主条形码 = hqSetCode.H主条形码,
                         H多条形码 = hqSetCode.H多条形码,
@@ -1526,10 +1599,7 @@ namespace BlazorApp.Api.Services.React
                         FGC_LastModifier = hqSetCode.FGC_LastModifier,
                         FGC_LastModifyDate = hqSetCode.FGC_LastModifyDate,
                     })
-                    .Where(row =>
-                        row.H商品编码 == productCode
-                        && row.H多码商品编号 == setProductCode
-                    )
+                    .Where(row => row.ID == existing.ID)
                     .ExecuteCommandAsync();
                 result.ProductSetCodesUpdated++;
             }
@@ -1570,16 +1640,51 @@ namespace BlazorApp.Api.Services.React
                 )
                 .Select(row => new DIC_分店一品多码表
                 {
+                    ID = row.ID,
+                    HGUID = row.HGUID,
                     H分店代码 = row.H分店代码,
                     H商品编码 = row.H商品编码,
                     H多码商品编码 = row.H多码商品编码,
+                    H分店多码商品编码 = row.H分店多码商品编码,
+                    H多条形码 = row.H多条形码,
                 })
                 .ToListAsync();
-            var existingKeys = existingRows
-                .Select(row => BuildStoreMultiCodeKey(row.H分店代码, row.H商品编码, row.H多码商品编码))
-                .Where(key => key != null)
-                .Select(key => key!)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingByBusinessKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildStoreMultiCodeKey(row.H分店代码, row.H商品编码, row.H多码商品编码),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var existingByGuidKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildStoreMultiCodeKey(row.H分店代码, row.H商品编码, row.HGUID),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var existingByBarcodeKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildStoreMultiCodeKey(row.H分店代码, row.H商品编码, row.H多条形码),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var existingByStoreMultiProductKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildStoreMultiCodeKey(row.H分店代码, row.H商品编码, row.H分店多码商品编码),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!)
+                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
             var storeMultiCodeByKey = storeMultiCodes
                 .Select(row => new
                 {
@@ -1593,6 +1698,46 @@ namespace BlazorApp.Api.Services.React
                 .Where(item => item.Key != null)
                 .GroupBy(item => item.Key!)
                 .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+            var allocatedStoreMultiPurchasePrices = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            foreach (var storeCode in activeStoreCodes)
+            {
+                foreach (
+                    var group in productSetCodes
+                        .Select(row => new
+                        {
+                            ProductCode = NormalizeCode(row.ProductCode),
+                            SetCode = row,
+                        })
+                        .Where(item => item.ProductCode != null && productByCode.ContainsKey(item.ProductCode))
+                        .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                )
+                {
+                    var product = productByCode[group.Key];
+                    // 分店一品多码优先使用分店子码零售价参与分摊；没有分店价时回退全局子码零售价。
+                    var allocations = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
+                        group.Select(item => item.SetCode),
+                        product.PurchasePrice,
+                        setCode => setCode.SetProductCode,
+                        setCode =>
+                        {
+                            var setProductCode = NormalizeCode(setCode.SetProductCode);
+                            var storeMultiKey = BuildStoreMultiCodeKey(storeCode, group.Key, setProductCode);
+                            return storeMultiKey != null
+                                && storeMultiCodeByKey.TryGetValue(storeMultiKey, out var storeMultiCode)
+                                ? storeMultiCode.MultiCodeRetailPrice ?? setCode.SetRetailPrice
+                                : setCode.SetRetailPrice;
+                        }
+                    );
+                    foreach (var allocation in allocations)
+                    {
+                        var key = BuildStoreMultiCodeKey(storeCode, group.Key, allocation.Key);
+                        if (key != null)
+                        {
+                            allocatedStoreMultiPurchasePrices[key] = allocation.Value;
+                        }
+                    }
+                }
+            }
 
             var inserts = new List<DIC_分店一品多码表>();
             foreach (var storeCode in activeStoreCodes)
@@ -1613,18 +1758,43 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     storeMultiCodeByKey.TryGetValue(key, out var storeMultiCode);
+                    allocatedStoreMultiPurchasePrices.TryGetValue(key, out var allocatedPurchasePrice);
                     var hqStoreMultiCode = MapStoreMultiCodeToHq(
                         storeCode,
                         product,
                         setCode,
-                        storeMultiCode
+                        storeMultiCode,
+                        allocatedStoreMultiPurchasePrices.ContainsKey(key) ? allocatedPurchasePrice : null
                     );
-                    if (!existingKeys.Contains(key))
+                    var guidKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.HGUID);
+                    var barcodeKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.H多条形码);
+                    var storeMultiProductKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.H分店多码商品编码);
+                    var existing =
+                        existingByBusinessKey.GetValueOrDefault(key)
+                        ?? (guidKey == null ? null : existingByGuidKey.GetValueOrDefault(guidKey))
+                        ?? (barcodeKey == null ? null : existingByBarcodeKey.GetValueOrDefault(barcodeKey))
+                        ?? (storeMultiProductKey == null ? null : existingByStoreMultiProductKey.GetValueOrDefault(storeMultiProductKey));
+                    if (existing == null)
                     {
                         inserts.Add(hqStoreMultiCode);
-                        existingKeys.Add(key);
+                        existingByBusinessKey[key] = hqStoreMultiCode;
+                        if (guidKey != null)
+                        {
+                            existingByGuidKey[guidKey] = hqStoreMultiCode;
+                        }
+                        if (barcodeKey != null)
+                        {
+                            existingByBarcodeKey[barcodeKey] = hqStoreMultiCode;
+                        }
+                        if (storeMultiProductKey != null)
+                        {
+                            existingByStoreMultiProductKey[storeMultiProductKey] = hqStoreMultiCode;
+                        }
                         continue;
                     }
+
+                    // 兼容历史错码命中时，保留 HQ 既有业务编码，避免把 HGUID 回写成多码商品编码。
+                    hqStoreMultiCode.H分店多码商品编码 = existing.H分店多码商品编码;
 
                     // 分店一品多码更新不触碰库存、活动和动态销售字段。
                     await hqDb.Updateable<DIC_分店一品多码表>()
@@ -1644,11 +1814,7 @@ namespace BlazorApp.Api.Services.React
                             FGC_LastModifier = hqStoreMultiCode.FGC_LastModifier,
                             FGC_LastModifyDate = hqStoreMultiCode.FGC_LastModifyDate,
                         })
-                        .Where(row =>
-                            row.H分店代码 == storeCode
-                            && row.H商品编码 == productCode
-                            && row.H多码商品编码 == multiCode
-                        )
+                        .Where(row => row.ID == existing.ID)
                         .ExecuteCommandAsync();
                     result.StoreMultiCodesUpdated++;
                 }
@@ -2435,7 +2601,8 @@ namespace BlazorApp.Api.Services.React
 
         private static DIC_一品多码表 MapProductSetCodeToHq(
             ProductSetCode setCode,
-            Product product
+            Product product,
+            decimal? allocatedPurchasePrice = null
         )
         {
             var now = DateTime.Now;
@@ -2447,7 +2614,7 @@ namespace BlazorApp.Api.Services.React
                 H供应商编码 = "200",
                 H主条形码 = NormalizeCode(product.Barcode),
                 H多条形码 = NormalizeCode(setCode.SetBarcode),
-                H进货价 = setCode.SetPurchasePrice ?? product.PurchasePrice ?? 0,
+                H进货价 = allocatedPurchasePrice ?? setCode.SetPurchasePrice ?? product.PurchasePrice ?? 0,
                 H一品多码零售价 = setCode.SetRetailPrice ?? product.RetailPrice ?? 0,
                 H使用状态 = setCode.IsActive,
                 H是否自动定价 = product.IsAutoPricing,
@@ -2476,7 +2643,8 @@ namespace BlazorApp.Api.Services.React
             string storeCode,
             Product product,
             ProductSetCode setCode,
-            StoreMultiCodeProduct? storeMultiCode
+            StoreMultiCodeProduct? storeMultiCode,
+            decimal? allocatedPurchasePrice = null
         )
         {
             var now = DateTime.Now;
@@ -2496,7 +2664,8 @@ namespace BlazorApp.Api.Services.React
                 H供应商编码 = "200",
                 H主条形码 = NormalizeCode(product.Barcode),
                 H多条形码 = NormalizeCode(storeMultiCode?.MultiBarcode) ?? NormalizeCode(setCode.SetBarcode),
-                H进货价 = storeMultiCode?.PurchasePrice ?? setCode.SetPurchasePrice ?? product.PurchasePrice ?? 0,
+                H进货价 =
+                    allocatedPurchasePrice ?? storeMultiCode?.PurchasePrice ?? setCode.SetPurchasePrice ?? product.PurchasePrice ?? 0,
                 H折扣率 = storeMultiCode?.DiscountRate ?? 0,
                 H一品多码零售价 =
                     storeMultiCode?.MultiCodeRetailPrice ?? setCode.SetRetailPrice ?? product.RetailPrice ?? 0,

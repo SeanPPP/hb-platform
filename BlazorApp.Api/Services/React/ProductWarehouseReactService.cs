@@ -1079,6 +1079,8 @@ namespace BlazorApp.Api.Services.React
                                 item.ImageUrl,
                                 item.ItemNumber ?? code
                             ),
+                            // 货柜创建套装时必须同步写 POS 商品类型，否则 POS 商品管理会把空值显示为单品。
+                            ProductType = item.ProductType ?? (item.IsSetProduct ? 1 : 0),
                             IsAutoPricing = false,
                             IsActive = true,
                             IsDeleted = false,
@@ -1109,8 +1111,20 @@ namespace BlazorApp.Api.Services.React
                     {
                         if (setProductsByCode.TryGetValue(code!, out var setProducts))
                         {
+                            // 套装子码进货价按子码零售价比例分摊主项进货价，子项自身进货价只作为无法分摊时的保守回退。
+                            var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
+                                setProducts,
+                                item.ImportPrice,
+                                sp => sp.SetProductCode,
+                                sp => sp.OEMPrice ?? item.OEMPrice
+                            );
                             foreach (var sp in setProducts)
                             {
+                                var setPurchasePrice =
+                                    sp.SetProductCode != null
+                                    && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
+                                        ? allocatedPurchasePrice
+                                        : sp.ImportPrice ?? item.ImportPrice;
                                 var setCode = new ProductSetCode
                                 {
                                     SetCodeId = sp.SetProductCode!,
@@ -1118,7 +1132,7 @@ namespace BlazorApp.Api.Services.React
                                     SetProductCode = sp.SetProductCode!,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
-                                    SetPurchasePrice = sp.ImportPrice ?? item.ImportPrice,
+                                    SetPurchasePrice = setPurchasePrice,
                                     SetRetailPrice = sp.OEMPrice ?? item.OEMPrice,
                                     SetQuantity = 1,
                                     SetType = 1,
@@ -2772,12 +2786,24 @@ namespace BlazorApp.Api.Services.React
                     {
                         existingProductSetCodes.TryGetValue(productCode, out var existingSet);
                         existingSet ??= new HashSet<string?>();
+                        // 国内导入补套装子码时同样按零售价比例分摊主进货价，保持和货柜创建路径一致。
+                        var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
+                            setProducts,
+                            wp.ImportPrice,
+                            sp => sp.SetProductCode,
+                            sp => sp.OEMPrice ?? wp.OEMPrice
+                        );
 
                         foreach (var sp in setProducts)
                         {
                             if (existingSet.Contains(sp.SetProductCode))
                                 continue;
                             existingSet.Add(sp.SetProductCode);
+                            var setPurchasePrice =
+                                sp.SetProductCode != null
+                                && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
+                                    ? allocatedPurchasePrice
+                                    : sp.ImportPrice ?? wp.ImportPrice;
                             toInsertProductSetCodes.Add(
                                 new ProductSetCode
                                 {
@@ -2786,7 +2812,7 @@ namespace BlazorApp.Api.Services.React
                                     SetProductCode = sp.SetProductCode,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
-                                    SetPurchasePrice = sp.ImportPrice ?? wp.ImportPrice,
+                                    SetPurchasePrice = setPurchasePrice,
                                     SetRetailPrice = sp.OEMPrice ?? wp.OEMPrice,
                                     SetQuantity = 1,
                                     SetType = 1,
@@ -2804,6 +2830,12 @@ namespace BlazorApp.Api.Services.React
                     {
                         existingMultiCodeKeys.TryGetValue(productCode, out var existingKeys);
                         existingKeys ??= new HashSet<(string?, string?)>();
+                        var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
+                            setProducts,
+                            wp.ImportPrice,
+                            sp => sp.SetProductCode,
+                            sp => sp.OEMPrice ?? wp.OEMPrice
+                        );
 
                         foreach (var sp in setProducts)
                         {
@@ -2814,6 +2846,11 @@ namespace BlazorApp.Api.Services.React
                                 if (existingKeys.Contains((sp.SetBarcode, storeCode)))
                                     continue;
                                 existingKeys.Add((sp.SetBarcode, storeCode));
+                                var setPurchasePrice =
+                                    sp.SetProductCode != null
+                                    && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
+                                        ? allocatedPurchasePrice
+                                        : sp.ImportPrice;
                                 toInsertStoreMultiCodeProducts.Add(
                                     new StoreMultiCodeProduct
                                     {
@@ -2823,7 +2860,7 @@ namespace BlazorApp.Api.Services.React
                                         MultiCodeProductCode = sp.SetProductCode,
                                         StoreMultiCodeProductCode = storeCode + sp.SetProductCode,
                                         MultiBarcode = sp.SetBarcode,
-                                        PurchasePrice = sp.ImportPrice,
+                                        PurchasePrice = setPurchasePrice,
                                         MultiCodeRetailPrice = sp.OEMPrice,
                                         DiscountRate = 0,
                                         IsAutoPricing = false,

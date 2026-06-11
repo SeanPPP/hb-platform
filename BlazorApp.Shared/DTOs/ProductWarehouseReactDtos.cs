@@ -73,6 +73,10 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Volume { get; set; }
         public string? ImageUrl { get; set; }
         /// <summary>
+        /// 商品类型：0=普通商品，1=套装商品，2=多码商品
+        /// </summary>
+        public int? ProductType { get; set; }
+        /// <summary>
         /// 是否套装商品；若为 true，需从 DomesticSetProduct 更新到 ProductSetCode
         /// </summary>
         public bool IsSetProduct { get; set; } = false;

@@ -107,7 +107,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             .SingleAsync(row => row.H商品编码 == "HB001" && row.H多码商品编号 == "HB001-M1");
         Assert.Equal("set-1", setCode.HGUID);
         Assert.Equal("952700000002", setCode.H多条形码);
-        Assert.Equal(2.0m, setCode.H进货价);
+        Assert.Equal(2.5m, setCode.H进货价);
         Assert.Equal(4.0m, setCode.H一品多码零售价);
 
         var storeMultiCodes = await _hqDb.Queryable<DIC_分店一品多码表>()
@@ -116,12 +116,12 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         Assert.Equal(2, storeMultiCodes.Count);
         Assert.Contains(storeMultiCodes, row =>
             row.H分店代码 == "S01"
-            && row.H进货价 == 1.9m
+            && row.H进货价 == 2.5m
             && row.H一品多码零售价 == 3.9m
         );
         Assert.Contains(storeMultiCodes, row =>
             row.H分店代码 == "S02"
-            && row.H进货价 == 2.0m
+            && row.H进货价 == 2.5m
             && row.H一品多码零售价 == 4.0m
         );
 
@@ -284,7 +284,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
 
         var setCode = await _hqDb.Queryable<DIC_一品多码表>()
             .SingleAsync(row => row.H商品编码 == "HB001" && row.H多码商品编号 == "HB001-M1");
-        Assert.Equal(2.6m, setCode.H进货价);
+        Assert.Equal(2.5m, setCode.H进货价);
         Assert.Equal(4.6m, setCode.H一品多码零售价);
         Assert.False(setCode.H使用状态);
 
@@ -293,15 +293,198 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             .ToListAsync();
         Assert.Contains(storeMultiCodes, row =>
             row.H分店代码 == "S01"
-            && row.H进货价 == 2.4m
+            && row.H进货价 == 2.5m
             && row.H一品多码零售价 == 4.4m
             && row.H使用状态 == false
         );
         Assert.Contains(storeMultiCodes, row =>
             row.H分店代码 == "S02"
-            && row.H进货价 == 2.6m
+            && row.H进货价 == 2.5m
             && row.H一品多码零售价 == 4.6m
             && row.H使用状态 == false
+        );
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_Hq已有小货号本地历史错用Hguid时_更新既有子码且不重复创建()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<ProductSetCode>()
+            .SetColumns(row => new ProductSetCode
+            {
+                SetProductCode = "set-1",
+                SetItemNumber = "HB001-M1",
+                SetPurchasePrice = 2.7m,
+                SetRetailPrice = 4.7m,
+            })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<StoreMultiCodeProduct>()
+            .SetColumns(row => new StoreMultiCodeProduct
+            {
+                MultiCodeProductCode = "set-1",
+                StoreMultiCodeProductCode = "S01set-1",
+                PurchasePrice = 2.6m,
+                MultiCodeRetailPrice = 4.6m,
+            })
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _hqDb.Insertable(new DIC_一品多码表
+        {
+            HGUID = "set-1",
+            H商品编码 = "HB001",
+            H多码商品编号 = "HB001-M1",
+            H多条形码 = "952700000002",
+            H进货价 = 2.0m,
+            H一品多码零售价 = 4.0m,
+            H使用状态 = true,
+        }).ExecuteCommandAsync();
+        await _hqDb.Insertable(new[]
+        {
+            new DIC_分店一品多码表
+            {
+                HGUID = "store-multi-1",
+                H分店代码 = "S01",
+                H商品编码 = "HB001",
+                H分店商品编码 = "S01HB001",
+                H多码商品编码 = "HB001-M1",
+                H分店多码商品编码 = "S01HB001-M1",
+                H多条形码 = "952700000003",
+                H进货价 = 1.9m,
+                H一品多码零售价 = 3.9m,
+                H使用状态 = true,
+            },
+            new DIC_分店一品多码表
+            {
+                HGUID = "store-multi-s02",
+                H分店代码 = "S02",
+                H商品编码 = "HB001",
+                H分店商品编码 = "S02HB001",
+                H多码商品编码 = "HB001-M1",
+                H分店多码商品编码 = "S02HB001-M1",
+                H多条形码 = "952700000002",
+                H进货价 = 2.0m,
+                H一品多码零售价 = 4.0m,
+                H使用状态 = true,
+            },
+        }).ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(0, response.Data?.ProductSetCodesCreated);
+        Assert.Equal(1, response.Data?.ProductSetCodesUpdated);
+        Assert.Equal(0, response.Data?.StoreMultiCodesCreated);
+        Assert.Equal(2, response.Data?.StoreMultiCodesUpdated);
+        Assert.Equal(1, await _hqDb.Queryable<DIC_一品多码表>().Where(row => row.H商品编码 == "HB001").CountAsync());
+        Assert.Equal(2, await _hqDb.Queryable<DIC_分店一品多码表>().Where(row => row.H商品编码 == "HB001").CountAsync());
+
+        var setCode = await _hqDb.Queryable<DIC_一品多码表>().SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("HB001-M1", setCode.H多码商品编号);
+        Assert.Equal(2.5m, setCode.H进货价);
+        Assert.Equal(4.7m, setCode.H一品多码零售价);
+
+        var s01StoreMulti = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .SingleAsync(row => row.H商品编码 == "HB001" && row.H分店代码 == "S01");
+        Assert.Equal("HB001-M1", s01StoreMulti.H多码商品编码);
+        Assert.Equal(2.5m, s01StoreMulti.H进货价);
+        Assert.Equal(4.6m, s01StoreMulti.H一品多码零售价);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_套装子码进货价按零售价比例分摊主项进货价()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { PurchasePrice = 10m, RetailPrice = 20m })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<ProductSetCode>()
+            .SetColumns(row => new ProductSetCode
+            {
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 4m,
+            })
+            .Where(row => row.ProductCode == "HB001" && row.SetProductCode == "HB001-M1")
+            .ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-2",
+            ProductCode = "HB001",
+            SetProductCode = "HB001-M2",
+            SetItemNumber = "HB001-M2",
+            SetBarcode = "952700000004",
+            SetPurchasePrice = 88m,
+            SetRetailPrice = 6m,
+            SetQuantity = 1,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _localDb.Updateable<StoreMultiCodeProduct>()
+            .SetColumns(row => new StoreMultiCodeProduct
+            {
+                PurchasePrice = 77m,
+                MultiCodeRetailPrice = 4m,
+            })
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001" && row.MultiCodeProductCode == "HB001-M1")
+            .ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "store-multi-2",
+            StoreCode = "S01",
+            ProductCode = "HB001",
+            MultiCodeProductCode = "HB001-M2",
+            StoreMultiCodeProductCode = "S01HB001-M2",
+            MultiBarcode = "952700000005",
+            PurchasePrice = 66m,
+            MultiCodeRetailPrice = 6m,
+            DiscountRate = 0.95m,
+            IsAutoPricing = false,
+            IsSpecialProduct = false,
+            IsActive = true,
+            IsDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var hqSetCodes = await _hqDb.Queryable<DIC_一品多码表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Contains(hqSetCodes, row =>
+            row.H多码商品编号 == "HB001-M1"
+            && row.H进货价 == 4m
+            && row.H一品多码零售价 == 4m
+        );
+        Assert.Contains(hqSetCodes, row =>
+            row.H多码商品编号 == "HB001-M2"
+            && row.H进货价 == 6m
+            && row.H一品多码零售价 == 6m
+        );
+
+        var hqStoreMultiCodes = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row => row.H商品编码 == "HB001" && row.H分店代码 == "S01")
+            .ToListAsync();
+        Assert.Contains(hqStoreMultiCodes, row =>
+            row.H多码商品编码 == "HB001-M1"
+            && row.H进货价 == 4m
+            && row.H一品多码零售价 == 4m
+        );
+        Assert.Contains(hqStoreMultiCodes, row =>
+            row.H多码商品编码 == "HB001-M2"
+            && row.H进货价 == 6m
+            && row.H一品多码零售价 == 6m
         );
     }
 
@@ -719,7 +902,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
                 && row.H商品编码 == "HB001"
                 && row.H多码商品编码 == "HB001-M1"
             );
-        Assert.Equal(2.3m, storeMulti.H进货价);
+        Assert.Equal(2.5m, storeMulti.H进货价);
         Assert.Equal(4.3m, storeMulti.H一品多码零售价);
         Assert.False(storeMulti.H使用状态);
         Assert.Equal(88, storeMulti.H库存);
