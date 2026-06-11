@@ -92,11 +92,9 @@ function resolvePickingListRowsPerPdfPage(
   return Math.max(1, Math.floor(availableHeight / options.rowHeightMm))
 }
 
-function resolveRowsBeforeSummaryPage(remaining: number, regularRowsPerPage: number, summaryRowsPerPage: number) {
-  // 尾部两页均衡拆分，避免为了保护汇总区而产生 1-3 行的孤立页面。
-  const balancedRows = Math.ceil(remaining / 2)
-  const rowsNeededBeforeSummary = remaining - summaryRowsPerPage
-  return Math.min(regularRowsPerPage, Math.max(balancedRows, rowsNeededBeforeSummary))
+function resolveRowsBeforeSummaryPage(remaining: number, regularRowsPerPage: number) {
+  // 尾页允许少量明细，优先让倒数第二页满排，同时保证汇总页不超过容量。
+  return Math.min(regularRowsPerPage, Math.max(1, remaining - 1))
 }
 
 // 统一管理配货单的派生展示逻辑，避免组件里散落业务格式化判断。
@@ -192,11 +190,11 @@ export function buildPickingListPdfPages(
     const remaining = items.length - startIndex
     const canFitRestWithSummary = remaining <= summaryRowsPerPage
     const shouldBalanceTailPages = hasSummary && !canFitRestWithSummary && remaining <= regularRowsPerPage + summaryRowsPerPage
-    // 尾页需要显示备注和汇总时，最后两页均衡拆分，兼顾汇总空间和页面观感。
+    // 尾页需要显示备注和汇总时，倒数第二页尽量满排，最后一页可以少。
     const rowsForPage = canFitRestWithSummary
       ? summaryRowsPerPage
       : shouldBalanceTailPages
-        ? resolveRowsBeforeSummaryPage(remaining, regularRowsPerPage, summaryRowsPerPage)
+        ? resolveRowsBeforeSummaryPage(remaining, regularRowsPerPage)
         : regularRowsPerPage
     const pageItems = items.slice(startIndex, startIndex + rowsForPage)
 
