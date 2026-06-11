@@ -98,6 +98,17 @@ async function main() {
   })
   if (currencyFormatFailure) failures.push(currencyFormatFailure)
 
+  const barcodeLabelFailure = await runTest('粘贴条码列应去掉随单元格带入的条码标签', () => {
+    const [suffixLabelRow] = parsePasteText('SKU-1\t9357405070864 条码\t商品1\t1\t5\t5\t5', defaultPasteFieldOrder)
+    const [prefixLabelRow] = parsePasteText('SKU-2\t条码：9357405070864\t商品2\t1\t5\t5\t5', defaultPasteFieldOrder)
+    const [excelTextRow] = parsePasteText("SKU-3\t'9357405070864\t商品3\t1\t5\t5\t5", defaultPasteFieldOrder)
+
+    assertEqual(suffixLabelRow?.barcode, '9357405070864', '条码尾部标签应被去掉')
+    assertEqual(prefixLabelRow?.barcode, '9357405070864', '条码前置标签应被去掉')
+    assertEqual(excelTextRow?.barcode, '9357405070864', 'Excel 文本条码前导单引号应被去掉')
+  })
+  if (barcodeLabelFailure) failures.push(barcodeLabelFailure)
+
   if (failures.length) {
     throw new Error(failures.join('\n'))
   }

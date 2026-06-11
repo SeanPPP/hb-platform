@@ -49,6 +49,19 @@ function parsePastedNumber(value?: string) {
   return Number.isNaN(parsed) ? undefined : parsed
 }
 
+function parsePastedBarcode(value?: string) {
+  if (!value?.trim()) return undefined
+
+  // 关键位置：Excel/扫码来源有时会把文本前导单引号或“条码”标签一起复制进条码列，提交前只保留真实条码值。
+  const normalized = value
+    .trim()
+    .replace(/^'+/, '')
+    .replace(/条码|barcode|bar\s*code|ean|upc/gi, ' ')
+    .replace(/[\s:：]+/g, '')
+
+  return normalized || undefined
+}
+
 export function normalizePastedRetailPrice(price: number) {
   if (!Number.isFinite(price) || price < 3) return price
 
@@ -89,6 +102,11 @@ export function parsePasteText(
         row[field] = field === 'retailPrice' && options.normalizeRetailPrice && parsedNumber !== undefined
           ? normalizePastedRetailPrice(parsedNumber)
           : parsedNumber
+        return
+      }
+
+      if (field === 'barcode') {
+        row[field] = parsePastedBarcode(value)
         return
       }
 
