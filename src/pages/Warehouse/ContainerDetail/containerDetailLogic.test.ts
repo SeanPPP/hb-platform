@@ -12,6 +12,7 @@ import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
   applyContainerDetailCategoryFilter,
+  applyContainerDetailLoadedTextFilters,
   applyContainerDetailColumnState,
   buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
@@ -326,8 +327,10 @@ const categoryRows: ContainerDetail[] = [
     id: 157,
     hguid: 'category-row-grandchild',
     商品编码: 'P004',
+    商品名称: '浴巾套装',
     warehouseCategoryGUID: 'cat-towels',
     categoryName: 'Towels',
+    商品信息: { 货号: 'HB-P004' },
   },
   {
     id: 158,
@@ -441,6 +444,16 @@ assertDeepEqual(
   applyContainerDetailCategoryFilter(categoryRows, 'cat-towels', categoryLookup).map((row) => row.hguid),
   ['category-row-grandchild', 'category-row-great-grandchild', 'category-row-name-only-grandchild'],
   '选择子分类时应命中自身和所有更深层后代商品',
+)
+assertDeepEqual(
+  applyContainerDetailLoadedTextFilters(categoryRows, ' p004 ', {}).map((row) => row.hguid),
+  ['category-row-grandchild'],
+  '顶部货号关键字应只按当前已加载行的货号做前端包含过滤',
+)
+assertDeepEqual(
+  applyContainerDetailLoadedTextFilters(categoryRows, '', { itemNumber: 'p00', productName: '浴巾' }).map((row) => row.hguid),
+  ['category-row-grandchild'],
+  '列头文字搜索应在前端同时匹配货号和商品名称等文本列',
 )
 assertDeepEqual(
   getContainerDetailBatchCategoryProductCodes(categoryRows),
@@ -2185,11 +2198,12 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes("const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)") &&
-    pageSource.includes('applyContainerDetailCategoryFilter(baseFilteredRows, categoryFilterValue, categoryLookup)') &&
+    pageSource.includes('applyContainerDetailLoadedTextFilters(baseFilteredRows, itemNumberFilter, columnFilters)') &&
+    pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
     !pageSource.includes('categoryFilterValue, sortState') &&
     !pageSource.includes('categoryFilterValue, selectedTagFilters'),
   true,
-  '分类过滤应使用分类树 lookup 做前端已加载行过滤，不应进入远程 detailQuery 依赖',
+  '顶部货号、列头文字和分类过滤应在前端过滤已加载行，不应进入远程 detailQuery 依赖',
 )
 assertEqual(
   pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
@@ -2210,7 +2224,13 @@ assertEqual(
     pageSource.includes('filters: remoteColumnFilters') &&
     pageSource.includes('sortState'),
   true,
-  '顶部筛选、列头过滤和排序应转换为服务端查询条件',
+  '非文本列头过滤、标签筛选和排序应继续转换为服务端查询条件',
+)
+assertEqual(
+  !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
+    pageSource.includes('const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])'),
+  true,
+  '顶部货号和列头文字筛选不应合并进远程查询条件',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),

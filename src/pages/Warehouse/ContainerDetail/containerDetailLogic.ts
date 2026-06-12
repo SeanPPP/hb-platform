@@ -679,6 +679,35 @@ function matchesTextFilter(value: string | undefined, filter: string | undefined
   return normalizeText(value).includes(normalizedFilter)
 }
 
+export function applyContainerDetailLoadedTextFilters(
+  rows: ContainerDetail[],
+  itemNumberFilter: string,
+  filters: ContainerDetailColumnFilters,
+) {
+  return rows.filter((row) => (
+    // 前端文字筛选只作用于当前已加载行，避免输入关键字时触发货柜明细远程重载。
+    matchesTextFilter(getContainerDetailItemNumber(row), itemNumberFilter) &&
+    matchesTextFilter(getContainerDetailItemNumber(row), filters.itemNumber) &&
+    matchesTextFilter(getContainerDetailBarcode(row), filters.barcode) &&
+    matchesTextFilter(getContainerDetailProductName(row), filters.productName) &&
+    matchesTextFilter(getContainerDetailEnglishName(row), filters.englishName) &&
+    matchesTextFilter(row.备注, filters.remark)
+  ))
+}
+
+export function omitContainerDetailTextFilters(filters: ContainerDetailColumnFilters): ContainerDetailColumnFilters {
+  const {
+    itemNumber: _itemNumber,
+    barcode: _barcode,
+    productName: _productName,
+    englishName: _englishName,
+    remark: _remark,
+    ...remoteFilters
+  } = filters
+  // 文本列头筛选已在前端处理，这里只保留仍需后端查询的数字和枚举筛选。
+  return remoteFilters
+}
+
 function isEmptyNumberRange(filter: ContainerDetailNumberRangeFilter | undefined) {
   return filter?.min == null && filter?.max == null
 }

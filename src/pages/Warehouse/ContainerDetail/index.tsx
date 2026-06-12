@@ -111,6 +111,7 @@ import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../.
 import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailCategoryFilter,
+  applyContainerDetailLoadedTextFilters,
   applyContainerDetailWarehouseStatusByProductCodes,
   buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
@@ -151,6 +152,7 @@ import {
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
+  omitContainerDetailTextFilters,
   resolveContainerDetailOemPrice,
   rollbackContainerDetailWarehouseStatuses,
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
@@ -656,10 +658,7 @@ export default function ContainerDetailPage() {
     warehouseCategoryGUID: targetCategoryGuid,
   }, categoryLookup, i18n.language) : undefined
 
-  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => ({
-    ...columnFilters,
-    itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber,
-  }), [columnFilters, itemNumberFilter])
+  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
 
   const detailQuery = useMemo(() => buildContainerDetailQuery({
     containerGuid,
@@ -881,9 +880,13 @@ export default function ContainerDetailPage() {
     return rows
   }, [rows])
 
+  const textFilteredRows = useMemo(() => {
+    return applyContainerDetailLoadedTextFilters(baseFilteredRows, itemNumberFilter, columnFilters)
+  }, [baseFilteredRows, columnFilters, itemNumberFilter])
+
   const filteredRows = useMemo(() => {
-    return applyContainerDetailCategoryFilter(baseFilteredRows, categoryFilterValue, categoryLookup)
-  }, [baseFilteredRows, categoryFilterValue, categoryLookup])
+    return applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)
+  }, [categoryFilterValue, categoryLookup, textFilteredRows])
 
   const displayRows = useMemo(
     () => filteredRows,
