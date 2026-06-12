@@ -135,6 +135,67 @@ async function main() {
   })
   if (storeScopeDependencyFailure) failures.push(storeScopeDependencyFailure)
 
+  const searchCategoryPathFailure = await runTest('搜索商品卡片应显示分类完整路径', () => {
+    assert(
+      shopHomeSource.includes('buildWarehouseCategoryLookup') &&
+        shopHomeSource.includes('getWarehouseProductCategoryTooltip') &&
+        shopHomeSource.includes('const shouldShowCategoryPath = Boolean(keyword)') &&
+        shopHomeSource.includes('categoryPath={categoryPathMap[product.productCode]}'),
+      '搜索结果商品卡片未复用分类树路径工具，或未把分类完整路径传给 ProductCard',
+    )
+  })
+  if (searchCategoryPathFailure) failures.push(searchCategoryPathFailure)
+
+  const searchOnlyCategoryPathFailure = await runTest('分类路径只应显示在搜索结果卡片', () => {
+    assert(
+      shopHomeSource.includes('if (!shouldShowCategoryPath || !categoryLookup)') &&
+        shopHomeSource.includes('return {}'),
+      '分类路径缺少 keyword 开关，分类页或全部商品页可能也会显示路径',
+    )
+  })
+  if (searchOnlyCategoryPathFailure) failures.push(searchOnlyCategoryPathFailure)
+
+  const productCardCategoryPathFailure = await runTest('商品卡片应在货号下方以两行省略显示分类路径', () => {
+    assert(
+      productCardSource.includes('categoryPath?: string') &&
+        productCardSource.includes('Tooltip') &&
+        productCardSource.includes('shop-product-category-path') &&
+        productCardSource.includes('ellipsis={{ rows: 2 }}') &&
+        globalCssSource.includes('.shop-product-category-path'),
+      'ProductCard 未声明 categoryPath，或分类路径没有 Tooltip/两行省略/稳定样式',
+    )
+  })
+  if (productCardCategoryPathFailure) failures.push(productCardCategoryPathFailure)
+
+  const categoryPathClickFailure = await runTest('搜索商品分类路径点击后应进入对应分类并清除搜索词', () => {
+    assert(
+      shopHomeSource.includes('useNavigate') &&
+        shopHomeSource.includes('const navigate = useNavigate()') &&
+        shopHomeSource.includes('const handleCategoryPathClick = useCallback') &&
+        shopHomeSource.includes('product.warehouseCategoryGUID') &&
+        shopHomeSource.includes('navigate(`/shop?category=${encodeURIComponent(product.warehouseCategoryGUID)}`)') &&
+        shopHomeSource.includes('shouldShowCategoryPath && product.warehouseCategoryGUID') &&
+        shopHomeSource.includes('? handleCategoryPathClick') &&
+        shopHomeSource.includes(': undefined'),
+      '搜索商品分类路径没有点击进入分类、跳转没有清除 keyword，或缺少分类 GUID 时仍会显示可点击状态',
+    )
+  })
+  if (categoryPathClickFailure) failures.push(categoryPathClickFailure)
+
+  const productCardCategoryPathA11yFailure = await runTest('可点击分类路径应支持鼠标和键盘触发', () => {
+    assert(
+      productCardSource.includes('onCategoryPathClick?: (product: StoreOrderProductItem) => void') &&
+        productCardSource.includes('const canClickCategoryPath = Boolean(categoryPath && onCategoryPathClick)') &&
+        productCardSource.includes("role={canClickCategoryPath ? 'button' : undefined}") &&
+        productCardSource.includes('tabIndex={canClickCategoryPath ? 0 : undefined}') &&
+        productCardSource.includes("event.key === 'Enter' || event.key === ' '") &&
+        productCardSource.includes('onCategoryPathClick(product)') &&
+        globalCssSource.includes('.shop-product-category-path--clickable'),
+      'ProductCard 分类路径缺少可点击 prop、键盘触发或可点击样式',
+    )
+  })
+  if (productCardCategoryPathA11yFailure) failures.push(productCardCategoryPathA11yFailure)
+
   const lazyImageFailure = await runTest('商品卡图片应懒加载避免拖慢首屏', () => {
     assert(
       productCardSource.includes('loading="lazy"'),

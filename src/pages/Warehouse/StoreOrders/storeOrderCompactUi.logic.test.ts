@@ -105,6 +105,47 @@ async function main() {
   })
   if (listTwoLineFailure) failures.push(listTwoLineFailure)
 
+  const listColumnDragFailure = await runTest('列表页主表应支持和货柜明细一致的表头列拖拽', () => {
+    assert(
+      storeOrdersSource.includes('DndContext') &&
+        storeOrdersSource.includes('SortableContext') &&
+        storeOrdersSource.includes('useSortable') &&
+        storeOrdersSource.includes('horizontalListSortingStrategy'),
+      '列表页主表应复用 @dnd-kit 横向排序能力',
+    )
+    assert(
+      storeOrdersSource.includes("const STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.storeOrders.list.columnOrder.v1'") &&
+        storeOrdersSource.includes('localStorage.setItem(STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY') &&
+        storeOrdersSource.includes('mergeStoreOrderListColumnOrder('),
+      '列表页列顺序应保存到专用 localStorage key，并兼容列增删',
+    )
+    assert(
+      storeOrdersSource.includes('components={{ header: { cell: DraggableHeaderCell } }}') &&
+        storeOrdersSource.includes('<SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>') &&
+        storeOrdersSource.includes('<DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>'),
+      '列表页表格应接入可拖拽表头 cell 与横向 SortableContext',
+    )
+    assert(
+      storeOrdersSource.includes('isStoreOrderListColumnOrderCustomized(columnOrder, draggableColumnKeys)') &&
+        storeOrdersSource.includes('setColumnOrder(draggableColumnKeys)') &&
+        storeOrdersSource.includes('localStorage.removeItem(STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY)'),
+      '列表页拖拽列后应提供重置列按钮并清除本地列顺序',
+    )
+    assert(
+      storeOrdersSource.includes('const draggableColumnKeys = baseColumns.map((column) => String(column.key) as StoreOrderListTableColumnKey)') &&
+        storeOrdersSource.includes('rowSelection={{') &&
+        !storeOrdersSource.includes("columnOrder.includes('selection')"),
+      '列表页选择列仍应由 rowSelection 管理，不能进入业务列拖拽顺序',
+    )
+    assert(
+      compactCssSource.includes('.store-order-list-draggable-header') &&
+        compactCssSource.includes('cursor: move') &&
+        compactCssSource.includes('user-select: none'),
+      '列表页拖拽表头应有局部样式，避免影响其他表格',
+    )
+  })
+  if (listColumnDragFailure) failures.push(listColumnDragFailure)
+
   const listStatusFilterFailure = await runTest('列表页状态筛选应使用多选框并默认勾选已提交和配货中', () => {
     assert(storeOrdersSource.includes('Checkbox.Group'), '状态筛选应使用 Checkbox.Group')
     assert(storeOrdersSource.includes('const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]'), '默认状态筛选应为已提交和配货中')

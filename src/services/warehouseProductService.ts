@@ -122,6 +122,8 @@ export interface WarehouseProductListItem {
   itemNumber: string
   barcode?: string
   categoryName?: string
+  warehouseCategoryGUID?: string
+  categoryPath?: string
   domesticSupplierName?: string
   domesticSupplierCode?: string
   localSupplierName?: string
@@ -149,6 +151,8 @@ export interface WarehouseProductsTableQuery {
   searchText?: string
   supplierCode?: string
   categoryFilter?: 'all' | 'uncategorized'
+  categoryGuid?: string
+  uncategorizedOnly?: boolean
   productType?: 0 | 1 | 2
   isActive?: boolean
   sortField?: string
@@ -465,19 +469,69 @@ function toBoolean(value: unknown, fallback = false) {
   return fallback
 }
 
+function readString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed) {
+        return trimmed
+      }
+      continue
+    }
+
+    if (typeof value === 'number') {
+      return String(value)
+    }
+  }
+
+  return undefined
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
 function transformWarehouseProduct(raw: Record<string, unknown>): WarehouseProductListItem {
+  const localSupplier = readRecord(raw.localSupplier ?? raw.LocalSupplier)
+
   return {
-    id: String(raw.productCode ?? raw.ProductCode ?? raw.id ?? ''),
-    productCode: String(raw.productCode ?? raw.ProductCode ?? ''),
-    name: String(raw.productName ?? raw.ProductName ?? ''),
-    nameEn: String(raw.englishName ?? raw.EnglishName ?? '') || undefined,
-    itemNumber: String(raw.itemNumber ?? raw.ItemNumber ?? ''),
-    barcode: String(raw.barcode ?? raw.Barcode ?? '') || undefined,
-    categoryName: String(raw.categoryName ?? raw.CategoryName ?? '') || undefined,
-    domesticSupplierName: String(raw.domesticSupplierName ?? raw.DomesticSupplierName ?? raw.supplierName ?? raw.SupplierName ?? '') || undefined,
-    domesticSupplierCode: String(raw.domesticSupplierCode ?? raw.DomesticSupplierCode ?? raw.supplierCode ?? raw.SupplierCode ?? '') || undefined,
-    localSupplierName: String(raw.localSupplierName ?? raw.LocalSupplierName ?? '') || undefined,
-    localSupplierCode: String(raw.localSupplierCode ?? raw.LocalSupplierCode ?? '') || undefined,
+    id: readString(raw.productCode, raw.ProductCode, raw.id) ?? '',
+    productCode: readString(raw.productCode, raw.ProductCode) ?? '',
+    name: readString(raw.productName, raw.ProductName) ?? '',
+    nameEn: readString(raw.englishName, raw.EnglishName),
+    itemNumber: readString(raw.itemNumber, raw.ItemNumber) ?? '',
+    barcode: readString(raw.barcode, raw.Barcode),
+    categoryName: readString(raw.categoryName, raw.CategoryName),
+    warehouseCategoryGUID:
+      readString(
+        raw.warehouseCategoryGUID,
+        raw.WarehouseCategoryGUID,
+        raw.productCategoryGUID,
+        raw.ProductCategoryGUID,
+      ),
+    categoryPath:
+      readString(raw.categoryPath, raw.CategoryPath, raw.categoryFullPath, raw.CategoryFullPath),
+    domesticSupplierName: readString(raw.domesticSupplierName, raw.DomesticSupplierName, raw.supplierName, raw.SupplierName),
+    domesticSupplierCode: readString(raw.domesticSupplierCode, raw.DomesticSupplierCode, raw.supplierCode, raw.SupplierCode),
+    localSupplierName: readString(
+      raw.localSupplierName,
+      raw.LocalSupplierName,
+      localSupplier.localSupplierName,
+      localSupplier.LocalSupplierName,
+      localSupplier.name,
+      localSupplier.Name,
+    ),
+    // 澳洲供应商保持独立读取，避免把国内 SupplierName 误显示到澳洲供应商列。
+    localSupplierCode: readString(
+      raw.localSupplierCode,
+      raw.LocalSupplierCode,
+      localSupplier.localSupplierCode,
+      localSupplier.LocalSupplierCode,
+      localSupplier.code,
+      localSupplier.Code,
+    ),
     domesticPrice: toNumber(raw.domesticPrice ?? raw.DomesticPrice),
     labelPrice: toNumber(raw.oemPrice ?? raw.OEMPrice),
     importPrice: toNumber(raw.importPrice ?? raw.ImportPrice),
@@ -487,11 +541,11 @@ function transformWarehouseProduct(raw: Record<string, unknown>): WarehouseProdu
     isPackingQtyFallback: toBoolean(raw.isPackingQuantityFallback ?? raw.IsPackingQuantityFallback),
     minOrderQuantity: toNumber(raw.minOrderQuantity ?? raw.MinOrderQuantity),
     productType: (toNumber(raw.productType ?? raw.ProductType) ?? 0) as 0 | 1 | 2,
-    productImage: String(raw.productImage ?? raw.ProductImage ?? '') || undefined,
+    productImage: readString(raw.productImage, raw.ProductImage),
     isActive: toBoolean(raw.isActive ?? raw.IsActive, true),
-    createdAt: String(raw.createdAt ?? raw.CreatedAt ?? '') || undefined,
-    updatedAt: String(raw.updatedAt ?? raw.UpdatedAt ?? '') || undefined,
-    updatedBy: String(raw.updatedBy ?? raw.UpdatedBy ?? '') || undefined,
+    createdAt: readString(raw.createdAt, raw.CreatedAt),
+    updatedAt: readString(raw.updatedAt, raw.UpdatedAt),
+    updatedBy: readString(raw.updatedBy, raw.UpdatedBy),
     middlePackQty: toNumber(raw.middlePackQuantity ?? raw.MiddlePackQuantity),
   }
 }
@@ -635,10 +689,8 @@ export async function getWarehouseProductsTable(
     ...(query.isActive !== undefined ? { isActive: [String(query.isActive)] } : {}),
   }
 
-  // 空分类商品通过仓库分类 GUID 空值过滤，避免清空筛选时误查全部商品。
-  if (query.categoryFilter === 'uncategorized') {
-    filters.warehouseCategoryGUID = ['']
-  }
+  // 分类过滤走后端顶层字段；保留 categoryFilter 仅作为旧调用兼容入口。
+  const uncategorizedOnly = query.uncategorizedOnly === true || query.categoryFilter === 'uncategorized'
 
   const response = await request<unknown>(`${API_BASE}/table`, {
     method: 'POST',
@@ -649,6 +701,9 @@ export async function getWarehouseProductsTable(
       SortOrder: query.sortOrder,
       GlobalSearch: query.searchText || undefined,
       Filters: filters,
+      CategoryGuids: query.categoryGuid ? [query.categoryGuid] : undefined,
+      IncludeSubCategories: true,
+      UncategorizedOnly: query.categoryGuid ? false : uncategorizedOnly,
     },
   })
 

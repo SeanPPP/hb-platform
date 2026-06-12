@@ -1,9 +1,18 @@
 import { readFileSync } from 'node:fs'
 import type { ContainerDetail } from '../../../types/container'
 import type { DetectionResult } from '../../../services/warehouseProductService'
+import type { WarehouseCategoryNode } from '../../../services/warehouseCategoryService'
 import {
+  buildWarehouseCategoryLookup,
+  getWarehouseProductCategoryTooltip,
+} from '../Products/categoryPath'
+import {
+  CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
+  CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
+  applyContainerDetailCategoryFilter,
+  applyContainerDetailLoadedTextFilters,
   applyContainerDetailColumnState,
   buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
@@ -30,12 +39,18 @@ import {
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   mergeContainerDetailLoadedItems,
+  getContainerDetailBatchCategoryProductCodes,
+  getContainerDetailCategoryGuid,
+  getContainerDetailCategoryName,
+  getContainerDetailCategoryPath,
+  getContainerDetailCategoryTooltipRecord,
   getContainerDetailEnglishName,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
   getContainerDetailCreateProductRowLabel,
   getContainerDetailProductType,
   getContainerDetailProductTypeFilterKey,
+  getContainerDetailImageUrl,
   getContainerDetailOemPriceSource,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
@@ -276,6 +291,180 @@ assertEqual(
   }),
   '套装子商品',
   '国内商品表类型缺失时应回退货柜明细商品类型',
+)
+
+const categoryRows: ContainerDetail[] = [
+  {
+    id: 151,
+    hguid: 'category-row-direct',
+    商品编码: ' P001 ',
+    categoryName: 'Bath',
+    categoryPath: 'Home / 家居 > Bath / 浴室',
+    warehouseCategoryGUID: 'cat-bath',
+  },
+  {
+    id: 152,
+    hguid: 'category-row-info',
+    商品信息: {
+      商品编码: 'P002',
+      ProductCategoryName: 'Kitchen',
+      CategoryFullPath: 'Home / 家居 > Kitchen / 厨房',
+      ProductCategoryGUID: 'cat-kitchen',
+    },
+  },
+  {
+    id: 153,
+    hguid: 'category-row-empty',
+    商品编码: 'P003',
+  },
+  {
+    id: 154,
+    hguid: 'category-row-duplicate-code',
+    商品编码: 'P001',
+    WarehouseCategoryGUID: 'cat-bath',
+    CategoryName: 'Bath',
+  },
+  {
+    id: 157,
+    hguid: 'category-row-grandchild',
+    商品编码: 'P004',
+    商品名称: '浴巾套装',
+    warehouseCategoryGUID: 'cat-towels',
+    categoryName: 'Towels',
+    商品信息: { 货号: 'HB-P004' },
+  },
+  {
+    id: 158,
+    hguid: 'category-row-great-grandchild',
+    商品编码: 'P005',
+    warehouseCategoryGUID: 'cat-small-towels',
+    categoryName: 'Small Towels',
+  },
+  {
+    id: 159,
+    hguid: 'category-row-sibling',
+    商品编码: 'P006',
+    warehouseCategoryGUID: 'cat-kitchen',
+    categoryName: 'Kitchen',
+  },
+  {
+    id: 160,
+    hguid: 'category-row-name-only-grandchild',
+    商品编码: 'P007',
+    categoryName: 'Small Towels',
+  },
+]
+const categoryTree: WarehouseCategoryNode[] = [
+  {
+    categoryGUID: 'cat-home',
+    categoryName: 'Home',
+    chineseName: '家居',
+    isActive: true,
+    children: [
+      {
+        categoryGUID: 'cat-bath',
+        categoryName: 'Bath',
+        chineseName: '浴室',
+        isActive: true,
+        children: [
+          {
+            categoryGUID: 'cat-towels',
+            categoryName: 'Towels',
+            chineseName: '毛巾',
+            isActive: true,
+            children: [
+              {
+                categoryGUID: 'cat-small-towels',
+                categoryName: 'Small Towels',
+                chineseName: '小毛巾',
+                isActive: true,
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        categoryGUID: 'cat-kitchen',
+        categoryName: 'Kitchen',
+        chineseName: '厨房',
+        isActive: true,
+        children: [],
+      },
+    ],
+  },
+]
+const categoryLookup = buildWarehouseCategoryLookup(categoryTree)
+assertEqual(getContainerDetailCategoryName(categoryRows[0]), 'Bath', '分类名称应优先读取明细行字段')
+assertEqual(getContainerDetailCategoryName(categoryRows[1]), 'Kitchen', '分类名称应兼容商品信息 PascalCase 字段')
+assertEqual(getContainerDetailCategoryPath(categoryRows[1]), 'Home / 家居 > Kitchen / 厨房', '完整分类路径应兼容商品信息 CategoryFullPath 字段')
+assertEqual(getContainerDetailCategoryGuid(categoryRows[1]), 'cat-kitchen', '分类 GUID 应兼容商品信息 ProductCategoryGUID 字段')
+assertEqual(
+  getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord({ id: 155, hguid: 'category-name-only', categoryName: 'Bath' }), buildWarehouseCategoryLookup(categoryTree), 'zh'),
+  '家居 > 浴室',
+  '只有分类名称时应通过分类树反查当前语言 Tooltip 完整路径',
+)
+assertDeepEqual(
+  applyContainerDetailCategoryFilter(categoryRows, CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY).map((row) => row.hguid),
+  [
+    'category-row-direct',
+    'category-row-info',
+    'category-row-empty',
+    'category-row-duplicate-code',
+    'category-row-grandchild',
+    'category-row-great-grandchild',
+    'category-row-sibling',
+    'category-row-name-only-grandchild',
+  ],
+  '全部分类过滤应保留当前已加载行',
+)
+assertDeepEqual(
+  applyContainerDetailCategoryFilter(categoryRows, CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY).map((row) => row.hguid),
+  ['category-row-empty'],
+  '未分类过滤应只保留缺少分类名称和分类 GUID 的当前已加载行',
+)
+assertDeepEqual(
+  applyContainerDetailCategoryFilter(categoryRows, 'cat-home', categoryLookup).map((row) => row.hguid),
+  [
+    'category-row-direct',
+    'category-row-info',
+    'category-row-duplicate-code',
+    'category-row-grandchild',
+    'category-row-great-grandchild',
+    'category-row-sibling',
+    'category-row-name-only-grandchild',
+  ],
+  '选择根分类时应命中自身和所有层级的子孙分类商品',
+)
+assertDeepEqual(
+  applyContainerDetailCategoryFilter(categoryRows, 'cat-bath', categoryLookup).map((row) => row.hguid),
+  ['category-row-direct', 'category-row-duplicate-code', 'category-row-grandchild', 'category-row-great-grandchild', 'category-row-name-only-grandchild'],
+  '选择父分类时应命中自身、子类、孙子类和只有分类名的后代商品',
+)
+assertDeepEqual(
+  applyContainerDetailCategoryFilter(categoryRows, 'cat-towels', categoryLookup).map((row) => row.hguid),
+  ['category-row-grandchild', 'category-row-great-grandchild', 'category-row-name-only-grandchild'],
+  '选择子分类时应命中自身和所有更深层后代商品',
+)
+assertDeepEqual(
+  applyContainerDetailLoadedTextFilters(categoryRows, ' p004 ', {}).map((row) => row.hguid),
+  ['category-row-grandchild'],
+  '顶部货号关键字应只按当前已加载行的货号做前端包含过滤',
+)
+assertDeepEqual(
+  applyContainerDetailLoadedTextFilters(categoryRows, '', { itemNumber: 'p00', productName: '浴巾' }).map((row) => row.hguid),
+  ['category-row-grandchild'],
+  '列头文字搜索应在前端同时匹配货号和商品名称等文本列',
+)
+assertDeepEqual(
+  getContainerDetailBatchCategoryProductCodes(categoryRows),
+  { productCodes: ['P001', 'P002', 'P003', 'P004', 'P005', 'P006', 'P007'], skippedMissingCodeCount: 0 },
+  '批量分类应提取 trim 后商品编码并去重',
+)
+assertDeepEqual(
+  getContainerDetailBatchCategoryProductCodes([{ id: 156, hguid: 'missing-code' }, ...categoryRows.slice(0, 1)]),
+  { productCodes: ['P001'], skippedMissingCodeCount: 1 },
+  '批量分类应跳过缺商品编码行并统计数量',
 )
 assertDeepEqual(
   buildContainerDetailSaveFailureKeys('row-1', { 商品名称: '皮带' }),
@@ -833,15 +1022,15 @@ assertDeepEqual(
   ],
   '仓库状态本地更新应按 trim 后商品编码同步同商品行',
 )
-const defaultColumnOrder: ContainerDetailTableColumnKey[] = ['index', 'image', 'itemNumber', 'barcode', 'productName', 'englishName']
+const defaultColumnOrder: ContainerDetailTableColumnKey[] = ['index', 'image', 'itemNumber', 'categoryName', 'barcode', 'productName', 'englishName']
 assertDeepEqual(
   mergeContainerDetailColumnOrder(['barcode', 'unknown', 'barcode', 'image'], defaultColumnOrder),
-  ['barcode', 'image', 'index', 'itemNumber', 'productName', 'englishName'],
+  ['barcode', 'image', 'index', 'itemNumber', 'categoryName', 'productName', 'englishName'],
   '货柜明细列顺序应过滤未知列、去重并补齐新增列',
 )
 assertDeepEqual(
   moveContainerDetailColumnOrder(defaultColumnOrder, 'barcode', 'image'),
-  ['index', 'barcode', 'image', 'itemNumber', 'productName', 'englishName'],
+  ['index', 'barcode', 'image', 'itemNumber', 'categoryName', 'productName', 'englishName'],
   '货柜明细列拖拽应把 active 列移动到 over 列位置',
 )
 assertDeepEqual(
@@ -1378,9 +1567,9 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('[active, detailQueryKey]') &&
-    pageSource.includes('detailQueryKey 已包含货柜、筛选、排序和 tag'),
+    pageSource.includes('detailQueryKey 已包含货柜、远程筛选和 tag，列头排序只在前端当前已加载数据内处理'),
   true,
-  '清空已选明细的 effect 应监听 active 和远程查询 key，覆盖顶部筛选、列头过滤和列头排序',
+  '远程重载 effect 应监听 active 和远程查询 key，列头排序不应进入远程重载依赖',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -1623,6 +1812,39 @@ assertDeepEqual(
     },
   ],
   '发送到 HQ 的候选项应保留图片和价格，但不得携带仓库上下架状态',
+)
+
+assertEqual(
+  getContainerDetailImageUrl({
+    id: 24,
+    hguid: 'detail-24',
+    商品图片: '  container-detail-image.jpg  ',
+    商品信息: { 商品图片: 'product-info-image.jpg' },
+  }),
+  'container-detail-image.jpg',
+  '货柜明细图片展示应优先使用行级商品图片并清理空白',
+)
+
+assertEqual(
+  getContainerDetailImageUrl({
+    id: 25,
+    hguid: 'detail-25',
+    商品图片: '   ',
+    商品信息: { 商品图片: '  product-info-image.jpg  ' },
+  }),
+  'product-info-image.jpg',
+  '货柜明细图片展示应在行级图片为空时回退商品信息图片',
+)
+
+assertEqual(
+  getContainerDetailImageUrl({
+    id: 26,
+    hguid: 'detail-26',
+    商品图片: '   ',
+    商品信息: { 商品图片: '   ' },
+  }),
+  undefined,
+  '货柜明细图片展示在所有图片字段为空时应返回空值',
 )
 
 const normalizedPushFailure = normalizeContainerDetailPushToHqPayload({
@@ -2000,11 +2222,59 @@ assertEqual(
   '货柜明细表格应使用列头过滤和排序后的 displayRows',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailQuery({') &&
-    pageSource.includes('filters: remoteColumnFilters') &&
-    pageSource.includes('sortState'),
+  pageSource.includes('applyContainerDetailColumnState(filteredRows, {}, sortState)'),
   true,
-  '顶部筛选、列头过滤和排序应转换为服务端查询条件',
+  '货柜明细列头排序应在前端对当前已加载可见行排序',
+)
+assertEqual(
+  pageSource.includes('getCategoryTree') &&
+    pageSource.includes('batchAssignProducts') &&
+    pageSource.includes('buildWarehouseCategoryLookup') &&
+    pageSource.includes('getWarehouseProductCategoryTooltip') &&
+    pageSource.includes('formatWarehouseCategoryNodeName'),
+  true,
+  '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用批量分类服务',
+)
+assertEqual(
+  pageSource.includes("const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)") &&
+    pageSource.includes('applyContainerDetailLoadedTextFilters(baseFilteredRows, itemNumberFilter, columnFilters)') &&
+    pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
+    !pageSource.includes('categoryFilterValue, sortState') &&
+    !pageSource.includes('categoryFilterValue, selectedTagFilters'),
+  true,
+  '顶部货号、列头文字和分类过滤应在前端过滤已加载行，不应进入远程 detailQuery 依赖',
+)
+assertEqual(
+  pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
+    pageSource.includes('options={categoryFilterOptions}') &&
+    pageSource.includes('setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)') &&
+    pageSource.includes('buildContainerDetailCategoryOptions(categories, t, i18n.language)'),
+  true,
+  '货柜明细顶部应提供当前语言分类 Select，并支持清空回到全部分类',
+)
+assertEqual(
+  pageSource.includes('filteredRows.length !== rows.length') &&
+    pageSource.includes("t('containers.text.visibleRows'"),
+  true,
+  '分类过滤后应显示当前可见行数量，避免误解为后端总数变化',
+)
+assertEqual(
+  (() => {
+    const detailQueryStart = pageSource.indexOf('const detailQuery = useMemo(() => buildContainerDetailQuery({')
+    const detailQueryEnd = pageSource.indexOf('const detailQueryKey', detailQueryStart)
+    const detailQuerySource = pageSource.slice(detailQueryStart, detailQueryEnd)
+    return detailQueryStart >= 0 &&
+      pageSource.includes('filters: remoteColumnFilters') &&
+      !detailQuerySource.includes('sortState')
+  })(),
+  true,
+  '非文本列头过滤和标签筛选应继续转换为服务端查询条件，列头排序不应进入远程 detailQuery',
+)
+assertEqual(
+  !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
+    pageSource.includes('const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])'),
+  true,
+  '顶部货号和列头文字筛选不应合并进远程查询条件',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -2159,6 +2429,7 @@ const defaultColumnOrderMarkers = [
   "key: 'image'",
   "renderColumnTitle('itemNumber'",
   "renderColumnTitle('englishName'",
+  "key: 'categoryName'",
   "renderColumnTitle('containerPieces'",
   "renderColumnTitle('containerQuantity'",
   "renderColumnTitle('domesticPrice'",
@@ -2182,6 +2453,17 @@ assertEqual(
     defaultColumnOrderIndexes.every((index, markerIndex) => markerIndex === 0 || index > defaultColumnOrderIndexes[markerIndex - 1]),
   true,
   '货柜明细默认列顺序应按截图排列',
+)
+const categoryColumnSource = pageSource.slice(
+  pageSource.indexOf("key: 'categoryName'"),
+  pageSource.indexOf("title: renderColumnTitle('containerPieces'"),
+)
+assertEqual(
+  categoryColumnSource.includes("title: renderCompactHeader(t('containers.fields.category'") &&
+    categoryColumnSource.includes('renderContainerDetailCategoryCell(row, categoryLookup, i18n.language)') &&
+    pageSource.includes("const displayName = getContainerDetailCategoryName(record) || '--'"),
+  true,
+  '分类列应显示分类名称，Tooltip 使用完整路径 helper，缺失时显示 --',
 )
 const barcodeColumnSource = pageSource.slice(
   pageSource.indexOf("renderColumnTitle('barcode', t('containers.fields.barcode'))"),
@@ -2259,6 +2541,44 @@ assertEqual(
   true,
   '货柜明细选择列仍应由 rowSelection 管理，不能进入业务列拖拽顺序',
 )
+assertEqual(
+  pageSource.includes("key: 'batchCategory'") &&
+    pageSource.includes('const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts') &&
+    pageSource.includes('if (!canBatchSetCategory)') &&
+    pageSource.includes('openBatchCategory()') &&
+    pageSource.includes('handleBatchCategorySave') &&
+    pageSource.includes('getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)') &&
+    pageSource.includes('batchAssignProducts(targetCategoryGuid, productCodes)'),
+  true,
+  '批量操作菜单应包含批量分类，并提交当前目标行的去重商品编码',
+)
+const batchCategorySaveSource = pageSource.slice(
+  pageSource.indexOf('const handleBatchCategorySave = async () => {'),
+  pageSource.indexOf('const submitBatchEditEnglishName = async () => {'),
+)
+assertEqual(
+  batchCategorySaveSource.includes('await batchAssignProducts(targetCategoryGuid, productCodes)') &&
+    !batchCategorySaveSource.includes("await loadDetailChunk(1, 'reset')") &&
+    batchCategorySaveSource.includes('setRows((items) =>') &&
+    batchCategorySaveSource.includes('const productCode = getContainerDetailProductCode(item)') &&
+    batchCategorySaveSource.includes('productCodeSet.has(productCode)') &&
+    batchCategorySaveSource.includes('WarehouseCategoryGUID: targetCategoryGuid') &&
+    batchCategorySaveSource.includes('ProductCategoryGUID: targetCategoryGuid'),
+  true,
+  '货柜明细批量分类保存成功后应本地更新当前行分类，不应重新查询明细表格',
+)
+assertEqual(
+    pageSource.includes("title={t('containers.modals.batchCategoryTitle'") &&
+    pageSource.includes("t('warehouse.categories.targetCategory'") &&
+    pageSource.includes('selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)') &&
+    pageSource.includes('import CategoryTreePicker') &&
+    pageSource.includes('setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))') &&
+    pageSource.includes('<CategoryTreePicker') &&
+    pageSource.includes('selectedKey={targetCategoryGuid}') &&
+    pageSource.includes('maxHeight={360}'),
+  true,
+  '批量分类弹窗应使用带查询的当前语言分类树，并在每次打开时默认展开到一级分类',
+)
 assertEqual(pageSource.includes('className="container-detail-table"'), true, '货柜明细表格应挂载专属 class 以隔离垂直对齐样式')
 assertEqual(
   pageSource.includes("rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}"),
@@ -2335,10 +2655,12 @@ assertEqual(
 assertEqual(
   pageSource.includes('Image,') &&
     pageSource.includes('<Image') &&
+    pageSource.includes('const imageUrl = getContainerDetailImageUrl(row)') &&
+    pageSource.includes('src={imageUrl}') &&
     pageSource.includes('className="container-detail-product-image"') &&
     pageSource.includes('preview={{ mask: t(\'containers.actions.previewImage\', \'查看大图\') }}'),
   true,
-  '货柜明细商品图片应可点击放大预览',
+  '货柜明细商品图片应使用统一图片兜底并可点击放大预览',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-barcode-cell .ant-typography'),

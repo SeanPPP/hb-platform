@@ -52,7 +52,7 @@ export default function StoreDetailPage() {
           <Descriptions.Item label={t('system.stores.brandName')}>{store.brandName || '--'}</Descriptions.Item>
           <Descriptions.Item label="ABN">{store.abn || '--'}</Descriptions.Item>
           <Descriptions.Item label={t('system.stores.contactPhone')}>{store.contactPhone || '--'}</Descriptions.Item>
-          <Descriptions.Item label={t('column.status')}>
+          <Descriptions.Item label={t('system.stores.cashRegisterEnabled')}>
             <Tag color={store.isActive ? 'success' : 'default'}>{store.isActive ? t('common.active') : t('common.inactive')}</Tag>
           </Descriptions.Item>
           <Descriptions.Item label={t('system.stores.address')} span={2}>

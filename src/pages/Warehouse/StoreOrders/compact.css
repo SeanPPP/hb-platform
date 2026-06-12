@@ -48,6 +48,11 @@
   margin-inline-end: 0;
 }
 
+.store-order-list-draggable-header {
+  cursor: move;
+  user-select: none;
+}
+
 .store-order-detail-table .ant-table-cell {
   padding: 2px 4px !important;
   vertical-align: middle;

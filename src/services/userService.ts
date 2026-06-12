@@ -16,14 +16,17 @@ import type {
 import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
 
 type UserStoreApiDto = Omit<UserStoreDto, 'isManageable'> & {
+  IsActive?: boolean
   isManageable?: boolean
   isPrimary?: boolean
 }
 
 const mapUserStore = (store: UserStoreApiDto): UserStoreDto => {
-  const { isPrimary, isManageable, ...rest } = store
+  const { IsActive, isPrimary, isManageable, ...rest } = store
   return {
     ...rest,
+    // 用户关联分店可能已停用，前端仍保留状态给详情展示和后续判断。
+    isActive: rest.isActive ?? IsActive,
     isManageable: isManageable ?? isPrimary ?? false,
   }
 }

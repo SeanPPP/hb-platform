@@ -32,6 +32,18 @@ export interface ContainerProductInfo {
   单件体积?: number
   商品类型?: string
   套装数量?: number
+  categoryName?: string
+  CategoryName?: string
+  productCategoryName?: string
+  ProductCategoryName?: string
+  categoryPath?: string
+  CategoryPath?: string
+  categoryFullPath?: string
+  CategoryFullPath?: string
+  warehouseCategoryGUID?: string
+  WarehouseCategoryGUID?: string
+  productCategoryGUID?: string
+  ProductCategoryGUID?: string
 }
 
 export interface ContainerDetail {
@@ -66,6 +78,18 @@ export interface ContainerDetail {
   warehouseOEMPrice?: number
   WarehouseOEMPrice?: number
   warehouseIsActive?: boolean
+  categoryName?: string
+  CategoryName?: string
+  productCategoryName?: string
+  ProductCategoryName?: string
+  categoryPath?: string
+  CategoryPath?: string
+  categoryFullPath?: string
+  CategoryFullPath?: string
+  warehouseCategoryGUID?: string
+  WarehouseCategoryGUID?: string
+  productCategoryGUID?: string
+  ProductCategoryGUID?: string
   matchType?: 'productCode' | 'supplierItem' | 'unmatched'
   MatchType?: string
 }

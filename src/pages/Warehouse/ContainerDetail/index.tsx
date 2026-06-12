@@ -2,6 +2,7 @@ import {
   ArrowLeftOutlined,
   ArrowDownOutlined,
   ArrowUpOutlined,
+  AppstoreOutlined,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
@@ -94,6 +95,11 @@ import { upsertForActiveStores as upsertMultiCodeForActiveStores } from '../../.
 import { upsertForActiveStores as upsertRetailForActiveStores } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
 import {
+  batchAssignProducts,
+  getCategoryTree,
+  type WarehouseCategoryNode,
+} from '../../../services/warehouseCategoryService'
+import {
   batchUpdateWarehouseProducts,
   bulkSetStatus,
   detectProducts,
@@ -104,6 +110,9 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
+  applyContainerDetailCategoryFilter,
+  applyContainerDetailColumnState,
+  applyContainerDetailLoadedTextFilters,
   applyContainerDetailWarehouseStatusByProductCodes,
   buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
@@ -116,6 +125,7 @@ import {
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
+  getContainerDetailBatchCategoryProductCodes,
   buildContainerDetailTranslationUpdates,
   calculateContainerSetCodePurchasePrice,
   countContainerDetailInvalidTranslationResults,
@@ -124,7 +134,10 @@ import {
   findContainerDetailRowsMissingProductName,
   getContainerDetailExportColumns,
   getContainerDetailBarcode,
+  getContainerDetailCategoryName,
+  getContainerDetailCategoryTooltipRecord,
   getContainerDetailEnglishName,
+  getContainerDetailImageUrl,
   getContainerDetailItemNumber,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
@@ -141,9 +154,12 @@ import {
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
+  omitContainerDetailTextFilters,
   resolveContainerDetailOemPrice,
   rollbackContainerDetailWarehouseStatuses,
+  CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
+  CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
@@ -159,6 +175,8 @@ import {
   type ContainerDetailTagStats,
   type ContainerDetailWarehouseStatusFilter,
 } from './containerDetailLogic'
+import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup } from '../Products/categoryPath'
+import CategoryTreePicker from '../Products/CategoryTreePicker'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 import './index.css'
 
@@ -348,6 +366,57 @@ function renderImportPriceCell(row: ContainerDetail, input?: ReactNode) {
   )
 }
 
+function collectCategoryExpandedKeys(nodes: WarehouseCategoryNode[], maxLevel: number, level = 1): string[] {
+  return nodes.flatMap((node) => [
+    level <= maxLevel ? node.categoryGUID : '',
+    ...collectCategoryExpandedKeys(node.children || [], maxLevel, level + 1),
+  ]).filter(Boolean)
+}
+
+function findWarehouseCategory(nodes: WarehouseCategoryNode[], targetGuid?: string): WarehouseCategoryNode | undefined {
+  if (!targetGuid) return undefined
+  for (const node of nodes) {
+    if (node.categoryGUID === targetGuid) return node
+    const matched = findWarehouseCategory(node.children || [], targetGuid)
+    if (matched) return matched
+  }
+  return undefined
+}
+
+function buildContainerDetailCategoryOptions(
+  nodes: WarehouseCategoryNode[],
+  t: ReturnType<typeof useTranslation>['t'],
+  language?: string,
+  level = 0,
+): Array<{ value: string; label: string }> {
+  if (level === 0) {
+    return [
+      { value: CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY, label: t('containers.filters.allCategories', '全部分类') },
+      { value: CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY, label: t('containers.filters.uncategorized', '未分类') },
+      ...buildContainerDetailCategoryOptions(nodes, t, language, level + 1),
+    ]
+  }
+
+  return nodes.flatMap((node) => [
+    {
+      value: node.categoryGUID,
+      label: `${level > 1 ? `${'--'.repeat(level - 1)} ` : ''}${formatWarehouseCategoryNodeName(node, language)}`,
+    },
+    ...buildContainerDetailCategoryOptions(node.children || [], t, language, level + 1),
+  ])
+}
+
+function renderContainerDetailCategoryCell(record: ContainerDetail, categoryLookup: WarehouseCategoryLookup, language?: string) {
+  const displayName = getContainerDetailCategoryName(record) || '--'
+  const tooltipTitle = getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord(record), categoryLookup, language)
+
+  return (
+    <Tooltip title={tooltipTitle || displayName}>
+      <span className="container-detail-two-line-text">{displayName}</span>
+    </Tooltip>
+  )
+}
+
 function renderCompactHeader(value: ReactNode) {
   return <span className="container-detail-header-title">{value}</span>
 }
@@ -468,7 +537,7 @@ function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellP
 }
 
 export default function ContainerDetailPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const route = useStableRouteContext()
   const { active } = useKeepAliveContext()
@@ -495,6 +564,10 @@ export default function ContainerDetailPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
+  const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
+  const [categoryLoading, setCategoryLoading] = useState(false)
+  const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)
+  const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([])
   const [columnFilters, setColumnFilters] = useState<ContainerDetailColumnFilters>({})
   // 默认按货号升序展示，保证每次打开货柜明细时列表顺序稳定。
   const [sortState, setSortState] = useState<ContainerDetailSortState>(DEFAULT_CONTAINER_DETAIL_SORT)
@@ -506,6 +579,9 @@ export default function ContainerDetailPage() {
   const [batchEnglishName, setBatchEnglishName] = useState('')
   const [batchEnglishNameModalOpen, setBatchEnglishNameModalOpen] = useState(false)
   const [batchEnglishNameSaving, setBatchEnglishNameSaving] = useState(false)
+  const [batchCategoryOpen, setBatchCategoryOpen] = useState(false)
+  const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>()
+  const [batchCategorySaving, setBatchCategorySaving] = useState(false)
   const [editingProductNameRowKey, setEditingProductNameRowKey] = useState<string | null>(null)
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -562,19 +638,37 @@ export default function ContainerDetailPage() {
     setCodeAbortControllerRef.current?.abort()
   }, [])
 
-  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => ({
-    ...columnFilters,
-    itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber,
-  }), [columnFilters, itemNumberFilter])
+  useEffect(() => {
+    setCategoryLoading(true)
+    getCategoryTree()
+      .then((tree) => {
+        setCategories(tree)
+        setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1))
+      })
+      .catch((error) => {
+        console.error(error)
+        message.error(error instanceof Error ? error.message : t('warehouse.categories.loadTreeFailed', '加载分类树失败'))
+      })
+      .finally(() => setCategoryLoading(false))
+  }, [t])
+
+  const categoryFilterOptions = useMemo(() => buildContainerDetailCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t])
+  const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories])
+  const selectedTargetCategory = useMemo(() => findWarehouseCategory(categories, targetCategoryGuid), [categories, targetCategoryGuid])
+  const selectedTargetCategoryPath = targetCategoryGuid ? getWarehouseProductCategoryTooltip({
+    categoryName: selectedTargetCategory?.categoryName,
+    warehouseCategoryGUID: targetCategoryGuid,
+  }, categoryLookup, i18n.language) : undefined
+
+  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
 
   const detailQuery = useMemo(() => buildContainerDetailQuery({
     containerGuid,
     filters: remoteColumnFilters,
     selectedTags: selectedTagFilters,
-    sortState,
     pageNumber: 1,
     pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-  }), [containerGuid, remoteColumnFilters, selectedTagFilters, sortState])
+  }), [containerGuid, remoteColumnFilters, selectedTagFilters])
 
   const detailQueryKey = useMemo(() => JSON.stringify(detailQuery), [detailQuery])
 
@@ -753,7 +847,7 @@ export default function ContainerDetailPage() {
     return () => {
       detailAbortControllerRef.current?.abort()
     }
-    // detailQueryKey 已包含货柜、筛选、排序和 tag，避免依赖对象引用导致重复请求。
+    // detailQueryKey 已包含货柜、远程筛选和 tag，列头排序只在前端当前已加载数据内处理。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, detailQueryKey])
 
@@ -787,13 +881,20 @@ export default function ContainerDetailPage() {
     return rows
   }, [rows])
 
+  const textFilteredRows = useMemo(() => {
+    return applyContainerDetailLoadedTextFilters(baseFilteredRows, itemNumberFilter, columnFilters)
+  }, [baseFilteredRows, columnFilters, itemNumberFilter])
+
   const filteredRows = useMemo(() => {
-    return baseFilteredRows
-  }, [baseFilteredRows])
+    return applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)
+  }, [categoryFilterValue, categoryLookup, textFilteredRows])
 
   const displayRows = useMemo(
-    () => filteredRows,
-    [filteredRows],
+    () => {
+      // 列头排序只调整当前已加载且已过滤的行，避免点击列头触发远程重载。
+      return applyContainerDetailColumnState(filteredRows, {}, sortState)
+    },
+    [filteredRows, sortState],
   )
 
   const setEditableCellRef = (
@@ -1020,6 +1121,7 @@ export default function ContainerDetailPage() {
     return false
   }
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
+  const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
 
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
     setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
@@ -1411,6 +1513,98 @@ export default function ContainerDetailPage() {
     }
     setBatchEnglishName('')
     setBatchEnglishNameModalOpen(true)
+  }
+
+  const openBatchCategory = () => {
+    if (!ensureTargetRowsVisible()) return
+    if (!targetRows.length) {
+      message.warning(t('containers.messages.noCategoryFilterRows', '当前没有可分类的明细'))
+      return
+    }
+    setTargetCategoryGuid(undefined)
+    // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
+    setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
+    setBatchCategoryOpen(true)
+  }
+
+  const handleBatchCategorySave = async () => {
+    if (!canBatchSetCategory) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+    if (!targetCategoryGuid) {
+      message.warning(t('warehouse.categories.selectTargetCategory', '请选择目标分类'))
+      return
+    }
+    if (!ensureTargetRowsVisible()) return
+
+    const batchCategoryTargetRows = selectedRowKeys.length ? selectedRows : displayRows
+    const { productCodes, skippedMissingCodeCount } = getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)
+    if (!productCodes.length) {
+      message.warning(t('containers.messages.noProductsForCategoryAssign', '当前目标明细没有可分类的已有商品'))
+      return
+    }
+
+    setBatchCategorySaving(true)
+    try {
+      // 批量分类只写仓库商品分类，不修改货柜明细价格、数量等业务字段。
+      await batchAssignProducts(targetCategoryGuid, productCodes)
+      const productCodeSet = new Set(productCodes)
+      const selectedTargetCategoryName = selectedTargetCategory
+        ? formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)
+        : undefined
+      const nextCategoryPath = selectedTargetCategoryPath || selectedTargetCategoryName
+      // 保存成功后只更新当前已加载行，避免重新查询整张明细表造成等待和 loading。
+      setRows((items) =>
+        items.map((item) => {
+          const productCode = getContainerDetailProductCode(item)
+          if (!productCode || !productCodeSet.has(productCode)) return item
+          return {
+            ...item,
+            categoryName: selectedTargetCategoryName,
+            CategoryName: selectedTargetCategoryName,
+            productCategoryName: selectedTargetCategoryName,
+            ProductCategoryName: selectedTargetCategoryName,
+            categoryPath: nextCategoryPath,
+            CategoryPath: nextCategoryPath,
+            categoryFullPath: nextCategoryPath,
+            CategoryFullPath: nextCategoryPath,
+            warehouseCategoryGUID: targetCategoryGuid,
+            WarehouseCategoryGUID: targetCategoryGuid,
+            productCategoryGUID: targetCategoryGuid,
+            ProductCategoryGUID: targetCategoryGuid,
+            商品信息: item.商品信息
+              ? {
+                  ...item.商品信息,
+                  categoryName: selectedTargetCategoryName,
+                  CategoryName: selectedTargetCategoryName,
+                  productCategoryName: selectedTargetCategoryName,
+                  ProductCategoryName: selectedTargetCategoryName,
+                  categoryPath: nextCategoryPath,
+                  CategoryPath: nextCategoryPath,
+                  categoryFullPath: nextCategoryPath,
+                  CategoryFullPath: nextCategoryPath,
+                  warehouseCategoryGUID: targetCategoryGuid,
+                  WarehouseCategoryGUID: targetCategoryGuid,
+                  productCategoryGUID: targetCategoryGuid,
+                  ProductCategoryGUID: targetCategoryGuid,
+                }
+              : item.商品信息,
+          }
+        }),
+      )
+      setSelectedRowKeys([])
+      setBatchCategoryOpen(false)
+      setTargetCategoryGuid(undefined)
+      message.success(t('containers.messages.batchCategoryUpdated', '已设置 {{count}} 个商品分类', { count: productCodes.length }))
+      if (skippedMissingCodeCount > 0) {
+        message.warning(t('containers.messages.batchCategorySkippedMissingCode', '已跳过 {{count}} 条缺少商品编码的明细', { count: skippedMissingCodeCount }))
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.batchAssignFailed', '批量分类失败'))
+    } finally {
+      setBatchCategorySaving(false)
+    }
   }
 
   const submitBatchEditEnglishName = async () => {
@@ -2264,19 +2458,22 @@ export default function ContainerDetailPage() {
       title: renderCompactHeader(t('containers.columns.image')),
       width: 64,
       fixed: 'left',
-      render: (_, row) =>
-        row.商品信息?.商品图片 ? (
+      render: (_, row) => {
+        const imageUrl = getContainerDetailImageUrl(row)
+
+        return imageUrl ? (
           <Image
             className="container-detail-product-image"
             width={40}
             height={40}
-            src={row.商品信息.商品图片}
+            src={imageUrl}
             alt={row.商品信息?.货号 || row.商品信息?.商品名称 || ''}
             preview={{ mask: t('containers.actions.previewImage', '查看大图') }}
           />
         ) : (
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
-        ),
+        )
+      },
     },
     {
       title: renderColumnTitle('itemNumber', t('containers.fields.itemNumber')),
@@ -2303,6 +2500,12 @@ export default function ContainerDetailPage() {
           onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
         />
       ) : <TwoLineText value={getContainerDetailEnglishName(row)} />,
+    },
+    {
+      key: 'categoryName',
+      title: renderCompactHeader(t('containers.fields.category', '分类')),
+      width: 120,
+      render: (_, row) => renderContainerDetailCategoryCell(row, categoryLookup, i18n.language),
     },
     {
       title: renderColumnTitle('containerPieces', t('containers.fields.containerPieces')),
@@ -2692,6 +2895,42 @@ export default function ContainerDetailPage() {
           onPressEnter={() => void submitBatchEditEnglishName()}
         />
       </Modal>
+      <Modal
+        title={t('containers.modals.batchCategoryTitle', '批量设置分类')}
+        open={batchCategoryOpen}
+        width={640}
+        destroyOnClose
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+        confirmLoading={batchCategorySaving}
+        okButtonProps={{ disabled: !targetCategoryGuid || categoryLoading || !categories.length }}
+        onCancel={() => {
+          setBatchCategoryOpen(false)
+          setTargetCategoryGuid(undefined)
+        }}
+        onOk={() => void handleBatchCategorySave()}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {t('containers.modals.batchCategoryContent', '请选择目标分类，确认后会把当前目标明细对应的仓库商品设置到该分类。')}
+          </Typography.Text>
+          {selectedTargetCategory ? (
+            <Tag color="blue">
+              {t('warehouse.categories.targetCategory', '目标分类')}: {selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)}
+            </Tag>
+          ) : null}
+          <CategoryTreePicker
+            categories={categories}
+            selectedKey={targetCategoryGuid}
+            expandedKeys={categoryExpandedKeys}
+            onExpand={setCategoryExpandedKeys}
+            onSelect={setTargetCategoryGuid}
+            language={i18n.language}
+            t={t}
+            maxHeight={360}
+          />
+        </Space>
+      </Modal>
       <div className={pageClassName}>
       <Spin spinning={loading}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -2758,11 +2997,23 @@ export default function ContainerDetailPage() {
                     onChange={setTagFiltersFromSelect}
                     options={tagSelectOptions}
                   />
+                  <Select
+                    value={categoryFilterValue}
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    loading={categoryLoading}
+                    placeholder={t('containers.filters.allCategories', '全部分类')}
+                    style={{ width: 220 }}
+                    options={categoryFilterOptions}
+                    onChange={(value) => setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)}
+                  />
                   <Typography.Text type="secondary">
                     {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
                       loaded: rows.length,
                       total: detailItemsTotal,
                     })}
+                    {filteredRows.length !== rows.length ? ` ${t('containers.text.visibleRows', '当前可见 {{count}} 条', { count: filteredRows.length })}` : ''}
                     {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
                   </Typography.Text>
                   {hasActiveColumnState ? (
@@ -2827,6 +3078,9 @@ export default function ContainerDetailPage() {
                           { key: 'translate', label: t('containers.actions.batchTranslate') },
                           { key: 'editEnglishName', label: t('containers.actions.batchEditEnglishName') },
                           { key: 'clearEnglishName', label: t('containers.actions.clearEnglishNames') },
+                          ...(canBatchSetCategory
+                            ? [{ key: 'batchCategory', icon: <AppstoreOutlined />, label: t('containers.actions.batchSetCategory', '批量分类') }]
+                            : []),
                           ...(canCreateContainerProducts
                             ? [{ key: 'createNew', label: t('containers.actions.createNewProducts'), disabled: createProductsLoading || pendingDetailSaveCount > 0 }]
                             : []),
@@ -2838,6 +3092,7 @@ export default function ContainerDetailPage() {
                           if (key === 'translate') void translateNames()
                           if (key === 'editEnglishName') openBatchEditEnglishName()
                           if (key === 'clearEnglishName') clearEnglishNames()
+                          if (key === 'batchCategory') openBatchCategory()
                           if (key === 'createNew') void createNewProducts()
                           if (key === 'updatePurchase') void updateExistingPurchase()
                           if (key === 'active') void applyActive(true)

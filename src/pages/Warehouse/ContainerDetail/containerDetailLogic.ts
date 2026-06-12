@@ -10,6 +10,8 @@ export type ContainerDetailNewProductFilter = 'new' | 'existing'
 export type ContainerDetailMatchTypeFilter = 'productCode' | 'supplierItem' | 'unmatched'
 export type ContainerDetailWarehouseStatusFilter = 'active' | 'inactive'
 export type ContainerDetailSortOrder = 'ascend' | 'descend'
+export const CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = '__ALL_CONTAINER_DETAIL_CATEGORIES__'
+export const CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = '__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__'
 export type ContainerDetailSortField =
   | 'itemNumber'
   | 'barcode'
@@ -33,8 +35,15 @@ export type ContainerDetailSortField =
 export type ContainerDetailTableColumnKey =
   | 'index'
   | 'image'
+  | 'categoryName'
   | 'readonlyOemPrice'
   | ContainerDetailSortField
+
+export interface ContainerDetailCategoryFilterLookup {
+  byGuid: Map<string, string>
+  byName: Map<string, string[]>
+  descendantGuidsByGuid: Map<string, Set<string>>
+}
 
 export type ContainerDetailEditableCellDirection = 'up' | 'down' | 'left' | 'right'
 export type ContainerDetailExportColumnKey =
@@ -259,6 +268,11 @@ export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
 }
 
+export function getContainerDetailImageUrl(row: ContainerDetail) {
+  // 货柜明细和商品信息可能来自不同接口层，图片字段需要按明细优先、商品信息兜底读取。
+  return row.商品图片?.trim() || row.商品信息?.商品图片?.trim() || undefined
+}
+
 export function getContainerDetailCreateProductRowLabel(row: ContainerDetail) {
   return getContainerDetailItemNumber(row) ?? getContainerDetailProductCode(row) ?? row.hguid
 }
@@ -314,6 +328,129 @@ export function getContainerDetailBarcode(row: ContainerDetail) {
 
 export function getContainerDetailProductCode(row: ContainerDetail) {
   return row.商品编码?.trim() || row.商品信息?.商品编码?.trim() || undefined
+}
+
+function firstTrimmedValue(...values: Array<string | undefined>) {
+  return values.map((value) => value?.trim()).find((value): value is string => Boolean(value))
+}
+
+export function getContainerDetailCategoryName(row: ContainerDetail) {
+  return firstTrimmedValue(
+    row.categoryName,
+    row.CategoryName,
+    row.productCategoryName,
+    row.ProductCategoryName,
+    row.商品信息?.categoryName,
+    row.商品信息?.CategoryName,
+    row.商品信息?.productCategoryName,
+    row.商品信息?.ProductCategoryName,
+  )
+}
+
+export function getContainerDetailCategoryPath(row: ContainerDetail) {
+  return firstTrimmedValue(
+    row.categoryPath,
+    row.CategoryPath,
+    row.categoryFullPath,
+    row.CategoryFullPath,
+    row.商品信息?.categoryPath,
+    row.商品信息?.CategoryPath,
+    row.商品信息?.categoryFullPath,
+    row.商品信息?.CategoryFullPath,
+  )
+}
+
+export function getContainerDetailCategoryGuid(row: ContainerDetail) {
+  return firstTrimmedValue(
+    row.warehouseCategoryGUID,
+    row.WarehouseCategoryGUID,
+    row.productCategoryGUID,
+    row.ProductCategoryGUID,
+    row.商品信息?.warehouseCategoryGUID,
+    row.商品信息?.WarehouseCategoryGUID,
+    row.商品信息?.productCategoryGUID,
+    row.商品信息?.ProductCategoryGUID,
+  )
+}
+
+export function getContainerDetailCategoryTooltipRecord(row: ContainerDetail) {
+  return {
+    categoryName: getContainerDetailCategoryName(row),
+    categoryPath: getContainerDetailCategoryPath(row),
+    warehouseCategoryGUID: getContainerDetailCategoryGuid(row),
+  }
+}
+
+function isContainerDetailCategoryNameInSelectedSubtree(
+  categoryName: string | undefined,
+  selectedCategoryGuid: string,
+  lookup?: ContainerDetailCategoryFilterLookup,
+) {
+  if (!categoryName || !lookup) {
+    return false
+  }
+
+  const selectedPath = lookup.byGuid.get(selectedCategoryGuid)
+  if (!selectedPath) {
+    return false
+  }
+
+  const pathsByName = lookup.byName.get(categoryName)
+  return pathsByName?.some((path) => path === selectedPath || path.startsWith(`${selectedPath} > `)) ?? false
+}
+
+export function matchesContainerDetailCategoryFilter(
+  row: ContainerDetail,
+  categoryFilterValue: string,
+  lookup?: ContainerDetailCategoryFilterLookup,
+) {
+  if (!categoryFilterValue || categoryFilterValue === CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY) {
+    return true
+  }
+
+  const categoryGuid = getContainerDetailCategoryGuid(row)
+  const categoryName = getContainerDetailCategoryName(row)
+
+  if (categoryFilterValue === CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY) {
+    return !categoryGuid && !categoryName
+  }
+
+  const allowedCategoryGuids = lookup?.descendantGuidsByGuid.get(categoryFilterValue)
+  if (categoryGuid) {
+    return allowedCategoryGuids ? allowedCategoryGuids.has(categoryGuid) : categoryGuid === categoryFilterValue
+  }
+
+  // 有些接口暂时只给分类名称，没有 GUID；用分类树路径兜底判断是否落在当前父分类子树内。
+  return isContainerDetailCategoryNameInSelectedSubtree(categoryName, categoryFilterValue, lookup)
+}
+
+export function applyContainerDetailCategoryFilter(
+  rows: ContainerDetail[],
+  categoryFilterValue: string,
+  lookup?: ContainerDetailCategoryFilterLookup,
+) {
+  return rows.filter((row) => matchesContainerDetailCategoryFilter(row, categoryFilterValue, lookup))
+}
+
+export function getContainerDetailBatchCategoryProductCodes(rows: ContainerDetail[]) {
+  const productCodes: string[] = []
+  const seen = new Set<string>()
+  let skippedMissingCodeCount = 0
+
+  for (const row of rows) {
+    const productCode = getContainerDetailProductCode(row)
+    if (!productCode) {
+      skippedMissingCodeCount += 1
+      continue
+    }
+    if (seen.has(productCode)) {
+      continue
+    }
+    seen.add(productCode)
+    productCodes.push(productCode)
+  }
+
+  return { productCodes, skippedMissingCodeCount }
 }
 
 export function getContainerDetailMatchType(row: ContainerDetail): ContainerDetailMatchTypeFilter {
@@ -545,6 +682,35 @@ function matchesTextFilter(value: string | undefined, filter: string | undefined
   const normalizedFilter = normalizeText(filter)
   if (!normalizedFilter) return true
   return normalizeText(value).includes(normalizedFilter)
+}
+
+export function applyContainerDetailLoadedTextFilters(
+  rows: ContainerDetail[],
+  itemNumberFilter: string,
+  filters: ContainerDetailColumnFilters,
+) {
+  return rows.filter((row) => (
+    // 前端文字筛选只作用于当前已加载行，避免输入关键字时触发货柜明细远程重载。
+    matchesTextFilter(getContainerDetailItemNumber(row), itemNumberFilter) &&
+    matchesTextFilter(getContainerDetailItemNumber(row), filters.itemNumber) &&
+    matchesTextFilter(getContainerDetailBarcode(row), filters.barcode) &&
+    matchesTextFilter(getContainerDetailProductName(row), filters.productName) &&
+    matchesTextFilter(getContainerDetailEnglishName(row), filters.englishName) &&
+    matchesTextFilter(row.备注, filters.remark)
+  ))
+}
+
+export function omitContainerDetailTextFilters(filters: ContainerDetailColumnFilters): ContainerDetailColumnFilters {
+  const {
+    itemNumber: _itemNumber,
+    barcode: _barcode,
+    productName: _productName,
+    englishName: _englishName,
+    remark: _remark,
+    ...remoteFilters
+  } = filters
+  // 文本列头筛选已在前端处理，这里只保留仍需后端查询的数字和枚举筛选。
+  return remoteFilters
 }
 
 function isEmptyNumberRange(filter: ContainerDetailNumberRangeFilter | undefined) {

@@ -1,4 +1,4 @@
-﻿import { CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+﻿import { AppstoreOutlined, CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -13,8 +13,10 @@ import BarcodePreview from '../../../components/BarcodePreview';
 import PageContainer from '../../../components/PageContainer';
 import { getSupplierOptions, } from '../../../services/domesticProductService';
 import { exportDomesticProductsToExcel, type ExportResult } from '../../../services/exportService';
+import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService';
 import { batchCreateSetCodes, batchDelete as batchDeleteSetCodes, batchUpdateBarcodes as batchUpdateSetBarcodes, batchUpdatePrices as batchUpdateSetPrices, batchUpdateStatus as batchUpdateSetStatus, getGridData as getSetCodeGridData, } from '../../../services/multiCodeSetService';
 import { HqProductSyncPollingCancelledError, HqProductSyncPollingTimeoutError, batchToggleWarehouseProductsActive, batchUpdateWarehouseProducts, createWarehouseProductHqSyncJob, createWarehouseProductHqSyncJobPoller, getWarehouseProductHqSyncJob, getWarehouseProductsTable, updateWarehouseProductFull, type WarehouseProductBatchUpdateItem, type WarehouseProductHqSyncJobResult, type WarehouseProductHqSyncJobStatus, type WarehouseProductListItem, type WarehouseProductsTableQuery, } from '../../../services/warehouseProductService';
+import { batchAssignProducts, getCategoryTree, type WarehouseCategoryNode, } from '../../../services/warehouseCategoryService';
 import { useAuthStore } from '../../../store/auth';
 import type { SupplierOption, } from '../../../types/domesticProduct';
 import { ProductType, ProductTypeLabels } from '../../../types/domesticProduct';
@@ -22,8 +24,11 @@ import type { MulticodeSetItem } from '../../../types/multiCodeSet';
 import { copyTextToClipboard } from '../../../utils/clipboard';
 import { isWarehouseProductColumnOrderCustomized, mergeWarehouseProductColumnOrder, moveWarehouseProductColumnOrder, type WarehouseProductTableColumnKey, } from './columnOrder';
 import CreateProductModal from './CreateProductModal';
+import CategoryTreePicker from './CategoryTreePicker';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
+import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
+import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, resolveCategoryProductFilterMode, } from '../Categories/categoryProductFilters';
 interface ProductFormValues {
     supplierCode?: string;
     productName: string;
@@ -179,6 +184,13 @@ const warehouseProductsTableStyle = `
     word-break: break-word;
   }
 
+  .warehouse-products-table .warehouse-products-category-cell {
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .warehouse-products-table .warehouse-products-draggable-header {
     display: inline-flex;
     align-items: center;
@@ -222,6 +234,7 @@ const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = [
     'itemNumber',
     'productImage',
     'domesticSupplierCode',
+    'categoryName',
     'nameEn',
     'minOrderQuantity',
     'domesticPrice',
@@ -303,6 +316,38 @@ function buildSupplierOptions(suppliers: SupplierOption[]): SupplierSelectOption
 function filterSupplierOption(input: string, option?: DefaultOptionType) {
     return String((option as SupplierSelectOption | undefined)?.searchText ?? '')
         .includes(input.trim().toLowerCase());
+}
+function collectCategoryExpandedKeys(nodes: WarehouseCategoryNode[], maxLevel: number, level = 1): string[] {
+    if (level > maxLevel) {
+        return [];
+    }
+    return nodes.flatMap((node) => [
+        node.categoryGUID,
+        ...collectCategoryExpandedKeys(node.children || [], maxLevel, level + 1),
+    ]);
+}
+function findWarehouseCategory(nodes: WarehouseCategoryNode[], targetGuid?: string): WarehouseCategoryNode | undefined {
+    if (!targetGuid) {
+        return undefined;
+    }
+    for (const node of nodes) {
+        if (node.categoryGUID === targetGuid) {
+            return node;
+        }
+        const matched = findWarehouseCategory(node.children || [], targetGuid);
+        if (matched) {
+            return matched;
+        }
+    }
+    return undefined;
+}
+function renderWarehouseProductCategoryCell(record: WarehouseProductListItem, categoryLookup: WarehouseCategoryLookup, language?: string) {
+    const displayName = record.categoryName || '--';
+    const tooltipTitle = getWarehouseProductCategoryTooltip(record, categoryLookup, language);
+    // 单元格只显示分类名称，完整多级路径放到 Tooltip，保持主表紧凑可扫读。
+    return (<Tooltip title={tooltipTitle}>
+      <div className="warehouse-products-category-cell">{displayName}</div>
+    </Tooltip>);
 }
 function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel, onSubmit, }: {
     open: boolean;
@@ -470,6 +515,14 @@ export default function WarehouseProductsPage() {
     const [createModalOpen, setCreateModalOpen] = useState(false);
     const [editingItem, setEditingItem] = useState<WarehouseProductListItem | null>(null);
     const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
+    const [localSupplierNameMap, setLocalSupplierNameMap] = useState<Record<string, string>>({});
+    const [categories, setCategories] = useState<WarehouseCategoryNode[]>([]);
+    const [categoryLoading, setCategoryLoading] = useState(false);
+    const [categoryFilterValue, setCategoryFilterValue] = useState<string>(ALL_PRODUCTS_FILTER_KEY);
+    const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([]);
+    const [batchCategoryOpen, setBatchCategoryOpen] = useState(false);
+    const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>();
+    const [batchCategorySaving, setBatchCategorySaving] = useState(false);
     const [data, setData] = useState<WarehouseProductListItem[]>([]);
     const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
     const [searchText, setSearchText] = useState('');
@@ -515,17 +568,34 @@ export default function WarehouseProductsPage() {
     }));
     const { access } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
-    const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => ({
-        page,
-        pageSize,
-        searchText,
-        supplierCode,
-        productType,
-        isActive,
-        sortField,
-        sortOrder,
-        ...overrides,
-    });
+    const categoryFilterOptions = useMemo(() => buildFilterCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t]);
+    const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories]);
+    const selectedTargetCategory = useMemo(() => findWarehouseCategory(categories, targetCategoryGuid), [categories, targetCategoryGuid]);
+    const selectedTargetCategoryPath = targetCategoryGuid ? getWarehouseProductCategoryTooltip({
+        categoryName: selectedTargetCategory?.categoryName,
+        warehouseCategoryGUID: targetCategoryGuid,
+    }, categoryLookup, i18n.language) : undefined;
+    const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => {
+        const filterMode = resolveCategoryProductFilterMode(categoryFilterValue);
+        const categoryQuery: Partial<WarehouseProductsTableQuery> = filterMode.type === 'category'
+            ? { categoryGuid: filterMode.categoryGuid, uncategorizedOnly: false }
+            : filterMode.type === 'uncategorized'
+                ? { categoryGuid: undefined, uncategorizedOnly: true }
+                : { categoryGuid: undefined, uncategorizedOnly: false };
+        return {
+            page,
+            pageSize,
+            searchText,
+            supplierCode,
+            productType,
+            isActive,
+            sortField,
+            sortOrder,
+            // 分类筛选使用后端顶层字段，避免把未分类塞进普通 Filters 后被后端清洗掉。
+            ...categoryQuery,
+            ...overrides,
+        };
+    };
     const loadData = async (overrides: Partial<WarehouseProductsTableQuery> = {}) => {
         const query = buildGridQuery(overrides);
         setLoading(true);
@@ -674,6 +744,7 @@ export default function WarehouseProductsPage() {
         });
     }, [activeHqSyncJob, i18n.language, t]);
     useEffect(() => {
+        setCategoryLoading(true);
         void Promise.all([
             loadData({ page: 1 }),
             getSupplierOptions()
@@ -682,6 +753,30 @@ export default function WarehouseProductsPage() {
                 console.error(error);
                 message.error(t('productCreation.loadSupplierListFailed'));
             }),
+            getActiveAustralianSuppliers()
+                .then((items) => {
+                const map: Record<string, string> = {};
+                items.forEach((item) => {
+                    if (item.localSupplierCode && item.name) {
+                        map[item.localSupplierCode] = item.name;
+                    }
+                });
+                setLocalSupplierNameMap(map);
+            })
+                .catch((error) => {
+                console.error(error);
+                message.error(t('warehouse.loadLocalSupplierFailed', '加载澳洲供应商失败'));
+            }),
+            getCategoryTree()
+                .then((tree) => {
+                setCategories(tree);
+                setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1));
+            })
+                .catch((error) => {
+                console.error(error);
+                message.error(error instanceof Error ? error.message : t('warehouse.categories.loadTreeFailed', '加载分类树失败'));
+            })
+                .finally(() => setCategoryLoading(false)),
         ]);
     }, []);
     useEffect(() => {
@@ -795,6 +890,58 @@ export default function WarehouseProductsPage() {
         }
         batchEditForm.resetFields();
         setBatchEditOpen(true);
+    };
+    const openBatchCategory = () => {
+        if (!selectedRowKeys.length) {
+            message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
+            return;
+        }
+        setTargetCategoryGuid(undefined);
+        // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
+        setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1));
+        setBatchCategoryOpen(true);
+    };
+    const handleBatchCategorySave = async () => {
+        if (!selectedRowKeys.length) {
+            message.warning(t('warehouse.selectProductsFirst', '请先选择商品'));
+            return;
+        }
+        if (!targetCategoryGuid) {
+            message.warning(t('warehouse.categories.selectTargetFirst', '请选择目标分类'));
+            return;
+        }
+        try {
+            setBatchCategorySaving(true);
+            const selectedProductCodes = selectedRowKeys.map(String);
+            const selectedProductCodeSet = new Set(selectedProductCodes);
+            // 批量分类只提交商品编码和目标分类，避免误改价格、状态等其他业务字段。
+            await batchAssignProducts(targetCategoryGuid, selectedProductCodes);
+            // 保存成功后只更新当前页分类显示，不触发表格重新查询。
+            setData((items) => items.map((item) => selectedProductCodeSet.has(item.productCode)
+                ? {
+                    ...item,
+                    warehouseCategoryGUID: targetCategoryGuid,
+                    categoryName: selectedTargetCategory
+                        ? formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)
+                        : item.categoryName,
+                    categoryPath: selectedTargetCategoryPath || item.categoryPath,
+                }
+                : item));
+            message.success(t('warehouse.categories.batchUpdateSuccess', {
+                count: selectedRowKeys.length,
+                categoryName: selectedTargetCategory?.categoryName || t('warehouse.categories.targetCategory', '目标分类'),
+            }));
+            setBatchCategoryOpen(false);
+            setTargetCategoryGuid(undefined);
+            setSelectedRowKeys([]);
+        }
+        catch (error) {
+            console.error(error);
+            message.error(error instanceof Error ? error.message : t('warehouse.categories.batchUpdateFailed', '批量更新商品分类失败'));
+        }
+        finally {
+            setBatchCategorySaving(false);
+        }
     };
     const handleBatchEditSave = async () => {
         if (!selectedRowKeys.length) {
@@ -1100,15 +1247,23 @@ export default function WarehouseProductsPage() {
         },
         {
             key: 'domesticSupplierCode',
-            title: t('column.supplier'),
+            title: t('warehouse.domesticSupplier', '国内供应商'),
             dataIndex: 'domesticSupplierCode',
             width: 132,
             sorter: true,
-            render: (_value, record) => record.domesticSupplierCode || record.domesticSupplierName ? (<div className="warehouse-products-supplier-cell">
-              <Tag color="blue">
-                {[record.domesticSupplierCode, record.domesticSupplierName].filter(Boolean).join(' - ')}
-              </Tag>
-            </div>) : ('--'),
+            render: (_value, record) => {
+                const supplierDisplayName = record.domesticSupplierName || record.domesticSupplierCode;
+                return supplierDisplayName ? (<div className="warehouse-products-supplier-cell">
+              <Tag color="blue">{supplierDisplayName}</Tag>
+            </div>) : ('--');
+            },
+        },
+        {
+            key: 'categoryName',
+            title: t('column.category'),
+            dataIndex: 'categoryName',
+            width: 128,
+            render: (_value, record) => renderWarehouseProductCategoryCell(record, categoryLookup, i18n.language),
         },
         {
             key: 'nameEn',
@@ -1198,13 +1353,17 @@ export default function WarehouseProductsPage() {
         },
         {
             key: 'localSupplierCode',
-            title: t('column.localSupplier'),
+            title: t('column.australianSupplier', '澳洲供应商'),
             dataIndex: 'localSupplierCode',
             width: 150,
             sorter: true,
-            render: (_value, record) => record.localSupplierName ? (<div className="warehouse-products-supplier-cell">
-              <Tag color="purple">{record.localSupplierName}</Tag>
-            </div>) : ('--'),
+            render: (_value, record) => {
+                // 表格接口只返回澳洲供应商代码时，用活跃供应商列表补齐名称。
+                const supplierDisplayName = record.localSupplierName || localSupplierNameMap[record.localSupplierCode || ''] || record.localSupplierCode;
+                return supplierDisplayName ? (<div className="warehouse-products-supplier-cell">
+              <Tag color="purple">{supplierDisplayName}</Tag>
+            </div>) : ('--');
+            },
         },
         {
             key: 'updatedAt',
@@ -1239,7 +1398,7 @@ export default function WarehouseProductsPage() {
               </Tooltip>)}
           </Space>),
         },
-    ], [access.canWriteProduct, i18n.language, togglingProductCodes]);
+    ], [access.canWriteProduct, categoryLookup, i18n.language, localSupplierNameMap, togglingProductCodes]);
     const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER];
     useEffect(() => {
         setColumnOrder((current) => {
@@ -1333,6 +1492,9 @@ export default function WarehouseProductsPage() {
           {access.canWriteProduct ? (<Button loading={batchEditSaving} disabled={!selectedRowKeys.length || batchEditSaving} onClick={openBatchEdit}>
               {t('warehouse.batchEdit', '批量修改')}
             </Button>) : null}
+          {access.canWriteProduct ? (<Button icon={<AppstoreOutlined />} loading={batchCategorySaving} disabled={!selectedRowKeys.length || batchCategorySaving} onClick={openBatchCategory}>
+              {t('warehouse.batchSetCategory', '批量分类')}
+            </Button>) : null}
           {access.canWriteProduct ? (<Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
               {t('warehouse.createProduct')}
             </Button>) : null}
@@ -1344,14 +1506,26 @@ export default function WarehouseProductsPage() {
           <Space wrap style={{ marginBottom: 16 }}>
           <Input value={searchText} onChange={(event) => setSearchText(event.target.value)} prefix={<SearchOutlined />} placeholder={t('warehouse.searchProductFull')} style={{ width: 300 }} allowClear/>
           <Select value={supplierCode} onChange={setSupplierCode} options={buildSupplierOptions(suppliers)} placeholder={t('warehouse.allDomesticSuppliers')} style={{ width: 240 }} showSearch filterOption={filterSupplierOption} allowClear/>
+          <Select value={categoryFilterValue} onChange={(value) => setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY)} options={categoryFilterOptions} placeholder={t('warehouse.categories.category', '分类')} style={{ width: 220 }} showSearch optionFilterProp="label" loading={categoryLoading} allowClear/>
           <Select value={productType} onChange={setProductType} options={productTypeOptions} placeholder={t('warehouse.allProductTypes')} style={{ width: 160 }} allowClear/>
           <Select value={isActive} onChange={setIsActive} options={getStatusOptions(t)} placeholder={t('warehouse.allStatus')} style={{ width: 140 }} allowClear/>
+          <Button onClick={() => {
+            setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);
+            void loadData({
+                page: 1,
+                categoryGuid: undefined,
+                uncategorizedOnly: true,
+            });
+        }}>
+            {t('warehouse.categories.uncategorizedOption', '未分类商品')}
+          </Button>
           <Button type="primary" onClick={() => void loadData({ page: 1 })}>
             {t('common.query')}
           </Button>
           <Button icon={<ReloadOutlined />} onClick={() => {
             setSearchText('');
             setSupplierCode(undefined);
+            setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);
             setProductType(undefined);
             setIsActive(undefined);
             setSortField('createdAt');
@@ -1360,6 +1534,8 @@ export default function WarehouseProductsPage() {
                 page: 1,
                 searchText: '',
                 supplierCode: undefined,
+                categoryGuid: undefined,
+                uncategorizedOnly: false,
                 productType: undefined,
                 isActive: undefined,
                 sortField: 'createdAt',
@@ -1475,6 +1651,21 @@ export default function WarehouseProductsPage() {
             </Select>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal title={t('warehouse.batchCategoryTitle', '批量设置分类 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchCategoryOpen} width={640} destroyOnClose okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchCategorySaving} okButtonProps={{ disabled: !targetCategoryGuid || !categories.length }} onCancel={() => {
+            setBatchCategoryOpen(false);
+            setTargetCategoryGuid(undefined);
+        }} onOk={() => void handleBatchCategorySave()}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            {t('warehouse.batchCategoryHint', '请选择目标分类，确认后会把已选商品设置到该分类。')}
+          </Typography.Paragraph>
+          {selectedTargetCategory ? (<Tag color="blue">
+              {t('warehouse.categories.targetCategory', '目标分类')}: {selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)}
+            </Tag>) : null}
+          <CategoryTreePicker categories={categories} selectedKey={targetCategoryGuid} expandedKeys={categoryExpandedKeys} onExpand={setCategoryExpandedKeys} onSelect={setTargetCategoryGuid} language={i18n.language} t={t} maxHeight={420}/>
+        </Space>
       </Modal>
 
       <ImportFromDomesticModal open={importFromDomesticOpen} onCancel={() => setImportFromDomesticOpen(false)} onSuccess={() => void loadData({ page: 1 })}/>

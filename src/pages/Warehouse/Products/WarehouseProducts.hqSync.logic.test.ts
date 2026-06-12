@@ -69,6 +69,8 @@ function extractSection(source: string, startText: string, endText: string) {
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/index.tsx')
 const pageSource = readFileSync(pageFile, 'utf8')
+const categoryTreePickerFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/CategoryTreePicker.tsx')
+const categoryTreePickerSource = readFileSync(categoryTreePickerFile, 'utf8')
 
 async function main() {
   const failures: string[] = []
@@ -388,6 +390,7 @@ async function main() {
       "'itemNumber'",
       "'productImage'",
       "'domesticSupplierCode'",
+      "'categoryName'",
       "'nameEn'",
       "'minOrderQuantity'",
       "'domesticPrice'",
@@ -421,7 +424,9 @@ async function main() {
       'const draggableColumnKeys',
     )
     assert(
-      columnsSection.indexOf("key: 'nameEn'") < columnsSection.indexOf("key: 'minOrderQuantity'") &&
+      columnsSection.indexOf("key: 'domesticSupplierCode'") < columnsSection.indexOf("key: 'categoryName'") &&
+        columnsSection.indexOf("key: 'categoryName'") < columnsSection.indexOf("key: 'nameEn'") &&
+        columnsSection.indexOf("key: 'nameEn'") < columnsSection.indexOf("key: 'minOrderQuantity'") &&
         columnsSection.indexOf("key: 'minOrderQuantity'") < columnsSection.indexOf("key: 'domesticPrice'") &&
         columnsSection.indexOf("key: 'barcode'") < columnsSection.indexOf("key: 'name'"),
       'baseColumns 应按截图默认顺序排列，避免默认顺序依赖历史代码顺序',
@@ -456,6 +461,135 @@ async function main() {
     )
   })
   if (defaultColumnOrderFailure) failures.push(defaultColumnOrderFailure)
+
+  const supplierColumnDisplayFailure = await runTest('仓库商品供应商列应区分国内供应商和澳洲供应商名称显示', () => {
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    const domesticSupplierSection = extractSection(
+      columnsSection,
+      "key: 'domesticSupplierCode'",
+      "key: 'categoryName'",
+    )
+    const australianSupplierSection = extractSection(
+      columnsSection,
+      "key: 'localSupplierCode'",
+      "key: 'updatedAt'",
+    )
+
+    assert(
+      domesticSupplierSection.includes("title: t('warehouse.domesticSupplier', '国内供应商')") &&
+        domesticSupplierSection.includes("dataIndex: 'domesticSupplierCode'") &&
+        domesticSupplierSection.includes('sorter: true'),
+      '国内供应商列应绑定 domesticSupplierCode，不能显示澳洲供应商字段',
+    )
+    assert(
+      australianSupplierSection.includes("title: t('column.australianSupplier', '澳洲供应商')") &&
+        australianSupplierSection.includes("dataIndex: 'localSupplierCode'") &&
+        australianSupplierSection.includes('sorter: true'),
+      '澳洲供应商列应绑定 localSupplierCode，不能显示国内供应商字段',
+    )
+    assert(
+      domesticSupplierSection.includes('record.domesticSupplierName || record.domesticSupplierCode') &&
+        australianSupplierSection.includes('record.localSupplierName || localSupplierNameMap[record.localSupplierCode || \'\'] || record.localSupplierCode'),
+      '国内供应商列应优先显示名称；澳洲供应商列应优先显示名称，并在行数据缺名称时用活跃供应商映射兜底',
+    )
+  })
+  if (supplierColumnDisplayFailure) failures.push(supplierColumnDisplayFailure)
+
+  const localSupplierFallbackFailure = await runTest('仓库商品澳洲供应商列应使用活跃供应商名称兜底', () => {
+    assert(
+      pageSource.includes("import { getActiveLocalSuppliers as getActiveAustralianSuppliers } from '../../../services/localSupplierService'"),
+      '页面应从澳洲供应商服务导入活跃供应商列表，并使用别名避免和国内供应商混淆',
+    )
+    assert(
+      pageSource.includes('const [localSupplierNameMap, setLocalSupplierNameMap] = useState<Record<string, string>>({})'),
+      '页面应维护澳洲供应商代码到名称的兜底映射',
+    )
+    assert(
+      pageSource.includes('getActiveAustralianSuppliers()') &&
+        pageSource.includes('setLocalSupplierNameMap(') &&
+        pageSource.includes('map[item.localSupplierCode] = item.name'),
+      '页面加载时应读取活跃澳洲供应商并建立代码到名称映射',
+    )
+
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    const australianSupplierSection = extractSection(
+      columnsSection,
+      "key: 'localSupplierCode'",
+      "key: 'updatedAt'",
+    )
+
+    assert(
+      australianSupplierSection.includes('record.localSupplierName || localSupplierNameMap[record.localSupplierCode || \'\'] || record.localSupplierCode'),
+      '澳洲供应商列应按行内名称、活跃供应商名称映射、供应商代码的顺序显示',
+    )
+    assert(
+      pageSource.includes('表格接口只返回澳洲供应商代码时，用活跃供应商列表补齐名称'),
+      '兜底逻辑应有中文注释说明原因',
+    )
+  })
+  if (localSupplierFallbackFailure) failures.push(localSupplierFallbackFailure)
+
+  const categoryColumnFailure = await runTest('仓库商品表格应显示分类名称并悬浮展示完整路径', () => {
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    const categoryColumn = extractSection(
+      columnsSection,
+      "key: 'categoryName'",
+      "key: 'minOrderQuantity'",
+    )
+
+    assert(categoryColumn.includes("title: t('column.category')"), '分类列应使用 column.category 文案')
+    assert(categoryColumn.includes("dataIndex: 'categoryName'"), '分类列应绑定 categoryName')
+    assert(categoryColumn.includes('renderWarehouseProductCategoryCell(record, categoryLookup, i18n.language)'), '分类列应使用分类展示 helper')
+    assert(pageSource.includes('function renderWarehouseProductCategoryCell'), '页面应提供分类单元格 helper')
+    assert(pageSource.includes('getWarehouseProductCategoryTooltip(record, categoryLookup, language)'), '分类 Tooltip 应优先读取完整路径 helper')
+    assert(pageSource.includes('const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories])'), '页面应基于分类树建立 GUID 和分类名到完整路径的映射')
+    assert(pageSource.includes('buildWarehouseCategoryLookup') && pageSource.includes('WarehouseCategoryLookup'), '页面应复用可测试的分类路径 lookup helper')
+    assert(categoryTreePickerSource.includes('formatWarehouseCategoryNodeName(node, language)'), '分类树节点应按当前语言显示名称')
+    assert(pageSource.includes('buildFilterCategoryOptions(categories, t, i18n.language)'), '分类筛选下拉应使用当前语言显示分类名')
+    assert(pageSource.includes("import CategoryTreePicker from './CategoryTreePicker'"), '批量分类弹窗应复用带查询的分类树组件')
+    assert(pageSource.includes('setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1));'), '批量分类弹窗每次打开应默认展开到一级分类')
+    assert(pageSource.includes('<CategoryTreePicker categories={categories}') && pageSource.includes('maxHeight={420}'), '批量分类树应使用当前语言查询组件构建')
+    assert(pageSource.includes('selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)'), '批量分类目标提示应显示当前语言完整路径')
+    assert(pageSource.includes('<Tooltip title={tooltipTitle}'), '分类名称应通过 Tooltip 展示完整路径')
+    assert(pageSource.includes('className="warehouse-products-category-cell"'), '分类名称应挂载紧凑样式 class')
+    assert(pageSource.includes('record.categoryName ||') && pageSource.includes("'--'"), '分类列缺失名称时应显示 --')
+    const batchCategorySaveSection = extractSection(
+      pageSource,
+      'const handleBatchCategorySave = async () => {',
+      'const handleBatchEditSave = async () => {',
+    )
+    assert(
+      batchCategorySaveSection.includes('await batchAssignProducts(targetCategoryGuid, selectedProductCodes)') &&
+        batchCategorySaveSection.includes('setData((items) =>') &&
+        batchCategorySaveSection.includes('selectedProductCodeSet.has(item.productCode)') &&
+        batchCategorySaveSection.includes('warehouseCategoryGUID: targetCategoryGuid') &&
+        batchCategorySaveSection.includes('categoryName: selectedTargetCategory') &&
+        batchCategorySaveSection.includes('formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)') &&
+        !batchCategorySaveSection.includes('void loadData({ page })'),
+      '仓库商品批量分类保存成功后应本地更新当前页分类，不应重新查询商品表格',
+    )
+    assert(
+      categoryTreePickerSource.includes('function filterCategoryTree') &&
+        categoryTreePickerSource.includes('buildSearchText(node, language, parentPath).includes(keyword)') &&
+        categoryTreePickerSource.includes('children: childResult.nodes') &&
+        categoryTreePickerSource.includes('const visibleExpandedKeys = keyword ? searchResult.expandedKeys : expandedKeys') &&
+        categoryTreePickerSource.includes("placeholder={t('warehouse.categories.searchPlaceholder'"),
+      '共享分类树组件应支持查询分类名和父级路径，并在搜索时自动展开命中路径',
+    )
+  })
+  if (categoryColumnFailure) failures.push(categoryColumnFailure)
 
   const compactTableFailure = await runTest('仓库商品主表应使用紧凑行高、媒体尺寸和列宽', () => {
     assert(

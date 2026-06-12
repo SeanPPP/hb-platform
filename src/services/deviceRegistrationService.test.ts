@@ -1,5 +1,9 @@
 import {
+  activateDevice,
   buildUpdateDeviceRegistrationPayload,
+  disableDevice,
+  getDeviceRegistrations,
+  lockDevice,
   normalizeDeviceRegistrationDetail,
 } from './deviceRegistrationService'
 
@@ -103,3 +107,69 @@ assertDeepEqual(
   },
   'Update payload should only include editable Chinese DTO fields',
 )
+
+const originalFetch = globalThis.fetch
+const calls: Array<{ url: string; method?: string; body?: string }> = []
+
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  calls.push({
+    url: String(input),
+    method: init?.method,
+    body: typeof init?.body === 'string' ? init.body : undefined,
+  })
+  return new Response(JSON.stringify({
+    success: true,
+    data: {
+      devices: [],
+      pagination: {
+        page: 2,
+        pageSize: 30,
+        total: 0,
+        totalPages: 1,
+      },
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}) as typeof fetch
+
+try {
+  await getDeviceRegistrations({
+    page: 2,
+    pageSize: 30,
+    storeCode: 'S01',
+    deviceType: 'POS',
+    deviceSystem: 'Windows',
+  })
+  await activateDevice(12)
+  await disableDevice(12)
+  await lockDevice(12)
+
+  assertEqual(
+    calls[0]?.url,
+    '/api/react/v1/device-registration/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Windows',
+    'Device registration list should use react API base path',
+  )
+  assertEqual(calls[0]?.method, 'GET', 'Device registration list should use GET')
+  assertEqual(
+    calls[1]?.url,
+    '/api/react/v1/device-registration/12/activate',
+    'Device activation should use react API base path',
+  )
+  assertEqual(calls[1]?.method, 'POST', 'Device activation should use POST')
+  assertEqual(
+    calls[2]?.url,
+    '/api/react/v1/device-registration/12/disable',
+    'Device disable should use react API base path',
+  )
+  assertEqual(
+    calls[3]?.url,
+    '/api/react/v1/device-registration/12/lock',
+    'Device lock should use react API base path',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+console.log('deviceRegistrationService.test: ok')
