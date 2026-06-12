@@ -19,4 +19,5 @@ HBBblazorweb-master-vite     -> services/backend
 
 - POS 仓库整体保留在 `apps/pos-wpf`，第一阶段不拆出 `services/pos-api`。
 - POS API 的主后端共享项目引用已改为 `..\..\..\..\services\backend\BlazorApp.Shared\BlazorApp.Shared.csproj`。
+- POS WPF Client 测试依赖 WindowsDesktop runtime，非 Windows 环境只执行 restore/build 和 POS API 测试。
 - 本地环境文件、工具状态目录、依赖目录和构建产物不迁入。

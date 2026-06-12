@@ -24,7 +24,13 @@ set -euo pipefail
 
 (
   cd apps/pos-wpf
-  dotnet restore hbpos_win.slnx
-  dotnet test hbpos_win.slnx
-)
+  dotnet restore hbpos_win.slnx -p:EnableWindowsTargeting=true
+  dotnet build hbpos_win.slnx -p:EnableWindowsTargeting=true --no-restore
+  dotnet test tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj --no-restore
 
+  if [ "${OS:-}" = "Windows_NT" ]; then
+    dotnet test tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj --no-restore
+  else
+    echo "跳过 POS WPF Client 测试：非 Windows 环境缺少 Microsoft.WindowsDesktop.App runtime。"
+  fi
+)

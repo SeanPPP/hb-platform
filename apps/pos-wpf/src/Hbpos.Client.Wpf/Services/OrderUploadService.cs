@@ -232,10 +232,11 @@ public sealed class OrderSyncApiClient(HttpClient httpClient) : IOrderSyncApiCli
     public async Task<OrderSyncResponse> SyncAsync(OrderSyncRequest request, CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
+        const string requestPath = "/api/v1/orders/sync";
         Log(
             $"http sync start orderGuid={request.OrderGuid:D} store={request.StoreCode} device={request.DeviceCode} " +
             $"lines={request.Lines.Count} payments={request.Payments.Count}");
-        using var response = await httpClient.PostAsJsonAsync("api/v1/orders/sync", request, JsonOptions, cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync(requestPath.TrimStart('/'), request, JsonOptions, cancellationToken);
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
         ApiResult<OrderSyncResponse>? result = null;
         if (!string.IsNullOrWhiteSpace(content))
@@ -249,6 +250,21 @@ public sealed class OrderSyncApiClient(HttpClient httpClient) : IOrderSyncApiCli
                 $"http sync failed orderGuid={request.OrderGuid:D} http={(int)response.StatusCode} " +
                 $"success={result?.Success.ToString() ?? "<null>"} errorCode={result?.ErrorCode ?? "<null>"} " +
                 $"message={result?.Message ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            ConsoleLog.WriteError(
+                "OrderSync",
+                "Order sync request failed.",
+                new ApplicationLogContext(
+                    TraceId: request.OrderGuid.ToString("D"),
+                    RequestPath: requestPath,
+                    RequestMethod: "POST",
+                    StatusCode: (int)response.StatusCode,
+                    Properties: new Dictionary<string, object?>
+                    {
+                        ["storeCode"] = request.StoreCode,
+                        ["deviceCode"] = request.DeviceCode,
+                        ["errorCode"] = result?.ErrorCode,
+                        ["elapsedMs"] = stopwatch.ElapsedMilliseconds
+                    }));
             throw new CatalogApiException(
                 result?.Message ?? $"Order sync failed with HTTP {(int)response.StatusCode}.",
                 response.StatusCode,

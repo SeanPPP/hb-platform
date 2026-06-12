@@ -41,9 +41,11 @@ POS/WPF：
 
 ```bash
 cd apps/pos-wpf
-dotnet restore hbpos_win.slnx
+dotnet restore hbpos_win.slnx -p:EnableWindowsTargeting=true
 dotnet run --project src/Hbpos.Client.Wpf/Hbpos.Client.Wpf.csproj
 ```
+
+macOS/Linux 可以执行 POS restore/build 和 POS API 测试；`Hbpos.Client.Tests` 依赖 WindowsDesktop runtime，需要在 Windows 环境运行。
 
 ## 架构边界
 
@@ -53,4 +55,3 @@ dotnet run --project src/Hbpos.Client.Wpf/Hbpos.Client.Wpf.csproj
 
 - `services/backend`：主业务后端。
 - `apps/pos-wpf/src/Hbpos.Api`：POS 自带后端。
-
