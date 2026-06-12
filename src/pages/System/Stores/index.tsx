@@ -340,25 +340,40 @@ export default function SystemStoresPage() {
         destroyOnHidden
       >
         <Form form={form} layout="vertical">
-          <Form.Item label={t('system.stores.storeName')} name="storeName" rules={[{ required: true, message: t('system.stores.storeNameRequired') }]}>
+          {/* 前端长度限制与后端 UpdateStoreDto 保持一致，避免提交后才收到 400。 */}
+          <Form.Item
+            label={t('system.stores.storeName')}
+            name="storeName"
+            rules={[
+              { required: true, message: t('system.stores.storeNameRequired') },
+              { max: 100, message: t('system.stores.storeNameMaxLength') },
+            ]}
+          >
             <Input />
           </Form.Item>
-          <Form.Item label={t('system.stores.storeCode')} name="storeCode" rules={[{ required: true, message: t('system.stores.storeCodeRequired') }]}>
+          <Form.Item
+            label={t('system.stores.storeCode')}
+            name="storeCode"
+            rules={[
+              { required: true, message: t('system.stores.storeCodeRequired') },
+              { max: 20, message: t('system.stores.storeCodeMaxLength') },
+            ]}
+          >
             <Input />
           </Form.Item>
-          <Form.Item label={t('system.stores.brandName')} name="brandName">
+          <Form.Item label={t('system.stores.brandName')} name="brandName" rules={[{ max: 100, message: t('system.stores.brandNameMaxLength') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label={t('system.stores.contactPhone')} name="contactPhone">
+          <Form.Item label={t('system.stores.contactPhone')} name="contactPhone" rules={[{ max: 20, message: t('system.stores.contactPhoneMaxLength') }]}>
             <Input />
           </Form.Item>
           <Form.Item label={t('system.stores.contactEmail')} name="contactEmail" rules={[{ type: 'email', message: t('system.users.emailInvalid') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label={t('system.stores.address')} name="address">
+          <Form.Item label={t('system.stores.address')} name="address" rules={[{ max: 200, message: t('system.stores.addressMaxLength') }]}>
             <Input />
           </Form.Item>
-          <Form.Item label={t('column.description')} name="description">
+          <Form.Item label={t('column.description')} name="description" rules={[{ max: 500, message: t('system.stores.descriptionMaxLength') }]}>
             <Input.TextArea rows={4} />
           </Form.Item>
           <Form.Item label={t('system.stores.cashRegisterEnabled')} name="isActive" valuePropName="checked">
