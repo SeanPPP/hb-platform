@@ -1,5 +1,3 @@
-import Constants from "expo-constants";
-import { useAuthStore } from "@/store/auth-store";
 import { buildApiBaseUrl, getCurrentApiHost } from "@/shared/api/config";
 import {
   createApplicationLogItem,
@@ -26,19 +24,64 @@ let pendingLogs: QueuedApplicationLog[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushInFlight = false;
 let globalHandlerInstalled = false;
+let configOverrideForTests: LogCenterConfig | null = null;
+let userContextOverrideForTests: { userId?: string; userName?: string } | null = null;
+
+function getExpoConfigExtra() {
+  try {
+    // 运行时按需读取 Expo 配置，避免测试环境提前加载 react-native 依赖。
+    const constantsModule = require("expo-constants") as {
+      default?: {
+        expoConfig?: {
+          extra?: Record<string, unknown>;
+        };
+      };
+    };
+
+    return constantsModule.default?.expoConfig?.extra;
+  } catch {
+    return undefined;
+  }
+}
 
 function getLogCenterConfig() {
+  if (configOverrideForTests) {
+    return configOverrideForTests;
+  }
+
   const fallbackApiBaseUrl = buildApiBaseUrl(getCurrentApiHost());
-  const rawConfig = Constants.expoConfig?.extra?.logCenter;
+  const rawConfig = getExpoConfigExtra()?.logCenter;
   return normalizeLogCenterConfig(rawConfig, fallbackApiBaseUrl);
 }
 
 function getUserLogContext() {
-  const user = useAuthStore.getState().user;
-  return {
-    userId: user?.userGuid || user?.userGUID || undefined,
-    userName: user?.username || user?.fullName || undefined,
-  };
+  if (userContextOverrideForTests) {
+    return userContextOverrideForTests;
+  }
+
+  try {
+    // 这里同样采用惰性读取，避免日志测试被鉴权 store 的原生依赖拖入。
+    const authStoreModule = require("@/store/auth-store") as {
+      useAuthStore?: {
+        getState?: () => {
+          user?: {
+            userGuid?: string;
+            userGUID?: string;
+            username?: string;
+            fullName?: string;
+          } | null;
+        };
+      };
+    };
+    const user = authStoreModule.useAuthStore?.getState?.().user;
+    return {
+      userId: user?.userGuid || user?.userGUID || undefined,
+      userName: user?.username || user?.fullName || undefined,
+    };
+  } catch {
+    return {};
+  }
+
 }
 
 function trimPendingLogs(maxQueueSize: number) {
@@ -118,6 +161,15 @@ async function flushPendingLogs() {
   }
 }
 
+function clearFlushTimer() {
+  if (!flushTimer) {
+    return;
+  }
+
+  clearTimeout(flushTimer);
+  flushTimer = null;
+}
+
 export function reportApplicationLog(input: ApplicationLogInput) {
   try {
     const config = getLogCenterConfig();
@@ -140,6 +192,30 @@ export function reportApplicationLog(input: ApplicationLogInput) {
   } catch {
     // 日志上报必须吞掉所有异常，不能反向影响业务链路。
   }
+}
+
+export function __setLogCenterConfigForTests(config: LogCenterConfig | null) {
+  configOverrideForTests = config;
+}
+
+export function __setUserLogContextForTests(context: { userId?: string; userName?: string } | null) {
+  userContextOverrideForTests = context;
+}
+
+export function __getPendingLogCountForTests() {
+  return pendingLogs.length;
+}
+
+export async function __flushPendingLogsForTests() {
+  await flushPendingLogs();
+}
+
+export function __resetLogCenterRuntimeForTests() {
+  clearFlushTimer();
+  pendingLogs = [];
+  flushInFlight = false;
+  configOverrideForTests = null;
+  userContextOverrideForTests = null;
 }
 
 function normalizeUnhandledReason(reason: unknown) {

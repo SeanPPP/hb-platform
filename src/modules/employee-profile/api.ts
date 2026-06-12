@@ -1,4 +1,5 @@
 import { apiClient } from "@/shared/api/client";
+import { reportExternalFetchFailure } from "@/shared/logging/external-fetch-log";
 import type {
   DirectUploadRequest,
   DirectUploadSignature,
@@ -89,13 +90,40 @@ export async function uploadEmployeeProfileImageBlobToSignedUrl(
   blob: Blob,
   signature: DirectUploadSignature
 ) {
-  const response = await fetch(signature.url, {
-    method: "PUT",
-    headers: signature.headers,
-    body: blob,
-  });
+  let response: Response;
+  try {
+    response = await fetch(signature.url, {
+      method: "PUT",
+      headers: signature.headers,
+      body: blob,
+    });
+  } catch (error) {
+    reportExternalFetchFailure({
+      message: "员工资料图片上传请求失败",
+      sourceType: "employee-profile.upload",
+      requestMethod: "PUT",
+      requestUrl: signature.url,
+      error,
+      properties: {
+        objectKey: signature.objectKey,
+        uploadUrl: signature.url,
+      },
+    });
+    throw error;
+  }
 
   if (!response.ok) {
+    reportExternalFetchFailure({
+      message: "员工资料图片上传失败",
+      sourceType: "employee-profile.upload",
+      requestMethod: "PUT",
+      requestUrl: signature.url,
+      statusCode: response.status,
+      properties: {
+        objectKey: signature.objectKey,
+        uploadUrl: signature.url,
+      },
+    });
     throw new Error(`Upload failed with status ${response.status}`);
   }
 
