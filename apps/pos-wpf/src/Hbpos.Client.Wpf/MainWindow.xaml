@@ -1,0 +1,1036 @@
+﻿<Window x:Class="Hbpos.Client.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="clr-namespace:Hbpos.Client.Wpf.Converters"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
+        xmlns:views="clr-namespace:Hbpos.Client.Wpf.Views.Screens"
+        xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
+        mc:Ignorable="d"
+        Title="HB POS"
+        Width="1366"
+        Height="768"
+        MinWidth="1080"
+        MinHeight="720"
+        Icon="pack://application:,,,/Resources/AppIcon.ico"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        FontFamily="{StaticResource PosFontFamily}"
+        Background="{StaticResource PosScreenBackgroundBrush}">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
+
+        <Style x:Key="CustomerDisplayModeIconButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="36" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="#FFF4F5F7" />
+            <Setter Property="BorderBrush" Value="#FFD9DCE5" />
+            <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.88" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.76" />
+                            </Trigger>
+                            <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Closed}">
+                                <Setter TargetName="Root" Property="Background" Value="#FFF4F5F7" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FFD1D5DB" />
+                                <Setter Property="Foreground" Value="#FF4B5563" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Normal}">
+                                <Setter TargetName="Root" Property="Background" Value="#FFE0F2FE" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF93C5FD" />
+                                <Setter Property="Foreground" Value="#FF2563EB" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Fullscreen}">
+                                <Setter TargetName="Root" Property="Background" Value="#FFCCFBF1" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF5EEAD4" />
+                                <Setter Property="Foreground" Value="#FF0F766E" />
+                            </DataTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <DataTemplate DataType="{x:Type vm:PosTerminalViewModel}">
+            <views:PosTerminalView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SpecialProductsViewModel}">
+            <views:SpecialProductsView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:ReceiptReturnsViewModel}">
+            <views:ReceiptReturnsView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:PaymentViewModel}">
+            <views:PaymentView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:InstallmentCenterViewModel}">
+            <views:InstallmentCenterView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:InstallmentCreateViewModel}">
+            <views:InstallmentCreateView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:PaymentSuccessViewModel}">
+            <views:PaymentSuccessView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:TransactionHistoryViewModel}">
+            <views:TransactionHistoryView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DailyCloseViewModel}">
+            <views:DailyCloseView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:CustomerDisplayViewModel}">
+            <views:CustomerDisplayView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+            <views:SettingsView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DeviceRegistrationViewModel}">
+            <views:DeviceRegistrationView />
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid Background="{StaticResource PosScreenBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="32" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="White"
+                BorderBrush="#FFE7E8EB"
+                BorderThickness="0,0,0,1"
+                MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.06" />
+            </Border.Effect>
+            <Grid Margin="16,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="32" Height="32" Background="{StaticResource PosPrimaryBrush}" CornerRadius="8" Margin="0,0,10,0">
+                        <materialDesign:PackIcon Kind="CashRegister"
+                                                 Width="18"
+                                                 Height="18"
+                                                 Foreground="White"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center" />
+                    </Border>
+                    <TextBlock Text="{loc:Loc AppName}"
+                               FontWeight="Black"
+                               FontSize="16"
+                               Foreground="{StaticResource PosTextBrush}"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Button Command="{Binding ToggleCustomerDisplayWindowCommand}"
+                            Style="{StaticResource CustomerDisplayModeIconButtonStyle}"
+                            ToolTip="{loc:Loc shell.customerDisplayWindow}"
+                            Margin="0,0,6,0">
+                        <materialDesign:PackIcon Width="18" Height="18">
+                            <materialDesign:PackIcon.Style>
+                                <Style TargetType="materialDesign:PackIcon">
+                                    <Setter Property="Kind" Value="MonitorOff" />
+                                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Normal}">
+                                            <Setter Property="Kind" Value="Monitor" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Fullscreen}">
+                                            <Setter Property="Kind" Value="Fullscreen" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </materialDesign:PackIcon.Style>
+                        </materialDesign:PackIcon>
+                    </Button>
+                    <Border Height="34"
+                            MinWidth="150"
+                            Padding="18,0"
+                            Margin="6,0,0,0"
+                            Background="#FFE8F0FE"
+                            BorderBrush="#FFD6E4FF"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                        <TextBlock Text="{Binding ActivePageTitleText}"
+                                   FontSize="13"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosPrimaryBrush}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StoreInfo}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <TextBlock Text="{Binding CashierInfo}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <Button Content="{loc:Loc shell.languageToggle}"
+                            Command="{Binding ToggleCultureCommand}"
+                            Width="72"
+                            Height="30"
+                            Padding="0"
+                            FontWeight="Black"
+                            Background="#FFE8F0FE"
+                            Foreground="{StaticResource PosPrimaryBrush}"
+                            Style="{StaticResource PosShellNavButtonStyle}"
+                            ToolTip="{loc:Loc Language}"
+                            Margin="0,0,8,0" />
+                    <Button Content="{loc:Loc shell.scannerBinding}"
+                            Command="{Binding ResetScannerBindingCommand}"
+                            Width="76"
+                            Height="30"
+                            Padding="0"
+                            FontWeight="Black"
+                            Background="#FFF5F7FA"
+                            Foreground="{StaticResource PosMutedForegroundBrush}"
+                            Style="{StaticResource PosShellNavButtonStyle}"
+                            ToolTip="{loc:Loc shell.scannerBinding.resetTooltip}"
+                            Margin="0,0,8,0" />
+                    <Button Click="MinimizeButton_Click"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            ToolTip="{loc:Loc shell.window.minimize}">
+                        <materialDesign:PackIcon Kind="WindowMinimize" Width="18" Height="18" />
+                    </Button>
+                    <Button Click="MaximizeButton_Click"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            ToolTip="{loc:Loc shell.window.maximize}"
+                            Margin="2,0,0,0">
+                        <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16" />
+                    </Button>
+                    <Button Click="CloseButton_Click"
+                            Style="{StaticResource TitleBarCloseButtonStyle}"
+                            ToolTip="{loc:Loc shell.window.close}"
+                            Margin="2,0,0,0">
+                        <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1">
+            <ContentControl Content="{Binding CachedPosTerminalScreen}">
+                <ContentControl.Style>
+                    <Style TargetType="{x:Type ContentControl}">
+                        <Setter Property="Visibility" Value="Hidden" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsPosTerminalScreenActive}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
+            </ContentControl>
+
+            <ContentControl Content="{Binding CachedSpecialProductsScreen}">
+                <ContentControl.Style>
+                    <Style TargetType="{x:Type ContentControl}">
+                        <Setter Property="Visibility" Value="Hidden" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsSpecialProductsScreenActive}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
+            </ContentControl>
+
+            <ContentControl Content="{Binding CachedCashPaymentScreen}">
+                <ContentControl.Style>
+                    <Style TargetType="{x:Type ContentControl}">
+                        <Setter Property="Visibility" Value="Hidden" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsCashPaymentScreenActive}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
+            </ContentControl>
+
+            <ContentControl Content="{Binding CurrentScreen}"
+                            Visibility="{Binding IsFallbackScreenActive, Converter={StaticResource BoolToVis}}" />
+
+            <Border Visibility="{Binding IsSyncCenterExpanded, Converter={StaticResource BoolToVis}}"
+                    VerticalAlignment="Bottom"
+                    HorizontalAlignment="Right"
+                    Margin="0,0,16,12"
+                    Width="540"
+                    MaxHeight="330"
+                    Background="White"
+                    BorderBrush="#FFD9DCE5"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Panel.ZIndex="20">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.18" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Padding="16,12" Background="#FFF7F8FB" BorderBrush="#FFE7E8EB" BorderThickness="0,0,0,1" CornerRadius="14,14,0,0">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right"
+                                    Command="{Binding ToggleSyncCenterCommand}"
+                                    Style="{StaticResource TitleBarButtonStyle}"
+                                    ToolTip="{loc:Loc shell.sync.close}">
+                                <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                            </Button>
+                            <StackPanel>
+                                <TextBlock Text="{loc:Loc shell.sync.title}" FontSize="14" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" />
+                                <TextBlock Text="{Binding SyncCenterDetailTitle}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+
+                    <Grid Grid.Row="1" Margin="16,12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Border Background="#FFFFF7E8"
+                                BorderBrush="#FFFFD59B"
+                                BorderThickness="1"
+                                CornerRadius="10"
+                                Padding="10"
+                                Margin="0,0,0,10">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                         Width="18"
+                                                         Height="18"
+                                                         Foreground="#FF8F4E00"
+                                                         Margin="0,0,8,0" />
+                                <TextBlock Text="{Binding LastOrderSyncErrorText}"
+                                           Foreground="#FF8F4E00"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="1" Background="#FFFAFAFA" CornerRadius="10" Padding="8">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding SyncCenterOrders}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,0,8"
+                                                    Padding="10"
+                                                    Background="White"
+                                                    BorderBrush="#FFE7E8EB"
+                                                    BorderThickness="1"
+                                                    CornerRadius="10">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding ShortEntityId}" FontSize="12" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" />
+                                                            <TextBlock Text="{Binding Status, StringFormat='  [{0}]'}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource PosPrimaryBrush}" Margin="6,0,0,0" />
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding EntityType}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,4,0,0" />
+                                                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,2,0,0">
+                                                            <Run Text="{loc:Loc shell.sync.created}" />
+                                                            <Run Text=" " />
+                                                            <Run Text="{Binding CreatedAtDisplay, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,2,0,0">
+                                                            <Run Text="{loc:Loc shell.sync.lastAttempt}" />
+                                                            <Run Text=" " />
+                                                            <Run Text="{Binding LastTriedAtDisplay, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding ErrorMessage}" FontSize="10" Foreground="{StaticResource PosDangerBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding AmountDisplay}" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Right" />
+                                                        <Button Content="{loc:Loc shell.sync.retry}"
+                                                                Command="{Binding DataContext.RetrySyncOrderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"
+                                                                Style="{StaticResource PosPrimaryButtonStyle}"
+                                                                Padding="10,4"
+                                                                MinHeight="28"
+                                                                FontSize="10"
+                                                                Margin="0,8,0,0" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="2" Padding="16,12" Background="#FFF7F8FB" BorderBrush="#FFE7E8EB" BorderThickness="0,1,0,0" CornerRadius="0,0,14,14">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right"
+                                    Content="{loc:Loc shell.sync.retryAll}"
+                                    Command="{Binding RetryAllSyncOrdersCommand}"
+                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                    MinHeight="30"
+                                    Padding="12,4"
+                                    FontSize="11" />
+                            <TextBlock Text="{loc:Loc shell.sync.caption}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2" Background="#FFFAFAFA" BorderBrush="#FFE7E8EB" BorderThickness="0,1,0,0">
+            <Grid Margin="16,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Text="{Binding CurrentTime}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" />
+
+                <TextBlock Grid.Column="1"
+                           Text="{Binding StatusMessage}"
+                           FontSize="10"
+                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                           VerticalAlignment="Center"
+                           Margin="18,0,0,0"
+                           TextTrimming="CharacterEllipsis">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsCatalogDownloadProgressVisible}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+
+                <Border Grid.Column="1"
+                        Visibility="{Binding IsCatalogDownloadProgressVisible, Converter={StaticResource BoolToVis}}"
+                        Margin="18,0,16,0"
+                        VerticalAlignment="Center"
+                        MaxWidth="560">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding CatalogDownloadProgressText}"
+                                   FontSize="10"
+                                   FontWeight="Black"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,10,0"
+                                   TextTrimming="CharacterEllipsis">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource PosSuccessBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsCatalogDownloadProgressFailed}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <ProgressBar Grid.Column="1"
+                                     Height="6"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Value="{Binding CatalogDownloadProgressValue}"
+                                     Foreground="{StaticResource PosSuccessBrush}"
+                                     Background="#FFE1F4EA"
+                                     BorderThickness="0"
+                                     VerticalAlignment="Center"
+                                     Margin="0,0,10,0" />
+                        <TextBlock Grid.Column="2"
+                                   Text="{Binding CatalogDownloadProgressDetailText}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource PosSyncBadgeStyle}" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding OnlineStateText}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosSuccessBrush}" Margin="0,0,10,0" />
+                            <TextBlock Text="{Binding PendingSyncText}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="{Binding TerminalInfo}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                    <TextBlock Text="{Binding VersionStatusText}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
+
+                    <Button Command="{Binding ToggleSyncCenterCommand}"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            Padding="0"
+                            Cursor="Hand">
+                        <Border Style="{StaticResource PosSyncBadgeStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{loc:Loc shell.sync.title}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" Margin="0,0,10,0" />
+                                <TextBlock Text="{Binding OrderSyncStatusText}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,0,10,0" />
+                                <TextBlock FontSize="10" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,8,0">
+                                    <Run Text="{loc:Loc shell.sync.pending}" />
+                                    <Run Text=": " />
+                                    <Run Text="{Binding PendingUploadCount, Mode=OneWay}" />
+                                </TextBlock>
+                                <TextBlock FontSize="10" Foreground="{StaticResource PosDangerBrush}" Margin="0,0,8,0">
+                                    <Run Text="{loc:Loc shell.sync.failed}" />
+                                    <Run Text=": " />
+                                    <Run Text="{Binding FailedUploadCount, Mode=OneWay}" />
+                                </TextBlock>
+                                <TextBlock FontSize="10" Foreground="{StaticResource PosSuccessBrush}">
+                                    <Run Text="{loc:Loc shell.sync.syncing}" />
+                                    <Run Text=": " />
+                                    <Run Text="{Binding SyncingOrderCount, Mode=OneWay}" />
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.RowSpan="3"
+              Visibility="{Binding IsDeviceReregistrationDialogOpen, Converter={StaticResource BoolToVis}}"
+              Background="#99000000"
+              Panel.ZIndex="100">
+            <Border Width="560"
+                    Background="White"
+                    BorderBrush="#FFE0E3EA"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="26"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    DataContext="{Binding DeviceRegistration}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="4" Opacity="0.22" />
+                </Border.Effect>
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
+                        <Border Width="42" Height="42" Background="{StaticResource PosPrimaryBrush}" CornerRadius="8" Margin="0,0,12,0">
+                            <materialDesign:PackIcon Kind="AccountSwitch"
+                                                     Width="22"
+                                                     Height="22"
+                                                     Foreground="White"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center" />
+                        </Border>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding TitleText}"
+                                       FontSize="21"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosTextBrush}" />
+                            <TextBlock Text="{loc:Loc deviceRegistration.reregister.subtitle}"
+                                       FontSize="12"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       Margin="0,3,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <TextBlock Text="{loc:Loc deviceRegistration.store}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               Margin="0,0,0,6" />
+                    <ComboBox ItemsSource="{Binding Stores}"
+                              SelectedItem="{Binding SelectedStore, Mode=TwoWay}"
+                              DisplayMemberPath="DisplayName"
+                              Height="42"
+                              FontSize="15"
+                              Margin="0,0,0,16" />
+
+                    <Grid Margin="0,0,0,18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="{loc:Loc deviceRegistration.hardwareId}"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       Margin="0,0,0,6" />
+                            <TextBox Text="{Binding HardwareId}"
+                                     IsReadOnly="True"
+                                     Height="42"
+                                     FontSize="12"
+                                     TextWrapping="NoWrap" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="{loc:Loc deviceRegistration.deviceCode}"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       Margin="0,0,0,6" />
+                            <TextBox Text="{Binding DeviceCode}"
+                                     IsReadOnly="True"
+                                     Height="42"
+                                     FontSize="14" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Border MinHeight="42"
+                            Background="#FFFFF7E8"
+                            BorderBrush="#FFFFD59B"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10,8"
+                            Margin="0,0,0,20">
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   FontSize="12"
+                                   Foreground="#FF8F4E00"
+                                   TextWrapping="Wrap" />
+                    </Border>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                Command="{Binding RegisterCommand}"
+                                Height="44"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="CheckCircle" Width="18" Height="18" Foreground="White" Margin="0,0,8,0" />
+                                <TextBlock Text="{Binding RegisterButtonText}" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="2"
+                                Command="{Binding VerifyCommand}"
+                                Height="44"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="Sync" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc deviceRegistration.verify}" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="4"
+                                Command="{Binding CancelCommand}"
+                                Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"
+                                Height="44"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="Close" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc common.cancel}" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid Grid.RowSpan="3"
+              Visibility="{Binding IsCardRecoveryResultDialogOpen, Converter={StaticResource BoolToVis}}"
+              Background="#99000000"
+              Panel.ZIndex="90">
+            <Border Width="760"
+                    MaxHeight="680"
+                    Background="White"
+                    BorderBrush="#FFE0E3EA"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="0"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    DataContext="{Binding CardRecoveryResultDialog}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="4" Opacity="0.22" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0"
+                            Padding="22,18"
+                            BorderBrush="#FFE7E8EB"
+                            BorderThickness="0,0,0,1"
+                            CornerRadius="8,8,0,0">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="#FFF7F8FB" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSuccess}" Value="True">
+                                        <Setter Property="Background" Value="#FFEAF7EF" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                        <Setter Property="Background" Value="#FFFFF7E8" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsError}" Value="True">
+                                        <Setter Property="Background" Value="#FFFFECEC" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right"
+                                    Command="{Binding DataContext.CloseCardRecoveryResultDialogCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    Style="{StaticResource TitleBarButtonStyle}"
+                                    ToolTip="{loc:Loc shell.window.close}">
+                                <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                            </Button>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Title}"
+                                           FontSize="22"
+                                           FontWeight="Black"
+                                           Foreground="{StaticResource PosTextBrush}" />
+                                <TextBlock Text="{Binding Message}"
+                                           Margin="0,6,24,0"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <Grid Margin="22,18">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.05*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="0.95*" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="{loc:Loc cardRecovery.dialog.section.certFields}"
+                                           FontSize="13"
+                                           FontWeight="Black"
+                                           Foreground="{StaticResource PosTextBrush}"
+                                           Margin="0,0,0,10" />
+                                <UniformGrid Columns="2">
+                                    <StackPanel Margin="0,0,10,12" Visibility="{Binding HasOrderGuid, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.order}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding OrderGuidDisplay}" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource PosTextBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,10,12" Visibility="{Binding HasAmount, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.amount}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding AmountDisplay}" FontSize="13" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,10,12" Visibility="{Binding HasTxnRef, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.txnRef}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding TxnRef}" FontSize="12" FontFamily="Consolas" TextWrapping="Wrap" Foreground="{StaticResource PosTextBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,10,12" Visibility="{Binding HasSessionId, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.sessionId}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding SessionId}" FontSize="11" FontFamily="Consolas" TextWrapping="Wrap" Foreground="{StaticResource PosTextBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,10,12" Visibility="{Binding HasResponseCode, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.responseCode}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding ResponseCode}" FontSize="13" FontWeight="Black" Foreground="{StaticResource PosAccentBrush}" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,10,12" Visibility="{Binding HasResponseText, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.responseText}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding ResponseText}" FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource PosTextBrush}" />
+                                    </StackPanel>
+                                </UniformGrid>
+
+                                <Border Padding="12"
+                                        Margin="0,4,0,0"
+                                        Background="#FFF7F8FB"
+                                        BorderBrush="#FFE7E8EB"
+                                        BorderThickness="1"
+                                        CornerRadius="8">
+                                    <StackPanel>
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.field.timestamp}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                        <TextBlock Text="{Binding TimestampDisplay}" FontSize="12" FontFamily="Consolas" Foreground="{StaticResource PosTextBrush}" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <Border Grid.Column="2"
+                                    Padding="14"
+                                    Background="#FFFAFAFA"
+                                    BorderBrush="#FFE7E8EB"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="{Binding HasReceiptPreview, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                        <materialDesign:PackIcon Kind="Receipt" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,6,0" />
+                                        <TextBlock Text="{loc:Loc cardRecovery.dialog.section.receiptPreview}" FontSize="13" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                                    </StackPanel>
+                                    <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Text}"
+                                                           Margin="0,0,0,3"
+                                                           FontFamily="Consolas"
+                                                           FontSize="11"
+                                                           TextWrapping="Wrap">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="TextAlignment" Value="Left" />
+                                                            <Setter Property="FontWeight" Value="Normal" />
+                                                            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsCentered}" Value="True">
+                                                                    <Setter Property="TextAlignment" Value="Center" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsRightAligned}" Value="True">
+                                                                    <Setter Property="TextAlignment" Value="Right" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsEmphasized}" Value="True">
+                                                                    <Setter Property="FontWeight" Value="Black" />
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding IsMachineCode}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </ScrollViewer>
+
+                    <Border Grid.Row="2"
+                            Padding="18"
+                            Background="#FFF7F8FB"
+                            BorderBrush="#FFE7E8EB"
+                            BorderThickness="0,1,0,0"
+                            CornerRadius="0,0,8,8">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Command="{Binding DataContext.PrintRecoveredReceiptCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    MinWidth="128"
+                                    Height="44"
+                                    Margin="0,0,10,0"
+                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                    Visibility="{Binding CanPrintReceipt, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="Printer" Width="18" Height="18" Foreground="White" Margin="0,0,8,0" />
+                                    <TextBlock Text="{Binding PrintButtonText}" Foreground="White" FontWeight="Bold" />
+                                </StackPanel>
+                            </Button>
+                            <Button Command="{Binding DataContext.CloseCardRecoveryResultDialogCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    MinWidth="112"
+                                    Height="44"
+                                    Style="{StaticResource PosSecondaryButtonStyle}">
+                                <TextBlock Text="{loc:Loc cardRecovery.dialog.action.close}" FontWeight="Bold" />
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.RowSpan="3"
+                Panel.ZIndex="80"
+                Background="#66000000"
+                Visibility="{Binding LinklyTerminalDialog.IsOpen, Converter={StaticResource BoolToVis}}">
+            <Border Width="520"
+                    Padding="24"
+                    Background="{StaticResource PosSurfaceBrush}"
+                    CornerRadius="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    DataContext="{Binding LinklyTerminalDialog}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.22" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" Margin="0,0,0,18">
+                        <Button DockPanel.Dock="Right"
+                                Command="{Binding CloseCommand}"
+                                Style="{StaticResource TitleBarButtonStyle}"
+                                Visibility="{Binding IsCloseButtonVisible, Converter={StaticResource BoolToVis}}"
+                                ToolTip="{loc:Loc shell.window.close}">
+                            <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                        </Button>
+                        <StackPanel>
+                            <TextBlock Text="{Binding TitleText}"
+                                       FontSize="20"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosTextBrush}" />
+                            <TextBlock Text="{Binding SessionId}"
+                                       Margin="0,4,0,0"
+                                       FontSize="11"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </DockPanel>
+
+                    <Border Grid.Row="1"
+                            Padding="12"
+                            Margin="0,0,0,12"
+                            Background="#FFF7F8FB"
+                            BorderBrush="#FFE7E8EB"
+                            BorderThickness="1"
+                            CornerRadius="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="110" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding StatusLabelText}"
+                                       FontSize="11"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding StatusText}"
+                                       FontSize="15"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosPrimaryBrush}"
+                                       TextWrapping="Wrap" />
+                        </Grid>
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="0,0,0,12">
+                        <TextBlock Text="{Binding DisplayLabelText}"
+                                   FontSize="11"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        <Border Margin="0,6,0,0"
+                                Padding="14"
+                                MinHeight="70"
+                                Background="#FF191C1E"
+                                CornerRadius="10">
+                            <TextBlock Text="{Binding DisplayText}"
+                                       Foreground="White"
+                                       FontSize="20"
+                                       FontWeight="Black"
+                                       TextWrapping="Wrap" />
+                        </Border>
+                        <TextBlock Text="{Binding MessageText}"
+                                   Margin="0,8,0,0"
+                                   Foreground="#FF8F4E00"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding MessageText, Converter={StaticResource StringHasValueToVis}}" />
+                        <TextBlock Text="{Binding ResponseText}"
+                                   Margin="0,8,0,0"
+                                   Foreground="{StaticResource PosAccentBrush}"
+                                   FontWeight="Black"
+                                   TextWrapping="Wrap"
+                                   Visibility="{Binding ResponseText, Converter={StaticResource StringHasValueToVis}}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="3"
+                                Margin="0,0,0,16"
+                                Visibility="{Binding ReceiptText, Converter={StaticResource StringHasValueToVis}}">
+                        <TextBlock Text="{Binding ReceiptLabelText}"
+                                   FontSize="11"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        <TextBox Text="{Binding ReceiptText, Mode=OneWay}"
+                                 Margin="0,6,0,0"
+                                 MinHeight="96"
+                                 MaxHeight="150"
+                                 Padding="10"
+                                 FontFamily="Consolas"
+                                 FontSize="12"
+                                 IsReadOnly="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="4"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right">
+                        <Button Command="{Binding CancelPaymentCommand}"
+                                MinWidth="112"
+                                Height="44"
+                                Margin="8,0,0,0"
+                                Visibility="{Binding IsCancelPaymentVisible, Converter={StaticResource BoolToVis}}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                    <Setter Property="Background" Value="{StaticResource PosDangerBrush}" />
+                                    <Setter Property="BorderBrush" Value="{StaticResource PosDangerBrush}" />
+                                </Style>
+                            </Button.Style>
+                            <TextBlock Text="{Binding CancelPaymentText}" Foreground="White" FontWeight="Bold" />
+                        </Button>
+                        <ItemsControl ItemsSource="{Binding DisplayButtons}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type services:LinklyTerminalDialogButtonViewModel}">
+                                    <Button Command="{Binding DataContext.LinklyTerminalDialog.SubmitActionCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="{Binding}"
+                                            MinWidth="112"
+                                            Height="44"
+                                            Margin="8,0,0,0">
+                                        <Button.Style>
+                                            <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsDestructive}" Value="True">
+                                                        <Setter Property="Background" Value="{StaticResource PosDangerBrush}" />
+                                                        <Setter Property="BorderBrush" Value="{StaticResource PosDangerBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Button.Style>
+                                        <TextBlock Text="{Binding Text}" Foreground="White" FontWeight="Bold" />
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Border>
+    </Grid>
+</Window>
+

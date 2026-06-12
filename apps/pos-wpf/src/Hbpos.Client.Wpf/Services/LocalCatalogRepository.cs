@@ -1,0 +1,1110 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using Hbpos.Contracts.Catalog;
+using Microsoft.Data.Sqlite;
+
+namespace Hbpos.Client.Wpf.Services;
+
+public sealed record LocalSellableItemCompareRow(
+    string StoreCode,
+    string LookupCodeNormalized,
+    string ContentHash,
+    DateTimeOffset? SyncedAt);
+
+public sealed record LocalCatalogStoreReplaceCommitResult(
+    int InsertedCount,
+    int DeletedCount);
+
+public interface ILocalCatalogStoreReplaceSession : IAsyncDisposable
+{
+    Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default);
+
+    Task<LocalCatalogStoreReplaceCommitResult> CommitAsync(CancellationToken cancellationToken = default);
+}
+
+public interface ILocalCatalogRepository
+{
+    Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default);
+
+    Task UpsertSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default);
+
+    Task<int> DeleteByLookupCodesAsync(string storeCode, IEnumerable<string> lookupCodes, CancellationToken cancellationToken = default);
+
+    Task<SellableItemDto?> FindByLookupCodeAsync(string storeCode, string lookupCode, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<SellableItemDto>> LoadSpecialProductItemsAsync(string storeCode, CancellationToken cancellationToken = default);
+
+    Task SaveSpecialProductOrderAsync(string storeCode, IEnumerable<string> productCodes, CancellationToken cancellationToken = default);
+
+    Task<int> UpdateSpecialProductFlagAsync(
+        string storeCode,
+        string productCode,
+        bool isSpecialProduct,
+        CancellationToken cancellationToken = default);
+
+    Task<int> ClearSpecialProductFlagsExceptAsync(
+        string storeCode,
+        IEnumerable<string> productCodesToKeep,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<LocalSellableItemCompareRow>> LoadSellableItemComparePageAsync(
+        string storeCode,
+        string? afterLookupCodeNormalized,
+        int pageSize,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(string storeCode, CancellationToken cancellationToken = default);
+
+    Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        throw new NotSupportedException("Store replace sessions are not supported by this repository.");
+    }
+}
+
+public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatalogRepository
+{
+    public Task ReplaceSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
+    {
+        return UpsertSellableItemsAsync(items, cancellationToken);
+    }
+
+    public async Task UpsertSellableItemsAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
+    {
+        var materializedItems = items.ToList();
+        if (materializedItems.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+        var syncedAt = DateTimeOffset.UtcNow;
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = UpsertSellableItemSql;
+        AddUpsertParameters(command);
+        command.Prepare();
+
+        foreach (var item in materializedItems)
+        {
+            var storeCode = NormalizeStoreCode(item.StoreCode);
+            var lookupCodeNormalized = NormalizeLookupCode(item.LookupCode);
+            if (string.IsNullOrEmpty(storeCode))
+            {
+                throw new ArgumentException("Sellable item store code is required.", nameof(items));
+            }
+
+            if (string.IsNullOrEmpty(lookupCodeNormalized))
+            {
+                throw new ArgumentException("Sellable item lookup code is required.", nameof(items));
+            }
+
+            var contentHash = CreateContentHash(item, storeCode, lookupCodeNormalized);
+            SetItemParameters(command, item, storeCode, lookupCodeNormalized, contentHash, syncedAt);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<int> DeleteByLookupCodesAsync(
+        string storeCode,
+        IEnumerable<string> lookupCodes,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return 0;
+        }
+
+        var normalizedLookupCodes = lookupCodes
+            .Select(NormalizeLookupCode)
+            .Where(code => !string.IsNullOrEmpty(code))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (normalizedLookupCodes.Length == 0)
+        {
+            return 0;
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+        var deleted = 0;
+
+        foreach (var lookupCodeNormalized in normalizedLookupCodes)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM LocalSellableItemIndex
+                WHERE StoreCode = $StoreCode
+                  AND LookupCodeNormalized = $LookupCodeNormalized;
+                """;
+            command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            command.Parameters.AddWithValue("$LookupCodeNormalized", lookupCodeNormalized);
+            deleted += await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
+    }
+
+    public async Task<SellableItemDto?> FindByLookupCodeAsync(
+        string storeCode,
+        string lookupCode,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        var lookupCodeNormalized = NormalizeLookupCode(lookupCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode) || string.IsNullOrEmpty(lookupCodeNormalized))
+        {
+            return null;
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            {SelectSellableItemSql}
+            WHERE StoreCode = $StoreCode
+              AND LookupCodeNormalized = $LookupCodeNormalized
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+        command.Parameters.AddWithValue("$LookupCodeNormalized", lookupCodeNormalized);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadSellableItem(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<SellableItemDto>> LoadSpecialProductItemsAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return [];
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                l.StoreCode,
+                l.ProductCode,
+                l.ReferenceCode,
+                l.DisplayName,
+                l.LookupCode,
+                l.ItemNumber,
+                l.Barcode,
+                l.ProductImage,
+                l.DiscountRate,
+                l.IsSpecialProduct,
+                l.RetailPrice,
+                l.PriceSource,
+                l.PriceSourceLabel,
+                l.QuantityFactor,
+                l.UpdatedAt,
+                s.SortOrder
+            FROM LocalSellableItemIndex l
+            LEFT JOIN LocalSpecialProductSortOrder s
+              ON s.StoreCode = l.StoreCode
+             AND s.ProductCode = l.ProductCode
+            WHERE l.StoreCode = $StoreCode
+              AND l.IsSpecialProduct = 1
+            ORDER BY
+                CASE WHEN s.SortOrder IS NULL THEN 1 ELSE 0 END,
+                s.SortOrder,
+                l.DisplayName,
+                l.ProductCode,
+                l.LookupCodeNormalized;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+
+        var rows = new List<(SellableItemDto Item, int? SortOrder)>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add((ReadSellableItem(reader), ReadNullableInt32(reader, "SortOrder")));
+        }
+
+        return rows
+            .GroupBy(row => NormalizeProductCode(row.Item.ProductCode), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(row => row.SortOrder ?? int.MaxValue)
+                .ThenBy(row => PreferredSpecialLookupRank(row.Item))
+                .ThenBy(row => row.Item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(row => row.Item.LookupCode, StringComparer.OrdinalIgnoreCase)
+                .First())
+            .OrderBy(row => row.SortOrder ?? int.MaxValue)
+            .ThenBy(row => row.Item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(row => row.Item.ProductCode, StringComparer.OrdinalIgnoreCase)
+            .Select(row => row.Item)
+            .ToArray();
+    }
+
+    public async Task SaveSpecialProductOrderAsync(
+        string storeCode,
+        IEnumerable<string> productCodes,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return;
+        }
+
+        var normalizedProductCodes = productCodes
+            .Select(NormalizeProductCode)
+            .Where(code => !string.IsNullOrEmpty(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+
+        await using (var deleteCommand = connection.CreateCommand())
+        {
+            deleteCommand.Transaction = transaction;
+            deleteCommand.CommandText = "DELETE FROM LocalSpecialProductSortOrder WHERE StoreCode = $StoreCode;";
+            deleteCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var updatedAt = DateTimeOffset.UtcNow.ToString("O");
+        for (var index = 0; index < normalizedProductCodes.Length; index++)
+        {
+            await using var insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText = """
+                INSERT INTO LocalSpecialProductSortOrder (StoreCode, ProductCode, SortOrder, UpdatedAt)
+                VALUES ($StoreCode, $ProductCode, $SortOrder, $UpdatedAt);
+                """;
+            insertCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            insertCommand.Parameters.AddWithValue("$ProductCode", normalizedProductCodes[index]);
+            insertCommand.Parameters.AddWithValue("$SortOrder", index);
+            insertCommand.Parameters.AddWithValue("$UpdatedAt", updatedAt);
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<int> UpdateSpecialProductFlagAsync(
+        string storeCode,
+        string productCode,
+        bool isSpecialProduct,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        var normalizedProductCode = NormalizeProductCode(productCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode) || string.IsNullOrEmpty(normalizedProductCode))
+        {
+            return 0;
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE LocalSellableItemIndex
+            SET IsSpecialProduct = $IsSpecialProduct
+            WHERE StoreCode = $StoreCode
+              AND ProductCode = $ProductCode;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+        command.Parameters.AddWithValue("$ProductCode", normalizedProductCode);
+        command.Parameters.AddWithValue("$IsSpecialProduct", isSpecialProduct ? 1 : 0);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+
+        if (!isSpecialProduct)
+        {
+            await using var deleteOrderCommand = connection.CreateCommand();
+            deleteOrderCommand.Transaction = transaction;
+            deleteOrderCommand.CommandText = """
+                DELETE FROM LocalSpecialProductSortOrder
+                WHERE StoreCode = $StoreCode
+                  AND ProductCode = $ProductCode;
+                """;
+            deleteOrderCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            deleteOrderCommand.Parameters.AddWithValue("$ProductCode", normalizedProductCode);
+            await deleteOrderCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return updated;
+    }
+
+    public async Task<int> ClearSpecialProductFlagsExceptAsync(
+        string storeCode,
+        IEnumerable<string> productCodesToKeep,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return 0;
+        }
+
+        var normalizedProductCodes = productCodesToKeep
+            .Select(NormalizeProductCode)
+            .Where(code => !string.IsNullOrEmpty(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+
+        var exclusionClause = normalizedProductCodes.Length == 0
+            ? string.Empty
+            : $" AND ProductCode NOT IN ({string.Join(", ", normalizedProductCodes.Select((_, index) => $"$ProductCode{index}"))})";
+
+        await using var updateCommand = connection.CreateCommand();
+        updateCommand.Transaction = transaction;
+        updateCommand.CommandText = $"""
+            UPDATE LocalSellableItemIndex
+            SET IsSpecialProduct = 0
+            WHERE StoreCode = $StoreCode
+              AND IsSpecialProduct = 1
+              {exclusionClause};
+            """;
+        updateCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+        for (var index = 0; index < normalizedProductCodes.Length; index++)
+        {
+            updateCommand.Parameters.AddWithValue($"$ProductCode{index}", normalizedProductCodes[index]);
+        }
+
+        var updated = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var deleteSortCommand = connection.CreateCommand();
+        deleteSortCommand.Transaction = transaction;
+        deleteSortCommand.CommandText = $"""
+            DELETE FROM LocalSpecialProductSortOrder
+            WHERE StoreCode = $StoreCode
+              {exclusionClause};
+            """;
+        deleteSortCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+        for (var index = 0; index < normalizedProductCodes.Length; index++)
+        {
+            deleteSortCommand.Parameters.AddWithValue($"$ProductCode{index}", normalizedProductCodes[index]);
+        }
+
+        await deleteSortCommand.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return updated;
+    }
+
+    public async Task<IReadOnlyList<LocalSellableItemCompareRow>> LoadSellableItemComparePageAsync(
+        string storeCode,
+        string? afterLookupCodeNormalized,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return [];
+        }
+
+        var cursor = string.IsNullOrWhiteSpace(afterLookupCodeNormalized)
+            ? null
+            : NormalizeLookupCode(afterLookupCodeNormalized);
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT StoreCode, LookupCodeNormalized, ContentHash, SyncedAt
+            FROM LocalSellableItemIndex
+            WHERE StoreCode = $StoreCode
+              AND ($AfterLookupCodeNormalized IS NULL OR LookupCodeNormalized > $AfterLookupCodeNormalized)
+            ORDER BY StoreCode, LookupCodeNormalized
+            LIMIT $PageSize;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+        command.Parameters.AddWithValue("$AfterLookupCodeNormalized", (object?)cursor ?? DBNull.Value);
+        command.Parameters.AddWithValue("$PageSize", Math.Clamp(pageSize, 1, 2000));
+
+        var rows = new List<LocalSellableItemCompareRow>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new LocalSellableItemCompareRow(
+                ReadString(reader, "StoreCode"),
+                ReadString(reader, "LookupCodeNormalized"),
+                ReadString(reader, "ContentHash"),
+                ReadNullableDateTimeOffset(reader, "SyncedAt")));
+        }
+
+        return rows;
+    }
+
+    public async Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            {SelectSellableItemSql}
+            ORDER BY StoreCode, LookupCodeNormalized;
+            """;
+
+        var items = new List<SellableItemDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadSellableItem(reader));
+        }
+
+        return items;
+    }
+
+    public async Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(string storeCode, CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+        {
+            return [];
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            {SelectSellableItemSql}
+            WHERE StoreCode = $StoreCode
+            ORDER BY LookupCodeNormalized;
+            """;
+        command.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+
+        var items = new List<SellableItemDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadSellableItem(reader));
+        }
+
+        return items;
+    }
+
+    public async Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            throw new ArgumentException("Store code is required.", nameof(storeCode));
+        }
+
+        var connection = await store.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var session = new LocalCatalogStoreReplaceSession(connection, normalizedStoreCode);
+            await session.InitializeAsync(cancellationToken);
+            return session;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    private const string SelectSellableItemSql = """
+        SELECT StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, Barcode, ProductImage, DiscountRate, IsSpecialProduct, RetailPrice, PriceSource, PriceSourceLabel, QuantityFactor, UpdatedAt
+        FROM LocalSellableItemIndex
+        """;
+
+    private const string UpsertSellableItemSql = """
+        INSERT INTO LocalSellableItemIndex
+        (
+            StoreCode,
+            ProductCode,
+            ReferenceCode,
+            DisplayName,
+            LookupCode,
+            LookupCodeNormalized,
+            ItemNumber,
+            Barcode,
+            ProductImage,
+            DiscountRate,
+            IsSpecialProduct,
+            RetailPrice,
+            PriceSource,
+            PriceSourceLabel,
+            QuantityFactor,
+            UpdatedAt,
+            ContentHash,
+            SyncedAt
+        )
+        VALUES
+        (
+            $StoreCode,
+            $ProductCode,
+            $ReferenceCode,
+            $DisplayName,
+            $LookupCode,
+            $LookupCodeNormalized,
+            $ItemNumber,
+            $Barcode,
+            $ProductImage,
+            $DiscountRate,
+            $IsSpecialProduct,
+            $RetailPrice,
+            $PriceSource,
+            $PriceSourceLabel,
+            $QuantityFactor,
+            $UpdatedAt,
+            $ContentHash,
+            $SyncedAt
+        )
+        ON CONFLICT(StoreCode, LookupCodeNormalized) DO UPDATE SET
+            ProductCode = excluded.ProductCode,
+            ReferenceCode = excluded.ReferenceCode,
+            DisplayName = excluded.DisplayName,
+            LookupCode = excluded.LookupCode,
+            ItemNumber = excluded.ItemNumber,
+            Barcode = excluded.Barcode,
+            ProductImage = excluded.ProductImage,
+            DiscountRate = excluded.DiscountRate,
+            IsSpecialProduct = excluded.IsSpecialProduct,
+            RetailPrice = excluded.RetailPrice,
+            PriceSource = excluded.PriceSource,
+            PriceSourceLabel = excluded.PriceSourceLabel,
+            QuantityFactor = excluded.QuantityFactor,
+            UpdatedAt = excluded.UpdatedAt,
+            ContentHash = excluded.ContentHash,
+            SyncedAt = excluded.SyncedAt;
+        """;
+
+    private const string StageSellableItemSql = """
+        INSERT INTO TempLocalSellableItemIndexReplace
+        (
+            StoreCode,
+            ProductCode,
+            ReferenceCode,
+            DisplayName,
+            LookupCode,
+            LookupCodeNormalized,
+            ItemNumber,
+            Barcode,
+            ProductImage,
+            DiscountRate,
+            IsSpecialProduct,
+            RetailPrice,
+            PriceSource,
+            PriceSourceLabel,
+            QuantityFactor,
+            UpdatedAt,
+            ContentHash,
+            SyncedAt
+        )
+        VALUES
+        (
+            $StoreCode,
+            $ProductCode,
+            $ReferenceCode,
+            $DisplayName,
+            $LookupCode,
+            $LookupCodeNormalized,
+            $ItemNumber,
+            $Barcode,
+            $ProductImage,
+            $DiscountRate,
+            $IsSpecialProduct,
+            $RetailPrice,
+            $PriceSource,
+            $PriceSourceLabel,
+            $QuantityFactor,
+            $UpdatedAt,
+            $ContentHash,
+            $SyncedAt
+        )
+        ON CONFLICT(StoreCode, LookupCodeNormalized) DO UPDATE SET
+            ProductCode = excluded.ProductCode,
+            ReferenceCode = excluded.ReferenceCode,
+            DisplayName = excluded.DisplayName,
+            LookupCode = excluded.LookupCode,
+            ItemNumber = excluded.ItemNumber,
+            Barcode = excluded.Barcode,
+            ProductImage = excluded.ProductImage,
+            DiscountRate = excluded.DiscountRate,
+            IsSpecialProduct = excluded.IsSpecialProduct,
+            RetailPrice = excluded.RetailPrice,
+            PriceSource = excluded.PriceSource,
+            PriceSourceLabel = excluded.PriceSourceLabel,
+            QuantityFactor = excluded.QuantityFactor,
+            UpdatedAt = excluded.UpdatedAt,
+            ContentHash = excluded.ContentHash,
+            SyncedAt = excluded.SyncedAt;
+        """;
+
+    private static void AddUpsertParameters(SqliteCommand command)
+    {
+        command.Parameters.AddWithValue("$StoreCode", string.Empty);
+        command.Parameters.AddWithValue("$ProductCode", string.Empty);
+        command.Parameters.AddWithValue("$ReferenceCode", DBNull.Value);
+        command.Parameters.AddWithValue("$DisplayName", string.Empty);
+        command.Parameters.AddWithValue("$LookupCode", string.Empty);
+        command.Parameters.AddWithValue("$LookupCodeNormalized", string.Empty);
+        command.Parameters.AddWithValue("$ItemNumber", DBNull.Value);
+        command.Parameters.AddWithValue("$Barcode", DBNull.Value);
+        command.Parameters.AddWithValue("$ProductImage", DBNull.Value);
+        command.Parameters.AddWithValue("$DiscountRate", DBNull.Value);
+        command.Parameters.AddWithValue("$IsSpecialProduct", 0);
+        command.Parameters.AddWithValue("$RetailPrice", 0m);
+        command.Parameters.AddWithValue("$PriceSource", 0);
+        command.Parameters.AddWithValue("$PriceSourceLabel", string.Empty);
+        command.Parameters.AddWithValue("$QuantityFactor", 1m);
+        command.Parameters.AddWithValue("$UpdatedAt", DBNull.Value);
+        command.Parameters.AddWithValue("$ContentHash", string.Empty);
+        command.Parameters.AddWithValue("$SyncedAt", string.Empty);
+    }
+
+    private static void SetItemParameters(
+        SqliteCommand command,
+        SellableItemDto item,
+        string storeCode,
+        string lookupCodeNormalized,
+        string contentHash,
+        DateTimeOffset syncedAt)
+    {
+        command.Parameters["$StoreCode"].Value = storeCode;
+        command.Parameters["$ProductCode"].Value = item.ProductCode;
+        command.Parameters["$ReferenceCode"].Value = (object?)item.ReferenceCode ?? DBNull.Value;
+        command.Parameters["$DisplayName"].Value = item.DisplayName;
+        command.Parameters["$LookupCode"].Value = item.LookupCode;
+        command.Parameters["$LookupCodeNormalized"].Value = lookupCodeNormalized;
+        command.Parameters["$ItemNumber"].Value = (object?)item.ItemNumber ?? DBNull.Value;
+        command.Parameters["$Barcode"].Value = (object?)item.Barcode ?? DBNull.Value;
+        command.Parameters["$ProductImage"].Value = (object?)item.ProductImage ?? DBNull.Value;
+        command.Parameters["$DiscountRate"].Value = (object?)item.DiscountRate ?? DBNull.Value;
+        command.Parameters["$IsSpecialProduct"].Value = item.IsSpecialProduct ? 1 : 0;
+        command.Parameters["$RetailPrice"].Value = item.RetailPrice;
+        command.Parameters["$PriceSource"].Value = (int)item.PriceSource;
+        command.Parameters["$PriceSourceLabel"].Value = item.PriceSourceLabel;
+        command.Parameters["$QuantityFactor"].Value = item.QuantityFactor;
+        command.Parameters["$UpdatedAt"].Value = (object?)item.UpdatedAt?.ToString("O") ?? DBNull.Value;
+        command.Parameters["$ContentHash"].Value = contentHash;
+        command.Parameters["$SyncedAt"].Value = syncedAt.ToString("O");
+    }
+
+    private static SellableItemDto ReadSellableItem(SqliteDataReader reader)
+    {
+        return new SellableItemDto(
+            ReadString(reader, "StoreCode"),
+            ReadString(reader, "ProductCode"),
+            ReadNullableString(reader, "ReferenceCode"),
+            ReadString(reader, "DisplayName"),
+            ReadString(reader, "LookupCode"),
+            ReadNullableString(reader, "ItemNumber"),
+            ReadNullableString(reader, "Barcode"),
+            ReadDecimal(reader, "RetailPrice"),
+            (PriceSourceKind)ReadInt32(reader, "PriceSource"),
+            ReadString(reader, "PriceSourceLabel"),
+            ReadDecimal(reader, "QuantityFactor"),
+            ReadNullableDateTimeOffset(reader, "UpdatedAt"),
+            ReadNullableString(reader, "ProductImage"),
+            ReadNullableDecimal(reader, "DiscountRate"),
+            ReadBool(reader, "IsSpecialProduct"));
+    }
+
+    private static string CreateContentHash(SellableItemDto item, string storeCode, string lookupCodeNormalized)
+    {
+        var builder = new StringBuilder();
+        AppendCanonical(builder, storeCode);
+        AppendCanonical(builder, item.ProductCode.Trim());
+        AppendCanonical(builder, item.ReferenceCode?.Trim() ?? string.Empty);
+        AppendCanonical(builder, item.DisplayName.Trim());
+        AppendCanonical(builder, lookupCodeNormalized);
+        AppendCanonical(builder, item.ItemNumber?.Trim() ?? string.Empty);
+        AppendCanonical(builder, item.Barcode?.Trim() ?? string.Empty);
+        AppendCanonical(builder, item.RetailPrice.ToString("0.#############################", CultureInfo.InvariantCulture));
+        AppendCanonical(builder, ((int)item.PriceSource).ToString(CultureInfo.InvariantCulture));
+        AppendCanonical(builder, item.PriceSourceLabel.Trim());
+        AppendCanonical(builder, item.QuantityFactor.ToString("0.#############################", CultureInfo.InvariantCulture));
+        AppendCanonical(builder, item.ProductImage ?? string.Empty);
+        AppendCanonical(builder, FormatNullableDecimal(item.DiscountRate));
+        AppendCanonical(builder, item.IsSpecialProduct ? "1" : "0");
+
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return Convert.ToHexString(hashBytes);
+    }
+
+    private static void AppendCanonical(StringBuilder builder, string value)
+    {
+        builder
+            .Append(value.Length.ToString(CultureInfo.InvariantCulture))
+            .Append(':')
+            .Append(value)
+            .Append('|');
+    }
+
+    private static string NormalizeStoreCode(string? value)
+    {
+        return (value ?? string.Empty).Trim();
+    }
+
+    private static string NormalizeProductCode(string? value)
+    {
+        return (value ?? string.Empty).Trim();
+    }
+
+    private static string NormalizeLookupCode(string? value)
+    {
+        return (value ?? string.Empty).Trim().ToUpperInvariant();
+    }
+
+    private static string ReadString(SqliteDataReader reader, string name)
+    {
+        return reader.GetString(reader.GetOrdinal(name));
+    }
+
+    private static string? ReadNullableString(SqliteDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+    }
+
+    private static int ReadInt32(SqliteDataReader reader, string name)
+    {
+        var value = reader.GetValue(reader.GetOrdinal(name));
+        return value switch
+        {
+            int intValue => intValue,
+            long longValue => (int)longValue,
+            string stringValue => int.Parse(stringValue, CultureInfo.InvariantCulture),
+            _ => Convert.ToInt32(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static int? ReadNullableInt32(SqliteDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var value = reader.GetValue(ordinal);
+        return value switch
+        {
+            int intValue => intValue,
+            long longValue => (int)longValue,
+            string stringValue when string.IsNullOrWhiteSpace(stringValue) => null,
+            string stringValue => int.Parse(stringValue, CultureInfo.InvariantCulture),
+            _ => Convert.ToInt32(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static bool ReadBool(SqliteDataReader reader, string name)
+    {
+        var value = reader.GetValue(reader.GetOrdinal(name));
+        return value switch
+        {
+            bool boolValue => boolValue,
+            int intValue => intValue != 0,
+            long longValue => longValue != 0,
+            string stringValue when int.TryParse(stringValue, CultureInfo.InvariantCulture, out var parsed) => parsed != 0,
+            string stringValue => bool.Parse(stringValue),
+            _ => Convert.ToBoolean(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static decimal ReadDecimal(SqliteDataReader reader, string name)
+    {
+        var value = reader.GetValue(reader.GetOrdinal(name));
+        return value switch
+        {
+            decimal decimalValue => decimalValue,
+            double doubleValue => Convert.ToDecimal(doubleValue, CultureInfo.InvariantCulture),
+            long longValue => longValue,
+            int intValue => intValue,
+            string stringValue => decimal.Parse(stringValue, CultureInfo.InvariantCulture),
+            _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static decimal? ReadNullableDecimal(SqliteDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var value = reader.GetValue(ordinal);
+        return value switch
+        {
+            decimal decimalValue => decimalValue,
+            double doubleValue => Convert.ToDecimal(doubleValue, CultureInfo.InvariantCulture),
+            long longValue => longValue,
+            int intValue => intValue,
+            string stringValue when string.IsNullOrWhiteSpace(stringValue) => null,
+            string stringValue => decimal.Parse(stringValue, CultureInfo.InvariantCulture),
+            _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static string FormatNullableDecimal(decimal? value)
+    {
+        return value?.ToString("0.#############################", CultureInfo.InvariantCulture) ?? string.Empty;
+    }
+
+    private static DateTimeOffset? ReadNullableDateTimeOffset(SqliteDataReader reader, string name)
+    {
+        var value = ReadNullableString(reader, name);
+        return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static int PreferredSpecialLookupRank(SellableItemDto item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.Barcode) &&
+            string.Equals(NormalizeLookupCode(item.LookupCode), NormalizeLookupCode(item.Barcode), StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.ItemNumber) &&
+            string.Equals(NormalizeLookupCode(item.LookupCode), NormalizeLookupCode(item.ItemNumber), StringComparison.Ordinal))
+        {
+            return 1;
+        }
+
+        return 2;
+    }
+
+    private sealed class LocalCatalogStoreReplaceSession(
+        SqliteConnection connection,
+        string storeCode) : ILocalCatalogStoreReplaceSession
+    {
+        private bool _committed;
+        private bool _disposed;
+
+        public async Task InitializeAsync(CancellationToken cancellationToken)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TEMP TABLE TempLocalSellableItemIndexReplace (
+                    StoreCode TEXT NOT NULL,
+                    ProductCode TEXT NOT NULL,
+                    ReferenceCode TEXT NULL,
+                    DisplayName TEXT NOT NULL,
+                    LookupCode TEXT NOT NULL,
+                    LookupCodeNormalized TEXT NOT NULL,
+                    ItemNumber TEXT NULL,
+                    Barcode TEXT NULL,
+                    ProductImage TEXT NULL,
+                    DiscountRate TEXT NULL,
+                    IsSpecialProduct INTEGER NOT NULL DEFAULT 0,
+                    RetailPrice TEXT NOT NULL,
+                    PriceSource INTEGER NOT NULL,
+                    PriceSourceLabel TEXT NOT NULL,
+                    QuantityFactor TEXT NOT NULL,
+                    UpdatedAt TEXT NULL,
+                    ContentHash TEXT NOT NULL,
+                    SyncedAt TEXT NOT NULL,
+                    PRIMARY KEY (StoreCode, LookupCodeNormalized)
+                );
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        public async Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (_committed)
+            {
+                throw new InvalidOperationException("The store replace session has already been committed.");
+            }
+
+            var materializedItems = items.ToList();
+            if (materializedItems.Count == 0)
+            {
+                return;
+            }
+
+            using var transaction = connection.BeginTransaction();
+            var syncedAt = DateTimeOffset.UtcNow;
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = StageSellableItemSql;
+            AddUpsertParameters(command);
+            command.Prepare();
+
+            foreach (var item in materializedItems)
+            {
+                var itemStoreCode = NormalizeStoreCode(item.StoreCode);
+                var lookupCodeNormalized = NormalizeLookupCode(item.LookupCode);
+                if (!string.Equals(itemStoreCode, storeCode, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException("Staged sellable item store code must match the replace session store.", nameof(items));
+                }
+
+                if (string.IsNullOrEmpty(lookupCodeNormalized))
+                {
+                    throw new ArgumentException("Sellable item lookup code is required.", nameof(items));
+                }
+
+                var contentHash = CreateContentHash(item, itemStoreCode, lookupCodeNormalized);
+                SetItemParameters(command, item, itemStoreCode, lookupCodeNormalized, contentHash, syncedAt);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        public async Task<LocalCatalogStoreReplaceCommitResult> CommitAsync(CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (_committed)
+            {
+                throw new InvalidOperationException("The store replace session has already been committed.");
+            }
+
+            using var transaction = connection.BeginTransaction();
+            var deletedCount = await CountDeletedLookupsAsync(transaction, cancellationToken);
+            var insertedCount = await CountStagedItemsAsync(transaction, cancellationToken);
+
+            await using (var deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = """
+                    DELETE FROM LocalSellableItemIndex
+                    WHERE StoreCode = $StoreCode;
+                    """;
+                deleteCommand.Parameters.AddWithValue("$StoreCode", storeCode);
+                await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var insertCommand = connection.CreateCommand())
+            {
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText = """
+                    INSERT INTO LocalSellableItemIndex
+                    (
+                        StoreCode,
+                        ProductCode,
+                        ReferenceCode,
+                        DisplayName,
+                        LookupCode,
+                        LookupCodeNormalized,
+                        ItemNumber,
+                        Barcode,
+                        ProductImage,
+                        DiscountRate,
+                        IsSpecialProduct,
+                        RetailPrice,
+                        PriceSource,
+                        PriceSourceLabel,
+                        QuantityFactor,
+                        UpdatedAt,
+                        ContentHash,
+                        SyncedAt
+                    )
+                    SELECT
+                        StoreCode,
+                        ProductCode,
+                        ReferenceCode,
+                        DisplayName,
+                        LookupCode,
+                        LookupCodeNormalized,
+                        ItemNumber,
+                        Barcode,
+                        ProductImage,
+                        DiscountRate,
+                        IsSpecialProduct,
+                        RetailPrice,
+                        PriceSource,
+                        PriceSourceLabel,
+                        QuantityFactor,
+                        UpdatedAt,
+                        ContentHash,
+                        SyncedAt
+                    FROM TempLocalSellableItemIndexReplace
+                    WHERE StoreCode = $StoreCode;
+                    """;
+                insertCommand.Parameters.AddWithValue("$StoreCode", storeCode);
+                await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            _committed = true;
+            return new LocalCatalogStoreReplaceCommitResult(insertedCount, deletedCount);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            await connection.DisposeAsync();
+        }
+
+        private async Task<int> CountDeletedLookupsAsync(
+            SqliteTransaction transaction,
+            CancellationToken cancellationToken)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM LocalSellableItemIndex l
+                WHERE l.StoreCode = $StoreCode
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM TempLocalSellableItemIndexReplace s
+                      WHERE s.StoreCode = l.StoreCode
+                        AND s.LookupCodeNormalized = l.LookupCodeNormalized
+                  );
+                """;
+            command.Parameters.AddWithValue("$StoreCode", storeCode);
+            return await ExecuteScalarInt32Async(command, cancellationToken);
+        }
+
+        private async Task<int> CountStagedItemsAsync(
+            SqliteTransaction transaction,
+            CancellationToken cancellationToken)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM TempLocalSellableItemIndexReplace
+                WHERE StoreCode = $StoreCode;
+                """;
+            command.Parameters.AddWithValue("$StoreCode", storeCode);
+            return await ExecuteScalarInt32Async(command, cancellationToken);
+        }
+
+        private void ThrowIfDisposed()
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+        }
+
+        private static async Task<int> ExecuteScalarInt32Async(
+            SqliteCommand command,
+            CancellationToken cancellationToken)
+        {
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            return value switch
+            {
+                int intValue => intValue,
+                long longValue => (int)longValue,
+                null or DBNull => 0,
+                _ => Convert.ToInt32(value, CultureInfo.InvariantCulture)
+            };
+        }
+    }
+}

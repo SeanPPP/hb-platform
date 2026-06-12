@@ -1,0 +1,11 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.DS_Store
+Thumbs.db
+node_modules/
+.superpowers/
+**/logs/*.log
+fix_*.py

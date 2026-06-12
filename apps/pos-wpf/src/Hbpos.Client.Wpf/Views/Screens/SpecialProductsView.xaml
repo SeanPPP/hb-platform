@@ -1,0 +1,493 @@
+<UserControl x:Class="Hbpos.Client.Wpf.Views.Screens.SpecialProductsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:Hbpos.Client.Wpf.Converters"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="688"
+             d:DesignWidth="1366"
+             Background="{StaticResource PosScreenBackgroundBrush}">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
+        <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringIsEmptyToVis" Invert="True" />
+        <converters:ProductThumbnailImageSourceConverter x:Key="ProductThumbnailImageSourceConverter" DecodePixelWidth="72" />
+
+        <Style x:Key="TouchIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+            <Setter Property="MinWidth" Value="48" />
+            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="3,0,0,0" />
+        </Style>
+
+        <Style x:Key="SpecialProductCardStyle" TargetType="Border">
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="#FFE0E4EC" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Background="{StaticResource PosScreenBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{StaticResource PosSurfaceBrush}" BorderBrush="#FFE1E5EC" BorderThickness="0,0,0,1" Padding="20,14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Command="{Binding BackCommand}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        MinHeight="64"
+                        Padding="18,0"
+                        Margin="0,0,16,0">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="ArrowLeft" Width="22" Height="22" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="{Binding BackText}" FontWeight="Black" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <TextBlock Grid.Column="1"
+                           Text="{Binding SubtitleText}"
+                           FontSize="12"
+                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Background="#FFE8F0FE" CornerRadius="18" Padding="14,8" Margin="0,0,10,0">
+                        <TextBlock Text="{Binding OnlineStateText}" FontSize="12" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" />
+                    </Border>
+                    <Button Command="{Binding DownloadCommand}"
+                            Style="{StaticResource PosPrimaryButtonStyle}"
+                            MinHeight="64"
+                            Padding="16,0"
+                            Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Download" Width="22" Height="22" Margin="0,0,8,0" Foreground="White" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding DownloadText}" Foreground="White" FontWeight="Black" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding ToggleEditModeCommand}"
+                            Style="{StaticResource PosSecondaryButtonStyle}"
+                            MinHeight="64"
+                            Padding="16,0"
+                            Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Pencil" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding EditModeText}" FontWeight="Black" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button Command="{Binding RefreshCommand}"
+                            Style="{StaticResource PosSecondaryButtonStyle}"
+                            MinHeight="64"
+                            Padding="16,0">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Refresh" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding RefreshText}" FontWeight="Black" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1"
+                Margin="20,16,20,0"
+                Padding="14"
+                Background="#FFFFFFFF"
+                BorderBrush="#FFE0E4EC"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding IsDownloadProgressVisible, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="{Binding DownloadProgressText}"
+                           FontSize="13"
+                           FontWeight="Black"
+                           Foreground="{StaticResource PosTextBrush}" />
+                <Grid Grid.Row="1" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <ProgressBar Height="8"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding DownloadProgressValue}"
+                                 Foreground="{StaticResource PosPrimaryBrush}"
+                                 Background="#FFE8EEF9"
+                                 BorderThickness="0"
+                                 VerticalAlignment="Center"
+                                 Margin="0,0,12,0" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding DownloadProgressDetailText}"
+                               FontSize="11"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               VerticalAlignment="Center"
+                               TextWrapping="Wrap" />
+                </Grid>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2"
+                Margin="20,10,20,6"
+                Padding="10"
+                Background="#FFFFFFFF"
+                BorderBrush="#FFE0E4EC"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0"
+                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource PosSearchTextBoxStyle}"
+                             Height="48"
+                             FontSize="15"
+                             materialDesign:HintAssist.Hint="{Binding SearchPlaceholderText}">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Enter" Command="{Binding SearchCommand}" />
+                        </TextBox.InputBindings>
+                    </TextBox>
+                    <Button Grid.Column="1"
+                            Command="{Binding ClearSearchCommand}"
+                            Style="{StaticResource PosSecondaryButtonStyle}"
+                            MinHeight="48"
+                            MinWidth="78"
+                            Margin="8,0,0,0">
+                        <TextBlock Text="{Binding ClearSearchText}" FontWeight="Black" />
+                    </Button>
+                    <Button Grid.Column="2"
+                            Command="{Binding SearchCommand}"
+                            Style="{StaticResource PosPrimaryButtonStyle}"
+                            MinHeight="48"
+                            MinWidth="112"
+                            Margin="8,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Magnify" Width="20" Height="20" Foreground="White" Margin="0,0,6,0" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontWeight="Black" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+
+                <StackPanel Grid.Row="1"
+                            Margin="0,8,0,0"
+                            Visibility="{Binding HasSearchResults, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="{Binding SearchResultsText}" FontSize="11" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="2,0,0,6" />
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" MaxHeight="84">
+                        <ListBox ItemsSource="{Binding SearchResults}"
+                                 SelectedItem="{Binding SelectedSearchResult, Mode=TwoWay}"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 Padding="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Margin" Value="0" />
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+                                                <ContentPresenter />
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border x:Name="SearchResultCard" Width="224" Height="76" Margin="0,0,8,0" Padding="7" Background="#FFF8FAFD" BorderBrush="#FFE0E4EC" BorderThickness="1" CornerRadius="8">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="54" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Background="#FFE8F0FE" CornerRadius="6">
+                                                <Grid>
+                                                    <materialDesign:PackIcon Kind="Image" Width="22" Height="22" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                    <Image converters:ProductThumbnailImageSourceConverter.AsyncIsEnabled="{Binding DataContext.AreThumbnailsEnabled, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                           converters:ProductThumbnailImageSourceConverter.AsyncSourceText="{Binding ProductImage}"
+                                                           converters:ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth="72"
+                                                           Stretch="UniformToFill"
+                                                           RenderOptions.BitmapScalingMode="LowQuality" />
+                                                </Grid>
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Margin="8,0,8,0" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding DisplayName}" FontSize="12" FontWeight="Black" TextWrapping="Wrap" MaxHeight="32" />
+                                                <TextBlock Text="{Binding LookupCode}" FontSize="11" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
+                                            </StackPanel>
+                                            <Button Grid.Column="2"
+                                                    Command="{Binding DataContext.AddSpecialProductCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                                    MinWidth="52"
+                                                    MinHeight="52"
+                                                    Padding="0"
+                                                    ToolTip="{Binding DataContext.AddText, RelativeSource={RelativeSource AncestorType=ListBox}}">
+                                                <materialDesign:PackIcon Kind="Plus" Width="22" Height="22" Foreground="White" />
+                                            </Button>
+                                        </Grid>
+                                    </Border>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                            <Setter TargetName="SearchResultCard" Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                                            <Setter TargetName="SearchResultCard" Property="BorderThickness" Value="2" />
+                                            <Setter TargetName="SearchResultCard" Property="Background" Value="#FFE8F0FE" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </ScrollViewer>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="3" Margin="20,4,20,10">
+            <Border Visibility="{Binding IsSpecialListEmpty, Converter={StaticResource BoolToVis}}"
+                    Background="#FFFFFFFF"
+                    BorderBrush="#FFE0E4EC"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="30">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <materialDesign:PackIcon Kind="Star" Width="52" Height="52" Foreground="{StaticResource PosAccentBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding EmptyText}" FontSize="18" FontWeight="Black" TextAlignment="Center" Margin="0,14,0,0" />
+                </StackPanel>
+            </Border>
+
+            <ListBox ItemsSource="{Binding PagedSpecialItems}"
+                     SelectedItem="{Binding SelectedSpecialItem, Mode=TwoWay}"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Padding="0"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Rows="4" Columns="5" />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="Margin" Value="0" />
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="BorderThickness" Value="0" />
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <ContentPresenter />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border x:Name="SpecialProductCard" Style="{StaticResource SpecialProductCardStyle}">
+                            <Button Command="{Binding DataContext.SpecialItemCardCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                    CommandParameter="{Binding}"
+                                    Style="{StaticResource PosSearchSegmentButtonStyle}"
+                                    Padding="0"
+                                    HorizontalContentAlignment="Stretch"
+                                    VerticalContentAlignment="Stretch">
+                                <Grid Margin="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="78" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <Border Grid.Column="0" Background="#FFE8F0FE" CornerRadius="6" ClipToBounds="True" Width="72" Height="72" VerticalAlignment="Center">
+                                        <Grid>
+                                            <materialDesign:PackIcon Kind="Image" Width="28" Height="28" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            <Image converters:ProductThumbnailImageSourceConverter.AsyncIsEnabled="{Binding DataContext.AreThumbnailsEnabled, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                   converters:ProductThumbnailImageSourceConverter.AsyncSourceText="{Binding ProductImage}"
+                                                   converters:ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth="72"
+                                                   Stretch="UniformToFill"
+                                                   RenderOptions.BitmapScalingMode="LowQuality" />
+                                        </Grid>
+                                    </Border>
+
+                                    <Grid Grid.Column="1" Margin="9,0,0,0">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0"
+                                                   Text="{Binding DisplayName}"
+                                                   FontSize="14"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosTextBrush}"
+                                                   TextWrapping="Wrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   MaxHeight="42" />
+                                        <TextBlock Grid.Row="1"
+                                                   Text="{Binding ItemNumber}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Margin="0,5,0,0" />
+                                        <Grid Grid.Row="2" Margin="0,5,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0"
+                                                       Text="{Binding RetailPrice, StringFormat={}{0:C2}}"
+                                                       FontSize="18"
+                                                       FontWeight="Black"
+                                                       Foreground="{StaticResource PosPrimaryBrush}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding LookupCode}"
+                                                       FontSize="10"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="8,4,0,0"
+                                                       VerticalAlignment="Center" />
+                                        </Grid>
+                                    </Grid>
+                                </Grid>
+                            </Button>
+                        </Border>
+                        <DataTemplate.Triggers>
+                            <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                <Setter TargetName="SpecialProductCard" Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                                <Setter TargetName="SpecialProductCard" Property="BorderThickness" Value="2" />
+                                <Setter TargetName="SpecialProductCard" Property="Background" Value="#FFE8F0FE" />
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+
+        <Border Grid.Row="4" Background="{StaticResource PosSurfaceBrush}" BorderBrush="#FFE1E5EC" BorderThickness="0,1,0,0" Padding="20,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <Border Grid.Column="1"
+                        Background="#FFF8FAFD"
+                        BorderBrush="#FFE0E4EC"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Padding="8"
+                        Margin="12,0,0,0"
+                        Visibility="{Binding IsEditMode, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding SelectedSpecialItemText}"
+                                   FontSize="12"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosTextBrush}"
+                                   MaxWidth="260"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center"
+                                   Margin="2,0,10,0" />
+                        <Button Command="{Binding MoveUpCommand}"
+                                CommandParameter="{Binding SelectedSpecialItem}"
+                                Style="{StaticResource TouchIconButtonStyle}"
+                                MinWidth="58"
+                                MinHeight="44"
+                                ToolTip="{Binding MoveUpText}">
+                            <materialDesign:PackIcon Kind="ArrowUp" Width="20" Height="20" />
+                        </Button>
+                        <Button Command="{Binding MoveDownCommand}"
+                                CommandParameter="{Binding SelectedSpecialItem}"
+                                Style="{StaticResource TouchIconButtonStyle}"
+                                MinWidth="58"
+                                MinHeight="44"
+                                ToolTip="{Binding MoveDownText}">
+                            <materialDesign:PackIcon Kind="ArrowDown" Width="20" Height="20" />
+                        </Button>
+                        <Button Command="{Binding RemoveSpecialProductCommand}"
+                                CommandParameter="{Binding SelectedSpecialItem}"
+                                Style="{StaticResource TouchIconButtonStyle}"
+                                MinWidth="58"
+                                MinHeight="44"
+                                Background="#FFFFEEF0"
+                                BorderBrush="#FFFFCCD2"
+                                Foreground="{StaticResource PosDangerBrush}"
+                                ToolTip="{Binding RemoveText}">
+                            <materialDesign:PackIcon Kind="DeleteOutline" Width="20" Height="20" />
+                        </Button>
+                    </StackPanel>
+                </Border>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Command="{Binding PreviousPageCommand}"
+                            Style="{StaticResource PosSecondaryButtonStyle}"
+                            MinHeight="64"
+                            Padding="18,0"
+                            Margin="12,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="ChevronLeft" Width="22" Height="22" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding PreviousPageText}" FontWeight="Black" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <TextBlock Text="{Binding PageStatusText}"
+                               FontSize="14"
+                               FontWeight="Black"
+                               Foreground="{StaticResource PosTextBrush}"
+                               MinWidth="128"
+                               TextAlignment="Center"
+                               VerticalAlignment="Center" />
+                    <Button Command="{Binding NextPageCommand}"
+                            Style="{StaticResource PosSecondaryButtonStyle}"
+                            MinHeight="64"
+                            Padding="18,0"
+                            Margin="10,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding NextPageText}" FontWeight="Black" VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Kind="ChevronRight" Width="22" Height="22" Margin="8,0,0,0" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

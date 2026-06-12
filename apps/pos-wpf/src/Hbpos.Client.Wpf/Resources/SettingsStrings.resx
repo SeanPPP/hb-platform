@@ -1,0 +1,186 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="settings.title" xml:space="preserve"><value>Settings</value></data>
+  <data name="settings.subtitle.dataMaintenance" xml:space="preserve"><value>Data maintenance</value></data>
+  <data name="settings.subtitle.paymentTerminal" xml:space="preserve"><value>Card terminal settings</value></data>
+  <data name="settings.subtitle.receiptPrinter" xml:space="preserve"><value>Receipt printer settings</value></data>
+  <data name="settings.subtitle.deviceRegistration" xml:space="preserve"><value>Change store registration</value></data>
+  <data name="settings.category.title" xml:space="preserve"><value>Categories</value></data>
+  <data name="settings.category.dataMaintenance" xml:space="preserve"><value>Data maintenance</value></data>
+  <data name="settings.category.paymentTerminal" xml:space="preserve"><value>Payment terminal</value></data>
+  <data name="settings.category.receiptPrinter" xml:space="preserve"><value>Receipt printer</value></data>
+  <data name="settings.category.deviceRegistration" xml:space="preserve"><value>Change store registration</value></data>
+  <data name="settings.section.dataDownload.title" xml:space="preserve"><value>Data Download</value></data>
+  <data name="settings.section.dataDownload.description" xml:space="preserve"><value>Sync the current store catalog from the server and refresh the local checkout item index.</value></data>
+  <data name="settings.section.dataDownload.action" xml:space="preserve"><value>Data Download</value></data>
+  <data name="settings.section.dataReset.title" xml:space="preserve"><value>Data Reset</value></data>
+  <data name="settings.section.dataReset.description" xml:space="preserve"><value>Force a fresh local catalog rebuild when data looks stale, prices do not refresh, or the product index needs a clean reset.</value></data>
+  <data name="settings.section.dataReset.action" xml:space="preserve"><value>Data Reset</value></data>
+  <data name="settings.section.testSalesDataReset.title" xml:space="preserve"><value>Reset Test Sales Data</value></data>
+  <data name="settings.section.testSalesDataReset.description" xml:space="preserve"><value>Debug only. Deletes local test orders, payments, card transactions, sync queue items, installment orders, daily closes, and suspended orders.</value></data>
+  <data name="settings.section.testSalesDataReset.action" xml:space="preserve"><value>Reset Sales Data</value></data>
+  <data name="settings.square.title" xml:space="preserve"><value>Square</value></data>
+  <data name="settings.square.description" xml:space="preserve"><value>Use a Square access token to load locations and terminal devices.</value></data>
+  <data name="settings.square.switchHelp" xml:space="preserve"><value>Switch to another paired Square terminal in the same location, then save to use it for the next payment.</value></data>
+  <data name="settings.square.tokenSource" xml:space="preserve"><value>Token Source</value></data>
+  <data name="settings.square.tokenStatus.cached" xml:space="preserve"><value>Local encrypted token cached. HBPOS refreshes it when Square rejects it.</value></data>
+  <data name="settings.square.tokenStatus.missing" xml:space="preserve"><value>No local token cached. The next Square request will fetch one from HBPOS.</value></data>
+  <data name="settings.square.tokenHelp" xml:space="preserve"><value>Square token is stored encrypted on this device and fetched from HBPOS when missing or rejected.</value></data>
+  <data name="settings.payment.environment" xml:space="preserve"><value>Environment</value></data>
+  <data name="settings.payment.sandbox.toggle" xml:space="preserve"><value>Use Sandbox test environment</value></data>
+  <data name="settings.square.sandbox" xml:space="preserve"><value>Sandbox</value></data>
+  <data name="settings.square.sandbox.toggle" xml:space="preserve"><value>Test mode only</value></data>
+  <data name="settings.square.location" xml:space="preserve"><value>Location</value></data>
+  <data name="settings.square.loadLocations" xml:space="preserve"><value>Load Locations</value></data>
+  <data name="settings.square.loadLocations.tooltip" xml:space="preserve"><value>Load Square locations</value></data>
+  <data name="settings.square.device" xml:space="preserve"><value>Device</value></data>
+  <data name="settings.square.loadDevices" xml:space="preserve"><value>Load Devices</value></data>
+  <data name="settings.square.loadDevices.tooltip" xml:space="preserve"><value>Load Square devices</value></data>
+  <data name="settings.square.deviceCodes" xml:space="preserve"><value>Device Codes</value></data>
+  <data name="settings.square.deviceCodeName" xml:space="preserve"><value>New Device Code Name</value></data>
+  <data name="settings.square.loadDeviceCodes" xml:space="preserve"><value>Load Codes</value></data>
+  <data name="settings.square.createDeviceCode" xml:space="preserve"><value>Create Code</value></data>
+  <data name="settings.square.deviceCodeList" xml:space="preserve"><value>Device Code List</value></data>
+  <data name="settings.square.refreshDeviceCode" xml:space="preserve"><value>Refresh Status</value></data>
+  <data name="settings.square.deviceCodesHelp" xml:space="preserve"><value>Create a device code, enter it on the Square Terminal, then refresh the status to map the paired terminal back into the device selector.</value></data>
+  <data name="settings.square.deviceCodes.unsupported" xml:space="preserve"><value>Square Device Codes are only supported in Production. Sandbox mode keeps device switching available but disables pairing maintenance.</value></data>
+  <data name="settings.square.timeoutSeconds" xml:space="preserve"><value>Terminal Timeout Seconds</value></data>
+  <data name="settings.square.save" xml:space="preserve"><value>Save Square</value></data>
+  <data name="settings.linkly.title" xml:space="preserve"><value>ANZ Linkly</value></data>
+  <data name="settings.linkly.description" xml:space="preserve"><value>Choose the Linkly connection mode that matches this checkout: local/LAN IP gateway, Cloud direct sync, or Cloud backend async.</value></data>
+  <data name="settings.linkly.cloudMode" xml:space="preserve"><value>Use Linkly Cloud</value></data>
+  <data name="settings.linkly.mode.title" xml:space="preserve"><value>Connection mode</value></data>
+  <data name="settings.linkly.mode.localIp" xml:space="preserve"><value>Local IP / Port</value></data>
+  <data name="settings.linkly.mode.localIp.help" xml:space="preserve"><value>Use the Windows Linkly EFT-Client on this PC or the local network through the IP gateway.</value></data>
+  <data name="settings.linkly.mode.cloudDirectSync" xml:space="preserve"><value>Cloud direct sync</value></data>
+  <data name="settings.linkly.mode.cloudDirectSync.help" xml:space="preserve"><value>Pair directly to Linkly Cloud. This mode only returns transaction status results.</value></data>
+  <data name="settings.linkly.mode.cloudBackendAsync" xml:space="preserve"><value>Cloud backend async</value></data>
+  <data name="settings.linkly.mode.cloudBackendAsync.help" xml:space="preserve"><value>Use the backend async workflow with display, receipt, sendkey, and signature authorization support.</value></data>
+  <data name="settings.linkly.priority.title" xml:space="preserve"><value>Connection priority</value></data>
+  <data name="settings.linkly.priority.primary" xml:space="preserve"><value>Primary</value></data>
+  <data name="settings.linkly.priority.fallback" xml:space="preserve"><value>Fallback</value></data>
+  <data name="settings.linkly.priority.configure" xml:space="preserve"><value>Make primary and show settings</value></data>
+  <data name="settings.linkly.priority.moveUp" xml:space="preserve"><value>Move up</value></data>
+  <data name="settings.linkly.priority.moveDown" xml:space="preserve"><value>Move down</value></data>
+  <data name="settings.linkly.localIp.title" xml:space="preserve"><value>Local Linkly IP Gateway</value></data>
+  <data name="settings.linkly.localIp.description" xml:space="preserve"><value>Connect this POS to the Windows Linkly EFT-Client on the same PC or LAN by IP address and port.</value></data>
+  <data name="settings.linkly.localIp.ipAddress" xml:space="preserve"><value>IP Address</value></data>
+  <data name="settings.linkly.cloudDirect.title" xml:space="preserve"><value>Cloud direct sync</value></data>
+  <data name="settings.linkly.cloudDirect.description" xml:space="preserve"><value>Save the Cloud API test account on this POS, pair the terminal, then test the direct Cloud connection. This mode only exposes transaction status results.</value></data>
+  <data name="settings.linkly.cloudBackend.title" xml:space="preserve"><value>Cloud backend async</value></data>
+  <data name="settings.linkly.cloudBackend.description" xml:space="preserve"><value>Use the backend Linkly workflow for asynchronous Cloud processing. This mode supports display, receipt, sendkey, and signature authorization. Test this store and device against the backend before enabling Linkly.</value></data>
+  <data name="settings.linkly.cloudBackend.test" xml:space="preserve"><value>Test Logon</value></data>
+  <data name="settings.linkly.cloudBackend.testStatus" xml:space="preserve"><value>Test TXN Status</value></data>
+  <data name="settings.linkly.cloud.secret" xml:space="preserve"><value>Cloud Pairing Secret</value></data>
+  <data name="settings.linkly.cloud.secretStatus.cached" xml:space="preserve"><value>Paired secret is saved securely on this POS.</value></data>
+  <data name="settings.linkly.cloud.secretStatus.missing" xml:space="preserve"><value>No paired secret saved for this POS.</value></data>
+  <data name="settings.linkly.cloud.credential" xml:space="preserve"><value>Cloud API Test Credential</value></data>
+  <data name="settings.linkly.cloud.credentialStatus.cached" xml:space="preserve"><value>Cloud API password is saved securely on this POS.</value></data>
+  <data name="settings.linkly.cloud.credentialStatus.missing" xml:space="preserve"><value>No Cloud API password saved on this POS.</value></data>
+  <data name="settings.linkly.cloud.terminalPairingTitle" xml:space="preserve"><value>Terminal Pairing</value></data>
+  <data name="settings.linkly.cloud.terminalPairingSubtitle" xml:space="preserve"><value>Enter Linkly Cloud details for this POS.</value></data>
+  <data name="settings.linkly.cloud.username" xml:space="preserve"><value>Cloud API Username</value></data>
+  <data name="settings.linkly.cloud.password" xml:space="preserve"><value>Cloud API Password</value></data>
+  <data name="settings.linkly.cloud.saveCredential" xml:space="preserve"><value>Save Test Account</value></data>
+  <data name="settings.linklyCloud.localCredentialMissing" xml:space="preserve"><value>Save the Linkly Cloud API username and password first.</value></data>
+  <data name="settings.linklyCloud.deviceContextMissing" xml:space="preserve"><value>Device registration context is unavailable. Reopen settings and try again.</value></data>
+  <data name="settings.linklyCloud.usernameRequired" xml:space="preserve"><value>Enter the Linkly Cloud API username first.</value></data>
+  <data name="settings.linklyCloud.passwordRequired" xml:space="preserve"><value>Enter the Linkly Cloud API password, or save it on this POS first.</value></data>
+  <data name="settings.linklyCloud.pairCodeRequired" xml:space="preserve"><value>Enter the Linkly VPP pair code first.</value></data>
+  <data name="settings.linkly.cloud.pairCode" xml:space="preserve"><value>Pair Code</value></data>
+  <data name="settings.linkly.cloud.pair" xml:space="preserve"><value>Pair Cloud</value></data>
+  <data name="settings.linkly.cloud.cancelPairing" xml:space="preserve"><value>Cancel</value></data>
+  <data name="settings.linkly.host" xml:space="preserve"><value>Host</value></data>
+  <data name="settings.linkly.port" xml:space="preserve"><value>Port</value></data>
+  <data name="settings.linkly.test" xml:space="preserve"><value>Test Linkly</value></data>
+  <data name="settings.linkly.enable" xml:space="preserve"><value>Enable Linkly</value></data>
+  <data name="settings.linkly.sop.title" xml:space="preserve"><value>Terminal setup steps</value></data>
+  <data name="settings.linkly.sop.note" xml:space="preserve"><value>Menu names may vary slightly on ANZ Worldline / Ingenico Move 5000 terminals.</value></data>
+  <data name="settings.linkly.sop.cloud.title" xml:space="preserve"><value>Switch to Linkly Cloud and generate a pairing code</value></data>
+  <data name="settings.linkly.sop.cloud.step1" xml:space="preserve"><value>On the terminal: Func -&gt; 7410 -&gt; Terminal Setup -&gt; Begin -&gt; Cloud Comms.</value></data>
+  <data name="settings.linkly.sop.cloud.step2" xml:space="preserve"><value>For Wi-Fi: choose Setup Wi-Fi, select the store Wi-Fi, enter the password, then tap Next.</value></data>
+  <data name="settings.linkly.sop.cloud.step3" xml:space="preserve"><value>For Ethernet: plug in the network cable, skip Wi-Fi setup, and wait for the terminal network test.</value></data>
+  <data name="settings.linkly.sop.cloud.step4" xml:space="preserve"><value>When Cloud setup completed appears, press OK.</value></data>
+  <data name="settings.linkly.sop.cloud.step5" xml:space="preserve"><value>Press Cancel to return to the main screen.</value></data>
+  <data name="settings.linkly.sop.cloud.step6" xml:space="preserve"><value>When the terminal prompts for a Pairing Code, press Enter.</value></data>
+  <data name="settings.linkly.sop.cloud.step7" xml:space="preserve"><value>Enter the 6-digit Pairing Code here and click Pair Cloud before it expires.</value></data>
+  <data name="settings.linkly.sop.cloud.step8" xml:space="preserve"><value>Cloud API username and password are saved locally on this POS and used for pairing.</value></data>
+  <data name="settings.linkly.sop.repair.title" xml:space="preserve"><value>Generate a new Pairing Code</value></data>
+  <data name="settings.linkly.sop.repair.step1" xml:space="preserve"><value>On the terminal: Func -&gt; 8880 -&gt; OK / Enter.</value></data>
+  <data name="settings.linkly.sop.repair.step2" xml:space="preserve"><value>After the terminal clears the old pairing, press Enter to generate a new 6-digit Pairing Code.</value></data>
+  <data name="settings.linkly.sop.repair.step3" xml:space="preserve"><value>Enter the new Pairing Code here and pair Cloud again.</value></data>
+  <data name="settings.linkly.sop.repair.warning" xml:space="preserve"><value>Warning: Func 8880 removes the existing pairing. Do not use it during trading unless you intend to re-pair.</value></data>
+  <data name="settings.linkly.sop.local.title" xml:space="preserve"><value>Switch back to local Linkly / Windows USB mode</value></data>
+  <data name="settings.linkly.sop.local.step1" xml:space="preserve"><value>On the terminal: press Func.</value></data>
+  <data name="settings.linkly.sop.local.step2" xml:space="preserve"><value>Enter 7410.</value></data>
+  <data name="settings.linkly.sop.local.step3" xml:space="preserve"><value>Open Terminal Setup.</value></data>
+  <data name="settings.linkly.sop.local.step4" xml:space="preserve"><value>Open In-store Comms.</value></data>
+  <data name="settings.linkly.sop.local.step5" xml:space="preserve"><value>Select USB.</value></data>
+  <data name="settings.linkly.sop.local.step6" xml:space="preserve"><value>Select Async DLE 9600.</value></data>
+  <data name="settings.linkly.sop.local.step7" xml:space="preserve"><value>Save the settings and press Cancel to return to the main screen.</value></data>
+  <data name="settings.linkly.sop.local.step8" xml:space="preserve"><value>On the Windows PC, confirm Linkly software is installed and configured with the IP Gateway User ID and Password.</value></data>
+  <data name="settings.linkly.sop.local.step9" xml:space="preserve"><value>In POS settings, clear Use Linkly Cloud.</value></data>
+  <data name="settings.linkly.sop.local.step10" xml:space="preserve"><value>Host is usually 127.0.0.1 and Port is usually 2011.</value></data>
+  <data name="settings.linkly.sop.local.step11" xml:space="preserve"><value>Click Test Linkly. After the test succeeds, click Enable Linkly.</value></data>
+  <data name="settings.linkly.sop.mode.title" xml:space="preserve"><value>How to identify the current mode</value></data>
+  <data name="settings.linkly.sop.mode.localIp" xml:space="preserve"><value>Local IP / Port: use when the Windows Linkly EFT-Client is running locally or on the LAN and the POS connects to its IP gateway.</value></data>
+  <data name="settings.linkly.sop.mode.cloudDirectSync" xml:space="preserve"><value>Cloud direct sync: use when the terminal is paired to Linkly Cloud, but the POS only needs transaction status results.</value></data>
+  <data name="settings.linkly.sop.mode.cloudBackendAsync" xml:space="preserve"><value>Cloud backend async: use when the terminal is paired to Linkly Cloud and the POS needs display, receipt, sendkey, or signature authorization support.</value></data>
+  <data name="settings.receiptPrinter.title" xml:space="preserve"><value>Receipt printer</value></data>
+  <data name="settings.receiptPrinter.description" xml:space="preserve"><value>Configure the thermal receipt printer and the store information printed on receipts.</value></data>
+  <data name="settings.receiptPrinter.port" xml:space="preserve"><value>Printer Port</value></data>
+  <data name="settings.receiptPrinter.brandName" xml:space="preserve"><value>Brand Name</value></data>
+  <data name="settings.receiptPrinter.storeName" xml:space="preserve"><value>Store Name</value></data>
+  <data name="settings.receiptPrinter.address" xml:space="preserve"><value>Address</value></data>
+  <data name="settings.receiptPrinter.phone" xml:space="preserve"><value>Phone</value></data>
+  <data name="settings.receiptPrinter.abn" xml:space="preserve"><value>ABN</value></data>
+  <data name="settings.receiptPrinter.returnPolicy" xml:space="preserve"><value>Return Policy</value></data>
+  <data name="settings.receiptPrinter.save" xml:space="preserve"><value>Save Receipt Printer</value></data>
+  <data name="settings.receiptPrinter.test" xml:space="preserve"><value>Test Print</value></data>
+  <data name="settings.deviceRegistration.description" xml:space="preserve"><value>Choose another store and submit an authorized reregistration request for this checkout device. Pending, failed, or syncing orders must be cleared first.</value></data>
+  <data name="settings.deviceRegistration.action" xml:space="preserve"><value>Change Store Registration</value></data>
+  <data name="settings.status.ready" xml:space="preserve"><value>Ready.</value></data>
+  <data name="settings.status.loaded" xml:space="preserve"><value>Settings loaded.</value></data>
+  <data name="settings.status.noSquareLocations" xml:space="preserve"><value>No Square locations returned.</value></data>
+  <data name="settings.status.squareLocationsLoaded" xml:space="preserve"><value>Loaded {0} Square locations.</value></data>
+  <data name="settings.status.selectSquareLocation" xml:space="preserve"><value>Select a Square location first.</value></data>
+  <data name="settings.status.noSquareDevices" xml:space="preserve"><value>No Square devices returned for this location.</value></data>
+  <data name="settings.status.squareDevicesLoaded" xml:space="preserve"><value>Loaded {0} Square devices.</value></data>
+  <data name="settings.status.selectSquareDevice" xml:space="preserve"><value>Select a Square device first.</value></data>
+  <data name="settings.status.squareDeviceSwitchPendingSave" xml:space="preserve"><value>Selected {0}. Save Square to switch the next payment to this terminal.</value></data>
+  <data name="settings.status.squareDeviceCodesLoaded" xml:space="preserve"><value>Loaded {0} Square device codes.</value></data>
+  <data name="settings.status.squareDeviceCodeNameRequired" xml:space="preserve"><value>Enter a device code name first.</value></data>
+  <data name="settings.status.squareDeviceCodeCreated" xml:space="preserve"><value>Created device code {0} for {1}. Enter it on the Square Terminal, then refresh status.</value></data>
+  <data name="settings.status.selectSquareDeviceCode" xml:space="preserve"><value>Select a Square device code first.</value></data>
+  <data name="settings.status.squareDeviceCodeNotPaired" xml:space="preserve"><value>Device code is not paired yet. Current status: {0}.</value></data>
+  <data name="settings.status.squareDeviceCodePaired" xml:space="preserve"><value>Device code paired successfully. {0} is selected and ready to save for the next payment.</value></data>
+  <data name="settings.status.loadSquareBeforeSave" xml:space="preserve"><value>Load Square locations and devices before saving.</value></data>
+  <data name="settings.status.squareSaved" xml:space="preserve"><value>Square terminal settings saved. The next payment will use {0}.</value></data>
+  <data name="settings.status.linklyTestSuccess" xml:space="preserve"><value>Linkly EFT-Client connection succeeded.</value></data>
+  <data name="settings.status.linklyTestFailed" xml:space="preserve"><value>Linkly EFT-Client connection failed.</value></data>
+  <data name="settings.status.linklyCloudPaired" xml:space="preserve"><value>Linkly Cloud terminal paired.</value></data>
+  <data name="settings.status.linklyCloudPairFailed" xml:space="preserve"><value>Linkly Cloud pairing failed.</value></data>
+  <data name="settings.linklyCloud.pairAuthFailed" xml:space="preserve"><value>Linkly Cloud pairing failed. Check the Sandbox VPP pair code and Cloud test account username/password.</value></data>
+  <data name="settings.status.linklyCloudCredentialSaved" xml:space="preserve"><value>Linkly Cloud API test account saved securely.</value></data>
+  <data name="settings.status.linklyCloudCredentialSynced" xml:space="preserve"><value>Linkly Cloud API test account saved securely and synced to HBPOS.</value></data>
+  <data name="settings.status.testLinklyBeforeSave" xml:space="preserve"><value>Test Linkly connection before enabling ANZ Linkly.</value></data>
+  <data name="settings.status.linklySaved" xml:space="preserve"><value>ANZ Linkly terminal settings saved.</value></data>
+  <data name="settings.status.receiptPrinterNotConfigured" xml:space="preserve"><value>Receipt printer service is not configured.</value></data>
+  <data name="settings.status.receiptPrinterSaved" xml:space="preserve"><value>Receipt printer settings saved.</value></data>
+  <data name="settings.status.catalogDownloadNotConfigured" xml:space="preserve"><value>Catalog download service is not configured.</value></data>
+  <data name="settings.status.catalogDownloading" xml:space="preserve"><value>Downloading catalog data...</value></data>
+  <data name="settings.status.catalogDownloadCompleted" xml:space="preserve"><value>Catalog data download completed.</value></data>
+  <data name="settings.status.catalogResetNotConfigured" xml:space="preserve"><value>Catalog reset service is not configured.</value></data>
+  <data name="settings.status.catalogResetting" xml:space="preserve"><value>Resetting catalog data...</value></data>
+  <data name="settings.status.catalogResetCompleted" xml:space="preserve"><value>Catalog data reset completed.</value></data>
+  <data name="settings.status.testSalesDataResetNotConfigured" xml:space="preserve"><value>Test sales data reset service is not configured.</value></data>
+  <data name="settings.status.testSalesDataResetting" xml:space="preserve"><value>Deleting local test sales data...</value></data>
+  <data name="settings.status.testSalesDataResetCompleted" xml:space="preserve"><value>Local test sales data deleted.</value></data>
+  <data name="settings.status.reregisterNotConfigured" xml:space="preserve"><value>Device reregistration service is not configured.</value></data>
+  <data name="settings.status.reregisterStarting" xml:space="preserve"><value>Starting change store registration...</value></data>
+  <data name="settings.status.operationCanceled" xml:space="preserve"><value>Operation canceled.</value></data>
+</root>

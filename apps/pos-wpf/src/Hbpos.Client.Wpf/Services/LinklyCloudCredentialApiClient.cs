@@ -1,0 +1,214 @@
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Linkly;
+
+namespace Hbpos.Client.Wpf.Services;
+
+public interface ILinklyCloudCredentialApiClient
+{
+    Task<LinklyCloudCredentialResponse> GetCredentialAsync(
+        CardTerminalEnvironment environment,
+        CancellationToken cancellationToken = default);
+
+    Task<LinklyCloudCredentialUpsertResponse> UpsertCredentialAsync(
+        CardTerminalEnvironment environment,
+        string username,
+        string password,
+        CancellationToken cancellationToken = default);
+
+    Task<LinklyCloudBackendTerminalCredentialResponse> UpsertBackendTerminalCredentialAsync(
+        CardTerminalEnvironment environment,
+        string secret,
+        string posId,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class LinklyCloudCredentialApiClient(HttpClient httpClient) : ILinklyCloudCredentialApiClient
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    public async Task<LinklyCloudCredentialResponse> GetCredentialAsync(
+        CardTerminalEnvironment environment,
+        CancellationToken cancellationToken = default)
+    {
+        Log($"backend credential request start environment={environment}");
+        using var response = await httpClient.GetAsync(
+            $"api/v1/linkly/cloud-credential?environment={Uri.EscapeDataString(environment.ToString())}",
+            cancellationToken);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        Log($"backend credential response environment={environment} http={(int)response.StatusCode}");
+        ApiResult<LinklyCloudCredentialResponse>? result = null;
+        if (!string.IsNullOrWhiteSpace(content))
+        {
+            try
+            {
+                result = JsonSerializer.Deserialize<ApiResult<LinklyCloudCredentialResponse>>(content, JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                Log($"backend credential response invalid-json environment={environment} http={(int)response.StatusCode}");
+                throw new CatalogApiException(
+                    "Linkly credential API returned invalid JSON.",
+                    response.StatusCode,
+                    errorCode: null,
+                    ex);
+            }
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Log($"backend credential request failed environment={environment} http={(int)response.StatusCode} errorCode={LogValue(result?.ErrorCode)}");
+            throw new CatalogApiException(
+                $"Linkly credential API request failed with HTTP {(int)response.StatusCode}.",
+                response.StatusCode,
+                result?.ErrorCode);
+        }
+
+        if (result is null)
+        {
+            Log($"backend credential request failed environment={environment} http={(int)response.StatusCode} reason=empty-response");
+            throw new CatalogApiException("Linkly credential API returned an empty response.", response.StatusCode);
+        }
+
+        if (!result.Success || result.Data is null)
+        {
+            Log($"backend credential request failed environment={environment} http={(int)response.StatusCode} errorCode={LogValue(result.ErrorCode)}");
+            throw new CatalogApiException(
+                "Linkly credential API returned a failure response.",
+                response.StatusCode,
+                result.ErrorCode);
+        }
+
+        if (string.IsNullOrWhiteSpace(result.Data.Username) ||
+            string.IsNullOrWhiteSpace(result.Data.Password))
+        {
+            Log($"backend credential request failed environment={environment} http={(int)response.StatusCode} reason=incomplete-credentials store={LogValue(result.Data.StoreCode)}");
+            throw new CatalogApiException("Linkly credential API returned incomplete credentials.", response.StatusCode);
+        }
+
+        Log($"backend credential request succeeded environment={environment} store={LogValue(result.Data.StoreCode)} credentialEnvironment={LogValue(result.Data.Environment)} updatedAt={result.Data.UpdatedAt:O}");
+        return result.Data;
+    }
+
+    public async Task<LinklyCloudCredentialUpsertResponse> UpsertCredentialAsync(
+        CardTerminalEnvironment environment,
+        string username,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        Log(
+            $"backend credential upsert start environment={environment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED;
+        using var response = await httpClient.PutAsJsonAsync(
+            "api/v1/linkly/cloud-credential",
+            new LinklyCloudCredentialUpsertRequest(environment.ToString(), username, password),
+            JsonOptions,
+            cancellationToken);
+        var result = await ReadApiResultAsync<LinklyCloudCredentialUpsertResponse>(response, cancellationToken);
+        var payload = EnsureSuccess(
+            result,
+            response.StatusCode,
+            "Linkly credential API save",
+            $"environment={environment}");
+        Log(
+            $"backend credential upsert succeeded environment={environment} store={LogValue(payload.StoreCode)} updatedAt={payload.UpdatedAt:O}");
+        return payload;
+    }
+
+    public async Task<LinklyCloudBackendTerminalCredentialResponse> UpsertBackendTerminalCredentialAsync(
+        CardTerminalEnvironment environment,
+        string secret,
+        string posId,
+        CancellationToken cancellationToken = default)
+    {
+        Log(
+            $"backend terminal credential upsert start environment={environment} hasSecret={!string.IsNullOrWhiteSpace(secret)} posId={LogValue(posId)}");
+        using var response = await httpClient.PutAsJsonAsync(
+            "api/v1/linkly/cloud-backend/terminal",
+            new LinklyCloudBackendTerminalCredentialUpsertRequest(environment.ToString(), secret, posId),
+            JsonOptions,
+            cancellationToken);
+        var result = await ReadApiResultAsync<LinklyCloudBackendTerminalCredentialResponse>(response, cancellationToken);
+        var payload = EnsureSuccess(
+            result,
+            response.StatusCode,
+            "Linkly backend terminal credential API save",
+            $"environment={environment} posId={LogValue(posId)}");
+        Log(
+            $"backend terminal credential upsert succeeded environment={environment} store={LogValue(payload.StoreCode)} device={LogValue(payload.DeviceCode)} posId={LogValue(payload.PosId)} updatedAt={payload.UpdatedAt:O}");
+        return payload;
+    }
+
+    private static async Task<ApiResult<T>?> ReadApiResultAsync<T>(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        Log($"backend credential response http={(int)response.StatusCode}");
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<ApiResult<T>>(content, JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            Log($"backend credential response invalid-json http={(int)response.StatusCode}");
+            throw new CatalogApiException(
+                "Linkly credential API returned invalid JSON.",
+                response.StatusCode,
+                errorCode: null,
+                ex);
+        }
+    }
+
+    private static T EnsureSuccess<T>(
+        ApiResult<T>? result,
+        System.Net.HttpStatusCode statusCode,
+        string operationName,
+        string logContext)
+    {
+        if (result is null)
+        {
+            Log($"{operationName} failed {logContext} http={(int)statusCode} reason=empty-response");
+            throw new CatalogApiException($"{operationName} returned an empty response.", statusCode);
+        }
+
+        if ((int)statusCode < 200 || (int)statusCode >= 300)
+        {
+            Log($"{operationName} failed {logContext} http={(int)statusCode} errorCode={LogValue(result.ErrorCode)}");
+            throw new CatalogApiException(
+                $"{operationName} request failed with HTTP {(int)statusCode}.",
+                statusCode,
+                result.ErrorCode);
+        }
+
+        if (!result.Success || result.Data is null)
+        {
+            Log($"{operationName} failed {logContext} http={(int)statusCode} errorCode={LogValue(result.ErrorCode)}");
+            throw new CatalogApiException(
+                $"{operationName} returned a failure response.",
+                statusCode,
+                result.ErrorCode);
+        }
+
+        return result.Data;
+    }
+
+    private static void Log(string message)
+    {
+        LinklyJsonLog.WriteMessage("LinklyCloud", "cloud-credential-api", message);
+    }
+
+    private static string LogValue(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "<null>" : value.Trim();
+    }
+}
