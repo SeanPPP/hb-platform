@@ -463,12 +463,12 @@ async function main() {
       'const baseColumns = useMemo',
       'const draggableColumnKeys',
     )
-    const australianSupplierSection = extractSection(
+    const domesticSupplierSection = extractSection(
       columnsSection,
       "key: 'domesticSupplierCode'",
       "key: 'nameEn'",
     )
-    const domesticSupplierSection = extractSection(
+    const australianSupplierSection = extractSection(
       columnsSection,
       "key: 'localSupplierCode'",
       "key: 'updatedAt'",
@@ -476,20 +476,20 @@ async function main() {
 
     assert(
       domesticSupplierSection.includes("title: t('warehouse.domesticSupplier', '国内供应商')") &&
-        domesticSupplierSection.includes("dataIndex: 'localSupplierCode'") &&
+        domesticSupplierSection.includes("dataIndex: 'domesticSupplierCode'") &&
         domesticSupplierSection.includes('sorter: true'),
-      '国内供应商列应只调整标题，不能改变 key/dataIndex/sorter',
+      '国内供应商列应绑定 domesticSupplierCode，不能显示澳洲供应商字段',
     )
     assert(
       australianSupplierSection.includes("title: t('column.australianSupplier', '澳洲供应商')") &&
-        australianSupplierSection.includes("dataIndex: 'domesticSupplierCode'") &&
+        australianSupplierSection.includes("dataIndex: 'localSupplierCode'") &&
         australianSupplierSection.includes('sorter: true'),
-      '澳洲供应商列应保留 domesticSupplierCode 作为字段和排序来源',
+      '澳洲供应商列应绑定 localSupplierCode，不能显示国内供应商字段',
     )
     assert(
-      australianSupplierSection.includes('record.domesticSupplierName || record.domesticSupplierCode') &&
-        !australianSupplierSection.includes("[record.domesticSupplierCode, record.domesticSupplierName].filter(Boolean).join(' - ')") ,
-      '澳洲供应商列应优先显示名称，不能继续显示编码 - 名称组合',
+      domesticSupplierSection.includes('record.domesticSupplierName || record.domesticSupplierCode') &&
+        australianSupplierSection.includes('record.localSupplierName || record.localSupplierCode'),
+      '国内/澳洲供应商列都应优先显示各自名称，名称缺失时回退各自代码',
     )
   })
   if (supplierColumnDisplayFailure) failures.push(supplierColumnDisplayFailure)

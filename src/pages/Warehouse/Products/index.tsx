@@ -1100,7 +1100,7 @@ export default function WarehouseProductsPage() {
         },
         {
             key: 'domesticSupplierCode',
-            title: t('column.australianSupplier', '澳洲供应商'),
+            title: t('warehouse.domesticSupplier', '国内供应商'),
             dataIndex: 'domesticSupplierCode',
             width: 132,
             sorter: true,
@@ -1199,13 +1199,16 @@ export default function WarehouseProductsPage() {
         },
         {
             key: 'localSupplierCode',
-            title: t('warehouse.domesticSupplier', '国内供应商'),
+            title: t('column.australianSupplier', '澳洲供应商'),
             dataIndex: 'localSupplierCode',
             width: 150,
             sorter: true,
-            render: (_value, record) => record.localSupplierName ? (<div className="warehouse-products-supplier-cell">
-              <Tag color="purple">{record.localSupplierName}</Tag>
-            </div>) : ('--'),
+            render: (_value, record) => {
+                const supplierDisplayName = record.localSupplierName || record.localSupplierCode;
+                return supplierDisplayName ? (<div className="warehouse-products-supplier-cell">
+              <Tag color="purple">{supplierDisplayName}</Tag>
+            </div>) : ('--');
+            },
         },
         {
             key: 'updatedAt',
