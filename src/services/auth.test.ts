@@ -18,6 +18,7 @@ const userWithLegacyStoreFlags = normalizeCurrentUser({
       StoreGUID: 'managed-store-guid',
       StoreName: 'Managed Store',
       StoreCode: 'M1',
+      IsActive: false,
       IsPrimary: true,
       AssignedAt: '2026-01-01T00:00:00Z',
     },
@@ -36,6 +37,12 @@ assertEqual(
   'Current user stores should treat legacy IsPrimary as manageable',
 )
 
+assertEqual(
+  userWithLegacyStoreFlags.stores?.[0]?.isActive,
+  false,
+  'Current user stores should normalize PascalCase inactive store status',
+)
+
 const userWithCamelStoreFlags = normalizeCurrentUser({
   userGUID: 'current-user-guid',
   username: 'storemanager',
@@ -48,6 +55,7 @@ const userWithCamelStoreFlags = normalizeCurrentUser({
       storeGUID: 'managed-store-guid',
       storeName: 'Managed Store',
       storeCode: 'M1',
+      isActive: true,
       isPrimary: true,
       assignedAt: '2026-01-01T00:00:00Z',
     },
@@ -58,6 +66,12 @@ assertEqual(
   userWithCamelStoreFlags.stores?.[0]?.isManageable,
   true,
   'Current user stores should treat legacy isPrimary as manageable',
+)
+
+assertEqual(
+  userWithCamelStoreFlags.stores?.[0]?.isActive,
+  true,
+  'Current user stores should keep camelCase active store status',
 )
 
 const originalFetch = globalThis.fetch

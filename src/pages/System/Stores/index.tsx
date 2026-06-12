@@ -24,6 +24,47 @@ import { getStoreByGuid, getStores, updateStore } from '../../../services/storeS
 import type { StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
 import StoreUserManagement from './StoreUserManagement'
 
+const brandTagPalette = [
+  { background: '#e6f4ff', borderColor: '#91caff', color: '#0958d9' },
+  { background: '#f6ffed', borderColor: '#b7eb8f', color: '#389e0d' },
+  { background: '#fff7e6', borderColor: '#ffd591', color: '#d46b08' },
+  { background: '#f9f0ff', borderColor: '#d3adf7', color: '#722ed1' },
+  { background: '#e6fffb', borderColor: '#87e8de', color: '#08979c' },
+  { background: '#fff1f0', borderColor: '#ffa39e', color: '#cf1322' },
+]
+
+const brandTagStyleByName: Record<string, (typeof brandTagPalette)[number]> = {
+  'hot bargain': brandTagPalette[0],
+  'discount general': brandTagPalette[1],
+  'dollar king': brandTagPalette[5],
+}
+
+function getBrandTagStyle(brandName: string) {
+  // 常见品牌固定配色，避免列表里不同品牌因为 hash 碰撞显示成同色。
+  const normalizedName = brandName.trim().toLowerCase()
+  const knownStyle = brandTagStyleByName[normalizedName]
+  if (knownStyle) {
+    return knownStyle
+  }
+
+  // 未知品牌仍按名称稳定取色，分页和刷新后不会跳色。
+  const hash = Array.from(normalizedName).reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 0)
+  return brandTagPalette[hash % brandTagPalette.length]
+}
+
+function renderBrandName(value?: string) {
+  const brandName = value?.trim()
+  if (!brandName) {
+    return <Typography.Text type="secondary">--</Typography.Text>
+  }
+
+  return (
+    <Tag bordered={false} style={getBrandTagStyle(brandName)}>
+      {brandName}
+    </Tag>
+  )
+}
+
 export default function SystemStoresPage() {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
@@ -152,7 +193,7 @@ export default function SystemStoresPage() {
   const columns: ColumnsType<StoreDto> = [
     { title: t('system.stores.storeName'), dataIndex: 'storeName', width: 240 },
     { title: t('system.stores.storeCode'), dataIndex: 'storeCode', width: 140 },
-    { title: t('system.stores.brandName'), dataIndex: 'brandName', width: 180, render: (value) => value || '--' },
+    { title: t('system.stores.brandName'), dataIndex: 'brandName', width: 180, render: renderBrandName },
     { title: t('system.stores.contactPhone'), dataIndex: 'contactPhone', width: 160, render: (value) => value || '--' },
     {
       title: t('system.stores.linkedUserCount'),
@@ -165,7 +206,7 @@ export default function SystemStoresPage() {
       ),
     },
     {
-      title: t('column.status'),
+      title: t('system.stores.cashRegisterEnabled'),
       dataIndex: 'isActive',
       width: 100,
       render: (value: boolean) => (
@@ -262,7 +303,7 @@ export default function SystemStoresPage() {
               <Descriptions.Item label={t('system.stores.brandName')}>{detailStore.brandName || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.contactPhone')}>{detailStore.contactPhone || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.contactEmail')}>{detailStore.contactEmail || '--'}</Descriptions.Item>
-              <Descriptions.Item label={t('column.status')}>
+              <Descriptions.Item label={t('system.stores.cashRegisterEnabled')}>
                 <Tag color={detailStore.isActive ? 'success' : 'default'}>
                   {detailStore.isActive ? t('common.active') : t('common.inactive')}
                 </Tag>
@@ -320,7 +361,7 @@ export default function SystemStoresPage() {
           <Form.Item label={t('column.description')} name="description">
             <Input.TextArea rows={4} />
           </Form.Item>
-          <Form.Item label={t('column.status')} name="isActive" valuePropName="checked">
+          <Form.Item label={t('system.stores.cashRegisterEnabled')} name="isActive" valuePropName="checked">
             <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
           </Form.Item>
         </Form>

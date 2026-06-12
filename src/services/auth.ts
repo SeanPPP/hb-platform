@@ -7,6 +7,7 @@ type CurrentUserStoreApiDto = Partial<UserStoreDto> & {
   StoreGUID?: string
   StoreName?: string
   StoreCode?: string
+  IsActive?: boolean
   IsManageable?: boolean
   isPrimary?: boolean
   IsPrimary?: boolean
@@ -54,6 +55,8 @@ export function normalizeCurrentUser(user: CurrentUserApiDto): CurrentUser {
       storeGUID: store.storeGUID ?? store.StoreGUID ?? '',
       storeName: store.storeName ?? store.StoreName ?? '',
       storeCode: store.storeCode ?? store.StoreCode ?? '',
+      // 后端会返回关联分店启用状态；停用分店仍属于用户身份范围。
+      isActive: store.isActive ?? store.IsActive,
       isManageable: store.isManageable ?? store.IsManageable ?? store.isPrimary ?? store.IsPrimary ?? false,
       assignedAt: store.assignedAt ?? store.AssignedAt ?? '',
     })),

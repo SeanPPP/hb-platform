@@ -15,6 +15,7 @@ export interface UserStoreDto {
   storeGUID: string
   storeName: string
   storeCode: string
+  isActive?: boolean
   isManageable: boolean
   assignedAt: string
 }

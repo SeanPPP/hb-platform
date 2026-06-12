@@ -2691,6 +2691,7 @@
       "brandName": "Brand Name",
       "contactPhone": "Contact Phone",
       "contactEmail": "Contact Email",
+      "cashRegisterEnabled": "Cash Register Enabled",
       "linkedUserCount": "Linked Users",
       "userCount": "Users",
       "address": "Address",
