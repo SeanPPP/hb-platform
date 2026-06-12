@@ -1,0 +1,501 @@
+.store-order-print-page {
+  min-height: 100vh;
+  padding: 24px;
+  background: #f5f5f5;
+}
+
+.store-order-print-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.store-order-print-paper {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+}
+
+.store-order-picking-paper {
+  padding: 8mm 6mm;
+}
+
+.store-order-picking-header-cell {
+  padding: 0 !important;
+  border: none !important;
+}
+
+.store-order-picking-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #000;
+}
+
+.store-order-picking-title {
+  flex: 0 0 auto;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.store-order-picking-meta {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 14px;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.store-order-picking-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 15px;
+  line-height: 1.35;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.store-order-picking-table thead {
+  display: table-header-group;
+}
+
+.store-order-picking-table tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.store-order-picking-table th {
+  padding: 6px 2px;
+  text-align: left;
+  font-weight: 700;
+  background: #f0f0f0;
+  border-bottom: 1px solid #000;
+  line-height: 1.35;
+}
+
+.store-order-picking-table td {
+  padding: 6px 2px;
+  vertical-align: top;
+  border-bottom: 1px solid #ddd;
+  line-height: 1.35;
+}
+
+.store-order-picking-table tbody tr:nth-child(even) td {
+  background: #eef2f7;
+}
+
+.store-order-picking-table .col-index {
+  width: 3%;
+  padding-right: 8px;
+  text-align: center;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.store-order-picking-table .col-item {
+  width: 16%;
+  padding-left: 10px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: visible;
+  font-size: 14.5px;
+}
+
+.store-order-picking-table .col-location {
+  width: 15%;
+  padding-left: 5px;
+  padding-right: 5px;
+  white-space: nowrap;
+  overflow: visible;
+  font-weight: 800;
+  font-size: 14.5px;
+}
+
+.store-order-picking-table .col-product {
+  width: 34%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+
+.store-order-picking-table .col-inner-pack {
+  width: 5%;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.store-order-picking-table .col-qty {
+  width: 5.5%;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.store-order-picking-table .col-send-qty {
+  width: 5.5%;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: center;
+  font-size: 13px;
+  border-left: 1px solid #eee;
+}
+
+.store-order-picking-table .col-price {
+  width: 6%;
+  padding-left: 1px;
+  padding-right: 1px;
+  text-align: right;
+  font-size: 13px;
+}
+
+.store-order-picking-name {
+  display: block;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.store-order-picking-footer {
+  margin-top: 8px;
+  border-top: 1px solid #000;
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.store-order-picking-remarks {
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #ccc;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.store-order-picking-totals {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.store-order-pdf-root {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 210mm;
+  background: #fff;
+  pointer-events: none;
+}
+
+.store-order-pdf-page {
+  position: relative;
+  width: 210mm;
+  height: 297mm;
+  margin: 0;
+  background: #fff;
+  box-sizing: border-box;
+  overflow: hidden;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.store-order-pdf-page.store-order-picking-paper {
+  padding: 6mm 5mm 12mm;
+}
+
+.store-order-pdf-page-body {
+  height: 100%;
+  padding-bottom: 12mm;
+  box-sizing: border-box;
+}
+
+.store-order-pdf-page-number {
+  position: absolute;
+  right: 5mm;
+  bottom: 4mm;
+  left: 5mm;
+  border-top: 1px solid #ddd;
+  padding-top: 2mm;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #333;
+}
+
+.store-order-invoice-paper {
+  padding: 12mm 10mm 18mm;
+  position: relative;
+}
+
+.store-order-invoice-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #333;
+}
+
+.store-order-invoice-logo {
+  width: 40%;
+}
+
+.store-order-invoice-company {
+  width: 55%;
+  text-align: right;
+  font-size: 11px;
+  color: #555;
+  line-height: 1.3;
+}
+
+.store-order-invoice-company h4 {
+  margin: 0 0 5px;
+  color: #333;
+  font-weight: 700;
+}
+
+.store-order-invoice-company p {
+  margin: 0 0 3px;
+}
+
+.store-order-invoice-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #333;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.store-order-invoice-customer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 11px;
+}
+
+.store-order-invoice-customer-row {
+  display: flex;
+  gap: 10px;
+}
+
+.store-order-invoice-label {
+  min-width: 104px;
+  color: #666;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.store-order-invoice-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin-bottom: 18px;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.store-order-invoice-table th {
+  padding: 5px 4px;
+  text-align: left;
+  font-weight: 700;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+}
+
+.store-order-invoice-table td {
+  padding: 5px 4px;
+  vertical-align: middle;
+  border-bottom: 1px solid #eee;
+  overflow: hidden;
+}
+
+.store-order-invoice-table .col-index {
+  width: 28px;
+  text-align: center;
+}
+
+.store-order-invoice-table .col-image {
+  width: 44px;
+  text-align: center;
+}
+
+.store-order-invoice-table .col-item {
+  width: 72px;
+}
+
+.store-order-invoice-table .col-barcode {
+  width: 100px;
+  text-align: center;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.store-order-invoice-table .col-name {
+  width: 160px;
+  word-break: break-word;
+}
+
+.store-order-invoice-table .col-cost,
+.store-order-invoice-table .col-subtotal {
+  width: 68px;
+  text-align: right;
+}
+
+.store-order-invoice-table .col-qty {
+  width: 42px;
+  text-align: center;
+}
+
+.store-order-invoice-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  page-break-inside: avoid;
+}
+
+.store-order-invoice-payment {
+  width: 60%;
+  font-size: 11px;
+}
+
+.store-order-invoice-payment h4 {
+  margin: 0 0 8px;
+  font-weight: 700;
+  color: #333;
+}
+
+.store-order-invoice-payment-row {
+  display: flex;
+  margin-bottom: 4px;
+}
+
+.store-order-invoice-payment-row .store-order-invoice-label {
+  min-width: 80px;
+}
+
+.store-order-invoice-disclaimer {
+  margin-top: 10px;
+  color: #888;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.store-order-invoice-totals {
+  width: 35%;
+  text-align: right;
+  font-size: 12px;
+}
+
+.store-order-invoice-total-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.store-order-invoice-total-row.is-grand {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #333;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.store-order-print-footer {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm 6mm;
+  }
+
+  @page store-order-picking {
+    size: A4;
+    margin: 6mm 5mm;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .store-order-print-root,
+  .store-order-print-root * {
+    visibility: visible;
+  }
+
+  .store-order-print-page {
+    padding: 0;
+    background: #fff;
+  }
+
+  .store-order-print-toolbar {
+    display: none !important;
+  }
+
+  .store-order-print-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    background: #fff;
+  }
+
+  .store-order-print-paper {
+    width: 100%;
+    min-height: auto;
+    margin: 0;
+    box-shadow: none;
+  }
+
+  .store-order-picking-paper,
+  .store-order-invoice-paper {
+    padding: 0;
+  }
+
+  .store-order-picking-paper {
+    page: store-order-picking;
+  }
+
+  .store-order-print-footer {
+    display: flex;
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-top: 1px solid #eee;
+    font-size: 10px;
+    color: #666;
+    background: #fff;
+  }
+}

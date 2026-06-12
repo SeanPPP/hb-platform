@@ -1,0 +1,389 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
+import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(message)
+  }
+}
+
+async function runTest(name: string, execute: () => void | Promise<void>): Promise<string | null> {
+  try {
+    await execute()
+    console.log(`ok - ${name}`)
+    return null
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`not ok - ${name}`)
+    console.error(reason)
+    return `${name}: ${reason}`
+  }
+}
+
+const detailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Detail.tsx')
+const pickingListFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx')
+const invoiceFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Invoice.tsx')
+const containerDetailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/ContainerDetail/index.tsx')
+const localSupplierInvoiceDetailFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx')
+const localSupplierInvoiceEditFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
+const detailLoadStateFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/detailLoadState.ts')
+const sharedDetailLoadStateFile = path.resolve(process.cwd(), 'src/utils/detailLoadState.ts')
+const zhFile = path.resolve(process.cwd(), 'src/i18n/locales/zh.json')
+const enFile = path.resolve(process.cwd(), 'src/i18n/locales/en.json')
+
+const detailSource = readFileSync(detailFile, 'utf8')
+const pickingListSource = readFileSync(pickingListFile, 'utf8')
+const invoiceSource = readFileSync(invoiceFile, 'utf8')
+const containerDetailSource = readFileSync(containerDetailFile, 'utf8')
+const localSupplierInvoiceDetailSource = readFileSync(localSupplierInvoiceDetailFile, 'utf8')
+const localSupplierInvoiceEditSource = readFileSync(localSupplierInvoiceEditFile, 'utf8')
+const detailLoadStateSource = readFileSync(detailLoadStateFile, 'utf8')
+const sharedDetailLoadStateSource = readFileSync(sharedDetailLoadStateFile, 'utf8')
+const zhSource = readFileSync(zhFile, 'utf8')
+const enSource = readFileSync(enFile, 'utf8')
+
+async function main() {
+  const failures: string[] = []
+
+  const auxiliaryWarningFailure = await runTest('分店下拉加载失败应降级为非阻断提示', () => {
+    assert(
+      detailSource.includes("message.warning(t('storeOrders.detail.loadStoreOptionsFailed'"),
+      'loadStores 失败时应使用非阻断 warning 文案，避免误提示整张订货明细失败',
+    )
+    assert(
+      !detailSource.includes("message.error(error instanceof Error ? error.message : t('storeOrders.loadStoresFailed'))"),
+      'loadStores 失败时不应直接透传后端错误 message',
+    )
+  })
+  if (auxiliaryWarningFailure) failures.push(auxiliaryWarningFailure)
+
+  const translationFailure = await runTest('分店下拉非阻断提示应有中英文文案', () => {
+    assert(
+      zhSource.includes('"loadStoreOptionsFailed": "分店下拉加载失败，订单明细可继续查看"'),
+      '中文文案缺少分店下拉非阻断提示',
+    )
+    assert(
+      enSource.includes('"loadStoreOptionsFailed": "Store selector failed to load. Order details remain available."'),
+      '英文文案缺少分店下拉非阻断提示',
+    )
+  })
+  if (translationFailure) failures.push(translationFailure)
+
+  const detailSaveTranslationFailure = await runTest('订货明细保存和金额显示应有中英文文案', () => {
+    assert(zhSource.includes('"saveEditedLines": "整单保存"'), '中文文案缺少整单保存')
+    assert(enSource.includes('"saveEditedLines": "Save All Lines"'), '英文文案缺少整单保存')
+    assert(zhSource.includes('"importPriceSyncConfirmTitle": "确认同步进口价"'), '中文文案缺少进口价同步确认标题')
+    assert(enSource.includes('"importPriceSyncConfirmTitle": "Confirm Import Price Sync"'), '英文文案缺少进口价同步确认标题')
+    assert(
+      zhSource.includes('"importPriceSyncConfirmContent": "进口价保存后会同步写入仓库商品表和分店表，请确认是否继续。"'),
+      '中文文案缺少进口价同步确认内容',
+    )
+    assert(
+      enSource.includes('"importPriceSyncConfirmContent": "After saving, import prices will sync to warehouse products and store products. Continue?"'),
+      '英文文案缺少进口价同步确认内容',
+    )
+    assert(zhSource.includes('"syncImportPriceCheckbox": "同步进口价到仓库商品表和分店表"'), '中文文案缺少同步进口价勾选项')
+    assert(enSource.includes('"syncImportPriceCheckbox": "Sync import price to warehouse products and store products"'), '英文文案缺少同步进口价勾选项')
+    assert(zhSource.includes('"orderAmountLabel": "预计销售额"'), '中文订单金额标签应改为预计销售额')
+    assert(enSource.includes('"orderAmountLabel": "Estimated Sales"'), '英文订单金额标签应改为 Estimated Sales')
+    assert(zhSource.includes('"importAmountLabel": "订单金额 ex GST"'), '中文进口金额标签应改为订单金额 ex GST')
+    assert(enSource.includes('"importAmountLabel": "Order Amount ex GST"'), '英文进口金额标签应改为 Order Amount ex GST')
+    assert(zhSource.includes('"gstAmountLabel": "GST 10%"'), '中文文案缺少 GST 10%')
+    assert(enSource.includes('"gstAmountLabel": "GST 10%"'), '英文文案缺少 GST 10%')
+  })
+  if (detailSaveTranslationFailure) failures.push(detailSaveTranslationFailure)
+
+  const editabilityStateFailure = await runTest('详情页应复用订单状态权限派生函数', () => {
+    assert(
+      detailSource.includes("import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'") &&
+        detailSource.includes('} = deriveStoreOrderDetailPermissions(detail?.flowStatus)'),
+      '详情页尚未复用 deriveStoreOrderDetailPermissions 派生状态权限',
+    )
+  })
+  if (editabilityStateFailure) failures.push(editabilityStateFailure)
+
+  const editGuardFailure = await runTest('不可编辑订单的写入口应先走统一 guard', () => {
+    assert(
+      detailSource.includes('function ensureOrderEditable') &&
+        detailSource.includes("message.warning(t('storeOrders.detail.orderReadonlyRefresh'))") &&
+        detailSource.includes('if (!ensureOrderEditable())') &&
+        detailSource.includes('handleSaveLine') &&
+        detailSource.includes('handleConfirmPaste'),
+      '详情页写操作尚未统一拦截不可编辑订单',
+    )
+  })
+  if (editGuardFailure) failures.push(editGuardFailure)
+
+  const flowGuardFailure = await runTest('状态流转写入口应有函数内二次门禁', () => {
+    assert(
+      detailSource.includes('if (!canStartPicking)') &&
+        detailSource.includes('if (!canCompleteOrder)') &&
+        detailSource.includes("message.warning(t('storeOrders.detail.orderReadonlyRefresh'))"),
+      '开始配货/完成订单函数入口尚未按状态二次拦截',
+    )
+  })
+  if (flowGuardFailure) failures.push(flowGuardFailure)
+
+  const disabledUiFailure = await runTest('不可编辑订单应禁用表头和明细写控件但保留只读动作', () => {
+    assert(
+      detailSource.includes('disabled={isReadonlyOrder}') &&
+        detailSource.includes('disabled={isReadonlyOrder || !selectedLineKeys.length}') &&
+        detailSource.includes('disabled={isReadonlyOrder || validPastePreviewCount === 0}') &&
+        detailSource.includes('disabled={isReadonlyOrder || !canStartPicking}') &&
+        detailSource.includes('disabled={!canCompleteOrder}') &&
+        detailSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
+        detailSource.includes('navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)'),
+      '详情页尚未禁用写控件或误影响配货单/发票只读动作',
+    )
+  })
+  if (disabledUiFailure) failures.push(disabledUiFailure)
+
+  const statusChangeFailure = await runTest('详情页应提供三状态订单状态更改入口', () => {
+    assert(
+      detailSource.includes('updateStoreOrderStatus') &&
+        detailSource.includes('handleChangeOrderStatus') &&
+        detailSource.includes('orderStatusChangeOptions') &&
+        detailSource.includes('StoreOrderFlowStatus.Submitted') &&
+        detailSource.includes('StoreOrderFlowStatus.Picking') &&
+        detailSource.includes('StoreOrderFlowStatus.Completed') &&
+        detailSource.includes("t('storeOrders.detail.changeOrderStatus'") &&
+        detailSource.includes("t('storeOrders.detail.statusChangeSuccess'"),
+      '详情页尚未提供三状态订单状态更改入口',
+    )
+  })
+  if (statusChangeFailure) failures.push(statusChangeFailure)
+
+  const keepAliveSkipAutoReloadFailure = await runTest('详情页 Tab 切回已有数据时应跳过自动刷新', () => {
+    assert(
+      detailSource.includes('loadedDetailIdRef') &&
+        detailSource.includes('useKeepAliveContext') &&
+        detailSource.includes('const { active } = useKeepAliveContext()') &&
+        detailSource.includes('if (!active) return') &&
+        detailSource.includes('visibleDetailIdRef') &&
+        detailSource.includes('lastLoadedDetailQueryKeyRef') &&
+        detailSource.includes('shouldSkipDetailAutoReload({') &&
+        detailSource.includes('shouldShowStoreOrderDetailInitialLoading({') &&
+        detailSource.includes('active,') &&
+        detailSource.includes('return () => {') &&
+        detailSource.includes('detailRequestControllerRef.current?.abort()'),
+      '详情页缺少 KeepAlive active 守卫，隐藏 Tab 会跟随全局路由变化重新请求',
+    )
+    assert(
+      detailSource.includes('loadedDetailIdRef.current = result.orderGUID || id') &&
+        detailSource.includes('visibleDetailIdRef.current = result.orderGUID || id') &&
+        detailSource.includes('lastLoadedDetailQueryKeyRef.current = detailQueryKey'),
+      '详情页加载成功后应记录已加载订单 id 和查询参数，后续同订单同查询才能跳过自动刷新',
+    )
+  })
+  if (keepAliveSkipAutoReloadFailure) failures.push(keepAliveSkipAutoReloadFailure)
+
+  const initialLoadingDecisionFailure = await runTest('详情页初始加载和自动刷新跳过判断应覆盖切回和换单边界', () => {
+    assert(
+      sharedDetailLoadStateSource.includes('loadedDetailId !== requestedDetailId || visibleDetailId !== requestedDetailId') &&
+        sharedDetailLoadStateSource.includes('export function shouldSkipDetailAutoReload') &&
+        detailLoadStateSource.includes('shouldShowDetailInitialLoading'),
+      '初始加载和自动刷新跳过判断应沉到通用 helper，并同时检查已加载记录和当前可展示记录',
+    )
+    assert(
+      !shouldShowDetailInitialLoading({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }) &&
+      !shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-a',
+        loadedOrderId: 'order-a',
+        visibleDetailId: 'order-a',
+      }),
+      '同订单且当前仍有可展示明细时应静默刷新',
+    )
+    assert(
+      shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }),
+      '同详情且当前仍有可展示内容时应跳过自动刷新',
+    )
+    assert(
+      shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-b',
+        loadedOrderId: 'order-a',
+        visibleDetailId: 'order-a',
+      }),
+      '切到新订单时应显示首次主加载',
+    )
+    assert(
+      shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-a',
+        loadedOrderId: 'order-a',
+        visibleDetailId: null,
+      }),
+      '当前没有可展示明细时即使已加载标记命中也应显示主加载',
+    )
+    assert(
+      shouldShowStoreOrderDetailInitialLoading({
+        requestedOrderId: 'order-a',
+        loadedOrderId: 'order-a',
+        visibleDetailId: 'order-b',
+      }),
+      '当前可展示明细属于其他订单时应显示主加载，避免短暂展示错误订单状态',
+    )
+    assert(
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-b',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }) &&
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: '',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+      }) &&
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: null,
+      }),
+      '换详情、空 id 或没有可展示内容时不应跳过自动刷新',
+    )
+    assert(
+      shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+        requestedDetailQueryKey: '{"pageNumber":1}',
+        loadedDetailQueryKey: '{"pageNumber":1}',
+      }) &&
+      !shouldSkipDetailAutoReload({
+        requestedDetailId: 'detail-a',
+        loadedDetailId: 'detail-a',
+        visibleDetailId: 'detail-a',
+        requestedDetailQueryKey: '{"pageNumber":2}',
+        loadedDetailQueryKey: '{"pageNumber":1}',
+      }),
+      '门店订单详情查询参数一致才应跳过自动刷新，分页搜索排序变化必须重新请求',
+    )
+  })
+  if (initialLoadingDecisionFailure) failures.push(initialLoadingDecisionFailure)
+
+  const silentFailurePreserveFailure = await runTest('详情页静默刷新失败不应清空当前明细', () => {
+    assert(
+      detailSource.includes("const errorMessage = error instanceof Error ? error.message : t('storeOrders.detail.loadDetailFailed')") &&
+        detailSource.includes('if (showLoading)') &&
+        detailSource.includes('setDetail(null)') &&
+        detailSource.includes("setDetailLoadStatus('error')") &&
+        detailSource.includes('setDetailErrorMessage(errorMessage)') &&
+        detailSource.includes('message.error(errorMessage)'),
+      '静默刷新失败时应保留旧 detail，只提示错误；首次加载失败才进入 error 空态',
+    )
+  })
+  if (silentFailurePreserveFailure) failures.push(silentFailurePreserveFailure)
+
+  const storeOrderPrintPagesKeepAliveFailure = await runTest('配货单和发票 Tab 切回已有数据时应跳过自动刷新', () => {
+    for (const [pageName, source, loadFailureKey] of [
+      ['配货单', pickingListSource, 'warehouse.pickingList.loadFailed'],
+      ['发票', invoiceSource, 'warehouse.invoice.loadFailed'],
+    ] as const) {
+      assert(
+        source.includes("import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
+          source.includes('loadedOrderIdRef') &&
+          source.includes('visibleOrderIdRef') &&
+          source.includes('const load = async (showLoading = true)') &&
+          source.includes('if (showLoading) {') &&
+          source.includes('setLoading(true)') &&
+          source.includes('shouldSkipDetailAutoReload({') &&
+          source.includes('return'),
+        `${pageName}缺少同订单 Tab 恢复跳过自动刷新保护`,
+      )
+      assert(
+        source.includes('loadedOrderIdRef.current = detail.orderGUID || id') &&
+          source.includes('visibleOrderIdRef.current = detail.orderGUID || id') &&
+          source.includes(`const errorMessage = error instanceof Error ? error.message : t('${loadFailureKey}')`) &&
+          source.includes('if (showLoading) {') &&
+          source.includes('setOrder(null)') &&
+          source.includes('setStore(null)'),
+        `${pageName}应在成功后记录可展示订单，且首次加载失败才清空当前内容`,
+      )
+    }
+  })
+  if (storeOrderPrintPagesKeepAliveFailure) failures.push(storeOrderPrintPagesKeepAliveFailure)
+
+  const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并跳过自动刷新', () => {
+    assert(
+      containerDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
+        containerDetailSource.includes('useKeepAliveContext') &&
+        containerDetailSource.includes('const { active } = useKeepAliveContext()') &&
+        containerDetailSource.includes('if (!active) return') &&
+        containerDetailSource.includes('loadedContainerGuidRef') &&
+        containerDetailSource.includes('visibleContainerGuidRef') &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
+        containerDetailSource.includes('const loadData = async (showLoading = true)') &&
+        containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
+        containerDetailSource.includes('requestedDetailQueryKey: detailQueryKey') &&
+        containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+        containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
+        containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
+        containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
+        containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid') &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }'),
+      '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
+    )
+    assert(
+      containerDetailSource.includes('setDetailTableRenderKey((value) => value + 1)') &&
+        containerDetailSource.includes('detailTableRef.current?.scrollTo?.({ top: scrollTop })') &&
+        containerDetailSource.indexOf('setDetailTableRenderKey((value) => value + 1)') >
+          containerDetailSource.indexOf('if (!active || wasActive || rows.length === 0)') &&
+        containerDetailSource.indexOf("loadDetailChunk(1, 'reset')") <
+          containerDetailSource.indexOf('setDetailTableRenderKey((value) => value + 1)'),
+      '货柜明细 Tab 切回已有数据时应只恢复虚拟表格测量，不能通过重新加载明细修复空白',
+    )
+    assert(
+      localSupplierInvoiceDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
+        localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef') &&
+        localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef') &&
+        localSupplierInvoiceDetailSource.includes('const loadInvoice = async (showLoading = true)') &&
+        localSupplierInvoiceDetailSource.includes('shouldSkipDetailAutoReload({') &&
+        localSupplierInvoiceDetailSource.includes('loadedInvoiceGuidRef.current = invoiceGuid') &&
+        localSupplierInvoiceDetailSource.includes('visibleInvoiceGuidRef.current = invoiceGuid'),
+      '本地供应商发票只读详情缺少同发票 Tab 恢复跳过自动刷新保护',
+    )
+    assert(
+      localSupplierInvoiceEditSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../../utils/detailLoadState'") &&
+        localSupplierInvoiceEditSource.includes('loadedInvoiceGuidRef') &&
+        localSupplierInvoiceEditSource.includes('visibleInvoiceGuidRef') &&
+        localSupplierInvoiceEditSource.includes('const loadInvoice = useCallback(async (showLoading = true)') &&
+        localSupplierInvoiceEditSource.includes('shouldSkipDetailAutoReload({') &&
+        localSupplierInvoiceEditSource.includes('loadedInvoiceGuidRef.current = invoiceGuid') &&
+        localSupplierInvoiceEditSource.includes('visibleInvoiceGuidRef.current = invoiceGuid'),
+      '本地供应商发票编辑页缺少同发票 Tab 恢复跳过自动刷新保护',
+    )
+  })
+  if (lowRiskDetailPagesKeepAliveFailure) failures.push(lowRiskDetailPagesKeepAliveFailure)
+
+  const readonlyCopyFailure = await runTest('只读状态应提供中英文提示文案', () => {
+    assert(
+      zhSource.includes('"orderReadonlyTitle": "当前订单为只读状态"') &&
+        zhSource.includes('"orderReadonlyDescription": "已完成订单不可编辑，请更改状态后再操作。但仍可补录或修正出库日期。"') &&
+        zhSource.includes('"orderReadonlyRefresh": "当前订单状态不可编辑，请刷新确认状态。"'),
+      '中文文案缺少订单只读提示',
+    )
+    assert(
+      enSource.includes('"orderReadonlyTitle": "Order is read-only"') &&
+        enSource.includes('"orderReadonlyDescription": "Completed orders cannot be edited. Change the status before editing. The outbound date can still be corrected."') &&
+        enSource.includes('"orderReadonlyRefresh": "The current order status is not editable. Please refresh and confirm the status."'),
+      '英文文案缺少订单只读提示',
+    )
+  })
+  if (readonlyCopyFailure) failures.push(readonlyCopyFailure)
+
+  if (failures.length > 0) {
+    throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)
+  }
+
+  console.log('detailAuxiliaryLoads.logic.test: ok')
+}
+
+await main()

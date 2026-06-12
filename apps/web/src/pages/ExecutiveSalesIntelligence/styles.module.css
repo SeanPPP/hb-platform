@@ -1,0 +1,355 @@
+.pageContainer {
+  background: #f9f9ff;
+  padding: 14px;
+  min-height: 100vh;
+}
+
+.headerSection {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(255, 255, 255, 95%);
+  backdrop-filter: blur(12px);
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-bottom: 1px solid rgba(195, 198, 210, 0.1);
+  margin: -14px -14px 24px;
+}
+
+.headerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+
+  .headerIcon {
+    font-size: 32px;
+    color: #003670;
+  }
+}
+
+.headerTitleContainer {
+  display: flex;
+  flex-direction: column;
+}
+
+.headerTitle {
+  font-family: 'Manrope', sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  color: #003670;
+  text-transform: uppercase;
+  letter-spacing: -0.5px;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.headerSubtitle {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #737782;
+  margin-top: 4px;
+  margin-bottom: 0;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.compareDateSwitch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compareDateSwitchLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: #737782;
+  white-space: nowrap;
+}
+
+.compareDateTag {
+  font-size: 11px;
+  color: #737782;
+  background: #f3f3f9;
+  padding: 4px 12px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.dateRangePicker {
+  :global(.ant-picker) {
+    border-radius: 8px;
+    border-color: #c3c6d2;
+
+    &:hover,
+    &:focus {
+      border-color: #003670;
+    }
+  }
+}
+
+.filterTagsRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #f3f3f9;
+  border-radius: 8px;
+}
+
+.quickSelectRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+
+  .quickSelectLabel {
+    font-size: 10px;
+    font-weight: 700;
+    color: #737782;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-right: 8px;
+    white-space: nowrap;
+  }
+}
+
+.quickSelectBtn {
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid rgba(115, 119, 130, 0.3);
+  background: #f3f3f9;
+  color: #434750;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+
+  &:hover {
+    background: #e8e8ee;
+  }
+
+  &.active {
+    background: #003670;
+    color: #ffffff;
+    border-color: #003670;
+    box-shadow: 0 1px 2px rgba(0, 54, 112, 0.3);
+  }
+
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+.bentoGrid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 24px;
+}
+
+.cardBase {
+  background: #fff;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 8%);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.cardHeader {
+  padding: 20px 24px;
+  border-bottom: 1px solid #ededf4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cardTitle {
+  font-family: Manrope, sans-serif;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #003670;
+}
+
+.cardContent {
+  flex: 1;
+}
+
+.colSpan8 {
+  grid-column: span 8;
+
+  @media (max-width: 991px) {
+    grid-column: span 12;
+  }
+}
+
+.colSpan4 {
+  grid-column: span 4;
+
+  @media (max-width: 991px) {
+    grid-column: span 12;
+  }
+}
+
+.colSpan12 {
+  grid-column: span 12;
+}
+
+.cardFooter {
+  padding: 16px 24px;
+  background: #f3f3f9;
+}
+
+.footerText {
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-align: center;
+
+  @media (min-width: 768px) {
+    text-align: left;
+  }
+}
+
+.actionButton {
+  padding: 8px;
+  border: 1px solid rgba(195, 198, 210, 30%);
+  border-radius: 0.5rem;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: rgba(0, 0, 0, 2%);
+  }
+}
+
+.detailLink {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #003670;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: #0958d9;
+
+    .detailArrow {
+      transform: translateX(4px);
+    }
+  }
+}
+
+.detailArrow {
+  font-size: 12px;
+  transition: transform 0.2s ease;
+  color: #003670;
+
+  &:hover {
+    color: #0958d9;
+  }
+}
+
+.branchTag {
+  background: #e6f4ff;
+  border-color: #91caff;
+  color: #1677ff;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    background: #bae0ff;
+  }
+}
+
+@media (max-width: 768px) {
+  .pageContainer {
+    padding: 0;
+    background: #fff;
+  }
+
+  .headerSection {
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px;
+    margin: 0;
+  }
+
+  .headerTop {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .headerTitle {
+    font-size: 1.5rem;
+  }
+
+  .headerLeft {
+    width: 100%;
+  }
+
+  .headerActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .cardBase {
+    border-radius: 0;
+    box-shadow: none;
+    border-bottom: 1px solid #ededf4;
+  }
+
+  .cardHeader {
+    padding: 12px 16px;
+  }
+
+  .cardFooter {
+    padding: 12px 16px;
+  }
+
+  .cardInTag {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .headerActions {
+    gap: 8px;
+  }
+
+  .quickSelectRow {
+    gap: 6px;
+  }
+
+  .quickSelectLabel {
+    width: 100%;
+    margin-bottom: 4px;
+  }
+
+  .quickSelectBtn {
+    padding: 5px 10px;
+    font-size: 10px;
+  }
+}

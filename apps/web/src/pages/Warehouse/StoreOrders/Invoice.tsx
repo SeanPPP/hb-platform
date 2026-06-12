@@ -1,0 +1,714 @@
+import { DownloadOutlined, FileExcelOutlined, MailOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
+import { Button, Empty, Image, Input, Modal, Segmented, Space, Spin, Switch, message } from 'antd'
+import ExcelJS from 'exceljs'
+import type { TFunction } from 'i18next'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
+import BarcodePreview from '../../../components/BarcodePreview'
+import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
+import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
+import { getStores } from '../../../services/storeService'
+import {
+  getStoreOrderDetail,
+  getStoreOrderInvoiceEmailJob,
+  sendStoreOrderInvoiceEmail,
+  translateStoreOrderInvoiceEmailText,
+  updateStoreOrderStoreContact,
+} from '../../../services/storeOrderService'
+import type { StoreDto } from '../../../types/store'
+import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
+import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
+import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import {
+  StoreOrderInvoiceEmailPollingTimeoutError,
+  createStoreOrderInvoiceEmailJobPoller,
+} from './invoiceEmailJobPolling'
+import {
+  buildDocumentFileName,
+  collectElementBreakOffsets,
+  downloadElementAsPdf,
+  formatCurrency,
+  formatPrintDate,
+} from './printUtils'
+import './print.css'
+
+const TRANSPARENT_IMAGE_FALLBACK = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+const EMAIL_REGEXP = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+type InvoiceEmailModalLanguage = 'zh' | 'en'
+
+function normalizeInvoiceEmailModalLanguage(language?: string): InvoiceEmailModalLanguage {
+  return language === 'en' || language?.startsWith('en-') ? 'en' : 'zh'
+}
+
+function sortInvoiceItems(items: StoreOrderDetailLine[]) {
+  return [...items].sort((left, right) => {
+    const leftAllocQuantity = Number(left.allocQuantity ?? 0)
+    const rightAllocQuantity = Number(right.allocQuantity ?? 0)
+    const leftIsZero = leftAllocQuantity === 0
+    const rightIsZero = rightAllocQuantity === 0
+
+    if (leftIsZero !== rightIsZero) {
+      return leftIsZero ? 1 : -1
+    }
+
+    const itemNumberCompare = (left.itemNumber || '').localeCompare(right.itemNumber || '', 'zh-CN', {
+      numeric: true,
+      sensitivity: 'base',
+    })
+    if (itemNumberCompare !== 0) {
+      return itemNumberCompare
+    }
+
+    return (left.productCode || '').localeCompare(right.productCode || '', 'zh-CN', {
+      numeric: true,
+      sensitivity: 'base',
+    })
+  })
+}
+
+async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDetailLine[], storeName: string | undefined, t: TFunction) {
+  const workbook = new ExcelJS.Workbook()
+  const worksheet = workbook.addWorksheet(t('warehouse.invoice.excel.sheetName'))
+
+  worksheet.columns = [
+    { header: '#', key: 'index', width: 8 },
+    { header: t('warehouse.invoice.excel.itemNo'), key: 'itemNumber', width: 18 },
+    { header: t('warehouse.invoice.excel.name'), key: 'productName', width: 28 },
+    { header: t('warehouse.invoice.excel.barcode'), key: 'barcode', width: 20 },
+    { header: t('warehouse.invoice.excel.cost'), key: 'importPrice', width: 14 },
+    { header: t('warehouse.invoice.excel.orderQty'), key: 'orderQuantity', width: 12 },
+    { header: t('warehouse.invoice.excel.shipQty'), key: 'allocQuantity', width: 12 },
+    { header: t('warehouse.invoice.excel.subtotal'), key: 'subtotal', width: 16 },
+  ]
+
+  worksheet.getRow(1).font = { bold: true }
+
+  items.forEach((item, index) => {
+    const orderQuantity = Number(item.quantity || 0)
+    const allocQuantity = Number(item.allocQuantity ?? 0)
+    worksheet.addRow({
+      index: index + 1,
+      itemNumber: item.itemNumber || '',
+      productName: item.productName || '',
+      barcode: item.barcode || item.productCode,
+      importPrice: Number(item.importPrice || 0),
+      orderQuantity,
+      allocQuantity,
+      subtotal: Number((allocQuantity * Number(item.importPrice || 0)).toFixed(2)),
+    })
+  })
+
+  const subTotal = Number(order.totalImportAmount || 0)
+  const gst = Number((subTotal * 0.1).toFixed(2))
+  const freight = Number(order.shippingFee || 0)
+  const total = Number((subTotal + gst + freight).toFixed(2))
+
+  worksheet.addRow({})
+  worksheet.addRow({ productName: t('warehouse.invoice.subTotal'), subtotal: subTotal })
+  worksheet.addRow({ productName: t('warehouse.invoice.gst'), subtotal: gst })
+  worksheet.addRow({ productName: t('warehouse.invoice.freight'), subtotal: freight })
+  worksheet.addRow({ productName: t('warehouse.invoice.total'), subtotal: total })
+  worksheet.addRow({})
+  worksheet.addRow({ productName: t('warehouse.invoice.remarks'), barcode: t('warehouse.invoice.imageRefNote') })
+
+  worksheet.getColumn('importPrice').numFmt = '$#,##0.00'
+  worksheet.getColumn('subtotal').numFmt = '$#,##0.00'
+
+  const buffer = await workbook.xlsx.writeBuffer()
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = buildDocumentFileName(
+    t('warehouse.invoice.fileName'),
+    storeName || order.storeCode,
+    order.orderNo || order.orderGUID,
+    'xlsx',
+    {
+      unknownStore: t('warehouse.invoice.unknownStore'),
+      unknownOrder: t('warehouse.invoice.unknownOrder'),
+    },
+  )
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+export default function StoreOrderInvoicePage() {
+  const { t, i18n } = useTranslation()
+  const route = useStableRouteContext()
+  const id = route?.params.id || ''
+  const navigate = useNavigate()
+  const printRootRef = useRef<HTMLDivElement | null>(null)
+  // 记录当前发票已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
+  const loadedOrderIdRef = useRef<string | null>(null)
+  const visibleOrderIdRef = useRef<string | null>(null)
+  const stopInvoiceEmailPollingRef = useRef<(() => void) | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [exportingExcel, setExportingExcel] = useState(false)
+  const [emailModalOpen, setEmailModalOpen] = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
+  const [order, setOrder] = useState<StoreOrderDetail | null>(null)
+  const [store, setStore] = useState<StoreDto | null>(null)
+  const [recipientEmail, setRecipientEmail] = useState('')
+  const [emailSubject, setEmailSubject] = useState('')
+  const [emailBody, setEmailBody] = useState('')
+  const [saveAsStoreDefault, setSaveAsStoreDefault] = useState(true)
+  const [emailModalLanguage, setEmailModalLanguage] = useState<InvoiceEmailModalLanguage>('zh')
+  const [emailSubjectTouched, setEmailSubjectTouched] = useState(false)
+  const [emailBodyTouched, setEmailBodyTouched] = useState(false)
+  const [translatingEmailText, setTranslatingEmailText] = useState(false)
+
+  useDynamicTabTitle(
+    order?.orderNo
+      ? t('warehouse.invoice.titleWithStore', { storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'), orderNo: order.orderNo })
+      : t('warehouse.invoice.title'),
+  )
+
+  useEffect(() => {
+    if (!id) {
+      return
+    }
+
+    const load = async (showLoading = true) => {
+      if (showLoading) {
+        setLoading(true)
+      }
+      try {
+        const detail = await getStoreOrderDetail(id)
+        if (!detail) {
+          if (showLoading) {
+            loadedOrderIdRef.current = null
+            visibleOrderIdRef.current = null
+            setOrder(null)
+            setStore(null)
+          }
+          message.error(t('storeOrders.detail.notFound'))
+          return
+        }
+
+        loadedOrderIdRef.current = detail.orderGUID || id
+        visibleOrderIdRef.current = detail.orderGUID || id
+        setOrder(detail)
+
+        if (detail.storeCode) {
+          const storeResult = await getStores({
+            search: detail.storeCode,
+            page: 1,
+            pageSize: 1,
+          })
+          setStore(storeResult.items[0] ?? null)
+        } else {
+          setStore(null)
+        }
+      } catch (error) {
+        console.error(error)
+        const errorMessage = error instanceof Error ? error.message : t('warehouse.invoice.loadFailed')
+        if (showLoading) {
+          visibleOrderIdRef.current = null
+          setOrder(null)
+          setStore(null)
+        }
+        message.error(errorMessage)
+      } finally {
+        if (showLoading) {
+          setLoading(false)
+        }
+      }
+    }
+
+    // 保活 Tab 切回同订单且页面仍有可见内容时，直接复用现有发票数据。
+    if (shouldSkipDetailAutoReload({
+      requestedDetailId: id,
+      loadedDetailId: loadedOrderIdRef.current,
+      visibleDetailId: visibleOrderIdRef.current,
+    })) {
+      return
+    }
+
+    const shouldShowInitialLoading = shouldShowStoreOrderDetailInitialLoading({
+      requestedOrderId: id,
+      loadedOrderId: loadedOrderIdRef.current,
+      visibleDetailId: visibleOrderIdRef.current,
+    })
+    void load(shouldShowInitialLoading)
+  }, [id])
+
+  useEffect(() => {
+    return () => {
+      stopInvoiceEmailPollingRef.current?.()
+      stopInvoiceEmailPollingRef.current = null
+    }
+  }, [])
+
+  const totals = useMemo(() => {
+    const subTotal = Number(order?.totalImportAmount || 0)
+    const gst = Number((subTotal * 0.1).toFixed(2))
+    const freight = Number(order?.shippingFee || 0)
+    return {
+      subTotal,
+      gst,
+      freight,
+      total: Number((subTotal + gst + freight).toFixed(2)),
+    }
+  }, [order?.shippingFee, order?.totalImportAmount])
+
+  const sortedItems = useMemo(() => sortInvoiceItems(order?.items || []), [order?.items])
+  const defaultRecipientEmail = order ? order.storeContactEmail || store?.contactEmail || '' : ''
+  const getEmailStoreName = (language: InvoiceEmailModalLanguage) =>
+    store?.storeName || order?.storeCode || t('warehouse.invoice.unknownStore', { lng: language })
+  const buildDefaultEmailSubject = (language: InvoiceEmailModalLanguage) =>
+    order
+      ? t('warehouse.invoice.defaultEmailSubject', {
+          lng: language,
+          storeName: getEmailStoreName(language),
+          orderNo: order.orderNo || order.orderGUID,
+        })
+      : ''
+  const buildDefaultEmailBody = (language: InvoiceEmailModalLanguage) =>
+    order
+      ? t('warehouse.invoice.defaultEmailBody', {
+          lng: language,
+          storeName: getEmailStoreName(language),
+          orderNo: order.orderNo || order.orderGUID,
+        })
+      : ''
+
+  const resolveInvoicePdfFileName = () =>
+    buildDocumentFileName(
+      t('warehouse.invoice.fileName'),
+      store?.storeName || order?.storeCode,
+      order?.orderNo || order?.orderGUID,
+      'pdf',
+      {
+        unknownStore: t('warehouse.invoice.unknownStore'),
+        unknownOrder: t('warehouse.invoice.unknownOrder'),
+      },
+    )
+
+  const getInvoicePdfBreakOffsets = () => {
+    if (!printRootRef.current) {
+      return []
+    }
+
+    return collectElementBreakOffsets(
+      printRootRef.current,
+      '.store-order-invoice-table tbody tr',
+      '.store-order-invoice-footer',
+    )
+  }
+
+  const handlePrint = () => {
+    window.print()
+  }
+
+  const handleDownloadPdf = async () => {
+    if (!printRootRef.current || !order) {
+      return
+    }
+
+    setDownloading(true)
+    try {
+      await downloadElementAsPdf(
+        printRootRef.current,
+        resolveInvoicePdfFileName(),
+        {
+          createCanvasContextErrorMessage: t('warehouse.invoice.createPdfCanvasFailed'),
+          avoidBreakOffsets: getInvoicePdfBreakOffsets(),
+        },
+      )
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.downloadPdfFailed'))
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleOpenEmailModal = () => {
+    const initialLanguage = normalizeInvoiceEmailModalLanguage(i18n.language)
+    setEmailModalLanguage(initialLanguage)
+    setRecipientEmail(defaultRecipientEmail)
+    setEmailSubject(buildDefaultEmailSubject(initialLanguage))
+    setEmailBody(buildDefaultEmailBody(initialLanguage))
+    setEmailSubjectTouched(false)
+    setEmailBodyTouched(false)
+    setSaveAsStoreDefault(true)
+    setEmailModalOpen(true)
+  }
+
+  const handleEmailModalLanguageChange = async (nextLanguage: InvoiceEmailModalLanguage) => {
+    if (!order || nextLanguage === emailModalLanguage || translatingEmailText) {
+      return
+    }
+
+    const nextSubjectTemplate = buildDefaultEmailSubject(nextLanguage)
+    const nextBodyTemplate = buildDefaultEmailBody(nextLanguage)
+    if (!emailSubjectTouched && !emailBodyTouched) {
+      setEmailModalLanguage(nextLanguage)
+      setEmailSubject(nextSubjectTemplate)
+      setEmailBody(nextBodyTemplate)
+      return
+    }
+
+    setTranslatingEmailText(true)
+    try {
+      const translated = await translateStoreOrderInvoiceEmailText({
+        orderGUID: order.orderGUID,
+        targetLanguage: nextLanguage,
+        subject: emailSubjectTouched ? emailSubject : undefined,
+        body: emailBodyTouched ? emailBody : undefined,
+      })
+
+      setEmailModalLanguage(nextLanguage)
+      setEmailSubject(emailSubjectTouched ? translated.subject ?? emailSubject : nextSubjectTemplate)
+      setEmailBody(emailBodyTouched ? translated.body ?? emailBody : nextBodyTemplate)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.emailTranslateFailed', { lng: emailModalLanguage }))
+    } finally {
+      setTranslatingEmailText(false)
+    }
+  }
+
+  const pollInvoiceEmailJob = async (jobId: string) => {
+    stopInvoiceEmailPollingRef.current?.()
+
+    const poller = createStoreOrderInvoiceEmailJobPoller({
+      jobId,
+      getJob: getStoreOrderInvoiceEmailJob,
+    })
+    stopInvoiceEmailPollingRef.current = poller.stop
+
+    try {
+      const result = await poller.promise
+      if (result.status === 'Succeeded') {
+        message.success(result.message || t('warehouse.invoice.emailSendSuccess'))
+        return
+      }
+
+      if (result.status === 'Failed') {
+        message.error(result.message || t('warehouse.invoice.emailSendFailed'))
+      }
+    } catch (error) {
+      if (error instanceof StoreOrderInvoiceEmailPollingTimeoutError) {
+        message.warning(t('warehouse.invoice.emailJobPollingTimeout'))
+        return
+      }
+
+      console.error(error)
+      message.error(t('warehouse.invoice.emailJobPollingFailed'))
+    } finally {
+      if (stopInvoiceEmailPollingRef.current === poller.stop) {
+        stopInvoiceEmailPollingRef.current = null
+      }
+    }
+  }
+
+  const handleSendInvoiceEmail = async () => {
+    if (!order) {
+      return
+    }
+
+    const normalizedRecipientEmail = recipientEmail.trim()
+    if (!normalizedRecipientEmail) {
+      message.warning(t('warehouse.invoice.emailRequired'))
+      return
+    }
+    if (!EMAIL_REGEXP.test(normalizedRecipientEmail)) {
+      message.warning(t('warehouse.invoice.invalidEmail'))
+      return
+    }
+
+    setSendingEmail(true)
+    try {
+      const job = await sendStoreOrderInvoiceEmail({
+        orderGUID: order.orderGUID,
+        toEmail: normalizedRecipientEmail,
+        subject: emailSubject.trim() || undefined,
+        body: emailBody.trim() || undefined,
+      })
+
+      message.success(t('warehouse.invoice.emailJobSubmitted'))
+      setEmailModalOpen(false)
+      if (job.jobId) {
+        void pollInvoiceEmailJob(job.jobId)
+      }
+
+      if (saveAsStoreDefault && order.storeCode) {
+        await updateStoreOrderStoreContact({
+          orderGUID: order.orderGUID,
+          storeCode: order.storeCode,
+          contactEmail: normalizedRecipientEmail,
+        })
+
+        setStore((current) => (current ? { ...current, contactEmail: normalizedRecipientEmail } : current))
+        setOrder((current) => (current ? { ...current, storeContactEmail: normalizedRecipientEmail } : current))
+      }
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.emailSendFailed'))
+    } finally {
+      setSendingEmail(false)
+    }
+  }
+
+  const handleExportExcel = async () => {
+    if (!order) {
+      return
+    }
+
+    setExportingExcel(true)
+    try {
+      await downloadInvoiceExcel(order, sortedItems, store?.storeName || order.storeCode, t)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('warehouse.invoice.exportExcelFailed'))
+    } finally {
+      setExportingExcel(false)
+    }
+  }
+
+  if (loading) {
+    return <Spin size="large" style={{ display: 'block', margin: '120px auto' }} />
+  }
+
+  if (!order) {
+    return <Empty description={t('storeOrders.detail.orderDataNotFound')} style={{ marginTop: 120 }} />
+  }
+
+  const displayStoreName = store?.storeName || order.storeCode || '--'
+  const storeAddress = order.storeAddress || store?.address || '--'
+
+  return (
+    <div className="store-order-print-page">
+      <div className="store-order-print-toolbar no-print">
+        <Space wrap>
+          <Button icon={<RollbackOutlined />} onClick={() => navigate(-1)}>
+            {t('common.back')}
+          </Button>
+          <Button icon={<MailOutlined />} loading={sendingEmail} onClick={handleOpenEmailModal}>
+            {t('warehouse.invoice.sendEmail')}
+          </Button>
+          <Button icon={<FileExcelOutlined />} loading={exportingExcel} onClick={() => void handleExportExcel()}>
+            {t('warehouse.invoice.exportExcel')}
+          </Button>
+          <Button icon={<DownloadOutlined />} loading={downloading} onClick={() => void handleDownloadPdf()}>
+            {t('warehouse.invoice.downloadPdf')}
+          </Button>
+          <Button type="primary" icon={<PrinterOutlined />} onClick={handlePrint}>
+            {t('warehouse.invoice.printInvoice')}
+          </Button>
+        </Space>
+      </div>
+
+      <div ref={printRootRef} className="store-order-print-root store-order-print-paper store-order-invoice-paper">
+        <div className="store-order-invoice-header">
+          <div className="store-order-invoice-logo">
+            <Image src="/invoice-logo.png" alt="HOT BARGAIN" preview={false} style={{ maxHeight: 120, objectFit: 'contain' }} />
+          </div>
+          <div className="store-order-invoice-company">
+            <h4>{t('warehouse.invoice.warehouseAddress')}</h4>
+            <p>3 Rogilla close Maryland, NSW, 2287, Australia</p>
+            <p>
+              <strong>A.B.N.</strong> 35 160 589 793
+            </p>
+            <p>
+              <strong>{t('warehouse.invoice.warehouseEmail')}</strong> dong@hotbargain.com.au
+            </p>
+          </div>
+        </div>
+
+        <div className="store-order-invoice-bar">
+          <div>{t('warehouse.invoice.invoiceNo', { orderNo: order.orderNo || order.orderGUID })}</div>
+          <div>{t('warehouse.invoice.invoiceDate', { date: formatPrintDate(undefined, false) })}</div>
+        </div>
+
+        <div className="store-order-invoice-customer">
+          <div className="store-order-invoice-customer-row">
+            <span className="store-order-invoice-label">{t('warehouse.invoice.customer')}</span>
+            <span>{displayStoreName}</span>
+          </div>
+          <div className="store-order-invoice-customer-row">
+            <span className="store-order-invoice-label">{t('warehouse.invoice.customerContact')}</span>
+            <span>{store?.contactPhone || '-'}</span>
+          </div>
+          <div className="store-order-invoice-customer-row">
+            <span className="store-order-invoice-label">{t('warehouse.invoice.address')}</span>
+            <span>{storeAddress}</span>
+          </div>
+        </div>
+
+        <table className="store-order-invoice-table">
+          <thead>
+            <tr>
+              <th className="col-index">#</th>
+              <th className="col-image">{t('column.image')}</th>
+              <th className="col-item">{t('column.itemNumber')}</th>
+              <th className="col-barcode">{t('column.barcode')}</th>
+              <th className="col-name">{t('column.name')}</th>
+              <th className="col-cost">{t('column.cost')}</th>
+              <th className="col-qty">{t('column.orderQuantity')}</th>
+              <th className="col-qty">{t('column.shipQuantity')}</th>
+              <th className="col-subtotal">{t('column.subtotal')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedItems.map((item, index) => {
+              const orderQuantity = Number(item.quantity || 0)
+              const allocQuantity = Number(item.allocQuantity ?? 0)
+              return (
+                <tr key={item.detailGUID}>
+                  <td className="col-index">{index + 1}</td>
+                  <td className="col-image">
+                    {item.productImage ? (
+                      <Image
+                        src={item.productImage}
+                        alt=""
+                        width={36}
+                        height={36}
+                        preview={false}
+                        fallback={TRANSPARENT_IMAGE_FALLBACK}
+                        style={{ objectFit: 'contain' }}
+                      />
+                    ) : (
+                      null
+                    )}
+                  </td>
+                  <td className="col-item">{item.itemNumber || '--'}</td>
+                  <td className="col-barcode">
+                    {item.barcode ? (
+                      <BarcodePreview
+                        value={item.barcode}
+                        showCopy={false}
+                        textMaxWidth={92}
+                        options={{ width: 0.9, height: 20, margin: 0 }}
+                      />
+                    ) : (
+                      item.productCode
+                    )}
+                  </td>
+                  <td className="col-name">{item.productName || '--'}</td>
+                  <td className="col-cost">{formatCurrency(item.importPrice)}</td>
+                  <td className="col-qty">{orderQuantity}</td>
+                  <td className="col-qty">{allocQuantity}</td>
+                  <td className="col-subtotal">{formatCurrency(allocQuantity * Number(item.importPrice || 0))}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+
+        <div className="store-order-invoice-footer">
+          <div className="store-order-invoice-payment">
+            <h4>{t('warehouse.invoice.paymentDetail')}</h4>
+            <div className="store-order-invoice-payment-row">
+              <span className="store-order-invoice-label">{t('warehouse.invoice.paymentName')}</span>
+              <span>HOT BARGAIN INTERNATIONAL</span>
+            </div>
+            <div className="store-order-invoice-payment-row">
+              <span className="store-order-invoice-label">{t('warehouse.invoice.bsb')}</span>
+              <span>12532</span>
+            </div>
+            <div className="store-order-invoice-payment-row">
+              <span className="store-order-invoice-label">{t('warehouse.invoice.account')}</span>
+              <span>208034605</span>
+            </div>
+            <div className="store-order-invoice-disclaimer">
+              {t('warehouse.invoice.paymentDisclaimer')}
+            </div>
+          </div>
+
+          <div className="store-order-invoice-totals">
+            <div className="store-order-invoice-total-row">
+              <span>{t('warehouse.invoice.subTotal')}</span>
+              <span>{formatCurrency(totals.subTotal)}</span>
+            </div>
+            <div className="store-order-invoice-total-row">
+              <span>{t('warehouse.invoice.gst')}</span>
+              <span>{formatCurrency(totals.gst)}</span>
+            </div>
+            <div className="store-order-invoice-total-row">
+              <span>{t('warehouse.invoice.freight')}</span>
+              <span>{formatCurrency(totals.freight)}</span>
+            </div>
+            <div className="store-order-invoice-total-row is-grand">
+              <span>{t('warehouse.invoice.totalBeforeDiscount')}</span>
+              <span>{formatCurrency(totals.total)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="store-order-print-footer">
+          <div>{t('warehouse.invoice.pageDocument')}</div>
+          <div>{t('warehouse.invoice.imageRefNote')}</div>
+          <div>{t('warehouse.invoice.dateLabel')} {formatPrintDate(undefined)}</div>
+        </div>
+      </div>
+
+      <Modal
+        title={t('warehouse.invoice.emailModalTitle', { lng: emailModalLanguage })}
+        open={emailModalOpen}
+        destroyOnClose
+        okText={t('warehouse.invoice.sendEmail', { lng: emailModalLanguage })}
+        cancelText={t('common.cancel', { lng: emailModalLanguage })}
+        confirmLoading={sendingEmail || translatingEmailText}
+        okButtonProps={{ disabled: translatingEmailText }}
+        onCancel={() => setEmailModalOpen(false)}
+        onOk={() => void handleSendInvoiceEmail()}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Segmented<InvoiceEmailModalLanguage>
+            aria-label={t('warehouse.invoice.emailLanguage', { lng: emailModalLanguage })}
+            size="small"
+            value={emailModalLanguage}
+            disabled={translatingEmailText}
+            options={[
+              { label: t('warehouse.invoice.emailLanguageChinese', { lng: emailModalLanguage }), value: 'zh' },
+              { label: t('warehouse.invoice.emailLanguageEnglish', { lng: emailModalLanguage }), value: 'en' },
+            ]}
+            onChange={(value) => void handleEmailModalLanguageChange(value)}
+          />
+          <Input
+            type="email"
+            value={recipientEmail}
+            onChange={(event) => setRecipientEmail(event.target.value)}
+            disabled={translatingEmailText}
+            placeholder={t('warehouse.invoice.recipientEmail', { lng: emailModalLanguage })}
+          />
+          <Input
+            value={emailSubject}
+            onChange={(event) => {
+              setEmailSubjectTouched(true)
+              setEmailSubject(event.target.value)
+            }}
+            disabled={translatingEmailText}
+            placeholder={t('warehouse.invoice.emailSubject', { lng: emailModalLanguage })}
+          />
+          <Input.TextArea
+            rows={5}
+            value={emailBody}
+            onChange={(event) => {
+              setEmailBodyTouched(true)
+              setEmailBody(event.target.value)
+            }}
+            disabled={translatingEmailText}
+            placeholder={t('warehouse.invoice.emailBody', { lng: emailModalLanguage })}
+          />
+          <Switch
+            checked={saveAsStoreDefault}
+            disabled={translatingEmailText}
+            checkedChildren={t('warehouse.invoice.saveAsStoreDefault', { lng: emailModalLanguage })}
+            unCheckedChildren={t('warehouse.invoice.saveAsStoreDefault', { lng: emailModalLanguage })}
+            onChange={setSaveAsStoreDefault}
+          />
+        </Space>
+      </Modal>
+    </div>
+  )
+}

@@ -1,0 +1,778 @@
+import type { ApiResponse } from '../types/api'
+import type {
+  AddStoreOrderLinePayload,
+  BatchAddStoreOrderLinePayload,
+  PasteReplaceStoreOrderLinesPayload,
+  BatchUpdateStoreOrderLinePayload,
+  BatchUpdateStoreOrderProductStatusPayload,
+  CopyStoreOrderPayload,
+  CopyStoreOrderResult,
+  CreateStoreOrderPayload,
+  RemoveStoreOrderLinePayload,
+  StoreOrderHqSyncPayload,
+  SyncMissingStoreOrdersPayload,
+  SyncMissingStoreOrdersResult,
+  StoreOrderSyncJobResult,
+  StoreOrderSyncJobStatus,
+  StoreOrderInvoiceEmailJobResult,
+  StoreOrderPasteReplaceJobResult,
+  StoreOrderBatchStatusUpdatePayload,
+  StoreOrderBranchOption,
+  StoreOrderDetail,
+  StoreOrderDetailQuery,
+  StoreOrderBatchLookupItem,
+  StoreOrderBatchLookupPayload,
+  StoreOrderCart,
+  StoreOrderListItem,
+  StoreOrderListQuery,
+  StoreOrderListResult,
+  StoreOrderScanLookupResult,
+  StoreOrderDynamicData,
+  StoreOrderPasteTargetField,
+  StoreOrderProductItem,
+  StoreOrderProductListResult,
+  StoreOrderProductQuery,
+  StoreOrderStatusUpdatePayload,
+  SendStoreOrderInvoiceEmailPayload,
+  TranslateStoreOrderInvoiceEmailTextPayload,
+  TranslateStoreOrderInvoiceEmailTextResult,
+  UpdateStoreOrderStoreContactPayload,
+  UpdateStoreOrderHeaderPayload,
+  UpdateStoreOrderOutboundDatePayload,
+  UpdateStoreOrderLinePayload,
+  UpdateStoreOrderProductStatusPayload,
+} from '../types/storeOrder'
+import request from '../utils/request'
+
+const API_BASE = '/api/react/v1/store-order'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function unwrapEnvelope<T>(payload: unknown): T {
+  let current = payload
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!isRecord(current) || !('data' in current)) {
+      break
+    }
+
+    const keys = Object.keys(current)
+    const looksLikeEnvelope =
+      keys.includes('data') &&
+      (keys.includes('success') ||
+        keys.includes('isSuccess') ||
+        keys.includes('message') ||
+        keys.includes('errorCode') ||
+        keys.includes('code'))
+
+    if (!looksLikeEnvelope) {
+      break
+    }
+
+    current = current.data
+  }
+
+  return current as T
+}
+
+function normalizePagedList<T>(payload: unknown): StoreOrderListResult {
+  const result = unwrapEnvelope<{
+    items?: T[]
+    total?: number
+    page?: number
+    pageSize?: number
+    pageNumber?: number
+  }>(payload)
+
+  return {
+    items: (result?.items ?? []) as StoreOrderListItem[],
+    total: result?.total ?? 0,
+    page: result?.page ?? result?.pageNumber ?? 1,
+    pageSize: result?.pageSize ?? 10,
+  }
+}
+
+function normalizeProductPagedList(payload: unknown): StoreOrderProductListResult {
+  const result = unwrapEnvelope<{
+    items?: StoreOrderProductItem[]
+    total?: number
+    page?: number
+    pageNumber?: number
+    pageSize?: number
+  }>(payload)
+
+  return {
+    items: result?.items ?? [],
+    total: result?.total ?? 0,
+    page: result?.page ?? result?.pageNumber ?? 1,
+    pageSize: result?.pageSize ?? 24,
+  }
+}
+
+function normalizeCart(payload: unknown): StoreOrderCart | null {
+  const result = normalizeResult<Partial<StoreOrderCart> | null>(payload)
+  if (!result) {
+    return null
+  }
+
+  return {
+    orderGUID: result.orderGUID ?? '',
+    orderNo: result.orderNo,
+    storeCode: result.storeCode,
+    storeName: result.storeName,
+    totalAmount: result.totalAmount ?? 0,
+    totalQuantity: result.totalQuantity ?? 0,
+    totalImportAmount: result.totalImportAmount ?? 0,
+    totalVolume: result.totalVolume ?? 0,
+    remarks: result.remarks,
+    shippingFee: result.shippingFee,
+    orderDate: result.orderDate,
+    outboundDate: result.outboundDate,
+    storeAddress: result.storeAddress,
+    flowStatus: result.flowStatus,
+    items: Array.isArray(result.items) ? result.items : [],
+  }
+}
+
+function normalizeStoreOrderDetail(payload: unknown): StoreOrderDetail | null {
+  const result = normalizeResult<Partial<StoreOrderDetail> | null>(payload)
+  if (!result) {
+    return null
+  }
+
+  const items = Array.isArray(result.items) ? result.items : []
+
+  return {
+    ...result,
+    orderGUID: result.orderGUID ?? '',
+    totalAmount: result.totalAmount ?? 0,
+    totalQuantity: result.totalQuantity ?? 0,
+    totalImportAmount: result.totalImportAmount ?? 0,
+    totalVolume: result.totalVolume ?? 0,
+    itemsTotal: result.itemsTotal ?? items.length,
+    items,
+  } as StoreOrderDetail
+}
+
+function normalizeResult<T>(payload: unknown): T {
+  return unwrapEnvelope<T>(payload)
+}
+
+function normalizeStoreOrderSyncPayload(payload?: SyncMissingStoreOrdersPayload) {
+  const storeCodes = Array.from(
+    new Set(
+      (payload?.storeCodes?.length ? payload.storeCodes : payload?.storeCode ? [payload.storeCode] : [])
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  )
+
+  return storeCodes.length ? { storeCodes } : {}
+}
+
+function normalizeStoreOrderHqIncrementalSyncPayload(payload?: StoreOrderHqSyncPayload) {
+  const basePayload = normalizeStoreOrderSyncPayload(payload)
+  return {
+    ...basePayload,
+    ...(payload?.startDate ? { startDate: payload.startDate } : {}),
+    ...(payload?.endDate ? { endDate: payload.endDate } : {}),
+    ...(payload?.conflictStrategy ? { conflictStrategy: payload.conflictStrategy } : {}),
+  }
+}
+
+function normalizeStoreOrderSyncJobStatus(status: unknown): StoreOrderSyncJobStatus {
+  if (typeof status !== 'string') {
+    return 'Running'
+  }
+
+  switch (status.trim().toLowerCase()) {
+    case 'queued':
+    case 'pending':
+      return 'Queued'
+    case 'running':
+      return 'Running'
+    case 'succeeded':
+      return 'Succeeded'
+    case 'failed':
+      return 'Failed'
+    default:
+      return 'Running'
+  }
+}
+
+function normalizeStoreOrderSyncJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): StoreOrderSyncJobResult {
+  const rawPayload = isRecord(payload) ? payload : null
+  const rawResult = normalizeResult<Record<string, unknown> | null>(payload)
+  const result = isRecord(rawResult) ? rawResult : {}
+  const nestedResult = isRecord(result.result) ? result.result : {}
+
+  const readNumber = (...values: unknown[]) =>
+    values.find((value): value is number => typeof value === 'number')
+  const message =
+    typeof result.message === 'string'
+      ? result.message
+      : typeof nestedResult.message === 'string'
+        ? nestedResult.message
+        : rawPayload && typeof rawPayload.message === 'string'
+          ? rawPayload.message
+          : undefined
+  const success =
+    typeof result.success === 'boolean'
+      ? result.success
+      : typeof nestedResult.success === 'boolean'
+        ? nestedResult.success
+        : rawPayload && typeof rawPayload.success === 'boolean'
+          ? rawPayload.success
+          : undefined
+  const resolvedStatus =
+    typeof result.status === 'string'
+      ? normalizeStoreOrderSyncJobStatus(result.status)
+      : success === false
+        ? 'Failed'
+        : 'Running'
+
+  return {
+    jobId: typeof result.jobId === 'string' ? result.jobId : fallbackJobId,
+    status: resolvedStatus,
+    mode:
+      result.mode === 'Full' || result.mode === 'Incremental'
+        ? result.mode
+        : nestedResult.mode === 'Full' || nestedResult.mode === 'Incremental'
+          ? nestedResult.mode
+          : undefined,
+    conflictStrategy:
+      result.conflictStrategy === 'LatestWins' || result.conflictStrategy === 'HqWins'
+        ? result.conflictStrategy
+        : nestedResult.conflictStrategy === 'LatestWins' || nestedResult.conflictStrategy === 'HqWins'
+          ? nestedResult.conflictStrategy
+          : undefined,
+    message,
+    success,
+    storeCodes: Array.isArray(result.storeCodes)
+      ? result.storeCodes.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    startDate: typeof result.startDate === 'string' ? result.startDate : undefined,
+    endDate: typeof result.endDate === 'string' ? result.endDate : undefined,
+    ordersSynced: readNumber(result.ordersSynced, nestedResult.ordersSynced),
+    detailsSynced: readNumber(result.detailsSynced, nestedResult.detailsSynced),
+    ordersUpdated: readNumber(result.ordersUpdated, nestedResult.ordersUpdated),
+    detailsUpdated: readNumber(result.detailsUpdated, nestedResult.detailsUpdated),
+    ordersSoftDeleted: readNumber(result.ordersSoftDeleted, nestedResult.ordersSoftDeleted),
+    detailsSoftDeleted: readNumber(result.detailsSoftDeleted, nestedResult.detailsSoftDeleted),
+    skippedOrdersBecauseLocalNewer: readNumber(
+      result.skippedOrdersBecauseLocalNewer,
+      nestedResult.skippedOrdersBecauseLocalNewer,
+    ),
+    skippedDetailsBecauseLocalNewer: readNumber(
+      result.skippedDetailsBecauseLocalNewer,
+      nestedResult.skippedDetailsBecauseLocalNewer,
+    ),
+    hqOrderCount: readNumber(result.hqOrderCount, nestedResult.hqOrderCount),
+    hqDetailCount: readNumber(result.hqDetailCount, nestedResult.hqDetailCount),
+    shadowRowCount: readNumber(result.shadowRowCount, nestedResult.shadowRowCount),
+    durationMs: readNumber(result.durationMs, nestedResult.durationMs),
+    errors: Array.isArray(nestedResult.errors)
+      ? nestedResult.errors.filter((item): item is string => typeof item === 'string')
+      : Array.isArray(result.errors)
+        ? result.errors.filter((item): item is string => typeof item === 'string')
+        : undefined,
+  }
+}
+
+function normalizeStoreOrderInvoiceEmailJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): StoreOrderInvoiceEmailJobResult {
+  const rawPayload = isRecord(payload) ? payload : null
+  const result = normalizeResult<Record<string, unknown> | null>(payload)
+  const job = isRecord(result) ? result : {}
+  const message =
+    typeof job.message === 'string'
+      ? job.message
+      : rawPayload && typeof rawPayload.message === 'string'
+        ? rawPayload.message
+        : undefined
+
+  return {
+    jobId: typeof job.jobId === 'string' ? job.jobId : fallbackJobId,
+    status: normalizeStoreOrderSyncJobStatus(job.status),
+    message,
+    orderGUID: typeof job.orderGUID === 'string' ? job.orderGUID : undefined,
+    toEmail: typeof job.toEmail === 'string' ? job.toEmail : undefined,
+    createdAt: typeof job.createdAt === 'string' ? job.createdAt : undefined,
+    completedAt: typeof job.completedAt === 'string' ? job.completedAt : undefined,
+  }
+}
+
+function normalizeStoreOrderPasteReplaceJobResult(
+  payload: unknown,
+  fallbackJobId = '',
+): StoreOrderPasteReplaceJobResult {
+  const rawPayload = isRecord(payload) ? payload : null
+  const result = normalizeResult<Record<string, unknown> | null>(payload)
+  const job = isRecord(result) ? result : {}
+  const success = rawPayload && typeof rawPayload.success === 'boolean' ? rawPayload.success : undefined
+  const message =
+    typeof job.message === 'string'
+      ? job.message
+      : rawPayload && typeof rawPayload.message === 'string'
+        ? rawPayload.message
+        : undefined
+  const status = typeof job.status === 'string'
+    ? normalizeStoreOrderSyncJobStatus(job.status)
+    : success === false
+      ? 'Failed'
+      : 'Running'
+
+  return {
+    jobId: typeof job.jobId === 'string' ? job.jobId : fallbackJobId,
+    status,
+    message,
+    orderGUID: typeof job.orderGUID === 'string' ? job.orderGUID : undefined,
+    targetField: job.targetField === 'allocQuantity' || job.targetField === 'quantity' ? job.targetField : undefined,
+    totalCount: typeof job.totalCount === 'number' ? job.totalCount : undefined,
+    importedCount: typeof job.importedCount === 'number' ? job.importedCount : undefined,
+    skippedCount: typeof job.skippedCount === 'number' ? job.skippedCount : undefined,
+    createdAt: typeof job.createdAt === 'string' ? job.createdAt : undefined,
+    completedAt: typeof job.completedAt === 'string' ? job.completedAt : undefined,
+  }
+}
+
+export async function getStoreOrderList(query: StoreOrderListQuery) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/list`, {
+    method: 'POST',
+    data: query,
+  })
+
+  return normalizePagedList<StoreOrderListItem>(response)
+}
+
+export async function getUsedStoreOrderBranches() {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/used-branches`, {
+    method: 'GET',
+  })
+
+  return normalizeResult<StoreOrderBranchOption[]>(response)
+}
+
+export async function getStoreOrderDetail(
+  orderGuid: string,
+  query?: StoreOrderDetailQuery,
+  signal?: AbortSignal,
+) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    query ? `${API_BASE}/detail/${orderGuid}` : `${API_BASE}/detail/${orderGuid}/full`,
+    {
+      method: 'GET',
+      params: query ? { ...query } : undefined,
+      signal,
+    },
+  )
+
+  return normalizeStoreOrderDetail(response)
+}
+
+export async function getStoreOrderDetailFull(orderGuid: string, signal?: AbortSignal) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/detail/${orderGuid}/full`, {
+    method: 'GET',
+    signal,
+  })
+
+  return normalizeStoreOrderDetail(response)
+}
+
+export async function getStoreOrderDetailProductCodes(orderGuid: string, signal?: AbortSignal) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/detail/${orderGuid}/product-codes`,
+    {
+      method: 'GET',
+      signal,
+    },
+  )
+
+  const result = normalizeResult<unknown>(response)
+  return Array.isArray(result) ? result.filter((item): item is string => typeof item === 'string') : []
+}
+
+export async function getStoreOrderProducts(query: StoreOrderProductQuery) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products`, {
+    method: 'POST',
+    data: query,
+  })
+
+  return normalizeProductPagedList(response)
+}
+
+export async function batchLookupStoreOrderProducts(payload: StoreOrderBatchLookupPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products/batch-lookup`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<StoreOrderBatchLookupItem[]>(response)
+}
+
+export async function lookupStoreOrderProductsByBarcode(barcode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products/scan-lookup`, {
+    method: 'POST',
+    data: { barcode },
+  })
+
+  const result = normalizeResult<Partial<StoreOrderScanLookupResult> | null>(response)
+
+  return {
+    barcode: result?.barcode ?? barcode,
+    items: Array.isArray(result?.items) ? (result?.items as StoreOrderProductItem[]) : [],
+  } satisfies StoreOrderScanLookupResult
+}
+
+export async function getStoreOrderProductsDynamicData(payload: {
+  storeCode: string
+  productCodes: string[]
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/dynamic-data`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  const result = normalizeResult<StoreOrderDynamicData[] | null>(response)
+  return Array.isArray(result) ? result : []
+}
+
+export async function getActiveStoreOrderCart(storeCode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/${storeCode}`, {
+    method: 'GET',
+  })
+
+  return normalizeCart(response)
+}
+
+export async function addStoreOrderCartItem(payload: {
+  storeCode: string
+  productCode: string
+  quantity: number
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/add`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeCart(response)
+}
+
+export async function updateStoreOrderCartItem(payload: {
+  storeCode: string
+  productCode: string
+  quantity: number
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/update`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeCart(response)
+}
+
+export async function removeStoreOrderCartItem(payload: {
+  storeCode: string
+  detailGUID: string
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/remove`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeCart(response)
+}
+
+export async function clearActiveStoreOrderCart(storeCode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/clear`, {
+    method: 'POST',
+    data: { storeCode },
+  })
+
+  return normalizeCart(response)
+}
+
+export async function submitActiveStoreOrder(payload: {
+  storeCode: string
+  remarks?: string
+}) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/submit`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<CopyStoreOrderResult | string | null>(response)
+}
+
+export async function createStoreOrder(payload: CreateStoreOrderPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/create`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<string>(response)
+}
+
+export async function copyStoreOrder(payload: CopyStoreOrderPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/copy`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<CopyStoreOrderResult | string>(response)
+}
+
+export async function updateStoreOrderStatus(payload: StoreOrderStatusUpdatePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/status`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function batchUpdateStoreOrderStatus(payload: StoreOrderBatchStatusUpdatePayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/batch-status`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<number | boolean | null>(response)
+}
+
+export async function deleteStoreOrder(orderGuid: string) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/${orderGuid}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function addStoreOrderLine(payload: AddStoreOrderLinePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/add`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function batchAddStoreOrderLines(payload: BatchAddStoreOrderLinePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/batch-add`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function pasteReplaceStoreOrderLines(payload: PasteReplaceStoreOrderLinesPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/paste-replace`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function createStoreOrderPasteReplaceJob(payload: PasteReplaceStoreOrderLinesPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/paste-replace/jobs`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeStoreOrderPasteReplaceJobResult(response)
+}
+
+export async function getStoreOrderPasteReplaceJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/line/paste-replace/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderPasteReplaceJobResult(response, jobId)
+}
+
+export async function updateStoreOrderLine(payload: UpdateStoreOrderLinePayload) {
+  const { allocQuantity, ...restPayload } = payload
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/update`, {
+    method: 'POST',
+    // 后端当前接口仍使用 quantity 字段表达发货数，前端类型保持 allocQuantity 语义。
+    data: {
+      ...restPayload,
+      quantity: allocQuantity,
+    },
+  })
+}
+
+export async function removeStoreOrderLine(payload: RemoveStoreOrderLinePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/remove`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function batchUpdateStoreOrderLines(payload: BatchUpdateStoreOrderLinePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/batch-update`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function updateStoreOrderProductStatus(payload: UpdateStoreOrderProductStatusPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/product/status`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function batchUpdateStoreOrderProductStatus(payload: BatchUpdateStoreOrderProductStatusPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/product/batch-status`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function updateStoreOrderHeader(payload: UpdateStoreOrderHeaderPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/header/update`, {
+    method: 'POST',
+    data: {
+      ...payload,
+      orderGuid: payload.orderGUID,
+    },
+  })
+}
+
+export async function updateStoreOrderOutboundDate(payload: UpdateStoreOrderOutboundDatePayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/outbound-date`, {
+    method: 'POST',
+    data: {
+      ...payload,
+      orderGuid: payload.orderGUID,
+    },
+  })
+}
+
+export async function updateStoreOrderStoreContact(payload: UpdateStoreOrderStoreContactPayload) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/store-contact/update`, {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export async function sendStoreOrderInvoiceEmail(payload: SendStoreOrderInvoiceEmailPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/invoice/email`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeStoreOrderInvoiceEmailJobResult(response)
+}
+
+export async function translateStoreOrderInvoiceEmailText(
+  payload: TranslateStoreOrderInvoiceEmailTextPayload,
+): Promise<TranslateStoreOrderInvoiceEmailTextResult> {
+  const response = await request<ApiResponse<TranslateStoreOrderInvoiceEmailTextResult> | unknown>(
+    `${API_BASE}/invoice/email/translate-text`,
+    {
+      method: 'POST',
+      data: payload,
+    },
+  )
+
+  const result = normalizeResult<Record<string, unknown> | null>(response)
+  return {
+    subject: typeof result?.subject === 'string' ? result.subject : undefined,
+    body: typeof result?.body === 'string' ? result.body : undefined,
+  }
+}
+
+export async function getStoreOrderInvoiceEmailJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/invoice/email/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderInvoiceEmailJobResult(response, jobId)
+}
+
+export async function completeStoreOrder(orderGuid: string) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/complete/${orderGuid}`, {
+    method: 'POST',
+  })
+}
+
+export async function startPickingStoreOrder(orderGuid: string) {
+  await request<ApiResponse<unknown> | unknown>(`${API_BASE}/start-picking/${orderGuid}`, {
+    method: 'POST',
+  })
+}
+
+export async function syncMissingStoreOrders(payload?: SyncMissingStoreOrdersPayload) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000)
+
+  try {
+    const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/sync-missing-orders`, {
+      method: 'POST',
+      data: normalizeStoreOrderSyncPayload(payload),
+      signal: controller.signal,
+    })
+
+    return normalizeResult<SyncMissingStoreOrdersResult>(response)
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+export async function createStoreOrderSyncJob(payload?: SyncMissingStoreOrdersPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/sync-missing-orders/jobs`, {
+    method: 'POST',
+    data: normalizeStoreOrderSyncPayload(payload),
+  })
+
+  return normalizeStoreOrderSyncJobResult(response)
+}
+
+export async function createStoreOrderFullHqSyncJob() {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/hq-sync/full/jobs`, {
+    method: 'POST',
+    data: {},
+  })
+
+  return normalizeStoreOrderSyncJobResult(response)
+}
+
+export async function createStoreOrderIncrementalHqSyncJob(payload?: StoreOrderHqSyncPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/hq-sync/incremental/jobs`, {
+    method: 'POST',
+    data: normalizeStoreOrderHqIncrementalSyncPayload(payload),
+  })
+
+  return normalizeStoreOrderSyncJobResult(response)
+}
+
+export async function getStoreOrderSyncJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/sync-missing-orders/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderSyncJobResult(response, jobId)
+}
+
+export async function getStoreOrderHqSyncJob(jobId: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/hq-sync/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'GET',
+    },
+  )
+
+  return normalizeStoreOrderSyncJobResult(response, jobId)
+}
+
+export type { StoreOrderPasteTargetField }

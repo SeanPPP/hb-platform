@@ -1,0 +1,21 @@
+services:
+  hb-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hbweb-rv-frontend:local
+    container_name: hb-frontend
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    networks:
+      - hb-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  hb-network:
+    external: true

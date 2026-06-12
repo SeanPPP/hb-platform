@@ -1,0 +1,232 @@
+.container {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.thead {
+  background: #f3f3f9;
+}
+
+.th {
+  padding: 8px 12px;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-align: left;
+  border-bottom: none;
+}
+
+.thRight {
+  text-align: right;
+}
+
+.thCenter {
+  text-align: center;
+}
+
+.tbody {
+  font-family: Inter, sans-serif;
+}
+
+.row {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  border-bottom: 1px solid #ededf4;
+
+  &:hover {
+    background-color: rgba(0, 0, 0, 2%);
+  }
+}
+
+.rowWeek {
+  background: rgba(243, 243, 249, 30%);
+}
+
+.rowBranch {
+  background: #fff;
+}
+
+.rowDate {
+  background: rgba(248, 248, 248, 50%);
+}
+
+.cell {
+  padding: 6px 12px;
+}
+
+.subValueGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.cellRight {
+  text-align: right;
+}
+
+.hierarchyCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.indentBranch {
+  padding-left: 32px;
+}
+
+.indentDate {
+  padding-left: 56px;
+}
+
+.expandIcon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.2s ease, color 0.2s ease;
+  color: #003670;
+  font-size: 0;
+  flex-shrink: 0;
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid currentcolor;
+    border-bottom: 1.5px solid currentcolor;
+    transform: rotate(-45deg);
+    transition: transform 0.2s ease;
+  }
+
+  &:hover {
+    color: #0050a0;
+  }
+
+  &.expanded {
+    &::before {
+      transform: rotate(45deg);
+      margin-top: -2px;
+    }
+  }
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #003670 0%, #06c 100%);
+  margin-left: 4px;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px rgba(0, 54, 112, 40%);
+  animation: dot-pulse 2s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.7;
+    transform: scale(0.85);
+  }
+}
+
+.hierarchyLabel {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+
+  .rowWeek & {
+    color: #003670;
+  }
+
+  .rowBranch & {
+    color: #1a1c20;
+  }
+
+  .rowDate & {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #434750;
+  }
+}
+
+.valueGroup {
+  text-align: right;
+}
+
+.value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+
+  .rowWeek & {
+    color: #1a1c20;
+  }
+
+  .rowBranch & {
+    color: #1a1c20;
+  }
+
+  .rowDate & {
+    font-weight: 600;
+    color: #434750;
+  }
+}
+
+.subValue {
+  font-weight: 600;
+  color: #434750;
+  font-variant-numeric: tabular-nums;
+}
+
+.lyValue {
+  font-size: 0.5625rem;
+  color: #1a1c20;
+  font-weight: 500;
+}
+
+.changeRatio {
+  font-size: 0.5625rem;
+  font-weight: 600;
+}
+
+.changeUp {
+  color: #005b14;
+}
+
+.changeDown {
+  color: #93000a;
+}
+
+.loadingContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 300px;
+  width: 100%;
+}
+
+.emptyContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 300px;
+  width: 100%;
+}
+
+.emptyText {
+  color: #94a3b8;
+  font-size: 0.875rem;
+  font-weight: 500;
+}

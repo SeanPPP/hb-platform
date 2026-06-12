@@ -1,0 +1,349 @@
+import type { ApplicationLogIngestItem } from '../types/centerLog'
+
+const importMetaEnv = (import.meta as ImportMeta & { env?: ImportMetaEnv }).env ?? {}
+const API_BASE_URL = (importMetaEnv.VITE_API_BASE_URL || '').trim()
+const CENTER_LOG_INGEST_PATH = '/api/system/logs/ingest'
+const CENTER_LOG_PROJECT = (importMetaEnv.VITE_CENTER_LOG_PROJECT || 'hbweb_rv').trim()
+// VITE_* 会被打进浏览器包里，只能作为公开 ingest token，不能当服务端秘密。
+const CENTER_LOG_KEY = (importMetaEnv.VITE_CENTER_LOG_KEY || '').trim()
+const CENTER_LOG_ENVIRONMENT =
+  (importMetaEnv.VITE_CENTER_LOG_ENVIRONMENT || importMetaEnv.MODE || 'development').trim()
+const CENTER_LOG_SERVICE_NAME = (importMetaEnv.VITE_CENTER_LOG_SERVICE_NAME || 'hbweb_rv-web').trim()
+const CENTER_LOG_SOURCE_TYPE = 'Web'
+
+const MAX_MESSAGE_LENGTH = 2000
+const MAX_STACK_LENGTH = 12000
+const MAX_PROPERTY_LENGTH = 1000
+const EXTERNAL_SENSITIVE_PROPERTY_PATTERN = /(token|password|authorization|credential|signature|sig|code)/i
+
+function trimText(value: string | undefined, maxLength: number) {
+  if (!value) {
+    return undefined
+  }
+
+  const normalized = value.trim()
+  if (!normalized) {
+    return undefined
+  }
+
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 3)}...`
+    : normalized
+}
+
+function buildApiUrl(path: string) {
+  return `${API_BASE_URL}${path}`.replace(/([^:]\/)\/+/g, '$1')
+}
+
+function getRequestPath(url?: string, options?: { stripQuery?: boolean }) {
+  if (!url) {
+    return undefined
+  }
+
+  try {
+    const resolved = new URL(url, typeof window !== 'undefined' ? window.location.origin : 'http://localhost')
+    return options?.stripQuery ? resolved.pathname : `${resolved.pathname}${resolved.search}`
+  } catch {
+    return options?.stripQuery ? url.split('?')[0] : url
+  }
+}
+
+function sanitizeExternalUrl(value: string) {
+  try {
+    const resolved = new URL(value, typeof window !== 'undefined' ? window.location.origin : 'http://localhost')
+    if (resolved.origin === 'null') {
+      return value.split('?')[0]?.split('#')[0]?.trim() || undefined
+    }
+    return `${resolved.origin}${resolved.pathname}`
+  } catch {
+    return value.split('?')[0]?.split('#')[0]?.trim() || undefined
+  }
+}
+
+function extractUriTail(value: string) {
+  const sanitized = sanitizeExternalUrl(value)
+  if (!sanitized) {
+    return undefined
+  }
+
+  const segments = sanitized.split('/').filter(Boolean)
+  return segments[segments.length - 1] || undefined
+}
+
+function sanitizeProperties(properties?: Record<string, unknown>) {
+  if (!properties) {
+    return undefined
+  }
+
+  const sanitizedEntries: Array<[string, unknown]> = []
+
+  Object.entries(properties).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return
+    }
+
+    if (typeof value === 'string') {
+      const trimmedValue = trimText(value, MAX_PROPERTY_LENGTH)
+      if (trimmedValue) {
+        sanitizedEntries.push([key, trimmedValue])
+      }
+      return
+    }
+
+    sanitizedEntries.push([key, value])
+  })
+
+  return sanitizedEntries.length ? Object.fromEntries(sanitizedEntries) : undefined
+}
+
+function sanitizeExternalProperties(properties?: Record<string, unknown>) {
+  if (!properties) {
+    return undefined
+  }
+
+  const sanitizedEntries: Array<[string, unknown]> = []
+
+  Object.entries(properties).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return
+    }
+
+    // 外部上传参数里常见 token/signature/authorization code，按 key 直接丢弃。
+    if (EXTERNAL_SENSITIVE_PROPERTY_PATTERN.test(key)) {
+      return
+    }
+
+    if (typeof value === 'string' && /url$/i.test(key)) {
+      const sanitizedUrl = sanitizeExternalUrl(value)
+      if (sanitizedUrl) {
+        sanitizedEntries.push([key, sanitizedUrl])
+      }
+      return
+    }
+
+    if (typeof value === 'string' && /uri$/i.test(key)) {
+      const uriTail = extractUriTail(value)
+      if (uriTail) {
+        sanitizedEntries.push([`${key}Tail`, uriTail])
+      }
+      return
+    }
+
+    if (typeof value === 'string') {
+      const trimmedValue = trimText(value, MAX_PROPERTY_LENGTH)
+      if (trimmedValue) {
+        sanitizedEntries.push([key, trimmedValue])
+      }
+      return
+    }
+
+    sanitizedEntries.push([key, value])
+  })
+
+  return sanitizedEntries.length ? Object.fromEntries(sanitizedEntries) : undefined
+}
+
+export function summarizeResponsePayloadForLog(payload: unknown) {
+  if (payload === undefined || payload === null || payload === '') {
+    return undefined
+  }
+
+  if (typeof payload === 'string') {
+    return { message: trimText(payload, MAX_PROPERTY_LENGTH) }
+  }
+
+  if (typeof payload !== 'object') {
+    return { message: trimText(String(payload), MAX_PROPERTY_LENGTH) }
+  }
+
+  const raw = payload as Record<string, unknown>
+  const summary: Record<string, unknown> = {}
+  ;['success', 'isSuccess', 'message', 'code', 'errorCode'].forEach((key) => {
+    const value = raw[key]
+    if (typeof value === 'boolean' || typeof value === 'number') {
+      summary[key] = value
+      return
+    }
+    if (typeof value === 'string') {
+      const trimmed = trimText(value, MAX_PROPERTY_LENGTH)
+      if (trimmed) {
+        summary[key] = trimmed
+      }
+    }
+  })
+
+  return Object.keys(summary).length ? summary : undefined
+}
+
+export function summarizeExternalResponsePayloadForLog(payload: unknown) {
+  if (payload === undefined || payload === null || payload === '') {
+    return undefined
+  }
+
+  if (typeof payload === 'string') {
+    // 外部服务的原始响应体可能带签名、token 或 HTML 片段，这里只保留长度摘要。
+    return { type: 'string', length: payload.length }
+  }
+
+  if (typeof payload !== 'object') {
+    return {
+      type: typeof payload,
+      message: trimText(String(payload), MAX_PROPERTY_LENGTH),
+    }
+  }
+
+  return summarizeResponsePayloadForLog(payload)
+}
+
+export function isCenterLogIngestRequest(url: string) {
+  const requestPath = getRequestPath(url) || ''
+  return requestPath.startsWith(CENTER_LOG_INGEST_PATH)
+}
+
+export function isCenterLogConfigured() {
+  return Boolean(CENTER_LOG_KEY)
+}
+
+export interface CenterLogPayload extends Omit<ApplicationLogIngestItem, 'projectCode' | 'environment' | 'serviceName' | 'timestampUtc'> {
+  timestampUtc?: string
+}
+
+export function sendCenterLog(payload: CenterLogPayload) {
+  if (!isCenterLogConfigured()) {
+    return
+  }
+
+  // 前端统一在这里补齐中心日志要求的基础字段，业务侧只传本次事件本身。
+  const item: ApplicationLogIngestItem = {
+    ...payload,
+    message: trimText(payload.message, MAX_MESSAGE_LENGTH) || '未知错误',
+    timestampUtc: payload.timestampUtc || new Date().toISOString(),
+    projectCode: CENTER_LOG_PROJECT,
+    environment: CENTER_LOG_ENVIRONMENT,
+    sourceType: CENTER_LOG_SOURCE_TYPE,
+    serviceName: CENTER_LOG_SERVICE_NAME || undefined,
+    exceptionMessage: trimText(payload.exceptionMessage, MAX_MESSAGE_LENGTH),
+    stackTrace: trimText(payload.stackTrace, MAX_STACK_LENGTH),
+    requestPath: trimText(payload.requestPath, MAX_PROPERTY_LENGTH),
+    traceId: trimText(payload.traceId, MAX_PROPERTY_LENGTH),
+    category: trimText(payload.category || payload.sourceType, MAX_PROPERTY_LENGTH),
+    userId: trimText(payload.userId, MAX_PROPERTY_LENGTH),
+    userName: trimText(payload.userName, MAX_PROPERTY_LENGTH),
+    properties: sanitizeProperties(payload.properties),
+  }
+
+  void fetch(buildApiUrl(CENTER_LOG_INGEST_PATH), {
+    method: 'POST',
+    credentials: 'include',
+    keepalive: true,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Log-Project': CENTER_LOG_PROJECT,
+      'X-Log-Key': CENTER_LOG_KEY,
+    },
+    body: JSON.stringify({ logs: [item] }),
+  }).catch(() => {
+    // 日志上报必须静默失败，不能反向影响业务链路。
+  })
+}
+
+function normalizeUnknownError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      exceptionType: error.name,
+      stackTrace: error.stack,
+    }
+  }
+
+  return {
+    message: typeof error === 'string' ? error : '未知异常',
+    exceptionType: typeof error,
+    stackTrace: undefined,
+  }
+}
+
+export interface RequestErrorReportInput {
+  url: string
+  method: string
+  statusCode?: number
+  error: unknown
+  responsePayload?: unknown
+  traceId?: string
+}
+
+export interface ExternalFetchErrorReportInput extends RequestErrorReportInput {
+  properties?: Record<string, unknown>
+}
+
+export function reportRequestError(input: RequestErrorReportInput) {
+  // 日志写入接口自身失败时必须短路，避免 request -> log -> request 的递归放大。
+  if (isCenterLogIngestRequest(input.url)) {
+    return
+  }
+
+  const normalizedError = normalizeUnknownError(input.error)
+  sendCenterLog({
+    level: input.statusCode && input.statusCode < 500 ? 'Warning' : 'Error',
+    sourceType: 'frontend-request',
+    message: normalizedError.message,
+    exceptionType: normalizedError.exceptionType,
+    exceptionMessage: normalizedError.message,
+    stackTrace: normalizedError.stackTrace,
+    requestPath: getRequestPath(input.url),
+    requestMethod: input.method,
+    statusCode: input.statusCode,
+    traceId: input.traceId,
+    properties: {
+      // 只记录失败摘要，避免把后端响应里的客户资料、token 等敏感字段写进前端日志。
+      responsePayload: summarizeResponsePayloadForLog(input.responsePayload),
+    },
+  })
+}
+
+export function buildExternalFetchErrorLog(input: ExternalFetchErrorReportInput): CenterLogPayload {
+  const normalizedError = normalizeUnknownError(input.error)
+  const sanitizedProperties = sanitizeExternalProperties(input.properties)
+  return {
+    level: input.statusCode && input.statusCode < 500 ? 'Warning' : 'Error',
+    sourceType: 'frontend-external-request',
+    message: normalizedError.message,
+    exceptionType: normalizedError.exceptionType,
+    exceptionMessage: normalizedError.message,
+    stackTrace: normalizedError.stackTrace,
+    // 外部 URL 常带签名 query，这里只保留 path，避免把临时凭证写进中心日志。
+    requestPath: getRequestPath(input.url, { stripQuery: true }),
+    requestMethod: input.method,
+    statusCode: input.statusCode,
+    traceId: input.traceId,
+    properties: {
+      ...sanitizedProperties,
+      responsePayload: summarizeExternalResponsePayloadForLog(input.responsePayload),
+    },
+  }
+}
+
+export function reportExternalFetchError(input: ExternalFetchErrorReportInput) {
+  if (isCenterLogIngestRequest(input.url)) {
+    return
+  }
+
+  sendCenterLog(buildExternalFetchErrorLog(input))
+}
+
+export function reportRuntimeError(
+  sourceType: 'window-error' | 'unhandledrejection' | 'react-error-boundary',
+  error: unknown,
+  properties?: Record<string, unknown>,
+) {
+  const normalizedError = normalizeUnknownError(error)
+  sendCenterLog({
+    level: 'Error',
+    sourceType,
+    message: normalizedError.message,
+    exceptionType: normalizedError.exceptionType,
+    exceptionMessage: normalizedError.message,
+    stackTrace: normalizedError.stackTrace,
+    properties,
+  })
+}
