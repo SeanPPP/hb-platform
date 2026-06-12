@@ -9,7 +9,8 @@ namespace BlazorApp.Api.Services.Logging
         public string ServiceName { get; set; } = "HBBBackend.Api";
         public string? InstanceId { get; set; }
         public string MinimumLevel { get; set; } = "Warning";
-        public int DefaultRetentionDays { get; set; } = 30;
+        // 中心日志默认只保留 7 天，避免未显式配置的项目长期堆积日志。
+        public int DefaultRetentionDays { get; set; } = 7;
         public int MaxBatchSize { get; set; } = 200;
         public int MaxIngestRequestsPerMinute { get; set; } = 120;
         public int MaxIngestLogsPerMinute { get; set; } = 5000;

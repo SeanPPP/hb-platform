@@ -34,6 +34,14 @@ public class ApplicationLogServiceTests : IDisposable
     }
 
     [Fact]
+    public void ApplicationLoggingOptions_默认保留天数为7天()
+    {
+        var options = new ApplicationLoggingOptions();
+
+        Assert.Equal(7, options.DefaultRetentionDays);
+    }
+
+    [Fact]
     public async Task AuthenticateProjectAsync_Key正确且项目启用_返回项目配置()
     {
         var service = CreateService(
@@ -434,6 +442,31 @@ public class ApplicationLogServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CleanupExpiredLogsAsync_项目保留7天时删除8天前并保留7天内日志()
+    {
+        var now = new DateTime(2026, 6, 5, 0, 0, 0, DateTimeKind.Utc);
+        await InsertLogAsync("HBBBackend", "Error", "/api/expired", "8天前日志", "expired", now.AddDays(-8));
+        await InsertLogAsync("HBBBackend", "Error", "/api/kept", "7天内日志", "kept", now.AddDays(-6));
+
+        var service = CreateService(
+            new ApplicationLoggingProjectOptions
+            {
+                ProjectCode = "HBBBackend",
+                ApiKeyHash = Sha256("backend-secret"),
+                RetentionDays = 7,
+                Enabled = true,
+            }
+        );
+
+        var deleted = await service.CleanupExpiredLogsAsync(now);
+
+        Assert.Equal(1, deleted);
+        var remaining = await _db.Queryable<ApplicationLog>().OrderBy(x => x.TraceId).ToListAsync();
+        var item = Assert.Single(remaining);
+        Assert.Equal("kept", item.TraceId);
+    }
+
+    [Fact]
     public async Task CleanupExpiredLogsAsync_按项目保留天数删除过期日志()
     {
         var now = new DateTime(2026, 6, 5, 0, 0, 0, DateTimeKind.Utc);
@@ -472,7 +505,7 @@ public class ApplicationLogServiceTests : IDisposable
             new ApplicationLoggingOptions
             {
                 DefaultProjectCode = "HBBBackend",
-                DefaultRetentionDays = 30,
+                DefaultRetentionDays = 7,
                 MaxBatchSize = 200,
                 Projects = projects.Length > 0
                     ? projects.ToList()
@@ -484,7 +517,7 @@ public class ApplicationLogServiceTests : IDisposable
                             DisplayName = "后端",
                             ApiKeyHash = Sha256("backend-secret"),
                             Enabled = true,
-                            RetentionDays = 30,
+                            RetentionDays = 7,
                         },
                     },
             }
