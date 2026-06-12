@@ -34,7 +34,6 @@ import {
   DatePicker,
   Descriptions,
   Dropdown,
-  Empty,
   Image,
   Input,
   InputNumber,
@@ -47,14 +46,12 @@ import {
   Table,
   Tag,
   Tooltip,
-  Tree,
   Typography,
   message,
   notification,
 } from 'antd'
 import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
-import type { DataNode } from 'antd/es/tree'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -174,7 +171,8 @@ import {
   type ContainerDetailTagStats,
   type ContainerDetailWarehouseStatusFilter,
 } from './containerDetailLogic'
-import { buildWarehouseCategoryLookup, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup } from '../Products/categoryPath'
+import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup } from '../Products/categoryPath'
+import CategoryTreePicker from '../Products/CategoryTreePicker'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
 import './index.css'
 
@@ -384,42 +382,29 @@ function findWarehouseCategory(nodes: WarehouseCategoryNode[], targetGuid?: stri
 function buildContainerDetailCategoryOptions(
   nodes: WarehouseCategoryNode[],
   t: ReturnType<typeof useTranslation>['t'],
+  language?: string,
   level = 0,
 ): Array<{ value: string; label: string }> {
   if (level === 0) {
     return [
       { value: CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY, label: t('containers.filters.allCategories', '全部分类') },
       { value: CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY, label: t('containers.filters.uncategorized', '未分类') },
-      ...buildContainerDetailCategoryOptions(nodes, t, level + 1),
+      ...buildContainerDetailCategoryOptions(nodes, t, language, level + 1),
     ]
   }
 
   return nodes.flatMap((node) => [
     {
       value: node.categoryGUID,
-      label: `${level > 1 ? `${'--'.repeat(level - 1)} ` : ''}${node.categoryName}${node.chineseName ? ` / ${node.chineseName}` : ''}`,
+      label: `${level > 1 ? `${'--'.repeat(level - 1)} ` : ''}${formatWarehouseCategoryNodeName(node, language)}`,
     },
-    ...buildContainerDetailCategoryOptions(node.children || [], t, level + 1),
+    ...buildContainerDetailCategoryOptions(node.children || [], t, language, level + 1),
   ])
 }
 
-function buildContainerDetailCategoryTreeData(nodes: WarehouseCategoryNode[], t: ReturnType<typeof useTranslation>['t']): DataNode[] {
-  return nodes.map((node) => ({
-    key: node.categoryGUID,
-    title: (
-      <Space size={6}>
-        <Typography.Text>{node.categoryName}</Typography.Text>
-        {node.chineseName ? <Typography.Text type="secondary">{node.chineseName}</Typography.Text> : null}
-        {node.isActive ? <Tag color="success">{t('common.active')}</Tag> : <Tag>{t('common.inactive')}</Tag>}
-      </Space>
-    ),
-    children: buildContainerDetailCategoryTreeData(node.children || [], t),
-  }))
-}
-
-function renderContainerDetailCategoryCell(record: ContainerDetail, categoryLookup: WarehouseCategoryLookup) {
+function renderContainerDetailCategoryCell(record: ContainerDetail, categoryLookup: WarehouseCategoryLookup, language?: string) {
   const displayName = getContainerDetailCategoryName(record) || '--'
-  const tooltipTitle = getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord(record), categoryLookup)
+  const tooltipTitle = getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord(record), categoryLookup, language)
 
   return (
     <Tooltip title={tooltipTitle || displayName}>
@@ -548,7 +533,7 @@ function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellP
 }
 
 export default function ContainerDetailPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const route = useStableRouteContext()
   const { active } = useKeepAliveContext()
@@ -654,7 +639,7 @@ export default function ContainerDetailPage() {
     getCategoryTree()
       .then((tree) => {
         setCategories(tree)
-        setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 2))
+        setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1))
       })
       .catch((error) => {
         console.error(error)
@@ -663,11 +648,13 @@ export default function ContainerDetailPage() {
       .finally(() => setCategoryLoading(false))
   }, [t])
 
-  const categoryFilterOptions = useMemo(() => buildContainerDetailCategoryOptions(categories, t), [categories, t])
-  const categoryTreeData = useMemo(() => buildContainerDetailCategoryTreeData(categories, t), [categories, t])
+  const categoryFilterOptions = useMemo(() => buildContainerDetailCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t])
   const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories])
   const selectedTargetCategory = useMemo(() => findWarehouseCategory(categories, targetCategoryGuid), [categories, targetCategoryGuid])
-  const selectedTargetCategoryPath = targetCategoryGuid ? categoryLookup.byGuid.get(targetCategoryGuid) : undefined
+  const selectedTargetCategoryPath = targetCategoryGuid ? getWarehouseProductCategoryTooltip({
+    categoryName: selectedTargetCategory?.categoryName,
+    warehouseCategoryGUID: targetCategoryGuid,
+  }, categoryLookup, i18n.language) : undefined
 
   const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => ({
     ...columnFilters,
@@ -1528,6 +1515,8 @@ export default function ContainerDetailPage() {
       return
     }
     setTargetCategoryGuid(undefined)
+    // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
+    setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
     setBatchCategoryOpen(true)
   }
 
@@ -1553,7 +1542,50 @@ export default function ContainerDetailPage() {
     try {
       // 批量分类只写仓库商品分类，不修改货柜明细价格、数量等业务字段。
       await batchAssignProducts(targetCategoryGuid, productCodes)
-      await loadDetailChunk(1, 'reset')
+      const productCodeSet = new Set(productCodes)
+      const selectedTargetCategoryName = selectedTargetCategory
+        ? formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)
+        : undefined
+      const nextCategoryPath = selectedTargetCategoryPath || selectedTargetCategoryName
+      // 保存成功后只更新当前已加载行，避免重新查询整张明细表造成等待和 loading。
+      setRows((items) =>
+        items.map((item) => {
+          const productCode = getContainerDetailProductCode(item)
+          if (!productCode || !productCodeSet.has(productCode)) return item
+          return {
+            ...item,
+            categoryName: selectedTargetCategoryName,
+            CategoryName: selectedTargetCategoryName,
+            productCategoryName: selectedTargetCategoryName,
+            ProductCategoryName: selectedTargetCategoryName,
+            categoryPath: nextCategoryPath,
+            CategoryPath: nextCategoryPath,
+            categoryFullPath: nextCategoryPath,
+            CategoryFullPath: nextCategoryPath,
+            warehouseCategoryGUID: targetCategoryGuid,
+            WarehouseCategoryGUID: targetCategoryGuid,
+            productCategoryGUID: targetCategoryGuid,
+            ProductCategoryGUID: targetCategoryGuid,
+            商品信息: item.商品信息
+              ? {
+                  ...item.商品信息,
+                  categoryName: selectedTargetCategoryName,
+                  CategoryName: selectedTargetCategoryName,
+                  productCategoryName: selectedTargetCategoryName,
+                  ProductCategoryName: selectedTargetCategoryName,
+                  categoryPath: nextCategoryPath,
+                  CategoryPath: nextCategoryPath,
+                  categoryFullPath: nextCategoryPath,
+                  CategoryFullPath: nextCategoryPath,
+                  warehouseCategoryGUID: targetCategoryGuid,
+                  WarehouseCategoryGUID: targetCategoryGuid,
+                  productCategoryGUID: targetCategoryGuid,
+                  ProductCategoryGUID: targetCategoryGuid,
+                }
+              : item.商品信息,
+          }
+        }),
+      )
       setSelectedRowKeys([])
       setBatchCategoryOpen(false)
       setTargetCategoryGuid(undefined)
@@ -2463,7 +2495,7 @@ export default function ContainerDetailPage() {
       key: 'categoryName',
       title: renderCompactHeader(t('containers.fields.category', '分类')),
       width: 120,
-      render: (_, row) => renderContainerDetailCategoryCell(row, categoryLookup),
+      render: (_, row) => renderContainerDetailCategoryCell(row, categoryLookup, i18n.language),
     },
     {
       title: renderColumnTitle('containerPieces', t('containers.fields.containerPieces')),
@@ -2874,23 +2906,19 @@ export default function ContainerDetailPage() {
           </Typography.Text>
           {selectedTargetCategory ? (
             <Tag color="blue">
-              {t('warehouse.categories.targetCategory', '目标分类')}: {selectedTargetCategoryPath || [selectedTargetCategory.categoryName, selectedTargetCategory.chineseName].filter(Boolean).join(' / ')}
+              {t('warehouse.categories.targetCategory', '目标分类')}: {selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)}
             </Tag>
           ) : null}
-          {categories.length ? (
-            <div style={{ maxHeight: 360, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8 }}>
-              <Tree
-                blockNode
-                selectedKeys={targetCategoryGuid ? [targetCategoryGuid] : []}
-                expandedKeys={categoryExpandedKeys}
-                onExpand={(keys) => setCategoryExpandedKeys(keys as string[])}
-                onSelect={(keys) => setTargetCategoryGuid(typeof keys[0] === 'string' ? keys[0] : undefined)}
-                treeData={categoryTreeData}
-              />
-            </div>
-          ) : (
-            <Empty description={t('warehouse.categories.noCategoryData', '暂无分类数据')} />
-          )}
+          <CategoryTreePicker
+            categories={categories}
+            selectedKey={targetCategoryGuid}
+            expandedKeys={categoryExpandedKeys}
+            onExpand={setCategoryExpandedKeys}
+            onSelect={setTargetCategoryGuid}
+            language={i18n.language}
+            t={t}
+            maxHeight={360}
+          />
         </Space>
       </Modal>
       <div className={pageClassName}>

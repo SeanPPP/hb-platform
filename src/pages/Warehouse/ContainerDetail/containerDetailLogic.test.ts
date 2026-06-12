@@ -396,9 +396,9 @@ assertEqual(getContainerDetailCategoryName(categoryRows[1]), 'Kitchen', '分类�
 assertEqual(getContainerDetailCategoryPath(categoryRows[1]), 'Home / 家居 > Kitchen / 厨房', '完整分类路径应兼容商品信息 CategoryFullPath 字段')
 assertEqual(getContainerDetailCategoryGuid(categoryRows[1]), 'cat-kitchen', '分类 GUID 应兼容商品信息 ProductCategoryGUID 字段')
 assertEqual(
-  getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord({ id: 155, hguid: 'category-name-only', categoryName: 'Bath' }), buildWarehouseCategoryLookup(categoryTree)),
-  'Home / 家居 > Bath / 浴室',
-  '只有分类名称时应通过分类树反查 Tooltip 完整路径',
+  getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord({ id: 155, hguid: 'category-name-only', categoryName: 'Bath' }), buildWarehouseCategoryLookup(categoryTree), 'zh'),
+  '家居 > 浴室',
+  '只有分类名称时应通过分类树反查当前语言 Tooltip 完整路径',
 )
 assertDeepEqual(
   applyContainerDetailCategoryFilter(categoryRows, CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY).map((row) => row.hguid),
@@ -2178,9 +2178,10 @@ assertEqual(
   pageSource.includes('getCategoryTree') &&
     pageSource.includes('batchAssignProducts') &&
     pageSource.includes('buildWarehouseCategoryLookup') &&
-    pageSource.includes('getWarehouseProductCategoryTooltip'),
+    pageSource.includes('getWarehouseProductCategoryTooltip') &&
+    pageSource.includes('formatWarehouseCategoryNodeName'),
   true,
-  '货柜明细应加载分类树、复用分类路径 Tooltip helper，并调用批量分类服务',
+  '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用批量分类服务',
 )
 assertEqual(
   pageSource.includes("const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)") &&
@@ -2193,9 +2194,10 @@ assertEqual(
 assertEqual(
   pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
     pageSource.includes('options={categoryFilterOptions}') &&
-    pageSource.includes('setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)'),
+    pageSource.includes('setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)') &&
+    pageSource.includes('buildContainerDetailCategoryOptions(categories, t, i18n.language)'),
   true,
-  '货柜明细顶部应提供分类 Select，并支持清空回到全部分类',
+  '货柜明细顶部应提供当前语言分类 Select，并支持清空回到全部分类',
 )
 assertEqual(
   pageSource.includes('filteredRows.length !== rows.length') &&
@@ -2394,7 +2396,7 @@ const categoryColumnSource = pageSource.slice(
 )
 assertEqual(
   categoryColumnSource.includes("title: renderCompactHeader(t('containers.fields.category'") &&
-    categoryColumnSource.includes('renderContainerDetailCategoryCell(row, categoryLookup)') &&
+    categoryColumnSource.includes('renderContainerDetailCategoryCell(row, categoryLookup, i18n.language)') &&
     pageSource.includes("const displayName = getContainerDetailCategoryName(record) || '--'"),
   true,
   '分类列应显示分类名称，Tooltip 使用完整路径 helper，缺失时显示 --',
@@ -2486,15 +2488,32 @@ assertEqual(
   true,
   '批量操作菜单应包含批量分类，并提交当前目标行的去重商品编码',
 )
+const batchCategorySaveSource = pageSource.slice(
+  pageSource.indexOf('const handleBatchCategorySave = async () => {'),
+  pageSource.indexOf('const submitBatchEditEnglishName = async () => {'),
+)
+assertEqual(
+  batchCategorySaveSource.includes('await batchAssignProducts(targetCategoryGuid, productCodes)') &&
+    !batchCategorySaveSource.includes("await loadDetailChunk(1, 'reset')") &&
+    batchCategorySaveSource.includes('setRows((items) =>') &&
+    batchCategorySaveSource.includes('const productCode = getContainerDetailProductCode(item)') &&
+    batchCategorySaveSource.includes('productCodeSet.has(productCode)') &&
+    batchCategorySaveSource.includes('WarehouseCategoryGUID: targetCategoryGuid') &&
+    batchCategorySaveSource.includes('ProductCategoryGUID: targetCategoryGuid'),
+  true,
+  '货柜明细批量分类保存成功后应本地更新当前行分类，不应重新查询明细表格',
+)
 assertEqual(
     pageSource.includes("title={t('containers.modals.batchCategoryTitle'") &&
     pageSource.includes("t('warehouse.categories.targetCategory'") &&
-    pageSource.includes('selectedTargetCategoryPath || [selectedTargetCategory.categoryName, selectedTargetCategory.chineseName].filter(Boolean).join') &&
-    pageSource.includes('<Tree') &&
-    pageSource.includes('blockNode') &&
-    pageSource.includes('selectedKeys={targetCategoryGuid ? [targetCategoryGuid] : []}'),
+    pageSource.includes('selectedTargetCategoryPath || formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)') &&
+    pageSource.includes('import CategoryTreePicker') &&
+    pageSource.includes('setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))') &&
+    pageSource.includes('<CategoryTreePicker') &&
+    pageSource.includes('selectedKey={targetCategoryGuid}') &&
+    pageSource.includes('maxHeight={360}'),
   true,
-  '批量分类弹窗应展示分类树，并在选中分类后显示完整目标分类路径',
+  '批量分类弹窗应使用带查询的当前语言分类树，并在每次打开时默认展开到一级分类',
 )
 assertEqual(pageSource.includes('className="container-detail-table"'), true, '货柜明细表格应挂载专属 class 以隔离垂直对齐样式')
 assertEqual(
