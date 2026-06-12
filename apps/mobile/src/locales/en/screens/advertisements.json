@@ -1,0 +1,105 @@
+{
+  "title": "Advertisements",
+  "subtitle": "Manage mobile ad creatives, upload image or video assets, and control availability by store and date range.",
+  "mediaTypes": {
+    "image": "Image",
+    "video": "Video"
+  },
+  "statuses": {
+    "enabled": "Enabled",
+    "disabled": "Disabled"
+  },
+  "filters": {
+    "title": "Title",
+    "store": "Store",
+    "storePlaceholder": "All stores",
+    "allMediaTypes": "All media",
+    "allStatuses": "All statuses"
+  },
+  "fields": {
+    "title": "Title",
+    "description": "Description",
+    "mediaType": "Media type",
+    "mediaTypePlaceholder": "Select media type",
+    "mediaUrl": "Media URL",
+    "thumbnailUrl": "Thumbnail URL",
+    "objectKey": "Object key",
+    "originalFileName": "Original file name",
+    "contentType": "Content type",
+    "fileSize": "File size (bytes)",
+    "effectiveStart": "Effective start",
+    "effectiveEnd": "Effective end",
+    "sortOrder": "Sort order",
+    "isEnabled": "Enabled",
+    "storeScope": "Store scope",
+    "effectiveStartPlaceholder": "2026-06-01T00:00:00Z",
+    "effectiveEndPlaceholder": "2026-06-30T23:59:59Z"
+  },
+  "labels": {
+    "sortOrder": "Sort",
+    "fileSize": "File size",
+    "videoSelected": "Video asset selected",
+    "noDescription": "No description",
+    "noFileSelected": "No file selected",
+    "noStoreSelected": "No store selected",
+    "allStores": "All stores",
+    "noStore": "No store"
+  },
+  "actions": {
+    "create": "Create",
+    "edit": "Edit",
+    "delete": "Delete",
+    "enable": "Enable",
+    "disable": "Disable",
+    "addStore": "Add store",
+    "selectAllStores": "Select all stores",
+    "clearStores": "Clear stores",
+    "pickAndUpload": "Pick and upload",
+    "capturePhoto": "Take photo",
+    "recordVideo": "Record video",
+    "resetFilters": "Reset filters"
+  },
+  "editor": {
+    "createTitle": "Create advertisement",
+    "editTitle": "Edit advertisement",
+    "subtitle": "Edit asset metadata, schedule, enable status, and store scope."
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next",
+    "summary": "Page {{page}} / {{totalPages}} · {{total}} items"
+  },
+  "messages": {
+    "saveSuccess": "Advertisement saved.",
+    "saveFailed": "Failed to save advertisement.",
+    "deleteSuccess": "Advertisement deleted.",
+    "deleteFailed": "Failed to delete advertisement.",
+    "toggleSuccess": "Advertisement status updated.",
+    "toggleFailed": "Failed to update advertisement status.",
+    "uploadSuccess": "Asset uploaded.",
+    "uploadFailed": "Failed to upload asset.",
+    "permissionDenied": "Media library permission is required.",
+    "cameraPermissionDenied": "Camera permission is required.",
+    "validationFailed": "Please complete the required fields."
+  },
+  "validation": {
+    "title": "Title is required.",
+    "mediaUrl": "Media URL is required.",
+    "effectiveStart": "Effective start is required.",
+    "effectiveStartInvalid": "Enter a valid effective start time.",
+    "effectiveEnd": "Effective end is required.",
+    "effectiveEndInvalid": "Enter a valid effective end time.",
+    "effectiveEndOrder": "Effective end must be after effective start.",
+    "storeCodes": "Select at least one store."
+  },
+  "states": {
+    "noAccessTitle": "No access",
+    "noAccessDescription": "This account cannot view or manage mobile advertisements.",
+    "loadFailedTitle": "Unable to load advertisements",
+    "loadFailedDescription": "Try again after refreshing.",
+    "emptyTitle": "No advertisements found",
+    "emptyDescription": "Create an advertisement or adjust the filters.",
+    "emptyMediaTypes": "No media types",
+    "loadingStores": "Loading stores..."
+  }
+}

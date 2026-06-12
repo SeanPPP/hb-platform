@@ -1,0 +1,275 @@
+{
+  "title": "考勤",
+  "subtitle": "查看排班、打卡和申请",
+  "sections": {
+    "today": "今日打卡",
+    "selectedDay": "某日打卡",
+    "calendar": "日期选择",
+    "week": "本周排班",
+    "availability": "可上班时间",
+    "leave": "请假申请",
+    "approvals": "店长审核",
+    "scheduleManagement": "排班管理",
+    "employeeAttendance": "员工考勤",
+    "managerSchedule": "店长排班",
+    "holidayManagement": "公共假期管理"
+  },
+  "tabs": {
+    "personalAttendance": "考勤",
+    "attendanceManagement": "考勤管理",
+    "personalPunch": "个人打卡",
+    "punchRecords": "打卡记录",
+    "personalAvailability": "可上班时间",
+    "weeklySchedule": "周表",
+    "scheduleManagement": "排班管理",
+    "holidayManagement": "公共假期管理",
+    "leaveManagement": "病假年假管理"
+  },
+  "today": {
+    "schedules": "今日班次",
+    "punches": "打卡记录",
+    "noSchedule": "今天暂无排班",
+    "noPunch": "今天暂无打卡",
+    "status": {
+      "readyToClockIn": "状态: 未上班打卡",
+      "readyToClockOut": "状态: 已上班，等待下班打卡",
+      "completed": "状态: 今日打卡已完成",
+      "holiday": "状态: 今日为假期安排",
+      "viewOnly": "状态: 当前为历史记录查看"
+    },
+    "info": {
+      "location": "位置",
+      "network": "网络",
+      "locationDependencyMissing": "当前版本未接入 GPS 采集能力，需审批新增定位依赖",
+      "locationPermissionDenied": "定位权限被拒绝，本次将按人工复核信息提交",
+      "locationUnavailable": "暂未采集到定位信息，本次将按人工复核信息提交",
+      "networkAvailable": "已完成后端连通性校验",
+      "networkAvailableWithTimeZone": "已完成后端连通性校验，门店时区 {{timeZone}}",
+      "networkUnavailable": "未能完成网络连通性校验，本次将按人工复核信息提交",
+      "networkUnknown": "网络校验状态暂不可用"
+    },
+    "verification": {
+      "refreshing": "检查中",
+      "statuses": {
+        "available": "已采集",
+        "permissionDenied": "权限被拒绝",
+        "unavailable": "不可用",
+        "unknown": "待补充"
+      }
+    },
+    "dailyRecords": {
+      "title": "每日记录",
+      "clockInTitle": "上班打卡",
+      "clockOutTitle": "下班打卡",
+      "clockInBadge": "上",
+      "clockOutBadge": "下",
+      "systemAlertTitle": "系统提示",
+      "clockInSuccess": "已记录上班打卡，状态：{{status}}。",
+      "clockOutSuccess": "已记录下班打卡，状态：{{status}}。",
+      "clockInPending": "尚未打卡，预计开始时间 {{startTime}}。",
+      "clockOutPending": "班次进行中，预计结束时间 {{endTime}}。",
+      "noSchedule": "当天没有已发布班次。",
+      "awaitingShift": "等待排班后才能生成下班记录。",
+      "alertSelectedDate": "当前查看的是所选日期记录，只有当天才能执行打卡。",
+      "alertHoliday": "今日标记为 {{holidayName}}，请按门店安排确认是否需要打卡。",
+      "alertVerificationCaptured": "本次打卡将携带当前采集到的校验信息提交。",
+      "alertVerificationSentForReview": "本次打卡仍可提交，但会附带当前校验状态供后端复核。",
+      "alertNoSchedule": "当前日期没有排班，若需上班请先联系店长安排。"
+    }
+  },
+  "week": {
+    "empty": "暂无本周排班",
+    "noSchedule": "无排班"
+  },
+  "availability": {
+    "empty": "暂无已上报时间段"
+  },
+  "leave": {
+    "empty": "暂无请假申请"
+  },
+  "approvals": {
+    "empty": "暂无待审核事项"
+  },
+  "holidayManagement": {
+    "noStore": "请先选择分店",
+    "empty": "当前分店暂无公共假期",
+    "addAction": "新增假期",
+    "syncAction": "同步未来 30 天",
+    "syncUnsupportedJurisdiction": "当前分店需要可识别的 NSW 或 QLD 邮编/州信息后才能同步公共假期。",
+    "deleteTitle": "删除公共假期",
+    "deleteMessage": "确定删除这个公共假期吗？",
+    "deleteConfirm": "删除",
+    "closedAllDay": "全天休业",
+    "paidLabel": "带薪",
+    "fields": {
+      "name": "假期名称",
+      "paidHoliday": "带薪公共假期"
+    },
+    "businessStatuses": {
+      "Open": "营业",
+      "Closed": "休业",
+      "Partial": "部分营业"
+    }
+  },
+  "leaveManagement": {
+    "empty": "暂无病假年假待审核事项",
+    "noStore": "请先选择分店",
+    "noEligibleEmployees": "当前分店没有可提交年假或病假的全职/兼职员工。",
+    "attachmentRequired": "病假必须上传医嘱照片。",
+    "fields": {
+      "employee": "员工",
+      "attachment": "病假医嘱照片"
+    },
+    "actions": {
+      "takePhoto": "拍照上传",
+      "retakePhoto": "重新拍照",
+      "grantCameraPermission": "允许相机权限",
+      "capture": "拍照"
+    },
+    "messages": {
+      "permissionRequired": "需要相机权限才能拍照上传。",
+      "captureFailed": "拍照失败，请重试。",
+      "uploadFailed": "上传照片失败。",
+      "attachmentUploaded": "医嘱照片已上传。",
+      "attachmentRequired": "请先上传病假医嘱照片。",
+      "cameraReady": "请拍摄清晰的医嘱照片后上传。"
+    },
+    "camera": {
+      "title": "拍照上传医嘱",
+      "permissionTitle": "需要相机权限",
+      "permissionDescription": "允许相机权限后即可拍照并上传病假医嘱照片。"
+    }
+  },
+  "scheduleManagement": {
+    "employeeColumn": "分店/员工",
+    "previousWeek": "上周",
+    "nextWeek": "下周",
+    "tapToAdd": "点按新增",
+    "createTitle": "新增班次",
+    "editTitle": "编辑班次",
+    "deleteAction": "删除",
+    "deleteTitle": "删除班次",
+    "deleteMessage": "确定删除这个班次吗？",
+    "deleteConfirm": "删除",
+    "noStore": "请先选择分店",
+    "noEmployees": "当前分店暂无员工",
+    "publishTitle": "发布排班",
+    "publishSubtitle": "发布后员工可查看本周正式排班",
+    "quickEntryTitle": "快速排班",
+    "quickEntrySubtitle": "先选员工和日期，再用默认班次或滚动时间快速创建。",
+    "restDay": "休息",
+    "fullscreen": "全屏维护",
+    "exitFullscreen": "退出全屏",
+    "fullscreenTitle": "周排班表",
+    "weekNumberLabel": "{{year}} 年第 {{week}} 周",
+    "stats": {
+      "totalPeople": "总人数",
+      "plannedHours": "预计总工时",
+      "peopleUnit": "人",
+      "hoursUnit": "小时"
+    },
+    "quickShiftTitle": "常用班次",
+    "quickShifts": {
+      "nineToFiveThirty": "09:00 - 17:30",
+      "tenToFour": "10:00 - 16:00",
+      "nineToSeven": "09:00 - 19:00"
+    },
+    "timePicker": {
+      "hour": "小时",
+      "minute": "分钟"
+    }
+  },
+  "datePicker": {
+    "selectDate": "选择日期",
+    "openDatePicker": "打开日期选择",
+    "close": "关闭",
+    "done": "完成"
+  },
+  "fields": {
+    "workDate": "日期",
+    "startTime": "开始时间",
+    "endTime": "结束时间",
+    "startTimeOptional": "开始时间（可选）",
+    "endTimeOptional": "结束时间（可选）",
+    "note": "备注",
+    "startDate": "开始日期",
+    "endDate": "结束日期",
+    "reason": "原因",
+    "remark": "审核备注"
+  },
+  "actions": {
+    "clockIn": "上班打卡",
+    "clockOut": "下班打卡",
+    "addAvailability": "添加时间段",
+    "submitLeave": "提交申请",
+    "approve": "通过",
+    "reject": "拒绝",
+    "createSchedule": "创建排班",
+    "publishWeek": "发布本周"
+  },
+  "punchTypes": {
+    "ClockIn": "上班",
+    "ClockOut": "下班"
+  },
+  "leaveTypes": {
+    "AnnualLeave": "年假",
+    "SickLeave": "病假",
+    "PublicHoliday": "公共假期"
+  },
+  "sourceTypes": {
+    "Punch": "打卡",
+    "Leave": "请假"
+  },
+  "statuses": {
+    "Normal": "正常",
+    "Late": "迟到",
+    "EarlyLeave": "早退",
+    "NoSchedule": "未排班",
+    "Duplicate": "重复",
+    "PendingApproval": "待审核",
+    "Pending": "待审核",
+    "Approved": "已通过",
+    "Rejected": "已拒绝",
+    "Submitted": "已提交",
+    "Cancelled": "已取消",
+    "Draft": "草稿",
+    "Active": "已发布"
+  },
+  "weekdays": {
+    "0": "周一",
+    "1": "周二",
+    "2": "周三",
+    "3": "周四",
+    "4": "周五",
+    "5": "周六",
+    "6": "周日"
+  },
+  "messages": {
+    "loginRequired": "请先登录后再使用考勤",
+    "loadFailed": "加载考勤数据失败",
+    "managerLoadFailedTitle": "店长排班加载失败",
+    "noManagedStoreTitle": "暂无可管理分店",
+    "noManagedStoreDescription": "当前账号没有可管理分店，或权限尚未同步。",
+    "refreshFailed": "刷新失败",
+    "saveFailed": "保存失败",
+    "cancelFailed": "取消失败",
+    "punchSuccess": "打卡已提交",
+    "punchFailed": "打卡失败",
+    "punchVerificationSentForReview": "定位或网络校验未完成，已按复核信息一并提交。",
+    "availabilitySaved": "可上班时间已保存",
+    "availabilityCancelled": "可上班时间已取消",
+    "leaveSubmitted": "请假申请已提交",
+    "leaveCancelled": "请假申请已取消",
+    "approvalApproved": "审核已通过",
+    "approvalRejected": "审核已拒绝",
+    "approvalFailed": "审核操作失败",
+    "selectStoreFirst": "请先选择分店",
+    "scheduleSaved": "排班已保存",
+    "scheduleDeleted": "排班已删除",
+    "weekPublished": "本周排班已发布",
+    "publishFailed": "发布失败",
+    "holidaySaved": "公共假期已保存",
+    "holidayDeleted": "公共假期已删除",
+    "holidaySyncSuccess": "已同步 {{count}} 条公共假期"
+  }
+}

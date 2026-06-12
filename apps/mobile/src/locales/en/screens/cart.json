@@ -1,0 +1,73 @@
+{
+  "title": "Cart",
+  "summary": {
+    "quantity": "Quantity",
+    "sku": "Cart product types",
+    "orderTotal": "Order total",
+    "money": "${{amount}}"
+  },
+  "filters": {
+    "title": "Filters",
+    "currentStore": "Store: {{store}}",
+    "searchPlaceholder": "Search cart items",
+    "clearSearch": "Clear search",
+    "applySearch": "Apply search",
+    "items": "Items: {{count}}",
+    "totalQuantity": "Quantity: {{count}}",
+    "salesAmount": "Sales total: ${{amount}}",
+    "importAmount": "Import total: ${{amount}}",
+    "volume": "Volume total: {{value}}",
+    "pageSize": "Items per page",
+    "storeHint": "Store switching is handled on the product page.",
+    "goHome": "Go to products"
+  },
+  "empty": {
+    "cartEmptyTitle": "Cart is empty",
+    "cartEmptyDescription": "You can scan products into the cart from this page.",
+    "selectStoreTitle": "Select a store first",
+    "selectStoreDescription": "Choose a store on the product page first."
+  },
+  "confirm": {
+    "clearTitle": "Clear cart",
+    "clearMessage": "Clear the cart for the current store?",
+    "clearAction": "Clear",
+    "submitTitle": "Submit cart",
+    "submitMessage": "Submit the cart for the current store?"
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}}"
+  },
+  "messages": {
+    "updateQtyFailed": "Failed to update the cart quantity.",
+    "deleteFailed": "Failed to remove the cart item.",
+    "clearSuccess": "Cart cleared.",
+    "clearFailed": "Failed to clear the cart.",
+    "needStore": "Please select a store first.",
+    "emptyCart": "The cart is empty and cannot be submitted.",
+    "submitSuccess": "Cart submitted.",
+    "submitFailed": "Failed to submit the cart."
+  },
+  "item": {
+    "deleting": "Deleting",
+    "delete": "Delete",
+    "sku": "SKU: {{value}}",
+    "grade": "Grade {{grade}}",
+    "unitPrice": "${{amount}} / unit",
+    "subtotal": "Subtotal ${{amount}}",
+    "import": "Import ${{amount}}",
+    "inCart": "In cart"
+  },
+  "checkout": {
+    "totalItems": "Total Items",
+    "subtotal": "Subtotal",
+    "totalAmount": "Total Order Amount",
+    "submit": "Submit Order",
+    "clear": "Clear Cart"
+  },
+  "actions": {
+    "submit": "Submit",
+    "clear": "Clear"
+  }
+}

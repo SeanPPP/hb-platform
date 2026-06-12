@@ -1,0 +1,151 @@
+{
+  "title": "China Purchase",
+  "subTabs": {
+    "creation": "Item/Barcode Creation",
+    "products": "Domestic Product List"
+  },
+  "summary": "Showing {{shown}} / {{total}} batches",
+  "actions": {
+    "create": "Create",
+    "detail": "Detail",
+    "copy": "Copy",
+    "export": "Export",
+    "loadMore": "Load more",
+    "cancel": "Cancel",
+    "confirmCreate": "Create",
+    "saveChanges": "Save changes"
+  },
+  "empty": {
+    "noAccessTitle": "No domestic purchase access",
+    "noAccessDescription": "The current account cannot create domestic purchase batches.",
+    "noBatchTitle": "No batches",
+    "noBatchDescription": "Created item/barcode batches will appear here."
+  },
+  "create": {
+    "title": "Create item/barcode batch",
+    "selectSupplier": "Select supplier",
+    "selectPrefix": "Select prefix",
+    "noPrefix": "No prefix",
+    "count": "Quantity",
+    "privateLabelPrice": "Uniform OEM price",
+    "privateLabelPriceHelp": "Optional. Leave blank when prices differ, then edit each item in the detail dialog."
+  },
+  "fields": {
+    "productName": "Product name",
+    "normalCount": "Normal {{value}}",
+    "setCount": "Set {{value}}",
+    "barcode": "Barcode {{value}}",
+    "privateLabelPriceLabel": "OEM price",
+    "privateLabelPrice": "OEM {{value}}",
+    "parent": "Parent {{value}}",
+    "emptyName": "--"
+  },
+  "types": {
+    "normal": "Normal",
+    "set": "Set",
+    "setSubItem": "Set item"
+  },
+  "messages": {
+    "loadFailed": "Failed to load batches",
+    "loadDetailFailed": "Failed to load detail",
+    "loadSuppliersFailed": "Failed to load suppliers",
+    "loadPrefixesFailed": "Failed to load prefixes",
+    "selectSupplier": "Select a supplier first",
+    "invalidCount": "Quantity must be between 1 and 100",
+    "invalidPrice": "Invalid private label price",
+    "createSuccess": "Created",
+    "createFailed": "Create failed",
+    "saveSuccess": "Saved",
+    "saveFailed": "Save failed",
+    "copySuccess": "Copied",
+    "copyFailed": "Copy failed",
+    "copyEmpty": "No detail available to copy",
+    "exportSuccess": "Exported",
+    "exportFailed": "Export failed"
+  },
+  "copy": {
+    "batchHeader": "Item Barcode OEM Price"
+  },
+  "productList": {
+    "title": "Domestic Product List",
+    "headerSubtitle": "View, edit, and copy domestic product information",
+    "summary": "Page {{page}} / {{totalPages}}, {{total}} total",
+    "fields": {
+      "productCode": "Product code",
+      "supplier": "Supplier",
+      "supplierCode": "Supplier code",
+      "supplierName": "Supplier",
+      "productName": "Product name",
+      "englishProductName": "English name",
+      "itemNumber": "Item number",
+      "hbProductNo": "Item number",
+      "barcode": "Barcode",
+      "productSpecification": "Specification",
+      "productType": "Product type",
+      "domesticPrice": "Domestic price",
+      "oemPrice": "OEM price",
+      "importPrice": "Import price",
+      "packingQuantity": "Packing quantity",
+      "unitVolume": "Unit volume",
+      "middlePackQuantity": "Middle pack quantity",
+      "image": "Image",
+      "productImage": "Product image",
+      "isActive": "Active"
+    },
+    "actions": {
+      "search": "Search",
+      "reset": "Reset",
+      "edit": "Edit",
+      "copy": "Copy"
+    },
+    "empty": {
+      "title": "No domestic products",
+      "description": "Try another supplier or item number."
+    },
+    "status": {
+      "active": "Active",
+      "inactive": "Inactive"
+    },
+    "productTypes": {
+      "normal": "Normal",
+      "set": "Set",
+      "multi": "Multi-code"
+    },
+    "messages": {
+      "loadFailed": "Failed to load domestic products",
+      "saveSuccess": "Product updated",
+      "saveFailed": "Failed to update product",
+      "copySuccess": "Product details copied",
+      "copyFailed": "Failed to copy product details",
+      "invalidEdit": "Check the price, volume, and quantity values",
+      "empty": "No domestic products found"
+    },
+    "filters": {
+      "supplierCode": "Supplier code",
+      "productNo": "Product code / HB product no.",
+      "sortBy": "Sort by",
+      "sortDirection": "Sort direction",
+      "supplierTitle": "Select domestic supplier",
+      "allSuppliers": "All suppliers",
+      "clear": "Clear"
+    },
+    "pagination": {
+      "summary": "Page {{page}}, {{pageSize}} per page, {{total}} total",
+      "page": "Page {{page}} / {{totalPages}}",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "edit": {
+      "title": "Edit domestic product",
+      "readonlyHint": "Item number, barcode, and supplier are generated or linked by the backend and are read-only here.",
+      "save": "Save",
+      "cancel": "Cancel",
+      "active": "Active",
+      "inactive": "Inactive"
+    },
+    "copy": {
+      "title": "Copy product details",
+      "emptyValue": "--"
+    }
+  }
+}

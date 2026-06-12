@@ -1,0 +1,79 @@
+{
+  "title": "季节卡片",
+  "submitSubtitle": "按管理分店、年度和节日填报季节卡剩余数量",
+  "historyTitle": "填报历史",
+  "historySubtitle": "按分店、年度和节日查看已提交记录",
+  "detailTitle": "季节卡详情",
+  "viewModes": {
+    "submit": "填报",
+    "history": "历史"
+  },
+  "cardTypes": {
+    "1": "圣诞节",
+    "2": "情人节",
+    "3": "母亲节",
+    "4": "复活节",
+    "5": "父亲节"
+  },
+  "form": {
+    "storeCode": "分店",
+    "seasonYear": "年度",
+    "cardType": "节日",
+    "priceOption": "目录价格项",
+    "customPriceOption": "其他",
+    "customUnitPrice": "实际金额",
+    "remainingQuantity": "剩余数量",
+    "remark": "备注",
+    "selectStore": "选择分店",
+    "selectSeasonYear": "选择年度",
+    "selectCardType": "选择节日",
+    "selectPriceOption": "选择价格项",
+    "storePickerTitle": "选择分店",
+    "yearPickerTitle": "选择年度",
+    "cardTypePickerTitle": "选择节日",
+    "priceOptionPickerTitle": "选择价格项"
+  },
+  "history": {
+    "storeCode": "分店",
+    "seasonYear": "年度",
+    "cardType": "节日",
+    "allCardTypes": "全部节日",
+    "allYears": "全部年度",
+    "displayList": "列表",
+    "displayTable": "表格",
+    "priceTypeHeader": "价格类型",
+    "nextPage": "下一页"
+  },
+  "labels": {
+    "storeCode": "分店",
+    "seasonYear": "年度",
+    "cardType": "节日",
+    "unitPrice": "价格",
+    "remainingQuantity": "剩余数量",
+    "submittedByName": "提交人",
+    "submittedAt": "提交时间",
+    "remark": "备注"
+  },
+  "errors": {
+    "storeCode": "请选择分店",
+    "seasonYear": "请选择有效年度",
+    "catalogGuid": "请选择目录价格项",
+    "customUnitPrice": "请输入大于 0 的实际金额",
+    "remainingQuantity": "请输入非负整数数量"
+  },
+  "messages": {
+    "noAccessTitle": "没有权限",
+    "noAccessDescription": "当前账号没有季节卡片查看或填报权限。",
+    "formFixErrors": "请先修正表单错误",
+    "submitSuccess": "提交成功",
+    "submitFailed": "提交失败",
+    "historyLoadFailed": "加载历史失败",
+    "detailLoadFailed": "加载详情失败",
+    "detailLoadFailedDescription": "暂时无法获取该条记录详情。",
+    "emptyHistory": "暂无历史记录",
+    "emptyHistoryDescription": "当前筛选条件下还没有季节卡填报记录。",
+    "emptyOptions": "暂无可选项",
+    "selectCardTypeFirst": "请先选择节日",
+    "catalogEmpty": "当前没有可填报的季节卡目录"
+  }
+}

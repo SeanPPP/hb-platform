@@ -1,0 +1,170 @@
+{
+  "title": "Staff Management",
+  "searchPlaceholder": "Search username, name, email, or phone",
+  "currentStore": {
+    "label": "Current store",
+    "value": "{{name}} ({{code}})",
+    "empty": "No store selected",
+    "allRelated": "All assigned stores",
+    "select": "Select store",
+    "helper": "Choose an assigned store to view staff. Only manageable stores can create, edit, disable, or reset passwords.",
+    "readOnlyHelper": "This store is view-only. Staff accounts cannot be changed here.",
+    "manageableBadge": "Manage",
+    "viewOnlyBadge": "View only"
+  },
+  "actions": {
+    "refresh": "Refresh",
+    "create": "Add staff",
+    "edit": "Edit",
+    "save": "Save",
+    "cancel": "Cancel",
+    "more": "More actions",
+    "viewDetails": "Details",
+    "enable": "Enable",
+    "disable": "Disable",
+    "resetPassword": "Reset password",
+    "confirmReset": "Reset"
+  },
+  "statuses": {
+    "active": "Active",
+    "disabled": "Disabled"
+  },
+  "fields": {
+    "username": "Username",
+    "fullName": "Full name",
+    "email": "Email",
+    "phone": "Phone",
+    "enabled": "Enabled",
+    "initialPassword": "Initial password",
+    "newPassword": "New password",
+    "fixedRoleHint": "Accounts created here are always staff accounts, assigned to the selected managed store, and set as casual staff.",
+    "roleValue": "Role: Staff",
+    "positionValue": "Store staff",
+    "storeValue": "Store: {{value}}",
+    "ageValue": "Age: {{value}}",
+    "genderValue": "Gender: {{value}}",
+    "employmentTypeValue": "Employment type: {{value}}",
+    "emailValue": "Email: {{value}}",
+    "phoneValue": "Phone: {{value}}",
+    "lastLoginValue": "Last login: {{value}}",
+    "updatedAtValue": "Updated: {{value}}"
+  },
+  "filters": {
+    "sortByName": "Sort by name",
+    "statusAll": "All",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled"
+  },
+  "detail": {
+    "title": "Staff Details",
+    "missingTitle": "Staff member not selected",
+    "missingDescription": "Open a staff profile from Staff Management.",
+    "loadFailedTitle": "Failed to load staff details",
+    "tabs": {
+      "personalInfo": "Personal Info",
+      "schedule": "Schedule",
+      "records": "Records"
+    },
+    "sections": {
+      "employeeDetails": "Employee Details",
+      "accountInfo": "Account Info",
+      "payroll": "Payroll",
+      "quickActions": "Quick Actions"
+    },
+    "fields": {
+      "employeeId": "Employee ID",
+      "age": "Age",
+      "gender": "Gender",
+      "employmentType": "Employment type",
+      "identityId": "Identity ID",
+      "phone": "Phone Number",
+      "email": "Email",
+      "store": "Store Location",
+      "joinDate": "Join Date",
+      "birthday": "Birthday",
+      "address": "Address",
+      "bankBsb": "BSB",
+      "bankAccount": "Bank account",
+      "superCompany": "Super company",
+      "superAccount": "Super account"
+    },
+    "actions": {
+      "viewFullSchedule": "View Full Schedule"
+    },
+    "schedule": {
+      "title": "This Week's Schedule",
+      "description": "View this staff member's weekly schedule in the detail page instead of leaving for the shared attendance screen.",
+      "loading": "Loading staff schedule...",
+      "loadFailedTitle": "Failed to load schedule",
+      "loadFailedDescription": "The staff schedule could not be loaded right now. Please try again.",
+      "endpointUnavailable": "The backend employee schedule endpoint is not available yet. Add the endpoint and try again."
+    },
+    "records": {
+      "title": "Recent Records",
+      "description": "Review this staff member's recent punches, leave requests, and approval records.",
+      "loading": "Loading staff records...",
+      "loadFailedTitle": "Failed to load records",
+      "loadFailedDescription": "The staff records could not be loaded right now. Please try again.",
+      "endpointUnavailable": "The backend employee records endpoint is not available yet. Add the endpoint and try again.",
+      "emptyTitle": "No records yet",
+      "emptyDescription": "There are no punches, leave requests, or approvals to show yet.",
+      "submittedAt": "Submitted",
+      "workDate": "Work date",
+      "dateRange": "Date range",
+      "store": "Store",
+      "types": {
+        "punch": "Punch",
+        "leave": "Leave",
+        "approval": "Approval"
+      }
+    },
+    "employmentTypes": {
+      "fullTime": "Full-time",
+      "partTime": "Part-time",
+      "casual": "Casual"
+    },
+    "genders": {
+      "unknown": "Unknown",
+      "male": "Male",
+      "female": "Female",
+      "other": "Other"
+    }
+  },
+  "dialogs": {
+    "createTitle": "Create staff account",
+    "editTitle": "Edit staff account",
+    "resetPasswordTitle": "Reset staff password",
+    "resetPasswordDescription": "Set a new password for {{username}}. Share it with this staff member after saving.",
+    "statusConfirmMessage": "Are you sure you want to {{action}} {{username}}?"
+  },
+  "messages": {
+    "noAccessTitle": "No staff view access",
+    "noAccessDescription": "The current account cannot view store staff.",
+    "selectStoreTitle": "Select a current store first",
+    "selectStoreDescription": "Choose a store before viewing or managing staff accounts for that store.",
+    "selectStoreFirst": "Select a current store first",
+    "selectManageableStoreFirst": "Select a manageable store first",
+    "storeReadOnly": "This store is view-only. Staff accounts cannot be changed.",
+    "loadFailedTitle": "Failed to load staff accounts",
+    "loadFailedDescription": "Try again later or pull to refresh.",
+    "refreshFailed": "Failed to refresh staff accounts",
+    "emptyTitle": "No staff accounts yet",
+    "emptyDescription": "Add the first staff account for the current store.",
+    "emptySearchTitle": "No matching staff found",
+    "emptySearchDescription": "No staff account matched \"{{keyword}}\".",
+    "usernameRequired": "Enter a username",
+    "usernameLength": "Username must be 3 to 50 characters",
+    "emailInvalid": "Enter a valid email address",
+    "passwordRequired": "Enter a password",
+    "passwordTooShort": "Password must be at least 6 characters",
+    "passwordTooLong": "Password must be 100 characters or fewer",
+    "saveFailed": "Failed to save the staff account.",
+    "statusFailed": "Failed to update the staff status.",
+    "passwordResetFailed": "Failed to reset the password",
+    "userCreated": "Staff account created",
+    "userUpdated": "Staff account updated",
+    "userEnabled": "Staff account enabled",
+    "userDisabled": "Staff account disabled",
+    "passwordReset": "Password reset successfully"
+  }
+}

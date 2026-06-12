@@ -1,0 +1,275 @@
+{
+  "title": "Attendance",
+  "subtitle": "Schedules, punches, and requests",
+  "sections": {
+    "today": "Today",
+    "selectedDay": "Selected day",
+    "calendar": "Date selector",
+    "week": "Weekly schedule",
+    "availability": "Availability",
+    "leave": "Leave request",
+    "approvals": "Manager approvals",
+    "scheduleManagement": "Schedule management",
+    "employeeAttendance": "Employee attendance",
+    "managerSchedule": "Manager schedule",
+    "holidayManagement": "Public holidays"
+  },
+  "tabs": {
+    "personalAttendance": "Attendance",
+    "attendanceManagement": "Attendance Admin",
+    "personalPunch": "Personal punch",
+    "punchRecords": "Punch records",
+    "personalAvailability": "Availability",
+    "weeklySchedule": "Weekly schedule",
+    "scheduleManagement": "Schedule",
+    "holidayManagement": "Holidays",
+    "leaveManagement": "Leave"
+  },
+  "today": {
+    "schedules": "Today's shifts",
+    "punches": "Punches",
+    "noSchedule": "No shift today",
+    "noPunch": "No punches yet",
+    "status": {
+      "readyToClockIn": "Status: Not clocked in",
+      "readyToClockOut": "Status: Clocked in, waiting to clock out",
+      "completed": "Status: Today's punches are complete",
+      "holiday": "Status: Holiday arrangement",
+      "viewOnly": "Status: Viewing a past date"
+    },
+    "info": {
+      "location": "Location",
+      "network": "Network",
+      "locationDependencyMissing": "GPS capture is not enabled in this build and needs approved location dependencies",
+      "locationPermissionDenied": "Location permission was denied. This punch will be sent for manual review",
+      "locationUnavailable": "Location data is unavailable. This punch will be sent for manual review",
+      "networkAvailable": "Backend reachability check completed",
+      "networkAvailableWithTimeZone": "Backend reachability check completed, store timezone {{timeZone}}",
+      "networkUnavailable": "Network reachability check failed. This punch will be sent for manual review",
+      "networkUnknown": "Network verification status is unavailable"
+    },
+    "verification": {
+      "refreshing": "Checking",
+      "statuses": {
+        "available": "Captured",
+        "permissionDenied": "Denied",
+        "unavailable": "Unavailable",
+        "unknown": "Unknown"
+      }
+    },
+    "dailyRecords": {
+      "title": "Daily Records",
+      "clockInTitle": "Clock-in",
+      "clockOutTitle": "Clock-out",
+      "clockInBadge": "IN",
+      "clockOutBadge": "OUT",
+      "systemAlertTitle": "System Alert",
+      "clockInSuccess": "Clock-in recorded with status: {{status}}.",
+      "clockOutSuccess": "Clock-out recorded with status: {{status}}.",
+      "clockInPending": "Waiting for clock-in. Expected start {{startTime}}.",
+      "clockOutPending": "Shift in progress. Expected finish {{endTime}}.",
+      "noSchedule": "No published shift for this day.",
+      "awaitingShift": "Clock-out record will appear after a shift is scheduled.",
+      "alertSelectedDate": "You are viewing a selected date. Punch actions are only available for today.",
+      "alertHoliday": "This day is marked as {{holidayName}}. Confirm with the store before punching.",
+      "alertVerificationCaptured": "This punch will include the current verification data.",
+      "alertVerificationSentForReview": "This punch can still be submitted and will include the current verification state for review.",
+      "alertNoSchedule": "There is no shift for this date. Contact the manager if work needs to be arranged."
+    }
+  },
+  "week": {
+    "empty": "No schedule this week",
+    "noSchedule": "No shift"
+  },
+  "availability": {
+    "empty": "No availability submitted"
+  },
+  "leave": {
+    "empty": "No leave requests"
+  },
+  "approvals": {
+    "empty": "No pending approvals"
+  },
+  "holidayManagement": {
+    "noStore": "Select a store first",
+    "empty": "No public holidays for this store.",
+    "addAction": "Add holiday",
+    "syncAction": "Sync next 30 days",
+    "syncUnsupportedJurisdiction": "This store must have an NSW or QLD postcode/state before syncing public holidays.",
+    "deleteTitle": "Delete holiday",
+    "deleteMessage": "Delete this public holiday?",
+    "deleteConfirm": "Delete",
+    "closedAllDay": "Closed all day",
+    "paidLabel": "Paid",
+    "fields": {
+      "name": "Holiday name",
+      "paidHoliday": "Paid holiday"
+    },
+    "businessStatuses": {
+      "Open": "Open",
+      "Closed": "Closed",
+      "Partial": "Partial"
+    }
+  },
+  "leaveManagement": {
+    "empty": "No sick or annual leave approvals pending",
+    "noStore": "Select a store first",
+    "noEligibleEmployees": "There are no full-time or part-time employees in this store who can submit annual or sick leave.",
+    "attachmentRequired": "Sick leave requires a medical certificate photo.",
+    "fields": {
+      "employee": "Employee",
+      "attachment": "Medical certificate photo"
+    },
+    "actions": {
+      "takePhoto": "Take photo",
+      "retakePhoto": "Retake photo",
+      "grantCameraPermission": "Allow camera",
+      "capture": "Capture"
+    },
+    "messages": {
+      "permissionRequired": "Camera permission is required to take a photo.",
+      "captureFailed": "Failed to take a photo. Please try again.",
+      "uploadFailed": "Failed to upload the photo.",
+      "attachmentUploaded": "Medical certificate photo uploaded.",
+      "attachmentRequired": "Please upload a medical certificate photo first.",
+      "cameraReady": "Take a clear photo of the medical certificate and upload it."
+    },
+    "camera": {
+      "title": "Take medical certificate photo",
+      "permissionTitle": "Camera access required",
+      "permissionDescription": "Allow camera access to take and upload a medical certificate photo for sick leave."
+    }
+  },
+  "scheduleManagement": {
+    "employeeColumn": "Store / employee",
+    "previousWeek": "Previous",
+    "nextWeek": "Next",
+    "tapToAdd": "Tap to add",
+    "createTitle": "Add shift",
+    "editTitle": "Edit shift",
+    "deleteAction": "Delete",
+    "deleteTitle": "Delete shift",
+    "deleteMessage": "Delete this shift?",
+    "deleteConfirm": "Delete",
+    "noStore": "Select a store first",
+    "noEmployees": "No employees in this store",
+    "publishTitle": "Publish schedule",
+    "publishSubtitle": "Employees can see this week's official schedule after publishing.",
+    "quickEntryTitle": "Quick scheduling",
+    "quickEntrySubtitle": "Pick an employee and day first, then use presets or the HH/MM scroller to create a shift.",
+    "restDay": "Off",
+    "fullscreen": "Full screen",
+    "exitFullscreen": "Exit full screen",
+    "fullscreenTitle": "Weekly schedule",
+    "weekNumberLabel": "Week {{week}}, {{year}}",
+    "stats": {
+      "totalPeople": "Total people",
+      "plannedHours": "Planned hours",
+      "peopleUnit": "staff",
+      "hoursUnit": "hrs"
+    },
+    "quickShiftTitle": "Common shifts",
+    "quickShifts": {
+      "nineToFiveThirty": "09:00 - 17:30",
+      "tenToFour": "10:00 - 16:00",
+      "nineToSeven": "09:00 - 19:00"
+    },
+    "timePicker": {
+      "hour": "HH",
+      "minute": "MM"
+    }
+  },
+  "datePicker": {
+    "selectDate": "Select date",
+    "openDatePicker": "Open date picker",
+    "close": "Close",
+    "done": "Done"
+  },
+  "fields": {
+    "workDate": "Date",
+    "startTime": "Start time",
+    "endTime": "End time",
+    "startTimeOptional": "Start time (optional)",
+    "endTimeOptional": "End time (optional)",
+    "note": "Note",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "reason": "Reason",
+    "remark": "Review note"
+  },
+  "actions": {
+    "clockIn": "Clock in",
+    "clockOut": "Clock out",
+    "addAvailability": "Add slot",
+    "submitLeave": "Submit request",
+    "approve": "Approve",
+    "reject": "Reject",
+    "createSchedule": "Create schedule",
+    "publishWeek": "Publish week"
+  },
+  "punchTypes": {
+    "ClockIn": "Clock in",
+    "ClockOut": "Clock out"
+  },
+  "leaveTypes": {
+    "AnnualLeave": "Annual leave",
+    "SickLeave": "Sick leave",
+    "PublicHoliday": "Public holiday"
+  },
+  "sourceTypes": {
+    "Punch": "Punch",
+    "Leave": "Leave"
+  },
+  "statuses": {
+    "Normal": "Normal",
+    "Late": "Late",
+    "EarlyLeave": "Early leave",
+    "NoSchedule": "No schedule",
+    "Duplicate": "Duplicate",
+    "PendingApproval": "Pending",
+    "Pending": "Pending",
+    "Approved": "Approved",
+    "Rejected": "Rejected",
+    "Submitted": "Submitted",
+    "Cancelled": "Cancelled",
+    "Draft": "Draft",
+    "Active": "Published"
+  },
+  "weekdays": {
+    "0": "Mon",
+    "1": "Tue",
+    "2": "Wed",
+    "3": "Thu",
+    "4": "Fri",
+    "5": "Sat",
+    "6": "Sun"
+  },
+  "messages": {
+    "loginRequired": "Please sign in before using attendance.",
+    "loadFailed": "Failed to load attendance.",
+    "managerLoadFailedTitle": "Manager schedule failed to load",
+    "noManagedStoreTitle": "No managed stores",
+    "noManagedStoreDescription": "This account has no managed stores, or the latest permissions have not synced.",
+    "refreshFailed": "Refresh failed.",
+    "saveFailed": "Save failed.",
+    "cancelFailed": "Cancel failed.",
+    "punchSuccess": "Punch submitted.",
+    "punchFailed": "Punch failed.",
+    "punchVerificationSentForReview": "Location or network verification is incomplete. The punch was prepared with review metadata.",
+    "availabilitySaved": "Availability saved.",
+    "availabilityCancelled": "Availability cancelled.",
+    "leaveSubmitted": "Leave request submitted.",
+    "leaveCancelled": "Leave request cancelled.",
+    "approvalApproved": "Approval accepted.",
+    "approvalRejected": "Approval rejected.",
+    "approvalFailed": "Approval action failed.",
+    "selectStoreFirst": "Please select a store first.",
+    "scheduleSaved": "Schedule saved.",
+    "scheduleDeleted": "Schedule deleted.",
+    "weekPublished": "This week's schedule was published.",
+    "publishFailed": "Publish failed.",
+    "holidaySaved": "Public holiday saved.",
+    "holidayDeleted": "Public holiday deleted.",
+    "holidaySyncSuccess": "Synced {{count}} public holidays."
+  }
+}

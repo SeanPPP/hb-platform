@@ -1,0 +1,60 @@
+{
+  "title": "分期订单",
+  "subtitle": "按分店、状态、客户电话、客户姓名和日期范围查看分期订单与付款记录",
+  "filters": {
+    "storeCode": "分店",
+    "status": "状态",
+    "userPhone": "客户电话",
+    "userName": "客户姓名",
+    "dateFrom": "开始日期",
+    "dateTo": "结束日期",
+    "emptyDate": "未选择",
+    "allStores": "全部分店",
+    "allStatuses": "全部状态",
+    "storePickerTitle": "选择分店",
+    "statusPickerTitle": "选择状态"
+  },
+  "statuses": {
+    "pending": "待处理",
+    "paid": "已支付",
+    "cancelled": "已取消",
+    "refunded": "已退款",
+    "installment": "分期中",
+    "unknown": "未知状态"
+  },
+  "labels": {
+    "orderNo": "订单号",
+    "orderQrCode": "订单二维码",
+    "orderTime": "订单时间",
+    "store": "分店",
+    "status": "状态",
+    "customer": "客户",
+    "customerPhone": "客户电话",
+    "customerName": "客户姓名",
+    "itemCount": "商品数",
+    "skuCount": "SKU 数",
+    "totalAmount": "订单金额",
+    "discountAmount": "优惠金额",
+    "actualAmount": "实付金额",
+    "paymentRecords": "付款记录",
+    "paymentMethod": "付款方式",
+    "paymentTime": "付款时间",
+    "paymentAmount": "付款金额",
+    "cashier": "收银员",
+    "reference": "参考号",
+    "orderLines": "订单明细",
+    "quantity": "数量",
+    "unitPrice": "单价"
+  },
+  "actions": {
+    "viewDetail": "查看详情",
+    "loadMore": "加载更多"
+  },
+  "messages": {
+    "empty": "没有找到分期订单",
+    "loadFailed": "加载分期订单失败",
+    "detailsLoadFailed": "加载订单详情失败",
+    "paymentRecordsEmpty": "暂无付款记录",
+    "orderLinesEmpty": "暂无订单明细"
+  }
+}

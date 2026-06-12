@@ -1,0 +1,61 @@
+{
+  "title": "商品列表",
+  "filterTitle": "过滤面板",
+  "gradeFilterTitle": "等级筛选",
+  "scanResultHint": "当前为扫码结果，点清除按钮恢复全部商品",
+  "searchPlaceholder": "按货号搜索",
+  "searchToggleOpen": "展开搜索框",
+  "searchToggleClose": "收起搜索框",
+  "cameraQuery": "相机查询",
+  "autoAddOn": "自动加入购物车已开启",
+  "autoAddOff": "自动加入购物车已关闭",
+  "resetScanFocus": "扫码焦点重置",
+  "clearScanFilter": "清除扫码过滤",
+  "filters": {
+    "currentStore": "当前门店: {{store}}",
+    "currentCategory": "当前分类: {{category}}",
+    "currentGrade": "当前等级: {{grade}}",
+    "store": "分店",
+    "category": "分类",
+    "grade": "等级",
+    "all": "全部",
+    "allCategories": "全部分类",
+    "allGrades": "全部等级",
+    "noStores": "当前账号没有可用门店。",
+    "noGrades": "暂无可选等级。",
+    "gradesLoadFailed": "商品等级加载失败，请稍后重试。"
+  },
+  "empty": {
+    "noProductsTitle": "暂无商品",
+    "noProductsDescription": "可以换个关键词、重新扫码或切换分类试试",
+    "productsLoadFailedTitle": "商品加载失败",
+    "productsLoadFailedDescription": "后端响应较慢或网络不稳定，请重试。",
+    "noAssignedStoresTitle": "暂无可用分店",
+    "noAssignedStoresDescription": "当前账号没有已分配分店，请联系管理员同步权限。",
+    "selectStoreTitle": "先选择门店",
+    "selectStoreDescription": "选中门店后可查看商品动态"
+  },
+  "pagination": {
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} 页"
+  },
+  "camera": {
+    "title": "相机扫码查询",
+    "currentStore": "当前门店: {{store}}",
+    "needPermissionTitle": "需要相机权限",
+    "needPermissionDescription": "开启权限后，就能在商品页里直接用摄像头扫码查询商品。",
+    "grantPermission": "开启相机权限"
+  },
+  "messages": {
+    "storesLoadFailed": "门店加载失败，请稍后重试",
+    "productsLoadFailed": "商品加载失败，请重试",
+    "scanAddFailed": "扫码加入购物车失败",
+    "addFailed": "加入购物车失败",
+    "updateQtyFailed": "更新购物车数量失败",
+    "addedToCart": "{{name}} 已加入购物车"
+  },
+  "cartSummary": {
+    "total": "总数"
+  }
+}

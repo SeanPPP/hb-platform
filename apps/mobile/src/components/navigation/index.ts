@@ -1,0 +1,1 @@
+export { ScrollableTabBar } from "./ScrollableTabBar";

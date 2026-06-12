@@ -1,0 +1,199 @@
+{
+  "title": "商品查询",
+  "currentStore": "当前分店：{{store}}",
+  "search": {
+    "placeholder": "条码 / 货号 / 编码",
+    "lastHit": "最近命中：{{value}}"
+  },
+  "actions": {
+    "returnToInvoiceDetails": "返回订单明细"
+  },
+  "createProduct": {
+    "action": "创建商品",
+    "title": "创建商品",
+    "submit": "创建",
+    "selectSupplier": "选择供应商",
+    "supplierPickerTitle": "选择供应商",
+    "reloadSuppliers": "重新加载供应商",
+    "fields": {
+      "supplier": "供应商",
+      "itemNumber": "货号",
+      "barcode": "条码",
+      "productName": "名称",
+      "purchasePrice": "进货价",
+      "retailPrice": "零售价",
+      "isSpecialProduct": "是否特殊商品",
+      "isAutoPricing": "是否自动价格"
+    },
+    "messages": {
+      "required": "供应商、货号、条码、名称、进货价、零售价必填",
+      "priceInvalid": "进货价和零售价必须是大于等于 0 的数字",
+      "manualRetailPriceInvalid": "关闭自动价格时零售价必须大于 0",
+      "itemNumberTooShort": "货号不能少于 5 个字符",
+      "barcodeTooShort": "条码不能少于 7 个字符",
+      "retailPriceTooLow": "关闭自动价格时，零售价不能小于进货价的 2 倍",
+      "suppliersLoading": "正在加载供应商...",
+      "suppliersLoadFailed": "供应商加载失败",
+      "created": "商品已创建",
+      "refreshFailedAfterCreate": "商品已创建，但刷新详情失败，请手动查询",
+      "createFailed": "创建商品失败"
+    }
+  },
+  "messages": {
+    "selectStoreFirst": "请先选择分店",
+    "keywordRequired": "请输入条码、货号或商品编码",
+    "storeUnavailable": "当前没有可用分店",
+    "targetStoreUnavailable": "没有权限访问分店 {{storeCode}}，已停止自动查询",
+    "notFound": "未找到匹配商品",
+    "noResultTitle": "没有找到匹配商品",
+    "noResultDescription": "查询值「{{value}}」没有匹配结果，请检查条码、货号、编码或切换分店后重试。",
+    "lookupFailed": "商品查询失败",
+    "lookupErrorTitle": "查询失败",
+    "lookupErrorDescription": "查询过程中出现问题，请稍后重试。",
+    "lookupNetworkError": "网络连接失败，请检查网络后重试。",
+    "lookupTimeout": "查询超时，请检查网络连接后重试。",
+    "lookupServerError": "服务器暂时不可用（{{status}}），请稍后重试。",
+    "refreshFailed": "刷新失败",
+    "clearanceSaved": "清货价已保存",
+    "clearanceSaveFailed": "清货价保存失败",
+    "clearancePriceRequired": "请输入有效的清货价",
+    "setCodeCreated": "套装条码已新增",
+    "setCodeSaved": "套装条码已保存",
+    "setCodeSaveFailed": "套装条码保存失败",
+    "setCodeBarcodeRequired": "请输入套装条码",
+    "setCodeRetailRequired": "请输入套装零售价",
+    "multiCodeCreated": "多码条码已新增",
+    "multiCodeSaved": "多码已保存",
+    "multiCodeSaveFailed": "多码保存失败",
+    "multiCodeBarcodeRequired": "请输入多码条码",
+    "codesLoadFailed": "条码列表加载失败",
+    "saved": "商品信息已保存",
+    "saveFailed": "保存失败",
+    "emptyStorePrice": "当前分店没有商品价格记录",
+    "emptyPrompt": "输入条码、货号或商品编码开始查询",
+    "cameraTip": "将条码对准取景框中心",
+    "printerRequired": "请先在设置页选择标签打印机",
+    "printerPaused": "打印机连接已暂停，请先到设置页重新连接",
+    "printSuccess": "打印任务已发送",
+    "printFailed": "打印失败",
+    "autoPricingEvaluateFailed": "自动价格评估失败",
+    "autoPricingUpdateFailed": "自动价格更新失败",
+    "productTypeUpdateFailed": "商品类型更新失败",
+    "productTypeUpdated": "商品类型已更新",
+    "discountPrintUnavailable": "当前商品没有折扣信息，无法打印折扣标签",
+    "clearancePrintUnavailable": "当前商品没有清货信息，无法打印清货标签"
+  },
+  "lookup": {
+    "title": "选择匹配商品",
+    "query": "查询值：{{value}}",
+    "viewDetail": "查看详情",
+    "source": {
+      "productBarcode": "主条码命中",
+      "multiBarcode": "多码表命中",
+      "setBarcode": "套装条码命中",
+      "clearanceBarcode": "清货条码命中",
+      "itemNumber": "货号命中",
+      "productCode": "编码命中",
+      "fallback": "命中"
+    }
+  },
+  "sections": {
+    "moreInfo": "更多信息"
+  },
+  "hero": {
+    "unnamedProduct": "未命名商品",
+    "itemNumber": "货号：{{value}}",
+    "barcode": "条码：{{value}}",
+    "barcodeImageLabel": "{{format}} 条码图",
+    "itemNumberLabel": "货号",
+    "barcodeLabel": "条码",
+    "productTypeLabel": "商品类型",
+    "supplierLabel": "供应商",
+    "productTypeChooseTitle": "选择商品类型",
+    "productType": {
+      "normal": "0 普通",
+      "set": "1 套装",
+      "multi": "2 多码",
+      "unknown": "未知类型"
+    },
+    "productTypeDescription": {
+      "normal": "普通商品，使用主条码自己的分店价格。",
+      "set": "套装零售价可自定义，进货价按主条码零售价和进货价比例换算。",
+      "multi": "多码零售价和进货价都与主条码当前分店价格一致。"
+    }
+  },
+  "storePrice": {
+    "fallbackTitle": "分店商品信息",
+    "purchase": "进货",
+    "retail": "零售",
+    "discountPercent": "折扣率%",
+    "discountedRetail": "折扣价格",
+    "rate": "Rate {{value}}",
+    "calculating": "计算中...",
+    "auto": "自动",
+    "special": "特殊"
+  },
+  "clearancePrice": {
+    "title": "分店清货价",
+    "store": "分店",
+    "barcode": "清货条码",
+    "price": "清货价",
+    "save": "保存清货",
+    "pendingBarcode": "保存后自动生成"
+  },
+  "setCode": {
+    "title": "套装条码",
+    "barcode": "条码",
+    "retail": "零售价",
+    "save": "保存",
+    "add": "新增",
+    "addTitle": "新增套装条码",
+    "editBarcodeTitle": "编辑套装条码",
+    "editRetailTitle": "编辑套装零售价",
+    "loading": "正在加载套装条码...",
+    "loadMore": "加载更多"
+  },
+  "multiCode": {
+    "title": "多码条码",
+    "barcode": "条码",
+    "retail": "零售",
+    "save": "保存",
+    "add": "新增",
+    "addTitle": "新增多码条码",
+    "editBarcodeTitle": "编辑多码条码",
+    "editRetailTitle": "编辑多码零售价",
+    "followMain": "零售价跟随主条码",
+    "loading": "正在加载多码条码...",
+    "loadMore": "加载更多",
+    "dirtyCount": "{{count}} 处未保存"
+  },
+  "camera": {
+    "title": "扫码查询商品",
+    "needPermissionTitle": "需要相机权限",
+    "needPermissionDescription": "开启权限后，才能在商品查询页里直接扫码查询商品。",
+    "grantPermission": "开启相机权限"
+  },
+  "autoPricingConfirm": {
+    "title": "发现自动价变化",
+    "description": "{{name}}（{{code}}）的自动零售价有更新。",
+    "currentRetail": "当前零售价：{{value}}",
+    "nextRetail": "新零售价：{{value}}",
+    "discountHint": "确认后会同步更新零售价，并按新价格更新普通标签。",
+    "confirm": "更新价格并更新标签"
+  },
+  "print": {
+    "title": "标签打印",
+    "quick": "打",
+    "product": "普通标签",
+    "discount": "折扣标签",
+    "bigDiscount": "大标签",
+    "clearance": "清货标签",
+    "sendingShort": "发送中",
+    "sending": "发送中...",
+    "settingsTitle": "打印设置",
+    "continuousPrint": "自动打印",
+    "smallLabel": "小标签 (60mm)",
+    "quantity": "打印数量",
+    "quantitySingleUse": "单次有效"
+  }
+}

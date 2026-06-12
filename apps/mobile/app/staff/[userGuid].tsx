@@ -1,0 +1,948 @@
+import { useCallback, useMemo, useState } from "react";
+import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
+import {
+  ActivityIndicator,
+  Avatar,
+  Button,
+  Card,
+  Chip,
+  Dialog,
+  IconButton,
+  Portal,
+  Snackbar,
+  Text,
+  TextInput,
+} from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { WeeklyScheduleTable } from "@/components/attendance/WeeklyScheduleTable";
+import { EmptyState } from "@/components/ui/EmptyState";
+import {
+  StaffAttendanceEndpointUnavailableError,
+  getStaffAttendanceRecords,
+  getStaffAttendanceWeek,
+  useStoreUserMutations,
+  useStoreUserProfile,
+  type StaffAttendanceRecord,
+} from "@/modules/users";
+import { calculateAge, maskTrailingFour } from "@/modules/users/profile-display";
+import { validatePasswordValue } from "@/modules/users/validation";
+import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { resolveLocaleTag } from "@/shared/i18n/types";
+
+type DetailTab = "personal" | "schedule" | "records";
+
+function firstParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function getInitials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return "?";
+  }
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+function formatDate(value: string | undefined, locale: string) {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value.slice(0, 10);
+  }
+  return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(
+    parsed,
+  );
+}
+
+function formatDateTime(value: string | undefined, locale: string) {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
+}
+
+function formatShortValue(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+  if (value.includes("T")) {
+    return value.split("T").pop()?.slice(0, 5) ?? value;
+  }
+  return value.length >= 5 && value.includes(":") ? value.slice(0, 5) : value;
+}
+
+function getCurrentWeekStartDate() {
+  const date = new Date();
+  const diff = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - diff);
+  date.setHours(0, 0, 0, 0);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function DetailRow({
+  emptyValue,
+  icon,
+  label,
+  value,
+}: {
+  emptyValue: string;
+  icon: string;
+  label: string;
+  value?: string | null;
+}) {
+  return (
+    <View style={styles.detailRow}>
+      <Avatar.Icon size={34} icon={icon} style={styles.detailIcon} />
+      <View style={styles.detailCopy}>
+        <Text variant="labelMedium" style={styles.muted}>
+          {label}
+        </Text>
+        <Text variant="bodyLarge">{value || emptyValue}</Text>
+      </View>
+    </View>
+  );
+}
+
+export default function StaffDetailScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams();
+  const { t, language } = useAppTranslation([
+    "userManagement",
+    "common",
+    "attendance",
+  ]);
+  const locale = useMemo(() => resolveLocaleTag(language), [language]);
+  const userGuid = firstParam(params.userGuid);
+  const storeCode = firstParam(params.storeCode);
+  const profileQuery = useStoreUserProfile(userGuid, storeCode);
+  const { statusMutation, passwordMutation } = useStoreUserMutations(
+    storeCode,
+    undefined,
+  );
+  const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [resetPasswordVisible, setResetPasswordVisible] = useState(false);
+  const [resetPasswordValue, setResetPasswordValue] = useState("");
+  const [activeTab, setActiveTab] = useState<DetailTab>("personal");
+
+  const profile = profileQuery.data;
+  const title = profile?.fullName || profile?.username || t("detail.title");
+  const resolvedStoreCode = profile?.storeCode || storeCode;
+  const staffWeekStartDate = useMemo(() => getCurrentWeekStartDate(), []);
+  const isActive = profile?.status === 1;
+  const emptyValue = t("common:na");
+  const age = calculateAge(profile?.birthday);
+  const gender = profile?.gender
+    ? t(`detail.genders.${profile.gender}`, profile.gender)
+    : emptyValue;
+  const employmentType = profile?.employmentType
+    ? t(`detail.employmentTypes.${profile.employmentType}`, profile.employmentType)
+    : emptyValue;
+
+  const handleBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace("/(tabs)/users" as unknown as Parameters<typeof router.replace>[0]);
+  }, [router]);
+
+  const handleResetPassword = useCallback(async () => {
+    if (!userGuid || !storeCode) {
+      return;
+    }
+
+    const validationMessage = validatePasswordValue(resetPasswordValue, t);
+    if (validationMessage) {
+      setSnackbarMessage(validationMessage);
+      return;
+    }
+
+    try {
+      await passwordMutation.mutateAsync({
+        userGuid,
+        storeCode,
+        newPassword: resetPasswordValue.trim(),
+      });
+      setResetPasswordVisible(false);
+      setResetPasswordValue("");
+      setSnackbarMessage(t("messages.passwordReset"));
+    } catch (error) {
+      console.warn("[staff-profile] password reset failed", error);
+      setSnackbarMessage(
+        resolveLocalizedErrorMessage(error, {
+          t,
+          language,
+          fallbackKey: "messages.passwordResetFailed",
+        }),
+      );
+    }
+  }, [language, passwordMutation, resetPasswordValue, storeCode, t, userGuid]);
+
+  const handleToggleStatus = useCallback(() => {
+    if (!profile || !storeCode) {
+      return;
+    }
+
+    const nextEnabled = profile.status !== 1;
+    const actionLabel = nextEnabled
+      ? t("actions.enable")
+      : t("actions.disable");
+    Alert.alert(
+      actionLabel,
+      t("dialogs.statusConfirmMessage", {
+        action: actionLabel,
+        username: profile.username,
+      }),
+      [
+        { text: t("actions.cancel"), style: "cancel" },
+        {
+          text: actionLabel,
+          style: nextEnabled ? "default" : "destructive",
+          onPress: async () => {
+            try {
+              await statusMutation.mutateAsync({
+                userGuid: profile.userGUID,
+                storeCode,
+                status: nextEnabled ? 1 : 0,
+              });
+              await profileQuery.refetch();
+              setSnackbarMessage(
+                nextEnabled
+                  ? t("messages.userEnabled")
+                  : t("messages.userDisabled"),
+              );
+            } catch (error) {
+              console.warn("[staff-profile] status failed", error);
+              setSnackbarMessage(
+                resolveLocalizedErrorMessage(error, {
+                  t,
+                  language,
+                  fallbackKey: "messages.statusFailed",
+                }),
+              );
+            }
+          },
+        },
+      ],
+    );
+  }, [language, profile, profileQuery, statusMutation, storeCode, t]);
+
+  const scheduleQuery = useQuery({
+    queryKey: [
+      "staffAttendance",
+      "week",
+      resolvedStoreCode ?? "",
+      userGuid ?? "",
+      staffWeekStartDate,
+    ],
+    enabled: Boolean(
+      activeTab === "schedule" && userGuid && resolvedStoreCode,
+    ),
+    queryFn: () =>
+      getStaffAttendanceWeek({
+        userGuid: userGuid!,
+        storeCode: resolvedStoreCode,
+        weekStartDate: staffWeekStartDate,
+      }),
+  });
+
+  const recordsQuery = useQuery({
+    queryKey: [
+      "staffAttendance",
+      "records",
+      resolvedStoreCode ?? "",
+      userGuid ?? "",
+    ],
+    enabled: Boolean(activeTab === "records" && userGuid && resolvedStoreCode),
+    queryFn: () =>
+      getStaffAttendanceRecords({
+        userGuid: userGuid!,
+        storeCode: resolvedStoreCode,
+        limit: 20,
+      }),
+  });
+
+  const openSchedule = useCallback(() => {
+    setActiveTab("schedule");
+  }, []);
+
+  const renderTabStateCard = useCallback(
+    ({
+      title,
+      description,
+      actionLabel,
+      onPress,
+    }: {
+      title: string;
+      description: string;
+      actionLabel?: string;
+      onPress?: () => void;
+    }) => (
+      <Card mode="elevated" style={styles.sectionCard}>
+        <Card.Content style={[styles.sectionContent, styles.stateCardContent]}>
+          <Text variant="titleMedium">{title}</Text>
+          <Text variant="bodyMedium" style={styles.muted}>
+            {description}
+          </Text>
+          {actionLabel && onPress ? (
+            <Button mode="outlined" icon="refresh" onPress={onPress}>
+              {actionLabel}
+            </Button>
+          ) : null}
+        </Card.Content>
+      </Card>
+    ),
+    [],
+  );
+
+  const renderScheduleTab = useCallback(() => {
+    if (scheduleQuery.isLoading && !scheduleQuery.data) {
+      return (
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={[styles.sectionContent, styles.stateCardContent]}>
+            <ActivityIndicator size="small" />
+            <Text variant="bodyMedium" style={styles.muted}>
+              {t("detail.schedule.loading")}
+            </Text>
+          </Card.Content>
+        </Card>
+      );
+    }
+
+    if (scheduleQuery.isError && !scheduleQuery.data) {
+      const description =
+        scheduleQuery.error instanceof StaffAttendanceEndpointUnavailableError
+          ? t("detail.schedule.endpointUnavailable")
+          : resolveLocalizedErrorMessage(scheduleQuery.error, {
+              t,
+              language,
+              fallbackKey: "detail.schedule.loadFailedDescription",
+            });
+
+      return renderTabStateCard({
+        title: t("detail.schedule.loadFailedTitle"),
+        description,
+        actionLabel: t("common:actions.retry"),
+        onPress: () => void scheduleQuery.refetch(),
+      });
+    }
+
+    return (
+      <>
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={styles.sectionContent}>
+            <Text variant="titleMedium">{t("detail.schedule.title")}</Text>
+            <Text variant="bodyMedium" style={styles.muted}>
+              {t("detail.schedule.description")}
+            </Text>
+          </Card.Content>
+        </Card>
+        <WeeklyScheduleTable week={scheduleQuery.data} />
+      </>
+    );
+  }, [renderTabStateCard, scheduleQuery, t]);
+
+  const getRecordTypeLabel = useCallback(
+    (record: StaffAttendanceRecord) => {
+      if (record.type === "Leave") {
+        return record.leaveType
+          ? t(`attendance:leaveTypes.${record.leaveType}`, record.leaveType)
+          : t("detail.records.types.leave");
+      }
+      if (record.type === "Approval") {
+        return record.sourceType
+          ? t(`attendance:sourceTypes.${record.sourceType}`, record.sourceType)
+          : t("detail.records.types.approval");
+      }
+      if (record.punchType) {
+        return t(`attendance:punchTypes.${record.punchType}`, record.punchType);
+      }
+      return t("detail.records.types.punch");
+    },
+    [t],
+  );
+
+  const renderRecordMeta = useCallback(
+    (record: StaffAttendanceRecord) => {
+      const submittedAt = formatDateTime(record.submittedAt, locale);
+      const workDateValue = formatDate(record.workDate, locale);
+      const startValue = record.startTime?.includes("-")
+        ? formatDate(record.startTime, locale)
+        : formatShortValue(record.startTime);
+      const endValue = record.endTime?.includes("-")
+        ? formatDate(record.endTime, locale)
+        : formatShortValue(record.endTime);
+      const rows: Array<{ label: string; value: string | null }> = [];
+
+      if (record.type === "Leave") {
+        rows.push({
+          label: t("detail.records.dateRange"),
+          value:
+            startValue && endValue ? `${startValue} - ${endValue}` : startValue || endValue,
+        });
+      } else {
+        rows.push({
+          label: t("detail.records.workDate"),
+          value: workDateValue,
+        });
+      }
+
+      if (submittedAt) {
+        rows.push({
+          label: t("detail.records.submittedAt"),
+          value: submittedAt,
+        });
+      }
+
+      if (record.storeName || record.storeCode) {
+        rows.push({
+          label: t("detail.records.store"),
+          value: record.storeName || record.storeCode || null,
+        });
+      }
+
+      return rows
+        .filter((row) => row.value)
+        .map((row) => (
+          <View key={`${record.recordGuid}-${row.label}`} style={styles.recordMetaRow}>
+            <Text variant="labelMedium" style={styles.muted}>
+              {row.label}
+            </Text>
+            <Text variant="bodyMedium" style={styles.recordMetaValue}>
+              {row.value}
+            </Text>
+          </View>
+        ));
+    },
+    [locale, t],
+  );
+
+  const renderRecordsTab = useCallback(() => {
+    if (recordsQuery.isLoading && !recordsQuery.data) {
+      return (
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={[styles.sectionContent, styles.stateCardContent]}>
+            <ActivityIndicator size="small" />
+            <Text variant="bodyMedium" style={styles.muted}>
+              {t("detail.records.loading")}
+            </Text>
+          </Card.Content>
+        </Card>
+      );
+    }
+
+    if (recordsQuery.isError && !recordsQuery.data) {
+      const description =
+        recordsQuery.error instanceof StaffAttendanceEndpointUnavailableError
+          ? t("detail.records.endpointUnavailable")
+          : resolveLocalizedErrorMessage(recordsQuery.error, {
+              t,
+              language,
+              fallbackKey: "detail.records.loadFailedDescription",
+            });
+
+      return renderTabStateCard({
+        title: t("detail.records.loadFailedTitle"),
+        description,
+        actionLabel: t("common:actions.retry"),
+        onPress: () => void recordsQuery.refetch(),
+      });
+    }
+
+    const records = recordsQuery.data ?? [];
+    if (!records.length) {
+      return renderTabStateCard({
+        title: t("detail.records.emptyTitle"),
+        description: t("detail.records.emptyDescription"),
+      });
+    }
+
+    return (
+      <Card mode="elevated" style={styles.sectionCard}>
+        <Card.Content style={styles.sectionContent}>
+          <Text variant="titleMedium">{t("detail.records.title")}</Text>
+          <Text variant="bodyMedium" style={styles.muted}>
+            {t("detail.records.description")}
+          </Text>
+          {records.map((record) => (
+            <View
+              key={`${record.type}-${record.recordGuid || record.workDate}`}
+              style={styles.recordCard}
+            >
+              <View style={styles.recordHeader}>
+                <View style={styles.recordHeaderCopy}>
+                  <Text variant="titleSmall">{getRecordTypeLabel(record)}</Text>
+                  <Text variant="bodySmall" style={styles.muted}>
+                    {t(`attendance:statuses.${record.status}`, record.status)}
+                  </Text>
+                </View>
+                <Chip compact>{t(`attendance:statuses.${record.status}`, record.status)}</Chip>
+              </View>
+              <View style={styles.recordMetaBlock}>{renderRecordMeta(record)}</View>
+              {record.detail ? (
+                <Text variant="bodySmall" style={styles.muted}>
+                  {record.detail}
+                </Text>
+              ) : null}
+            </View>
+          ))}
+        </Card.Content>
+      </Card>
+    );
+  }, [getRecordTypeLabel, recordsQuery, renderRecordMeta, renderTabStateCard, t]);
+
+  const renderTabContent = useCallback(() => {
+    if (activeTab === "schedule") {
+      return renderScheduleTab();
+    }
+    if (activeTab === "records") {
+      return renderRecordsTab();
+    }
+    return (
+      <>
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={styles.sectionContent}>
+            <Text variant="titleMedium">
+              {t("detail.sections.employeeDetails")}
+            </Text>
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="badge-account-outline"
+              label={t("detail.fields.employeeId")}
+              value={profile?.userGUID}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="calendar-account-outline"
+              label={t("detail.fields.age")}
+              value={age === null ? null : String(age)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="account-heart-outline"
+              label={t("detail.fields.gender")}
+              value={gender}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="briefcase-account-outline"
+              label={t("detail.fields.employmentType")}
+              value={employmentType}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="phone-outline"
+              label={t("detail.fields.phone")}
+              value={profile?.phone}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="email-outline"
+              label={t("detail.fields.email")}
+              value={profile?.email}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="storefront-outline"
+              label={t("detail.fields.store")}
+              value={profile?.storeName || profile?.storeCode}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="calendar-outline"
+              label={t("detail.fields.joinDate")}
+              value={formatDate(profile?.createdAt, locale)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="cake-variant-outline"
+              label={t("detail.fields.birthday")}
+              value={formatDate(profile?.birthday, locale)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="map-marker-outline"
+              label={t("detail.fields.address")}
+              value={profile?.address}
+            />
+          </Card.Content>
+        </Card>
+
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={styles.sectionContent}>
+            <Text variant="titleMedium">
+              {t("detail.sections.accountInfo")}
+            </Text>
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="badge-account-outline"
+              label={t("detail.fields.identityId")}
+              value={maskTrailingFour(profile?.identityId, emptyValue)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="credit-card-outline"
+              label={t("detail.fields.bankAccount")}
+              value={maskTrailingFour(profile?.bankAccountNumber, emptyValue)}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="identifier"
+              label={t("detail.fields.superAccount")}
+              value={maskTrailingFour(profile?.superannuationAccountNumber, emptyValue)}
+            />
+          </Card.Content>
+        </Card>
+
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={styles.sectionContent}>
+            <Text variant="titleMedium">{t("detail.sections.payroll")}</Text>
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="bank-outline"
+              label={t("detail.fields.bankBsb")}
+              value={profile?.bankBsb}
+            />
+            <DetailRow
+              emptyValue={emptyValue}
+              icon="shield-account-outline"
+              label={t("detail.fields.superCompany")}
+              value={profile?.superannuationCompanyName}
+            />
+          </Card.Content>
+        </Card>
+
+        <Card mode="elevated" style={styles.sectionCard}>
+          <Card.Content style={styles.sectionContent}>
+            <Text variant="titleMedium">
+              {t("detail.sections.quickActions")}
+            </Text>
+            <Button
+              mode="outlined"
+              icon="calendar-month-outline"
+              onPress={openSchedule}
+            >
+              {t("detail.actions.viewFullSchedule")}
+            </Button>
+            <Button
+              mode="outlined"
+              icon="key-outline"
+              onPress={() => setResetPasswordVisible(true)}
+            >
+              {t("actions.resetPassword")}
+            </Button>
+            <Button
+              mode={isActive ? "outlined" : "contained-tonal"}
+              icon={isActive ? "block-helper" : "check-circle-outline"}
+              onPress={handleToggleStatus}
+              loading={statusMutation.isPending}
+            >
+              {isActive ? t("actions.disable") : t("actions.enable")}
+            </Button>
+          </Card.Content>
+        </Card>
+      </>
+    );
+  }, [
+    activeTab,
+    age,
+    employmentType,
+    emptyValue,
+    gender,
+    handleToggleStatus,
+    isActive,
+    locale,
+    openSchedule,
+    profile,
+    renderRecordsTab,
+    renderScheduleTab,
+    statusMutation.isPending,
+    t,
+  ]);
+
+  if (!userGuid || !storeCode) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <EmptyState
+          title={t("detail.missingTitle")}
+          description={t("detail.missingDescription")}
+          primaryAction={{
+            label: t("common:actions.back"),
+            icon: "arrow-left",
+            onPress: handleBack,
+          }}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  if (profileQuery.isLoading && !profile) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (profileQuery.isError && !profile) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <EmptyState
+          title={t("detail.loadFailedTitle")}
+          description={resolveLocalizedErrorMessage(profileQuery.error, {
+            t,
+            language,
+            fallbackKey: "messages.loadFailedDescription",
+          })}
+          primaryAction={{
+            label: t("common:actions.retry"),
+            icon: "refresh",
+            onPress: () => void profileQuery.refetch(),
+          }}
+          secondaryAction={{
+            label: t("common:actions.back"),
+            icon: "arrow-left",
+            onPress: handleBack,
+          }}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.topBar}>
+          <IconButton icon="arrow-left" onPress={handleBack} />
+          <Text variant="titleLarge">{t("detail.title")}</Text>
+          <IconButton
+            icon="pencil-outline"
+            onPress={() => router.replace("/(tabs)/users" as unknown as Parameters<typeof router.replace>[0])}
+          />
+        </View>
+
+        <Card mode="elevated" style={styles.heroCard}>
+          <Card.Content style={styles.heroContent}>
+            <Avatar.Text
+              size={72}
+              label={getInitials(title)}
+              style={styles.heroAvatar}
+            />
+            <View style={styles.heroCopy}>
+              <Text variant="headlineSmall">{title}</Text>
+              <Text variant="bodyMedium" style={styles.muted}>
+                {profile?.employmentType
+                  ? t(
+                      `detail.employmentTypes.${profile.employmentType}`,
+                      profile.employmentType,
+                    )
+                  : t("fields.positionValue")}
+              </Text>
+              <Chip
+                compact
+                style={isActive ? styles.activeChip : styles.inactiveChip}
+              >
+                {isActive ? t("statuses.active") : t("statuses.disabled")}
+              </Chip>
+            </View>
+          </Card.Content>
+        </Card>
+
+        <View style={styles.segmentTabs}>
+          <Chip
+            selected={activeTab === "personal"}
+            onPress={() => setActiveTab("personal")}
+          >
+            {t("detail.tabs.personalInfo")}
+          </Chip>
+          <Chip
+            selected={activeTab === "schedule"}
+            onPress={() => setActiveTab("schedule")}
+          >
+            {t("detail.tabs.schedule")}
+          </Chip>
+          <Chip
+            selected={activeTab === "records"}
+            onPress={() => setActiveTab("records")}
+          >
+            {t("detail.tabs.records")}
+          </Chip>
+        </View>
+        {renderTabContent()}
+      </ScrollView>
+
+      <Portal>
+        <Dialog
+          visible={resetPasswordVisible}
+          onDismiss={() => setResetPasswordVisible(false)}
+        >
+          <Dialog.Title>{t("dialogs.resetPasswordTitle")}</Dialog.Title>
+          <Dialog.Content style={styles.dialogContent}>
+            <Text variant="bodyMedium">
+              {t("dialogs.resetPasswordDescription", {
+                username: profile?.username ?? "",
+              })}
+            </Text>
+            <TextInput
+              mode="outlined"
+              label={t("fields.newPassword")}
+              value={resetPasswordValue}
+              onChangeText={setResetPasswordValue}
+              secureTextEntry
+              autoCapitalize="none"
+              disabled={passwordMutation.isPending}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button
+              onPress={() => setResetPasswordVisible(false)}
+              disabled={passwordMutation.isPending}
+            >
+              {t("actions.cancel")}
+            </Button>
+            <Button
+              onPress={handleResetPassword}
+              loading={passwordMutation.isPending}
+            >
+              {t("actions.confirmReset")}
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      <Snackbar
+        visible={Boolean(snackbarMessage)}
+        onDismiss={() => setSnackbarMessage("")}
+        duration={2500}
+      >
+        {snackbarMessage}
+      </Snackbar>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  activeChip: {
+    alignSelf: "flex-start",
+    backgroundColor: "#D1FAE5",
+  },
+  centered: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
+  },
+  container: {
+    backgroundColor: "#F5F7FB",
+    flex: 1,
+  },
+  content: {
+    gap: 14,
+    padding: 16,
+    paddingBottom: 28,
+  },
+  detailCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  detailIcon: {
+    backgroundColor: "#EEF2F6",
+  },
+  detailRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
+  },
+  dialogContent: {
+    gap: 12,
+  },
+  heroAvatar: {
+    backgroundColor: "#111827",
+  },
+  heroCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+  },
+  heroContent: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 16,
+  },
+  heroCopy: {
+    flex: 1,
+    gap: 6,
+  },
+  inactiveChip: {
+    alignSelf: "flex-start",
+    backgroundColor: "#FEE2E2",
+  },
+  muted: {
+    color: "#6B7280",
+  },
+  recordCard: {
+    backgroundColor: "#F8FAFC",
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 10,
+    padding: 12,
+  },
+  recordHeader: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between",
+  },
+  recordHeaderCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  recordMetaBlock: {
+    gap: 6,
+  },
+  recordMetaRow: {
+    gap: 2,
+  },
+  recordMetaValue: {
+    color: "#111827",
+  },
+  sectionCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+  },
+  sectionContent: {
+    gap: 14,
+  },
+  segmentTabs: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  stateCardContent: {
+    alignItems: "center",
+  },
+  topBar: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+});

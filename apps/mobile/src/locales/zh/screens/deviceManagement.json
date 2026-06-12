@@ -1,0 +1,71 @@
+{
+  "title": "设备管理",
+  "subtitle": "共 {{count}} 台设备",
+  "searchPlaceholder": "搜索设备编号、硬件 ID 或系统",
+  "actions": {
+    "activate": "启用",
+    "cancel": "取消",
+    "disable": "禁用",
+    "lock": "锁定",
+    "refresh": "刷新"
+  },
+  "currentStore": {
+    "allStores": "全部分店"
+  },
+  "dialogs": {
+    "confirmTitle": "确认{{action}}设备",
+    "confirmMessage": "确定要{{action}}“{{device}}”吗？"
+  },
+  "fields": {
+    "createdAtValue": "创建：{{value}}",
+    "deviceSystemValue": "设备系统：{{value}}",
+    "deviceTypeValue": "设备类型：{{value}}",
+    "hardwareValue": "硬件 ID：{{value}}",
+    "noStore": "未绑定分店",
+    "storeValue": "分店：{{value}}",
+    "unnamedDevice": "未命名设备",
+    "updatedAtValue": "更新：{{value}}"
+  },
+  "filters": {
+    "all": "全部",
+    "active": "启用",
+    "apply": "应用筛选",
+    "button": "筛选",
+    "buttonWithCount": "筛选（{{count}}）",
+    "clear": "清空",
+    "current": "{{store}} · {{status}}",
+    "disabled": "禁用",
+    "keyword": "关键词",
+    "locked": "锁定",
+    "pendingConfirmation": "待确认",
+    "status": "状态",
+    "store": "分店",
+    "title": "筛选设备",
+    "unregistered": "未注册"
+  },
+  "messages": {
+    "activateFailed": "启用设备失败",
+    "activateSuccess": "设备已启用",
+    "disableFailed": "禁用设备失败",
+    "disableSuccess": "设备已禁用",
+    "emptyDescription": "当前还没有已登记设备。",
+    "emptySearchDescription": "换个关键词、状态或分店再试试。",
+    "emptySearchTitle": "没有匹配设备",
+    "emptyTitle": "暂无设备",
+    "loadFailedDescription": "请稍后重试。",
+    "loadFailedTitle": "设备列表加载失败",
+    "lockFailed": "锁定设备失败",
+    "lockSuccess": "设备已锁定",
+    "noAccessDescription": "只有管理员可以查看和操作移动端设备。",
+    "noAccessTitle": "无设备管理权限",
+    "refreshFailed": "刷新设备列表失败"
+  },
+  "statuses": {
+    "active": "启用",
+    "disabled": "禁用",
+    "locked": "锁定",
+    "pendingConfirmation": "待确认",
+    "unregistered": "未注册",
+    "unknown": "未知"
+  }
+}

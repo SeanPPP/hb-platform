@@ -1,0 +1,62 @@
+import { StyleSheet, View } from "react-native";
+import { Button, Text } from "react-native-paper";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import type { Store } from "@/modules/shop/types";
+
+interface StoreChipProps {
+  compact?: boolean;
+  store: Store | null;
+  onPress: () => void;
+}
+
+export function StoreChip({ compact = false, store, onPress }: StoreChipProps) {
+  const { t } = useAppTranslation("common");
+
+  if (compact) {
+    return (
+      <Button
+        mode="outlined"
+        onPress={onPress}
+        icon="storefront-outline"
+        style={styles.compactButton}
+        contentStyle={styles.compactButtonContent}
+        labelStyle={styles.compactButtonLabel}
+      >
+        {store?.storeName ?? t("labels.selectStore")}
+      </Button>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <Text variant="labelMedium" style={styles.label}>
+        {t("labels.currentStore")}
+      </Text>
+      <Button mode="outlined" onPress={onPress} icon="storefront-outline" contentStyle={styles.buttonContent}>
+        {store?.storeName ?? t("labels.selectStore")}
+      </Button>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    gap: 8,
+  },
+  label: {
+    color: "#666",
+  },
+  buttonContent: {
+    justifyContent: "space-between",
+  },
+  compactButton: {
+    width: "100%",
+  },
+  compactButtonContent: {
+    minHeight: 38,
+    justifyContent: "flex-start",
+  },
+  compactButtonLabel: {
+    marginVertical: 0,
+  },
+});

@@ -1,0 +1,80 @@
+{
+  "title": "Promotions",
+  "subtitle": "Current store: {{store}}",
+  "actions": {
+    "create": "New promotion",
+    "edit": "Edit",
+    "copyToStore": "Copy to store",
+    "addProduct": "Add product"
+  },
+  "filters": {
+    "keyword": "Search promotion name"
+  },
+  "scope": {
+    "storeOnly": "Store",
+    "multiStore": "Multi-store",
+    "headquarters": "HQ",
+    "unknown": "Unknown"
+  },
+  "status": {
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "exclusive": "Exclusive",
+    "stackable": "Stackable"
+  },
+  "fields": {
+    "unnamed": "Unnamed promotion",
+    "name": "Promotion name",
+    "description": "Description",
+    "effectiveStart": "Start time",
+    "effectiveEnd": "End time",
+    "applyQuantity": "Apply quantity",
+    "fixedPrice": "Fixed price",
+    "priority": "Priority",
+    "enabled": "Enabled",
+    "exclusive": "Exclusive",
+    "productCode": "Product code",
+    "unitWeight": "Weight",
+    "priorityValue": "Priority {{value}}",
+    "ruleValue": "{{count}} items for ${{price}}",
+    "productsAndStores": "{{products}} products · {{stores}} stores"
+  },
+  "form": {
+    "createTitle": "New store promotion",
+    "editTitle": "Edit store promotion",
+    "storeReadonly": "Applies only to: {{store}}",
+    "priorityHint": "New and copied promotions default to priority 0. Higher priority may affect exclusive promotion conflicts.",
+    "products": "Products"
+  },
+  "copy": {
+    "title": "Copy to store",
+    "description": "Copy “{{name}}” into a new promotion owned only by the current store."
+  },
+  "empty": {
+    "selectStoreTitle": "Select a store",
+    "selectStoreDescription": "Choose a store to view store, multi-store, and HQ promotions.",
+    "noDataTitle": "No promotions",
+    "noDataDescription": "No related promotions for the current store."
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}} / {{pageCount}}"
+  },
+  "store": {
+    "empty": "Not selected"
+  },
+  "messages": {
+    "selectStoreFirst": "Please select a store first.",
+    "loadFailed": "Failed to load promotions.",
+    "detailFailed": "Failed to load promotion detail.",
+    "detailMissing": "Promotion detail was not found.",
+    "nameRequired": "Please enter a promotion name.",
+    "saveFailed": "Failed to save promotion.",
+    "saved": "Promotion saved.",
+    "copyFailed": "Failed to copy promotion.",
+    "copied": "Copied as a store promotion.",
+    "copyBeforeEdit": "Copy multi-store or HQ promotions to this store before editing.",
+    "enableFailed": "Failed to update enabled status."
+  }
+}

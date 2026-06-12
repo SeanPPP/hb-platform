@@ -1,0 +1,75 @@
+{
+  "title": "个人信息",
+  "subtitle": "查看并维护你自己的资料。",
+  "readonly": {
+    "username": "用户名",
+    "displayName": "显示名称",
+    "createdAt": "创建时间",
+    "updatedAt": "更新时间"
+  },
+  "fields": {
+    "bankBsb": "BSB",
+    "bankAccountNumber": "银行账号",
+    "superannuationCompanyName": "养老金公司",
+    "superannuationCompanyCode": "养老金公司代码",
+    "superannuationAccountNumber": "养老金账号",
+    "birthday": "生日",
+    "gender": "性别",
+    "employmentType": "员工类型",
+    "avatarUrl": "头像",
+    "identityId": "证件号",
+    "identityPhotoUrl": "证件照片",
+    "address": "地址"
+  },
+  "placeholders": {
+    "birthday": "YYYY-MM-DD",
+    "address": "街道、城市、州、省、邮编"
+  },
+  "sections": {
+    "banking": "银行信息",
+    "superannuation": "养老金信息",
+    "personal": "个人资料",
+    "identity": "身份信息",
+    "images": "图片"
+  },
+  "genderOptions": {
+    "male": "男",
+    "female": "女",
+    "other": "其他"
+  },
+  "employmentTypeOptions": {
+    "fullTime": "全职",
+    "partTime": "兼职",
+    "casual": "临时工"
+  },
+  "actions": {
+    "save": "保存资料",
+    "takePhoto": "拍照上传",
+    "retakePhoto": "重新拍照",
+    "removeImage": "移除图片",
+    "grantCameraPermission": "允许相机权限",
+    "capture": "拍照"
+  },
+  "messages": {
+    "loadFailed": "加载个人信息失败。",
+    "saveSuccess": "个人信息已保存。",
+    "saveFailed": "保存个人信息失败。",
+    "loginRequired": "请先登录后再打开个人信息。",
+    "uploadSuccess": "图片已上传，请保存资料。",
+    "uploadFailed": "图片上传失败。",
+    "uploadNotAvailable": "当前服务器暂未开放个人资料图片上传。",
+    "imageRemoved": "图片已移除，请保存资料。",
+    "permissionRequired": "需要相机权限才能拍照上传。",
+    "cameraReady": "拍摄清晰照片后上传。"
+  },
+  "preview": {
+    "avatar": "头像预览",
+    "identityPhoto": "证件照片预览",
+    "empty": "暂未上传图片。"
+  },
+  "camera": {
+    "title": "拍照上传",
+    "permissionTitle": "需要相机权限",
+    "permissionDescription": "允许相机权限后即可拍照上传个人资料图片。"
+  }
+}

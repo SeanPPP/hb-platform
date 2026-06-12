@@ -1,0 +1,199 @@
+{
+  "title": "Product lookup",
+  "currentStore": "Store: {{store}}",
+  "search": {
+    "placeholder": "Barcode / item / code",
+    "lastHit": "Last hit: {{value}}"
+  },
+  "actions": {
+    "returnToInvoiceDetails": "Back to invoice details"
+  },
+  "createProduct": {
+    "action": "Create product",
+    "title": "Create product",
+    "submit": "Create",
+    "selectSupplier": "Select supplier",
+    "supplierPickerTitle": "Select supplier",
+    "reloadSuppliers": "Reload suppliers",
+    "fields": {
+      "supplier": "Supplier",
+      "itemNumber": "Item number",
+      "barcode": "Barcode",
+      "productName": "Name",
+      "purchasePrice": "Purchase price",
+      "retailPrice": "Retail price",
+      "isSpecialProduct": "Special product",
+      "isAutoPricing": "Auto pricing"
+    },
+    "messages": {
+      "required": "Supplier, item number, barcode, name, purchase price, and retail price are required.",
+      "priceInvalid": "Purchase price and retail price must be valid numbers greater than or equal to 0.",
+      "manualRetailPriceInvalid": "Retail price must be greater than 0 when auto pricing is off.",
+      "itemNumberTooShort": "Item number must be at least 5 characters.",
+      "barcodeTooShort": "Barcode must be at least 7 characters.",
+      "retailPriceTooLow": "Retail price must be at least 2 times the purchase price when auto pricing is off.",
+      "suppliersLoading": "Loading suppliers...",
+      "suppliersLoadFailed": "Failed to load suppliers",
+      "created": "Product created.",
+      "refreshFailedAfterCreate": "Product was created, but details failed to refresh. Search manually.",
+      "createFailed": "Failed to create product"
+    }
+  },
+  "messages": {
+    "selectStoreFirst": "Please select a store first.",
+    "keywordRequired": "Enter a barcode, item number, or product code.",
+    "storeUnavailable": "No store is currently available.",
+    "targetStoreUnavailable": "You cannot access store {{storeCode}}, so the automatic lookup was stopped.",
+    "notFound": "No matching product was found.",
+    "noResultTitle": "No matching product",
+    "noResultDescription": "No result matched \"{{value}}\". Check the barcode, item number, product code, or try another store.",
+    "lookupFailed": "Product lookup failed.",
+    "lookupErrorTitle": "Lookup failed",
+    "lookupErrorDescription": "Something went wrong while looking up the product. Please try again later.",
+    "lookupNetworkError": "Network connection failed. Please check your network and try again.",
+    "lookupTimeout": "Lookup timed out. Please check your connection and try again.",
+    "lookupServerError": "Server temporarily unavailable ({{status}}). Please try again later.",
+    "refreshFailed": "Refresh failed.",
+    "clearanceSaved": "Clearance price saved.",
+    "clearanceSaveFailed": "Failed to save the clearance price.",
+    "clearancePriceRequired": "Enter a valid clearance price.",
+    "setCodeCreated": "Set barcode added.",
+    "setCodeSaved": "Set barcode saved.",
+    "setCodeSaveFailed": "Failed to save the set barcode.",
+    "setCodeBarcodeRequired": "Enter the set barcode.",
+    "setCodeRetailRequired": "Enter the set retail price.",
+    "multiCodeCreated": "Multi barcode added.",
+    "multiCodeSaved": "Multi-code saved.",
+    "multiCodeSaveFailed": "Failed to save the multi-code record.",
+    "multiCodeBarcodeRequired": "Enter the multi barcode.",
+    "codesLoadFailed": "Failed to load barcode list.",
+    "saved": "Product information saved.",
+    "saveFailed": "Save failed.",
+    "emptyStorePrice": "There is no store price record for this product.",
+    "emptyPrompt": "Enter a barcode, item number, or product code to start.",
+    "cameraTip": "Align the barcode with the center of the frame.",
+    "printerRequired": "Select a label printer in Settings first.",
+    "printerPaused": "Printer connection is paused. Reconnect it in Settings first.",
+    "printSuccess": "The print job was sent.",
+    "printFailed": "Print failed.",
+    "autoPricingEvaluateFailed": "Auto pricing evaluation failed.",
+    "autoPricingUpdateFailed": "Auto pricing update failed.",
+    "productTypeUpdateFailed": "Failed to update product type.",
+    "productTypeUpdated": "Product type updated.",
+    "discountPrintUnavailable": "This product has no discount data to print.",
+    "clearancePrintUnavailable": "This product has no clearance data to print."
+  },
+  "lookup": {
+    "title": "Choose a matching product",
+    "query": "Query: {{value}}",
+    "viewDetail": "View details",
+    "source": {
+      "productBarcode": "Primary barcode match",
+      "multiBarcode": "Multi-code match",
+      "setBarcode": "Set barcode match",
+      "clearanceBarcode": "Clearance barcode match",
+      "itemNumber": "Item number match",
+      "productCode": "Product code match",
+      "fallback": "Match"
+    }
+  },
+  "sections": {
+    "moreInfo": "More details"
+  },
+  "hero": {
+    "unnamedProduct": "Unnamed product",
+    "itemNumber": "Item: {{value}}",
+    "barcode": "Barcode: {{value}}",
+    "barcodeImageLabel": "{{format}} barcode image",
+    "itemNumberLabel": "Item",
+    "barcodeLabel": "Barcode",
+    "productTypeLabel": "Type",
+    "supplierLabel": "Supplier",
+    "productTypeChooseTitle": "Choose product type",
+    "productType": {
+      "normal": "0 Regular",
+      "set": "1 Set",
+      "multi": "2 Multi",
+      "unknown": "Unknown type"
+    },
+    "productTypeDescription": {
+      "normal": "Regular products use the main barcode's own store price.",
+      "set": "Set retail can be customized, and purchase price follows the main barcode retail-to-cost ratio.",
+      "multi": "Multi barcode retail and purchase prices always stay aligned with the current store price of the main barcode."
+    }
+  },
+  "storePrice": {
+    "fallbackTitle": "Store product info",
+    "purchase": "Cost",
+    "retail": "Retail",
+    "discountPercent": "Discount %",
+    "discountedRetail": "Discount Price",
+    "rate": "Rate {{value}}",
+    "calculating": "Calculating...",
+    "auto": "Auto",
+    "special": "Special"
+  },
+  "clearancePrice": {
+    "title": "Store clearance price",
+    "store": "Store",
+    "barcode": "Clearance barcode",
+    "price": "Clearance price",
+    "save": "Save clearance",
+    "pendingBarcode": "Generated after save"
+  },
+  "setCode": {
+    "title": "Set barcodes",
+    "barcode": "Barcode",
+    "retail": "Retail",
+    "save": "Save",
+    "add": "Add",
+    "addTitle": "Add set barcode",
+    "editBarcodeTitle": "Edit set barcode",
+    "editRetailTitle": "Edit set retail price",
+    "loading": "Loading set barcodes...",
+    "loadMore": "Load more"
+  },
+  "multiCode": {
+    "title": "Multi barcodes",
+    "barcode": "Barcode",
+    "retail": "Retail",
+    "save": "Save",
+    "add": "Add",
+    "addTitle": "Add multi barcode",
+    "editBarcodeTitle": "Edit multi barcode",
+    "editRetailTitle": "Edit multi retail price",
+    "followMain": "Retail follows the main barcode",
+    "loading": "Loading multi barcodes...",
+    "loadMore": "Load more",
+    "dirtyCount": "{{count}} unsaved changes"
+  },
+  "camera": {
+    "title": "Scan a product",
+    "needPermissionTitle": "Camera permission required",
+    "needPermissionDescription": "Enable camera access to scan products directly from the product lookup page.",
+    "grantPermission": "Enable camera permission"
+  },
+  "autoPricingConfirm": {
+    "title": "Auto price changed",
+    "description": "The automatic retail price for {{name}} ({{code}}) has changed.",
+    "currentRetail": "Current retail: {{value}}",
+    "nextRetail": "New retail: {{value}}",
+    "discountHint": "Confirm to update the retail price and refresh the regular label.",
+    "confirm": "Update price and label"
+  },
+  "print": {
+    "title": "Label printing",
+    "quick": "Print",
+    "product": "Regular label",
+    "discount": "Discount label",
+    "bigDiscount": "Large label",
+    "clearance": "Clearance label",
+    "sendingShort": "Sending",
+    "sending": "Sending...",
+    "settingsTitle": "Print Settings",
+    "continuousPrint": "Auto print",
+    "smallLabel": "Small label (60mm)",
+    "quantity": "Print quantity",
+    "quantitySingleUse": "Single use"
+  }
+}

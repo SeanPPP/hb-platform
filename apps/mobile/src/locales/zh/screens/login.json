@@ -1,0 +1,68 @@
+{
+  "subtitle": "",
+  "languageSwitch": {
+    "toEnglish": "EN",
+    "toChinese": "中"
+  },
+  "username": "用户名",
+  "password": "密码",
+  "userMode": "用户登录",
+  "rememberUsername": "记住用户名",
+  "device": {
+    "mode": "设备登录",
+    "title": "已识别注册设备",
+    "description": "这台设备已在后台登记。启用后可使用设备登录，也可以切换为用户登录。",
+    "lookupInProgress": "正在识别当前设备...",
+    "deviceNumber": "设备编号：{{value}}",
+    "store": "绑定分店：{{value}}",
+    "statusLabel": "设备状态：{{status}}",
+    "hardwareId": "硬件识别码：{{value}}",
+    "login": "设备登录",
+    "switchToUser": "切换为用户登录",
+    "switchToDevice": "切换为设备登录",
+    "unavailable": "当前设备还不能登录，请等待后台启用，或检查是否已绑定分店。",
+    "notReadyMessage": "当前设备还不能登录，请等待后台启用或检查设备状态。",
+    "loginFailed": "设备登录失败，请稍后重试。",
+    "loginUnauthorized": "设备授权已失效，请重新绑定设备，或联系管理员确认设备已启用。",
+    "loginUnavailable": "当前设备不可用，请联系管理员确认设备状态和绑定分店。",
+    "loginTimeout": "设备登录超时，请确认服务器地址和网络连接。\n当前服务器: {{origin}}",
+    "loginNetwork": "无法连接服务器完成设备登录，请确认服务器地址、网络连接和后端服务已启动。\n当前服务器: {{origin}}",
+    "lookupFailed": "设备识别失败，请使用用户登录。",
+    "lookupTimeout": "设备识别超时，请确认服务器地址和网络连接。\n当前服务器: {{origin}}",
+    "lookupNetwork": "无法连接服务器识别设备，请确认服务器地址、网络连接和后端服务已启动。\n当前服务器: {{origin}}",
+    "lookupHttp": "设备识别失败，请稍后重试或联系管理员。错误码：{{status}}",
+    "status": {
+      "pending": "待确认",
+      "disabled": "禁用",
+      "enabled": "启用",
+      "locked": "锁定",
+      "unregistered": "未注册",
+      "unknown": "未知"
+    }
+  },
+  "apiHost": {
+    "label": "服务器地址",
+    "current": "当前服务器地址",
+    "change": "修改",
+    "settingsButton": "服务器设置",
+    "title": "服务器地址设置",
+    "description": "只输入 IP 或域名即可。",
+    "inputLabel": "IP 或域名",
+    "presets": {
+      "label": "快速选择",
+      "production": "线上服务器",
+      "local": "本地服务器"
+    },
+    "empty": "请输入后端 IP 或域名",
+    "saved": "后端地址已保存：{{host}}"
+  },
+  "errors": {
+    "invalidCredentials": "用户名或密码不正确，请重新输入。",
+    "accountUnavailable": "当前账号不可用，请联系管理员确认账号状态。",
+    "timeout": "登录超时，后端未及时响应。请确认服务器地址和网络连接。\n当前服务器: {{origin}}",
+    "network": "无法连接服务器，请确认服务器地址、网络连接和后端服务已启动。\n当前服务器: {{origin}}",
+    "server": "服务器暂时不可用，请稍后再试。",
+    "http": "登录失败，请稍后重试或联系管理员。错误码：{{status}}",
+    "default": "登录失败，请稍后重试。"
+  }
+}

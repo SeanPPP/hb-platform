@@ -1,0 +1,151 @@
+{
+  "title": "中国采购",
+  "subTabs": {
+    "creation": "货号条码创建",
+    "products": "国内商品列表"
+  },
+  "summary": "已显示 {{shown}} / {{total}} 个批次",
+  "actions": {
+    "create": "创建",
+    "detail": "明细",
+    "copy": "复制",
+    "export": "导出",
+    "loadMore": "加载更多",
+    "cancel": "取消",
+    "confirmCreate": "确认创建",
+    "saveChanges": "保存更改"
+  },
+  "empty": {
+    "noAccessTitle": "无国内采购权限",
+    "noAccessDescription": "当前账号没有国内采购批量创建权限。",
+    "noBatchTitle": "暂无批次",
+    "noBatchDescription": "创建货号条码批次后会显示在这里。"
+  },
+  "create": {
+    "title": "创建货号条码批次",
+    "selectSupplier": "选择供应商",
+    "selectPrefix": "选择前缀码",
+    "noPrefix": "不使用前缀码",
+    "count": "创建数量",
+    "privateLabelPrice": "统一贴牌价",
+    "privateLabelPriceHelp": "可留空；如果多个商品价格不同，创建后在明细中单独修改。"
+  },
+  "fields": {
+    "productName": "商品名称",
+    "normalCount": "普通 {{value}}",
+    "setCount": "套装 {{value}}",
+    "barcode": "条码 {{value}}",
+    "privateLabelPriceLabel": "贴牌价",
+    "privateLabelPrice": "贴牌 {{value}}",
+    "parent": "父货号 {{value}}",
+    "emptyName": "--"
+  },
+  "types": {
+    "normal": "普通",
+    "set": "套装",
+    "setSubItem": "套装子项"
+  },
+  "messages": {
+    "loadFailed": "加载批次失败",
+    "loadDetailFailed": "加载明细失败",
+    "loadSuppliersFailed": "加载供应商失败",
+    "loadPrefixesFailed": "加载前缀码失败",
+    "selectSupplier": "请先选择供应商",
+    "invalidCount": "创建数量需要在 1 到 100 之间",
+    "invalidPrice": "贴牌价格格式不正确",
+    "createSuccess": "创建成功",
+    "createFailed": "创建失败",
+    "saveSuccess": "保存成功",
+    "saveFailed": "保存失败",
+    "copySuccess": "已复制明细",
+    "copyFailed": "复制失败",
+    "copyEmpty": "没有可复制的明细",
+    "exportSuccess": "导出成功",
+    "exportFailed": "导出失败"
+  },
+  "copy": {
+    "batchHeader": "货号 条码 贴牌价格"
+  },
+  "productList": {
+    "title": "国内商品列表",
+    "headerSubtitle": "查看、编辑和复制国内商品信息",
+    "summary": "第 {{page}} / {{totalPages}} 页，共 {{total}} 条",
+    "fields": {
+      "productCode": "商品编码",
+      "supplier": "供应商",
+      "supplierCode": "供应商编码",
+      "supplierName": "供应商",
+      "productName": "商品名称",
+      "englishProductName": "英文名称",
+      "itemNumber": "货号",
+      "hbProductNo": "货号",
+      "barcode": "条码",
+      "productSpecification": "规格",
+      "productType": "商品类型",
+      "domesticPrice": "国内价格",
+      "oemPrice": "贴牌价格",
+      "importPrice": "进口价格",
+      "packingQuantity": "装箱数",
+      "unitVolume": "单体积",
+      "middlePackQuantity": "中包装数",
+      "image": "图片",
+      "productImage": "商品图片",
+      "isActive": "启用状态"
+    },
+    "actions": {
+      "search": "查询",
+      "reset": "重置",
+      "edit": "编辑",
+      "copy": "复制"
+    },
+    "empty": {
+      "title": "暂无国内商品",
+      "description": "换一个供应商或货号再试试。"
+    },
+    "status": {
+      "active": "启用",
+      "inactive": "停用"
+    },
+    "productTypes": {
+      "normal": "普通",
+      "set": "套装",
+      "multi": "多码"
+    },
+    "messages": {
+      "loadFailed": "加载国内商品失败",
+      "saveSuccess": "商品更新成功",
+      "saveFailed": "商品更新失败",
+      "copySuccess": "商品信息已复制",
+      "copyFailed": "复制商品信息失败",
+      "invalidEdit": "请检查价格、体积和数量格式",
+      "empty": "暂无国内商品数据"
+    },
+    "filters": {
+      "supplierCode": "供应商编码",
+      "productNo": "商品编码 / HB 货号",
+      "sortBy": "排序字段",
+      "sortDirection": "排序方向",
+      "supplierTitle": "选择国内供应商",
+      "allSuppliers": "全部供应商",
+      "clear": "清空"
+    },
+    "pagination": {
+      "summary": "第 {{page}} 页，每页 {{pageSize}} 条，共 {{total}} 条",
+      "page": "第 {{page}} / {{totalPages}} 页",
+      "previous": "上一页",
+      "next": "下一页"
+    },
+    "edit": {
+      "title": "编辑国内商品",
+      "readonlyHint": "货号、条码和供应商由后端生成或绑定，当前仅展示不可编辑。",
+      "save": "保存",
+      "cancel": "取消",
+      "active": "启用",
+      "inactive": "停用"
+    },
+    "copy": {
+      "title": "复制商品信息",
+      "emptyValue": "--"
+    }
+  }
+}

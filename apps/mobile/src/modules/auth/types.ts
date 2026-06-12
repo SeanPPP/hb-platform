@@ -1,0 +1,100 @@
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface TokenResponse {
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiry: string;
+  refreshTokenExpiry: string;
+  success: boolean;
+  message: string;
+}
+
+export interface RefreshTokenRequest {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface UserStoreDto {
+  storeGUID?: string;
+  storeCode: string;
+  storeName: string;
+  postcode?: string;
+  stateCode?: string;
+  isPrimary?: boolean;
+  assignedAt?: string;
+}
+
+export interface CurrentUser {
+  userGuid: string;
+  userGUID: string;
+  username: string;
+  email: string;
+  fullName?: string;
+  phone?: string;
+  permissions: string[];
+  roleNames: string[];
+  storeNames: string[];
+  stores: UserStoreDto[];
+}
+
+export interface AccessControl {
+  isAdmin: boolean;
+  isManager: boolean;
+  isUser: boolean;
+  isWarehouseStaff: boolean;
+  isWarehouseManager: boolean;
+  isStoreStaff: boolean;
+  isStoreManager: boolean;
+  isStoreLevelManager: boolean;
+  onlyOrder: boolean;
+  canReadOrder: boolean;
+  canWriteOrder: boolean;
+  canDeleteOrder: boolean;
+  canReadProduct: boolean;
+  canWriteProduct: boolean;
+  canDeleteProduct: boolean;
+  canReadUser: boolean;
+  canWriteUser: boolean;
+  canDeleteUser: boolean;
+  canReadRole: boolean;
+  canWriteRole: boolean;
+  canDeleteRole: boolean;
+  canReadStore: boolean;
+  canWriteStore: boolean;
+  canDeleteStore: boolean;
+  canManageWarehouse: boolean;
+  canManageStore: boolean;
+  canViewReports: boolean;
+  canExportData: boolean;
+  canModifyPrice: boolean;
+  canDeletePrice: boolean;
+  canViewDeviceRegistration: boolean;
+  canManageDeviceRegistration: boolean;
+  canViewEmployeeProfiles: boolean;
+  canViewAttendancePersonal: boolean;
+  canViewAttendanceManagement: boolean;
+  canReviewAttendance: boolean;
+  canEditAttendanceHoliday: boolean;
+  canEditAttendanceSettings: boolean;
+  canViewLocalPurchase: boolean;
+  canEditLocalPurchase: boolean;
+  canPushLocalPurchaseToHq: boolean;
+  canViewInstallmentOrders: boolean;
+  canViewAdvertisements: boolean;
+  canManageAdvertisements: boolean;
+  canViewStoreVouchers: boolean;
+  canViewSeasonalCardRemaining: boolean;
+  canSubmitSeasonalCardRemaining: boolean;
+  canCreateStoreProducts: boolean;
+  canManageAttendance: boolean;
+  hasPermission: (permission: string) => boolean;
+  hasRole: (role: string) => boolean;
+  onlyRole: (role: string) => boolean;
+  hasAnyRole: (roles: string[]) => boolean;
+  hasAllRoles: (roles: string[]) => boolean;
+  assignedStoreCodes: () => string[] | null;
+  managedStoreCodes: () => string[] | null;
+}
