@@ -457,6 +457,43 @@ async function main() {
   })
   if (defaultColumnOrderFailure) failures.push(defaultColumnOrderFailure)
 
+  const supplierColumnDisplayFailure = await runTest('仓库商品供应商列应区分国内供应商和澳洲供应商名称显示', () => {
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+    const australianSupplierSection = extractSection(
+      columnsSection,
+      "key: 'domesticSupplierCode'",
+      "key: 'nameEn'",
+    )
+    const domesticSupplierSection = extractSection(
+      columnsSection,
+      "key: 'localSupplierCode'",
+      "key: 'updatedAt'",
+    )
+
+    assert(
+      domesticSupplierSection.includes("title: t('warehouse.domesticSupplier', '国内供应商')") &&
+        domesticSupplierSection.includes("dataIndex: 'localSupplierCode'") &&
+        domesticSupplierSection.includes('sorter: true'),
+      '国内供应商列应只调整标题，不能改变 key/dataIndex/sorter',
+    )
+    assert(
+      australianSupplierSection.includes("title: t('column.australianSupplier', '澳洲供应商')") &&
+        australianSupplierSection.includes("dataIndex: 'domesticSupplierCode'") &&
+        australianSupplierSection.includes('sorter: true'),
+      '澳洲供应商列应保留 domesticSupplierCode 作为字段和排序来源',
+    )
+    assert(
+      australianSupplierSection.includes('record.domesticSupplierName || record.domesticSupplierCode') &&
+        !australianSupplierSection.includes("[record.domesticSupplierCode, record.domesticSupplierName].filter(Boolean).join(' - ')") ,
+      '澳洲供应商列应优先显示名称，不能继续显示编码 - 名称组合',
+    )
+  })
+  if (supplierColumnDisplayFailure) failures.push(supplierColumnDisplayFailure)
+
   const compactTableFailure = await runTest('仓库商品主表应使用紧凑行高、媒体尺寸和列宽', () => {
     assert(
       pageSource.includes('const WAREHOUSE_TABLE_ROW_MAX_HEIGHT = 60'),

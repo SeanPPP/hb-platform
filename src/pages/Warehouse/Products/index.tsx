@@ -1100,15 +1100,16 @@ export default function WarehouseProductsPage() {
         },
         {
             key: 'domesticSupplierCode',
-            title: t('column.supplier'),
+            title: t('column.australianSupplier', '澳洲供应商'),
             dataIndex: 'domesticSupplierCode',
             width: 132,
             sorter: true,
-            render: (_value, record) => record.domesticSupplierCode || record.domesticSupplierName ? (<div className="warehouse-products-supplier-cell">
-              <Tag color="blue">
-                {[record.domesticSupplierCode, record.domesticSupplierName].filter(Boolean).join(' - ')}
-              </Tag>
-            </div>) : ('--'),
+            render: (_value, record) => {
+                const supplierDisplayName = record.domesticSupplierName || record.domesticSupplierCode;
+                return supplierDisplayName ? (<div className="warehouse-products-supplier-cell">
+              <Tag color="blue">{supplierDisplayName}</Tag>
+            </div>) : ('--');
+            },
         },
         {
             key: 'nameEn',
@@ -1198,7 +1199,7 @@ export default function WarehouseProductsPage() {
         },
         {
             key: 'localSupplierCode',
-            title: t('column.localSupplier'),
+            title: t('warehouse.domesticSupplier', '国内供应商'),
             dataIndex: 'localSupplierCode',
             width: 150,
             sorter: true,
