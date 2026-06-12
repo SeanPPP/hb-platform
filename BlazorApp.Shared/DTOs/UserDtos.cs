@@ -292,6 +292,7 @@ namespace BlazorApp.Shared.DTOs
         public string StoreGUID { get; set; } = string.Empty;
         public string StoreName { get; set; } = string.Empty;
         public string StoreCode { get; set; } = string.Empty;
+        public bool IsActive { get; set; }
         public bool IsPrimary { get; set; }
         public DateTime AssignedAt { get; set; }
     }

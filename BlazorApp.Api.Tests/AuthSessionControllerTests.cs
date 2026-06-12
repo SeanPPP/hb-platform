@@ -2,6 +2,7 @@ using System.IO;
 using System.Net;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -187,6 +188,64 @@ public sealed class AuthSessionControllerTests : IDisposable
         );
     }
 
+    [Fact]
+    public async Task GetCurrentUser_WhenLinkedStoreInactive_ReturnsStoreAndAllowsCurrentUserLoad()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "inactive-store-user",
+                Username = "inactive-store-user",
+                Email = "inactive-store-user@example.com",
+                PasswordHash = "hashed",
+                FullName = "Inactive Store User",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+
+        var userService = new Mock<IUserService>();
+        userService
+            .Setup(service => service.GetUserStoresAsync("inactive-store-user"))
+            .ReturnsAsync(
+                ApiResponse<List<UserStoreDto>>.OK(
+                    new List<UserStoreDto>
+                    {
+                        new()
+                        {
+                            StoreGUID = "inactive-store",
+                            StoreName = "Inactive Store",
+                            StoreCode = "INACTIVE",
+                            IsActive = false,
+                            AssignedAt = DateTime.UtcNow,
+                        },
+                    },
+                    "获取用户分店成功"
+                )
+            );
+
+        var controller = CreateController(Mock.Of<IAuthService>(), userService: userService.Object);
+        controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim("userId", "inactive-store-user"),
+                    new Claim(ClaimTypes.NameIdentifier, "inactive-store-user"),
+                },
+                "TestAuthType"
+            )
+        );
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        var store = Assert.Single(result.Data!.Stores!);
+        Assert.Equal("Inactive Store", store.StoreName);
+        Assert.False(store.IsActive);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -198,13 +257,17 @@ public sealed class AuthSessionControllerTests : IDisposable
         }
     }
 
-    private AuthController CreateController(IAuthService authService)
+    private AuthController CreateController(
+        IAuthService authService,
+        IRoleService? roleService = null,
+        IUserService? userService = null
+    )
     {
         var controller = new AuthController(
             authService,
             CreateSqlSugarContext(_db),
-            Mock.Of<IRoleService>(),
-            Mock.Of<IUserService>(),
+            roleService ?? Mock.Of<IRoleService>(),
+            userService ?? Mock.Of<IUserService>(),
             Mock.Of<ILogger<AuthController>>()
         );
 

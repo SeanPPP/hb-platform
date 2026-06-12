@@ -146,6 +146,35 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Data.Users[0].IsPrimary);
         }
 
+        [Fact]
+        public async Task GetUsersOptimizedAsync_WhenLinkedStoreInactive_IncludesStoreName()
+        {
+            await SeedInactiveStoreUserAsync();
+            var service = CreateUserService();
+
+            var result = await service.GetUsersOptimizedAsync(
+                new UserQueryDto { Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(result.Success);
+            var user = Assert.Single(result.Data!.Items!, item => item.UserGUID == "inactive-store-user");
+            Assert.Contains("Inactive Store", user.StoreNames);
+        }
+
+        [Fact]
+        public async Task GetUserStoresAsync_WhenLinkedStoreInactive_ReturnsStoreWithInactiveStatus()
+        {
+            await SeedInactiveStoreUserAsync();
+            var service = CreateUserService();
+
+            var result = await service.GetUserStoresAsync("inactive-store-user");
+
+            Assert.True(result.Success);
+            var store = Assert.Single(result.Data!);
+            Assert.Equal("inactive-store", store.StoreGUID);
+            Assert.False(store.IsActive);
+        }
+
         [Theory]
         [InlineData("店长", false)]
         [InlineData("店长", true)]
@@ -594,6 +623,27 @@ namespace BlazorApp.Api.Tests
                     IsActive = true,
                 },
             }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedInactiveStoreUserAsync()
+        {
+            await _db.Insertable(CreateUser("inactive-store-user", "inactive-store-user@example.com"))
+                .ExecuteCommandAsync();
+
+            await _db.Insertable(
+                new Store
+                {
+                    StoreGUID = "inactive-store",
+                    StoreCode = "INACTIVE",
+                    StoreName = "Inactive Store",
+                    IsActive = false,
+                    IsDeleted = false,
+                    CreatedAt = DateTime.UtcNow,
+                }
+            ).ExecuteCommandAsync();
+
+            await _db.Insertable(CreateUserStore("inactive-store-user", "inactive-store", false))
+                .ExecuteCommandAsync();
         }
 
         private async Task SeedUsersRolesAndStoresForScopeTestsAsync()

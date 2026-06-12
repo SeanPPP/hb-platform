@@ -203,6 +203,7 @@ namespace BlazorApp.Api.Services
                                 StoreGUID = s.StoreGUID,
                                 StoreName = s.StoreName,
                                 StoreCode = s.StoreCode,
+                                IsActive = s.IsActive,
                                 IsPrimary = false,
                                 AssignedAt = DateTime.UtcNow,
                             })
@@ -261,9 +262,10 @@ namespace BlazorApp.Api.Services
                 var baseQuery = db.Queryable<User>()
                     .LeftJoin<UserRole>((u, ur) => u.UserGUID == ur.UserGUID)
                     .LeftJoin<Role>((u, ur, r) => ur.RoleGUID == r.RoleGUID && r.IsActive)
-                    .LeftJoin<UserStore>((u, ur, r, us) => u.UserGUID == us.UserGUID)
+                    .LeftJoin<UserStore>((u, ur, r, us) => u.UserGUID == us.UserGUID && !us.IsDeleted)
+                    // 用户关联分店用于身份范围展示，停用分店也必须保留；只排除已删除分店。
                     .LeftJoin<Store>(
-                        (u, ur, r, us, s) => us.StoreGUID == s.StoreGUID && s.IsActive
+                        (u, ur, r, us, s) => us.StoreGUID == s.StoreGUID && !s.IsDeleted
                     );
 
                 if (storeScope.StoreGuids.Count > 0)
@@ -713,7 +715,8 @@ namespace BlazorApp.Api.Services
                 // 获取用户分店详情
                 var stores = await db.Queryable<UserStore>()
                     .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
-                    .Where((us, s) => us.UserGUID == userGuid)
+                    // 用户详情也要展示历史关联的停用分店，只过滤软删除关系和软删除分店。
+                    .Where((us, s) => us.UserGUID == userGuid && !us.IsDeleted && !s.IsDeleted)
                     .Select(
                         (us, s) =>
                             new UserStoreDto
@@ -721,6 +724,7 @@ namespace BlazorApp.Api.Services
                                 StoreGUID = s.StoreGUID,
                                 StoreName = s.StoreName,
                                 StoreCode = s.StoreCode,
+                                IsActive = s.IsActive,
                                 IsPrimary = us.IsPrimary,
                                 AssignedAt = us.CreatedAt,
                             }
@@ -1571,11 +1575,14 @@ namespace BlazorApp.Api.Services
                 if (isAdminOrWarehouse)
                 {
                     stores = await db.Queryable<Store>()
+                        // 当前用户身份范围需要展示已关联/可见分店，停用分店不能影响登录后的用户信息。
+                        .Where(s => !s.IsDeleted)
                         .Select(s => new UserStoreDto
                         {
                             StoreGUID = s.StoreGUID,
                             StoreName = s.StoreName,
                             StoreCode = s.StoreCode,
+                            IsActive = s.IsActive,
                             IsPrimary = false,
                             AssignedAt = DateTime.UtcNow,
                         })
@@ -1585,7 +1592,8 @@ namespace BlazorApp.Api.Services
                 {
                     stores = await db.Queryable<UserStore>()
                         .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
-                        .Where((us, s) => us.UserGUID == userGuid)
+                        // 用户登录和用户信息展示只要求用户分店关系存在，停用分店也要返回。
+                        .Where((us, s) => us.UserGUID == userGuid && !us.IsDeleted && !s.IsDeleted)
                         .Select(
                             (us, s) =>
                                 new UserStoreDto
@@ -1593,6 +1601,7 @@ namespace BlazorApp.Api.Services
                                     StoreGUID = s.StoreGUID,
                                     StoreName = s.StoreName,
                                     StoreCode = s.StoreCode,
+                                    IsActive = s.IsActive,
                                     IsPrimary = us.IsPrimary,
                                     AssignedAt = us.CreatedAt,
                                 }
