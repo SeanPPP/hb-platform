@@ -630,6 +630,22 @@ async function main() {
   })
   if (storeRecordListSortFailure) failures.push(storeRecordListSortFailure)
 
+  const productAutoPricingColumnFailure = await runTest('商品管理主列表应显示自动定价列', () => {
+    const columnsStart = pageSource.indexOf('const columns: ColumnsType<ProductRow> = [')
+    const columnsEnd = pageSource.indexOf('\n  ]\n\n  return (', columnsStart)
+    const mainColumnsSource = pageSource.slice(columnsStart, columnsEnd)
+
+    assert(
+      mainColumnsSource.includes("title: t('posAdmin.products.autoPricing', '自动定价')") &&
+        mainColumnsSource.includes("dataIndex: 'isAutoPricing'") &&
+        mainColumnsSource.includes("<Tag color={value ? 'green' : 'default'}>") &&
+        mainColumnsSource.includes("t('common.yes', '是')") &&
+        mainColumnsSource.includes("t('common.no', '否')"),
+      '商品管理主表应新增自动定价列，并以是/否展示 ProductRow.isAutoPricing',
+    )
+  })
+  if (productAutoPricingColumnFailure) failures.push(productAutoPricingColumnFailure)
+
   const storeRecordsBatchUpdateFailure = await runTest('分店记录弹窗应支持批量修改分店业务字段', () => {
     assert(
       typeSource.includes('BatchUpdateProductStoreRecordsRequest') &&

@@ -287,6 +287,10 @@ async function main() {
   if (batchEditPersistFailure) failures.push(batchEditPersistFailure)
 
   const updateToStoreHqFailure = await runTest('更新到分店应移除同步HQ耦合并保留独立HQ弹窗', () => {
+    const storeModalStart = editPageSource.indexOf('{/* 更新到分店价格 Modal')
+    const hqModalStart = editPageSource.indexOf('{/* 更新 HQ 商品 Modal')
+    const storeModalSource = editPageSource.slice(storeModalStart, hqModalStart)
+
     assert(!editPageSource.includes('name="updateHqProduct"'), '更新到分店弹窗不应再包含 updateHqProduct 复选框')
     assert(!editPageSource.includes('confirmUpdateToStorePrices'), '更新到分店不应再包含同时更新 HQ 的二次确认')
     assert(!editPageSource.includes('showUpdateToStoreHqResult'), '更新到分店不应再展示 HQ 混合结果')
@@ -294,6 +298,23 @@ async function main() {
     assert(editPageSource.includes('hqUpdateForm.validateFields()'), '更新HQ商品应校验独立弹窗表单')
     assert(editPageSource.includes('startUpdateToStorePricesJob(request)'), '更新到分店应提交后台任务')
     assert(editPageSource.includes('getUpdateToStorePricesJob(jobId)'), '更新到分店应轮询后台任务')
+    assert(storeModalSource.includes('name="updatePurchasePrice"'), '更新到分店弹窗应保留更新进货价字段开关')
+    assert(storeModalSource.includes('name="updateRetailPrice"'), '更新到分店弹窗应保留更新零售价字段开关')
+    assert(storeModalSource.includes('name="updateIsAutoPricing"'), '更新到分店弹窗应保留更新自动定价字段开关')
+    assert(storeModalSource.includes('name="updateIsSpecialProduct"'), '更新到分店弹窗应保留更新特殊商品字段开关')
+    assert(storeModalSource.includes('name="updateDiscountRate"'), '更新到分店弹窗应保留更新折扣率字段开关')
+    assert(!storeModalSource.includes('name="purchasePrice"'), '更新到分店弹窗不应提供进货价覆盖值，应按前端明细行写入')
+    assert(!storeModalSource.includes('name="retailPrice"'), '更新到分店弹窗不应提供零售价覆盖值，应按前端明细行写入')
+    assert(!storeModalSource.includes('name="isAutoPricing"'), '更新到分店弹窗不应提供自动定价覆盖值，应按前端明细行写入')
+    assert(!storeModalSource.includes('name="isSpecialProduct"'), '更新到分店弹窗不应提供特殊商品覆盖值，应按前端明细行写入')
+    assert(!storeModalSource.includes('name="discountRate"'), '更新到分店弹窗不应提供折扣率覆盖值，应按前端明细行写入')
+    assert(editPageSource.includes('const storePriceDetailSet = new Set(request.detailGuids)'), '更新到分店应按选中的前端明细行构建保存范围')
+    assert(editPageSource.includes('await batchUpsertDetails(invoiceGuid, buildInvoiceDetailSaveItems(storePriceDetails))'), '更新到分店提交前应先保存前端当前选中明细行')
+    assert(
+      editPageSource.indexOf('await batchUpsertDetails(invoiceGuid, buildInvoiceDetailSaveItems(storePriceDetails))') <
+      editPageSource.indexOf('const job = await startUpdateToStorePricesJob(request)'),
+      '更新到分店应先保存前端明细行，再提交后端分店更新任务',
+    )
     assert(editPageSource.includes("completedJob.status === 'Failed'"), '更新到分店轮询到 Failed Job 时应展示失败而不是完成')
     assert(!editPageSource.includes('const result = await updateToStorePrices(request)'), '更新到分店不应再直接等待长请求')
     assert(editPageSource.includes('localSupplierInvoiceBatchJobTimeoutTitle'), '批量后台任务轮询超时应展示后台仍在执行提示')
@@ -305,6 +326,22 @@ async function main() {
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsResultTitle'"), '更新HQ商品应有独立结果弹窗')
   })
   if (updateToStoreHqFailure) failures.push(updateToStoreHqFailure)
+
+  const updateHqAutoPricingValueFailure = await runTest('更新HQ商品自动定价应按明细行值同步', () => {
+    const hqModalStart = editPageSource.indexOf('{/* 更新 HQ 商品 Modal')
+    const hqModalSource = editPageSource.slice(hqModalStart)
+
+    assert(hqModalSource.includes('name="updateIsAutoPricing"'), '更新HQ商品弹窗应保留更新自动定价字段开关')
+    assert(!hqModalSource.includes('name="isAutoPricing"'), '更新HQ商品弹窗不应提供自动定价是/否下拉，应由后端按明细行值写入')
+    assert(editPageSource.includes('const selectedDetailSet = new Set(detailGuids)'), '更新HQ商品应按选中的前端明细行构建保存范围')
+    assert(editPageSource.includes('await batchUpsertDetails(invoiceGuid, buildInvoiceDetailSaveItems(selectedDetails))'), '更新HQ商品提交前应先保存前端当前选中明细行')
+    assert(
+      editPageSource.indexOf('await batchUpsertDetails(invoiceGuid, buildInvoiceDetailSaveItems(selectedDetails))') <
+      editPageSource.indexOf('const job = await startUpdateHqProductsJob(invoiceGuid'),
+      '更新HQ商品应先保存前端明细行，再提交后端HQ更新任务',
+    )
+  })
+  if (updateHqAutoPricingValueFailure) failures.push(updateHqAutoPricingValueFailure)
 
   const pasteAndCheckJobPageFailure = await runTest('编辑页粘贴和商品检测应提交后台 Job 并轮询完成通知', () => {
     assert(editPageSource.includes('startPasteDetailsJob,'), '编辑页应静态导入粘贴后台任务创建接口')

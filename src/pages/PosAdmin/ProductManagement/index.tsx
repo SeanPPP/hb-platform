@@ -2392,6 +2392,18 @@ export default function ProductManagementPage() {
       render: (v: number) => <span className="pos-products-numeric-cell">{v != null ? Number(v).toFixed(2) : '-'}</span>,
     },
     {
+      title: t('posAdmin.products.autoPricing', '自动定价'),
+      dataIndex: 'isAutoPricing',
+      width: 78,
+      align: 'center',
+      // 主表展示商品主档的自动定价状态，便于和价格字段一起核对。
+      render: (value: boolean | undefined) => (
+        <Tag color={value ? 'green' : 'default'}>
+          {value ? t('common.yes', '是') : t('common.no', '否')}
+        </Tag>
+      ),
+    },
+    {
       title: t('posAdmin.products.unitWeight', '重量'),
       dataIndex: 'unitWeight',
       width: 64,

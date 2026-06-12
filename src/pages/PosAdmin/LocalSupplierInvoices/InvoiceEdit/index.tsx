@@ -1472,10 +1472,19 @@ export default function InvoiceEditPage() {
     setStorePriceVisible(false)
     storePriceForm.resetFields()
     setStorePriceLoading(true)
-    notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateToStoreSubmitted', '更新到分店价格已提交'))
 
     void (async () => {
       try {
+        const storePriceDetailSet = new Set(request.detailGuids)
+        const storePriceDetails = details.filter((detail) => detail.detailGUID && storePriceDetailSet.has(detail.detailGUID))
+        if (storePriceDetails.length !== request.detailGuids.length) {
+          throw new Error(t('posAdmin.invoiceDetail.selectedDetailNotFound', '未找到选中的明细行'))
+        }
+
+        // 更新到分店按前端明细行取值；提交任务前先保存选中行，避免后端读取旧明细。
+        await batchUpsertDetails(invoiceGuid, buildInvoiceDetailSaveItems(storePriceDetails))
+        notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateToStoreSubmitted', '更新到分店价格已提交'))
+
         const job = await startUpdateToStorePricesJob(request)
         const completedJob = await pollUpdateToStorePricesJob(job.jobId)
         const result = completedJob.result
@@ -1565,11 +1574,20 @@ export default function InvoiceEditPage() {
     setHqUpdateVisible(false)
     hqUpdateForm.resetFields()
     setHqUpdateLoading(true)
-    notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateHqProductsSubmitted', '更新HQ商品已提交'))
 
     void (async () => {
       let shouldClearIdempotencyKey = true
       try {
+        const selectedDetailSet = new Set(detailGuids)
+        const selectedDetails = details.filter((detail) => detail.detailGUID && selectedDetailSet.has(detail.detailGUID))
+        if (selectedDetails.length !== detailGuids.length) {
+          throw new Error(t('posAdmin.invoiceDetail.selectedDetailNotFound', '未找到选中的明细行'))
+        }
+
+        // HQ 按后端明细行写入字段值；提交任务前先保存当前前端选中行，避免读到旧明细。
+        await batchUpsertDetails(invoiceGuid, buildInvoiceDetailSaveItems(selectedDetails))
+        notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.updateHqProductsSubmitted', '更新HQ商品已提交'))
+
         const job = await startUpdateHqProductsJob(invoiceGuid, {
           detailGuids,
           targetStoreCodes,
