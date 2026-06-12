@@ -15,7 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Hbpos.Contracts\Hbpos.Contracts.csproj" />
-    <ProjectReference Include="..\..\..\HBweb-worktrees\Backend\publish-master\BlazorApp.Shared\BlazorApp.Shared.csproj" />
+    <ProjectReference Include="..\..\..\..\services\backend\BlazorApp.Shared\BlazorApp.Shared.csproj" />
   </ItemGroup>
 
 </Project>

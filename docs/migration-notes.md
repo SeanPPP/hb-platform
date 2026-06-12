@@ -18,6 +18,5 @@ HBBblazorweb-master-vite     -> services/backend
 ## 已知调整
 
 - POS 仓库整体保留在 `apps/pos-wpf`，第一阶段不拆出 `services/pos-api`。
-- POS API 的主后端共享项目引用需要改为 monorepo 内相对路径。
+- POS API 的主后端共享项目引用已改为 `..\..\..\..\services\backend\BlazorApp.Shared\BlazorApp.Shared.csproj`。
 - 本地环境文件、工具状态目录、依赖目录和构建产物不迁入。
-
