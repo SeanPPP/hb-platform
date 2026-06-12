@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs'
 import { generateBarcodeImages } from '../utils/barcode'
+import { reportExternalFetchError } from '../utils/centerLogClient'
 
 export interface ExportOptions {
   includeLabelPrice?: boolean
@@ -114,6 +115,18 @@ async function fetchImageAsBase64SingleAttempt(url: string): Promise<string | nu
     const response = await fetch(url, { signal: controller.signal })
     clearTimeout(timer)
     if (!response.ok) {
+      reportExternalFetchError({
+        url,
+        method: 'GET',
+        statusCode: response.status,
+        error: new Error(`Image download failed: ${response.status}`),
+        responsePayload: {
+          message: response.statusText || `HTTP ${response.status}`,
+        },
+        properties: {
+          assetType: 'product-image',
+        },
+      })
       return null
     }
     const blob = await response.blob()
@@ -123,7 +136,16 @@ async function fetchImageAsBase64SingleAttempt(url: string): Promise<string | nu
       reader.onerror = () => resolve('')
       reader.readAsDataURL(blob)
     })
-  } catch {}
+  } catch (error) {
+    reportExternalFetchError({
+      url,
+      method: 'GET',
+      error,
+      properties: {
+        assetType: 'product-image',
+      },
+    })
+  }
 
   try {
     const img = await loadImageViaElement(url)
@@ -150,9 +172,32 @@ async function fetchImageAsBase64WithRetry(
       const response = await fetch(url, { method: 'HEAD', mode: 'cors', signal: controller.signal })
       clearTimeout(timer)
       if (response.status === 404) {
+        reportExternalFetchError({
+          url,
+          method: 'HEAD',
+          statusCode: response.status,
+          error: new Error('Image HEAD failed: 404'),
+          responsePayload: {
+            message: '404 Not Found',
+          },
+          properties: {
+            assetType: 'product-image',
+            attempt: attempt + 1,
+          },
+        })
         return { data: null, reason: '404 Not Found' }
       }
-    } catch {}
+    } catch (error) {
+      reportExternalFetchError({
+        url,
+        method: 'HEAD',
+        error,
+        properties: {
+          assetType: 'product-image',
+          attempt: attempt + 1,
+        },
+      })
+    }
 
     const data = await fetchImageAsBase64SingleAttempt(url)
     if (data) {

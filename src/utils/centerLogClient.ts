@@ -14,6 +14,7 @@ const CENTER_LOG_SOURCE_TYPE = 'Web'
 const MAX_MESSAGE_LENGTH = 2000
 const MAX_STACK_LENGTH = 12000
 const MAX_PROPERTY_LENGTH = 1000
+const EXTERNAL_SENSITIVE_PROPERTY_PATTERN = /(token|password|authorization|credential|signature|sig|code)/i
 
 function trimText(value: string | undefined, maxLength: number) {
   if (!value) {
@@ -34,17 +35,39 @@ function buildApiUrl(path: string) {
   return `${API_BASE_URL}${path}`.replace(/([^:]\/)\/+/g, '$1')
 }
 
-function getRequestPath(url?: string) {
+function getRequestPath(url?: string, options?: { stripQuery?: boolean }) {
   if (!url) {
     return undefined
   }
 
   try {
     const resolved = new URL(url, typeof window !== 'undefined' ? window.location.origin : 'http://localhost')
-    return `${resolved.pathname}${resolved.search}`
+    return options?.stripQuery ? resolved.pathname : `${resolved.pathname}${resolved.search}`
   } catch {
-    return url
+    return options?.stripQuery ? url.split('?')[0] : url
   }
+}
+
+function sanitizeExternalUrl(value: string) {
+  try {
+    const resolved = new URL(value, typeof window !== 'undefined' ? window.location.origin : 'http://localhost')
+    if (resolved.origin === 'null') {
+      return value.split('?')[0]?.split('#')[0]?.trim() || undefined
+    }
+    return `${resolved.origin}${resolved.pathname}`
+  } catch {
+    return value.split('?')[0]?.split('#')[0]?.trim() || undefined
+  }
+}
+
+function extractUriTail(value: string) {
+  const sanitized = sanitizeExternalUrl(value)
+  if (!sanitized) {
+    return undefined
+  }
+
+  const segments = sanitized.split('/').filter(Boolean)
+  return segments[segments.length - 1] || undefined
 }
 
 function sanitizeProperties(properties?: Record<string, unknown>) {
@@ -56,6 +79,53 @@ function sanitizeProperties(properties?: Record<string, unknown>) {
 
   Object.entries(properties).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') {
+      return
+    }
+
+    if (typeof value === 'string') {
+      const trimmedValue = trimText(value, MAX_PROPERTY_LENGTH)
+      if (trimmedValue) {
+        sanitizedEntries.push([key, trimmedValue])
+      }
+      return
+    }
+
+    sanitizedEntries.push([key, value])
+  })
+
+  return sanitizedEntries.length ? Object.fromEntries(sanitizedEntries) : undefined
+}
+
+function sanitizeExternalProperties(properties?: Record<string, unknown>) {
+  if (!properties) {
+    return undefined
+  }
+
+  const sanitizedEntries: Array<[string, unknown]> = []
+
+  Object.entries(properties).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return
+    }
+
+    // 外部上传参数里常见 token/signature/authorization code，按 key 直接丢弃。
+    if (EXTERNAL_SENSITIVE_PROPERTY_PATTERN.test(key)) {
+      return
+    }
+
+    if (typeof value === 'string' && /url$/i.test(key)) {
+      const sanitizedUrl = sanitizeExternalUrl(value)
+      if (sanitizedUrl) {
+        sanitizedEntries.push([key, sanitizedUrl])
+      }
+      return
+    }
+
+    if (typeof value === 'string' && /uri$/i.test(key)) {
+      const uriTail = extractUriTail(value)
+      if (uriTail) {
+        sanitizedEntries.push([`${key}Tail`, uriTail])
+      }
       return
     }
 
@@ -103,6 +173,26 @@ export function summarizeResponsePayloadForLog(payload: unknown) {
   })
 
   return Object.keys(summary).length ? summary : undefined
+}
+
+export function summarizeExternalResponsePayloadForLog(payload: unknown) {
+  if (payload === undefined || payload === null || payload === '') {
+    return undefined
+  }
+
+  if (typeof payload === 'string') {
+    // 外部服务的原始响应体可能带签名、token 或 HTML 片段，这里只保留长度摘要。
+    return { type: 'string', length: payload.length }
+  }
+
+  if (typeof payload !== 'object') {
+    return {
+      type: typeof payload,
+      message: trimText(String(payload), MAX_PROPERTY_LENGTH),
+    }
+  }
+
+  return summarizeResponsePayloadForLog(payload)
 }
 
 export function isCenterLogIngestRequest(url: string) {
@@ -182,6 +272,10 @@ export interface RequestErrorReportInput {
   traceId?: string
 }
 
+export interface ExternalFetchErrorReportInput extends RequestErrorReportInput {
+  properties?: Record<string, unknown>
+}
+
 export function reportRequestError(input: RequestErrorReportInput) {
   // 日志写入接口自身失败时必须短路，避免 request -> log -> request 的递归放大。
   if (isCenterLogIngestRequest(input.url)) {
@@ -205,6 +299,36 @@ export function reportRequestError(input: RequestErrorReportInput) {
       responsePayload: summarizeResponsePayloadForLog(input.responsePayload),
     },
   })
+}
+
+export function buildExternalFetchErrorLog(input: ExternalFetchErrorReportInput): CenterLogPayload {
+  const normalizedError = normalizeUnknownError(input.error)
+  const sanitizedProperties = sanitizeExternalProperties(input.properties)
+  return {
+    level: input.statusCode && input.statusCode < 500 ? 'Warning' : 'Error',
+    sourceType: 'frontend-external-request',
+    message: normalizedError.message,
+    exceptionType: normalizedError.exceptionType,
+    exceptionMessage: normalizedError.message,
+    stackTrace: normalizedError.stackTrace,
+    // 外部 URL 常带签名 query，这里只保留 path，避免把临时凭证写进中心日志。
+    requestPath: getRequestPath(input.url, { stripQuery: true }),
+    requestMethod: input.method,
+    statusCode: input.statusCode,
+    traceId: input.traceId,
+    properties: {
+      ...sanitizedProperties,
+      responsePayload: summarizeExternalResponsePayloadForLog(input.responsePayload),
+    },
+  }
+}
+
+export function reportExternalFetchError(input: ExternalFetchErrorReportInput) {
+  if (isCenterLogIngestRequest(input.url)) {
+    return
+  }
+
+  sendCenterLog(buildExternalFetchErrorLog(input))
 }
 
 export function reportRuntimeError(
