@@ -30,7 +30,7 @@ export async function batchUpdateDomesticProducts(data: { Products: Array<Record
 }
 
 export async function fixProductImage(productCode: string, imageUrl: string): Promise<{ success: boolean; message?: string }> {
-  const response: any = await request(`${API_BASE}/${productCode}/image`, {
+  const response: any = await request(`${API_BASE}/${encodeURIComponent(productCode)}/image`, {
     method: 'PATCH',
     data: { productImage: imageUrl },
   })

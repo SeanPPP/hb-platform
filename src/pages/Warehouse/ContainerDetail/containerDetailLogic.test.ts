@@ -50,6 +50,7 @@ import {
   getContainerDetailCreateProductRowLabel,
   getContainerDetailProductType,
   getContainerDetailProductTypeFilterKey,
+  getContainerDetailImageUrl,
   getContainerDetailOemPriceSource,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
@@ -1566,9 +1567,9 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('[active, detailQueryKey]') &&
-    pageSource.includes('detailQueryKey 已包含货柜、筛选、排序和 tag'),
+    pageSource.includes('detailQueryKey 已包含货柜、远程筛选和 tag，列头排序只在前端当前已加载数据内处理'),
   true,
-  '清空已选明细的 effect 应监听 active 和远程查询 key，覆盖顶部筛选、列头过滤和列头排序',
+  '远程重载 effect 应监听 active 和远程查询 key，列头排序不应进入远程重载依赖',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -1811,6 +1812,39 @@ assertDeepEqual(
     },
   ],
   '发送到 HQ 的候选项应保留图片和价格，但不得携带仓库上下架状态',
+)
+
+assertEqual(
+  getContainerDetailImageUrl({
+    id: 24,
+    hguid: 'detail-24',
+    商品图片: '  container-detail-image.jpg  ',
+    商品信息: { 商品图片: 'product-info-image.jpg' },
+  }),
+  'container-detail-image.jpg',
+  '货柜明细图片展示应优先使用行级商品图片并清理空白',
+)
+
+assertEqual(
+  getContainerDetailImageUrl({
+    id: 25,
+    hguid: 'detail-25',
+    商品图片: '   ',
+    商品信息: { 商品图片: '  product-info-image.jpg  ' },
+  }),
+  'product-info-image.jpg',
+  '货柜明细图片展示应在行级图片为空时回退商品信息图片',
+)
+
+assertEqual(
+  getContainerDetailImageUrl({
+    id: 26,
+    hguid: 'detail-26',
+    商品图片: '   ',
+    商品信息: { 商品图片: '   ' },
+  }),
+  undefined,
+  '货柜明细图片展示在所有图片字段为空时应返回空值',
 )
 
 const normalizedPushFailure = normalizeContainerDetailPushToHqPayload({
@@ -2188,6 +2222,11 @@ assertEqual(
   '货柜明细表格应使用列头过滤和排序后的 displayRows',
 )
 assertEqual(
+  pageSource.includes('applyContainerDetailColumnState(filteredRows, {}, sortState)'),
+  true,
+  '货柜明细列头排序应在前端对当前已加载可见行排序',
+)
+assertEqual(
   pageSource.includes('getCategoryTree') &&
     pageSource.includes('batchAssignProducts') &&
     pageSource.includes('buildWarehouseCategoryLookup') &&
@@ -2220,11 +2259,16 @@ assertEqual(
   '分类过滤后应显示当前可见行数量，避免误解为后端总数变化',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailQuery({') &&
-    pageSource.includes('filters: remoteColumnFilters') &&
-    pageSource.includes('sortState'),
+  (() => {
+    const detailQueryStart = pageSource.indexOf('const detailQuery = useMemo(() => buildContainerDetailQuery({')
+    const detailQueryEnd = pageSource.indexOf('const detailQueryKey', detailQueryStart)
+    const detailQuerySource = pageSource.slice(detailQueryStart, detailQueryEnd)
+    return detailQueryStart >= 0 &&
+      pageSource.includes('filters: remoteColumnFilters') &&
+      !detailQuerySource.includes('sortState')
+  })(),
   true,
-  '非文本列头过滤、标签筛选和排序应继续转换为服务端查询条件',
+  '非文本列头过滤和标签筛选应继续转换为服务端查询条件，列头排序不应进入远程 detailQuery',
 )
 assertEqual(
   !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
@@ -2611,10 +2655,12 @@ assertEqual(
 assertEqual(
   pageSource.includes('Image,') &&
     pageSource.includes('<Image') &&
+    pageSource.includes('const imageUrl = getContainerDetailImageUrl(row)') &&
+    pageSource.includes('src={imageUrl}') &&
     pageSource.includes('className="container-detail-product-image"') &&
     pageSource.includes('preview={{ mask: t(\'containers.actions.previewImage\', \'查看大图\') }}'),
   true,
-  '货柜明细商品图片应可点击放大预览',
+  '货柜明细商品图片应使用统一图片兜底并可点击放大预览',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-barcode-cell .ant-typography'),

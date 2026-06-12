@@ -1,9 +1,11 @@
 import {
   ALL_PRODUCTS_FILTER_KEY,
+  buildFilterCategoryOptions,
   hasExecutedCategoryProductQuery,
   resolveCategoryProductFilterMode,
   UNCATEGORIZED_PRODUCTS_FILTER_KEY,
 } from './categoryProductFilters'
+import type { WarehouseCategoryNode } from '../../../services/warehouseCategoryService'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
@@ -42,5 +44,37 @@ assert(
 assertEqual(hasExecutedCategoryProductQuery(null), false, 'null 应表示尚未执行商品查询')
 assertEqual(hasExecutedCategoryProductQuery(allMode), true, '显式 ALL 模式应表示已经执行商品查询')
 assertEqual(hasExecutedCategoryProductQuery(emptyMode), true, '显式空分类模式应表示已经执行商品查询')
+
+const filterOptions = buildFilterCategoryOptions([], ((key: string, fallback?: string) => fallback ?? key) as never)
+assert(
+  filterOptions.some((option) => option.value === UNCATEGORIZED_PRODUCTS_FILTER_KEY && option.label === '未分类商品'),
+  '分类筛选选项应包含未分类商品快捷选项',
+)
+
+const categoryTree: WarehouseCategoryNode[] = [
+  {
+    categoryGUID: 'cat-home',
+    categoryName: 'Home',
+    chineseName: '家居',
+    isActive: true,
+    children: [
+      {
+        categoryGUID: 'cat-laundry',
+        categoryName: 'Laundry',
+        chineseName: '洗衣',
+        isActive: true,
+        children: [],
+      },
+    ],
+  },
+]
+const defaultLanguageOptions = buildFilterCategoryOptions(categoryTree, ((key: string, fallback?: string) => fallback ?? key) as never)
+const chineseOptions = buildFilterCategoryOptions(categoryTree, ((key: string, fallback?: string) => fallback ?? key) as never, 'zh')
+const englishOptions = buildFilterCategoryOptions(categoryTree, ((key: string, fallback?: string) => fallback ?? key) as never, 'en')
+assertEqual(defaultLanguageOptions[2]?.label, 'Home / 家居', '不传语言时分类筛选应保留旧的中英组合显示，兼容分类管理页')
+assertEqual(chineseOptions[2]?.label, '家居', '中文语言下分类筛选应只显示中文名称')
+assertEqual(chineseOptions[3]?.label, '-- 洗衣', '中文语言下子分类筛选应只显示中文名称并保留层级前缀')
+assertEqual(englishOptions[2]?.label, 'Home', '英文语言下分类筛选应只显示英文名称')
+assertEqual(englishOptions[3]?.label, '-- Laundry', '英文语言下子分类筛选应只显示英文名称并保留层级前缀')
 
 console.log('categoryProductFilters.test: ok')

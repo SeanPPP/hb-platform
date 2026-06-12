@@ -111,6 +111,7 @@ import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../.
 import {
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailCategoryFilter,
+  applyContainerDetailColumnState,
   applyContainerDetailLoadedTextFilters,
   applyContainerDetailWarehouseStatusByProductCodes,
   buildContainerDetailQuery,
@@ -136,6 +137,7 @@ import {
   getContainerDetailCategoryName,
   getContainerDetailCategoryTooltipRecord,
   getContainerDetailEnglishName,
+  getContainerDetailImageUrl,
   getContainerDetailItemNumber,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
@@ -664,10 +666,9 @@ export default function ContainerDetailPage() {
     containerGuid,
     filters: remoteColumnFilters,
     selectedTags: selectedTagFilters,
-    sortState,
     pageNumber: 1,
     pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-  }), [containerGuid, remoteColumnFilters, selectedTagFilters, sortState])
+  }), [containerGuid, remoteColumnFilters, selectedTagFilters])
 
   const detailQueryKey = useMemo(() => JSON.stringify(detailQuery), [detailQuery])
 
@@ -846,7 +847,7 @@ export default function ContainerDetailPage() {
     return () => {
       detailAbortControllerRef.current?.abort()
     }
-    // detailQueryKey 已包含货柜、筛选、排序和 tag，避免依赖对象引用导致重复请求。
+    // detailQueryKey 已包含货柜、远程筛选和 tag，列头排序只在前端当前已加载数据内处理。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, detailQueryKey])
 
@@ -889,8 +890,11 @@ export default function ContainerDetailPage() {
   }, [categoryFilterValue, categoryLookup, textFilteredRows])
 
   const displayRows = useMemo(
-    () => filteredRows,
-    [filteredRows],
+    () => {
+      // 列头排序只调整当前已加载且已过滤的行，避免点击列头触发远程重载。
+      return applyContainerDetailColumnState(filteredRows, {}, sortState)
+    },
+    [filteredRows, sortState],
   )
 
   const setEditableCellRef = (
@@ -2454,19 +2458,22 @@ export default function ContainerDetailPage() {
       title: renderCompactHeader(t('containers.columns.image')),
       width: 64,
       fixed: 'left',
-      render: (_, row) =>
-        row.商品信息?.商品图片 ? (
+      render: (_, row) => {
+        const imageUrl = getContainerDetailImageUrl(row)
+
+        return imageUrl ? (
           <Image
             className="container-detail-product-image"
             width={40}
             height={40}
-            src={row.商品信息.商品图片}
+            src={imageUrl}
             alt={row.商品信息?.货号 || row.商品信息?.商品名称 || ''}
             preview={{ mask: t('containers.actions.previewImage', '查看大图') }}
           />
         ) : (
           <span style={{ color: '#999' }}>{t('containers.empty.noImage')}</span>
-        ),
+        )
+      },
     },
     {
       title: renderColumnTitle('itemNumber', t('containers.fields.itemNumber')),

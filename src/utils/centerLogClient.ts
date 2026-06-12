@@ -4,6 +4,7 @@ const importMetaEnv = (import.meta as ImportMeta & { env?: ImportMetaEnv }).env 
 const API_BASE_URL = (importMetaEnv.VITE_API_BASE_URL || '').trim()
 const CENTER_LOG_INGEST_PATH = '/api/system/logs/ingest'
 const CENTER_LOG_PROJECT = (importMetaEnv.VITE_CENTER_LOG_PROJECT || 'hbweb_rv').trim()
+// VITE_* 会被打进浏览器包里，只能作为公开 ingest token，不能当服务端秘密。
 const CENTER_LOG_KEY = (importMetaEnv.VITE_CENTER_LOG_KEY || '').trim()
 const CENTER_LOG_ENVIRONMENT =
   (importMetaEnv.VITE_CENTER_LOG_ENVIRONMENT || importMetaEnv.MODE || 'development').trim()
@@ -70,6 +71,38 @@ function sanitizeProperties(properties?: Record<string, unknown>) {
   })
 
   return sanitizedEntries.length ? Object.fromEntries(sanitizedEntries) : undefined
+}
+
+export function summarizeResponsePayloadForLog(payload: unknown) {
+  if (payload === undefined || payload === null || payload === '') {
+    return undefined
+  }
+
+  if (typeof payload === 'string') {
+    return { message: trimText(payload, MAX_PROPERTY_LENGTH) }
+  }
+
+  if (typeof payload !== 'object') {
+    return { message: trimText(String(payload), MAX_PROPERTY_LENGTH) }
+  }
+
+  const raw = payload as Record<string, unknown>
+  const summary: Record<string, unknown> = {}
+  ;['success', 'isSuccess', 'message', 'code', 'errorCode'].forEach((key) => {
+    const value = raw[key]
+    if (typeof value === 'boolean' || typeof value === 'number') {
+      summary[key] = value
+      return
+    }
+    if (typeof value === 'string') {
+      const trimmed = trimText(value, MAX_PROPERTY_LENGTH)
+      if (trimmed) {
+        summary[key] = trimmed
+      }
+    }
+  })
+
+  return Object.keys(summary).length ? summary : undefined
 }
 
 export function isCenterLogIngestRequest(url: string) {
@@ -168,7 +201,8 @@ export function reportRequestError(input: RequestErrorReportInput) {
     statusCode: input.statusCode,
     traceId: input.traceId,
     properties: {
-      responsePayload: input.responsePayload,
+      // 只记录失败摘要，避免把后端响应里的客户资料、token 等敏感字段写进前端日志。
+      responsePayload: summarizeResponsePayloadForLog(input.responsePayload),
     },
   })
 }

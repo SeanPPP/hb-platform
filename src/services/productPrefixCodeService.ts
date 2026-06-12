@@ -105,12 +105,12 @@ export async function createPrefixCode(data: SavePrefixCodePayload): Promise<Pro
 }
 
 export async function updatePrefixCode(prefixCode: string, data: SavePrefixCodePayload): Promise<ProductPrefixCodeItem> {
-  const response = await request.put<ApiResponse<PrefixApiItem>>(`${API_BASE}/${prefixCode}`, toPrefixPayload(data, false))
+  const response = await request.put<ApiResponse<PrefixApiItem>>(`${API_BASE}/${encodeURIComponent(prefixCode)}`, toPrefixPayload(data, false))
   return transformPrefixItem(unwrapApiData(response) as PrefixApiItem)
 }
 
 export async function deletePrefixCode(prefixCode: string): Promise<boolean> {
-  const response = await request.delete<ApiResponse<boolean>>(`${API_BASE}/${prefixCode}`)
+  const response = await request.delete<ApiResponse<boolean>>(`${API_BASE}/${encodeURIComponent(prefixCode)}`)
   return unwrapApiData(response)
 }
 
@@ -118,7 +118,7 @@ export async function getProductsByPrefix(
   prefixCode: string,
   params: { page?: number; pageSize?: number },
 ): Promise<PrefixCodeProductsResult> {
-  const response = await request.get<ApiResponse<PagedResult<PrefixProductApiItem>>>(`${API_BASE}/${prefixCode}/products`, {
+  const response = await request.get<ApiResponse<PagedResult<PrefixProductApiItem>>>(`${API_BASE}/${encodeURIComponent(prefixCode)}/products`, {
     params: {
       page: params.page ?? 1,
       pageSize: params.pageSize ?? 10,

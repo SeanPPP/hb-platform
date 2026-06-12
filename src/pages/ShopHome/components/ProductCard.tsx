@@ -3,7 +3,7 @@ import {
   DeleteOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons'
-import { Badge, Button, Card, Image, InputNumber, Space, Typography } from 'antd'
+import { Badge, Button, Card, Image, InputNumber, Space, Tooltip, Typography } from 'antd'
 import { useMemo, useState } from 'react'
 import type { StoreOrderDynamicData, StoreOrderProductItem } from '../../../types/storeOrder'
 import { PRODUCT_GRADE_CONFIG } from '../../../types/productGrade'
@@ -13,6 +13,8 @@ const { Paragraph, Text, Title } = Typography
 interface ProductCardProps {
   product: StoreOrderProductItem
   dynamicData?: StoreOrderDynamicData
+  categoryPath?: string
+  onCategoryPathClick?: (product: StoreOrderProductItem) => void
   onAddToCart: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void
   onRemoveFromCart?: (product: StoreOrderProductItem) => Promise<void> | void
   loading?: boolean
@@ -21,6 +23,8 @@ interface ProductCardProps {
 export default function ProductCard({
   product,
   dynamicData,
+  categoryPath,
+  onCategoryPathClick,
   onAddToCart,
   onRemoveFromCart,
   loading,
@@ -35,6 +39,15 @@ export default function ProductCard({
   const gradeColor = product.grade
     ? (PRODUCT_GRADE_CONFIG[product.grade as keyof typeof PRODUCT_GRADE_CONFIG]?.color || '#999')
     : undefined
+  const canClickCategoryPath = Boolean(categoryPath && onCategoryPathClick)
+
+  const handleCategoryPathActivate = () => {
+    if (!canClickCategoryPath || !onCategoryPathClick) {
+      return
+    }
+
+    onCategoryPathClick(product)
+  }
 
   return (
     <div style={{ position: 'relative' }}>
@@ -130,6 +143,31 @@ export default function ProductCard({
                   {product.itemNumber}
                 </Text>
               </div>
+
+              {categoryPath ? (
+                <Tooltip title={categoryPath}>
+                  {/* 搜索结果卡片空间有限，分类路径保留两行并通过悬浮显示完整内容。 */}
+                  <Paragraph
+                    className={[
+                      'shop-product-category-path',
+                      canClickCategoryPath ? 'shop-product-category-path--clickable' : '',
+                    ].filter(Boolean).join(' ')}
+                    type="secondary"
+                    ellipsis={{ rows: 2 }}
+                    role={canClickCategoryPath ? 'button' : undefined}
+                    tabIndex={canClickCategoryPath ? 0 : undefined}
+                    onClick={handleCategoryPathActivate}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        handleCategoryPathActivate()
+                      }
+                    }}
+                  >
+                    {categoryPath}
+                  </Paragraph>
+                </Tooltip>
+              ) : null}
 
               {dynamicData?.lastOrderDate ? (
                 <div className="shop-product-last-order">

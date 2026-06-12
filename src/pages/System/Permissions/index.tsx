@@ -32,6 +32,8 @@ import {
   getSysPermissions,
 } from '../../../services/roleService'
 import type { CreateSysPermissionDto, PermissionCategoryDto, RoleOptionDto, SysPermissionDto } from '../../../types/role'
+import { useAuthStore } from '../../../store/auth'
+import { canManageSystemPermissions } from './permissionsAccess'
 
 const CATEGORY_COLORS: Record<string, string> = {
   Users: 'blue',
@@ -92,6 +94,8 @@ function buildPermissionTableItems(
 
 export default function SystemPermissionsPage() {
   const { t } = useTranslation()
+  const access = useAuthStore((state) => state.access)
+  const canWritePermissions = canManageSystemPermissions(access)
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<PermissionTableItem[]>([])
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
@@ -166,6 +170,11 @@ export default function SystemPermissionsPage() {
   }, [categoryFilter, data, normalizedKeyword])
 
   const handleCreate = async () => {
+    if (!canWritePermissions) {
+      message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
+      return
+    }
+
     try {
       const values = await createForm.validateFields()
       setCreateLoading(true)
@@ -191,6 +200,11 @@ export default function SystemPermissionsPage() {
   }
 
   const handleAssignRoles = async (record: PermissionTableItem) => {
+    if (!canWritePermissions) {
+      message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
+      return
+    }
+
     setCurrentPermission(record)
     setAssignOpen(true)
     setAssignLoading(true)
@@ -208,6 +222,11 @@ export default function SystemPermissionsPage() {
 
   const handleSaveRoles = async () => {
     if (!currentPermission) return
+    if (!canWritePermissions) {
+      message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
+      return
+    }
+
     setAssignSaving(true)
     try {
       await assignRolesToPermission(currentPermission.code, roleTargetKeys)
@@ -222,6 +241,11 @@ export default function SystemPermissionsPage() {
   }
 
   const handleDelete = async (record: PermissionTableItem) => {
+    if (!canWritePermissions) {
+      message.warning(t('system.permissions.noManagePermission', '无权限管理权限'))
+      return
+    }
+
     try {
       await deletePermission(record.code)
       message.success(t('common.deleteSuccess'))
@@ -269,10 +293,12 @@ export default function SystemPermissionsPage() {
       width: 180,
       render: (_, record) => (
         <Space>
-          <Button type="link" icon={<TeamOutlined />} onClick={() => void handleAssignRoles(record)}>
-            {t('system.permissions.assignRoles')}
-          </Button>
-          {record.deletable ? (
+          {canWritePermissions ? (
+            <Button type="link" icon={<TeamOutlined />} onClick={() => void handleAssignRoles(record)}>
+              {t('system.permissions.assignRoles')}
+            </Button>
+          ) : null}
+          {canWritePermissions && record.deletable ? (
             <Popconfirm
               title={t('common.delete')}
               description={t('common.deleteIrreversible', '删除后不可恢复')}
@@ -284,9 +310,9 @@ export default function SystemPermissionsPage() {
                 {t('common.delete')}
               </Button>
             </Popconfirm>
-          ) : (
+          ) : canWritePermissions ? (
             <Typography.Text type="secondary">--</Typography.Text>
-          )}
+          ) : null}
         </Space>
       ),
     },
@@ -332,9 +358,11 @@ export default function SystemPermissionsPage() {
               style={{ width: 280 }}
               allowClear
             />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-              {t('system.permissions.newPermission')}
-            </Button>
+            {canWritePermissions ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                {t('system.permissions.newPermission')}
+              </Button>
+            ) : null}
             <Button icon={<ReloadOutlined />} onClick={() => void loadData()}>
               {t('common.refresh')}
             </Button>
@@ -359,6 +387,7 @@ export default function SystemPermissionsPage() {
         }}
         onOk={() => void handleCreate()}
         confirmLoading={createLoading}
+        okButtonProps={{ disabled: !canWritePermissions }}
         width={600}
         destroyOnHidden
       >
@@ -395,6 +424,7 @@ export default function SystemPermissionsPage() {
         }}
         onOk={() => void handleSaveRoles()}
         confirmLoading={assignSaving}
+        okButtonProps={{ disabled: !canWritePermissions }}
         width={700}
         destroyOnHidden
       >

@@ -1770,6 +1770,23 @@ body {
   margin-top: 8px;
 }
 
+.shop-product-category-path {
+  margin: 4px 0 0 !important;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.shop-product-category-path--clickable {
+  color: #1677ff;
+  cursor: pointer;
+}
+
+.shop-product-category-path--clickable:hover {
+  text-decoration: underline;
+}
+
 .shop-product-last-order {
   margin: 8px 0;
   padding: 4px;

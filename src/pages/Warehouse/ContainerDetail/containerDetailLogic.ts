@@ -268,6 +268,11 @@ export function getContainerDetailProductName(row: ContainerDetail) {
   return row.商品名称 ?? row.商品信息?.商品名称
 }
 
+export function getContainerDetailImageUrl(row: ContainerDetail) {
+  // 货柜明细和商品信息可能来自不同接口层，图片字段需要按明细优先、商品信息兜底读取。
+  return row.商品图片?.trim() || row.商品信息?.商品图片?.trim() || undefined
+}
+
 export function getContainerDetailCreateProductRowLabel(row: ContainerDetail) {
   return getContainerDetailItemNumber(row) ?? getContainerDetailProductCode(row) ?? row.hguid
 }

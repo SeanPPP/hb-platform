@@ -130,7 +130,7 @@ export async function getDeviceRegistrations(params?: {
         totalPages?: number
       }
     }>
-  >('/api/paged', {
+  >(`${REACT_API_BASE}/paged`, {
     params: {
       page: params?.page ?? 1,
       pageSize: params?.pageSize ?? 50,
@@ -153,15 +153,15 @@ export async function getDeviceRegistrations(params?: {
 }
 
 export async function activateDevice(id: number) {
-  return request.post<ApiResponse<object>>(`/api/${id}/activate`, {})
+  return request.post<ApiResponse<object>>(`${REACT_API_BASE}/${id}/activate`, {})
 }
 
 export async function disableDevice(id: number) {
-  return request.post<ApiResponse<object>>(`/api/${id}/disable`, {})
+  return request.post<ApiResponse<object>>(`${REACT_API_BASE}/${id}/disable`, {})
 }
 
 export async function lockDevice(id: number) {
-  return request.post<ApiResponse<object>>(`/api/${id}/lock`, {})
+  return request.post<ApiResponse<object>>(`${REACT_API_BASE}/${id}/lock`, {})
 }
 
 export async function getDeviceRegistrationDetail(id: number): Promise<DeviceRegistrationDetail> {

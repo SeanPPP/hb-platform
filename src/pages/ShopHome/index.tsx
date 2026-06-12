@@ -1,7 +1,7 @@
 import { Breadcrumb, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import ShopScanBar from '../../components/ShopScanBar'
 import ShopScanResultPicker from '../../components/ShopScanResultPicker'
 import { PRODUCT_GRADE_CONFIG } from '../../types/productGrade'
@@ -16,6 +16,11 @@ import {
   removeStoreOrderCartItem,
 } from '../../services/storeOrderService'
 import { getCategoryTree, type WarehouseCategoryNode } from '../../services/warehouseCategoryService'
+import {
+  buildWarehouseCategoryLookup,
+  getWarehouseProductCategoryTooltip,
+  type WarehouseCategoryLookup,
+} from '../Warehouse/Products/categoryPath'
 import { useShopStore } from '../../store/shop'
 import type {
   StoreOrderDynamicData,
@@ -49,7 +54,8 @@ function logShopHomePerf(stage: string, payload: Record<string, unknown>) {
 }
 
 export default function ShopHomePage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const categoryId = searchParams.get('category')
   const keyword = searchParams.get('keyword')
@@ -61,6 +67,7 @@ export default function ShopHomePage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [categoryName, setCategoryName] = useState('')
+  const [categoryTree, setCategoryTree] = useState<WarehouseCategoryNode[]>([])
   const [parentChain, setParentChain] = useState<WarehouseCategoryNode[]>([])
   const [scanStatus, setScanStatus] = useState<StoreOrderScanStatus>('ready')
   const [scanEnabled, setScanEnabled] = useState(false)
@@ -80,6 +87,30 @@ export default function ShopHomePage() {
   const [gradeFilter, setGradeFilter] = useState<string[]>([])
   const selectedStore = useShopStore((state) => state.selectedStore)
   const setCart = useShopStore((state) => state.setCart)
+  const shouldShowCategoryPath = Boolean(keyword)
+
+  const categoryLookup = useMemo<WarehouseCategoryLookup | null>(() => {
+    if (!categoryTree.length) {
+      return null
+    }
+
+    return buildWarehouseCategoryLookup(categoryTree)
+  }, [categoryTree])
+
+  const categoryPathMap = useMemo<Record<string, string>>(() => {
+    if (!shouldShowCategoryPath || !categoryLookup) {
+      return {}
+    }
+
+    return products.reduce<Record<string, string>>((acc, product) => {
+      // 搜索结果需要展示完整分类路径，优先用 GUID，缺失时沿用分类名称兜底。
+      const categoryPath = getWarehouseProductCategoryTooltip(product, categoryLookup, i18n.language)
+      if (categoryPath) {
+        acc[product.productCode] = categoryPath
+      }
+      return acc
+    }, {})
+  }, [categoryLookup, i18n.language, products, shouldShowCategoryPath])
 
   const pageTitle = useMemo(() => {
     if (keyword) {
@@ -189,47 +220,56 @@ export default function ShopHomePage() {
   useEffect(() => {
     let cancelled = false
 
-    const buildChain = async () => {
-      if (!categoryId) {
-        setParentChain([])
+    const loadCategoryTree = async () => {
+      if (!categoryId && !keyword) {
+        setCategoryTree([])
         return
       }
 
       try {
         const tree = await getCategoryTree()
-        const path: WarehouseCategoryNode[] = []
-
-        const dfs = (nodes: WarehouseCategoryNode[]): boolean => {
-          for (const node of nodes) {
-            path.push(node)
-            if (node.categoryGUID === categoryId) {
-              return true
-            }
-            if (node.children?.length && dfs(node.children)) {
-              return true
-            }
-            path.pop()
-          }
-          return false
-        }
-
-        dfs(tree)
         if (!cancelled) {
-          setParentChain(path)
+          setCategoryTree(tree)
         }
       } catch (error) {
         if (!cancelled) {
-          setParentChain([])
+          setCategoryTree([])
         }
       }
     }
 
-    void buildChain()
+    void loadCategoryTree()
 
     return () => {
       cancelled = true
     }
-  }, [categoryId])
+  }, [categoryId, keyword])
+
+  useEffect(() => {
+    if (!categoryId) {
+      setParentChain([])
+      return
+    }
+
+    const path: WarehouseCategoryNode[] = []
+
+    const dfs = (nodes: WarehouseCategoryNode[]): boolean => {
+      for (const node of nodes) {
+        path.push(node)
+        if (node.categoryGUID === categoryId) {
+          return true
+        }
+        if (node.children?.length && dfs(node.children)) {
+          return true
+        }
+        path.pop()
+      }
+      return false
+    }
+
+    dfs(categoryTree)
+    setParentChain(path)
+  }, [categoryId, categoryTree])
 
   useEffect(() => {
     let cancelled = false
@@ -495,6 +535,18 @@ export default function ShopHomePage() {
     }
   }
 
+  const handleCategoryPathClick = useCallback(
+    (product: StoreOrderProductItem) => {
+      if (!product.warehouseCategoryGUID) {
+        return
+      }
+
+      // 点击搜索结果里的分类路径时进入对应分类页，同时清除当前搜索关键词。
+      navigate(`/shop?category=${encodeURIComponent(product.warehouseCategoryGUID)}`)
+    },
+    [navigate],
+  )
+
   const handleRemoveFromCart = async (product: StoreOrderProductItem) => {
     if (!selectedStore?.storeCode) {
       message.warning(t('shop.selectStoreFirst'))
@@ -629,6 +681,12 @@ export default function ShopHomePage() {
                 key={product.productCode}
                 product={product}
                 dynamicData={dynamicDataMap[product.productCode]}
+                categoryPath={categoryPathMap[product.productCode]}
+                onCategoryPathClick={
+                  shouldShowCategoryPath && product.warehouseCategoryGUID
+                    ? handleCategoryPathClick
+                    : undefined
+                }
                 onAddToCart={handleAddToCart}
                 onRemoveFromCart={handleRemoveFromCart}
               />

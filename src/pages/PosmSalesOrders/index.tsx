@@ -25,6 +25,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAuthStore } from '../../store/auth'
 import { getActiveStores } from '../../services/storeService'
+import { buildPosmSalesOrderListQuery } from './posmSalesOrdersLogic'
 import {
   fetchTaxInvoicePdf,
   getSalesOrderDetail,
@@ -91,6 +92,7 @@ export default function PosmSalesOrdersPage() {
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
+  const skipNextPageLoadRef = useRef(false)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
 
   const [storesLoaded, setStoresLoaded] = useState(false)
@@ -107,20 +109,22 @@ export default function PosmSalesOrdersPage() {
     [t],
   )
 
-  const loadData = async () => {
+  const getCurrentQueryState = () => ({
+    startDate:
+      filterDateRange?.[0]?.format('YYYY-MM-DD') || dayjs().format('YYYY-MM-DD'),
+    endDate:
+      filterDateRange?.[1]?.format('YYYY-MM-DD') || dayjs().format('YYYY-MM-DD'),
+    branchCode: filterBranchCode,
+    orderType: filterOrderType,
+    keyword: filterKeyword,
+    page,
+    pageSize,
+  })
+
+  const loadData = async (overrides: Partial<ReturnType<typeof getCurrentQueryState>> = {}) => {
     setLoading(true)
     try {
-      const result = await getSalesOrderList({
-        startDate:
-          filterDateRange?.[0]?.format('YYYY-MM-DD') || dayjs().format('YYYY-MM-DD'),
-        endDate:
-          filterDateRange?.[1]?.format('YYYY-MM-DD') || dayjs().format('YYYY-MM-DD'),
-        branchCode: filterBranchCode || undefined,
-        orderType: filterOrderType,
-        keyword: filterKeyword || undefined,
-        pageNumber: page,
-        pageSize,
-      })
+      const result = await getSalesOrderList(buildPosmSalesOrderListQuery(getCurrentQueryState(), overrides))
       setData(result?.items ?? [])
       setTotal(result?.total ?? 0)
     } catch {
@@ -171,6 +175,11 @@ export default function PosmSalesOrdersPage() {
 
   useEffect(() => {
     if (storesLoaded) {
+      if (skipNextPageLoadRef.current) {
+        // 搜索/重置已用显式参数请求，跳过 setPage(1) 触发的重复加载。
+        skipNextPageLoadRef.current = false
+        return
+      }
       void loadData()
     }
   }, [page, pageSize, storesLoaded])
@@ -188,16 +197,31 @@ export default function PosmSalesOrdersPage() {
   }, [pageSize, total])
 
   const handleSearch = () => {
+    if (page !== 1) {
+      skipNextPageLoadRef.current = true
+    }
     setPage(1)
-    void loadData()
+    void loadData({ page: 1 })
   }
 
   const handleReset = () => {
+    const today = dayjs()
+    if (page !== 1) {
+      skipNextPageLoadRef.current = true
+    }
     setFilterBranchCode('')
     setFilterOrderType(OrderType.All)
     setFilterKeyword('')
-    setFilterDateRange([dayjs(), dayjs()])
+    setFilterDateRange([today, today])
     setPage(1)
+    void loadData({
+      startDate: today.format('YYYY-MM-DD'),
+      endDate: today.format('YYYY-MM-DD'),
+      branchCode: '',
+      orderType: OrderType.All,
+      keyword: '',
+      page: 1,
+    })
   }
 
   const handlePreviewPdf = async (orderGuid: string) => {

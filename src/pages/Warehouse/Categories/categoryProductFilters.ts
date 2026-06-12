@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next'
 import type { WarehouseCategoryNode } from '../../../services/warehouseCategoryService'
+import { formatWarehouseCategoryNodeName } from '../Products/categoryPath'
 
 export const ALL_PRODUCTS_FILTER_KEY: string = '__ALL_PRODUCTS__'
 export const UNCATEGORIZED_PRODUCTS_FILTER_KEY: string = '__UNCATEGORIZED_PRODUCTS__'
@@ -35,19 +36,28 @@ export interface CategorySelectOption {
   value: string
 }
 
-export function buildCategoryOptions(nodes: WarehouseCategoryNode[], level = 0): CategorySelectOption[] {
+function formatCategoryOptionName(node: WarehouseCategoryNode, language?: string) {
+  if (language) {
+    return formatWarehouseCategoryNodeName(node, language)
+  }
+
+  return `${node.categoryName}${node.chineseName ? ` / ${node.chineseName}` : ''}`
+}
+
+export function buildCategoryOptions(nodes: WarehouseCategoryNode[], level = 0, language?: string): CategorySelectOption[] {
   return nodes.flatMap((node) => [
     {
       value: node.categoryGUID,
-      label: `${level > 0 ? `${'--'.repeat(level)} ` : ''}${node.categoryName}${node.chineseName ? ` / ${node.chineseName}` : ''}`,
+      label: `${level > 0 ? `${'--'.repeat(level)} ` : ''}${formatCategoryOptionName(node, language)}`,
     },
-    ...buildCategoryOptions(node.children || [], level + 1),
+    ...buildCategoryOptions(node.children || [], level + 1, language),
   ])
 }
 
-export function buildFilterCategoryOptions(nodes: WarehouseCategoryNode[], t: TFunction): CategorySelectOption[] {
+export function buildFilterCategoryOptions(nodes: WarehouseCategoryNode[], t: TFunction, language?: string): CategorySelectOption[] {
   return [
     { value: ALL_PRODUCTS_FILTER_KEY, label: t('warehouse.categories.allCategoryOption') },
-    ...buildCategoryOptions(nodes),
+    { value: UNCATEGORIZED_PRODUCTS_FILTER_KEY, label: t('warehouse.categories.uncategorizedOption', '未分类商品') },
+    ...buildCategoryOptions(nodes, 0, language),
   ]
 }

@@ -6,6 +6,20 @@ import {
   SearchOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import {
@@ -26,7 +40,7 @@ import {
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -73,6 +87,12 @@ import {
   StoreOrderSyncPollingCancelledError,
   StoreOrderSyncPollingTimeoutError,
 } from './syncJobPolling'
+import {
+  isStoreOrderListColumnOrderCustomized,
+  mergeStoreOrderListColumnOrder,
+  moveStoreOrderListColumnOrder,
+  type StoreOrderListTableColumnKey,
+} from './columnOrder'
 import './compact.css'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
@@ -175,6 +195,47 @@ function filterStoreOption(input: string, option?: { label?: unknown; value?: un
 const DEFAULT_INCREMENTAL_CONFLICT_STRATEGY: StoreOrderSyncConflictStrategy = 'LatestWins'
 const DEFAULT_STATUS_LIST = [FlowStatus.Submitted, FlowStatus.Picking]
 const STATUS_FILTER_ORDER = [FlowStatus.Submitted, FlowStatus.Picking, FlowStatus.Completed]
+const STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.storeOrders.list.columnOrder.v1'
+
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+  'data-column-key'?: string
+}
+
+function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+  const columnKey = props['data-column-key']
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: columnKey ?? '__store-order-list-static-column__',
+    disabled: !columnKey,
+  })
+
+  if (!columnKey) {
+    return <th style={style} {...props}>{children}</th>
+  }
+
+  const headerStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    cursor: 'move',
+    zIndex: isDragging ? 3 : style?.zIndex,
+    opacity: isDragging ? 0.85 : style?.opacity,
+  }
+
+  return (
+    <th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>
+      <div className="store-order-list-draggable-header">
+        {children}
+      </div>
+    </th>
+  )
+}
 
 function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePickerModalProps) {
   const { t } = useTranslation()
@@ -458,6 +519,7 @@ export default function StoreOrdersPage() {
   const [shippingOrder, setShippingOrder] = useState<StoreOrderListItem | null>(null)
   const [shippingDate, setShippingDate] = useState<Dayjs>(() => dayjs())
   const [shippingLoading, setShippingLoading] = useState(false)
+  const [columnOrder, setColumnOrder] = useState<StoreOrderListTableColumnKey[]>([])
   // 记录当前轮询停止函数，确保重复触发和页面卸载时都能清理定时器。
   const stopSyncPollingRef = useRef<(() => void) | null>(null)
   // 避免卸载后继续 setState，防止轮询尾声触发无效更新。
@@ -817,9 +879,18 @@ export default function StoreOrdersPage() {
     }
   }
 
-  const columns = useMemo<ColumnsType<StoreOrderListItem>>(
+  const columnDragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 4,
+      },
+    }),
+  )
+
+  const baseColumns = useMemo<ColumnsType<StoreOrderListItem>>(
     () => [
       {
+        key: 'index',
         title: t('column.index'),
         dataIndex: 'index',
         width: 52,
@@ -827,6 +898,7 @@ export default function StoreOrdersPage() {
         render: (_, __, index) => renderStoreOrderNumericCell((page - 1) * pageSize + index + 1),
       },
       {
+        key: 'orderNo',
         title: t('column.orderNo'),
         dataIndex: 'orderNo',
         width: 146,
@@ -849,6 +921,7 @@ export default function StoreOrdersPage() {
         ),
       },
       {
+        key: 'storeCode',
         title: t('column.store'),
         dataIndex: 'storeCode',
         width: 170,
@@ -876,6 +949,7 @@ export default function StoreOrdersPage() {
         },
       },
       {
+        key: 'orderDate',
         title: t('column.orderDate'),
         dataIndex: 'orderDate',
         width: 112,
@@ -883,6 +957,7 @@ export default function StoreOrdersPage() {
         render: (value: string | undefined) => renderDateTag(value, i18n.language),
       },
       {
+        key: 'outboundDate',
         title: t('storeOrders.outboundDate'),
         dataIndex: 'outboundDate',
         width: 112,
@@ -890,6 +965,7 @@ export default function StoreOrdersPage() {
         render: (value: string | undefined) => renderDateTag(value, i18n.language),
       },
       {
+        key: 'flowStatus',
         title: t('column.status'),
         dataIndex: 'flowStatus',
         width: 92,
@@ -910,6 +986,7 @@ export default function StoreOrdersPage() {
         ),
       },
       {
+        key: 'totalQuantity',
         title: t('storeOrders.orderQuantity'),
         dataIndex: 'totalQuantity',
         width: 88,
@@ -917,6 +994,7 @@ export default function StoreOrdersPage() {
         render: (value: number | undefined) => renderStoreOrderNumericCell(value ?? '--'),
       },
       {
+        key: 'totalOrderAmount',
         title: t('storeOrders.orderAmount'),
         dataIndex: 'totalOrderAmount',
         width: 92,
@@ -924,18 +1002,21 @@ export default function StoreOrdersPage() {
         render: (value: number) => renderStoreOrderNumericCell(formatAmount(value)),
       },
       {
+        key: 'totalOrderVolume',
         title: t('storeOrders.orderVolume'),
         dataIndex: 'totalOrderVolume',
         width: 92,
         render: (value: number | undefined) => renderStoreOrderNumericCell(formatVolume(value)),
       },
       {
+        key: 'totalAllocVolume',
         title: t('storeOrders.shipVolume'),
         dataIndex: 'totalAllocVolume',
         width: 92,
         render: (value: number | undefined) => renderStoreOrderNumericCell(formatVolume(value)),
       },
       {
+        key: 'totalAllocQuantity',
         title: t('storeOrders.shipQuantity'),
         dataIndex: 'totalAllocQuantity',
         width: 88,
@@ -943,6 +1024,7 @@ export default function StoreOrdersPage() {
         render: (value: number | undefined) => renderStoreOrderNumericCell(value ?? '--'),
       },
       {
+        key: 'importTotalAmount',
         title: t('storeOrders.shipAmount'),
         dataIndex: 'importTotalAmount',
         width: 92,
@@ -950,24 +1032,28 @@ export default function StoreOrdersPage() {
         render: (value: number) => renderStoreOrderNumericCell(formatAmount(value)),
       },
       {
+        key: 'remarks',
         title: t('common.remarks'),
         dataIndex: 'remarks',
         width: 170,
         render: (value: string | undefined) => renderStoreOrderTwoLineText(value),
       },
       {
+        key: 'createdAt',
         title: t('column.createTime'),
         dataIndex: 'createdAt',
         width: 150,
         render: (value: string | undefined) => <span className="store-order-nowrap">{formatDateTime(value, i18n.language)}</span>,
       },
       {
+        key: 'updatedBy',
         title: t('column.updater'),
         dataIndex: 'updatedBy',
         width: 112,
         render: (value: string | undefined) => <span className="store-order-nowrap">{value || '--'}</span>,
       },
       {
+        key: 'updatedAt',
         title: t('column.updateTime'),
         dataIndex: 'updatedAt',
         width: 150,
@@ -1017,6 +1103,67 @@ export default function StoreOrdersPage() {
     ],
     [access.canDeleteOrder, branchMap, i18n.language, page, pageSize, statusLabelMap, t],
   )
+
+  const draggableColumnKeys = baseColumns.map((column) => String(column.key) as StoreOrderListTableColumnKey)
+  const isColumnOrderCustomized = isStoreOrderListColumnOrderCustomized(columnOrder, draggableColumnKeys)
+
+  useEffect(() => {
+    setColumnOrder((current) => {
+      let savedOrder: unknown[] | null = null
+      if (!current.length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY)
+          savedOrder = raw ? JSON.parse(raw) : null
+        } catch {
+          savedOrder = null
+        }
+      }
+
+      // 列顺序只管理业务列；选择列继续由 rowSelection 管理，新增/删除列在这里自动兼容。
+      const nextOrder = mergeStoreOrderListColumnOrder(current.length ? current : savedOrder, draggableColumnKeys)
+      if (current.length === nextOrder.length && current.every((key, index) => key === nextOrder[index])) {
+        return current
+      }
+      return nextOrder
+    })
+  }, [draggableColumnKeys.join('|')])
+
+  const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    setColumnOrder((current) => {
+      const nextOrder = moveStoreOrderListColumnOrder(current, active.id, over.id)
+      try {
+        localStorage.setItem(STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(nextOrder))
+      } catch {
+        // localStorage 不可用时不影响当前页面内拖拽排序。
+      }
+      return nextOrder
+    })
+  }
+
+  const resetColumnOrder = () => {
+    setColumnOrder(draggableColumnKeys)
+    try {
+      localStorage.removeItem(STORE_ORDER_LIST_COLUMN_ORDER_STORAGE_KEY)
+    } catch {
+      // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+    }
+    message.success(t('containers.messages.columnOrderReset', '列顺序已恢复默认'))
+  }
+
+  const columns = useMemo(() => {
+    const activeOrder = columnOrder.length ? columnOrder : draggableColumnKeys
+    const columnMap = new Map(baseColumns.map((column) => [String(column.key), column]))
+    return activeOrder
+      .map((key) => columnMap.get(key))
+      .filter((column): column is ColumnsType<StoreOrderListItem>[number] => Boolean(column))
+      .map((column) => ({
+        ...column,
+        onHeaderCell: () => ({
+          'data-column-key': String(column.key),
+        }),
+      })) as ColumnsType<StoreOrderListItem>
+  }, [baseColumns, columnOrder, draggableColumnKeys])
 
   return (
     <PageContainer
@@ -1084,6 +1231,11 @@ export default function StoreOrdersPage() {
           >
             {t('common.reset')}
           </Button>
+          {isColumnOrderCustomized ? (
+            <Button icon={<ReloadOutlined />} onClick={resetColumnOrder}>
+              {t('containers.actions.resetColumns', '重置列')}
+            </Button>
+          ) : null}
           <Button
             disabled={!selectedRowKeys.length}
             onClick={() => handleBatchStatusChange(FlowStatus.Submitted)}
@@ -1132,47 +1284,52 @@ export default function StoreOrdersPage() {
           </Button>
         </Space>
 
-        <Table
-          className="store-order-list-table"
-          rowKey="orderGUID"
-          loading={loading}
-          dataSource={data}
-          columns={columns}
-          rowSelection={{
-            selectedRowKeys,
-            onChange: setSelectedRowKeys,
-          }}
-          scroll={{ x: 1640, y: 620 }}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            showTotal: (value) => t('common.total', { count: value }),
-          }}
-          onChange={(
-            pagination: TablePaginationConfig,
-            _,
-            sorter: SorterResult<StoreOrderListItem> | SorterResult<StoreOrderListItem>[],
-          ) => {
-            const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
-            const nextSortField =
-              typeof nextSorter?.field === 'string' ? nextSorter.field : sortField
-            const nextSortOrder =
-              nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
-                ? nextSorter.order
-                : sortOrder
+        <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+          <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+            <Table
+              className="store-order-list-table"
+              rowKey="orderGUID"
+              loading={loading}
+              dataSource={data}
+              components={{ header: { cell: DraggableHeaderCell } }}
+              columns={columns}
+              rowSelection={{
+                selectedRowKeys,
+                onChange: setSelectedRowKeys,
+              }}
+              scroll={{ x: 1640, y: 620 }}
+              pagination={{
+                current: page,
+                pageSize,
+                total,
+                showSizeChanger: true,
+                showTotal: (value) => t('common.total', { count: value }),
+              }}
+              onChange={(
+                pagination: TablePaginationConfig,
+                _,
+                sorter: SorterResult<StoreOrderListItem> | SorterResult<StoreOrderListItem>[],
+              ) => {
+                const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+                const nextSortField =
+                  typeof nextSorter?.field === 'string' ? nextSorter.field : sortField
+                const nextSortOrder =
+                  nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
+                    ? nextSorter.order
+                    : sortOrder
 
-            setSortField(nextSortField)
-            setSortOrder(nextSortOrder)
-            void loadData({
-              pageNumber: pagination.current || 1,
-              pageSize: pagination.pageSize || pageSize,
-              sortBy: nextSortField,
-              sortDescending: nextSortOrder === 'descend',
-            })
-          }}
-        />
+                setSortField(nextSortField)
+                setSortOrder(nextSortOrder)
+                void loadData({
+                  pageNumber: pagination.current || 1,
+                  pageSize: pagination.pageSize || pageSize,
+                  sortBy: nextSortField,
+                  sortDescending: nextSortOrder === 'descend',
+                })
+              }}
+            />
+          </SortableContext>
+        </DndContext>
       </Card>
 
       <StorePickerModal
