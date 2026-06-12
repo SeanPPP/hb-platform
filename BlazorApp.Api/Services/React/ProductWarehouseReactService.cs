@@ -1299,15 +1299,27 @@ namespace BlazorApp.Api.Services.React
                 )
                 .Where(w => !w.IsDeleted);
 
-            // 分类筛选（支持包含子分类）
-            if (request.CategoryGuids != null && request.CategoryGuids.Any())
+            // 分类筛选互斥处理：先清洗具体分类，具体分类优先，未分类只在未选择具体分类时生效。
+            var requestedCategoryGuids = request.CategoryGuids
+                ?.Where(g => !string.IsNullOrWhiteSpace(g))
+                .Select(g => g.Trim())
+                .Distinct()
+                .ToList() ?? new List<string>();
+            if (requestedCategoryGuids.Any())
             {
                 var guids = request.IncludeSubCategories
-                    ? GetCategoryAndSubCategories(request.CategoryGuids)
-                    : request.CategoryGuids;
+                    ? GetCategoryAndSubCategories(requestedCategoryGuids)
+                    : requestedCategoryGuids;
                 query = query.Where(
                     (w, dp, s, p, c) =>
                         p.WarehouseCategoryGUID != null && guids.Contains(p.WarehouseCategoryGUID)
+                );
+            }
+            else if (request.UncategorizedOnly)
+            {
+                query = query.Where(
+                    (w, dp, s, p, c) =>
+                        p.WarehouseCategoryGUID == null || p.WarehouseCategoryGUID == string.Empty
                 );
             }
 

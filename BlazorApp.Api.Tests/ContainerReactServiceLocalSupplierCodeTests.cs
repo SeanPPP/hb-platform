@@ -44,7 +44,8 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
             typeof(ContainerDetail),
             typeof(DomesticProduct),
             typeof(Product),
-            typeof(WarehouseProduct)
+            typeof(WarehouseProduct),
+            typeof(WarehouseCategory)
         );
 
         _mapper = new MapperConfiguration(
@@ -56,7 +57,14 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
     [Fact]
     public async Task GetContainerProductsAsync_应返回本地供应商编码到明细和商品信息()
     {
-        await SeedContainerGraphAsync("C-SUP-LIST", "D-SUP-LIST", "P-SUP-LIST", "SUP01");
+        await SeedWarehouseCategoryAsync("CAT-SUP-LIST", "Pet Supplies");
+        await SeedContainerGraphAsync(
+            "C-SUP-LIST",
+            "D-SUP-LIST",
+            "P-SUP-LIST",
+            "SUP01",
+            warehouseCategoryGuid: "CAT-SUP-LIST"
+        );
         var service = CreateService();
 
         var result = await service.GetContainerProductsAsync("C-SUP-LIST");
@@ -66,6 +74,10 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
         Assert.NotNull(detail.商品信息);
         Assert.Equal("SUP01", ReadLocalSupplierCode(detail.商品信息!));
         Assert.Equal("套装商品", detail.商品信息!.商品类型);
+        Assert.Equal("CAT-SUP-LIST", detail.ProductCategoryGUID);
+        Assert.Equal("Pet Supplies", detail.ProductCategoryName);
+        Assert.Equal("CAT-SUP-LIST", detail.商品信息.ProductCategoryGUID);
+        Assert.Equal("Pet Supplies", detail.商品信息.ProductCategoryName);
     }
 
     [Fact]
@@ -118,7 +130,8 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
         string containerCode,
         string detailCode,
         string productCode,
-        string localSupplierCode
+        string localSupplierCode,
+        string? warehouseCategoryGuid = null
     )
     {
         await _localDb.Insertable(
@@ -159,7 +172,21 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
                 ProductCode = productCode,
                 ProductName = "本地测试商品",
                 LocalSupplierCode = localSupplierCode,
+                WarehouseCategoryGUID = warehouseCategoryGuid,
                 IsActive = true,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedWarehouseCategoryAsync(string categoryGuid, string categoryName)
+    {
+        await _localDb.Insertable(
+            new WarehouseCategory
+            {
+                CategoryGUID = categoryGuid,
+                CategoryName = categoryName,
+                IsActive = true,
+                IsDeleted = false,
             }
         ).ExecuteCommandAsync();
     }

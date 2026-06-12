@@ -13,6 +13,7 @@ namespace BlazorApp.Shared.DTOs
         public Dictionary<string, string[]>? Filters { get; set; }
         public List<string>? CategoryGuids { get; set; }
         public bool IncludeSubCategories { get; set; } = true;
+        public bool UncategorizedOnly { get; set; } = false;
     }
 
     public class ReactTableResponseDto<T>

@@ -160,6 +160,60 @@ public sealed class HqProductTranslationReactServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchTranslateToEnglishAsync_DeepSeek返回空内容_应返回原文且不缓存()
+    {
+        var httpClient = CreateDeepSeekHttpClient("");
+        var translationService = CreateDeepSeekTranslationService(httpClient);
+
+        var result = await translationService.BatchTranslateToEnglishAsync(
+            new List<string> { "苹果" }
+        );
+
+        Assert.Equal("苹果", result["苹果"]);
+        Assert.Null(await translationService.GetCachedTranslationAsync("苹果"));
+    }
+
+    [Fact]
+    public async Task BatchTranslateToEnglishAsync_DeepSeek批次大小为一_应分两次请求并合并结果()
+    {
+        var handler = new DeepSeekHttpMessageHandler("1. Apple", "1. Banana");
+        var translationService = CreateDeepSeekTranslationService(
+            new HttpClient(handler),
+            new Dictionary<string, string?>
+            {
+                ["Translation:DeepSeek:BatchSize"] = "1",
+            }
+        );
+
+        var result = await translationService.BatchTranslateToEnglishAsync(
+            new List<string> { "苹果", "香蕉" }
+        );
+
+        Assert.Equal(2, handler.RequestCount);
+        Assert.Equal("Apple", result["苹果"]);
+        Assert.Equal("Banana", result["香蕉"]);
+    }
+
+    [Fact]
+    public async Task BatchTranslateToEnglishAsync_DeepSeek未配置批次大小_默认每二十五条分批()
+    {
+        var texts = Enumerable.Range(1, 26).Select(index => $"苹果{index}").ToList();
+        var firstBatchContent = string.Join(
+            "\n",
+            Enumerable.Range(1, 25).Select(index => $"{index}. Apple {index}")
+        );
+        var secondBatchContent = "1. Apple 26";
+        var handler = new DeepSeekHttpMessageHandler(firstBatchContent, secondBatchContent);
+        var translationService = CreateDeepSeekTranslationService(new HttpClient(handler));
+
+        var result = await translationService.BatchTranslateToEnglishAsync(texts);
+
+        Assert.Equal(2, handler.RequestCount);
+        Assert.Equal("Apple 1", result["苹果1"]);
+        Assert.Equal("Apple 26", result["苹果26"]);
+    }
+
+    [Fact]
     public async Task BatchTranslateToEnglishAsync_DeepSeek缺少ApiKey_应明确失败()
     {
         var translationService = new TranslationService(
@@ -214,6 +268,22 @@ public sealed class HqProductTranslationReactServiceTests : IDisposable
         Assert.Contains("DeepSeek", ex.Message);
         Assert.Null(await translationService.GetCachedTranslationAsync("苹果"));
     }
+
+    [Fact]
+    public async Task BatchTranslateToEnglishAsync_DeepSeek返回失败状态码_应明确失败且不缓存()
+    {
+        var translationService = CreateDeepSeekTranslationService(
+            new HttpClient(new FailedStatusCodeHttpMessageHandler())
+        );
+
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() =>
+            translationService.BatchTranslateToEnglishAsync(new List<string> { "苹果" })
+        );
+
+        Assert.Contains("DeepSeek", ex.Message);
+        Assert.Null(await translationService.GetCachedTranslationAsync("苹果"));
+    }
+
 
     [Fact]
     public async Task TranslateNamesAllAsync_现有英文名称仍含中文_应优先翻译英文名称本身()
@@ -277,20 +347,31 @@ public sealed class HqProductTranslationReactServiceTests : IDisposable
         );
     }
 
-    private static TranslationService CreateDeepSeekTranslationService(HttpClient httpClient)
+    private static TranslationService CreateDeepSeekTranslationService(
+        HttpClient httpClient,
+        Dictionary<string, string?>? extraConfiguration = null
+    )
     {
+        var configuration = new Dictionary<string, string?>
+        {
+            ["Translation:Provider"] = "deepseek",
+            ["Translation:DeepSeek:ApiKey"] = "test-api-key",
+            ["Translation:DeepSeek:Endpoint"] =
+                "https://api.deepseek.com/chat/completions",
+            ["Translation:DeepSeek:Model"] = "deepseek-v4-flash",
+        };
+
+        if (extraConfiguration is not null)
+        {
+            foreach (var kvp in extraConfiguration)
+            {
+                configuration[kvp.Key] = kvp.Value;
+            }
+        }
+
         return new TranslationService(
             NullLogger<TranslationService>.Instance,
-            new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Translation:Provider"] = "deepseek",
-                    ["Translation:DeepSeek:ApiKey"] = "test-api-key",
-                    ["Translation:DeepSeek:Endpoint"] =
-                        "https://api.deepseek.com/chat/completions",
-                    ["Translation:DeepSeek:Model"] = "deepseek-v4-flash",
-                })
-                .Build(),
+            new ConfigurationBuilder().AddInMemoryCollection(configuration).Build(),
             httpClient
         );
     }
@@ -302,18 +383,21 @@ public sealed class HqProductTranslationReactServiceTests : IDisposable
 
     private sealed class DeepSeekHttpMessageHandler : HttpMessageHandler
     {
-        private readonly string _content;
+        private readonly Queue<string> _contents;
 
-        public DeepSeekHttpMessageHandler(string content)
+        public DeepSeekHttpMessageHandler(params string[] contents)
         {
-            _content = content;
+            _contents = new Queue<string>(contents);
         }
+
+        public int RequestCount { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken
         )
         {
+            RequestCount++;
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Equal(
                 "https://api.deepseek.com/chat/completions",
@@ -330,7 +414,13 @@ public sealed class HqProductTranslationReactServiceTests : IDisposable
                 {
                     choices = new[]
                     {
-                        new { message = new { content = _content } },
+                        new
+                        {
+                            message = new
+                            {
+                                content = _contents.Count > 0 ? _contents.Dequeue() : "",
+                            },
+                        },
                     },
                 }
             );
@@ -354,6 +444,26 @@ public sealed class HqProductTranslationReactServiceTests : IDisposable
         )
         {
             throw new InvalidOperationException("不应在缺少 DeepSeek ApiKey 时发起 HTTP 请求。");
+        }
+    }
+
+    private sealed class FailedStatusCodeHttpMessageHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            return Task.FromResult(
+                new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError)
+                {
+                    Content = new StringContent(
+                        """{"error":"temporary failure"}""",
+                        System.Text.Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+            );
         }
     }
 

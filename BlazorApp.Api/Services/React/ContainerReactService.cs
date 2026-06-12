@@ -3,6 +3,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using SqlSugar;
@@ -625,6 +626,7 @@ namespace BlazorApp.Api.Services.React
                                 主表GUID = cd.ContainerCode,
                                 商品编码 = cd.ProductCode,
                                 LocalSupplierCode = lp.LocalSupplierCode,
+                                ProductCategoryGUID = lp.WarehouseCategoryGUID,
                                 装柜类型 = cd.LoadingType,
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
@@ -647,6 +649,7 @@ namespace BlazorApp.Api.Services.React
                                 {
                                     商品编码 = dp.ProductCode,
                                     LocalSupplierCode = lp.LocalSupplierCode,
+                                    ProductCategoryGUID = lp.WarehouseCategoryGUID,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
                                     英文名称 = dp.EnglishProductName,
@@ -663,6 +666,8 @@ namespace BlazorApp.Api.Services.React
                     )
                     .ToListAsync();
 
+                await FillContainerDetailCategoryNamesAsync(products);
+                FillContainerDetailProductImages(products);
                 return products;
             }
             catch (Exception ex)
@@ -720,6 +725,7 @@ namespace BlazorApp.Api.Services.React
                                 主表GUID = cd.ContainerCode,
                                 商品编码 = cd.ProductCode,
                                 LocalSupplierCode = lp.LocalSupplierCode,
+                                ProductCategoryGUID = lp.WarehouseCategoryGUID,
                                 装柜类型 = cd.LoadingType,
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
@@ -744,6 +750,7 @@ namespace BlazorApp.Api.Services.React
                                 {
                                     商品编码 = dp.ProductCode,
                                     LocalSupplierCode = lp.LocalSupplierCode,
+                                    ProductCategoryGUID = lp.WarehouseCategoryGUID,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
                                     英文名称 = dp.EnglishProductName,
@@ -762,6 +769,8 @@ namespace BlazorApp.Api.Services.React
                     .Take(pageSize)
                     .ToListAsync();
 
+                await FillContainerDetailCategoryNamesAsync(items);
+                FillContainerDetailProductImages(items);
                 return new ContainerDetailQueryResultDto
                 {
                     Items = items,
@@ -781,6 +790,83 @@ namespace BlazorApp.Api.Services.React
                 );
                 throw;
             }
+        }
+
+        private static void FillContainerDetailProductImages(List<ContainerDetailDto> items)
+        {
+            foreach (var item in items)
+            {
+                if (item.商品信息 == null)
+                {
+                    continue;
+                }
+
+                // 货柜明细和国内商品页共用默认图片规则，避免国内商品有默认图但明细接口返回空图。
+                item.商品信息.商品图片 = ProductImageUrlHelper.EnsureImageUrl(
+                    item.商品信息.商品图片,
+                    item.商品信息.货号 ?? item.商品编码 ?? string.Empty
+                );
+            }
+        }
+
+        private async Task FillContainerDetailCategoryNamesAsync(List<ContainerDetailDto> items)
+        {
+            var categoryGuids = items
+                .Select(item => item.ProductCategoryGUID)
+                .Select(NormalizeCategoryGuid)
+                .Where(guid => guid != null)
+                .Select(guid => guid!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (categoryGuids.Count == 0)
+            {
+                return;
+            }
+
+            // 分类名称只用于当前返回块展示，单独批量回填，避免扩大明细主查询的筛选、统计和分页风险。
+            var categories = await _context.Db.Queryable<WarehouseCategory>()
+                .Where(category =>
+                    categoryGuids.Contains(category.CategoryGUID.Trim().ToLower())
+                    && !category.IsDeleted
+                )
+                .Select(category => new
+                {
+                    category.CategoryGUID,
+                    category.CategoryName,
+                })
+                .ToListAsync();
+
+            var categoryByGuid = categories
+                .GroupBy(category => NormalizeCategoryGuid(category.CategoryGUID), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            foreach (var item in items)
+            {
+                var normalizedGuid = NormalizeCategoryGuid(item.ProductCategoryGUID);
+                if (normalizedGuid == null || !categoryByGuid.TryGetValue(normalizedGuid, out var category))
+                {
+                    continue;
+                }
+
+                item.ProductCategoryGUID = category.CategoryGUID;
+                item.ProductCategoryName = category.CategoryName;
+                if (item.商品信息 != null)
+                {
+                    item.商品信息.ProductCategoryGUID = item.ProductCategoryGUID;
+                    item.商品信息.ProductCategoryName = category.CategoryName;
+                }
+            }
+        }
+
+        private static string? NormalizeCategoryGuid(string? categoryGuid)
+        {
+            var normalized = categoryGuid?.Trim();
+            return string.IsNullOrEmpty(normalized) ? null : normalized.ToLowerInvariant();
         }
 
         public async Task<List<ContainerDomesticSetCodeDto>> GetDomesticSetCodesAsync(

@@ -43,6 +43,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             typeof(DomesticSetProduct),
             typeof(WarehouseProduct),
             typeof(Product),
+            typeof(WarehouseCategory),
             typeof(StoreRetailPrice)
         );
     }
@@ -96,6 +97,100 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         Assert.Equal(1, result.TagStats.AbnormalImport);
         Assert.Equal(2, result.TagStats.Active);
         Assert.Equal(1, result.TagStats.Inactive);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_应返回仓库分类到明细和商品信息()
+    {
+        await SeedContainerAsync("C-CATEGORY", "CSLU6099490");
+        await SeedWarehouseCategoryAsync("CAT-LAUNDRY", "Laundry");
+        await SeedDetailAsync(
+            "D-CATEGORY",
+            "C-CATEGORY",
+            "P-CATEGORY",
+            "HB-CATEGORY",
+            warehouseCategoryGuid: " cat-laundry "
+        );
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-CATEGORY",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        var detail = Assert.Single(result.Items);
+        Assert.Equal("CAT-LAUNDRY", detail.ProductCategoryGUID);
+        Assert.Equal("Laundry", detail.ProductCategoryName);
+        Assert.NotNull(detail.商品信息);
+        Assert.Equal("CAT-LAUNDRY", detail.商品信息!.ProductCategoryGUID);
+        Assert.Equal("Laundry", detail.商品信息.ProductCategoryName);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_应按国内商品页规则补齐商品图片()
+    {
+        await SeedContainerAsync("C-IMAGE", "OOLU9955404");
+        await SeedDetailAsync(
+            "D-IMAGE-GENERATED",
+            "C-IMAGE",
+            "P-IMAGE-GENERATED",
+            "HB249-HM-001",
+            productImage: null
+        );
+        await SeedDetailAsync(
+            "D-IMAGE-EXISTING",
+            "C-IMAGE",
+            "P-IMAGE-EXISTING",
+            "HB249-HM-002",
+            productImage: "https://cdn.example.test/HB249-HM-002.jpg"
+        );
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-IMAGE",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "itemNumber",
+                SortOrder = "ascend",
+            }
+        );
+
+        Assert.Equal(
+            "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/HB249-HM-001.jpg",
+            result.Items.Single(item => item.HGUID == "D-IMAGE-GENERATED").商品信息?.商品图片
+        );
+        Assert.Equal(
+            "https://cdn.example.test/HB249-HM-002.jpg",
+            result.Items.Single(item => item.HGUID == "D-IMAGE-EXISTING").商品信息?.商品图片
+        );
+    }
+
+    [Fact]
+    public async Task GetContainerProductsAsync_应按国内商品页规则补齐商品图片()
+    {
+        await SeedContainerAsync("C-LIST-IMAGE", "OOLU9955404");
+        await SeedDetailAsync(
+            "D-LIST-IMAGE",
+            "C-LIST-IMAGE",
+            "P-LIST-IMAGE",
+            "HB249-HM-001",
+            productImage: null
+        );
+        var service = CreateService();
+
+        var result = await service.GetContainerProductsAsync("C-LIST-IMAGE");
+
+        var detail = Assert.Single(result);
+        Assert.Equal(
+            "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/HB249-HM-001.jpg",
+            detail.商品信息?.商品图片
+        );
     }
 
     [Fact]
@@ -349,7 +444,9 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         int? minOrderQuantity = null,
         int? middlePackQuantity = null,
         int domesticProductType = 0,
-        string detailProductType = "普通商品"
+        string detailProductType = "普通商品",
+        string? warehouseCategoryGuid = null,
+        string? productImage = "__DEFAULT__"
     )
     {
         await _localDb.Insertable(
@@ -379,7 +476,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 Barcode = $"9300000000{itemNumber}",
                 ProductName = $"商品 {itemNumber}",
                 EnglishProductName = $"Product {itemNumber}",
-                ProductImage = $"https://example.test/{itemNumber}.jpg",
+                ProductImage = productImage == "__DEFAULT__" ? $"https://example.test/{itemNumber}.jpg" : productImage,
                 MiddlePackQuantity = middlePackQuantity,
                 ProductType = domesticProductType,
                 IsDeleted = false,
@@ -405,10 +502,24 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                     UUID = $"LOCAL-{productCode}",
                     ProductCode = productCode,
                     ProductName = $"本地商品 {itemNumber}",
+                    WarehouseCategoryGUID = warehouseCategoryGuid,
                     IsActive = isActive,
                 }
             ).ExecuteCommandAsync();
         }
+    }
+
+    private async Task SeedWarehouseCategoryAsync(string categoryGuid, string categoryName)
+    {
+        await _localDb.Insertable(
+            new WarehouseCategory
+            {
+                CategoryGUID = categoryGuid,
+                CategoryName = categoryName,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
     }
 
     private async Task SeedDomesticSetProductAsync(

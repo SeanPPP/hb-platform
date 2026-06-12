@@ -120,6 +120,16 @@ namespace BlazorApp.Shared.DTOs
         public string? LocalSupplierCode { get; set; }
 
         /// <summary>
+        /// 仓库分类GUID（来自本地商品主数据）
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 仓库分类名称（来自仓库分类表）
+        /// </summary>
+        public string? ProductCategoryName { get; set; }
+
+        /// <summary>
         /// 装柜类型
         /// </summary>
         public string? 装柜类型 { get; set; }
@@ -236,6 +246,16 @@ namespace BlazorApp.Shared.DTOs
         /// 本地供应商编码
         /// </summary>
         public string? LocalSupplierCode { get; set; }
+
+        /// <summary>
+        /// 仓库分类GUID（来自本地商品主数据）
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 仓库分类名称（来自仓库分类表）
+        /// </summary>
+        public string? ProductCategoryName { get; set; }
 
         /// <summary>
         /// 货号

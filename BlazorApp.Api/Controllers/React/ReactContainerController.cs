@@ -65,7 +65,8 @@ namespace BlazorApp.Api.Controllers.React
         private async Task<List<ContainerMainDto>> LoadComingSoonSummariesAsync()
         {
             var today = DateTime.Today;
-            var upcomingTask = _containerReactService.GetContainersAsync(
+            // SqlSugar 的 scoped 连接不能在同一个请求内并发打开，两段日期查询必须顺序执行。
+            var upcomingResult = await _containerReactService.GetContainersAsync(
                 CreateComingSoonContainerQuery(
                     "预计到岸日期",
                     today,
@@ -73,7 +74,7 @@ namespace BlazorApp.Api.Controllers.React
                     "asc"
                 )
             );
-            var arrivedTask = _containerReactService.GetContainersAsync(
+            var arrivedResult = await _containerReactService.GetContainersAsync(
                 CreateComingSoonContainerQuery(
                     "实际到货日期",
                     today.AddDays(-7),
@@ -82,10 +83,8 @@ namespace BlazorApp.Api.Controllers.React
                 )
             );
 
-            await Task.WhenAll(upcomingTask, arrivedTask);
-
             var containerMap = new Dictionary<string, ContainerMainDto>();
-            foreach (var container in arrivedTask.Result.Containers.Concat(upcomingTask.Result.Containers))
+            foreach (var container in arrivedResult.Containers.Concat(upcomingResult.Containers))
             {
                 if (!string.IsNullOrWhiteSpace(container.HGUID))
                 {
@@ -457,7 +456,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 获取 Coming Soon 货柜摘要（多用户共享 30 分钟缓存）。
         /// </summary>
         [HttpGet("coming-soon/summaries")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff,User")]
         public async Task<IActionResult> GetComingSoonContainerSummaries()
         {
             try
@@ -492,7 +491,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 获取 Coming Soon 单货柜商品明细（多用户共享 30 分钟缓存）。
         /// </summary>
         [HttpGet("coming-soon/{containerGuid}/products")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff,User")]
         public async Task<IActionResult> GetComingSoonContainerProducts(string containerGuid)
         {
             try
@@ -889,7 +888,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 返回：未来8周内预计到港 + 最近一周内实际到港的货柜及其商品
         /// </summary>
         [HttpGet("coming-soon")]
-        //[Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff,User")]
         public async Task<IActionResult> GetComingSoonContainers()
         {
             try

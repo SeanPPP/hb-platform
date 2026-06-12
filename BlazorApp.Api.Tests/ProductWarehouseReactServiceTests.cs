@@ -52,8 +52,99 @@ namespace BlazorApp.Api.Tests
                 typeof(StoreRetailPrice),
                 typeof(ProductLocation),
                 typeof(Location),
-                typeof(ProductGrade)
+                typeof(ProductGrade),
+                typeof(WarehouseCategory)
             );
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersByCategoryGuidsIncludingChildren()
+        {
+            await SeedWarehouseCategoryAsync("cat-root", null, "根分类");
+            await SeedWarehouseCategoryAsync("cat-child", "cat-root", "子分类");
+            await SeedWarehouseTableProductAsync("P-CAT-ROOT", "ITEM-CAT-ROOT", "根分类商品", "cat-root");
+            await SeedWarehouseTableProductAsync("P-CAT-CHILD", "ITEM-CAT-CHILD", "子分类商品", "cat-child");
+            await SeedWarehouseTableProductAsync("P-CAT-OTHER", "ITEM-CAT-OTHER", "其他分类商品", null);
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                CategoryGuids = new List<string> { "cat-root" },
+                IncludeSubCategories = true,
+            });
+
+            Assert.Equal(2, result.Total);
+            Assert.Contains(result.Items, item => item.ProductCode == "P-CAT-ROOT");
+            Assert.Contains(result.Items, item => item.ProductCode == "P-CAT-CHILD");
+            Assert.DoesNotContain(result.Items, item => item.ProductCode == "P-CAT-OTHER");
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersUncategorizedOnly()
+        {
+            await SeedWarehouseCategoryAsync("cat-assigned", null, "已分类");
+            await SeedWarehouseTableProductAsync("P-ASSIGNED", "ITEM-ASSIGNED", "已分类商品", "cat-assigned");
+            await SeedWarehouseTableProductAsync("P-UNCATEGORIZED-NULL", "ITEM-UNCAT-NULL", "未分类空值商品", null);
+            await SeedWarehouseTableProductAsync("P-UNCATEGORIZED-EMPTY", "ITEM-UNCAT-EMPTY", "未分类空字符串商品", string.Empty);
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                UncategorizedOnly = true,
+            });
+
+            Assert.Equal(2, result.Total);
+            Assert.Contains(result.Items, item => item.ProductCode == "P-UNCATEGORIZED-NULL");
+            Assert.Contains(result.Items, item => item.ProductCode == "P-UNCATEGORIZED-EMPTY");
+            Assert.DoesNotContain(result.Items, item => item.ProductCode == "P-ASSIGNED");
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_CategoryGuidsTakePriorityOverUncategorizedOnly()
+        {
+            await SeedWarehouseCategoryAsync("cat-priority", null, "优先分类");
+            await SeedWarehouseTableProductAsync("P-PRIORITY-CAT", "ITEM-PRIORITY-CAT", "分类优先商品", "cat-priority");
+            await SeedWarehouseTableProductAsync("P-PRIORITY-UNCAT", "ITEM-PRIORITY-UNCAT", "未分类商品", null);
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                CategoryGuids = new List<string> { "cat-priority" },
+                UncategorizedOnly = true,
+            });
+
+            Assert.Single(result.Items);
+            Assert.Equal("P-PRIORITY-CAT", result.Items[0].ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_BlankCategoryGuidsDoNotOverrideUncategorizedOnly()
+        {
+            await SeedWarehouseCategoryAsync("cat-blank-priority", null, "已分类");
+            await SeedWarehouseTableProductAsync("P-BLANK-CAT", "ITEM-BLANK-CAT", "已分类商品", "cat-blank-priority");
+            await SeedWarehouseTableProductAsync("P-BLANK-UNCAT", "ITEM-BLANK-UNCAT", "未分类商品", null);
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                CategoryGuids = new List<string> { "", "   " },
+                UncategorizedOnly = true,
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-BLANK-UNCAT", item.ProductCode);
         }
 
         [Fact]
@@ -1218,6 +1309,48 @@ namespace BlazorApp.Api.Tests
                 ProductName = productCode,
                 ItemNumber = itemNumber,
                 Barcode = barcode,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = productCode,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedWarehouseCategoryAsync(
+            string categoryGuid,
+            string? parentGuid,
+            string categoryName
+        )
+        {
+            await _db.Insertable(new WarehouseCategory
+            {
+                CategoryGUID = categoryGuid,
+                ParentGUID = parentGuid,
+                CategoryName = categoryName,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedWarehouseTableProductAsync(
+            string productCode,
+            string itemNumber,
+            string productName,
+            string? warehouseCategoryGuid
+        )
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = $"{productCode}-uuid",
+                ProductCode = productCode,
+                ItemNumber = itemNumber,
+                ProductName = productName,
+                WarehouseCategoryGUID = warehouseCategoryGuid,
                 IsActive = true,
                 IsDeleted = false,
             }).ExecuteCommandAsync();

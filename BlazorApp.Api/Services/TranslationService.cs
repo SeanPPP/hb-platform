@@ -751,7 +751,7 @@ namespace BlazorApp.Api.Services
             {
                 var batchSize = Math.Max(
                     1,
-                    _configuration.GetValue<int>("Translation:DeepSeek:BatchSize", 100)
+                    _configuration.GetValue<int>("Translation:DeepSeek:BatchSize", 25)
                 );
                 var batches = new List<List<string>>();
 
@@ -884,7 +884,7 @@ namespace BlazorApp.Api.Services
 
                 var translationResult = ExtractChatCompletionContent(result);
 
-                if (!string.IsNullOrEmpty(translationResult))
+                if (!string.IsNullOrWhiteSpace(translationResult))
                 {
                     var lines = translationResult.Split(
                         '\n',
@@ -965,7 +965,15 @@ namespace BlazorApp.Api.Services
                 }
 
                 _logger.LogWarning("DeepSeek批量翻译API返回空结果");
-                throw new InvalidOperationException("DeepSeek 批量翻译 API 返回空结果。");
+
+                // DeepSeek 偶发返回空内容时，只标记当前批次未翻译，避免整批接口返回500。
+                foreach (var text in texts)
+                {
+                    results[text] = text;
+                    _logger.LogWarning("DeepSeek未返回译文，保留原文且不缓存: {Chinese}", text);
+                }
+
+                return results;
             }
             catch (Exception ex)
             {

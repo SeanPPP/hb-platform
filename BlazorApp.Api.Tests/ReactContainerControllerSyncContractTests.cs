@@ -48,6 +48,45 @@ public class ReactContainerControllerSyncContractTests
     }
 
     [Fact]
+    public async Task GetComingSoonContainerSummaries_同一请求内顺序查询避免共享连接并发()
+    {
+        var activeCalls = 0;
+        var maxActiveCalls = 0;
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.GetContainersAsync(It.IsAny<ContainerQueryRequest>()))
+            .Returns(async (ContainerQueryRequest request) =>
+            {
+                var currentCalls = Interlocked.Increment(ref activeCalls);
+                maxActiveCalls = Math.Max(maxActiveCalls, currentCalls);
+                await Task.Delay(20);
+                Interlocked.Decrement(ref activeCalls);
+
+                return new ContainerListResponse
+                {
+                    Containers = new List<ContainerMainDto>
+                    {
+                        new ContainerMainDto
+                        {
+                            HGUID = request.DateType,
+                            货柜编号 = request.DateType,
+                        },
+                    },
+                    TotalCount = 1,
+                    Page = 1,
+                    PageSize = 100,
+                };
+            });
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.GetComingSoonContainerSummaries();
+
+        Assert.IsType<OkObjectResult>(response);
+        Assert.Equal(1, maxActiveCalls);
+        containerService.Verify(service => service.GetContainersAsync(It.IsAny<ContainerQueryRequest>()), Times.Exactly(2));
+    }
+
+    [Fact]
     public async Task GetComingSoonContainerProducts_同一货柜共享缓存且不同货柜独立()
     {
         var cache = new MemoryCache(new MemoryCacheOptions());
@@ -69,6 +108,22 @@ public class ReactContainerControllerSyncContractTests
         containerService.Verify(service => service.GetContainerProductsAsync("CONTAINER-A"), Times.Once);
         containerService.Verify(service => service.GetContainerProductsAsync("CONTAINER-B"), Times.Once);
         Assert.Equal(TimeSpan.FromMinutes(30), ReactContainerController.ComingSoonCacheDuration);
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactContainerController.GetComingSoonContainerSummaries))]
+    [InlineData(nameof(ReactContainerController.GetComingSoonContainerProducts))]
+    [InlineData(nameof(ReactContainerController.GetComingSoonContainers))]
+    public void ComingSoonReadEndpoints_允许仓库员工访问(string methodName)
+    {
+        var method = typeof(ReactContainerController).GetMethod(methodName);
+
+        var authorizeAttribute = Assert.IsType<AuthorizeAttribute>(Assert.Single(
+            method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+        ));
+
+        // 订货前台由仓库员工日常查看到货计划，拆分接口必须和仓库员工账号权限保持一致。
+        Assert.Equal("Admin,WarehouseManager,WarehouseStaff,User", authorizeAttribute.Roles);
     }
 
     [Fact]
