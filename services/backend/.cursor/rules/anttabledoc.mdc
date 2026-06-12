@@ -1,0 +1,7 @@
+---
+description:页面有ant Design 的问题 先查询文档 再使用chrome-devtools 检测页面
+globs:
+alwaysApply: true
+---
+
+https://antblazor.com/zh-CN/components/overview

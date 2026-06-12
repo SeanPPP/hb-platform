@@ -1,0 +1,98 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BlazorApp.Api\BlazorApp.Api.csproj" />
+    <ProjectReference Include="..\BlazorApp.Shared\BlazorApp.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="StoreProductMaintenanceSyncHelperTests.cs" />
+    <Compile Include="StoreProductMaintenanceClearanceBarcodeHelperTests.cs" />
+    <Compile Include="ReactLocationControllerTests.cs" />
+    <Compile Include="ReactProductWarehouseControllerTests.cs" />
+    <Compile Include="DeviceRegistrationControllerTests.cs" />
+    <Compile Include="DeviceRegistrationReactServiceTests.cs" />
+    <Compile Include="DomesticProductCreationControllerTests.cs" />
+    <Compile Include="DomesticProductReactServiceTests.cs" />
+    <Compile Include="EmployeeProfileServiceTests.cs" />
+    <Compile Include="StoreUsersReactServiceTests.cs" />
+    <Compile Include="UserStoreManagementRelationTests.cs" />
+    <Compile Include="AttendanceReactServiceTests.cs" />
+    <Compile Include="AttendancePublicHolidaySyncHelperTests.cs" />
+    <Compile Include="AttendancePublicHolidaySyncServiceTests.cs" />
+    <Compile Include="SeedDataServiceTests.cs" />
+    <Compile Include="NavigationServiceTests.cs" />
+    <Compile Include="ControllerAuthorizationMetadataTests.cs" />
+    <Compile Include="PermissionAuthorizationHandlerTests.cs" />
+    <Compile Include="RoleServicePermissionTests.cs" />
+    <Compile Include="SeasonalCardRemainingReactServiceTests.cs" />
+    <Compile Include="LocalSupplierInvoicesReactServiceTests.cs" />
+    <Compile Include="LocationReactServiceTests.cs" />
+    <Compile Include="ProductWarehouseReactServiceTests.cs" />
+    <Compile Include="ProductWarehouseReactServiceNonHotbargainTests.cs" />
+    <Compile Include="ProductWarehouseReactServiceSyncTests.cs" />
+    <Compile Include="WarehouseProductHqSyncJobServiceTests.cs" />
+    <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
+    <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
+    <Compile Include="ScheduledTaskServiceTests.cs" />
+    <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
+    <Compile Include="SalesStatisticsJobServiceTests.cs" />
+    <Compile Include="SalesDashboardBestSellersTests.cs" />
+    <Compile Include="AuthServiceTests.cs" />
+    <Compile Include="AuthSessionControllerTests.cs" />
+    <Compile Include="StoreVoucherReactRouteTests.cs" />
+    <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
+    <Compile Include="StoreOrderProductListTests.cs" />
+    <Compile Include="StoreOrderPasteReplaceJobServiceTests.cs" />
+    <Compile Include="StoreOrderContactAndInvoiceTests.cs" />
+    <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
+    <Compile Include="StoreOrderHqSyncTests.cs" />
+    <Compile Include="AdvertisementReactServiceTests.cs" />
+    <Compile Include="PromotionReactServiceTests.cs" />
+    <Compile Include="ProductReactServiceHqSyncTests.cs" />
+    <Compile Include="ProductStoreRecordsTests.cs" />
+    <Compile Include="ProductPushToHqServiceTests.cs" />
+    <Compile Include="ProductSupplierImageBatchUpdateTests.cs" />
+    <Compile Include="ProductStoreSyncJobServiceTests.cs" />
+    <Compile Include="ReactProductStoreSyncJobContractTests.cs" />
+    <Compile Include="SyncProductsToStoresRequestTests.cs" />
+    <Compile Include="ProductHqSyncSplitTests.cs" />
+    <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
+    <Compile Include="ProductSetCodeReactServiceTests.cs" />
+    <Compile Include="ReactProductHqSyncContractTests.cs" />
+    <Compile Include="StoreRetailPriceHqSyncContractTests.cs" />
+    <Compile Include="LocalSupplierInvoiceHqSyncContractTests.cs" />
+    <Compile Include="LocalSupplierInvoiceHqProductSyncTests.cs" />
+    <Compile Include="LocalSupplierInvoiceBatchUpdateJobServiceTests.cs" />
+    <Compile Include="ApplicationLogServiceTests.cs" />
+    <Compile Include="ApplicationLogQueueTests.cs" />
+    <Compile Include="ApplicationLogBackgroundServiceTests.cs" />
+    <Compile Include="ContainerHqSyncServiceTests.cs" />
+    <Compile Include="HqProductTranslationReactServiceTests.cs" />
+    <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
+    <Compile Include="ContainerCreateDuplicateTests.cs" />
+    <Compile Include="ContainerReactServiceDetailQueryTests.cs" />
+    <Compile Include="ContainerReactServiceLocalSupplierCodeTests.cs" />
+    <Compile Include="ContainerProductCreationServiceTests.cs" />
+    <Compile Include="ReactContainerControllerSyncContractTests.cs" />
+    <Compile Include="DataSyncReactControllerLocationSyncContractTests.cs" />
+    <Compile Include="SqliteTempFileCleanup.cs" />
+  </ItemGroup>
+</Project>

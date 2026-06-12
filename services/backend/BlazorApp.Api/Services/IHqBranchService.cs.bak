@@ -1,0 +1,55 @@
+using BlazorApp.Api.Models;
+
+namespace BlazorApp.Api.Services
+{
+    /// <summary>
+    /// HQ分店服务接口
+    /// </summary>
+    public interface IHqBranchService
+    {
+        /// <summary>
+        /// 获取所有分店
+        /// </summary>
+        Task<List<HqBranch>> GetAllBranchesAsync();
+
+        /// <summary>
+        /// 根据ID获取分店
+        /// </summary>
+        Task<HqBranch?> GetBranchByIdAsync(int id);
+
+        /// <summary>
+        /// 根据分店代码获取分店
+        /// </summary>
+        Task<HqBranch?> GetBranchByCodeAsync(string branchCode);
+
+        /// <summary>
+        /// 创建分店
+        /// </summary>
+        Task<HqBranch> CreateBranchAsync(HqBranch branch);
+
+        /// <summary>
+        /// 更新分店
+        /// </summary>
+        Task<HqBranch> UpdateBranchAsync(HqBranch branch);
+
+        /// <summary>
+        /// 删除分店（软删除）
+        /// </summary>
+        Task<bool> DeleteBranchAsync(int id);
+
+        /// <summary>
+        /// 搜索分店
+        /// </summary>
+        Task<List<HqBranch>> SearchBranchesAsync(string keyword);
+
+        /// <summary>
+        /// 获取活跃的分店
+        /// </summary>
+        Task<List<HqBranch>> GetActiveBranchesAsync();
+
+        /// <summary>
+        /// 检查分店代码是否存在
+        /// </summary>
+        Task<bool> IsBranchCodeExistsAsync(string branchCode, int? excludeId = null);
+    }
+}

@@ -1,0 +1,107 @@
+/* Cart Badge Theme - Modern Glass Design */
+:root {
+  /* 主品牌色系 - 科技紫蓝渐变 */
+  --cart-primary: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --cart-primary-hover: linear-gradient(135deg, #7c93f0 0%, #8659b8 100%);
+  --cart-secondary: linear-gradient(90deg, #1890ff 0%, #52c41a 100%);
+  
+  /* 毛玻璃效果 */
+  --cart-glass-bg: rgba(255, 255, 255, 0.15);
+  --cart-glass-border: rgba(255, 255, 255, 0.2);
+  --cart-glass-backdrop: blur(10px);
+  
+  /* 文字颜色 */
+  --cart-text-primary: #ffffff;
+  --cart-text-secondary: rgba(255, 255, 255, 0.85);
+  --cart-text-muted: rgba(255, 255, 255, 0.65);
+  --cart-text-accent: #ffd700;
+  
+  /* 间距和尺寸 */
+  --cart-radius: 12px;
+  --cart-radius-small: 8px;
+  --cart-radius-mini: 6px;
+  --cart-spacing-xs: 4px;
+  --cart-spacing-sm: 8px;
+  --cart-spacing-md: 12px;
+  --cart-spacing-lg: 16px;
+  --cart-spacing-xl: 24px;
+  
+  /* 阴影系统 */
+  --cart-shadow-sm: 0 2px 8px rgba(102, 126, 234, 0.15);
+  --cart-shadow-md: 0 4px 16px rgba(102, 126, 234, 0.25);
+  --cart-shadow-lg: 0 8px 32px rgba(102, 126, 234, 0.35);
+  --cart-shadow-glow: 0 0 20px rgba(102, 126, 234, 0.4);
+  
+  /* 字体系统 */
+  --cart-font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  --cart-font-size-xs: 10px;
+  --cart-font-size-sm: 11px;
+  --cart-font-size-base: 12px;
+  --cart-font-size-md: 14px;
+  --cart-font-size-lg: 16px;
+  --cart-font-weight-normal: 400;
+  --cart-font-weight-medium: 500;
+  --cart-font-weight-bold: 600;
+  
+  /* 动画时长 */
+  --cart-duration-fast: 0.15s;
+  --cart-duration-normal: 0.3s;
+  --cart-duration-slow: 0.45s;
+  
+  /* 移动端适配 */
+  --cart-mobile-padding: 8px 12px;
+  --cart-mobile-gap: 6px;
+  --cart-mobile-min-width: 200px;
+  
+  /* 桌面端适配 */
+  --cart-desktop-padding: 12px 20px;
+  --cart-desktop-gap: 16px;
+  --cart-desktop-min-width: 320px;
+  
+  /* 按钮样式 */
+  --cart-button-bg: rgba(255, 255, 255, 0.2);
+  --cart-button-hover: rgba(255, 255, 255, 0.3);
+  --cart-button-active: rgba(255, 255, 255, 0.4);
+  
+  /* 图标尺寸 */
+  --cart-icon-size-sm: 14px;
+  --cart-icon-size-md: 16px;
+  --cart-icon-size-lg: 18px;
+  
+  /* 响应式断点 */
+  --cart-breakpoint-mobile: 768px;
+  --cart-breakpoint-tablet: 1024px;
+  --cart-breakpoint-desktop: 1440px;
+}
+
+/* 深色模式支持 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cart-glass-bg: rgba(0, 0, 0, 0.3);
+    --cart-glass-border: rgba(255, 255, 255, 0.1);
+    --cart-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+    --cart-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+    --cart-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* 无障碍支持 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --cart-duration-fast: 0s;
+    --cart-duration-normal: 0s;
+    --cart-duration-slow: 0s;
+  }
+}
+
+/* 高对比度模式 */
+@media (prefers-contrast: high) {
+  :root {
+    --cart-text-primary: #ffffff;
+    --cart-text-secondary: #ffffff;
+    --cart-text-muted: #cccccc;
+    --cart-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.8);
+    --cart-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.8);
+    --cart-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.8);
+  }
+}

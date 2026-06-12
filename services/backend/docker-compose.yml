@@ -1,0 +1,52 @@
+services:
+  hb-api:
+    build:
+      context: .
+      dockerfile: BlazorApp.Api/Dockerfile
+    image: blazorapphbweb_hb-api_vite:local
+    container_name: hb-platform-vite-api
+    ports:
+      - "5002:5002"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5002
+      - ASPNETCORE_HTTP_PORTS=5002
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - ConnectionString=REDACTED
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=${JWT_ISSUER:-BlazorApp}
+      - Jwt__Audience=${JWT_AUDIENCE:-BlazorAppUsers}
+      - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
+      - Cookie__Secure=${COOKIE_SECURE:-true}
+      - Cookie__SameSite=${COOKIE_SAMESITE:-Lax}
+      - Translation__Provider=deepseek
+      - Translation__DeepSeek__ApiKey=REDACTED
+      - TencentCloud__SecretId=${TENCENT_SECRET_ID}
+      - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
+      - TencentCloud__BucketName=${TENCENT_BUCKET_NAME}
+      - TencentCloud__Region=${TENCENT_REGION}
+      - TencentCloud__ImageBucketName=${TENCENT_IMAGE_BUCKET_NAME}
+      - TencentCloud__ImageRegion=${TENCENT_IMAGE_REGION}
+    volumes:
+      - hb-api-logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - hb-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5002/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  hb-network:
+    driver: bridge
+    name: hb-network
+
+volumes:
+  hb-api-logs:
+    driver: local

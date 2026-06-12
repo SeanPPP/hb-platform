@@ -1,0 +1,305 @@
+# BlazorDatasheet 技术文档规则
+
+## 基本信息
+- **官方文档**: https://anmcgrath.github.io/BlazorDatasheet/
+- **GitHub**: https://github.com/anmcgrath/BlazorDatasheet
+- **NuGet包**: BlazorDatasheet
+- **许可证**: MIT
+- **星标**: 326+ stars
+- **用途**: 创建类似Excel的电子表格组件，支持数据编辑、复制粘贴等功能
+
+## 主要特性
+
+### 数据编辑
+- 内置编辑器：文本、日期、选择、布尔、文本区域、枚举
+- 可为任何数据类型添加自定义编辑器
+- 支持条件格式化
+- 数据验证
+- 公式支持
+- 键盘导航
+- 从表格数据复制粘贴
+- 虚拟化 - 同时处理行和列中的许多单元格
+
+## 安装和配置
+
+### 1. 安装NuGet包
+```bash
+dotnet add package BlazorDatasheet
+```
+
+### 2. 配置Program.cs
+```csharp
+builder.Services.AddBlazorDatasheet();
+```
+
+### 3. 导入JS/CSS
+在_Layout.cshtml或index.html中添加：
+```html
+<link href="_content/BlazorDatasheet/sheet-styles.css" rel="stylesheet"/>
+<script src="_content/BlazorDatasheet/blazor-datasheet.js" type="text/javascript"></script>
+```
+
+## 基本用法
+
+### 创建基本表格
+```csharp
+@using BlazorDatasheet.Core.Data
+
+<Datasheet Sheet="sheet"/>
+
+@code{
+    private Sheet sheet;
+
+    protected override void OnInitialized()
+    {
+        sheet = new Sheet(3, 3); // 3行3列
+    }
+}
+```
+
+## 核心概念
+
+### 单元格值设置
+```csharp
+// 多种方式设置单元格值
+sheet.Cells[0, 0].Value = "Test"
+sheet.Range("A1").Value = "Test";
+sheet.Cells.SetValue(0, 0, "Test");
+sheet.Commands.ExecuteCommand(new SetCellValueCommand(0, 0, "Test"));
+```
+
+### 单元格类型 (CellValueType)
+- Empty = 0 - 空
+- Error = 1 - 错误
+- Array = 2 - 数组
+- Unknown = 3 - 未知
+- Sequence = 4 - 序列
+- Reference = 5 - 引用
+- Number = 6 - 数字
+- Date = 7 - 日期
+- Text = 8 - 文本 ⭐**重要：货号等文本数据应使用此类型**
+- Logical = 9 - 逻辑值
+
+### 🔥 设置单元格类型 - 修复货号显示问题
+```csharp
+// 设置单元格类型为文本，避免自动转换为数字
+sheet.Range("A1:A5").Type = "text"; // 强制文本类型，确保货号显示为文本而非数字
+sheet.Range("B1:B5").Type = "text"; // 货号列设置为文本类型
+sheet.Range("C1:C5").Type = "boolean"; // 渲染复选框
+
+// 特别重要：货号列必须设置为text类型
+var itemNoColumn = new ColumnRegion(0); // 第一列（A列）
+sheet.Range(itemNoColumn).Type = "text";
+```
+
+### 控制数据类型转换
+```csharp
+// 使用BeforeCellValueConversion事件控制转换
+sheet.Cells.BeforeCellValueConversion += (sender, args) => {
+    if (args.Column == 0) // 第一列货号
+    {
+        args.NewValue = args.NewValue.ToString(); // 强制转换为字符串
+    }
+};
+```
+
+## 公式和验证
+
+### 公式
+```csharp
+sheet.Cells[0, 0].Formula = "=10+A2"
+// 当引用的单元格或范围发生变化时，单元格值会重新计算
+```
+
+### 数据验证
+```csharp
+// 严格验证：如果验证失败，编辑器不会设置单元格值
+sheet.Validators.Add(new ColumnRegion(0), new NumberValidator(isStrict: true));
+
+// 非严格验证：可以设置值，但会显示验证错误
+sheet.Validators.Add(new ColumnRegion(1), new TextValidator(isStrict: false));
+```
+
+## 格式化
+
+### 单元格格式设置
+```csharp
+// 多种方式设置格式
+sheet.Range("A1:A2").Format = new CellFormat() { BackgroundColor = "red" };
+sheet.Commands.ExecuteCommand(
+    new SetFormatCommand(new RowRegion(10, 12), new CellFormat() { ForegroundColor = "blue" }));
+sheet.SetFormat(sheet.Range(new ColumnRegion(5)), new CellFormat() { FontWeight = "bold" });
+sheet.Cells[0, 0].Format = new CellFormat() { TextAlign = "center" };
+```
+
+### 格式合并规则
+```csharp
+// 格式会合并到应用区域中的任何现有单元格格式
+sheet.Range("A1").Format = new CellFormat() { BackgroundColor = "red" };
+sheet.Range("A1:A2").Format = new CellFormat() { ForegroundColor = "blue" };
+var format = sheet.Cells[0, 0].Format; // backroundColor = "red", foreground = "blue"
+var format2 = sheet.Cells[1, 0].Format; // foreground = "blue"
+```
+
+## 区域和范围
+
+### 区域定义
+```csharp
+var region = new Region(0, 5, 0, 5); // r0到r5, c0到c5
+var cellRegion = new Region(0, 0); // 单元格A1
+var colRegion = new ColumnRegion(0, 4); // 列A到D
+var rowRegion = new RowRegion(0, 3); // 行1到4
+```
+
+### 范围操作
+```csharp
+var range = sheet.Range("A1:C5");
+var range = sheet.Range(new ColumnRegion(0));
+var range = sheet.Range(0, 0, 4, 5);
+```
+
+## 在HB Platform中的应用示例
+
+### OrderDetail.razor实现 - 修复货号显示问题
+```csharp
+@using BlazorDatasheet.Core.Data
+@using BlazorDatasheet.Core.Data.Cells
+@using BlazorDatasheet.DataStructures.Geometry
+
+<div class="datasheet-container">
+    <Datasheet Sheet="@pasteDataSheet" />
+</div>
+
+@code {
+    private Sheet pasteDataSheet = new(20, 5);
+
+    protected override void OnInitialized()
+    {
+        InitializePasteDataSheet();
+    }
+
+    private void InitializePasteDataSheet()
+    {
+        pasteDataSheet = new Sheet(20, 5);
+        
+        // 设置列标题
+        pasteDataSheet.Cells[0, 0].Value = "ItemNo (A)";
+        pasteDataSheet.Cells[0, 1].Value = "Quantity (B)";
+        pasteDataSheet.Cells[0, 2].Value = "Price (C)";
+        pasteDataSheet.Cells[0, 3].Value = "Discount (D)";
+        pasteDataSheet.Cells[0, 4].Value = "Total (E)";
+        
+        // 🔥 重要修复：设置第一列（货号列）为文本类型
+        var itemNoColumn = new ColumnRegion(0); // A列
+        pasteDataSheet.Range(itemNoColumn).Type = "text";
+        
+        // 可选：设置其他列的类型
+        pasteDataSheet.Range(new ColumnRegion(1)).Type = "text"; // B列数量
+        pasteDataSheet.Range(new ColumnRegion(2)).Type = "text"; // C列价格  
+        pasteDataSheet.Range(new ColumnRegion(3)).Type = "text"; // D列折扣
+        pasteDataSheet.Range(new ColumnRegion(4)).Type = "text"; // E列总价
+        
+        // 添加数据转换控制事件
+        pasteDataSheet.Cells.BeforeCellValueConversion += OnBeforeCellValueConversion;
+    }
+    
+    private void OnBeforeCellValueConversion(object sender, BeforeCellValueConversionEventArgs args)
+    {
+        // 确保第一列（货号）始终为文本
+        if (args.Column == 0) 
+        {
+            args.NewValue = args.NewValue?.ToString() ?? "";
+        }
+    }
+}
+```
+
+## 社区链接
+- [Using a Blazor Excel Datasheet To Update A Database](https://anmcgrath.github.io/BlazorDatasheet/)
+- [Using OpenAI to Update A Blazor Excel Worksheet](https://anmcgrath.github.io/BlazorDatasheet/)
+- [Microsoft Fabric and the Blazor Data Sheet](https://anmcgrath.github.io/BlazorDatasheet/)
+
+## 注意事项和最佳实践
+
+### 1. 数据类型管理
+- 默认编辑器是文本编辑器，可通过设置Cell的Type属性来改变
+- **货号等文本数据必须设置Type为"text"，防止自动转换为数字**
+- 使用BeforeCellValueConversion事件精细控制数据转换
+
+### 2. 性能优化
+- 支持虚拟化，可处理大量单元格
+- 建议分页加载大量数据
+
+### 3. 用户体验
+- 支持键盘导航
+- 支持复制粘贴表格数据（Ctrl+V）
+- 可自定义编辑器和渲染器
+
+### 4. 兼容性
+- 支持Blazor Server和WebAssembly
+- 需要.NET 6.0+
+
+### 5. 常见问题解决
+- **货号显示为数字**: 设置`sheet.Range("A1:A100").Type = "text"`
+- **公式不计算**: 确保引用的单元格有正确的值
+- **样式不生效**: 检查CSS类是否正确加载
+
+## Excel风格样式定制
+
+### CSS样式覆盖
+```css
+/* Excel风格表格样式 */
+.datasheet-container {
+    border: 1px solid #c0c0c0;
+    border-radius: 0;
+    overflow: hidden;
+    height: 500px;
+    background-color: #ffffff;
+    box-shadow: none;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* 普通单元格样式 - Excel风格 */
+.datasheet-container .sheet-container .cell {
+    border: 1px solid #c0c0c0 !important;
+    border-top: none !important;
+    border-left: none !important;
+    padding: 4px 6px !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    line-height: 1.2 !important;
+    min-height: 20px !important;
+    vertical-align: middle !important;
+    transition: background-color 0.1s ease !important;
+    font-size: 12px !important;
+}
+
+/* 列标题样式 - Excel A, B, C, D, E风格 */
+.datasheet-container .sheet-container .header-cell {
+    background: linear-gradient(to bottom, #f0f0f0 0%, #e0e0e0 100%) !important;
+    border: 1px solid #a0a0a0 !important;
+    border-top: 1px solid #c0c0c0 !important;
+    border-left: none !important;
+    font-weight: 600 !important;
+    text-align: center !important;
+    color: #000000 !important;
+    padding: 6px 4px !important;
+    font-size: 11px !important;
+    height: 24px !important;
+}
+
+/* 行号样式 - Excel风格 */
+.datasheet-container .sheet-container .row-header {
+    background: linear-gradient(to right, #f0f0f0 0%, #e0e0e0 100%) !important;
+    border: 1px solid #a0a0a0 !important;
+    border-top: none !important;
+    border-left: 1px solid #c0c0c0 !important;
+    font-weight: 500 !important;
+    text-align: center !important;
+    color: #000000 !important;
+    width: 35px !important;
+    min-width: 35px !important;
+    font-size: 11px !important;
+    padding: 4px 2px !important;
+}
+```

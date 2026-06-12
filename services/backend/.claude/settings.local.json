@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet build)",
+      "Bash(start:*)",
+      "Bash(curl:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet ef:*)",
+      "Bash(ls:*)",
+      "Bash(timeout:*)",
+      "WebFetch(domain:localhost)",
+      "Bash(pkill:*)",
+      "Bash(true)",
+      "Bash(dotnet run:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd:*)",
+      "Bash(dotnet:*)",
+      "mcp__ide__executeCode",
+      "Bash(chrome.exe:*)",
+      "Bash(powershell:*)",
+      "mcp__ide__getDiagnostics",
+      "WebFetch(domain:www.figma.com)",
+      "Bash(grep:*)",
+      "Bash(rm:*)",
+      "Bash(del:*)",
+      "Bash(mkdir:*)"
+    ],
+    "deny": []
+  }
+}

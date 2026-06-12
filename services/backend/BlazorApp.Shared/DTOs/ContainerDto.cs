@@ -1,0 +1,739 @@
+using System;
+using System.Collections.Generic;
+
+namespace BlazorApp.Shared.DTOs
+{
+    /// <summary>
+    /// 货柜主表DTO
+    /// </summary>
+    public class ContainerMainDto
+    {
+        /// <summary>
+        /// 主键ID
+        /// </summary>
+        public int ID { get; set; }
+
+        /// <summary>
+        /// 全局唯一标识
+        /// </summary>
+        public string? HGUID { get; set; }
+
+        /// <summary>
+        /// 货柜编号
+        /// </summary>
+        public string? 货柜编号 { get; set; }
+
+        /// <summary>
+        /// 装柜日期
+        /// </summary>
+        public DateTime? 装柜日期 { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期
+        /// </summary>
+        public DateTime? 预计到岸日期 { get; set; }
+
+        /// <summary>
+        /// 实际到货日期
+        /// </summary>
+        public DateTime? 实际到货日期 { get; set; }
+
+        /// <summary>
+        /// 合计件数
+        /// </summary>
+        public decimal? 合计件数 { get; set; }
+
+        /// <summary>
+        /// 合计数量
+        /// </summary>
+        public decimal? 合计数量 { get; set; }
+
+        /// <summary>
+        /// 合计金额
+        /// </summary>
+        public decimal? 合计金额 { get; set; }
+
+        /// <summary>
+        /// 总体积
+        /// </summary>
+        public decimal? 总体积 { get; set; }
+
+        /// <summary>
+        /// 成本浮率
+        /// </summary>
+        public decimal? 成本浮率 { get; set; }
+
+        /// <summary>
+        /// 汇率
+        /// </summary>
+        public decimal? 汇率 { get; set; }
+
+        /// <summary>
+        /// 运费
+        /// </summary>
+        public decimal? 运费 { get; set; }
+
+        /// <summary>
+        /// 备注
+        /// </summary>
+        public string? 备注 { get; set; }
+
+        /// <summary>
+        /// 状态
+        /// </summary>
+        public int? 状态 { get; set; }
+
+        /// <summary>
+        /// 货柜详情列表
+        /// </summary>
+        public List<ContainerDetailDto> Details { get; set; } = new List<ContainerDetailDto>();
+    }
+
+    /// <summary>
+    /// 货柜详情DTO
+    /// </summary>
+    public class ContainerDetailDto
+    {
+        /// <summary>
+        /// 主键ID
+        /// </summary>
+        public int ID { get; set; }
+
+        /// <summary>
+        /// 全局唯一标识
+        /// </summary>
+        public string? HGUID { get; set; }
+
+        /// <summary>
+        /// 主表GUID
+        /// </summary>
+        public string? 主表GUID { get; set; }
+
+        /// <summary>
+        /// 商品编码
+        /// </summary>
+        public string? 商品编码 { get; set; }
+
+        /// <summary>
+        /// 本地供应商编码
+        /// </summary>
+        public string? LocalSupplierCode { get; set; }
+
+        /// <summary>
+        /// 仓库分类GUID（来自本地商品主数据）
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 仓库分类名称（来自仓库分类表）
+        /// </summary>
+        public string? ProductCategoryName { get; set; }
+
+        /// <summary>
+        /// 装柜类型
+        /// </summary>
+        public string? 装柜类型 { get; set; }
+
+        /// <summary>
+        /// 商品类型
+        /// </summary>
+        public string? 商品类型 { get; set; }
+
+        /// <summary>
+        /// 套装数量
+        /// </summary>
+        public decimal? 套装数量 { get; set; }
+
+        /// <summary>
+        /// 装柜件数
+        /// </summary>
+        public decimal? 装柜件数 { get; set; }
+
+        /// <summary>
+        /// 中包数（仓库商品最小订货量）
+        /// </summary>
+        public decimal? 中包数 { get; set; }
+
+        /// <summary>
+        /// 装柜数量
+        /// </summary>
+        public decimal? 装柜数量 { get; set; }
+
+        /// <summary>
+        /// 国内价格
+        /// </summary>
+        public decimal? 国内价格 { get; set; }
+
+        /// <summary>
+        /// 调整浮率
+        /// </summary>
+        public decimal? 调整浮率 { get; set; }
+
+        /// <summary>
+        /// 进口价格
+        /// </summary>
+        public decimal? 进口价格 { get; set; }
+
+        /// <summary>
+        /// 贴牌价格
+        /// </summary>
+        public decimal? 贴牌价格 { get; set; }
+
+        /// <summary>
+        /// 单件装箱数
+        /// </summary>
+        public decimal? 单件装箱数 { get; set; }
+
+        /// <summary>
+        /// 单件体积
+        /// </summary>
+        public decimal? 单件体积 { get; set; }
+
+        /// <summary>
+        /// 合计装柜金额
+        /// </summary>
+        public decimal? 合计装柜金额 { get; set; }
+
+        /// <summary>
+        /// 合计装柜体积
+        /// </summary>
+        public decimal? 合计装柜体积 { get; set; }
+
+        /// <summary>
+        /// 运输成本
+        /// </summary>
+        public decimal? 运输成本 { get; set; }
+
+        /// <summary>
+        /// 备注
+        /// </summary>
+        public string? 备注 { get; set; }
+
+        /// <summary>
+        /// 商品信息
+        /// </summary>
+        public ContainerProductInfoDto? 商品信息 { get; set; }
+
+        public bool 是否新商品 { get; set; }
+
+        /// <summary>
+        /// 仓库当前进货价
+        /// </summary>
+        public decimal? WarehouseImportPrice { get; set; }
+
+        /// <summary>
+        /// 仓库当前贴牌价格
+        /// </summary>
+        public decimal? WarehouseOEMPrice { get; set; }
+
+        /// <summary>
+        /// 仓库商品是否上架
+        /// </summary>
+        public bool? WarehouseIsActive { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜商品信息DTO
+    /// </summary>
+    public class ContainerProductInfoDto
+    {
+        /// <summary>
+        /// 商品编码
+        /// </summary>
+        public string? 商品编码 { get; set; }
+
+        /// <summary>
+        /// 本地供应商编码
+        /// </summary>
+        public string? LocalSupplierCode { get; set; }
+
+        /// <summary>
+        /// 仓库分类GUID（来自本地商品主数据）
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 仓库分类名称（来自仓库分类表）
+        /// </summary>
+        public string? ProductCategoryName { get; set; }
+
+        /// <summary>
+        /// 货号
+        /// </summary>
+        public string? 货号 { get; set; }
+
+        /// <summary>
+        /// 商品名称
+        /// </summary>
+        public string? 商品名称 { get; set; }
+
+        /// <summary>
+        /// 英文名称
+        /// </summary>
+        public string? 英文名称 { get; set; }
+
+        /// <summary>
+        /// 商品图片
+        /// </summary>
+        public string? 商品图片 { get; set; }
+
+        public string? 条形码 { get; set; }
+
+        /// <summary>
+        /// 零售价格
+        /// </summary>
+        public decimal? 零售价格 { get; set; }
+
+        /// <summary>
+        /// 商品规格
+        /// </summary>
+        public string? 商品规格 { get; set; }
+
+        /// <summary>
+        /// 单位
+        /// </summary>
+        public string? 单位 { get; set; }
+
+        /// <summary>
+        /// 单件装箱数
+        /// </summary>
+        public decimal? 单件装箱数 { get; set; }
+
+        /// <summary>
+        /// 单件体积
+        /// </summary>
+        public decimal? 单件体积 { get; set; }
+
+        /// <summary>
+        /// 商品类型
+        /// </summary>
+        public string? 商品类型 { get; set; }
+
+        /// <summary>
+        /// 套装数量
+        /// </summary>
+        public decimal? 套装数量 { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细中查看国内套装多码价格的只读项
+    /// </summary>
+    public class ContainerDomesticSetCodeDto
+    {
+        public string? ProductCode { get; set; }
+        public string? ItemNumber { get; set; }
+        public int? ProductType { get; set; }
+        public string? SetProductCode { get; set; }
+        public string? SetItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? PurchasePrice { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细弹窗批量更新国内套装多码价格请求
+    /// </summary>
+    public class UpdateContainerDomesticSetCodePricesRequestDto
+    {
+        public List<UpdateContainerDomesticSetCodePriceItemDto> Items { get; set; } = new();
+    }
+
+    public class UpdateContainerDomesticSetCodePriceItemDto
+    {
+        public string? SetProductCode { get; set; }
+        public decimal? RetailPrice { get; set; }
+        public decimal? PurchasePrice { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细数字区间筛选
+    /// </summary>
+    public class ContainerDetailNumberRangeDto
+    {
+        public decimal? Min { get; set; }
+        public decimal? Max { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细服务端查询请求（前端无可见分页，内部按块懒加载）
+    /// </summary>
+    public class ContainerDetailQueryDto
+    {
+        public string ContainerGuid { get; set; } = string.Empty;
+        public int PageNumber { get; set; } = 1;
+        public int PageSize { get; set; } = 50;
+        public string? ItemNumber { get; set; }
+        public string? Barcode { get; set; }
+        public string? ProductName { get; set; }
+        public string? EnglishName { get; set; }
+        public string? Remark { get; set; }
+        public List<string> ProductTypes { get; set; } = new();
+        public List<string> NewProductStates { get; set; } = new();
+        public List<string> MatchTypes { get; set; } = new();
+        public List<string> WarehouseStatus { get; set; } = new();
+        public ContainerDetailNumberRangeDto? ContainerPieces { get; set; }
+        public decimal? ContainerPiecesMin { get; set; }
+        public decimal? ContainerPiecesMax { get; set; }
+        public ContainerDetailNumberRangeDto? MiddlePackQuantity { get; set; }
+        public decimal? MiddlePackQuantityMin { get; set; }
+        public decimal? MiddlePackQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? ContainerQuantity { get; set; }
+        public decimal? ContainerQuantityMin { get; set; }
+        public decimal? ContainerQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? DomesticPrice { get; set; }
+        public decimal? DomesticPriceMin { get; set; }
+        public decimal? DomesticPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? FloatRate { get; set; }
+        public decimal? FloatRateMin { get; set; }
+        public decimal? FloatRateMax { get; set; }
+        public ContainerDetailNumberRangeDto? TransportCost { get; set; }
+        public decimal? TransportCostMin { get; set; }
+        public decimal? TransportCostMax { get; set; }
+        public ContainerDetailNumberRangeDto? WarehouseImportPrice { get; set; }
+        public decimal? WarehouseImportPriceMin { get; set; }
+        public decimal? WarehouseImportPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? ImportPrice { get; set; }
+        public decimal? ImportPriceMin { get; set; }
+        public decimal? ImportPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? OemPrice { get; set; }
+        public decimal? OemPriceMin { get; set; }
+        public decimal? OemPriceMax { get; set; }
+        public List<string> SelectedTags { get; set; } = new();
+        public string? SortBy { get; set; }
+        public string? SortOrder { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细标签统计（基于当前服务端筛选口径）
+    /// </summary>
+    public class ContainerDetailTagStatsDto
+    {
+        public int All { get; set; }
+        public int New { get; set; }
+        public int Existing { get; set; }
+        public int NoOemPrice { get; set; }
+        public int AbnormalImport { get; set; }
+        public int Active { get; set; }
+        public int Inactive { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细服务端查询响应
+    /// </summary>
+    public class ContainerDetailQueryResultDto
+    {
+        public List<ContainerDetailDto> Items { get; set; } = new();
+        public int ItemsTotal { get; set; }
+        public int PageNumber { get; set; }
+        public int PageSize { get; set; }
+        public bool HasMore { get; set; }
+        public ContainerDetailTagStatsDto TagStats { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 货柜明细批量操作作用范围
+    /// </summary>
+    public class ContainerDetailBatchScopeDto
+    {
+        public List<string> SelectedHguids { get; set; } = new();
+        public ContainerDetailQueryDto? Query { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细批量调浮率请求
+    /// </summary>
+    public class ContainerDetailApplyFloatRateRequestDto : ContainerDetailBatchScopeDto
+    {
+        public decimal? FloatRate { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜明细批量改价请求
+    /// </summary>
+    public class ContainerDetailApplyPricesRequestDto : ContainerDetailBatchScopeDto
+    {
+        public decimal? ImportPrice { get; set; }
+        public decimal? OemPrice { get; set; }
+    }
+
+    /// <summary>
+    /// 更新货柜明细DTO
+    /// </summary>
+    public class UpdateContainerDetailDto
+    {
+        /// <summary>
+        /// 明细GUID
+        /// </summary>
+        public string HGUID { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 调整浮率
+        /// </summary>
+        public decimal? 调整浮率 { get; set; }
+
+        /// <summary>
+        /// 国内价格
+        /// </summary>
+        public decimal? 国内价格 { get; set; }
+
+        /// <summary>
+        /// 进口价格
+        /// </summary>
+        public decimal? 进口价格 { get; set; }
+
+        /// <summary>
+        /// 运输成本
+        /// </summary>
+        public decimal? 运输成本 { get; set; }
+
+        /// <summary>
+        /// 商品名称（商品信息）
+        /// </summary>
+        public string? 商品名称 { get; set; }
+
+        /// <summary>
+        /// 英文名称（商品信息）
+        /// </summary>
+        public string? 英文名称 { get; set; }
+
+        /// <summary>
+        /// 清空英文名称（商品信息）
+        /// </summary>
+        public bool? ClearEnglishName { get; set; }
+
+        /// <summary>
+        /// 贴牌价格
+        /// </summary>
+        public decimal? 贴牌价格 { get; set; }
+
+        /// <summary>
+        /// 单件装箱数
+        /// </summary>
+        public decimal? 单件装箱数 { get; set; }
+
+        /// <summary>
+        /// 中包数（写回仓库商品最小订货量）
+        /// </summary>
+        public decimal? 中包数 { get; set; }
+
+        /// <summary>
+        /// 单件体积
+        /// </summary>
+        public decimal? 单件体积 { get; set; }
+
+        /// <summary>
+        /// 装柜数量
+        /// </summary>
+        public decimal? 装柜数量 { get; set; }
+
+        /// <summary>
+        /// 合计装柜体积
+        /// </summary>
+        public decimal? 合计装柜体积 { get; set; }
+
+        /// <summary>
+        /// 合计装柜金额
+        /// </summary>
+        public decimal? 合计装柜金额 { get; set; }
+
+        /// <summary>
+        /// 是否上架
+        /// </summary>
+        public bool? IsActive { get; set; }
+
+        /// <summary>
+        /// 跳过商品主数据和关联价格表同步，仅更新货柜明细
+        /// </summary>
+        public bool? SkipRelatedProductSync { get; set; }
+    }
+
+    /// <summary>
+    /// 创建货柜DTO
+    /// </summary>
+    public class CreateContainerDto
+    {
+        /// <summary>
+        /// 货柜编号
+        /// </summary>
+        public string 货柜编号 { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 装柜日期
+        /// </summary>
+        public DateTime? 装柜日期 { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期
+        /// </summary>
+        public DateTime? 预计到岸日期 { get; set; }
+
+        /// <summary>
+        /// 汇率
+        /// </summary>
+        public decimal? 汇率 { get; set; }
+
+        /// <summary>
+        /// 运费
+        /// </summary>
+        public decimal? 运费 { get; set; }
+
+        /// <summary>
+        /// 备注
+        /// </summary>
+        public string? 备注 { get; set; }
+    }
+
+    /// <summary>
+    /// 货柜查询请求DTO
+    /// </summary>
+    public class ContainerQueryRequest
+    {
+        /// <summary>
+        /// 日期过滤类型 - 预计到岸日期 或 实际到货日期
+        /// </summary>
+        public string DateType { get; set; } = "预计到岸日期";
+
+        /// <summary>
+        /// 开始日期
+        /// </summary>
+        public DateTime? StartDate { get; set; }
+
+        /// <summary>
+        /// 结束日期
+        /// </summary>
+        public DateTime? EndDate { get; set; }
+
+        /// <summary>
+        /// 页码
+        /// </summary>
+        public int Page { get; set; } = 1;
+
+        /// <summary>
+        /// 页大小
+        /// </summary>
+        public int PageSize { get; set; } = 20;
+
+        /// <summary>
+        /// 货号过滤
+        /// </summary>
+        public string? ItemNumberFilter { get; set; }
+
+        /// <summary>
+        /// 排序字段
+        /// </summary>
+        public string? SortBy { get; set; } = "货号";
+
+        /// <summary>
+        /// 排序方向
+        /// </summary>
+        public string? SortDirection { get; set; } = "asc";
+    }
+
+    /// <summary>
+    /// 货柜列表响应DTO
+    /// </summary>
+    public class ContainerListResponse
+    {
+        /// <summary>
+        /// 货柜列表
+        /// </summary>
+        public List<ContainerMainDto> Containers { get; set; } = new List<ContainerMainDto>();
+
+        /// <summary>
+        /// 总数量
+        /// </summary>
+        public int TotalCount { get; set; }
+
+        /// <summary>
+        /// 页码
+        /// </summary>
+        public int Page { get; set; }
+
+        /// <summary>
+        /// 页大小
+        /// </summary>
+        public int PageSize { get; set; }
+
+        /// <summary>
+        /// 总页数
+        /// </summary>
+        public int TotalPages => (int)Math.Ceiling((double)TotalCount / PageSize);
+    }
+
+    /// <summary>
+    /// 即将到货货柜商品响应DTO（用于前端 Coming Soon 页面）
+    /// </summary>
+    public class ComingSoonContainerDto
+    {
+        /// <summary>
+        /// 货柜编号
+        /// </summary>
+        public string? 货柜编号 { get; set; }
+
+        /// <summary>
+        /// 货柜编码
+        /// </summary>
+        public string? 货柜编码 { get; set; }
+
+        /// <summary>
+        /// 装柜日期
+        /// </summary>
+        public DateTime? 装柜日期 { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期
+        /// </summary>
+        public DateTime? 预计到岸日期 { get; set; }
+
+        /// <summary>
+        /// 实际到货日期
+        /// </summary>
+        public DateTime? 实际到货日期 { get; set; }
+
+        /// <summary>
+        /// 货柜状态
+        /// </summary>
+        public int? 状态 { get; set; }
+
+        /// <summary>
+        /// 商品列表
+        /// </summary>
+        public List<ComingSoonProductDto> 商品列表 { get; set; } = new List<ComingSoonProductDto>();
+    }
+
+    /// <summary>
+    /// 即将到货商品DTO（用于前端 Coming Soon 页面）
+    /// </summary>
+    public class ComingSoonProductDto
+    {
+        /// <summary>
+        /// 商品编码
+        /// </summary>
+        public string? 商品编码 { get; set; }
+
+        /// <summary>
+        /// 货号
+        /// </summary>
+        public string? 货号 { get; set; }
+
+        /// <summary>
+        /// 商品名称
+        /// </summary>
+        public string? 商品名称 { get; set; }
+
+        /// <summary>
+        /// 英文名称
+        /// </summary>
+        public string? 英文名称 { get; set; }
+
+        /// <summary>
+        /// 商品图片
+        /// </summary>
+        public string? 商品图片 { get; set; }
+
+        /// <summary>
+        /// 装柜数量
+        /// </summary>
+        public decimal? 装柜数量 { get; set; }
+    }
+}

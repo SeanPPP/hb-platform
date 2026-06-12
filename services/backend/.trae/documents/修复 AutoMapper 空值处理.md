@@ -1,0 +1,1 @@
+修改 ReactCashRegisterUserProfile.cs，为所有可空字符串字段添加 `?? ""` 空值合并运算符，防止 DBNull.Value 错误。

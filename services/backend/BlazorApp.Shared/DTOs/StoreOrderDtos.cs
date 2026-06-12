@@ -1,0 +1,1208 @@
+using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
+
+namespace BlazorApp.Shared.DTOs
+{
+  /// <summary>
+  /// 订货页面商品DTO
+  /// </summary>
+  public class StoreOrderProductDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public string? ItemNumber { get; set; }
+    public string? Barcode { get; set; }
+    public string? ProductName { get; set; }
+    public string? ProductImage { get; set; }
+    public string? CategoryName { get; set; }
+    public string? WarehouseCategoryGUID { get; set; }
+    public string? LocalSupplierCode { get; set; }
+    public string? LocalSupplierName { get; set; }
+
+    /// <summary>
+    /// 贴牌价格 (订货价格)
+    /// </summary>
+    public decimal? OEMPrice { get; set; }
+
+    /// <summary>
+    /// 最小订货量
+    /// </summary>
+    public int MinOrderQuantity { get; set; } = 1;
+
+    /// <summary>
+    /// 库存数量
+    /// </summary>
+    public int StockQuantity { get; set; }
+
+    /// <summary>
+    /// 是否有库存
+    /// </summary>
+    public bool IsInStock => StockQuantity > 0;
+
+    /// <summary>
+    /// 包装数量
+    /// </summary>
+    public int? PackQty { get; set; }
+
+    /// <summary>
+    /// 进口价格 (参考)
+    /// </summary>
+    public decimal? ImportPrice { get; set; }
+
+    public string? Grade { get; set; }
+  }
+
+  /// <summary>
+  /// 订货页面查询过滤DTO
+  /// </summary>
+  public class StoreOrderFilterDto
+  {
+    /// <summary>
+    /// 分店代码（用于缓存分区；商品列表仍为仓库维度时可选不传）
+    /// </summary>
+    public string? StoreCode { get; set; }
+
+    /// <summary>
+    /// 货号 (精确或模糊匹配)
+    /// </summary>
+    public string? ItemNumber { get; set; }
+
+    /// <summary>
+    /// 商品名称 (模糊匹配)
+    /// </summary>
+    public string? ProductName { get; set; }
+
+    /// <summary>
+    /// 分类GUID
+    /// </summary>
+    public string? CategoryGUID { get; set; }
+
+    /// <summary>
+    /// 澳洲供应商代码过滤。
+    /// </summary>
+    public string? LocalSupplierCode { get; set; }
+
+    /// <summary>
+    /// 是否排除仓库库存表中已有未删除记录的商品。
+    /// </summary>
+    public bool ExcludeExistingWarehouseProducts { get; set; }
+
+    /// <summary>
+    /// 排除指定订货单中已有未删除明细的商品。
+    /// </summary>
+    public string? ExcludeOrderGUID { get; set; }
+
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 24;
+
+    /// <summary>
+    /// 排序字段: Default, PriceAsc, PriceDesc, Name
+    /// </summary>
+    public string SortBy { get; set; } = "Default";
+
+    public string? Grade { get; set; }
+  }
+
+  /// <summary>
+  /// 批量查询订货商品请求
+  /// </summary>
+  public class StoreOrderBatchLookupRequestDto
+  {
+    public List<string> Codes { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 批量查询订货商品结果
+  /// </summary>
+  public class StoreOrderBatchLookupItemDto
+  {
+    public string LookupCode { get; set; } = string.Empty;
+    public StoreOrderProductDto? Product { get; set; }
+  }
+
+  /// <summary>
+  /// 扫码查询订货商品请求
+  /// </summary>
+  public class StoreOrderScanLookupRequestDto
+  {
+    [Required]
+    public string Barcode { get; set; } = string.Empty;
+
+    public string? StoreCode { get; set; }
+  }
+
+  /// <summary>
+  /// 扫码查询订货商品结果
+  /// </summary>
+  public class StoreOrderScanLookupResultDto
+  {
+    public string Barcode { get; set; } = string.Empty;
+    public string? MatchType { get; set; }
+    public List<StoreOrderProductDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 购物车DTO (FlowStatus=0 的 WareHouseOrder)
+  /// </summary>
+  public class StoreOrderCartDto
+  {
+    public string OrderGUID { get; set; } = string.Empty;
+    public string? OrderNo { get; set; }
+    public string? StoreCode { get; set; }
+    public decimal TotalAmount { get; set; }
+    public int TotalQuantity { get; set; }
+
+    /// <summary>
+    /// 总进口金额
+    /// </summary>
+    public decimal TotalImportAmount { get; set; }
+
+    /// <summary>
+    /// 总体积 (m³)
+    /// </summary>
+    public decimal TotalVolume { get; set; }
+
+  /// <summary>
+  /// 总订货体积 (m³)
+  /// </summary>
+  public decimal TotalOrderVolume { get; set; }
+
+  /// <summary>
+  /// 总发货体积 (m³)
+  /// </summary>
+  public decimal TotalAllocVolume { get; set; }
+
+    /// <summary>
+    /// 运费
+    /// </summary>
+    public decimal? ShippingFee { get; set; }
+
+    public string? Remarks { get; set; }
+
+    /// <summary>
+    /// 门店地址
+    /// </summary>
+    public string? StoreAddress { get; set; }
+
+    /// <summary>
+    /// 分店联系邮箱
+    /// </summary>
+    public string? StoreContactEmail { get; set; }
+
+    public DateTime? OrderDate { get; set; }
+
+    public DateTime? OutboundDate { get; set; }
+
+    public int TotalAllocQuantity { get; set; }
+
+    public int TotalSKU { get; set; }
+
+    /// <summary>
+    /// 流程状态（0=草稿, 1=已提交, 2=已完成, 3=配货中）
+    /// </summary>
+    public int? FlowStatus { get; set; }
+
+    public List<StoreOrderCartItemDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 订货明细交互页查询参数。
+  /// </summary>
+  public class StoreOrderDetailQueryDto
+  {
+    public const int DefaultPageNumber = 1;
+    public const int DefaultPageSize = 50;
+    public const int MaxPageSize = 500;
+
+    public int PageNumber { get; set; } = DefaultPageNumber;
+    public int PageSize { get; set; } = DefaultPageSize;
+    public string? Keyword { get; set; }
+    public string? StatFilter { get; set; }
+    public string? SortBy { get; set; }
+    public bool SortDescending { get; set; }
+  }
+
+  /// <summary>
+  /// 订货明细交互页 DTO，保留订单头和整单汇总，只分页返回当前页明细。
+  /// </summary>
+  public class StoreOrderDetailDto : StoreOrderCartDto
+  {
+    public int Total { get; set; }
+    public int ItemsTotal { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 50;
+
+    /// <summary>
+    /// 整单“订货未配货”的行数。
+    /// </summary>
+    public int OrderedNotShippedCount { get; set; }
+
+    /// <summary>
+    /// 整单“主动配货”的行数。
+    /// </summary>
+    public int ShippedWithoutOrderCount { get; set; }
+  }
+
+  /// <summary>
+  /// 购物车明细DTO
+  /// </summary>
+  public class StoreOrderCartItemDto
+  {
+    public string DetailGUID { get; set; } = string.Empty;
+    public string ProductCode { get; set; } = string.Empty;
+    public string? ItemNumber { get; set; }
+    public string? Barcode { get; set; }
+    public string? Grade { get; set; }
+    public string? ProductName { get; set; }
+    public string? ProductImage { get; set; }
+    public decimal Price { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal? AllocQuantity { get; set; }
+    public decimal Amount { get; set; }
+
+    /// <summary>
+    /// 进口价格
+    /// </summary>
+    public decimal ImportPrice { get; set; }
+
+    /// <summary>
+    /// 进口金额
+    /// </summary>
+    public decimal ImportAmount { get; set; }
+
+    /// <summary>
+    /// 单件体积 (m³)
+    /// </summary>
+    public decimal? Volume { get; set; }
+
+    /// <summary>
+    /// 小计体积 (m³)
+    /// </summary>
+    public decimal? TotalVolume { get; set; }
+
+  /// <summary>
+  /// 订货体积 (m³)
+  /// </summary>
+  public decimal? OrderVolume { get; set; }
+
+  /// <summary>
+  /// 发货体积 (m³)
+  /// </summary>
+  public decimal? AllocVolume { get; set; }
+
+    /// <summary>
+    /// 最小订货量
+    /// </summary>
+    public int MinOrderQuantity { get; set; } = 1;
+
+    /// <summary>
+    /// 是否上架
+    /// </summary>
+    public bool IsActive { get; set; }
+
+    /// <summary>
+    /// 货位代码 (配货位)
+    /// </summary>
+    public string? LocationCode { get; set; }
+
+    /// <summary>
+    /// 零售价 (RRP)
+    /// </summary>
+    public decimal? RRP { get; set; }
+  }
+
+  /// <summary>
+  /// 添加到购物车请求
+  /// </summary>
+  public class AddToCartRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string ProductCode { get; set; } = string.Empty;
+
+    [Required]
+    public decimal Quantity { get; set; }
+
+    public decimal? ImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 移除购物车项请求
+  /// </summary>
+  public class RemoveFromCartRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string DetailGUID { get; set; } = string.Empty;
+  }
+
+  /// <summary>
+  /// 清空购物车请求
+  /// </summary>
+  public class ClearCartRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+  }
+
+  /// <summary>
+  /// 提交订单请求
+  /// </summary>
+  public class SubmitStoreOrderRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    public string? Remarks { get; set; }
+  }
+
+  /// <summary>
+  /// 动态数据请求 (历史订单 + 购物车数量)
+  /// </summary>
+  public class StoreOrderDynamicDataRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+    public List<string> ProductCodes { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 商品动态数据 (历史订单 + 购物车数量)
+  /// </summary>
+  public class StoreOrderDynamicDataDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 最近订货日期
+    /// </summary>
+    public DateTime? LastOrderDate { get; set; }
+
+    /// <summary>
+    /// 最近订货数量
+    /// </summary>
+    public decimal? LastQuantity { get; set; }
+
+    /// <summary>
+    /// 最近配货数量
+    /// </summary>
+    public decimal? LastAllocQuantity { get; set; }
+
+    /// <summary>
+    /// 当前购物车数量
+    /// </summary>
+    public decimal CartQuantity { get; set; }
+  }
+
+  /// <summary>
+  /// 订单列表过滤DTO
+  /// </summary>
+  public class StoreOrderListFilterDto
+  {
+    public string? Keyword { get; set; }
+    public string? StoreCode { get; set; }
+    public List<string>? StoreCodes { get; set; }
+    public DateTime? StartDate { get; set;}
+    public DateTime? EndDate { get; set; }
+    public List<int>? StatusList { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public string? SortBy { get; set; }
+    public bool? SortDescending { get; set; }
+  }
+
+  /// <summary>
+  /// 订单列表项DTO
+  /// </summary>
+  public class StoreOrderListItemDto
+  {
+    public string OrderGUID { get; set; } = string.Empty;
+    public string OrderNo { get; set; } = string.Empty;
+    public string? StoreCode { get; set; }
+    public string? StoreName { get; set; }
+    public DateTime? OrderDate { get; set; }
+    public DateTime? OutboundDate { get; set; }
+    public int FlowStatus { get; set; }
+
+    /// <summary>
+    /// 预计销售金额 (Order Qty * OEMPrice)
+    /// </summary>
+    public decimal TotalAmount { get; set; }
+
+    public decimal OEMTotalAmount { get; set; }
+
+    /// <summary>
+    /// 发货金额 (Alloc Qty * OEMPrice)
+    /// </summary>
+    public decimal ImportTotalAmount { get; set; }
+
+    /// <summary>
+    /// 订货金额 (Order Qty * OEMPrice)
+    /// </summary>
+    public decimal TotalOrderAmount { get; set; }
+
+    public int TotalQuantity { get; set; }
+
+    /// <summary>
+    /// 发货数量 (Alloc Qty)
+    /// </summary>
+    public int TotalAllocQuantity { get; set; }
+
+  /// <summary>
+  /// 订货体积 (m³)
+  /// </summary>
+  public decimal TotalOrderVolume { get; set; }
+
+  /// <summary>
+  /// 发货体积 (m³)
+  /// </summary>
+  public decimal TotalAllocVolume { get; set; }
+
+    public string? Remarks { get; set; }
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 创建者
+    /// </summary>
+    public string? CreatedBy { get; set; }
+
+    /// <summary>
+    /// 更新时间
+    /// </summary>
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
+    /// 更新者
+    /// </summary>
+    public string? UpdatedBy { get; set; }
+  }
+
+  /// <summary>
+  /// 创建订单请求
+  /// </summary>
+  public class CreateStoreOrderDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    public string? Remarks { get; set; }
+  }
+
+  /// <summary>
+  /// 添加商品到指定订单请求
+  /// </summary>
+  public class AddOrderLineDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    [Required]
+    public string ProductCode { get; set; } = string.Empty;
+
+    [Required]
+    public decimal Quantity { get; set; }
+
+    public decimal? ImportPrice { get; set; }
+  }
+
+  public class ProductQuantityDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal? ImportPrice { get; set; }
+    public string? Action { get; set; }
+  }
+
+  /// <summary>
+  /// 批量更新订单行请求 (数量或价格)
+  /// </summary>
+  public class BatchUpdateOrderLineDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    public List<BatchUpdateItemDto> Items { get; set; } = new();
+  }
+
+  public class BatchUpdateItemDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public decimal? Quantity { get; set; }
+    public decimal? ImportPrice { get; set; }
+  }
+
+  public static class StoreOrderPasteTargetFields
+  {
+    public const string Quantity = "quantity";
+    public const string AllocQuantity = "allocQuantity";
+  }
+
+  public static class StoreOrderPasteActions
+  {
+    public const string Replace = "replace";
+    public const string Append = "append";
+    public const string Skip = "skip";
+  }
+
+  /// <summary>
+  /// 批量添加商品请求
+  /// </summary>
+  public class BatchAddOrderLineDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    public List<ProductQuantityDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// Excel 粘贴覆盖订单行请求
+  /// </summary>
+  public class PasteReplaceOrderLinesDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    [Required]
+    public string TargetField { get; set; } = StoreOrderPasteTargetFields.Quantity;
+
+    public List<ProductQuantityDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 更新订单行请求
+  /// </summary>
+  public class UpdateOrderLineDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    [Required]
+    public string ProductCode { get; set; } = string.Empty;
+
+    [Required]
+    public decimal Quantity { get; set; }
+
+    public decimal? ImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 软删除订单行请求
+  /// </summary>
+  public class RemoveOrderLineDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    [Required]
+    public string DetailGUID { get; set; } = string.Empty;
+  }
+
+  /// <summary>
+  /// 更新订单头请求
+  /// </summary>
+  public class UpdateOrderHeaderDto
+  {
+    public string OrderGuid { get; set; } = string.Empty;
+    public string? Remarks { get; set; }
+    public decimal? ShippingFee { get; set; }
+    public DateTime? OrderDate { get; set; }
+    public string? StoreCode { get; set; }
+  }
+
+  /// <summary>
+  /// 更新订单出库日期请求
+  /// </summary>
+  public class UpdateOrderOutboundDateDto
+  {
+    [Required]
+    public string OrderGuid { get; set; } = string.Empty;
+
+    public DateTime? OutboundDate { get; set; }
+
+    public bool CompleteOrder { get; set; }
+  }
+}
+
+/// <summary>
+/// 更新商品状态请求
+/// </summary>
+public class UpdateProductStatusDto
+{
+  [Required]
+  public string ProductCode { get; set; } = string.Empty;
+
+  [Required]
+  public bool IsActive { get; set; }
+}
+
+/// <summary>
+/// 批量更新商品状态请求
+/// </summary>
+public class BatchUpdateProductStatusDto
+{
+  [Required]
+  public List<string> ProductCodes { get; set; } = new();
+
+  [Required]
+  public bool IsActive { get; set; }
+}
+
+/// <summary>
+/// 复制订单请求
+/// </summary>
+public class CopyOrderDto
+{
+  [Required]
+  public string SourceOrderGUID { get; set; } = string.Empty;
+
+  [Required]
+  public string TargetStoreCode { get; set; } = string.Empty;
+
+  public bool CopyOrderQuantity { get; set; } = false;
+
+  public bool CopyAllocQuantity { get; set; } = false;
+}
+
+/// <summary>
+/// 复制订单结果
+/// </summary>
+public class CopyOrderResultDto
+{
+    public string OrderGUID { get; set; } = string.Empty;
+    public string OrderNo { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 同步缺失订单的返回结果
+/// </summary>
+public class SyncMissingOrdersResultDto
+{
+    public bool Success { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// HQ 同步模式；旧缺失订单同步为空。
+    /// </summary>
+    public string? Mode { get; set; }
+
+    /// <summary>
+    /// HQ 冲突处理策略；旧缺失订单同步为空。
+    /// </summary>
+    public StoreOrderHqSyncConflictStrategy? ConflictStrategy { get; set; }
+
+    /// <summary>
+    /// 同步任务标识。
+    /// </summary>
+    public string? RunId { get; set; }
+
+    public int OrdersSynced { get; set; }
+
+    public int DetailsSynced { get; set; }
+
+    public int OrdersUpdated { get; set; }
+
+    public int DetailsUpdated { get; set; }
+
+    public int OrdersSoftDeleted { get; set; }
+
+    public int DetailsSoftDeleted { get; set; }
+
+    /// <summary>
+    /// LatestWins 下因本地时间更新而跳过的订单数。
+    /// </summary>
+    public int SkippedOrdersBecauseLocalNewer { get; set; }
+
+    /// <summary>
+    /// LatestWins 下因本地时间更新而跳过的明细数。
+    /// </summary>
+    public int SkippedDetailsBecauseLocalNewer { get; set; }
+
+    public int HqOrderCount { get; set; }
+
+    public int HqDetailCount { get; set; }
+
+    public int ShadowRowCount { get; set; }
+
+    public long DurationMs { get; set; }
+
+    public List<string> Errors { get; set; } = new();
+}
+
+/// <summary>
+/// 同步缺失订单的请求参数
+/// </summary>
+public class SyncMissingOrdersRequestDto
+{
+    /// <summary>
+    /// 分店代码（旧字段，可选；不传则同步所有分店）
+    /// </summary>
+    public string? StoreCode { get; set; }
+
+    /// <summary>
+    /// 分店代码集合（新字段，可选；优先级高于 StoreCode）
+    /// </summary>
+    public List<string>? StoreCodes { get; set; }
+}
+
+/// <summary>
+/// 分店订货 HQ 同步模式。
+/// </summary>
+public enum StoreOrderHqSyncMode
+{
+    Full = 1,
+    Incremental = 2,
+}
+
+/// <summary>
+/// 分店订货 HQ 同步冲突策略。
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum StoreOrderHqSyncConflictStrategy
+{
+    HqWins = 1,
+    LatestWins = 2,
+}
+
+/// <summary>
+/// 分店订货 HQ 同步请求。
+/// </summary>
+public class StoreOrderHqSyncRequestDto
+{
+    /// <summary>
+    /// 旧字段兼容：单个分店/外购客户代码。
+    /// </summary>
+    public string? StoreCode { get; set; }
+
+    /// <summary>
+    /// 分店/外购客户代码集合；优先级高于 StoreCode。
+    /// </summary>
+    public List<string>? StoreCodes { get; set; }
+
+    /// <summary>
+    /// 增量同步开始时间；为空时后端默认最近 30 天。
+    /// </summary>
+    public DateTime? StartDate { get; set; }
+
+    /// <summary>
+    /// 增量同步结束时间；为空时后端默认当前时间。
+    /// </summary>
+    public DateTime? EndDate { get; set; }
+
+    /// <summary>
+    /// 增量同步冲突策略；默认使用 LatestWins。
+    /// </summary>
+    public StoreOrderHqSyncConflictStrategy ConflictStrategy { get; set; } =
+        StoreOrderHqSyncConflictStrategy.LatestWins;
+}
+
+/// <summary>
+/// 分店订货 HQ 同步结果。
+/// </summary>
+public class StoreOrderHqSyncResultDto : SyncMissingOrdersResultDto
+{
+}
+
+/// <summary>
+/// 订货缺失订单同步 job 状态常量
+/// </summary>
+public static class StoreOrderSyncJobStatusConstants
+{
+    public const string Pending = "Pending";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string Failed = "Failed";
+}
+
+/// <summary>
+/// 订货缺失订单同步 job 状态
+/// </summary>
+public class StoreOrderSyncJobDto
+{
+    /// <summary>
+    /// job 标识
+    /// </summary>
+    public string JobId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// job 状态
+    /// </summary>
+    public string Status { get; set; } = StoreOrderSyncJobStatusConstants.Running;
+
+    /// <summary>
+    /// HQ 同步模式；旧缺失订单同步为空。
+    /// </summary>
+    public string? Mode { get; set; }
+
+    /// <summary>
+    /// HQ 冲突处理策略；旧缺失订单同步为空。
+    /// </summary>
+    public StoreOrderHqSyncConflictStrategy? ConflictStrategy { get; set; }
+
+    /// <summary>
+    /// 参与同步的分店集合
+    /// </summary>
+    public List<string> StoreCodes { get; set; } = new();
+
+    public DateTime? StartDate { get; set; }
+
+    public DateTime? EndDate { get; set; }
+
+    /// <summary>
+    /// 是否命中了运行中去重
+    /// </summary>
+    public bool IsDuplicateRequest { get; set; }
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 完成时间
+    /// </summary>
+    public DateTime? CompletedAt { get; set; }
+
+    /// <summary>
+    /// 终态过期时间
+    /// </summary>
+    public DateTime? ExpiresAt { get; set; }
+
+    /// <summary>
+    /// 同步结果
+    /// </summary>
+    public SyncMissingOrdersResultDto? Result { get; set; }
+}
+
+/// <summary>
+/// 更新订单状态请求
+/// </summary>
+public class UpdateOrderStatusDto
+{
+    /// <summary>
+    /// 订单GUID
+    /// </summary>
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 新状态 (1=Submitted, 2=Completed)
+    /// </summary>
+    [Required]
+    public int NewStatus { get; set; }
+}
+
+/// <summary>
+/// 批量更新订单状态请求
+/// </summary>
+public class BatchUpdateOrderStatusDto
+{
+    /// <summary>
+    /// 订单GUID列表
+    /// </summary>
+    [Required]
+    public List<string> OrderGUIDs { get; set; } = new();
+
+    /// <summary>
+    /// 新状态 (1=Submitted, 2=Completed)
+    /// </summary>
+    [Required]
+    public int NewStatus { get; set; }
+}
+
+/// <summary>
+/// 更新订单关联分店联系信息请求
+/// </summary>
+public class UpdateStoreOrderStoreContactDto
+{
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店代码
+    /// </summary>
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店地址
+    /// </summary>
+    [StringLength(500, ErrorMessage = "地址长度不能超过500个字符")]
+    public string? Address { get; set; }
+
+    /// <summary>
+    /// 分店联系邮箱
+    /// </summary>
+    [EmailAddress(ErrorMessage = "联系邮箱格式不正确")]
+    [StringLength(100, ErrorMessage = "联系邮箱长度不能超过100个字符")]
+    public string? ContactEmail { get; set; }
+}
+
+/// <summary>
+/// 订单关联分店联系信息
+/// </summary>
+public class StoreOrderStoreContactDto
+{
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店代码
+    /// </summary>
+    public string StoreCode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 分店地址
+    /// </summary>
+    public string? Address { get; set; }
+
+    /// <summary>
+    /// 分店联系邮箱
+    /// </summary>
+    public string? ContactEmail { get; set; }
+}
+
+/// <summary>
+/// 发送分店订货发票邮件请求
+/// </summary>
+public class SendStoreOrderInvoiceEmailDto
+{
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 收件邮箱
+    /// </summary>
+    [Required]
+    [EmailAddress(ErrorMessage = "收件邮箱格式不正确")]
+    [StringLength(100, ErrorMessage = "收件邮箱长度不能超过100个字符")]
+    public string ToEmail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件主题
+    /// </summary>
+    [StringLength(200, ErrorMessage = "邮件主题长度不能超过200个字符")]
+    public string? Subject { get; set; }
+
+    /// <summary>
+    /// 邮件正文
+    /// </summary>
+    [StringLength(10000, ErrorMessage = "邮件正文长度不能超过10000个字符")]
+    public string? Body { get; set; }
+}
+
+/// <summary>
+/// 分店订货发票邮件 job 状态常量
+/// </summary>
+public static class StoreOrderInvoiceEmailJobStatusConstants
+{
+    public const string Queued = "Queued";
+    public const string Running = "Running";
+    public const string Succeeded = "Succeeded";
+    public const string Failed = "Failed";
+}
+
+/// <summary>
+/// 分店订货发票邮件 job 状态
+/// </summary>
+public class StoreOrderInvoiceEmailJobDto
+{
+    /// <summary>
+    /// job 标识
+    /// </summary>
+    public string JobId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// job 状态
+    /// </summary>
+    public string Status { get; set; } = StoreOrderInvoiceEmailJobStatusConstants.Queued;
+
+    /// <summary>
+    /// 后端执行消息
+    /// </summary>
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 订单 GUID
+    /// </summary>
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 收件邮箱
+    /// </summary>
+    public string ToEmail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 创建时间
+    /// </summary>
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 完成时间
+    /// </summary>
+    public DateTime? CompletedAt { get; set; }
+}
+
+namespace BlazorApp.Shared.DTOs
+{
+    /// <summary>
+    /// Excel 粘贴导入后台 job 状态常量
+    /// </summary>
+    public static class StoreOrderPasteReplaceJobStatusConstants
+    {
+        public const string Queued = "Queued";
+        public const string Running = "Running";
+        public const string Succeeded = "Succeeded";
+        public const string Failed = "Failed";
+    }
+
+    /// <summary>
+    /// Excel 粘贴导入后台 job 状态
+    /// </summary>
+    public class StoreOrderPasteReplaceJobDto
+    {
+        /// <summary>
+        /// job 标识
+        /// </summary>
+        public string JobId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// job 状态
+        /// </summary>
+        public string Status { get; set; } = StoreOrderPasteReplaceJobStatusConstants.Queued;
+
+        /// <summary>
+        /// 后端执行消息
+        /// </summary>
+        public string Message { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 订单 GUID
+        /// </summary>
+        public string OrderGUID { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 写入目标字段
+        /// </summary>
+        public string TargetField { get; set; } = StoreOrderPasteTargetFields.Quantity;
+
+        /// <summary>
+        /// 前端提交的总行数
+        /// </summary>
+        public int TotalCount { get; set; }
+
+        /// <summary>
+        /// 实际提交给同步导入服务的行数
+        /// </summary>
+        public int ImportedCount { get; set; }
+
+        /// <summary>
+        /// 被后端跳过的行数
+        /// </summary>
+        public int SkippedCount { get; set; }
+
+        /// <summary>
+        /// 创建时间
+        /// </summary>
+        public DateTime CreatedAt { get; set; }
+
+        /// <summary>
+        /// 完成时间
+        /// </summary>
+        public DateTime? CompletedAt { get; set; }
+    }
+}
+
+/// <summary>
+/// 发票邮件文本翻译请求。
+/// </summary>
+public class StoreOrderInvoiceEmailTextTranslationRequestDto
+{
+    public string OrderGUID { get; set; } = string.Empty;
+    public string TargetLanguage { get; set; } = string.Empty;
+    public string? Subject { get; set; }
+    public string? Body { get; set; }
+}
+
+/// <summary>
+/// 发票邮件文本翻译结果。
+/// </summary>
+public class StoreOrderInvoiceEmailTextTranslationResultDto
+{
+    public string? Subject { get; set; }
+    public string? Body { get; set; }
+}
+
+/// <summary>
+/// 发票邮件发送消息
+/// </summary>
+public class StoreOrderInvoiceEmailMessage
+{
+    /// <summary>
+    /// 收件邮箱
+    /// </summary>
+    public string ToEmail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件主题
+    /// </summary>
+    public string Subject { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件正文
+    /// </summary>
+    public string Body { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 邮件附件集合
+    /// </summary>
+    public List<StoreOrderInvoiceEmailAttachment> Attachments { get; set; } = new();
+}
+
+/// <summary>
+/// 发票邮件附件
+/// </summary>
+public class StoreOrderInvoiceEmailAttachment
+{
+    /// <summary>
+    /// 附件文件名
+    /// </summary>
+    public string FileName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 附件 MIME 类型
+    /// </summary>
+    public string ContentType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 附件内容
+    /// </summary>
+    public byte[] Bytes { get; set; } = Array.Empty<byte>();
+}
+
+/// <summary>
+/// 发票邮件附件生成结果
+/// </summary>
+public class StoreOrderInvoiceAttachmentBundle
+{
+    public string OrderGUID { get; set; } = string.Empty;
+    public string? OrderNo { get; set; }
+    public string? StoreCode { get; set; }
+    public List<StoreOrderInvoiceEmailAttachment> Attachments { get; set; } = new();
+}

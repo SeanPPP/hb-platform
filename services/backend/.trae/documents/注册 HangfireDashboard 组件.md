@@ -1,0 +1,18 @@
+# 在 KeepAliveTabLayout 中注册 HangfireDashboard 组件
+
+## 问题根源
+`KeepAliveTabLayout.tsx` 中的 `componentMap` 映射表没有注册 `HangfireDashboard` 组件，导致路由无法找到对应的组件。
+
+## 修复步骤
+
+### 1. 在 componentMap 中添加 HangfireDashboard
+- 在 `KeepAliveTabLayout.tsx` 的 componentMap 中添加 HangfireDashboard 的动态导入
+
+### 2. 导入 DashboardOutlined 图标
+- 在文件顶部的图标导入部分添加 `DashboardOutlined`
+
+### 3. 在 iconMap 中注册 DashboardOutlined
+- 在 `iconMap` 映射表中添加 DashboardOutlined 图标
+
+## 涉及文件
+- `ReactUmi/my-app/src/layouts/KeepAliveTabLayout.tsx`

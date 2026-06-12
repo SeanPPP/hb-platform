@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice Design - HB Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .invoice-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .invoice-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .invoice-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        
+        .invoice-subtitle {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        
+        .invoice-content {
+            padding: 30px;
+        }
+        
+        .order-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8fafc;
+            border-radius: 12px;
+        }
+        
+        .info-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 5px;
+        }
+        
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        .info-label {
+            font-weight: 500;
+            color: #6b7280;
+        }
+        
+        .info-value {
+            font-weight: 600;
+            color: #1f2937;
+        }
+        
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+        
+        .items-table th {
+            background: #667eea;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        .items-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            font-size: 14px;
+        }
+        
+        .items-table tr:nth-child(even) {
+            background: #f9fafb;
+        }
+        
+        .product-image {
+            width: 40px;
+            height: 40px;
+            object-fit: cover;
+            border-radius: 6px;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .price-cell {
+            font-weight: 600;
+            color: #059669;
+        }
+        
+        .quantity-cell {
+            text-align: center;
+            font-weight: 500;
+        }
+        
+        .summary-section {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 20px;
+        }
+        
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .summary-total {
+            font-size: 20px;
+            font-weight: 700;
+            color: #667eea;
+            border-top: 2px solid #667eea;
+            padding-top: 15px;
+            margin-top: 15px;
+        }
+        
+        .notes-section {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            border-radius: 6px;
+        }
+        
+        .notes-title {
+            font-weight: 600;
+            color: #92400e;
+            margin-bottom: 8px;
+        }
+        
+        .export-options {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+        
+        .option-group {
+            margin-bottom: 20px;
+        }
+        
+        .option-label {
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+            display: block;
+        }
+        
+        .radio-group {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .radio-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .switch-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .slider {
+            background-color: #667eea;
+        }
+        
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <!-- Invoice Header -->
+        <div class="invoice-header">
+            <div class="invoice-title">INVOICE</div>
+            <div class="invoice-subtitle">HB Platform - Order Management System</div>
+        </div>
+        
+        <!-- Invoice Content -->
+        <div class="invoice-content">
+            <!-- Order Information -->
+            <div class="order-info">
+                <div class="info-section">
+                    <h3>Order Information</h3>
+                    <div class="info-row">
+                        <span class="info-label">Order Number:</span>
+                        <span class="info-value">ORD-2024-0001</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Order Date:</span>
+                        <span class="info-value">15/12/2024 14:30</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Status:</span>
+                        <span class="info-value">Picking</span>
+                    </div>
+                </div>
+                <div class="info-section">
+                    <h3>Store Information</h3>
+                    <div class="info-row">
+                        <span class="info-label">Store Name:</span>
+                        <span class="info-value">Main Store</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Address:</span>
+                        <span class="info-value">123 Main St, City</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Items Table -->
+            <table class="items-table">
+                <thead>
+                    <tr>
+                        <th>Image</th>
+                        <th>Item #</th>
+                        <th>Product Name</th>
+                        <th>Unit Price</th>
+                        <th>Order Qty</th>
+                        <th>Actual Qty</th>
+                        <th>Actual Price</th>
+                        <th>Total Price</th>
+                        <th>RRP</th>
+                        <th>Location</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><img src="https://via.placeholder.com/40x40/667eea/ffffff?text=P" class="product-image" alt="Product"></td>
+                        <td>ABC123</td>
+                        <td>Premium Product 1</td>
+                        <td class="price-cell">$10.00</td>
+                        <td class="quantity-cell">5</td>
+                        <td class="quantity-cell">4</td>
+                        <td class="price-cell">$10.00</td>
+                        <td class="price-cell">$40.00</td>
+                        <td class="price-cell">$12.00</td>
+                        <td>A1-B2</td>
+                    </tr>
+                    <tr>
+                        <td><img src="https://via.placeholder.com/40x40/764ba2/ffffff?text=P" class="product-image" alt="Product"></td>
+                        <td>DEF456</td>
+                        <td>Premium Product 2</td>
+                        <td class="price-cell">$15.00</td>
+                        <td class="quantity-cell">3</td>
+                        <td class="quantity-cell">3</td>
+                        <td class="price-cell">$15.00</td>
+                        <td class="price-cell">$45.00</td>
+                        <td class="price-cell">$18.00</td>
+                        <td>C3-D4</td>
+                    </tr>
+                    <tr>
+                        <td><img src="https://via.placeholder.com/40x40/10b981/ffffff?text=P" class="product-image" alt="Product"></td>
+                        <td>GHI789</td>
+                        <td>Premium Product 3</td>
+                        <td class="price-cell">$8.50</td>
+                        <td class="quantity-cell">2</td>
+                        <td class="quantity-cell">2</td>
+                        <td class="price-cell">$8.50</td>
+                        <td class="price-cell">$17.00</td>
+                        <td class="price-cell">$10.00</td>
+                        <td>E5-F6</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <!-- Summary Section -->
+            <div class="summary-section">
+                <div class="summary-row">
+                    <span>Subtotal:</span>
+                    <span>$102.00</span>
+                </div>
+                <div class="summary-row">
+                    <span>Discount:</span>
+                    <span>-$5.00</span>
+                </div>
+                <div class="summary-row">
+                    <span>Freight:</span>
+                    <span>$10.00</span>
+                </div>
+                <div class="summary-row">
+                    <span>GST (10%):</span>
+                    <span>$10.70</span>
+                </div>
+                <div class="summary-row summary-total">
+                    <span>Grand Total:</span>
+                    <span>$117.70</span>
+                </div>
+            </div>
+            
+            <!-- Notes Section -->
+            <div class="notes-section">
+                <div class="notes-title">Notes:</div>
+                <div>This invoice includes all order details and pricing information. Please review carefully before processing.</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Export Options -->
+    <div class="export-options">
+        <h2 style="font-size: 20px; font-weight: 700; color: #374151; margin-bottom: 20px;">Export Options</h2>
+        
+        <div class="option-group">
+            <label class="option-label">Export Format:</label>
+            <div class="radio-group">
+                <div class="radio-item">
+                    <input type="radio" id="pdf" name="format" value="pdf" checked>
+                    <label for="pdf">PDF Document</label>
+                </div>
+                <div class="radio-item">
+                    <input type="radio" id="excel" name="format" value="excel">
+                    <label for="excel">Excel Spreadsheet</label>
+                </div>
+            </div>
+        </div>
+        
+        <div class="option-group">
+            <label class="option-label">Include Product Images:</label>
+            <div class="switch-container">
+                <label class="switch">
+                    <input type="checkbox" id="include-images" checked aria-label="Include product images in export">
+                    <span class="slider"></span>
+                </label>
+                <span style="color: #6b7280; font-size: 14px;">(May increase file size)</span>
+            </div>
+        </div>
+        
+        <div class="option-group">
+            <label class="option-label" for="invoice-title">Invoice Title:</label>
+            <input type="text" id="invoice-title" value="Invoice - ORD-2024-0001" placeholder="Enter invoice title" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+        </div>
+        
+        <div class="option-group">
+            <label class="option-label">Additional Notes:</label>
+            <textarea rows="3" placeholder="Add any additional notes to the invoice" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;"></textarea>
+        </div>
+        
+        <div style="text-align: center; margin-top: 20px;">
+            <button style="background: #667eea; color: white; padding: 12px 24px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; margin-right: 10px;">
+                Export Invoice
+            </button>
+            <button style="background: #6b7280; color: white; padding: 12px 24px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer;">
+                Cancel
+            </button>
+        </div>
+    </div>
+</body>
+</html> 
