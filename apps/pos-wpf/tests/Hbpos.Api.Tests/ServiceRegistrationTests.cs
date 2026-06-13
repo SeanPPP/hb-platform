@@ -66,4 +66,15 @@ public sealed class ServiceRegistrationTests
         var descriptor = Assert.Single(services, x => x.ServiceType == typeof(IStoreSchemaInitializer));
         Assert.Equal(typeof(SqlSugarStoreSchemaInitializer), descriptor.ImplementationType);
     }
+
+    [Fact]
+    public void AddHbposApiServices_RegistersPromotionRuleService()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        var descriptor = Assert.Single(services, x => x.ServiceType == typeof(IPromotionRuleService));
+        Assert.Equal(typeof(PromotionRuleService), descriptor.ImplementationType);
+    }
 }
