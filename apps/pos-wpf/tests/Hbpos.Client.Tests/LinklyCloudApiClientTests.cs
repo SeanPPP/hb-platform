@@ -5,6 +5,7 @@ using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(GlobalLoggingTestCollection.Name)]
 public sealed class LinklyCloudApiClientTests
 {
     [Fact]
