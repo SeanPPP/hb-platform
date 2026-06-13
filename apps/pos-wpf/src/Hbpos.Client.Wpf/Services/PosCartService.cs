@@ -321,6 +321,61 @@ public sealed class PosCartService
         return true;
     }
 
+    internal void ApplyPromotionDiscounts(IEnumerable<PromotionLineDiscount> discounts)
+    {
+        var incomingDiscounts = discounts
+            .GroupBy(discount => discount.Line)
+            .ToDictionary(group => group.Key, group => group.Last().DiscountAmount);
+        var changed = false;
+
+        foreach (var line in _lines)
+        {
+            if (line.DiscountSource != CartLineDiscountSource.Promotion)
+            {
+                continue;
+            }
+
+            line.ClearPromotionDiscount();
+            changed = true;
+        }
+
+        foreach (var entry in incomingDiscounts)
+        {
+            var line = entry.Key;
+            if (!_lines.Contains(line) ||
+                line.IsReturnLine ||
+                line.IsOpenItem ||
+                !IsPositiveIntegerQuantity(line.Quantity) ||
+                line.GrossAmount <= 0m)
+            {
+                continue;
+            }
+
+            // 手工折扣必须优先保留，自动促销只能写入没有手工折扣来源的购物车行。
+            if (line.DiscountSource == CartLineDiscountSource.Manual)
+            {
+                continue;
+            }
+
+            var clampedDiscount = Math.Clamp(
+                decimal.Round(entry.Value, 2, MidpointRounding.AwayFromZero),
+                0m,
+                line.GrossAmount);
+            if (clampedDiscount <= 0m)
+            {
+                continue;
+            }
+
+            line.SetPromotionDiscountAmount(clampedDiscount);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            OnCartChanged();
+        }
+    }
+
     public bool SetOrderDiscountAmount(decimal discountAmount)
     {
         if (_lines.Count == 0 || HasReturnLine || discountAmount < 0m || discountAmount > TotalAmount)
@@ -425,11 +480,12 @@ public sealed class PosCartService
                 var item = CreateSnapshotItem(snapshotLine);
                 line = new CartLine(item, CartLineKind.OpenItem, snapshotLine.UnitPrice);
                 line.SetQuantity(snapshotLine.Quantity);
-                if (snapshotLine.DiscountPercent is decimal discountPercent)
+                // 挂单/快照里带回来的既有折扣默认按手工折扣恢复，避免后续自动促销把它清掉。
+                if (snapshotLine.DiscountPercent is decimal discountPercent && discountPercent > 0m)
                 {
                     line.SetDiscountPercent(discountPercent);
                 }
-                else
+                else if (snapshotLine.DiscountAmount > 0m)
                 {
                     line.SetDiscountAmount(snapshotLine.DiscountAmount);
                 }
@@ -440,11 +496,12 @@ public sealed class PosCartService
                 line = new CartLine(item);
                 line.SetQuantity(snapshotLine.Quantity);
                 line.SetUnitPrice(snapshotLine.UnitPrice);
-                if (snapshotLine.DiscountPercent is decimal discountPercent)
+                // 挂单/快照里带回来的既有折扣默认按手工折扣恢复，避免后续自动促销把它清掉。
+                if (snapshotLine.DiscountPercent is decimal discountPercent && discountPercent > 0m)
                 {
                     line.SetDiscountPercent(discountPercent);
                 }
-                else
+                else if (snapshotLine.DiscountAmount > 0m)
                 {
                     line.SetDiscountAmount(snapshotLine.DiscountAmount);
                 }

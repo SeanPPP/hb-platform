@@ -10,6 +10,13 @@ public enum CartLineKind
     OpenItem = 2
 }
 
+internal enum CartLineDiscountSource
+{
+    None = 0,
+    Manual = 1,
+    Promotion = 2
+}
+
 public sealed record ReturnCartLineRequest(
     string StoreCode,
     string ProductCode,
@@ -41,6 +48,7 @@ public sealed class CartLine : ObservableObject
     private decimal _unitPrice;
     private decimal _discountAmount;
     private decimal? _discountPercent;
+    private CartLineDiscountSource _discountSource = CartLineDiscountSource.None;
     private PriceSourceKind _priceSource;
     private string _priceSourceLabel = string.Empty;
     private CartLineKind _kind = CartLineKind.Sale;
@@ -208,6 +216,8 @@ public sealed class CartLine : ObservableObject
 
     public decimal? DiscountPercent => _discountPercent;
 
+    internal CartLineDiscountSource DiscountSource => _discountSource;
+
     public PriceSourceKind PriceSource
     {
         get => _priceSource;
@@ -316,15 +326,30 @@ public sealed class CartLine : ObservableObject
     public void SetDiscountAmount(decimal discountAmount)
     {
         ThrowIfLocked();
-        _discountPercent = null;
-        DiscountAmount = ClampDiscountAmount(discountAmount);
+        ApplyDiscount(discountAmount, null, CartLineDiscountSource.Manual);
     }
 
     public void SetDiscountPercent(decimal discountPercent)
     {
         ThrowIfLocked();
-        _discountPercent = Math.Clamp(discountPercent, 0m, 100m);
-        DiscountAmount = CalculateDiscountAmount(_discountPercent.Value);
+        var normalizedDiscountPercent = Math.Clamp(discountPercent, 0m, 100m);
+        ApplyDiscount(CalculateDiscountAmount(normalizedDiscountPercent), normalizedDiscountPercent, CartLineDiscountSource.Manual);
+    }
+
+    internal void SetPromotionDiscountAmount(decimal discountAmount)
+    {
+        ThrowIfLocked();
+        ApplyDiscount(discountAmount, null, CartLineDiscountSource.Promotion);
+    }
+
+    internal void ClearPromotionDiscount()
+    {
+        if (_discountSource != CartLineDiscountSource.Promotion)
+        {
+            return;
+        }
+
+        ApplyDiscount(0m, null, CartLineDiscountSource.Promotion);
     }
 
     public void UpdateFrom(SellableItemDto item)
@@ -363,9 +388,12 @@ public sealed class CartLine : ObservableObject
 
     private void RefreshDiscountForGrossChange()
     {
-        DiscountAmount = _discountPercent is decimal discountPercent
-            ? CalculateDiscountAmount(discountPercent)
-            : ClampDiscountAmount(DiscountAmount);
+        ApplyDiscount(
+            _discountPercent is decimal discountPercent
+                ? CalculateDiscountAmount(discountPercent)
+                : DiscountAmount,
+            _discountPercent,
+            _discountSource);
     }
 
     private decimal CalculateDiscountAmount(decimal discountPercent)
@@ -376,6 +404,15 @@ public sealed class CartLine : ObservableObject
     private decimal ClampDiscountAmount(decimal discountAmount)
     {
         return Math.Clamp(decimal.Round(discountAmount, 2, MidpointRounding.AwayFromZero), 0m, PositiveGrossAmount);
+    }
+
+    private void ApplyDiscount(decimal discountAmount, decimal? discountPercent, CartLineDiscountSource discountSource)
+    {
+        _discountPercent = discountPercent;
+        DiscountAmount = ClampDiscountAmount(discountAmount);
+        _discountSource = DiscountAmount > 0m
+            ? discountSource
+            : CartLineDiscountSource.None;
     }
 
     private decimal PositiveGrossAmount => decimal.Round(Quantity * UnitPrice, 2, MidpointRounding.AwayFromZero);
