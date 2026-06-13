@@ -146,6 +146,7 @@
   <data name="pos.status.scannerResult" xml:space="preserve"><value>Scan {0}: {1}</value></data>
   <data name="pos.status.cartCleared" xml:space="preserve"><value>Cart cleared.</value></data>
   <data name="pos.status.catalogSyncSkipped" xml:space="preserve"><value>Offline: catalog sync skipped.</value></data>
+  <data name="pos.status.promotionFallback" xml:space="preserve"><value>Promotions not updated. Using cached local prices.</value></data>
   <data name="cart.status.zeroPriceItem" xml:space="preserve"><value>Cart contains a zero-price item. Update the price before checkout.</value></data>
   <data name="cart.status.quantityMustBeInteger" xml:space="preserve"><value>Item quantity must be a positive integer.</value></data>
   <data name="pos.status.selectCartLine" xml:space="preserve"><value>Select a cart line first.</value></data>

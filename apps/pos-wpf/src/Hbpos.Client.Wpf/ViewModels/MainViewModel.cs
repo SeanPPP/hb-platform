@@ -67,6 +67,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ILinklyTerminalDialogPresenter? _linklyTerminalDialogPresenter;
     private readonly ICardPaymentRecoveryService? _cardPaymentRecoveryService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+    private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
@@ -259,7 +260,8 @@ public sealed partial class MainViewModel : ObservableObject
             cashDrawerService: cashDrawerService,
             applicationExitService: applicationExitService,
             confirmationDialogService: confirmationDialogService,
-            testSalesDataResetService: testSalesDataResetService)
+            testSalesDataResetService: testSalesDataResetService,
+            promotionEvaluationService: null)
     {
     }
 
@@ -305,7 +307,8 @@ public sealed partial class MainViewModel : ObservableObject
         ITestSalesDataResetService? testSalesDataResetService = null,
         ILinklyTerminalDialogPresenter? linklyTerminalDialogPresenter = null,
         ICardPaymentRecoveryService? cardPaymentRecoveryService = null,
-        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null)
+        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
+        IPromotionEvaluationService? promotionEvaluationService = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -338,6 +341,7 @@ public sealed partial class MainViewModel : ObservableObject
         _cardTerminalSetupService = cardTerminalSetupService;
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _specialProductsWorkflowService = specialProductsWorkflowService;
+        _promotionEvaluationService = promotionEvaluationService;
         _receiptReturnsWorkflowService = receiptReturnsWorkflowService ?? new ReceiptReturnsWorkflowService(
             _receiptQueryService,
             _orderRepository,
@@ -597,6 +601,7 @@ public sealed partial class MainViewModel : ObservableObject
             ShowCashPayment,
             ShowSpecialProductsAsync,
             _localization,
+            promotionEvaluationService: _promotionEvaluationService,
             userFeedbackService: _userFeedbackService,
             onHoldOrderAsync: SuspendCurrentOrderAsync,
             onRecallOrderAsync: ShowSuspendedHistoryAsync,

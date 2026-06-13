@@ -27,6 +27,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
     private readonly IPosTerminalWorkflowService _workflowService;
+    private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly Action? _onOpenPayment;
     private readonly Action? _onOpenReturns;
     private readonly Func<Task>? _onOpenSpecialProductsAsync;
@@ -52,6 +53,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private int _scanTraceSequence;
     private string? _activeScanTraceId;
     private DateTimeOffset? _activeScanStartedAt;
+    private long _cartChangedSequence;
+    private bool _isPromotionEvaluationRunning;
+    private string? _queuedPromotionEvaluationReason;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -90,6 +94,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         Action? onOpenPayment,
         Func<Task>? onOpenSpecialProductsAsync = null,
         ILocalizationService? localization = null,
+        IPromotionEvaluationService? promotionEvaluationService = null,
         IUserFeedbackService? userFeedbackService = null,
         Func<string, string, CancellationToken, Task<RemoteLookupRefreshResult>>? remoteLookupRefreshAsync = null,
         Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? reloadCatalogAsync = null,
@@ -113,6 +118,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _priceIndex = priceIndex;
         _cart = cart;
         _workflowService = workflowService ?? new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync);
+        _promotionEvaluationService = promotionEvaluationService;
         _session = session;
         _onOpenPayment = onOpenPayment;
         _onOpenReturns = onOpenReturns;
@@ -425,6 +431,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void OnCartChanged(object? sender, EventArgs e)
     {
+        _cartChangedSequence++;
         RefreshCartCore("cart-changed", _activeScanTraceId, _activeScanStartedAt);
     }
 
@@ -553,11 +560,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         var applyStopwatch = new Stopwatch();
         try
         {
+            var cartChangedBefore = _cartChangedSequence;
             result = _workflowService.ProcessScan(Session, submittedScanText, preferExactLookup: false, source: "manual", traceId);
             workflowStopwatch.Stop();
             applyStopwatch.Start();
             ApplyWorkflowResult(result);
             applyStopwatch.Stop();
+            QueuePromotionEvaluationIfCartChanged("manual-scan", cartChangedBefore);
         }
         finally
         {
@@ -584,7 +593,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void AddOpenItem()
     {
-        ApplyWorkflowResult(_workflowService.AddOpenItem(Session, KeypadBuffer));
+        ExecuteCartMutation("open-item", () => _workflowService.AddOpenItem(Session, KeypadBuffer));
     }
 
     private void AddSelected()
@@ -594,7 +603,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             return;
         }
 
-        ApplyWorkflowResult(_workflowService.AddSelectedItem(
+        ExecuteCartMutation("manual-add-selected", () => _workflowService.AddSelectedItem(
             Session,
             SelectedItem,
             clearScanText: false,
@@ -610,7 +619,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         SelectedItem = item;
-        ApplyWorkflowResult(_workflowService.AddSelectedItem(
+        ExecuteCartMutation("manual-select-match", () => _workflowService.AddSelectedItem(
             Session,
             item,
             clearScanText: true,
@@ -620,14 +629,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void RemoveLine(CartLine? line)
     {
-        ApplyWorkflowResult(_workflowService.RemoveLine(line));
+        ExecuteCartMutation("remove-line", () => _workflowService.RemoveLine(line));
     }
 
     private void IncreaseLine(CartLine? line)
     {
         var stopwatch = Stopwatch.StartNew();
-        var result = _workflowService.IncreaseLine(line);
-        ApplyWorkflowResult(result);
+        var result = ExecuteCartMutation("increase-line", () => _workflowService.IncreaseLine(line));
         stopwatch.Stop();
         if (line is not null && string.Equals(result.StatusKey, "pos.status.ready", StringComparison.Ordinal))
         {
@@ -637,32 +645,32 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void DecreaseLine(CartLine? line)
     {
-        ApplyWorkflowResult(_workflowService.DecreaseLine(line));
+        ExecuteCartMutation("decrease-line", () => _workflowService.DecreaseLine(line));
     }
 
     private void ModifySelectedLineQuantity()
     {
-        ApplyWorkflowResult(_workflowService.ModifySelectedLineQuantity(SelectedCartLine, KeypadBuffer));
+        ExecuteCartMutation("modify-line-quantity", () => _workflowService.ModifySelectedLineQuantity(SelectedCartLine, KeypadBuffer));
     }
 
     private void ModifySelectedLinePrice()
     {
-        ApplyWorkflowResult(_workflowService.ModifySelectedLinePrice(SelectedCartLine, KeypadBuffer));
+        ExecuteCartMutation("modify-line-price", () => _workflowService.ModifySelectedLinePrice(SelectedCartLine, KeypadBuffer));
     }
 
     private void ApplySelectedLineDiscountAmount()
     {
-        ApplyWorkflowResult(_workflowService.ApplySelectedLineDiscountAmount(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
+        ExecuteCartMutation("manual-discount-amount", () => _workflowService.ApplySelectedLineDiscountAmount(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
     }
 
     private void ApplySelectedLineDiscountPercent()
     {
-        ApplyWorkflowResult(_workflowService.ApplySelectedLineDiscountPercent(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
+        ExecuteCartMutation("manual-discount-percent", () => _workflowService.ApplySelectedLineDiscountPercent(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
     }
 
     private void ApplyQuickDiscountPercent(string? value)
     {
-        ApplyWorkflowResult(_workflowService.ApplyQuickDiscountPercent(SelectedCartLine, value, IsWholeOrderOperation));
+        ExecuteCartMutation("manual-discount-quick-percent", () => _workflowService.ApplyQuickDiscountPercent(SelectedCartLine, value, IsWholeOrderOperation));
     }
 
     private void SelectCartLine(CartLine line)
@@ -777,11 +785,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         var applyStopwatch = new Stopwatch();
         try
         {
+            var cartChangedBefore = _cartChangedSequence;
             result = _workflowService.ProcessScan(Session, barcode, preferExactLookup: true, source, traceId);
             workflowStopwatch.Stop();
             applyStopwatch.Start();
             ApplyWorkflowResult(result, statusTextOverride: FormatScannerResultStatus(barcode, result));
             applyStopwatch.Stop();
+            QueuePromotionEvaluationIfCartChanged($"{source}-scan", cartChangedBefore);
         }
         finally
         {
@@ -1053,6 +1063,87 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         else if (!string.IsNullOrWhiteSpace(statusTextOverride))
         {
             SetStatusText(statusTextOverride!, StatusFeedbackKind.Neutral);
+        }
+    }
+
+    private PosTerminalWorkflowResult ExecuteCartMutation(
+        string promotionReason,
+        Func<PosTerminalWorkflowResult> mutation)
+    {
+        var cartChangedBefore = _cartChangedSequence;
+        var result = mutation();
+        ApplyWorkflowResult(result);
+        QueuePromotionEvaluationIfCartChanged(promotionReason, cartChangedBefore);
+        return result;
+    }
+
+    private void QueuePromotionEvaluationIfCartChanged(string promotionReason, long cartChangedBefore)
+    {
+        if (_promotionEvaluationService is null || _cartChangedSequence == cartChangedBefore)
+        {
+            return;
+        }
+
+        if (_isPromotionEvaluationRunning)
+        {
+            _queuedPromotionEvaluationReason = promotionReason;
+            return;
+        }
+
+        _ = RunPromotionEvaluationLoopAsync(promotionReason);
+    }
+
+    private async Task RunPromotionEvaluationLoopAsync(string promotionReason)
+    {
+        _isPromotionEvaluationRunning = true;
+        try
+        {
+            var nextReason = promotionReason;
+            while (!string.IsNullOrWhiteSpace(nextReason))
+            {
+                _queuedPromotionEvaluationReason = null;
+                await ReevaluatePromotionsAsync(nextReason);
+                nextReason = _queuedPromotionEvaluationReason ?? string.Empty;
+            }
+        }
+        finally
+        {
+            _isPromotionEvaluationRunning = false;
+        }
+    }
+
+    private async Task ReevaluatePromotionsAsync(string promotionReason)
+    {
+        if (_promotionEvaluationService is null)
+        {
+            return;
+        }
+
+        var storeCode = Session.StoreCode?.Trim();
+        if (string.IsNullOrWhiteSpace(storeCode))
+        {
+            return;
+        }
+
+        try
+        {
+            // 先基于当前购物车快照完成评估，只有成功后才一次性替换旧促销折扣。
+            var linesSnapshot = _cart.Lines.ToArray();
+            var discounts = await _promotionEvaluationService.EvaluateAsync(
+                linesSnapshot,
+                storeCode,
+                DateTimeOffset.UtcNow);
+            _cart.ApplyPromotionDiscounts(discounts);
+            LogCartPerf(
+                $"operation=promotion-evaluation reason={promotionReason} storeCode={storeCode} discountCount={discounts.Count} cartLines={_cart.Lines.Count} totalAmount={FormatAmount(_cart.TotalAmount)} actualAmount={FormatAmount(_cart.ActualAmount)}");
+        }
+        catch (Exception ex)
+        {
+            LogCartPerf(
+                $"operation=promotion-evaluation reason={promotionReason} storeCode={storeCode} failed=true message={ex.Message}");
+            SetStatusText(
+                T("pos.status.promotionFallback", "Promotions not updated. Using cached local prices."),
+                StatusFeedbackKind.Warning);
         }
     }
 

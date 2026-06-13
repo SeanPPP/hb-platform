@@ -408,6 +408,9 @@
   <data name="pos.status.catalogSyncSkipped" xml:space="preserve">
     <value>当前离线，已跳过商品目录同步。</value>
   </data>
+  <data name="pos.status.promotionFallback" xml:space="preserve">
+    <value>促销未更新，当前使用本地缓存价格。</value>
+  </data>
   <data name="payment.title" xml:space="preserve">
     <value>支付</value>
   </data>

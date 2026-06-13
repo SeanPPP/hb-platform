@@ -33,6 +33,7 @@ public static class ServiceRegistration
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
         services.AddSingleton<ILocalPromotionRepository, LocalPromotionRepository>();
+        services.AddSingleton<IPromotionEvaluationService, PromotionEvaluationService>();
         services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
         services.AddSingleton<ILocalCardPaymentAttemptRepository, LocalCardPaymentAttemptRepository>();
         services.AddSingleton<ILinklyPaymentAttemptContextAccessor, LinklyPaymentAttemptContextAccessor>();
@@ -241,6 +242,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<ISuspendedOrderService>(),
             sp.GetRequiredService<IRemoteOrderHistoryService>(),
             userFeedbackService: sp.GetRequiredService<IUserFeedbackService>(),
+            promotionEvaluationService: sp.GetRequiredService<IPromotionEvaluationService>(),
             receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>(),
             voucherApiClient: sp.GetRequiredService<IVoucherApiClient>(),
             cardTerminalClient: sp.GetRequiredService<ICardTerminalClient>(),
