@@ -86,7 +86,7 @@ public sealed class PromotionEvaluationServiceTests
     }
 
     [Fact]
-    public async Task EvaluateAsync_non_exclusive_rules_do_not_reuse_the_same_cart_units()
+    public async Task EvaluateAsync_non_exclusive_rules_evaluate_independently_like_web()
     {
         var repository = new FakeLocalPromotionRepository();
         var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
@@ -105,7 +105,31 @@ public sealed class PromotionEvaluationServiceTests
 
         var discount = Assert.Single(discounts);
         Assert.Same(line, discount.Line);
-        Assert.Equal(5m, discount.DiscountAmount);
+        Assert.Equal(9m, discount.DiscountAmount);
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_groups_units_in_cart_order_like_web()
+    {
+        var repository = new FakeLocalPromotionRepository();
+        var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
+        repository.SeedStore("S001",
+        [
+            CreateRule("PROMO-CART-ORDER", asOf, ["SKU-ORDER"], applyQuantity: 2, fixedPrice: 10m)
+        ]);
+
+        var cart = new PosCartService();
+        var lowPriceLine = cart.AddItem(CreateItem(productCode: "SKU-ORDER", lookupCode: "SKU-ORDER-LOW", price: 4m));
+        var highPriceLine = cart.AddItem(CreateItem(productCode: "SKU-ORDER", lookupCode: "SKU-ORDER-HIGH", price: 10m));
+        Assert.True(cart.SetLineQuantity(highPriceLine, 2m));
+        var service = new PromotionEvaluationService(repository);
+
+        var discounts = await service.EvaluateAsync(cart.Lines, "S001", asOf);
+
+        Assert.Equal(2, discounts.Count);
+        Assert.Equal(1.14m, Assert.Single(discounts, item => ReferenceEquals(item.Line, lowPriceLine)).DiscountAmount);
+        Assert.Equal(2.86m, Assert.Single(discounts, item => ReferenceEquals(item.Line, highPriceLine)).DiscountAmount);
+        Assert.Equal(4m, discounts.Sum(item => item.DiscountAmount));
     }
 
     [Fact]

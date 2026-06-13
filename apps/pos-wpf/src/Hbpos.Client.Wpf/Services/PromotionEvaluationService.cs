@@ -52,8 +52,6 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         }
 
         var rulesToEvaluate = SelectRulesToEvaluate(applicableRules);
-        var maxRuleProductWeights = BuildMaxRuleProductWeights(rulesToEvaluate);
-        var availableUnits = ExpandRuleUnits(eligibleLines, maxRuleProductWeights);
         var discountsByLine = new Dictionary<CartLine, decimal>();
 
         foreach (var rule in rulesToEvaluate)
@@ -64,36 +62,22 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
                 continue;
             }
 
-            var remainingApplications = rule.MaxApplicationsPerOrder ?? int.MaxValue;
-            while (remainingApplications-- > 0)
+            var ruleUnits = ExpandRuleUnits(eligibleLines, ruleProductWeights);
+            var applicationCount = ruleUnits.Count / rule.ApplyQuantity;
+            if (rule.MaxApplicationsPerOrder is int maxApplications)
             {
-                if (availableUnits.Count == 0)
-                {
-                    break;
-                }
+                applicationCount = Math.Min(applicationCount, maxApplications);
+            }
 
-                var candidateUnits = SelectCandidateUnits(availableUnits, ruleProductWeights);
-                if (candidateUnits.Count == 0)
-                {
-                    break;
-                }
-
-                var selectedUnits = SelectBestGroup(candidateUnits, rule.ApplyQuantity);
-                if (selectedUnits.Count == 0)
-                {
-                    break;
-                }
-
-                var groupTotal = decimal.Round(selectedUnits.Sum(unit => unit.UnitPrice), 2, MidpointRounding.AwayFromZero);
-                if (groupTotal <= rule.FixedPrice)
-                {
-                    break;
-                }
+            for (var applicationIndex = 0; applicationIndex < applicationCount; applicationIndex++)
+            {
+                // 与 Web 端评估保持一致：每条非排他规则独立按购物车顺序分组，不跨规则消费同一份展开单位。
+                var selectedUnits = ruleUnits
+                    .Skip(applicationIndex * rule.ApplyQuantity)
+                    .Take(rule.ApplyQuantity)
+                    .ToArray();
 
                 AddGroupDiscount(discountsByLine, selectedUnits, rule.FixedPrice);
-                // 展开后的同价单位要逐个消费，只删除本次实际命中的展开单位。
-                var consumedUnitIds = selectedUnits.Select(unit => unit.Id).ToHashSet();
-                availableUnits.RemoveAll(unit => consumedUnitIds.Contains(unit.Id));
             }
         }
 
@@ -159,30 +143,6 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         return weights;
     }
 
-    private static Dictionary<string, int> BuildMaxRuleProductWeights(IReadOnlyList<PromotionRuleDto> rules)
-    {
-        var maxWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rule in rules)
-        {
-            foreach (var product in rule.Products)
-            {
-                var productCode = NormalizeProductCode(product.ProductCode);
-                if (string.IsNullOrEmpty(productCode))
-                {
-                    continue;
-                }
-
-                var weight = product.UnitWeight > 0 ? product.UnitWeight : 1;
-                if (!maxWeights.TryGetValue(productCode, out var currentWeight) || weight > currentWeight)
-                {
-                    maxWeights[productCode] = weight;
-                }
-            }
-        }
-
-        return maxWeights;
-    }
-
     private static List<RuleUnit> ExpandRuleUnits(
         IReadOnlyList<CartLine> lines,
         IReadOnlyDictionary<string, int> ruleProductWeights)
@@ -216,32 +176,6 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         }
 
         return expandedUnits;
-    }
-
-    private static List<RuleUnit> SelectCandidateUnits(
-        IReadOnlyList<RuleUnit> availableUnits,
-        IReadOnlyDictionary<string, int> ruleProductWeights)
-    {
-        return availableUnits
-            .Where(unit =>
-                ruleProductWeights.TryGetValue(unit.ProductCode, out var ruleWeight) &&
-                unit.ExpandedIndex < ruleWeight)
-            .ToList();
-    }
-
-    private static IReadOnlyList<RuleUnit> SelectBestGroup(IReadOnlyList<RuleUnit> units, int applyQuantity)
-    {
-        if (applyQuantity <= 0 || units.Count < applyQuantity)
-        {
-            return [];
-        }
-
-        return units
-            .OrderByDescending(unit => unit.UnitPrice)
-            .ThenBy(unit => unit.SortOrder)
-            .ThenBy(unit => unit.ExpandedIndex)
-            .Take(applyQuantity)
-            .ToArray();
     }
 
     private static void AddGroupDiscount(
