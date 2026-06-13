@@ -2,6 +2,7 @@ import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/stor
 import fs from 'node:fs'
 import path from 'node:path'
 import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount } from './pickingListLogic'
+import { formatStoreOrderVolume } from './volumeFormat'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -34,6 +35,12 @@ runTest('minOrderQuantity 为空 0 1 或无效时应返回空字符串', () => {
   assertEqual(formatInnerPackCount(24, 0), '', 'minOrderQuantity 为 0 时应显示空字符串')
   assertEqual(formatInnerPackCount(24, 1), '', 'minOrderQuantity 为 1 时应显示空字符串')
   assertEqual(formatInnerPackCount(24, Number.NaN), '', 'minOrderQuantity 非法时应显示空字符串')
+})
+
+runTest('分店订货体积应统一保留两位小数', () => {
+  assertEqual(formatStoreOrderVolume(7.648), '7.65', '体积应四舍五入到两位小数')
+  assertEqual(formatStoreOrderVolume(0), '0.00', '零体积也应显示两位小数')
+  assertEqual(formatStoreOrderVolume(undefined), '--', '缺失体积应显示占位符')
 })
 
 const excelTexts = {
@@ -163,9 +170,9 @@ runTest('配货单 Excel 数据应包含固定列顺序、备注和总计信息'
       ['Total SKU', 3],
       ['Total Order Qty', 37],
       ['Total Ship Qty', 19],
-      ['Order Volume', '12.3456'],
+      ['Order Volume', '12.35'],
     ],
-    '总计行应包含 SKU、订货数、发货数和订货体积',
+    '总计行应包含 SKU、订货数、发货数和两位小数订货体积',
   )
 })
 

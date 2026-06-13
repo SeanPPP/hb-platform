@@ -93,6 +93,7 @@ import {
   moveStoreOrderListColumnOrder,
   type StoreOrderListTableColumnKey,
 } from './columnOrder'
+import { formatStoreOrderVolume } from './volumeFormat'
 import './compact.css'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
@@ -147,13 +148,6 @@ function formatAmount(value?: number) {
     return '--'
   }
   return value.toFixed(2)
-}
-
-function formatVolume(value?: number) {
-  if (value === undefined || value === null) {
-    return '--'
-  }
-  return value.toFixed(4)
 }
 
 function renderStoreOrderNumericCell(value: ReactNode) {
@@ -1006,14 +1000,14 @@ export default function StoreOrdersPage() {
         title: t('storeOrders.orderVolume'),
         dataIndex: 'totalOrderVolume',
         width: 92,
-        render: (value: number | undefined) => renderStoreOrderNumericCell(formatVolume(value)),
+        render: (value: number | undefined) => renderStoreOrderNumericCell(formatStoreOrderVolume(value)),
       },
       {
         key: 'totalAllocVolume',
         title: t('storeOrders.shipVolume'),
         dataIndex: 'totalAllocVolume',
         width: 92,
-        render: (value: number | undefined) => renderStoreOrderNumericCell(formatVolume(value)),
+        render: (value: number | undefined) => renderStoreOrderNumericCell(formatStoreOrderVolume(value)),
       },
       {
         key: 'totalAllocQuantity',

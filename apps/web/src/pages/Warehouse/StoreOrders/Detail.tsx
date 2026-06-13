@@ -104,6 +104,7 @@ import {
   StoreOrderPasteReplacePollingTimeoutError,
   createStoreOrderPasteReplaceJobPoller,
 } from './pasteReplaceJobPolling'
+import { formatStoreOrderVolume } from './volumeFormat'
 import './compact.css'
 
 function formatDateTime(value?: string) {
@@ -124,13 +125,6 @@ function formatAmount(value?: number) {
     return '--'
   }
   return value.toFixed(2)
-}
-
-function formatVolume(value?: number) {
-  if (value === undefined || value === null) {
-    return '--'
-  }
-  return value.toFixed(4)
 }
 
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
@@ -1956,8 +1950,8 @@ export default function StoreOrderDetailPage() {
         return nextValue === undefined || nextValue === null
           ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
-            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.0000'))
-            : renderStoreOrderDetailNumericCell(formatVolume(nextValue))
+            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.00'))
+            : renderStoreOrderDetailNumericCell(formatStoreOrderVolume(nextValue))
       },
     },
     {
@@ -1974,8 +1968,8 @@ export default function StoreOrderDetailPage() {
         return nextValue === undefined || nextValue === null
           ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
-            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.0000'))
-            : renderStoreOrderDetailNumericCell(formatVolume(nextValue))
+            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.00'))
+            : renderStoreOrderDetailNumericCell(formatStoreOrderVolume(nextValue))
       },
     },
     {
@@ -2205,8 +2199,8 @@ export default function StoreOrderDetailPage() {
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderQtyLabel')}>{detail.totalQuantity}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.shipQtyLabel')}>{totalAllocQuantity}</Descriptions.Item>
-                <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatVolume(totalOrderVolume)}</Descriptions.Item>
-                <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatVolume(totalAllocVolume)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatStoreOrderVolume(totalOrderVolume)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatStoreOrderVolume(totalAllocVolume)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderAmountLabel')}>{formatAmount(estimatedSalesAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.importAmountLabel')}>{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.gstAmountLabel')}>{formatAmount(gstAmount)}</Descriptions.Item>

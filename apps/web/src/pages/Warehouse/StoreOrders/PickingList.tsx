@@ -15,15 +15,8 @@ import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { buildDocumentFileName, downloadElementPagesAsPdf, formatCurrency, formatPrintDate, printElementPagesAsPdf } from './printUtils'
 import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount } from './pickingListLogic'
+import { formatStoreOrderVolume } from './volumeFormat'
 import './print.css'
-
-function formatVolume(value?: number) {
-  if (value === undefined || value === null) {
-    return '--'
-  }
-
-  return value.toFixed(4)
-}
 
 export default function PickingListPage() {
   const { t, i18n } = useTranslation()
@@ -274,7 +267,7 @@ export default function PickingListPage() {
           storeText: displayStoreText,
           orderDateText: formatPrintDate(order.orderDate, false, printLocale),
           printTimeText: formatPrintDate(undefined, true, printLocale),
-          totalOrderVolumeText: formatVolume(totalOrderVolume),
+          totalOrderVolumeText: formatStoreOrderVolume(totalOrderVolume),
         },
       )
 
@@ -467,7 +460,7 @@ export default function PickingListPage() {
             <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
             <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
             <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>
-            <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
+            <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatStoreOrderVolume(totalOrderVolume) })}</div>
           </div>
         </div>
       </div>
@@ -559,7 +552,7 @@ export default function PickingListPage() {
                     <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
                     <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
                     <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>
-                    <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
+                    <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatStoreOrderVolume(totalOrderVolume) })}</div>
                   </div>
                 </div>
               ) : null}

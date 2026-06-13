@@ -1,4 +1,5 @@
 import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
+import { formatStoreOrderVolume } from './volumeFormat'
 
 export interface PickingListExcelTexts {
   sheetName: string
@@ -134,9 +135,9 @@ export function buildPickingListExcelData(
     printTimeText: '',
     totalOrderVolumeText:
       typeof order.totalOrderVolume === 'number'
-        ? order.totalOrderVolume.toFixed(4)
+        ? formatStoreOrderVolume(order.totalOrderVolume)
         : typeof order.totalVolume === 'number'
-          ? order.totalVolume.toFixed(4)
+          ? formatStoreOrderVolume(order.totalVolume)
           : '--',
   },
 ): PickingListExcelData {
