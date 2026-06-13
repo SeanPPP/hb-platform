@@ -1,0 +1,2 @@
+# 忽略 iOS 第三方依赖，避免解析生成头文件拖慢 GitNexus 索引。
+apps/mobile/ios/Pods/
