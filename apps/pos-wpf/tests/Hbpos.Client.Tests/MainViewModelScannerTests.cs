@@ -547,7 +547,7 @@ public sealed class MainViewModelScannerTests
         Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
         Assert.Same(viewModel.PosTerminal, viewModel.CachedPosTerminalScreen);
         Assert.Same(viewModel.CashPayment, viewModel.CachedCashPaymentScreen);
-        Assert.Null(viewModel.CachedSpecialProductsScreen);
+        Assert.Same(viewModel.SpecialProducts, viewModel.CachedSpecialProductsScreen);
         Assert.True(viewModel.IsPosTerminalScreenActive);
         Assert.False(viewModel.IsCashPaymentScreenActive);
         Assert.False(viewModel.IsSpecialProductsScreenActive);
@@ -883,7 +883,7 @@ public sealed class MainViewModelScannerTests
             new FakeCustomerDisplayWindowService(),
             new FakeRawScannerService());
 
-        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.InitializeAsync(new AppStartupOptions([], true, null, null));
 
         var openTask = viewModel.PosTerminal!.OpenSpecialProductsCommand.ExecuteAsync(null);
 

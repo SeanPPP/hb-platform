@@ -174,6 +174,9 @@ public sealed class AdvertisementControllerTests
             builder.UseEnvironment("Production");
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<IStoreSchemaInitializer>();
+                services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
+
                 services.RemoveAll<IAdvertisementSchemaInitializer>();
                 services.AddSingleton(advertisementSchemaInitializer);
 
@@ -207,6 +210,14 @@ public sealed class AdvertisementControllerTests
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {
             throw exception;
+        }
+    }
+
+    private sealed class NoOpStoreSchemaInitializer : IStoreSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
         }
     }
 

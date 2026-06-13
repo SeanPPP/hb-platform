@@ -99,6 +99,8 @@
   <data name="settings.linkly.test" xml:space="preserve"><value>&#x6D4B;&#x8BD5; Linkly</value></data>
   <data name="settings.linkly.enable" xml:space="preserve"><value>&#x542F;&#x7528; Linkly</value></data>
   <data name="settings.linkly.sop.title" xml:space="preserve"><value>刷卡机操作步骤</value></data>
+  <data name="settings.linkly.sop.open" xml:space="preserve"><value>查看设置说明</value></data>
+  <data name="settings.linkly.sop.close" xml:space="preserve"><value>关闭</value></data>
   <data name="settings.linkly.sop.note" xml:space="preserve"><value>ANZ Worldline / Ingenico Move 5000 菜单文字可能略有不同。</value></data>
   <data name="settings.linkly.sop.cloud.title" xml:space="preserve"><value>切到 Linkly Cloud 并生成配对码</value></data>
   <data name="settings.linkly.sop.cloud.step1" xml:space="preserve"><value>刷卡机：Func -&gt; 7410 -&gt; Terminal Setup -&gt; Begin -&gt; Cloud Comms。</value></data>

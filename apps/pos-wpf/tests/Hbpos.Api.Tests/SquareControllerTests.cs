@@ -180,6 +180,9 @@ public sealed class SquareControllerTests
                 services.RemoveAll<ISquareTokenService>();
                 services.AddSingleton(squareTokenService ?? new StubSquareTokenService());
 
+                services.RemoveAll<IStoreSchemaInitializer>();
+                services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
+
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton(schemaInitializer ?? new NoOpSquareTokenSchemaInitializer());
 
@@ -206,6 +209,14 @@ public sealed class SquareControllerTests
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {
             throw exception;
+        }
+    }
+
+    private sealed class NoOpStoreSchemaInitializer : IStoreSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
         }
     }
 

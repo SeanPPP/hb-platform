@@ -115,14 +115,20 @@ internal sealed record ApplicationLogOptions(
 
     private static string? ReadText(IConfiguration configuration, string configKey, string environmentKey)
     {
+        // 环境变量用于部署覆盖，必须优先于 appsettings 中的默认值。
+        var environmentValue = System.Environment.GetEnvironmentVariable(environmentKey);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+        {
+            return environmentValue.Trim();
+        }
+
         var configuredValue = configuration[configKey];
         if (!string.IsNullOrWhiteSpace(configuredValue))
         {
             return configuredValue.Trim();
         }
 
-        var environmentValue = System.Environment.GetEnvironmentVariable(environmentKey);
-        return string.IsNullOrWhiteSpace(environmentValue) ? null : environmentValue.Trim();
+        return null;
     }
 
     private static int? ReadInt(IConfiguration configuration, string configKey, string environmentKey)

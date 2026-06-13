@@ -282,7 +282,7 @@ public sealed class CardTerminalSetupService(
         var resolvedPassword = ResolveCredentialPart(password, savedCredential.Password);
         if (string.IsNullOrWhiteSpace(resolvedUsername) || string.IsNullOrWhiteSpace(resolvedPassword))
         {
-            LogLinklyCloudSetup($"pair blocked environment={environment} reason=missing-local-credential hasUsername={!string.IsNullOrWhiteSpace(resolvedUsername)} hasPassword=REDACTED;
+            LogLinklyCloudSetup($"pair blocked environment={environment} reason=missing-local-credential hasUsername={!string.IsNullOrWhiteSpace(resolvedUsername)} hasPassword=REDACTED");
             return new LinklyConnectionTestResult(false, T("settings.linklyCloud.localCredentialMissing", "Save the Linkly Cloud API username and password first."));
         }
 
@@ -351,7 +351,7 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         var credential = await settingsStore.GetLinklyCloudCredentialAsync(environment, cancellationToken);
-        LogLinklyCloudSetup($"load local credential environment={environment} hasUsername={!string.IsNullOrWhiteSpace(credential.Username)} hasPassword=REDACTED;
+        LogLinklyCloudSetup($"load local credential environment={environment} hasUsername={!string.IsNullOrWhiteSpace(credential.Username)} hasPassword=REDACTED");
         return credential with { Password = null };
     }
 
@@ -362,7 +362,7 @@ public sealed class CardTerminalSetupService(
         bool syncBackendCredential = false,
         CancellationToken cancellationToken = default)
     {
-        LogLinklyCloudSetup($"save local credential requested environment={environment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED;
+        LogLinklyCloudSetup($"save local credential requested environment={environment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED");
         return SaveLinklyCloudCredentialCoreAsync(environment, username, password, syncBackendCredential, cancellationToken);
     }
 

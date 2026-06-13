@@ -20,6 +20,28 @@ public sealed class PosCartServiceTests
     }
 
     [Fact]
+    public void AddConsecutiveItem_merges_only_last_matching_sale_line()
+    {
+        var cart = new PosCartService();
+
+        var firstApple = cart.AddConsecutiveItem(CreateItem(productCode: "SKU-A", lookupCode: "apple-001", displayName: "Apple", price: 10m));
+        var banana = cart.AddConsecutiveItem(CreateItem(productCode: "SKU-B", lookupCode: "banana-001", displayName: "Banana", price: 12m));
+        var secondApple = cart.AddConsecutiveItem(CreateItem(productCode: "SKU-A", lookupCode: " apple-001 ", displayName: "Apple", price: 11m));
+        var mergedApple = cart.AddConsecutiveItem(CreateItem(productCode: "SKU-A", lookupCode: "APPLE-001", displayName: "Apple", price: 13m));
+
+        Assert.Equal(3, cart.Lines.Count);
+        Assert.Same(firstApple, cart.Lines[0]);
+        Assert.Same(banana, cart.Lines[1]);
+        Assert.Same(secondApple, cart.Lines[2]);
+        Assert.NotSame(firstApple, secondApple);
+        Assert.Same(secondApple, mergedApple);
+        Assert.Equal(1m, firstApple.Quantity);
+        Assert.Equal(1m, banana.Quantity);
+        Assert.Equal(2m, secondApple.Quantity);
+        Assert.Equal("APPLE-001", secondApple.LookupCodeNormalized);
+    }
+
+    [Fact]
     public void UpdateLineFromRemote_refreshes_display_price_source_and_totals()
     {
         var cart = new PosCartService();

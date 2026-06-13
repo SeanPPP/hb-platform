@@ -102,7 +102,7 @@ public sealed class LinklyCloudCredentialApiClient(HttpClient httpClient) : ILin
         CancellationToken cancellationToken = default)
     {
         Log(
-            $"backend credential upsert start environment={environment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED;
+            $"backend credential upsert start environment={environment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED");
         using var response = await httpClient.PutAsJsonAsync(
             "api/v1/linkly/cloud-credential",
             new LinklyCloudCredentialUpsertRequest(environment.ToString(), username, password),

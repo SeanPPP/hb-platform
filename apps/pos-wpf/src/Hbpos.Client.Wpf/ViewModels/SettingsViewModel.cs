@@ -88,7 +88,13 @@ public sealed partial class SettingsViewModel : ObservableObject
     private SettingsCategory _selectedCategory = SettingsCategory.DataMaintenance;
 
     [ObservableProperty]
-    private bool _isSandbox;
+    private bool _isSquareSandbox;
+
+    [ObservableProperty]
+    private bool _isLinklySandbox;
+
+    [ObservableProperty]
+    private bool _isLinklySetupInstructionsOpen;
 
     [ObservableProperty]
     private bool _hasSavedSquareToken;
@@ -211,6 +217,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         PairLinklyCloudCommand = new AsyncRelayCommand(PairLinklyCloudAsync, CanPairLinklyCloud);
         SaveLinklyCloudCredentialCommand = new AsyncRelayCommand(SaveLinklyCloudCredentialAsync, CanSaveLinklyCloudCredential);
         CancelLinklyCloudPairingCommand = new RelayCommand(CancelLinklyCloudPairing, CanCancelLinklyCloudPairing);
+        OpenLinklySetupInstructionsCommand = new RelayCommand(() => IsLinklySetupInstructionsOpen = true);
+        CloseLinklySetupInstructionsCommand = new RelayCommand(() => IsLinklySetupInstructionsOpen = false);
         TestLinklyCommand = new AsyncRelayCommand(TestLinklyAsync, CanTestLinkly);
         SaveLinklyCommand = new AsyncRelayCommand(SaveLinklyAsync, CanSaveLinkly);
         MoveLinklyPriorityUpCommand = new RelayCommand<LinklyModePriorityItem>(MoveLinklyPriorityUp, CanMoveLinklyPriorityUp);
@@ -255,6 +263,10 @@ public sealed partial class SettingsViewModel : ObservableObject
     public IAsyncRelayCommand SaveLinklyCloudCredentialCommand { get; }
 
     public IRelayCommand CancelLinklyCloudPairingCommand { get; }
+
+    public IRelayCommand OpenLinklySetupInstructionsCommand { get; }
+
+    public IRelayCommand CloseLinklySetupInstructionsCommand { get; }
 
     public IAsyncRelayCommand TestLinklyCommand { get; }
 
@@ -337,7 +349,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         ? T("settings.square.tokenStatus.cached")
         : T("settings.square.tokenStatus.missing");
 
-    public bool IsSquareDeviceCodesSupported => !IsSandbox;
+    public bool IsSquareDeviceCodesSupported => !IsSquareSandbox;
 
     public bool IsSquareDeviceCodesUnsupported => !IsSquareDeviceCodesSupported;
 
@@ -403,9 +415,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         ? T("settings.linkly.cloud.credentialStatus.cached")
         : T("settings.linkly.cloud.credentialStatus.missing");
 
-    public CardTerminalEnvironment SelectedEnvironment => IsSandbox
+    public CardTerminalEnvironment SelectedSquareEnvironment => IsSquareSandbox
         ? CardTerminalEnvironment.Sandbox
         : CardTerminalEnvironment.Production;
+
+    public CardTerminalEnvironment SelectedLinklyEnvironment => IsLinklySandbox
+        ? CardTerminalEnvironment.Sandbox
+        : CardTerminalEnvironment.Production;
+
+    public CardTerminalEnvironment SelectedEnvironment => SelectedLinklyEnvironment;
 
     public async Task LoadAsync()
     {
@@ -413,12 +431,13 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             _loadedConfiguration = await _setupService.LoadConfigurationAsync();
             await LoadReceiptPrinterSettingsAsync();
-            IsSandbox = _loadedConfiguration.Environment == CardTerminalEnvironment.Sandbox;
+            IsSquareSandbox = _loadedConfiguration.Environment == CardTerminalEnvironment.Sandbox;
+            IsLinklySandbox = _loadedConfiguration.Environment == CardTerminalEnvironment.Sandbox;
             LinklyHostText = _loadedConfiguration.LinklyHost;
             LinklyPortText = _loadedConfiguration.LinklyPort.ToString();
             ResetLinklyModePriority(_loadedConfiguration.LinklyConnectionModePriority);
             SelectedLinklyMode = ToSettingsMode(_loadedConfiguration.LinklyConnectionMode);
-            await LoadLinklyCloudCredentialFieldsAsync(SelectedEnvironment);
+            await LoadLinklyCloudCredentialFieldsAsync(SelectedLinklyEnvironment);
             HasSavedLinklyCloudSecret = _loadedConfiguration.HasProtectedLinklyCloudSecret;
             LinklyPairCodeText = string.Empty;
             TimeoutSecondsText = _loadedConfiguration.TerminalTimeoutSeconds.ToString();
@@ -434,19 +453,19 @@ public sealed partial class SettingsViewModel : ObservableObject
             SelectedSquareLocation = null;
             SelectedSquareDevice = null;
             LogSquareSettings(
-                $"load settings succeeded environment={SelectedEnvironment} hasSavedToken={HasSavedSquareToken} savedLocationId={LogValue(_savedSquareLocationId)} savedDeviceId={LogValue(_savedSquareDeviceId)}");
+                $"load settings succeeded squareEnvironment={SelectedSquareEnvironment} linklyEnvironment={SelectedLinklyEnvironment} hasSavedToken={HasSavedSquareToken} savedLocationId={LogValue(_savedSquareLocationId)} savedDeviceId={LogValue(_savedSquareDeviceId)}");
             SetStatus("settings.status.loaded");
         }, operationName: "load settings");
     }
 
     private async Task LoadLocationsAsync()
     {
-        LogSquareSettings($"load locations requested environment={SelectedEnvironment}");
+        LogSquareSettings($"load locations requested environment={SelectedSquareEnvironment}");
         await RunBusyAsync(async () =>
         {
             SquareLocations.ReplaceWith(await _setupService.ListSquareLocationsAsync(
                 accessToken: null,
-                SelectedEnvironment));
+                SelectedSquareEnvironment));
             SquareDevices.Clear();
             ResetSquareDeviceCodes();
             _devicesLoadedForLocationId = null;
@@ -455,7 +474,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                 string.Equals(location.Id, _savedSquareLocationId, StringComparison.OrdinalIgnoreCase));
             HasSavedSquareToken = true;
             LogSquareSettings(
-                $"load locations succeeded environment={SelectedEnvironment} count={SquareLocations.Count} selectedLocationId={LogValue(SelectedSquareLocation?.Id)}");
+                $"load locations succeeded environment={SelectedSquareEnvironment} count={SquareLocations.Count} selectedLocationId={LogValue(SelectedSquareLocation?.Id)}");
             SetStatus(
                 SquareLocations.Count == 0 ? "settings.status.noSquareLocations" : "settings.status.squareLocationsLoaded",
                 SquareLocations.Count);
@@ -470,13 +489,13 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
-        LogSquareSettings($"load devices requested environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)}");
+        LogSquareSettings($"load devices requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)}");
         await RunBusyAsync(async () =>
         {
             await LoadSquareDevicesForLocationAsync(SelectedSquareLocation.Id, selectSavedDevice: true);
             HasSavedSquareToken = true;
             LogSquareSettings(
-                $"load devices succeeded environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} count={SquareDevices.Count} selectedDeviceId={LogValue(SelectedSquareDevice?.Id)}");
+                $"load devices succeeded environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} count={SquareDevices.Count} selectedDeviceId={LogValue(SelectedSquareDevice?.Id)}");
             SetStatus(
                 SquareDevices.Count == 0 ? "settings.status.noSquareDevices" : "settings.status.squareDevicesLoaded",
                 SquareDevices.Count);
@@ -506,13 +525,13 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         LogSquareSettings(
-            $"save square requested environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} deviceId={LogValue(SelectedSquareDevice.Id)}");
+            $"save square requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} deviceId={LogValue(SelectedSquareDevice.Id)}");
         await RunBusyAsync(async () =>
         {
             var savedDeviceId = SquareDeviceIdNormalizer.NormalizeForTerminalCheckout(SelectedSquareDevice.Id);
             var configuration = new CardTerminalConfiguration(
                 CardProcessorKind.Square,
-                SelectedEnvironment,
+                SelectedSquareEnvironment,
                 NormalizeHost(LinklyHostText),
                 ParsePort(LinklyPortText),
                 SelectedSquareLocation.Id,
@@ -528,7 +547,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             _savedSquareDeviceId = configuration.SquareDeviceId;
             HasSavedSquareToken = configuration.HasProtectedSquareAccessToken;
             LogSquareSettings(
-                $"save square succeeded environment={SelectedEnvironment} locationId={LogValue(configuration.SquareLocationId)} selectedDeviceId={LogValue(SelectedSquareDevice.Id)} savedDeviceId={LogValue(configuration.SquareDeviceId)}");
+                $"save square succeeded environment={SelectedSquareEnvironment} locationId={LogValue(configuration.SquareLocationId)} selectedDeviceId={LogValue(SelectedSquareDevice.Id)} savedDeviceId={LogValue(configuration.SquareDeviceId)}");
             SetStatus("settings.status.squareSaved", SelectedSquareDevice.Name);
         }, operationName: "save square settings");
     }
@@ -541,19 +560,19 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
-        LogSquareSettings($"load device codes requested environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)}");
+        LogSquareSettings($"load device codes requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)}");
         await RunBusyAsync(async () =>
         {
             SquareDeviceCodes.ReplaceWith(await _setupService.ListSquareDeviceCodesAsync(
                 accessToken: null,
-                SelectedEnvironment,
+                SelectedSquareEnvironment,
                 SelectedSquareLocation.Id));
             SelectedSquareDeviceCode = SquareDeviceCodes.FirstOrDefault(deviceCode =>
                 SquareDeviceIdNormalizer.AreEquivalent(deviceCode.DeviceId, _savedSquareDeviceId));
             HasSavedSquareToken = true;
             SuggestSquareDeviceCodeName(force: false);
             LogSquareSettings(
-                $"load device codes succeeded environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} count={SquareDeviceCodes.Count} selectedDeviceCodeId={LogValue(SelectedSquareDeviceCode?.Id)}");
+                $"load device codes succeeded environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} count={SquareDeviceCodes.Count} selectedDeviceCodeId={LogValue(SelectedSquareDeviceCode?.Id)}");
             SetStatus("settings.status.squareDeviceCodesLoaded", SquareDeviceCodes.Count);
         }, operationName: "load square device codes");
     }
@@ -573,19 +592,19 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         LogSquareSettings(
-            $"create device code requested environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} name={LogValue(SquareDeviceCodeNameText.Trim())}");
+            $"create device code requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} name={LogValue(SquareDeviceCodeNameText.Trim())}");
         await RunBusyAsync(async () =>
         {
             var created = await _setupService.CreateSquareDeviceCodeAsync(
                 accessToken: null,
-                SelectedEnvironment,
+                SelectedSquareEnvironment,
                 SelectedSquareLocation.Id,
                 SquareDeviceCodeNameText);
             SquareDeviceCodes.Insert(0, created);
             SelectedSquareDeviceCode = created;
             HasSavedSquareToken = true;
             LogSquareSettings(
-                $"create device code succeeded environment={SelectedEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} deviceCodeId={created.Id} status={created.Status}");
+                $"create device code succeeded environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} deviceCodeId={created.Id} status={created.Status}");
             SetStatus("settings.status.squareDeviceCodeCreated", created.Code, created.Name);
         }, operationName: "create square device code");
     }
@@ -599,12 +618,12 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         LogSquareSettings(
-            $"refresh device code requested environment={SelectedEnvironment} deviceCodeId={LogValue(SelectedSquareDeviceCode.Id)}");
+            $"refresh device code requested environment={SelectedSquareEnvironment} deviceCodeId={LogValue(SelectedSquareDeviceCode.Id)}");
         await RunBusyAsync(async () =>
         {
             var refreshed = await _setupService.GetSquareDeviceCodeAsync(
                 accessToken: null,
-                SelectedEnvironment,
+                SelectedSquareEnvironment,
                 SelectedSquareDeviceCode.Id);
             ReplaceSquareDeviceCode(refreshed);
             SelectedSquareDeviceCode = refreshed;
@@ -621,14 +640,14 @@ public sealed partial class SettingsViewModel : ObservableObject
                 if (SelectedSquareDevice is not null)
                 {
                     LogSquareSettings(
-                        $"refresh device code paired environment={SelectedEnvironment} deviceCodeId={refreshed.Id} squareDeviceId={LogValue(refreshed.DeviceId)} selectedDeviceId={LogValue(SelectedSquareDevice.Id)}");
+                        $"refresh device code paired environment={SelectedSquareEnvironment} deviceCodeId={refreshed.Id} squareDeviceId={LogValue(refreshed.DeviceId)} selectedDeviceId={LogValue(SelectedSquareDevice.Id)}");
                     SetStatus("settings.status.squareDeviceCodePaired", SelectedSquareDevice.Name);
                     return;
                 }
             }
 
             LogSquareSettings(
-                $"refresh device code completed environment={SelectedEnvironment} deviceCodeId={refreshed.Id} status={refreshed.Status} squareDeviceId={LogValue(refreshed.DeviceId)}");
+                $"refresh device code completed environment={SelectedSquareEnvironment} deviceCodeId={refreshed.Id} status={refreshed.Status} squareDeviceId={LogValue(refreshed.DeviceId)}");
             SetStatus("settings.status.squareDeviceCodeNotPaired", refreshed.Status);
         }, operationName: "refresh square device code");
     }
@@ -645,11 +664,11 @@ public sealed partial class SettingsViewModel : ObservableObject
                 var testMode = PrimaryLinklyMode;
                 if (testMode == LinklySettingsMode.CloudBackendAsync)
                 {
-                    result = await _setupService.TestLinklyCloudBackendConnectionAsync(SelectedEnvironment);
+                    result = await _setupService.TestLinklyCloudBackendConnectionAsync(SelectedLinklyEnvironment);
                 }
                 else if (testMode == LinklySettingsMode.CloudDirectSync)
                 {
-                    result = await _setupService.TestLinklyCloudConnectionAsync(SelectedEnvironment);
+                    result = await _setupService.TestLinklyCloudConnectionAsync(SelectedLinklyEnvironment);
                 }
                 else
                 {
@@ -736,7 +755,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             try
             {
                 ClearLinklyTestStatus();
-                var result = await _setupService.TestLinklyCloudBackendTransactionStatusAsync(SelectedEnvironment);
+                var result = await _setupService.TestLinklyCloudBackendTransactionStatusAsync(SelectedLinklyEnvironment);
                 if (string.IsNullOrWhiteSpace(result.Message))
                 {
                     var key = result.Succeeded
@@ -764,7 +783,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private async Task PairLinklyCloudAsync()
     {
-        var pairingEnvironment = SelectedEnvironment;
+        var pairingEnvironment = SelectedLinklyEnvironment;
         var pairCode = LinklyPairCodeText;
         var username = LinklyCloudUsernameText;
         var password = LinklyCloudPasswordText;
@@ -787,8 +806,8 @@ public sealed partial class SettingsViewModel : ObservableObject
                     username,
                     password,
                     syncBackendTerminalCredential: IsLinklyCloudBackendAsyncMode);
-                LogLinklyCloudSettings($"pair completed environment={pairingEnvironment} currentEnvironment={SelectedEnvironment} success={result.Succeeded} hasMessage={!string.IsNullOrWhiteSpace(result.Message)}");
-                if (SelectedEnvironment == pairingEnvironment)
+                LogLinklyCloudSettings($"pair completed environment={pairingEnvironment} currentEnvironment={SelectedLinklyEnvironment} success={result.Succeeded} hasMessage={!string.IsNullOrWhiteSpace(result.Message)}");
+                if (SelectedLinklyEnvironment == pairingEnvironment)
                 {
                     HasSavedLinklyCloudSecret = result.Succeeded || HasSavedLinklyCloudSecret;
                 }
@@ -820,7 +839,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(LinklyCloudUsernameText))
         {
-            LogLinklyCloudSettings($"pair validation blocked environment={SelectedEnvironment} reason=missing-username");
+            LogLinklyCloudSettings($"pair validation blocked environment={SelectedLinklyEnvironment} reason=missing-username");
             SetLinklyTestStatus("settings.linklyCloud.usernameRequired");
             SetStatus("settings.linklyCloud.usernameRequired");
             return false;
@@ -828,7 +847,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         if (string.IsNullOrWhiteSpace(LinklyCloudPasswordText) && !HasSavedLinklyCloudPassword)
         {
-            LogLinklyCloudSettings($"pair validation blocked environment={SelectedEnvironment} reason=missing-password");
+            LogLinklyCloudSettings($"pair validation blocked environment={SelectedLinklyEnvironment} reason=missing-password");
             SetLinklyTestStatus("settings.linklyCloud.passwordRequired");
             SetStatus("settings.linklyCloud.passwordRequired");
             return false;
@@ -836,7 +855,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         if (string.IsNullOrWhiteSpace(LinklyPairCodeText))
         {
-            LogLinklyCloudSettings($"pair validation blocked environment={SelectedEnvironment} reason=missing-pair-code");
+            LogLinklyCloudSettings($"pair validation blocked environment={SelectedLinklyEnvironment} reason=missing-pair-code");
             SetLinklyTestStatus("settings.linklyCloud.pairCodeRequired");
             SetStatus("settings.linklyCloud.pairCodeRequired");
             return false;
@@ -847,7 +866,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private async Task SaveLinklyCloudCredentialAsync()
     {
-        var credentialEnvironment = SelectedEnvironment;
+        var credentialEnvironment = SelectedLinklyEnvironment;
         var syncBackendCredential = IsLinklyCloudBackendAsyncMode;
         var username = LinklyCloudUsernameText;
         var password = LinklyCloudPasswordText;
@@ -855,19 +874,19 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             try
             {
-                LogLinklyCloudSettings($"save credential clicked environment={credentialEnvironment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED;
+                LogLinklyCloudSettings($"save credential clicked environment={credentialEnvironment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED");
                 await _setupService.SaveLinklyCloudCredentialAsync(
                     credentialEnvironment,
                     username,
                     password,
                     syncBackendCredential: syncBackendCredential);
-                if (SelectedEnvironment == credentialEnvironment)
+                if (SelectedLinklyEnvironment == credentialEnvironment)
                 {
                     HasSavedLinklyCloudPassword = true;
                     LinklyCloudPasswordText = string.Empty;
                 }
 
-                LogLinklyCloudSettings($"save credential completed environment={credentialEnvironment} currentEnvironment={SelectedEnvironment} success=true");
+                LogLinklyCloudSettings($"save credential completed environment={credentialEnvironment} currentEnvironment={SelectedLinklyEnvironment} success=true");
                 var statusKey = syncBackendCredential
                     ? "settings.status.linklyCloudCredentialSynced"
                     : "settings.status.linklyCloudCredentialSaved";
@@ -885,8 +904,8 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private void CancelLinklyCloudPairing()
     {
-        // 取消配对只清空本次输入，不删除本机已保存的 Cloud API 测试账号。
-        LogLinklyCloudSettings($"pair cancel clicked environment={SelectedEnvironment} hadPassword=REDACTED hadPairCode={!string.IsNullOrWhiteSpace(LinklyPairCodeText)}");
+        // 鍙栨秷閰嶅鍙竻绌烘湰娆¤緭鍏ワ紝涓嶅垹闄ゆ湰鏈哄凡淇濆瓨鐨?Cloud API 娴嬭瘯璐﹀彿銆?
+        LogLinklyCloudSettings($"pair cancel clicked environment={SelectedLinklyEnvironment} hadPassword=REDACTED hadPairCode={!string.IsNullOrWhiteSpace(LinklyPairCodeText)}");
         LinklyPairCodeText = string.Empty;
         LinklyCloudPasswordText = string.Empty;
         ResetLinklyConnectionTest();
@@ -906,7 +925,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             var configuration = _loadedConfiguration with
             {
                 Processor = CardProcessorKind.Linkly,
-                Environment = SelectedEnvironment,
+                Environment = SelectedLinklyEnvironment,
                 LinklyConnectionMode = ToConnectionMode(PrimaryLinklyMode),
                 LinklyConnectionModePriority = GetLinklyConnectionModePriority(),
                 LinklyHost = NormalizeHost(LinklyHostText),
@@ -1039,7 +1058,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         {
             SetStatus("settings.status.reregisterStarting");
             var result = await _reregisterDeviceAsync();
-            // 设置页不切换屏幕，启动被拦截时需要把原因留在当前页状态栏。
+            // 璁剧疆椤典笉鍒囨崲灞忓箷锛屽惎鍔ㄨ鎷︽埅鏃堕渶瑕佹妸鍘熷洜鐣欏湪褰撳墠椤电姸鎬佹爮銆?
             if (!result.Started && !string.IsNullOrWhiteSpace(result.StatusMessage))
             {
                 SetStatusOverride(result.StatusMessage);
@@ -1250,29 +1269,38 @@ public sealed partial class SettingsViewModel : ObservableObject
             ReceiptPrinterSettings.Default.CutDistance);
     }
 
-    partial void OnIsSandboxChanged(bool value)
+    partial void OnIsSquareSandboxChanged(bool value)
     {
-        LogSquareSettings($"environment changed environment={SelectedEnvironment}");
+        LogSquareSettings($"square environment changed environment={SelectedSquareEnvironment}");
         SquareLocations.Clear();
         SquareDevices.Clear();
         ResetSquareDeviceCodes();
-        // 切环境时先同步清空当前界面字段，避免旧环境数据在异步刷新完成前继续停留在界面上。
+        _devicesLoadedForLocationId = null;
+        SelectedSquareLocation = null;
+        SelectedSquareDevice = null;
+        // Square 和 Linkly 的沙盒环境必须隔离，切换 Square 时不能清空 Linkly Cloud 输入。
+        RaiseCommandStates();
+        OnPropertyChanged(nameof(SelectedSquareEnvironment));
+        OnPropertyChanged(nameof(IsSquareDeviceCodesSupported));
+        OnPropertyChanged(nameof(IsSquareDeviceCodesUnsupported));
+        OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
+    }
+
+    partial void OnIsLinklySandboxChanged(bool value)
+    {
+        LogLinklyCloudSettings($"linkly environment changed environment={SelectedLinklyEnvironment}");
         ResetLinklyConnectionTest();
         LinklyCloudUsernameText = string.Empty;
         HasSavedLinklyCloudSecret = false;
         HasSavedLinklyCloudPassword = false;
         LinklyCloudPasswordText = string.Empty;
         LinklyPairCodeText = string.Empty;
-        _devicesLoadedForLocationId = null;
-        SelectedSquareLocation = null;
-        SelectedSquareDevice = null;
-        _ = RefreshLinklyCloudSecretStatusAsync(SelectedEnvironment);
-        _ = RefreshLinklyCloudCredentialStatusAsync(SelectedEnvironment);
+        // Square 和 Linkly 的沙盒环境必须隔离，切换 Linkly 时不能清空 Square 门店和设备列表。
+        _ = RefreshLinklyCloudSecretStatusAsync(SelectedLinklyEnvironment);
+        _ = RefreshLinklyCloudCredentialStatusAsync(SelectedLinklyEnvironment);
         RaiseCommandStates();
+        OnPropertyChanged(nameof(SelectedLinklyEnvironment));
         OnPropertyChanged(nameof(SelectedEnvironment));
-        OnPropertyChanged(nameof(IsSquareDeviceCodesSupported));
-        OnPropertyChanged(nameof(IsSquareDeviceCodesUnsupported));
-        OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
     }
 
     partial void OnHasSavedSquareTokenChanged(bool value)
@@ -1302,7 +1330,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
-        // 排序列表中的选择也代表“设为首选”，确保配置面板、测试连接和保存目标一致。
+        // 鎺掑簭鍒楄〃涓殑閫夋嫨涔熶唬琛ㄢ€滆涓洪閫夆€濓紝纭繚閰嶇疆闈㈡澘銆佹祴璇曡繛鎺ュ拰淇濆瓨鐩爣涓€鑷淬€?
         SelectedLinklyMode = item.Mode;
     }
 
@@ -1394,7 +1422,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             var hasSecret = await _setupService.HasLinklyCloudSecretAsync(environment);
-            if (version == _linklySecretStatusVersion && SelectedEnvironment == environment)
+            if (version == _linklySecretStatusVersion && SelectedLinklyEnvironment == environment)
             {
                 HasSavedLinklyCloudSecret = hasSecret;
             }
@@ -1448,10 +1476,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         try
         {
             var credential = await _setupService.LoadLinklyCloudCredentialAsync(environment);
-            // 只有最新刷新、环境仍匹配且用户没有继续编辑时才回写，避免异步结果覆盖正在输入的凭据。
+            // 鍙湁鏈€鏂板埛鏂般€佺幆澧冧粛鍖归厤涓旂敤鎴锋病鏈夌户缁紪杈戞椂鎵嶅洖鍐欙紝閬垮厤寮傛缁撴灉瑕嗙洊姝ｅ湪杈撳叆鐨勫嚟鎹€?
             if (version == _linklyCredentialStatusVersion &&
                 editVersion == _linklyCredentialEditVersion &&
-                SelectedEnvironment == environment)
+                SelectedLinklyEnvironment == environment)
             {
                 ApplyLinklyCloudCredentialFields(
                     credential,
@@ -1465,7 +1493,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             LogSquareSettings($"refresh linkly cloud credential status failed environment={environment} message={LogValue(ex.Message)}");
             if (version == _linklyCredentialStatusVersion &&
                 editVersion == _linklyCredentialEditVersion &&
-                SelectedEnvironment == environment)
+                SelectedLinklyEnvironment == environment)
             {
                 ClearLinklyCloudCredentialFields();
             }
@@ -1703,7 +1731,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
-        // 兼容旧单选入口：直接设置模式时等同于把该模式提升为首选，但排序列表的配置按钮会显式抑制此行为。
+        // 鍏煎鏃у崟閫夊叆鍙ｏ細鐩存帴璁剧疆妯″紡鏃剁瓑鍚屼簬鎶婅妯″紡鎻愬崌涓洪閫夛紝浣嗘帓搴忓垪琛ㄧ殑閰嶇疆鎸夐挳浼氭樉寮忔姂鍒舵琛屼负銆?
         LinklyModePriorityItems.Move(index, 0);
         RefreshLinklyPriorityRanks();
         OnPropertyChanged(nameof(PrimaryLinklyMode));
@@ -1731,7 +1759,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         SquareDevices.ReplaceWith(await _setupService.ListSquareDevicesAsync(
             accessToken: null,
-            SelectedEnvironment,
+            SelectedSquareEnvironment,
             locationId));
         _devicesLoadedForLocationId = locationId;
         SelectedSquareDevice = selectSavedDevice

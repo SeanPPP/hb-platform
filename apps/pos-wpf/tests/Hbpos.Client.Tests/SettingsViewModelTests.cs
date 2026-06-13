@@ -241,7 +241,7 @@ public sealed class SettingsViewModelTests
         var service = new FakeCardTerminalSetupService(squareAccessToken: CachedToken);
         var viewModel = new SettingsViewModel(service)
         {
-            IsSandbox = true,
+            IsSquareSandbox = true,
             TimeoutSecondsText = "45"
         };
 
@@ -259,6 +259,93 @@ public sealed class SettingsViewModelTests
         Assert.Equal(45, service.SavedConfiguration.TerminalTimeoutSeconds);
         Assert.Null(service.SavedSquareAccessToken);
         Assert.Equal("Square terminal settings saved. The next payment will use Counter.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Square_environment_change_clears_only_square_state()
+    {
+        var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(squareAccessToken: CachedToken))
+        {
+            LinklyCloudUsernameText = "cloud-user",
+            LinklyCloudPasswordText = "cloud-password",
+            LinklyPairCodeText = "123456",
+            HasSavedLinklyCloudPassword = true,
+            HasSavedLinklyCloudSecret = true
+        };
+
+        await viewModel.LoadLocationsCommand.ExecuteAsync(null);
+        viewModel.SelectedSquareLocation = viewModel.SquareLocations.Single();
+        await viewModel.LoadDevicesCommand.ExecuteAsync(null);
+
+        viewModel.IsSquareSandbox = true;
+
+        Assert.Empty(viewModel.SquareLocations);
+        Assert.Empty(viewModel.SquareDevices);
+        Assert.Null(viewModel.SelectedSquareLocation);
+        Assert.Null(viewModel.SelectedSquareDevice);
+        Assert.Equal("cloud-user", viewModel.LinklyCloudUsernameText);
+        Assert.Equal("cloud-password", viewModel.LinklyCloudPasswordText);
+        Assert.Equal("123456", viewModel.LinklyPairCodeText);
+        Assert.True(viewModel.HasSavedLinklyCloudPassword);
+        Assert.True(viewModel.HasSavedLinklyCloudSecret);
+    }
+
+    [Fact]
+    public async Task Linkly_environment_change_clears_only_linkly_state()
+    {
+        var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(squareAccessToken: CachedToken))
+        {
+            LinklyCloudUsernameText = "cloud-user",
+            LinklyCloudPasswordText = "cloud-password",
+            LinklyPairCodeText = "123456",
+            HasSavedLinklyCloudPassword = true,
+            HasSavedLinklyCloudSecret = true
+        };
+
+        await viewModel.LoadLocationsCommand.ExecuteAsync(null);
+        viewModel.SelectedSquareLocation = viewModel.SquareLocations.Single();
+        await viewModel.LoadDevicesCommand.ExecuteAsync(null);
+        viewModel.SelectedSquareDevice = viewModel.SquareDevices.Single();
+
+        viewModel.IsLinklySandbox = true;
+
+        Assert.Single(viewModel.SquareLocations);
+        Assert.Single(viewModel.SquareDevices);
+        Assert.NotNull(viewModel.SelectedSquareLocation);
+        Assert.NotNull(viewModel.SelectedSquareDevice);
+        Assert.Equal(string.Empty, viewModel.LinklyCloudUsernameText);
+        Assert.Equal(string.Empty, viewModel.LinklyCloudPasswordText);
+        Assert.Equal(string.Empty, viewModel.LinklyPairCodeText);
+        Assert.False(viewModel.HasSavedLinklyCloudPassword);
+        Assert.False(viewModel.HasSavedLinklyCloudSecret);
+    }
+
+    [Fact]
+    public async Task Square_and_linkly_commands_use_separate_edit_environments()
+    {
+        var service = new FakeCardTerminalSetupService(squareAccessToken: CachedToken)
+        {
+            LinklyCloudTestResult = new LinklyConnectionTestResult(true, "cloud connected")
+        };
+        var viewModel = new SettingsViewModel(service)
+        {
+            IsSquareSandbox = true,
+            IsLinklyCloudMode = true,
+            IsLinklySandbox = false,
+            HasSavedLinklyCloudSecret = true
+        };
+
+        await viewModel.LoadLocationsCommand.ExecuteAsync(null);
+        viewModel.SelectedSquareLocation = viewModel.SquareLocations.Single();
+        await viewModel.LoadDevicesCommand.ExecuteAsync(null);
+        viewModel.SelectedSquareDevice = viewModel.SquareDevices.Single();
+        await viewModel.SaveSquareCommand.ExecuteAsync(null);
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        Assert.Equal(CardTerminalEnvironment.Sandbox, service.LastListSquareLocationsEnvironment);
+        Assert.Equal(CardTerminalEnvironment.Sandbox, service.LastListSquareDevicesEnvironment);
+        Assert.Equal(CardTerminalEnvironment.Sandbox, service.LastSaveSquareEnvironment);
+        Assert.Equal(CardTerminalEnvironment.Production, service.LastLinklyCloudTestEnvironment);
     }
 
     [Fact]
@@ -717,7 +804,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync,
-            IsSandbox = true
+            IsLinklySandbox = true
         };
 
         Assert.True(viewModel.IsLinklyCloudMode);
@@ -746,7 +833,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync,
-            IsSandbox = true
+            IsLinklySandbox = true
         };
         service.BlockNextLinklyCloudBackendStatusTest();
 
@@ -790,7 +877,7 @@ public sealed class SettingsViewModelTests
             cardRecoveryResultDialogService: dialogService)
         {
             SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync,
-            IsSandbox = true
+            IsLinklySandbox = true
         };
 
         await viewModel.TestLinklyTransactionStatusCommand.ExecuteAsync(null);
@@ -828,7 +915,7 @@ public sealed class SettingsViewModelTests
             cardRecoveryResultDialogService: dialogService)
         {
             SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync,
-            IsSandbox = true
+            IsLinklySandbox = true
         };
 
         await viewModel.TestLinklyTransactionStatusCommand.ExecuteAsync(null);
@@ -859,7 +946,7 @@ public sealed class SettingsViewModelTests
             cardRecoveryResultDialogService: dialogService)
         {
             SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync,
-            IsSandbox = true
+            IsLinklySandbox = true
         };
 
         await viewModel.TestLinklyTransactionStatusCommand.ExecuteAsync(null);
@@ -877,7 +964,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             SelectedLinklyMode = LinklySettingsMode.CloudBackendAsync,
-            IsSandbox = true,
+            IsLinklySandbox = true,
             LinklyCloudUsernameText = "cloud-user",
             LinklyCloudPasswordText = "cloud-password",
             LinklyPairCodeText = "12345"
@@ -916,7 +1003,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             IsLinklyCloudMode = true,
-            IsSandbox = true,
+            IsLinklySandbox = true,
             LinklyCloudUsernameText = "cloud-user",
             LinklyCloudPasswordText = "cloud-password",
             LinklyPairCodeText = "12345"
@@ -969,7 +1056,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             IsLinklyCloudMode = true,
-            IsSandbox = true,
+            IsLinklySandbox = true,
             LinklyCloudUsernameText = "sandbox-user",
             LinklyCloudPasswordText = "sandbox-password"
         };
@@ -1042,7 +1129,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service);
 
         await viewModel.LoadAsync();
-        viewModel.IsSandbox = true;
+        viewModel.IsLinklySandbox = true;
 
         await WaitUntilAsync(() => viewModel.HasSavedLinklyCloudSecret);
         Assert.True(viewModel.TestLinklyCommand.CanExecute(null));
@@ -1078,7 +1165,7 @@ public sealed class SettingsViewModelTests
         Assert.Equal("prod-user", viewModel.LinklyCloudUsernameText);
         Assert.Equal("cloud connected", viewModel.LinklyTestStatusMessage);
 
-        viewModel.IsSandbox = true;
+        viewModel.IsLinklySandbox = true;
 
         Assert.Equal(string.Empty, viewModel.LinklyCloudUsernameText);
         Assert.Equal(string.Empty, viewModel.LinklyCloudPasswordText);
@@ -1117,8 +1204,8 @@ public sealed class SettingsViewModelTests
 
         await viewModel.LoadAsync();
 
-        viewModel.IsSandbox = true;
-        viewModel.IsSandbox = false;
+        viewModel.IsLinklySandbox = true;
+        viewModel.IsLinklySandbox = false;
 
         await WaitUntilAsync(() =>
             viewModel.LinklyCloudUsernameText == "prod-user" &&
@@ -1130,7 +1217,7 @@ public sealed class SettingsViewModelTests
         service.ReleaseLinklyCloudSecretStatus(CardTerminalEnvironment.Sandbox);
         await Task.Delay(50);
 
-        Assert.False(viewModel.IsSandbox);
+        Assert.False(viewModel.IsLinklySandbox);
         Assert.Equal("prod-user", viewModel.LinklyCloudUsernameText);
         Assert.Equal(string.Empty, viewModel.LinklyCloudPasswordText);
         Assert.True(viewModel.HasSavedLinklyCloudPassword);
@@ -1153,7 +1240,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service);
 
         await viewModel.LoadAsync();
-        viewModel.IsSandbox = true;
+        viewModel.IsLinklySandbox = true;
         viewModel.LinklyCloudUsernameText = "typed-user";
         viewModel.LinklyCloudPasswordText = "typed-password";
 
@@ -1172,7 +1259,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             IsLinklyCloudMode = true,
-            IsSandbox = true,
+            IsLinklySandbox = true,
             LinklyCloudUsernameText = "sandbox-user",
             LinklyCloudPasswordText = "sandbox-password"
         };
@@ -1181,7 +1268,7 @@ public sealed class SettingsViewModelTests
         await WaitUntilAsync(() => viewModel.IsBusy);
         Assert.False(viewModel.CanChangeEnvironment);
 
-        viewModel.IsSandbox = false;
+        viewModel.IsLinklySandbox = false;
         service.ReleaseLinklyCloudCredentialSave();
         await saveTask;
 
@@ -1201,7 +1288,7 @@ public sealed class SettingsViewModelTests
         var viewModel = new SettingsViewModel(service)
         {
             IsLinklyCloudMode = true,
-            IsSandbox = true,
+            IsLinklySandbox = true,
             LinklyCloudUsernameText = "sandbox-user",
             LinklyCloudPasswordText = "sandbox-password",
             LinklyPairCodeText = "12345"
@@ -1211,7 +1298,7 @@ public sealed class SettingsViewModelTests
         await WaitUntilAsync(() => viewModel.IsBusy);
         Assert.False(viewModel.CanChangeEnvironment);
 
-        viewModel.IsSandbox = false;
+        viewModel.IsLinklySandbox = false;
         service.ReleaseLinklyCloudPair();
         await pairTask;
 
@@ -1382,6 +1469,20 @@ public sealed class SettingsViewModelTests
 
         public (string LocationId, string Name)? LastCreatedDeviceCodeRequest { get; private set; }
 
+        public CardTerminalEnvironment? LastListSquareLocationsEnvironment { get; private set; }
+
+        public CardTerminalEnvironment? LastListSquareDevicesEnvironment { get; private set; }
+
+        public CardTerminalEnvironment? LastSaveSquareEnvironment { get; private set; }
+
+        public CardTerminalEnvironment? LastLinklyCloudTestEnvironment { get; private set; }
+
+        public CardTerminalEnvironment? LastLinklyCloudBackendTestEnvironment { get; private set; }
+
+        public CardTerminalEnvironment? LastLinklyCloudBackendStatusTestEnvironment { get; private set; }
+
+        public CardTerminalEnvironment? LastPairLinklyCloudEnvironment { get; private set; }
+
         public Task<CardTerminalConfiguration> LoadConfigurationAsync(CancellationToken cancellationToken = default)
         {
             return Task.FromResult(_configuration);
@@ -1397,6 +1498,7 @@ public sealed class SettingsViewModelTests
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
+            LastListSquareLocationsEnvironment = environment;
             if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
             {
                 throw new InvalidOperationException("Enter a Square Access Token first.");
@@ -1411,6 +1513,7 @@ public sealed class SettingsViewModelTests
             string locationId,
             CancellationToken cancellationToken = default)
         {
+            LastListSquareDevicesEnvironment = environment;
             if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
             {
                 throw new InvalidOperationException("Enter a Square Access Token first.");
@@ -1472,6 +1575,7 @@ public sealed class SettingsViewModelTests
             string? squareAccessToken,
             CancellationToken cancellationToken = default)
         {
+            LastSaveSquareEnvironment = configuration.Environment;
             SavedConfiguration = configuration;
             SavedSquareAccessToken = squareAccessToken;
             _configuration = configuration with
@@ -1505,6 +1609,7 @@ public sealed class SettingsViewModelTests
             bool syncBackendTerminalCredential = false,
             CancellationToken cancellationToken = default)
         {
+            LastPairLinklyCloudEnvironment = environment;
             if (_pendingLinklyCloudPair is not null)
             {
                 using var registration = cancellationToken.Register(
@@ -1559,6 +1664,7 @@ public sealed class SettingsViewModelTests
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
+            LastLinklyCloudTestEnvironment = environment;
             LinklyCloudTestCallCount++;
             return Task.FromResult(LinklyCloudTestResult);
         }
@@ -1567,6 +1673,7 @@ public sealed class SettingsViewModelTests
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
+            LastLinklyCloudBackendTestEnvironment = environment;
             LinklyCloudBackendTestCallCount++;
             return Task.FromResult(LinklyCloudBackendTestResult);
         }
@@ -1575,6 +1682,7 @@ public sealed class SettingsViewModelTests
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
+            LastLinklyCloudBackendStatusTestEnvironment = environment;
             LinklyCloudBackendStatusTestCallCount++;
             if (_pendingLinklyCloudBackendStatusTest is not null)
             {

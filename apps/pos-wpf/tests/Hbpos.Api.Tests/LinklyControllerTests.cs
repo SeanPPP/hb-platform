@@ -818,6 +818,9 @@ public sealed class LinklyControllerTests
                 services.RemoveAll<ILinklyCloudBackendAsyncService>();
                 services.AddSingleton(linklyCloudBackendAsyncService ?? new CapturingLinklyCloudBackendAsyncService());
 
+                services.RemoveAll<IStoreSchemaInitializer>();
+                services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
+
                 services.RemoveAll<ILinklyCloudCredentialSchemaInitializer>();
                 services.AddSingleton(schemaInitializer ?? new NoOpLinklyCloudCredentialSchemaInitializer());
 
@@ -846,6 +849,14 @@ public sealed class LinklyControllerTests
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {
             throw exception;
+        }
+    }
+
+    private sealed class NoOpStoreSchemaInitializer : IStoreSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
         }
     }
 

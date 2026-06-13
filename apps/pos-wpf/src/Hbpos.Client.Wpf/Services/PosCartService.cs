@@ -56,6 +56,39 @@ public sealed class PosCartService
         return line;
     }
 
+    public CartLine AddConsecutiveItem(SellableItemDto item)
+    {
+        if (!IsPositiveIntegerQuantity(item.QuantityFactor))
+        {
+            throw new InvalidOperationException("Cart item quantity must be a positive integer.");
+        }
+
+        // 扫码自动加购只看最后一行，避免跨行回溯导致非连续重复商品被合并。
+        var lastLine = _lines.LastOrDefault();
+        var normalizedLookupCode = CartLine.NormalizeLookupCode(item.LookupCode);
+        if (lastLine is not null &&
+            !lastLine.IsReturnLine &&
+            !lastLine.IsOpenItem &&
+            string.Equals(lastLine.StoreCode, item.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(lastLine.LookupCodeNormalized, normalizedLookupCode, StringComparison.Ordinal))
+        {
+            if (!IsPositiveIntegerQuantity(lastLine.Quantity))
+            {
+                throw new InvalidOperationException("Cart line quantity must be a positive integer.");
+            }
+
+            lastLine.Increase(item.QuantityFactor);
+            OnCartChanged();
+            return lastLine;
+        }
+
+        // 最后一行不匹配时必须新建购物车行，保留扫码顺序。
+        var line = new CartLine(item);
+        _lines.Add(line);
+        OnCartChanged();
+        return line;
+    }
+
     public CartLine AddOpenItem(SellableItemDto item, decimal unitPrice)
     {
         if (!IsPositiveIntegerQuantity(item.QuantityFactor))

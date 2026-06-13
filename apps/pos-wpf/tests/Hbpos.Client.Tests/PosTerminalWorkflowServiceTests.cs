@@ -230,6 +230,74 @@ public sealed class PosTerminalWorkflowServiceTests
     }
 
     [Fact]
+    public void Add_selected_item_intermittent_same_item_still_merges_globally()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var apple = CreateItem("SKU-262", "Workflow Apple", "930262", PriceSourceKind.StoreRetailPrice, 3.5m);
+        var banana = CreateItem("SKU-263", "Workflow Banana", "930263", PriceSourceKind.StoreRetailPrice, 4.5m);
+        index.ReplaceAll([apple, banana]);
+        var service = new PosTerminalWorkflowService(index, cart);
+
+        var firstAppleResult = service.AddSelectedItem(Session, apple, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+        var bananaResult = service.AddSelectedItem(Session, banana, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+        var mergedAppleResult = service.AddSelectedItem(Session, apple, clearScanText: true, closeMatchesPopup: false, operation: "manual-add-selected");
+
+        Assert.Equal(2, cart.Lines.Count);
+        Assert.Same(firstAppleResult.SelectedCartLine, cart.Lines[0]);
+        Assert.Same(bananaResult.SelectedCartLine, cart.Lines[1]);
+        Assert.Same(cart.Lines[0], mergedAppleResult.SelectedCartLine);
+        Assert.Equal(2m, cart.Lines[0].Quantity);
+        Assert.Equal(1m, cart.Lines[1].Quantity);
+        Assert.Equal("930262", cart.Lines[0].LookupCodeNormalized);
+        Assert.Equal("930263", cart.Lines[1].LookupCodeNormalized);
+    }
+
+    [Fact]
+    public async Task Process_scan_remote_lookup_updates_all_non_consecutive_matching_sale_lines()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var apple = CreateItem("SKU-264", "Workflow Apple Local", "930264", PriceSourceKind.StoreRetailPrice, 2m);
+        var banana = CreateItem("SKU-265", "Workflow Banana", "930265", PriceSourceKind.StoreRetailPrice, 3m);
+        var remoteApple = CreateItem("SKU-264", "Workflow Apple Remote", "930264", PriceSourceKind.StoreClearancePrice, 5m);
+        var appleLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var appleLookupCalls = 0;
+        index.ReplaceAll([apple, banana]);
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (storeCode, lookupCode, _) =>
+            {
+                if (string.Equals(lookupCode, "930264", StringComparison.OrdinalIgnoreCase))
+                {
+                    Interlocked.Increment(ref appleLookupCalls);
+                    return appleLookup.Task;
+                }
+
+                return Task.FromResult(new RemoteLookupRefreshResult(storeCode, lookupCode, Found: false, Item: null, DeletedCount: 1));
+            });
+
+        service.ProcessScan(Session, "930264", preferExactLookup: true, source: "raw");
+        await WaitUntilAsync(() => Volatile.Read(ref appleLookupCalls) == 1);
+        service.ProcessScan(Session, "930265", preferExactLookup: true, source: "raw");
+        service.ProcessScan(Session, "930264", preferExactLookup: true, source: "raw");
+        service.ProcessScan(Session, "930264", preferExactLookup: true, source: "raw");
+
+        Assert.Equal(3, cart.Lines.Count);
+        Assert.Equal(2m, cart.Lines[0].UnitPrice);
+        Assert.Equal(2m, cart.Lines[2].UnitPrice);
+
+        appleLookup.SetResult(new RemoteLookupRefreshResult("S001", "930264", Found: true, Item: remoteApple, DeletedCount: 0));
+        await WaitUntilAsync(() => cart.Lines
+            .Where(line => line.LookupCodeNormalized == "930264")
+            .All(line => line.DisplayName == "Workflow Apple Remote" && line.UnitPrice == 5m));
+
+        Assert.Equal(1, Volatile.Read(ref appleLookupCalls));
+        Assert.Equal(18m, cart.TotalAmount);
+    }
+
+    [Fact]
     public async Task Add_selected_item_logs_remote_lookup_queue_and_dispatch()
     {
         var cart = new PosCartService();

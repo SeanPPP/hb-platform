@@ -23,6 +23,9 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
+    var storeSchemaInitializer = scope.ServiceProvider.GetRequiredService<IStoreSchemaInitializer>();
+    await storeSchemaInitializer.InitializeAsync();
+
     var advertisementSchemaInitializer = scope.ServiceProvider.GetRequiredService<IAdvertisementSchemaInitializer>();
     await advertisementSchemaInitializer.InitializeAsync();
 

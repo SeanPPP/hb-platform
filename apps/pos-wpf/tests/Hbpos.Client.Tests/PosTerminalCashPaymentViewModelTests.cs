@@ -690,6 +690,41 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Pos_terminal_non_consecutive_repeated_scan_creates_new_cart_line_and_then_merges_tail()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var scanner = new FakeRawScannerService();
+        index.ReplaceAll(
+        [
+            CreateItem("SKU-116A", "Scanner Apple", "930116A", PriceSourceKind.StoreRetailPrice, 2m),
+            CreateItem("SKU-116B", "Scanner Banana", "930116B", PriceSourceKind.StoreRetailPrice, 3m)
+        ]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            rawScannerService: scanner);
+        scanner.SetActivePage(PosTerminalViewModel.PageId);
+        var firstScanAt = DateTimeOffset.Now;
+
+        scanner.Emit("930116A", firstScanAt);
+        scanner.Emit("930116B", firstScanAt.AddMilliseconds(100));
+        scanner.Emit("930116A", firstScanAt.AddMilliseconds(200));
+        scanner.Emit("930116A", firstScanAt.AddMilliseconds(300));
+
+        Assert.Equal(3, viewModel.CartLines.Count);
+        Assert.Equal("930116A", viewModel.CartLines[0].LookupCodeNormalized);
+        Assert.Equal(1m, viewModel.CartLines[0].Quantity);
+        Assert.Equal("930116B", viewModel.CartLines[1].LookupCodeNormalized);
+        Assert.Equal(1m, viewModel.CartLines[1].Quantity);
+        Assert.Equal("930116A", viewModel.CartLines[2].LookupCodeNormalized);
+        Assert.Equal(2m, viewModel.CartLines[2].Quantity);
+        Assert.Same(viewModel.CartLines[2], viewModel.SelectedCartLine);
+    }
+
+    [Fact]
     public void Pos_terminal_keypad_caps_decimal_input_at_two_places()
     {
         var cart = new PosCartService();

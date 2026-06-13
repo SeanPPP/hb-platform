@@ -15,8 +15,8 @@ public sealed class UiPriorityCoordinatorTests
         coordinator.NotifyUserInput();
 
         var waitTask = coordinator.WaitForUiIdleAsync();
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
 
+        Assert.True(coordinator.IsUiActive);
         Assert.False(waitTask.IsCompleted);
         await waitTask.WaitAsync(idleDelay + TimeSpan.FromSeconds(1));
         Assert.False(coordinator.IsUiActive);

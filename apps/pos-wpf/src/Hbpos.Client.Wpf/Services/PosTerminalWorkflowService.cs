@@ -465,7 +465,10 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         var addStopwatch = Stopwatch.StartNew();
         try
         {
-            line = _cart.AddItem(item);
+            // 扫码自动加购走连续合并规则，其他入口继续沿用全局合并逻辑。
+            line = string.Equals(operation, "scan-auto-add", StringComparison.Ordinal)
+                ? _cart.AddConsecutiveItem(item)
+                : _cart.AddItem(item);
         }
         catch (InvalidOperationException)
         {
@@ -700,10 +703,10 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
                 _priceIndex.Upsert(result.Item);
                 if (CanApplyRemoteItemToCartLine(snapshot, result.Item))
                 {
-                    var updated = _cart.UpdateLineFromRemote(snapshot.Line, result.Item);
+                    var updatedCount = UpdateMatchingCartLinesFromRemote(snapshot, result.Item);
                     ConsoleLog.Write(
                         "PosScan",
-                        $"remote lookup cart update storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} referenceCode={snapshot.ReferenceCode ?? "<null>"} updated={updated} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                        $"remote lookup cart update storeCode={snapshot.StoreCode} lookupCode={snapshot.LookupCode} productCode={snapshot.ProductCode} referenceCode={snapshot.ReferenceCode ?? "<null>"} updated={FormatBool(updatedCount > 0)} updatedCount={updatedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
                 }
                 else
                 {
@@ -750,6 +753,32 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         return _reloadCatalogAsync is null
             ? _priceIndex.Items
             : await _reloadCatalogAsync(cancellationToken);
+    }
+
+    private int UpdateMatchingCartLinesFromRemote(RemoteLookupCartSnapshot snapshot, SellableItemDto item)
+    {
+        var normalizedLookupCode = CartLine.NormalizeLookupCode(snapshot.LookupCode);
+        var lines = _cart.Lines
+            .Where(line =>
+                !line.IsReturnLine &&
+                !line.IsOpenItem &&
+                string.Equals(line.StoreCode, snapshot.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(line.LookupCodeNormalized, normalizedLookupCode, StringComparison.Ordinal) &&
+                EqualsIdentity(line.ProductCode, snapshot.ProductCode) &&
+                EqualsIdentity(line.ReferenceCode, snapshot.ReferenceCode))
+            .ToList();
+
+        var updatedCount = 0;
+        foreach (var line in lines)
+        {
+            // 非连续扫码会产生多条同码销售行，同一次远程刷新需要同步更新这些行。
+            if (_cart.UpdateLineFromRemote(line, item))
+            {
+                updatedCount++;
+            }
+        }
+
+        return updatedCount;
     }
 
     private static bool CanApplyRemoteItemToCartLine(RemoteLookupCartSnapshot snapshot, SellableItemDto item)

@@ -12,6 +12,7 @@
              Background="#FFF9F9FD">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:CashDenominationAccentBrushConverter x:Key="CashDenominationAccentBrush" />
         <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
         <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringIsEmptyToVis" Invert="True" />
 
@@ -56,6 +57,23 @@
             <Setter Property="TextOptions.TextRenderingMode" Value="ClearType" />
         </Style>
 
+        <Style x:Key="DenominationBadgeStyle" TargetType="Border">
+            <!-- 面额标签单独着色，帮助快速识别币种，同时避免整行染色影响金额阅读。 -->
+            <Setter Property="MinWidth" Value="58" />
+            <Setter Property="Padding" Value="9,3" />
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+        </Style>
+
+        <Style x:Key="DenominationMetricBadgeStyle" TargetType="Border" BasedOn="{StaticResource DenominationBadgeStyle}">
+            <!-- 数量和小计沿用同一面额色板，保证同一行视觉归属一致。 -->
+            <Setter Property="MinWidth" Value="62" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+        </Style>
+
         <Style x:Key="KeypadButtonStyle" TargetType="Button">
             <Setter Property="Height" Value="34" />
             <Setter Property="Margin" Value="2" />
@@ -96,17 +114,56 @@
             </Setter>
         </Style>
 
-        <Style x:Key="CashApplyButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+        <Style x:Key="CashApplyButtonStyle" TargetType="Button">
+            <!-- 行内按钮使用独立模板，避免全局按钮缩放和内边距在 DataGrid 行内裁切文字。 -->
             <!-- 紧凑表格行内按钮需要覆盖全局按钮最小高度，避免在面额明细行内被裁切。 -->
             <Setter Property="MinHeight" Value="0" />
-            <Setter Property="Height" Value="30" />
-            <Setter Property="Padding" Value="8,1" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinWidth" Value="78" />
+            <Setter Property="Padding" Value="10,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="Background" Value="#FFEAF2FF" />
             <Setter Property="BorderBrush" Value="#FF80A9E8" />
+            <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Foreground" Value="#FF0040A1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}"
+                                              TextBlock.FontFamily="{TemplateBinding FontFamily}"
+                                              TextBlock.FontSize="{TemplateBinding FontSize}"
+                                              TextBlock.FontWeight="{TemplateBinding FontWeight}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <!-- 鼠标悬停只增强反馈，不覆盖面额绑定色，保持同行颜色统一。 -->
+                                <Setter TargetName="Root" Property="Opacity" Value="0.85" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.75" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="DailyCloseTabItemStyle" TargetType="{x:Type TabItem}">
@@ -323,14 +380,55 @@
                                                       ScrollViewer.VerticalScrollBarVisibility="Disabled"
                                                       ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                                 <DataGrid.Columns>
-                                                    <DataGridTextColumn Header="{loc:Loc dailyClose.denomination}" Binding="{Binding Label}" Width="*" />
-                                                    <DataGridTextColumn Header="{loc:Loc dailyClose.quantity}" Binding="{Binding Count}" Width="64" />
-                                                    <DataGridTextColumn Header="{loc:Loc dailyClose.subtotal}" Binding="{Binding Subtotal, StringFormat={}{0:C2}}" Width="112" />
-                                                    <DataGridTemplateColumn Header="" Width="94">
+                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.denomination}" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Border Style="{StaticResource DenominationBadgeStyle}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                                                                    <TextBlock Text="{Binding Label}"
+                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                                                               FontWeight="Black" />
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.quantity}" Width="88">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                                                                    <TextBlock Text="{Binding Count}"
+                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                                                               FontWeight="Black"
+                                                                               HorizontalAlignment="Center" />
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.subtotal}" Width="118">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                                                                    <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}"
+                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                                                               FontWeight="Black"
+                                                                               HorizontalAlignment="Center" />
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="" Width="104">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Button Command="{Binding DataContext.ApplyDenominationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                                                         CommandParameter="{Binding}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}"
+                                                                        Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
                                                                         Style="{StaticResource CashApplyButtonStyle}">
                                                                     <TextBlock Text="{loc:Loc dailyClose.apply}" FontWeight="Black" />
                                                                 </Button>
@@ -355,14 +453,55 @@
                                                       ScrollViewer.VerticalScrollBarVisibility="Disabled"
                                                       ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                                 <DataGrid.Columns>
-                                                    <DataGridTextColumn Header="{loc:Loc dailyClose.denomination}" Binding="{Binding Label}" Width="*" />
-                                                    <DataGridTextColumn Header="{loc:Loc dailyClose.quantity}" Binding="{Binding Count}" Width="64" />
-                                                    <DataGridTextColumn Header="{loc:Loc dailyClose.subtotal}" Binding="{Binding Subtotal, StringFormat={}{0:C2}}" Width="112" />
-                                                    <DataGridTemplateColumn Header="" Width="94">
+                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.denomination}" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Border Style="{StaticResource DenominationBadgeStyle}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                                                                    <TextBlock Text="{Binding Label}"
+                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                                                               FontWeight="Black" />
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.quantity}" Width="88">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                                                                    <TextBlock Text="{Binding Count}"
+                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                                                               FontWeight="Black"
+                                                                               HorizontalAlignment="Center" />
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.subtotal}" Width="118">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                                                                    <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}"
+                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                                                               FontWeight="Black"
+                                                                               HorizontalAlignment="Center" />
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="" Width="104">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Button Command="{Binding DataContext.ApplyDenominationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                                                         CommandParameter="{Binding}"
+                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}"
+                                                                        Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
                                                                         Style="{StaticResource CashApplyButtonStyle}">
                                                                     <TextBlock Text="{loc:Loc dailyClose.apply}" FontWeight="Black" />
                                                                 </Button>

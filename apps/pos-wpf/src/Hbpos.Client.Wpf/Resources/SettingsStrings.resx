@@ -99,6 +99,8 @@
   <data name="settings.linkly.test" xml:space="preserve"><value>Test Linkly</value></data>
   <data name="settings.linkly.enable" xml:space="preserve"><value>Enable Linkly</value></data>
   <data name="settings.linkly.sop.title" xml:space="preserve"><value>Terminal setup steps</value></data>
+  <data name="settings.linkly.sop.open" xml:space="preserve"><value>View setup steps</value></data>
+  <data name="settings.linkly.sop.close" xml:space="preserve"><value>Close</value></data>
   <data name="settings.linkly.sop.note" xml:space="preserve"><value>Menu names may vary slightly on ANZ Worldline / Ingenico Move 5000 terminals.</value></data>
   <data name="settings.linkly.sop.cloud.title" xml:space="preserve"><value>Switch to Linkly Cloud and generate a pairing code</value></data>
   <data name="settings.linkly.sop.cloud.step1" xml:space="preserve"><value>On the terminal: Func -&gt; 7410 -&gt; Terminal Setup -&gt; Begin -&gt; Cloud Comms.</value></data>

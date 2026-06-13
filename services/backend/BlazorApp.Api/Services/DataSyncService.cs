@@ -4081,13 +4081,13 @@ namespace BlazorApp.Api.Services
         {
             var result = new SyncResult();
             var connectionString =
-                "Host=hotbargain.vip;Port=5432;Database=postgresdb;Username=postgres;Password=REDACTED;
+                "Host=hotbargain.vip;Port=5432;Database=postgresdb;Username=postgres;Password=REDACTED;";
 
             try
             {
                 _logger.LogInformation("🔗 开始测试PostgreSQL数据库连接...");
                 _logger.LogInformation(
-                    "连接字符串: Host=hotbargain.vip;Port=5432;Database=postgresdb;Username=postgres;Password=REDACTED
+                    "连接字符串: Host=hotbargain.vip;Port=5432;Database=postgresdb;Username=postgres;Password=REDACTED"
                 );
 
                 using var connection = new Npgsql.NpgsqlConnection(connectionString);
