@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Promotions;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -44,7 +45,9 @@ public sealed record CatalogSyncProgress(
 public sealed class LocalCatalogSyncService(
     ILocalCatalogRepository localCatalogRepository,
     ICatalogApiClient catalogApiClient,
-    IUiPriorityCoordinator? uiPriorityCoordinator = null) : ILocalCatalogSyncService
+    IUiPriorityCoordinator? uiPriorityCoordinator = null,
+    ILocalPromotionRepository? localPromotionRepository = null,
+    IPromotionApiClient? promotionApiClient = null) : ILocalCatalogSyncService
 {
     private const int ComparePageSize = 2000;
     private const int DownloadPageSize = 5000;
@@ -274,6 +277,14 @@ public sealed class LocalCatalogSyncService(
 
                     cursor = response.NextCursor;
                 }
+            }
+
+            if (localPromotionRepository is not null && promotionApiClient is not null)
+            {
+                // 促销缓存只在商品同步成功后刷新，这样促销接口或落库失败时，旧缓存仍然可用。
+                var promotionResponse = await promotionApiClient.GetRulesAsync(storeCode, cancellationToken: cancellationToken);
+                await localPromotionRepository.ReplaceStoreRulesAsync(storeCode, promotionResponse, cancellationToken);
+                Log($"promotion sync completed store={storeCode} rules={promotionResponse.Rules.Count}");
             }
 
             totalStopwatch.Stop();

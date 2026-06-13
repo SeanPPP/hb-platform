@@ -406,6 +406,31 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         );
         """,
         """
+        CREATE TABLE IF NOT EXISTS LocalPromotions (
+            StoreCode TEXT NOT NULL,
+            PromotionId TEXT NOT NULL,
+            Name TEXT NOT NULL,
+            EffectiveStart TEXT NOT NULL,
+            EffectiveEnd TEXT NOT NULL,
+            IsExclusive INTEGER NOT NULL,
+            Priority INTEGER NOT NULL,
+            ApplyQuantity INTEGER NOT NULL,
+            FixedPrice TEXT NOT NULL,
+            MaxApplicationsPerOrder INTEGER NULL,
+            SyncedAt TEXT NOT NULL,
+            PRIMARY KEY (StoreCode, PromotionId)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS LocalPromotionProducts (
+            StoreCode TEXT NOT NULL,
+            PromotionId TEXT NOT NULL,
+            ProductCode TEXT NOT NULL,
+            UnitWeight INTEGER NOT NULL,
+            PRIMARY KEY (StoreCode, PromotionId, ProductCode)
+        );
+        """,
+        """
         CREATE TABLE IF NOT EXISTS LocalOrders (
             OrderGuid TEXT PRIMARY KEY,
             StoreCode TEXT NOT NULL,
@@ -697,6 +722,14 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         """
         CREATE INDEX IF NOT EXISTS IX_LocalSellableItemIndex_Store_Special_Product
         ON LocalSellableItemIndex (StoreCode, IsSpecialProduct, ProductCode);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotions_Store_EffectiveRange
+        ON LocalPromotions (StoreCode, EffectiveStart, EffectiveEnd);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotionProducts_Store_ProductCode
+        ON LocalPromotionProducts (StoreCode, ProductCode);
         """,
         """
         CREATE INDEX IF NOT EXISTS IX_LocalOrderLines_OrderGuid_ItemNumber_LookupCode
