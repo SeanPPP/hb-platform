@@ -33,7 +33,7 @@ function normalizeCommonPayload(values: InvoiceEmailSettingsFormValues) {
     maxAttachmentBytes: values.maxAttachmentBytes,
   }
 
-  // 后端约定 clearPassword=REDACTED 时只清空原密码，不接受新密码。
+  // 后端约定 clearPassword=true 时只清空原密码，不接受新密码。
   if (!values.clearPassword && trimmedPassword) {
     payload.password = trimmedPassword
   }

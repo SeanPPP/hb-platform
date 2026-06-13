@@ -134,7 +134,7 @@ export default function InvoiceEmailSettingsPage() {
           <Space size={12}>
             <MailOutlined />
             <Typography.Text strong>{t('invoiceEmailSettings.passwordStatus')}</Typography.Text>
-            <PasswordStateTag hasPassword=REDACTED ?? false} />
+            <PasswordStateTag hasPassword={settings?.hasPassword ?? false} />
           </Space>
 
           <Form

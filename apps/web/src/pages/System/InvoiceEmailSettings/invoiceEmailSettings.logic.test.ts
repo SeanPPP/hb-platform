@@ -102,7 +102,7 @@ const clearPasswordPayload = buildInvoiceEmailSettingsSavePayload({
 })
 
 assert('password' in clearPasswordPayload === false, '清空密码时不应同时发送 password')
-assertEqual(clearPasswordPayload.clearPassword, true, '清空密码时应发送 clearPassword=REDACTED
+assertEqual(clearPasswordPayload.clearPassword, true, '清空密码时应发送 clearPassword=true')
 
 const updatePasswordPayload = buildInvoiceEmailSettingsSavePayload({
   ...formValues,
