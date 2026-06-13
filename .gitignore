@@ -44,4 +44,5 @@ logs/
 .codegraph/
 .gitnexus/
 .understand-anything/
+.worktrees/
 
