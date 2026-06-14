@@ -6,19 +6,22 @@ namespace BlazorApp.Api.Utils
     /// <summary>
     /// 密码加密工具类
     /// 🔐 提供统一的密码哈希和验证功能
-    /// 使用SHA256算法 + Salt进行密码加密
+    /// 新密码使用 PBKDF2 慢哈希；旧 SHA256 固定盐格式仅用于登录迁移兼容。
     /// </summary>
     public static class PasswordHasher
     {
-        /// <summary>
-        /// 密码加密盐值
-        /// 🧂 用于增强密码安全性，防止彩虹表攻击
-        /// </summary>
-        private const string SALT = "h_platform_2025_Salt";
+        public const string PasswordFormatRaw = "raw";
+        public const string PasswordFormatClientSha256 = "clientSha256";
+
+        private const string LegacySalt = "h_platform_2025_Salt";
+        private const string Pbkdf2Prefix = "pbkdf2-sha256";
+        private const int Pbkdf2Iterations = 100_000;
+        private const int SaltByteSize = 16;
+        private const int HashByteSize = 32;
 
         /// <summary>
-        /// 对密码进行哈希加密
-        /// 🔐 使用SHA256算法 + Salt进行单向加密
+        /// 对原始密码进行哈希加密
+        /// 🔐 新密码统一使用每用户随机盐 + PBKDF2，存储格式自带版本信息。
         /// </summary>
         /// <param name="password">原始密码</param>
         /// <returns>Base64编码的哈希值</returns>
@@ -31,24 +34,54 @@ namespace BlazorApp.Api.Utils
 
             try
             {
-                // 🔧 创建SHA256哈希算法实例
-                using var sha256 = SHA256.Create();
+                var saltBytes = RandomNumberGenerator.GetBytes(SaltByteSize);
+                var hashBytes = Rfc2898DeriveBytes.Pbkdf2(
+                    password,
+                    saltBytes,
+                    Pbkdf2Iterations,
+                    HashAlgorithmName.SHA256,
+                    HashByteSize
+                );
 
-                // 📝 将密码 + Salt转换为字节数组
-                var passwordWithSalt = password + SALT;
-                var passwordBytes = Encoding.UTF8.GetBytes(passwordWithSalt);
-
-                // 🔄 计算哈希值
-                var hashedBytes = sha256.ComputeHash(passwordBytes);
-
-                // 📄 将哈希字节数组转换为Base64字符串
-                // Base64编码便于存储和传输
-                return Convert.ToBase64String(hashedBytes);
+                return string.Join(
+                    "$",
+                    Pbkdf2Prefix,
+                    Pbkdf2Iterations.ToString(),
+                    Convert.ToBase64String(saltBytes),
+                    Convert.ToBase64String(hashBytes)
+                );
             }
             catch (Exception ex)
             {
                 throw new InvalidOperationException("密码加密失败", ex);
             }
+        }
+
+        /// <summary>
+        /// 生成旧版 SHA256 + 固定盐哈希，仅用于兼容历史数据和测试夹具。
+        /// </summary>
+        public static string HashLegacyPassword(string password)
+        {
+            if (string.IsNullOrEmpty(password))
+            {
+                throw new ArgumentException("密码不能为空", nameof(password));
+            }
+
+            using var sha256 = SHA256.Create();
+            var passwordBytes = Encoding.UTF8.GetBytes(password + LegacySalt);
+            var hashedBytes = sha256.ComputeHash(passwordBytes);
+            return Convert.ToBase64String(hashedBytes);
+        }
+
+        /// <summary>
+        /// 根据客户端提交格式生成入库哈希；旧客户端 SHA256 值继续按 legacy 存储，便于后续 raw 登录迁移。
+        /// </summary>
+        public static string HashSubmittedPassword(string password, string? passwordFormat)
+        {
+            var normalizedFormat = NormalizePasswordFormat(passwordFormat);
+            return normalizedFormat == PasswordFormatRaw
+                ? HashPassword(password)
+                : HashLegacyPassword(password);
         }
 
         /// <summary>
@@ -60,6 +93,24 @@ namespace BlazorApp.Api.Utils
         /// <returns>true表示密码正确，false表示密码错误</returns>
         public static bool VerifyPassword(string password, string hashedPassword)
         {
+            return VerifyPassword(password, hashedPassword, PasswordFormatRaw, out _);
+        }
+
+        /// <summary>
+        /// 验证密码并判断是否需要迁移旧哈希。
+        /// </summary>
+        /// <param name="password">客户端提交的密码值，可能是原始密码或旧客户端 SHA256。</param>
+        /// <param name="hashedPassword">数据库中的密码哈希。</param>
+        /// <param name="passwordFormat">客户端密码格式：raw 或 clientSha256。</param>
+        /// <param name="needsRehash">旧哈希用原始密码验证成功时返回 true，调用方应重算新哈希。</param>
+        public static bool VerifyPassword(
+            string password,
+            string hashedPassword,
+            string? passwordFormat,
+            out bool needsRehash
+        )
+        {
+            needsRehash = false;
             if (string.IsNullOrEmpty(password) || string.IsNullOrEmpty(hashedPassword))
             {
                 return false;
@@ -67,17 +118,69 @@ namespace BlazorApp.Api.Utils
 
             try
             {
-                // 🔐 对输入的密码进行哈希
-                var inputHash = HashPassword(password);
+                var normalizedFormat = NormalizePasswordFormat(passwordFormat);
+                if (IsPbkdf2Hash(hashedPassword))
+                {
+                    // 新格式只接受原始密码，旧客户端提交的 SHA256 不能再作为登录凭据。
+                    return normalizedFormat == PasswordFormatRaw
+                        && VerifyPbkdf2Password(password, hashedPassword);
+                }
 
-                // ✅ 比较哈希值是否相等
-                return inputHash.Equals(hashedPassword, StringComparison.Ordinal);
+                var legacyPasswordValue =
+                    normalizedFormat == PasswordFormatRaw ? ComputeSha256(password) : password;
+                var inputHash = HashLegacyPassword(legacyPasswordValue);
+                var isValid = CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(inputHash),
+                    Encoding.UTF8.GetBytes(hashedPassword)
+                );
+
+                // 只有拿到原始密码时才能安全迁移，旧客户端 SHA256 登录只兼容不升级。
+                needsRehash = isValid && normalizedFormat == PasswordFormatRaw;
+                return isValid;
             }
             catch
             {
                 // 💥 如果加密过程出现异常，返回false
                 return false;
             }
+        }
+
+        private static string NormalizePasswordFormat(string? passwordFormat)
+        {
+            return string.Equals(passwordFormat, PasswordFormatRaw, StringComparison.OrdinalIgnoreCase)
+                ? PasswordFormatRaw
+                : PasswordFormatClientSha256;
+        }
+
+        private static bool IsPbkdf2Hash(string hashedPassword)
+        {
+            return hashedPassword.StartsWith($"{Pbkdf2Prefix}$", StringComparison.Ordinal);
+        }
+
+        private static bool VerifyPbkdf2Password(string password, string hashedPassword)
+        {
+            var parts = hashedPassword.Split('$');
+            if (parts.Length != 4 || parts[0] != Pbkdf2Prefix)
+            {
+                return false;
+            }
+
+            if (!int.TryParse(parts[1], out var iterations) || iterations <= 0)
+            {
+                return false;
+            }
+
+            var saltBytes = Convert.FromBase64String(parts[2]);
+            var storedHashBytes = Convert.FromBase64String(parts[3]);
+            var inputHashBytes = Rfc2898DeriveBytes.Pbkdf2(
+                password,
+                saltBytes,
+                iterations,
+                HashAlgorithmName.SHA256,
+                storedHashBytes.Length
+            );
+
+            return CryptographicOperations.FixedTimeEquals(inputHashBytes, storedHashBytes);
         }
 
         /// <summary>
@@ -136,7 +239,7 @@ namespace BlazorApp.Api.Utils
 
         /// <summary>
         /// 计算SHA256哈希值（不加盐）
-        /// 用于模拟前端哈希行为（例如重置密码时）
+        /// 仅用于识别旧客户端 SHA256 登录值，新增密码不得再调用它做入库哈希。
         /// </summary>
         /// <param name="rawData">原始数据</param>
         /// <returns>SHA256哈希值（小写Hex字符串）</returns>

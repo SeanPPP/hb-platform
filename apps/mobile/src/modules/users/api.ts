@@ -83,6 +83,7 @@ export async function resetStoreUserPassword(payload: StoreUserPasswordPayload):
     {
       storeCode: payload.storeCode,
       newPassword: payload.newPassword,
+      passwordFormat: payload.passwordFormat,
     }
   );
 }

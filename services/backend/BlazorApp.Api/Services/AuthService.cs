@@ -72,8 +72,8 @@ namespace BlazorApp.Api.Services
                     .ToListAsync();
                 var user = list.FirstOrDefault();
 
-                // ❌ 用户不存在或密码验证失败
-                if (user == null || !VerifyPassword(request.Password, user.PasswordHash))
+                // ❌ 用户不存在或密码验证失败；旧客户端未传格式时按 clientSha256 兼容处理。
+                if (user == null || !VerifyPassword(request.Password, user.PasswordHash, request.PasswordFormat, out var needsPasswordRehash))
                 {
                     return new LoginResponse { Success = false, Message = "用户名或密码错误" };
                 }
@@ -99,9 +99,14 @@ namespace BlazorApp.Api.Services
                 // 记录用户活动，可用于安全审计和会话管理
                 user.LastLoginAt = DateTime.UtcNow;
                 user.UpdatedAt = DateTime.UtcNow;
+                if (needsPasswordRehash)
+                {
+                    // 登录时拿到了原始密码，旧 SHA256 哈希可安全迁移为 PBKDF2。
+                    user.PasswordHash = HashPassword(request.Password);
+                }
                 await _dbContext
                     .Db.Updateable(user)
-                    .UpdateColumns(u => new { u.LastLoginAt, u.UpdatedAt }) // 只更新指定字段，提高性能
+                    .UpdateColumns(u => new { u.LastLoginAt, u.UpdatedAt, u.PasswordHash }) // 只更新指定字段，提高性能
                     .ExecuteCommandAsync();
 
                 var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
@@ -295,11 +300,18 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="password">用户输入的原始密码</param>
         /// <param name="storedHash">数据库中存储的密码哈希值</param>
+        /// <param name="passwordFormat">客户端提交密码的格式</param>
+        /// <param name="needsRehash">旧哈希使用原始密码验证成功时需要迁移</param>
         /// <returns>true表示密码正确，false表示密码错误</returns>
-        private static bool VerifyPassword(string password, string storedHash)
+        private static bool VerifyPassword(
+            string password,
+            string storedHash,
+            string? passwordFormat,
+            out bool needsRehash
+        )
         {
-            // 🔐 使用统一的密码验证工具类
-            return PasswordHasher.VerifyPassword(password, storedHash);
+            // 🔐 使用统一的密码验证工具类，并让登录流程负责旧哈希渐进迁移。
+            return PasswordHasher.VerifyPassword(password, storedHash, passwordFormat, out needsRehash);
         }
 
         /// <summary>
@@ -528,12 +540,11 @@ namespace BlazorApp.Api.Services
         {
             var user = await _dbContext.Db.Queryable<User>()
                 .FirstAsync(u => u.UserGUID == userGuid);
-            var pwcheck = HashPassword(dto.NewPassword);
 
             if (user == null) return false;
 
             // 验证旧密码
-            if (!VerifyPassword(dto.CurrentPassword, user.PasswordHash))
+            if (!VerifyPassword(dto.CurrentPassword, user.PasswordHash, PasswordHasher.PasswordFormatRaw, out _))
             {
                 throw new Exception("当前密码错误");
             }

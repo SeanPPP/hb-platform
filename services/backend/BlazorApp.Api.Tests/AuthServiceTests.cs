@@ -57,10 +57,45 @@ namespace BlazorApp.Api.Tests
             {
                 Username = "admin",
                 Password = "Secret123",
+                PasswordFormat = PasswordHasher.PasswordFormatRaw,
             });
 
             Assert.True(result.Success);
             Assert.Equal("admin", result.User?.Username);
+
+            var migratedHash = await _db.Queryable<User>()
+                .Where(user => user.Username == "admin")
+                .Select(user => user.PasswordHash)
+                .FirstAsync();
+            Assert.StartsWith("pbkdf2-sha256$", migratedHash);
+        }
+
+        [Fact]
+        public async Task LoginAsync_WhenLegacyClientSubmitsSha256_DoesNotMigratePasswordHash()
+        {
+            CreateLegacyUserSchemaWithoutPhone();
+            var legacyHash = await SeedLegacyUserAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            var result = await service.LoginAsync(new LoginRequest
+            {
+                Username = "admin",
+                Password = PasswordHasher.ComputeSha256("Secret123"),
+                PasswordFormat = PasswordHasher.PasswordFormatClientSha256,
+            });
+
+            Assert.True(result.Success);
+
+            var storedHash = await _db.Queryable<User>()
+                .Where(user => user.Username == "admin")
+                .Select(user => user.PasswordHash)
+                .FirstAsync();
+            Assert.Equal(legacyHash, storedHash);
         }
 
         [Fact]
@@ -204,8 +239,9 @@ namespace BlazorApp.Api.Tests
             );
         }
 
-        private async Task SeedLegacyUserAsync()
+        private async Task<string> SeedLegacyUserAsync()
         {
+            var legacyHash = PasswordHasher.HashLegacyPassword(PasswordHasher.ComputeSha256("Secret123"));
             await _db.Ado.ExecuteCommandAsync(
                 """
                 INSERT INTO [User] (
@@ -222,12 +258,14 @@ namespace BlazorApp.Api.Tests
                     new("@UserGUID", Guid.NewGuid().ToString()),
                     new("@Username", "admin"),
                     new("@Email", "admin@example.com"),
-                    new("@PasswordHash", PasswordHasher.HashPassword("Secret123")),
+                    new("@PasswordHash", legacyHash),
                     new("@FullName", "Admin User"),
                     new("@CreatedAt", DateTime.UtcNow),
                     new("@UpdatedAt", DateTime.UtcNow),
                 }
             );
+
+            return legacyHash;
         }
 
         private Task CreateCurrentAuthSchemaAsync()

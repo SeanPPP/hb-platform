@@ -43,6 +43,7 @@ export async function createUser(payload: CreateUserDto): Promise<UserDto> {
     Username: payload.username,
     Email: payload.email,
     Password: payload.password,
+    PasswordFormat: payload.passwordFormat,
     FullName: payload.fullName ?? null,
     IsActive: payload.isActive ?? true,
     RoleGuids: payload.roleGuids ?? [],
@@ -111,7 +112,11 @@ export async function assignStoresToUser(guid: string, payload: UserStoreAssignm
 export async function updateUserPassword(guid: string, dto: UpdateUserPasswordDto): Promise<boolean> {
   const response = await request.put<ApiResponse<boolean>>(
     `/api/Users/guid/${guid}/password`,
-    dto,
+    {
+      NewPassword: dto.newPassword,
+      PasswordFormat: dto.passwordFormat,
+      ForcePasswordChange: dto.forcePasswordChange,
+    },
   )
   return unwrapApiData(response)
 }

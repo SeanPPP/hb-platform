@@ -324,6 +324,7 @@ export default function UsersScreen() {
       email: formValues.email.trim() || undefined,
       phone: formValues.phone.trim() || undefined,
       password: formValues.password.trim() || undefined,
+      passwordFormat: "raw" as const,
       status: formValues.status ? 1 : 0,
       storeCode: targetStoreCode,
       roleNames: [STORE_STAFF_ROLE],
@@ -441,6 +442,7 @@ export default function UsersScreen() {
         userGuid: passwordUser.userGUID,
         storeCode: targetStoreCode,
         newPassword: resetPasswordValue.trim(),
+        passwordFormat: "raw",
       });
       setSnackbarMessage(t("messages.passwordReset"));
       closeResetPasswordDialog();

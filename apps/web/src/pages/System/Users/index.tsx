@@ -49,7 +49,6 @@ import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserPermissi
 import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
 import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
-import { hashPassword } from '../../../utils/password'
 import { useAuthStore } from '../../../store/auth'
 import {
   areRoleGuidsAllowedForScopedManager,
@@ -670,7 +669,10 @@ export default function SystemUsersPage() {
     try {
       const values = await resetPwdForm.validateFields()
       setResetPwdLoading(true)
-      await updateUserPassword(editingUser.userGUID, { newPassword: hashPassword(values.newPassword) })
+      await updateUserPassword(editingUser.userGUID, {
+        newPassword: values.newPassword,
+        passwordFormat: 'raw',
+      })
       message.success(t('system.users.resetPasswordSuccess', '密码重置成功'))
       setResetPwdOpen(false)
       resetPwdForm.resetFields()
@@ -720,7 +722,8 @@ export default function SystemUsersPage() {
       const payload: CreateUserDto = {
         username: values.username,
         email: values.email,
-        password: hashPassword(values.password),
+        password: values.password,
+        passwordFormat: 'raw',
         fullName: values.fullName,
         isActive: values.isActive ?? true,
         roleGuids: createRoleTargetKeys,

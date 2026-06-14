@@ -1,6 +1,7 @@
 export interface LoginRequest {
   username: string;
   password: string;
+  passwordFormat?: "raw" | "clientSha256";
 }
 
 export interface TokenResponse {

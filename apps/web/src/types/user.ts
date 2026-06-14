@@ -77,6 +77,7 @@ export interface CreateUserDto {
   username: string
   email: string
   password: string
+  passwordFormat?: 'raw' | 'clientSha256'
   fullName?: string
   isActive?: boolean
   roleGuids?: string[]
@@ -85,5 +86,6 @@ export interface CreateUserDto {
 
 export interface UpdateUserPasswordDto {
   newPassword: string
+  passwordFormat?: 'raw' | 'clientSha256'
   forcePasswordChange?: boolean
 }

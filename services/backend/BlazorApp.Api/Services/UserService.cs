@@ -885,7 +885,7 @@ namespace BlazorApp.Api.Services
                     UserGUID = Guid.NewGuid().ToString(),
                     Username = usernameLower,
                     Email = dto.Email,
-                    PasswordHash = PasswordHasher.HashPassword(dto.Password),
+                    PasswordHash = PasswordHasher.HashSubmittedPassword(dto.Password, dto.PasswordFormat),
                     FullName = dto.FullName,
                     IsActive = dto.IsActive,
                     CreatedAt = DateTime.UtcNow,
@@ -1280,7 +1280,7 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
 
-                var hashedPassword = PasswordHasher.HashPassword(dto.NewPassword);
+                var hashedPassword = PasswordHasher.HashSubmittedPassword(dto.NewPassword, dto.PasswordFormat);
 
                 var result = await db.Updateable<User>()
                     .SetColumns(u => new User
@@ -1803,8 +1803,9 @@ namespace BlazorApp.Api.Services
                             Username = importUser.Username,
                             Email = importUser.Email,
                             FullName = importUser.FullName,
-                            // 先计算SHA256（模拟前端哈希）
-                            Password = PasswordHasher.ComputeSha256(importUser.Password),
+                            // 导入密码按原始密码交给后端统一慢哈希，保持与新登录协议一致。
+                            Password = importUser.Password,
+                            PasswordFormat = PasswordHasher.PasswordFormatRaw,
                             IsActive = true,
                         };
 

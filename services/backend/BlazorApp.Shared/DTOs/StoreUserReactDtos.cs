@@ -57,6 +57,11 @@ namespace BlazorApp.Shared.DTOs
         [StringLength(100, MinimumLength = 6, ErrorMessage = "密码长度必须在6-100个字符之间")]
         public string Password { get; set; } = string.Empty;
 
+        /// <summary>
+        /// 密码格式：raw 表示 HTTPS 原始密码；clientSha256 表示旧客户端 SHA256。
+        /// </summary>
+        public string PasswordFormat { get; set; } = string.Empty;
+
         [StringLength(100, ErrorMessage = "姓名长度不能超过100个字符")]
         public string? FullName { get; set; }
 
@@ -109,5 +114,10 @@ namespace BlazorApp.Shared.DTOs
         [Required(ErrorMessage = "新密码不能为空")]
         [StringLength(100, MinimumLength = 6, ErrorMessage = "密码长度必须在6-100个字符之间")]
         public string NewPassword { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 新密码格式：raw 表示 HTTPS 原始密码；clientSha256 表示旧客户端 SHA256。
+        /// </summary>
+        public string PasswordFormat { get; set; } = string.Empty;
     }
 }

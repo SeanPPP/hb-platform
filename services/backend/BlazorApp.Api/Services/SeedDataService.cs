@@ -145,10 +145,8 @@ namespace BlazorApp.Api.Services
                     Username = "admin",
                     Email = "admin@example.com",
                     FullName = "Administrator",
-                    // 默认密码 "admin" 先通过SHA256哈希（模拟前端），再加盐哈希存储
-                    PasswordHash = PasswordHasher.HashPassword(
-                        PasswordHasher.ComputeSha256("admin")
-                    ),
+                    // 默认密码直接交给后端慢哈希，避免继续生成可重放的旧客户端哈希。
+                    PasswordHash = PasswordHasher.HashPassword("admin"),
                     IsActive = true,
                     CreatedAt = DateTime.UtcNow,
                     LastLoginAt = null,
