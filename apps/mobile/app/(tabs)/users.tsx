@@ -570,6 +570,11 @@ export default function UsersScreen() {
                   {t("fields.lastLoginValue", { value: lastLogin })}
                 </Text>
               ) : null}
+              {item.lastLoginIp ? (
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("fields.lastLoginIpValue", { value: item.lastLoginIp })}
+                </Text>
+              ) : null}
               {updatedAt ? (
                 <Text variant="bodySmall" style={styles.secondaryText}>
                   {t("fields.updatedAtValue", { value: updatedAt })}

@@ -67,6 +67,37 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 用户登录记录查询参数
+    /// </summary>
+    public class UserLoginRecordQueryDto
+    {
+        /// <summary>
+        /// 页码，从1开始
+        /// </summary>
+        public int Page { get; set; } = 1;
+
+        /// <summary>
+        /// 每页大小
+        /// </summary>
+        public int PageSize { get; set; } = 10;
+    }
+
+    /// <summary>
+    /// 用户登录记录DTO
+    /// </summary>
+    public class UserLoginRecordDto
+    {
+        public string SessionId { get; set; } = string.Empty;
+        public DateTime LoginAt { get; set; }
+        public string? IpAddress { get; set; }
+        public string? UserAgent { get; set; }
+        public DateTime ExpiresAt { get; set; }
+        public bool IsRevoked { get; set; }
+        public bool IsExpired { get; set; }
+        public string Status { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// 用户基础信息DTO
     /// </summary>
     public class UserDto
@@ -77,6 +108,7 @@ namespace BlazorApp.Shared.DTOs
         public string? FullName { get; set; }
         public string? Phone { get; set; } // 兼容性
         public DateTime? LastLoginAt { get; set; }
+        public string? LastLoginIp { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
@@ -102,6 +134,7 @@ namespace BlazorApp.Shared.DTOs
         public string? FullName { get; set; }
         public string? Phone { get; set; } // 兼容性
         public DateTime? LastLoginAt { get; set; }
+        public string? LastLoginIp { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }

@@ -14,6 +14,7 @@ export interface StoreUserListItem {
   gender?: string;
   employmentType?: string;
   lastLoginTime?: string;
+  lastLoginIp?: string;
   createdAt?: string;
   updatedAt?: string;
 }

@@ -39,6 +39,17 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<UserDetailDto>> GetUserByGuidAsync(string userGuid);
 
         /// <summary>
+        /// 获取用户登录记录
+        /// </summary>
+        /// <param name="userGuid">用户GUID</param>
+        /// <param name="query">分页查询参数</param>
+        /// <returns>登录记录分页数据</returns>
+        Task<ApiResponse<PagedResult<UserLoginRecordDto>>> GetUserLoginRecordsAsync(
+            string userGuid,
+            UserLoginRecordQueryDto query
+        );
+
+        /// <summary>
         /// 根据用户名获取用户
         /// </summary>
         /// <param name="username">用户名</param>

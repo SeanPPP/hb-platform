@@ -47,6 +47,7 @@
     "emailValue": "邮箱：{{value}}",
     "phoneValue": "电话：{{value}}",
     "lastLoginValue": "最近登录：{{value}}",
+    "lastLoginIpValue": "登录 IP：{{value}}",
     "updatedAtValue": "最近更新：{{value}}"
   },
   "filters": {

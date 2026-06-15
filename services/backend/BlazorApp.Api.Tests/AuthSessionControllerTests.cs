@@ -112,16 +112,97 @@ public sealed class AuthSessionControllerTests : IDisposable
         Assert.Contains(
             setCookieHeaders,
             header =>
-                header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
+                header != null
+                && header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
                 && header.Contains("httponly", StringComparison.OrdinalIgnoreCase)
         );
         Assert.Contains(
             setCookieHeaders,
             header =>
-                header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
+                header != null
+                && header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
                 && header.Contains("httponly", StringComparison.OrdinalIgnoreCase)
         );
     }
+
+    [Fact]
+    public async Task SessionLogin_RecordsResolvedLoginIpOnUser()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "ip-user-1",
+                Username = "ipuser",
+                Email = "ipuser@example.com",
+                PasswordHash = "hashed",
+                FullName = "IP User",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+
+        var authService = new Mock<IAuthService>();
+        authService
+            .Setup(service => service.LoginAsync(It.IsAny<LoginRequest>()))
+            .ReturnsAsync(
+                new LoginResponse
+                {
+                    Success = true,
+                    User = new LoginUserDto
+                    {
+                        UserGUID = "ip-user-1",
+                        Username = "ipuser",
+                        Email = "ipuser@example.com",
+                    },
+                }
+            );
+        authService
+            .Setup(service =>
+                service.GenerateTokensAsync(
+                    It.Is<User>(user => user.UserGUID == "ip-user-1"),
+                    "203.0.113.9",
+                    It.IsAny<string>()
+                )
+            )
+            .ReturnsAsync(
+                new TokenResponse
+                {
+                    AccessToken = "access-token",
+                    RefreshToken = "refresh-token",
+                    AccessTokenExpiry = DateTime.UtcNow.AddMinutes(15),
+                    RefreshTokenExpiry = DateTime.UtcNow.AddDays(7),
+                    Success = true,
+                }
+            );
+
+        var controller = CreateController(authService.Object);
+        controller.ControllerContext.HttpContext.Request.Headers["X-Forwarded-For"] =
+            "203.0.113.9, 10.0.0.1";
+
+        var result = await InvokeAsync(controller, "SessionLogin", new LoginRequest
+        {
+            Username = "ipuser",
+            Password = "Secret123",
+        });
+
+        Assert.NotNull(result);
+        Assert.True(GetBoolean(result!, "Success"));
+
+        var user = await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "ip-user-1");
+        Assert.Equal("203.0.113.9", user!.LastLoginIp);
+        Assert.NotNull(user.LastLoginAt);
+        authService.Verify(
+            service => service.GenerateTokensAsync(
+                It.Is<User>(item => item.UserGUID == "ip-user-1"),
+                "203.0.113.9",
+                It.IsAny<string>()
+            ),
+            Times.Once
+        );
+    }
+
 
     [Fact]
     public async Task SessionRefresh_ReturnsCookieOnlySessionPayload()
@@ -182,11 +263,11 @@ public sealed class AuthSessionControllerTests : IDisposable
         var setCookieHeaders = controller.Response.Headers.SetCookie.ToArray();
         Assert.Contains(
             setCookieHeaders,
-            header => header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
+            header => header != null && header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
         );
         Assert.Contains(
             setCookieHeaders,
-            header => header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
+            header => header != null && header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
         );
     }
 

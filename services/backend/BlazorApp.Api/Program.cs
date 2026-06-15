@@ -346,6 +346,14 @@ builder
                     return;
                 }
 
+                var authSessionValidator = context.HttpContext.RequestServices
+                    .GetRequiredService<IAuthSessionValidator>();
+                if (!await authSessionValidator.IsAccessSessionActiveAsync(userGuid, principal))
+                {
+                    context.Fail("登录会话已失效");
+                    return;
+                }
+
                 var activeRoleNames = await dbContext.Db.Queryable<UserRole>()
                     .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
                     .Where((userRole, role) =>
@@ -453,6 +461,8 @@ builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 // 作用域：每个HTTP请求创建一次实例，请求结束时销毁
 // 适合包含状态或需要事务管理的业务服务
 builder.Services.AddScoped<IAuthService, AuthService>(); // 认证服务
+builder.Services.AddScoped<IAuthSessionValidator, AuthSessionValidator>(); // access token 会话有效性校验
+builder.Services.AddSingleton<IClientIpResolver, ClientIpResolver>(); // 登录公网 IP 解析
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
 builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
 builder.Services.AddScoped<IRoleService, RoleService>(); // 角色管理服务
@@ -688,7 +698,8 @@ try
         // 🔄 智能模式：增量更新数据库结构
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-       // dbContext.CreateTable();
+        dbContext.EnsureLoginSessionSchema();
+        // dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 

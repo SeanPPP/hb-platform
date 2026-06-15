@@ -22,6 +22,7 @@ namespace BlazorApp.Api.Controllers
         private readonly IRoleService _roleService;
         private readonly IUserService _userService;
         private readonly ILogger<AuthController> _logger;
+        private readonly IClientIpResolver _clientIpResolver;
 
         /// <summary>
         /// 构造函数 - 依赖注入认证服务、数据库上下文和角色服务
@@ -29,12 +30,16 @@ namespace BlazorApp.Api.Controllers
         /// <param name="authService">认证服务</param>
         /// <param name="dbContext">数据库上下文</param>
         /// <param name="roleService">角色服务</param>
+        /// <param name="userService">用户服务</param>
+        /// <param name="logger">日志记录器</param>
+        /// <param name="clientIpResolver">客户端公网 IP 解析器</param>
         public AuthController(
             IAuthService authService,
             SqlSugarContext dbContext,
             IRoleService roleService,
             IUserService userService,
-            ILogger<AuthController> logger
+            ILogger<AuthController> logger,
+            IClientIpResolver? clientIpResolver = null
         )
         {
             _authService = authService;
@@ -42,6 +47,7 @@ namespace BlazorApp.Api.Controllers
             _roleService = roleService;
             _userService = userService;
             _logger = logger;
+            _clientIpResolver = clientIpResolver ?? new ClientIpResolver(new ConfigurationBuilder().Build());
         }
 
         /// <summary>
@@ -131,8 +137,7 @@ namespace BlazorApp.Api.Controllers
         {
             var accessToken = request?.AccessToken ?? string.Empty;
             var refreshToken = request?.RefreshToken ?? string.Empty;
-            var ipAddress =
-                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+            var ipAddress = _clientIpResolver.Resolve(Request.HttpContext);
             var userAgent = Request.Headers["User-Agent"].ToString();
 
             var tokenResponseFromBody = await _authService.RefreshTokensAsync(
@@ -157,8 +162,7 @@ namespace BlazorApp.Api.Controllers
         [AllowAnonymous]
         public async Task<ApiResponse<SessionResponse>> SessionRefresh()
         {
-            var ipAddress =
-                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+            var ipAddress = _clientIpResolver.Resolve(Request.HttpContext);
             var userAgent = Request.Headers["User-Agent"].ToString();
 
             var tokenResponse = await _authService.RefreshTokensAsync(
@@ -242,6 +246,7 @@ namespace BlazorApp.Api.Controllers
                     Username = user.Username,
                     Email = user.Email,
                     FullName = user.FullName,
+                    LastLoginIp = user.LastLoginIp,
                     IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt,
                     UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
@@ -350,9 +355,15 @@ namespace BlazorApp.Api.Controllers
             }
 
             // 获取客户端IP地址和用户代理信息（用于安全审计）
-            var ipAddress =
-                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+            var ipAddress = _clientIpResolver.Resolve(Request.HttpContext);
             var userAgent = Request.Headers["User-Agent"].ToString();
+
+            registeredUser.LastLoginAt = DateTime.UtcNow;
+            registeredUser.LastLoginIp = ipAddress;
+            registeredUser.UpdatedAt = DateTime.UtcNow;
+            await _dbContext.Db.Updateable(registeredUser)
+                .UpdateColumns(user => new { user.LastLoginAt, user.LastLoginIp, user.UpdatedAt })
+                .ExecuteCommandAsync();
 
             // 为新注册用户生成JWT访问令牌和刷新令牌
             var tokenResponse = await _authService.GenerateTokensAsync(
@@ -418,8 +429,7 @@ namespace BlazorApp.Api.Controllers
                 return null;
             }
 
-            var ipAddress =
-                Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+            var ipAddress = _clientIpResolver.Resolve(Request.HttpContext);
             var userAgent = Request.Headers["User-Agent"].ToString();
 
             var usernameLower = (request.Username ?? string.Empty).Trim().ToLower();
@@ -435,6 +445,14 @@ namespace BlazorApp.Api.Controllers
             {
                 return null;
             }
+
+            user.LastLoginIp = ipAddress;
+            user.LastLoginAt = DateTime.UtcNow;
+            user.UpdatedAt = DateTime.UtcNow;
+            // 登录 IP 写入 User 便于后台用户管理直接查看最近一次登录来源。
+            await _dbContext.Db.Updateable(user)
+                .UpdateColumns(item => new { item.LastLoginAt, item.LastLoginIp, item.UpdatedAt })
+                .ExecuteCommandAsync();
 
             return await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
         }

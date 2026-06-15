@@ -5,6 +5,8 @@ import type {
   UpdateUserDto,
   UserPermissionAssignmentDto,
   UserPermissionStateDto,
+  UserLoginRecordDto,
+  UserLoginRecordQueryDto,
   UpdateUserPasswordDto,
   UserDetailDto,
   UserDto,
@@ -55,6 +57,17 @@ export async function createUser(payload: CreateUserDto): Promise<UserDto> {
 export async function getUserByGuid(guid: string): Promise<UserDetailDto> {
   const response = await request.get<ApiResponse<UserDetailDto>>(`/api/Users/guid/${guid}`)
   return unwrapApiData(response)
+}
+
+export async function getUserLoginRecords(
+  guid: string,
+  params: UserLoginRecordQueryDto,
+): Promise<PagedResult<UserLoginRecordDto>> {
+  const response = await request.get<ApiResponse<PagedResult<UserLoginRecordDto>>>(
+    `/api/Users/guid/${guid}/login-records`,
+    { params: params as Record<string, unknown> },
+  )
+  return unwrapPagedResult(response)
 }
 
 export async function getUserStores(guid: string): Promise<UserStoreDto[]> {

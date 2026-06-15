@@ -27,6 +27,7 @@ namespace BlazorApp.Shared.DTOs
         public string? Gender { get; set; }
         public string? EmploymentType { get; set; }
         public DateTime? LastLoginTime { get; set; }
+        public string? LastLoginIp { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
     }
