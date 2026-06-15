@@ -54,6 +54,15 @@ export interface WarehouseLocation {
   status?: number | null;
   locationType?: number | null;
   productCount: number;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+  products?: Array<{
+    productCode?: string | null;
+    itemNumber?: string | null;
+    productName?: string | null;
+    productImage?: string | null;
+    middlePackageQuantity?: number | null;
+  }>;
 }
 
 export interface WarehouseLocationDetail {
@@ -67,6 +76,7 @@ export interface WarehouseLocationDetail {
     itemNumber?: string | null;
     productName?: string | null;
     productImage?: string | null;
+    middlePackageQuantity?: number | null;
   }>;
   updatedAt?: string | null;
   updatedBy?: string | null;
@@ -110,5 +120,8 @@ export interface WarehouseLocationPrintPayload {
   locationGuid: string;
   locationCode?: string | null;
   locationBarcode?: string | null;
+  itemNumber?: string | null;
+  productName?: string | null;
+  middlePackageQuantity?: number | null;
   productCount: number;
 }

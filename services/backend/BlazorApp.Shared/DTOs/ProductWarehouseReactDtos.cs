@@ -533,6 +533,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
+        public int? MiddlePackageQuantity { get; set; }
         public string? LocationCode { get; set; }
         public string? LocationBarcode { get; set; }
     }
@@ -542,6 +543,9 @@ namespace BlazorApp.Shared.DTOs
         public string LocationGuid { get; set; } = string.Empty;
         public string? LocationCode { get; set; }
         public string? LocationBarcode { get; set; }
+        public string? ItemNumber { get; set; }
+        public string? ProductName { get; set; }
+        public int? MiddlePackageQuantity { get; set; }
         public int ProductCount { get; set; }
     }
 }

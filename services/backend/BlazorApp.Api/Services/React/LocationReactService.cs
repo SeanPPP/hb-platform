@@ -45,20 +45,22 @@ namespace BlazorApp.Api.Services.React
 
                 if (filter.IsUsed.HasValue)
                 {
-                    var usedLocationGuids = await _context
-                        .Db.Queryable<ProductLocation>()
-                        .Where(pl => !pl.IsDeleted)
-                        .Select(pl => pl.LocationGuid)
-                        .Distinct()
-                        .ToListAsync();
-
+                    // 使用数据库端子查询判断使用状态，避免把全部已用货位 GUID 拉到内存。
                     if (filter.IsUsed.Value)
                     {
-                        query = query.Where(l => usedLocationGuids.Contains(l.LocationGuid));
+                        query = query.Where(l =>
+                            SqlFunc.Subqueryable<ProductLocation>()
+                                .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                                .Any()
+                        );
                     }
                     else
                     {
-                        query = query.Where(l => !usedLocationGuids.Contains(l.LocationGuid));
+                        query = query.Where(l =>
+                            !SqlFunc.Subqueryable<ProductLocation>()
+                                .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                                .Any()
+                        );
                     }
                 }
 
@@ -143,21 +145,11 @@ namespace BlazorApp.Api.Services.React
 
                 var sortBy = filter.SortBy ?? "LocationCode";
                 var sortDirection = filter.SortDirection ?? "asc";
-                var orderByExpression = CreateOrderByExpression(sortBy);
-                query =
-                    sortDirection.ToLower() == "desc"
-                        ? query.OrderByDescending(orderByExpression)
-                        : query.OrderBy(orderByExpression);
+                query = ApplySorting(query, sortBy, sortDirection);
 
                 var locations = await query.ToPageListAsync(filter.PageNumber, filter.PageSize);
-
-                var result = new List<LocationReactDto>();
-                foreach (var loc in locations)
-                {
-                    var dto = MapToDto(loc);
-                    await LoadProductsAsync(dto);
-                    result.Add(dto);
-                }
+                var result = locations.Select(MapToDto).ToList();
+                await LoadProductsForLocationsAsync(result);
 
                 return new PagedListReactDto<LocationReactDto>
                 {
@@ -822,8 +814,62 @@ namespace BlazorApp.Api.Services.React
                     Barcode = p.Barcode,
                     ProductName = p.ProductName,
                     ProductImage = p.ProductImage,
+                    MiddlePackageQuantity = p.MiddlePackageQuantity,
                 })
                 .ToList();
+        }
+
+        private async Task LoadProductsForLocationsAsync(List<LocationReactDto> locations)
+        {
+            if (locations.Count == 0)
+                return;
+
+            var locationGuids = locations.Select(location => location.LocationGuid).ToList();
+            // 批量加载当前页商品，避免列表每行分别查询 ProductLocation 和 Product。
+            var products = await _context
+                .Db.Queryable<ProductLocation>()
+                .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                .Where((pl, p) =>
+                    !pl.IsDeleted
+                    && pl.LocationGuid != null
+                    && locationGuids.Contains(pl.LocationGuid)
+                )
+                .Select((pl, p) => new
+                {
+                    pl.LocationGuid,
+                    p.ProductCode,
+                    p.ItemNumber,
+                    p.Barcode,
+                    p.ProductName,
+                    p.ProductImage,
+                    p.MiddlePackageQuantity,
+                })
+                .ToListAsync();
+
+            var productMap = products
+                .GroupBy(product => product.LocationGuid ?? string.Empty)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .Select(product => new LocationReactProductDto
+                        {
+                            ProductCode = product.ProductCode,
+                            ItemNumber = product.ItemNumber,
+                            Barcode = product.Barcode,
+                            ProductName = product.ProductName,
+                            ProductImage = product.ProductImage,
+                            MiddlePackageQuantity = product.MiddlePackageQuantity,
+                        })
+                        .ToList()
+                );
+
+            foreach (var location in locations)
+            {
+                if (productMap.TryGetValue(location.LocationGuid, out var locationProducts))
+                {
+                    location.Products = locationProducts;
+                }
+            }
         }
 
         private async Task<string> GenerateUniqueLocationBarcodeAsync()
@@ -927,6 +973,34 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        private ISugarQueryable<Location> ApplySorting(
+            ISugarQueryable<Location> query,
+            string sortBy,
+            string sortDirection
+        )
+        {
+            var isDescending = sortDirection.ToLower() == "desc";
+            if (sortBy == "Usage")
+            {
+                return isDescending
+                    ? query.OrderByDescending(l =>
+                        SqlFunc.Subqueryable<ProductLocation>()
+                            .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                            .Any()
+                    )
+                    : query.OrderBy(l =>
+                        SqlFunc.Subqueryable<ProductLocation>()
+                            .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                            .Any()
+                    );
+            }
+
+            var orderByExpression = CreateOrderByExpression(sortBy);
+            return isDescending
+                ? query.OrderByDescending(orderByExpression)
+                : query.OrderBy(orderByExpression);
+        }
+
         private static Expression<Func<Location, object>> CreateOrderByExpression(string sortBy)
         {
             return sortBy switch
@@ -936,6 +1010,7 @@ namespace BlazorApp.Api.Services.React
                 "Status" => l => l.Status,
                 "LocationType" => l => l.LocationType,
                 "UpdatedAt" => l => l.UpdatedAt,
+                "UpdatedBy" => l => l.UpdatedBy,
                 _ => l => l.LocationCode,
             };
         }

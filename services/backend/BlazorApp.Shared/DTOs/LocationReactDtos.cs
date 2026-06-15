@@ -65,6 +65,8 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductName { get; set; }
 
         public string? ProductImage { get; set; }
+
+        public int? MiddlePackageQuantity { get; set; }
     }
 
     public class CreateLocationReactDto

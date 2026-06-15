@@ -85,6 +85,8 @@
     "noResultsTitle": "No locations found",
     "noResultsDescription": "Try another location code or barcode.",
     "searchResultsTitle": "Bin results",
+    "unusedResultsTitle": "Unused bins",
+    "loadingUnused": "Loading unused bins...",
     "selectedTitle": "Selected bin",
     "newLocation": "New location",
     "editLocation": "Edit location",

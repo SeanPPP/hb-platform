@@ -56,5 +56,8 @@ export interface WarehouseLocationLabelPrintPayload {
   locationGuid: string;
   locationCode?: string | null;
   locationBarcode?: string | null;
+  itemNumber?: string | null;
+  productName?: string | null;
+  middlePackageQuantity?: number | null;
   productCount: number;
 }

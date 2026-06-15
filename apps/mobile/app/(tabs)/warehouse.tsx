@@ -3,7 +3,7 @@ import { Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, TextInput
 import { useFocusEffect } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
-import { Button, Card, IconButton, Menu, Modal, Portal, Searchbar, SegmentedButtons, Snackbar, Switch, Text, TextInput } from "react-native-paper";
+import { ActivityIndicator, Button, Card, IconButton, Menu, Modal, Portal, Searchbar, SegmentedButtons, Snackbar, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
@@ -22,6 +22,7 @@ import {
   createLocation,
   deleteLocation,
   getLocationDetail,
+  getDefaultUnusedLocations,
   getWarehouseImageUploadSignature,
   getWarehouseLocationPrintPayload,
   getWarehouseProduct,
@@ -34,6 +35,7 @@ import {
   updateLocation,
   uploadFileToSignedUrl,
 } from "@/modules/warehouse/api";
+import { buildWarehouseLocationLabelPayload } from "@/modules/warehouse/location-label-print";
 import type { WarehouseLocation, WarehouseLocationDetail, WarehouseLocationMutation, WarehouseProduct } from "@/modules/warehouse/types";
 import {
   buildWarehouseLocationCode as buildLocationCode,
@@ -320,6 +322,7 @@ export default function WarehouseScreen() {
   const productLocationBindingRef = useRef(false);
   const currentProductCodeRef = useRef<string | null>(null);
   const locationCodeGroupLookupRequestRef = useRef(0);
+  const defaultLocationLookupRequestRef = useRef(0);
   const [photoPermission, requestPhotoPermission] = useCameraPermissions();
   const [segment, setSegment] = useState<SegmentValue>("product");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>("product");
@@ -357,6 +360,8 @@ export default function WarehouseScreen() {
   const [locationResults, setLocationResults] = useState<WarehouseLocation[]>([]);
   const [selectedLocation, setSelectedLocation] = useState<WarehouseLocationDetail | null>(null);
   const [hasLocationLookup, setHasLocationLookup] = useState(false);
+  const [defaultLocationLoading, setDefaultLocationLoading] = useState(false);
+  const [defaultLocationLoaded, setDefaultLocationLoaded] = useState(false);
   const [bindModalVisible, setBindModalVisible] = useState(false);
   const [bindProductKeyword, setBindProductKeyword] = useState("");
   const [bindProductMatches, setBindProductMatches] = useState<WarehouseProduct[]>([]);
@@ -546,6 +551,45 @@ export default function WarehouseScreen() {
         : item
     )));
   }, []);
+
+  const loadDefaultUnusedLocations = useCallback(async (options?: { clearSelection?: boolean }) => {
+    const requestId = defaultLocationLookupRequestRef.current + 1;
+    defaultLocationLookupRequestRef.current = requestId;
+    setDefaultLocationLoading(true);
+    try {
+      const items = await getDefaultUnusedLocations();
+      if (requestId !== defaultLocationLookupRequestRef.current) {
+        return;
+      }
+
+      // 默认列表是货位页的基础视图，和搜索结果用 hasLocationLookup 区分标题与空状态。
+      setHasLocationLookup(false);
+      setDefaultLocationLoaded(true);
+      setLocationResults(items);
+      if (options?.clearSelection) {
+        applyLocationDetail(null);
+      }
+    } catch (error) {
+      if (requestId === defaultLocationLookupRequestRef.current) {
+        setSnackbar(getErrorMessage(error, "messages.locationLookupFailed"));
+      }
+    } finally {
+      if (requestId === defaultLocationLookupRequestRef.current) {
+        setDefaultLocationLoading(false);
+      }
+    }
+  }, [applyLocationDetail, getErrorMessage]);
+
+  const updateLocationKeyword = useCallback((value: string) => {
+    setLocationKeyword(value);
+    if (value.trim()) {
+      // 输入变化即让旧货位请求失效，避免搜索结果覆盖后续默认列表。
+      defaultLocationLookupRequestRef.current += 1;
+      return;
+    }
+
+    void loadDefaultUnusedLocations({ clearSelection: true });
+  }, [loadDefaultUnusedLocations]);
 
   const handleLookupProduct = useCallback(async (value?: string) => {
     const keyword = (value ?? productKeyword).trim();
@@ -901,12 +945,7 @@ export default function WarehouseScreen() {
       return;
     }
     try {
-      await printWarehouseLocationLabel({
-        locationGuid: selectedLocation.locationGuid,
-        locationCode: selectedLocation.locationCode,
-        locationBarcode: selectedLocation.locationBarcode,
-        productCount: selectedLocation.products.length,
-      });
+      await printWarehouseLocationLabel(buildWarehouseLocationLabelPayload(selectedLocation));
       setSnackbar(t("messages.printSent"));
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.printFailed"));
@@ -951,17 +990,25 @@ export default function WarehouseScreen() {
   const handleLookupLocationsByKeyword = useCallback(async (value?: string) => {
     const keyword = (value ?? locationKeyword).trim();
     if (!keyword) {
-      setSnackbar(t("messages.keywordRequired"));
+      await loadDefaultUnusedLocations({ clearSelection: true });
       return;
     }
 
     setBusy(true);
     setHasLocationLookup(true);
+    const requestId = defaultLocationLookupRequestRef.current + 1;
+    defaultLocationLookupRequestRef.current = requestId;
     try {
       const items = await lookupLocations(keyword);
+      if (requestId !== defaultLocationLookupRequestRef.current) {
+        return;
+      }
       setLocationResults(items);
       if (items.length === 1) {
         const detail = await getLocationDetail(items[0].locationGuid);
+        if (requestId !== defaultLocationLookupRequestRef.current) {
+          return;
+        }
         applyLocationDetail(detail);
       } else {
         applyLocationDetail(null);
@@ -971,7 +1018,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, locationKeyword, t]);
+  }, [applyLocationDetail, loadDefaultUnusedLocations, locationKeyword, t]);
 
   const handleLookupLocations = useCallback(async () => {
     await handleLookupLocationsByKeyword();
@@ -1035,6 +1082,14 @@ export default function WarehouseScreen() {
   useEffect(() => {
     hidScanner.resumeHiddenInputFocus();
   }, [hidScanner.resumeHiddenInputFocus, segment]);
+
+  useEffect(() => {
+    if (segment !== "location" || hasLocationLookup || locationKeyword.trim() || defaultLocationLoaded || defaultLocationLoading) {
+      return;
+    }
+
+    void loadDefaultUnusedLocations();
+  }, [defaultLocationLoaded, defaultLocationLoading, hasLocationLookup, loadDefaultUnusedLocations, locationKeyword, segment]);
 
   useEffect(() => () => {
     if (resumeHiddenScannerFocusTimerRef.current) {
@@ -1129,6 +1184,7 @@ export default function WarehouseScreen() {
 
     setBusy(true);
     try {
+      const isCreatingLocation = !editingLocationGuid;
       if (!editingLocationGuid) {
         const matchedLocations = await lookupLocations(locationCode);
         const duplicate = matchedLocations.some((item) => (item.locationCode ?? "").trim().toUpperCase() === locationCode);
@@ -1149,7 +1205,21 @@ export default function WarehouseScreen() {
       applyLocationDetail(detail);
       setLocationModalVisible(false);
       setSnackbar(t("messages.saved"));
-      await handleLookupLocations();
+      setDefaultLocationLoaded(false);
+      if (isCreatingLocation) {
+        try {
+          // 新建货位后默认打印标签，打印失败不回滚已创建的货位。
+          await printWarehouseLocationLabel(buildWarehouseLocationLabelPayload(detail));
+          setSnackbar(t("messages.printSent"));
+        } catch (printError) {
+          setSnackbar(getErrorMessage(printError, "messages.printFailed"));
+        }
+      }
+      if (locationKeyword.trim()) {
+        await handleLookupLocations();
+      } else {
+        await loadDefaultUnusedLocations();
+      }
     } catch (error) {
       reportWarehouseFailure("保存货位", error, {
         locationCode,
@@ -1167,7 +1237,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, editingLocationGuid, getErrorMessage, handleLookupLocations, locationCodeParts, locationModalState, locationSlotOptions.length, t]);
+  }, [applyLocationDetail, editingLocationGuid, getErrorMessage, handleLookupLocations, loadDefaultUnusedLocations, locationCodeParts, locationKeyword, locationModalState, locationSlotOptions.length, t]);
 
   const handleDeleteLocation = useCallback(async () => {
     if (!selectedLocation) {
@@ -1178,6 +1248,7 @@ export default function WarehouseScreen() {
       await deleteLocation(selectedLocation.locationGuid);
       applyLocationDetail(null);
       setLocationResults((current) => current.filter((item) => item.locationGuid !== selectedLocation.locationGuid));
+      setDefaultLocationLoaded(false);
       setBindModalVisible(false);
       setSnackbar(t("messages.saved"));
     } catch (error) {
@@ -1262,6 +1333,10 @@ export default function WarehouseScreen() {
       setSelectedBindProduct(null);
       setBindInitialQuantity("0");
       setHasBindProductLookup(false);
+      setDefaultLocationLoaded(false);
+      if (!hasLocationLookup && !locationKeyword.trim()) {
+        await loadDefaultUnusedLocations();
+      }
       setSnackbar(t("messages.locationBound"));
     } catch (error) {
       reportWarehouseFailure("绑定商品到货位", error, {
@@ -1289,7 +1364,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, bindInitialQuantity, bindProductKeyword, parseInitialQuantity, selectedBindProduct, selectedLocation, t]);
+  }, [applyLocationDetail, bindInitialQuantity, bindProductKeyword, hasLocationLookup, loadDefaultUnusedLocations, locationKeyword, parseInitialQuantity, selectedBindProduct, selectedLocation, t]);
 
   const openUnbindProductConfirm = useCallback((item: BoundLocationProduct) => {
     if (!selectedLocation || !item.productCode) {
@@ -1312,6 +1387,10 @@ export default function WarehouseScreen() {
       const detail = await unbindProductFromLocation(pendingUnbindProduct.locationGuid, pendingUnbindProduct.product.productCode);
       applyLocationDetail(detail);
       setPendingUnbindProduct(null);
+      setDefaultLocationLoaded(false);
+      if (!hasLocationLookup && !locationKeyword.trim()) {
+        await loadDefaultUnusedLocations();
+      }
       setSnackbar(t("messages.locationUnbound"));
     } catch (error) {
       reportWarehouseFailure("从货位解绑商品", error, {
@@ -1323,7 +1402,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, busy, pendingUnbindProduct, t]);
+  }, [applyLocationDetail, busy, hasLocationLookup, loadDefaultUnusedLocations, locationKeyword, pendingUnbindProduct, t]);
 
   const productTypeText = useMemo(() => {
     if (!product) {
@@ -1724,7 +1803,7 @@ export default function WarehouseScreen() {
               <Searchbar
                 placeholder={t("location.searchPlaceholder")}
                 value={locationKeyword}
-                onChangeText={setLocationKeyword}
+                onChangeText={updateLocationKeyword}
                 onFocus={pauseHiddenScannerFocus}
                 onBlur={resumeHiddenScannerFocusLater}
                 onSubmitEditing={() => void handleLookupLocations()}
@@ -1737,7 +1816,14 @@ export default function WarehouseScreen() {
               ) : null}
             </View>
 
-            {!selectedLocation && locationResults.length === 0 ? (
+            {defaultLocationLoading && !hasLocationLookup && locationResults.length === 0 ? (
+              <View style={styles.inlineLoadingState}>
+                <ActivityIndicator size="small" />
+                <Text variant="bodyMedium" style={styles.secondaryText}>{t("location.loadingUnused")}</Text>
+              </View>
+            ) : null}
+
+            {!defaultLocationLoading && !selectedLocation && locationResults.length === 0 ? (
               <EmptyState
                 title={hasLocationLookup ? t("location.noResultsTitle") : t("location.emptyTitle")}
                 description={hasLocationLookup ? t("location.noResultsDescription") : t("location.emptyDescription")}
@@ -1747,7 +1833,7 @@ export default function WarehouseScreen() {
             {locationResults.length ? (
               <View style={styles.sectionBlock}>
                 <Text variant="titleSmall" style={styles.sectionTitle}>
-                  {t("location.searchResultsTitle")}
+                  {hasLocationLookup ? t("location.searchResultsTitle") : t("location.unusedResultsTitle")}
                 </Text>
                 <View style={styles.binCardList}>
                   {locationResults.map((item) => {
@@ -2692,6 +2778,12 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: "#0F172A",
+  },
+  inlineLoadingState: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 16,
   },
   sectionHeaderRow: {
     flexDirection: "row",

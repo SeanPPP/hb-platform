@@ -4510,6 +4510,7 @@ namespace BlazorApp.Api.Services.React
                 DomesticPrice = item.DomesticPrice,
                 OEMPrice = item.OEMPrice,
                 ImportPrice = item.ImportPrice,
+                MiddlePackageQuantity = item.MiddlePackageQuantity,
                 LocationCode = item.LocationCode,
                 LocationBarcode = item.LocationBarcode,
             };
@@ -4533,6 +4534,9 @@ namespace BlazorApp.Api.Services.React
                 LocationGuid = item.LocationGuid,
                 LocationCode = item.LocationCode,
                 LocationBarcode = item.LocationBarcode,
+                ItemNumber = item.ItemNumber,
+                ProductName = item.ProductName,
+                MiddlePackageQuantity = item.MiddlePackageQuantity,
                 ProductCount = productCount,
             };
         }

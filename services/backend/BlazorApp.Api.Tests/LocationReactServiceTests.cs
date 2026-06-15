@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -95,6 +96,122 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(2, result.Count);
             Assert.Contains(result, item => item.LocationGuid == "loc-many");
             Assert.Contains(result, item => item.LocationGuid == "loc-other");
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_SortsByLocationCodeInRequestedDirection()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var ascending = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "LocationCode",
+                SortDirection = "asc",
+            });
+            var descending = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "LocationCode",
+                SortDirection = "desc",
+            });
+
+            Assert.Equal(new[] { "A-01-01-01", "B-01-01-01", "C-01-01-01" }, ascending.Items.Select(item => item.LocationCode));
+            Assert.Equal(new[] { "C-01-01-01", "B-01-01-01", "A-01-01-01" }, descending.Items.Select(item => item.LocationCode));
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_SortsByUpdatedByAndUpdatedAt()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var byUpdater = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "UpdatedBy",
+                SortDirection = "asc",
+            });
+            var byUpdatedAt = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "UpdatedAt",
+                SortDirection = "desc",
+            });
+
+            Assert.Equal(new[] { "A-01-01-01", "B-01-01-01", "C-01-01-01" }, byUpdater.Items.Select(item => item.LocationCode));
+            Assert.Equal(new[] { "C-01-01-01", "B-01-01-01", "A-01-01-01" }, byUpdatedAt.Items.Select(item => item.LocationCode));
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_FiltersUsedStatusWithDatabaseSubquery()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var used = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                IsUsed = true,
+            });
+            var unused = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                IsUsed = false,
+            });
+
+            Assert.Equal(new[] { "B-01-01-01" }, used.Items.Select(item => item.LocationCode));
+            Assert.Equal(new[] { "A-01-01-01", "C-01-01-01" }, unused.Items.Select(item => item.LocationCode));
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_SortsByUsageStatus()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var usageDescending = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "Usage",
+                SortDirection = "desc",
+            });
+
+            Assert.Equal("B-01-01-01", usageDescending.Items.First().LocationCode);
+            Assert.Single(usageDescending.Items.First().Products);
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_BatchLoadsProductsForCurrentPage()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var page = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 2,
+                SortBy = "LocationCode",
+                SortDirection = "asc",
+            });
+
+            Assert.Equal(3, page.Total);
+            Assert.Equal(2, page.Items.Count);
+            Assert.Empty(page.Items[0].Products);
+            var boundLocation = Assert.Single(page.Items[1].Products);
+            Assert.Equal("P-PAGED-001", boundLocation.ProductCode);
+            Assert.Equal("HB-PAGED-001", boundLocation.ItemNumber);
+            Assert.Equal("9320000000011", boundLocation.Barcode);
+            Assert.Equal("Paged product", boundLocation.ProductName);
+            Assert.Equal(12, boundLocation.MiddlePackageQuantity);
         }
 
         public void Dispose()
@@ -222,6 +339,66 @@ namespace BlazorApp.Api.Tests
                 Guid = "product-location-other",
                 ProductCode = "P-OTHER",
                 LocationGuid = "loc-other",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedPagedLocationsAsync()
+        {
+            await _db.Insertable(new[]
+            {
+                new Location
+                {
+                    LocationGuid = "loc-page-b",
+                    LocationCode = "B-01-01-01",
+                    LocationBarcode = "LOC-B",
+                    LocationType = 1,
+                    Status = 1,
+                    UpdatedAt = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedBy = "bravo",
+                    IsDeleted = false,
+                },
+                new Location
+                {
+                    LocationGuid = "loc-page-a",
+                    LocationCode = "A-01-01-01",
+                    LocationBarcode = "LOC-A",
+                    LocationType = 2,
+                    Status = 0,
+                    UpdatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedBy = "alpha",
+                    IsDeleted = false,
+                },
+                new Location
+                {
+                    LocationGuid = "loc-page-c",
+                    LocationCode = "C-01-01-01",
+                    LocationBarcode = "LOC-C",
+                    LocationType = 1,
+                    Status = 1,
+                    UpdatedAt = new DateTime(2026, 1, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedBy = "charlie",
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new Product
+            {
+                UUID = "product-page-001",
+                ProductCode = "P-PAGED-001",
+                ProductName = "Paged product",
+                ItemNumber = "HB-PAGED-001",
+                Barcode = "9320000000011",
+                MiddlePackageQuantity = 12,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new ProductLocation
+            {
+                Guid = "product-location-page-001",
+                ProductCode = "P-PAGED-001",
+                LocationGuid = "loc-page-b",
                 IsDeleted = false,
             }).ExecuteCommandAsync();
         }

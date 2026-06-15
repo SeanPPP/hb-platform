@@ -1285,6 +1285,56 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("Glow-in-the-Dark 5.5", item.EnglishName);
         }
 
+        [Fact]
+        public async Task GetMobileLocationPrintPayloadAsync_ReturnsProductDescriptionAndMiddlePackage()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "product-mobile-location-label",
+                ProductCode = "P-LABEL-001",
+                ProductName = "3D TOYS",
+                ItemNumber = "HB313-129",
+                Barcode = "9525813130129",
+                MiddlePackageQuantity = 24,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "P-LABEL-001",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Location
+            {
+                LocationGuid = "loc-label-001",
+                LocationCode = "A-00-00-01",
+                LocationBarcode = "5544492778828",
+                LocationType = 1,
+                Status = 1,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new ProductLocation
+            {
+                Guid = "pl-label-001",
+                ProductCode = "P-LABEL-001",
+                LocationGuid = "loc-label-001",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateService();
+
+            var payload = await service.GetMobileLocationPrintPayloadAsync("P-LABEL-001");
+
+            Assert.NotNull(payload);
+            Assert.Equal("loc-label-001", payload!.LocationGuid);
+            Assert.Equal("A-00-00-01", payload.LocationCode);
+            Assert.Equal("5544492778828", payload.LocationBarcode);
+            Assert.Equal("HB313-129", payload.ItemNumber);
+            Assert.Equal("3D TOYS", payload.ProductName);
+            Assert.Equal(24, payload.MiddlePackageQuantity);
+            Assert.Equal(1, payload.ProductCount);
+        }
+
         public void Dispose()
         {
             _db.Dispose();

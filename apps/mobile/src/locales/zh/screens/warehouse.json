@@ -85,6 +85,8 @@
     "noResultsTitle": "未找到匹配货位",
     "noResultsDescription": "换一个货位编码或条码再试试。",
     "searchResultsTitle": "货位结果",
+    "unusedResultsTitle": "未使用货位",
+    "loadingUnused": "正在加载未使用货位...",
     "selectedTitle": "已选货位",
     "newLocation": "新建货位",
     "editLocation": "编辑货位",
