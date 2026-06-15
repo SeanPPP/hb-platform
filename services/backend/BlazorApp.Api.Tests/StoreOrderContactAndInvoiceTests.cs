@@ -557,7 +557,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal("INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED", result.ErrorCode);
-        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新保存发票邮箱配置", result.Message);
+        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置", result.Message);
     }
 
     [Fact]

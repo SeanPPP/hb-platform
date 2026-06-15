@@ -58,7 +58,7 @@ export async function getLocationList(params: LocationFilterParams): Promise<Loc
     PageNumber: params.pageNumber || 1,
     PageSize: params.pageSize || 20,
     SortBy: params.sortBy || 'LocationCode',
-    sortDirection: params.sortDirection || 'asc',
+    SortDirection: params.sortDirection || 'asc',
     filters: params.filters,
   })
 

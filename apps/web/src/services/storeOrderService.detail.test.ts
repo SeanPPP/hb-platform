@@ -1,8 +1,11 @@
 import {
+  batchMapStoreOrderStoreCode,
   createStoreOrderPasteReplaceJob,
+  getUnmatchedStoreOrderGroups,
   getStoreOrderDetail,
   getStoreOrderDetailFull,
   getStoreOrderDetailProductCodes,
+  getStoreOrderProducts,
   getStoreOrderInvoiceEmailJob,
   getStoreOrderPasteReplaceJob,
   sendStoreOrderInvoiceEmail,
@@ -29,6 +32,129 @@ function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
 }
 
 const originalFetch = globalThis.fetch
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: [
+          {
+            sourceStoreCode: '11111111-1111-1111-1111-111111111111',
+            sourceStoreName: 'Ada - Tas - Kingston',
+            orderCount: 3,
+            latestOrderDate: '2026-06-15T00:00:00',
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await getUnmatchedStoreOrderGroups()
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/unmatched-store-groups', '未匹配分店聚合接口路径应保持一致')
+  assertEqual(capturedMethod, 'GET', '未匹配分店聚合接口应使用 GET')
+  assertDeepEqual(
+    result,
+    [
+      {
+        sourceStoreCode: '11111111-1111-1111-1111-111111111111',
+        sourceStoreName: 'Ada - Tas - Kingston',
+        orderCount: 3,
+        latestOrderDate: '2026-06-15T00:00:00',
+      },
+    ],
+    '未匹配分店聚合接口应保留后端分组数据',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          updatedCount: 2,
+          skippedCount: 1,
+          items: [
+            {
+              sourceStoreCode: '11111111-1111-1111-1111-111111111111',
+              targetStoreCode: '1042',
+              updatedCount: 2,
+              skippedCount: 1,
+            },
+          ],
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await batchMapStoreOrderStoreCode({
+    mappings: [
+      {
+        sourceStoreCode: '11111111-1111-1111-1111-111111111111',
+        targetStoreCode: '1042',
+      },
+    ],
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/batch-map-store-code', '批量修复分店 GUID 接口路径应保持一致')
+  assertEqual(capturedMethod, 'POST', '批量修复分店 GUID 接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      mappings: [
+        {
+          sourceStoreCode: '11111111-1111-1111-1111-111111111111',
+          targetStoreCode: '1042',
+        },
+      ],
+    },
+    '批量修复分店 GUID 应原样发送映射关系',
+  )
+  assertDeepEqual(
+    result,
+    {
+      updatedCount: 2,
+      skippedCount: 1,
+      items: [
+        {
+          sourceStoreCode: '11111111-1111-1111-1111-111111111111',
+          targetStoreCode: '1042',
+          updatedCount: 2,
+          skippedCount: 1,
+        },
+      ],
+    },
+    '批量修复分店 GUID 应归一化后端结果',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
 
 try {
   const controller = new AbortController()
@@ -121,6 +247,89 @@ try {
       ],
     },
     '订货明细接口应保留服务端返回的当前页 items 与 itemsTotal',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  const controller = new AbortController()
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedSignal: AbortSignal | null = null
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedSignal = (init?.signal as AbortSignal | null) ?? null
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          items: [
+            {
+              productCode: 'product-1',
+              itemNumber: 'HB137-001',
+              productName: '测试商品',
+            },
+          ],
+          total: 1,
+          pageNumber: 1,
+          pageSize: 100,
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await getStoreOrderProducts(
+    {
+      itemNumber: 'HB137-',
+      supplierCode: 'CN001',
+      excludeOrderGUID: 'order-1',
+      pageNumber: 1,
+      pageSize: 100,
+      sortBy: 'Default',
+    },
+    controller.signal,
+  )
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/products', '商品选择查询接口路径应保持不变')
+  assertEqual(capturedMethod, 'POST', '商品选择查询接口应使用 POST')
+  assertEqual(capturedSignal, controller.signal, '商品选择查询接口应透传取消信号')
+  assertDeepEqual(
+    capturedBody,
+    {
+      itemNumber: 'HB137-',
+      supplierCode: 'CN001',
+      excludeOrderGUID: 'order-1',
+      pageNumber: 1,
+      pageSize: 100,
+      sortBy: 'Default',
+    },
+    '商品选择查询接口应发送原始查询条件',
+  )
+  assertDeepEqual(
+    result,
+    {
+      items: [
+        {
+          productCode: 'product-1',
+          itemNumber: 'HB137-001',
+          productName: '测试商品',
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+    },
+    '商品选择查询接口应归一化分页响应',
   )
 } finally {
   globalThis.fetch = originalFetch

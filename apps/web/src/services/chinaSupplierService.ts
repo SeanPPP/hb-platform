@@ -102,8 +102,10 @@ export async function syncChinaSuppliersToHbSales(guids: string[]): Promise<Sync
   return unwrapApiData(response)
 }
 
-export async function getActiveChinaSuppliers(): Promise<ChinaSupplierItem[]> {
-  const response = await request.get<ApiResponse<ChinaSupplierApiItem[]>>(`${API_BASE}/active`)
+export async function getActiveChinaSuppliers(signal?: AbortSignal): Promise<ChinaSupplierItem[]> {
+  const response = await request.get<ApiResponse<ChinaSupplierApiItem[]>>(`${API_BASE}/active`, {
+    signal,
+  })
   const data = unwrapApiData(response) ?? []
   return Array.isArray(data)
     ? data

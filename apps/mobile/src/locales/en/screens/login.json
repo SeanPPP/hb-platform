@@ -8,6 +8,10 @@
   "password": "Password",
   "userMode": "User login",
   "rememberUsername": "Remember username",
+  "updateRestart": {
+    "message": "A new update has been downloaded. Restart the app to apply it.",
+    "action": "Restart"
+  },
   "device": {
     "mode": "Device login",
     "title": "Registered device detected",

@@ -157,6 +157,19 @@ async function main() {
   })
   if (listStatusFilterFailure) failures.push(listStatusFilterFailure)
 
+  const listColumnFilterFailure = await runTest('列表页主表列头筛选应走服务端查询参数并支持重置', () => {
+    assert(storeOrdersSource.includes('StoreOrderListColumnFilters'), '列表页应引入列头筛选类型')
+    assert(storeOrdersSource.includes('const [columnFilters, setColumnFilters] = useState<StoreOrderListColumnFilters>({})'), '列表页应维护列头筛选状态')
+    assert(storeOrdersSource.includes('columnFilters: cleanStoreOrderListColumnFilters('), '列表查询应携带清理后的 columnFilters')
+    assert(storeOrdersSource.includes('setColumnFilters({})'), '重置按钮应清空列头筛选状态')
+    assert(storeOrdersSource.includes('columnFilters: undefined'), '重置查询应显式清空服务端列筛选参数')
+    assert(storeOrdersSource.includes('makeTextFilterDropdown') && storeOrdersSource.includes('makeNumberRangeFilterDropdown') && storeOrdersSource.includes('makeDateRangeFilterDropdown'), '列表页应提供文本、数值范围和日期范围筛选弹层')
+    assert(storeOrdersSource.includes('makeStoreFilterDropdown') && storeOrdersSource.includes('makeStatusFilterDropdown') && storeOrdersSource.includes('makeOrderDateFilterDropdown'), '分店、状态和订单日期列头筛选应复用顶部筛选状态')
+    assert(storeOrdersSource.includes("onMouseDown={(event) => event.stopPropagation()}"), '列头筛选弹层应阻止鼠标事件冒泡，避免触发表头拖拽')
+    assert(compactCssSource.includes('.store-order-list-column-filter'), '列头筛选弹层应有局部紧凑样式')
+  })
+  if (listColumnFilterFailure) failures.push(listColumnFilterFailure)
+
   const detailContentFailure = await runTest('详情页货号条码名称应保留业务可读性', () => {
     assert(detailMainTableSource.includes('width={30}') && detailMainTableSource.includes('height={30}'), '详情页主明细图片应缩到 30x30')
     assert(detailMainTableSource.includes('className="store-order-detail-copy-button"'), '详情页货号复制按钮应为无文字图标按钮')

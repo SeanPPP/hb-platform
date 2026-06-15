@@ -3,7 +3,7 @@ import {
   buildWarehouseLocationLabelPayload,
   normalizeLocationMiddlePackageQuantity,
 } from "./location-label-print";
-import type { WarehouseLocationDetail } from "./types";
+import type { WarehouseLocation, WarehouseLocationDetail } from "./types";
 
 function location(products: WarehouseLocationDetail["products"]): WarehouseLocationDetail {
   return {
@@ -26,6 +26,19 @@ function run() {
   assert.equal(emptyPayload.itemNumber, null, "空货位没有商品货号");
   assert.equal(emptyPayload.productName, null, "空货位没有产品描述");
   assert.equal(emptyPayload.middlePackageQuantity, 1, "空货位标签中包数按 1 打印");
+  assert.equal(emptyPayload.productCount, 0, "空货位商品数为 0");
+
+  const unusedListItem: WarehouseLocation = {
+    locationGuid: "loc-unused",
+    locationCode: "A-11-01-01",
+    locationBarcode: "2606150113355",
+    productCount: 0,
+  };
+  const unusedPayload = buildWarehouseLocationLabelPayload(unusedListItem);
+  assert.equal(unusedPayload.itemNumber, null, "未使用货位列表项没有商品货号");
+  assert.equal(unusedPayload.productName, null, "未使用货位列表项没有产品描述");
+  assert.equal(unusedPayload.middlePackageQuantity, 1, "未使用货位列表项中包数按 1 打印");
+  assert.equal(unusedPayload.productCount, 0, "未使用货位列表项商品数为 0");
 
   const productPayload = buildWarehouseLocationLabelPayload(location([
     {

@@ -1,7 +1,11 @@
 import type { WarehouseLocationDetail, WarehouseLocationPrintPayload } from "./types";
 
-function firstBoundProduct(location: WarehouseLocationDetail) {
-  return location.products.find((item) => item.productCode || item.itemNumber || item.productName) ?? null;
+type WarehouseLocationLabelSource = Pick<WarehouseLocationDetail, "locationGuid" | "locationCode" | "locationBarcode"> & {
+  products?: WarehouseLocationDetail["products"] | null;
+};
+
+function firstBoundProduct(location: WarehouseLocationLabelSource) {
+  return location.products?.find((item) => item.productCode || item.itemNumber || item.productName) ?? null;
 }
 
 export function normalizeLocationMiddlePackageQuantity(value: number | null | undefined) {
@@ -10,7 +14,7 @@ export function normalizeLocationMiddlePackageQuantity(value: number | null | un
 }
 
 export function buildWarehouseLocationLabelPayload(
-  location: WarehouseLocationDetail
+  location: WarehouseLocationLabelSource
 ): WarehouseLocationPrintPayload {
   const product = firstBoundProduct(location);
   return {
@@ -20,6 +24,6 @@ export function buildWarehouseLocationLabelPayload(
     itemNumber: product?.itemNumber ?? product?.productCode ?? null,
     productName: product?.productName ?? null,
     middlePackageQuantity: normalizeLocationMiddlePackageQuantity(product?.middlePackageQuantity),
-    productCount: location.products.length,
+    productCount: location.products?.length ?? 0,
   };
 }

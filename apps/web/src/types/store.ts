@@ -26,6 +26,18 @@ export interface StoreQueryDto {
   sortOrder?: string
 }
 
+export interface CreateStoreDto {
+  storeName: string
+  storeCode: string
+  description?: string
+  address?: string
+  contactPhone?: string
+  contactEmail?: string
+  abn?: string
+  brandName?: string
+  isActive?: boolean
+}
+
 export interface UpdateStoreDto {
   storeName: string
   storeCode: string

@@ -8,6 +8,10 @@
   "password": "密码",
   "userMode": "用户登录",
   "rememberUsername": "记住用户名",
+  "updateRestart": {
+    "message": "新版本已下载，重启应用后生效。",
+    "action": "立即重启"
+  },
   "device": {
     "mode": "设备登录",
     "title": "已识别注册设备",

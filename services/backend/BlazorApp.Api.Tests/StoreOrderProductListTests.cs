@@ -6,6 +6,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -48,6 +49,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             typeof(WareHouseOrderDetails),
             typeof(Store),
             typeof(DomesticProduct),
+            typeof(ChinaSupplier),
+            typeof(CPT_DIC_外购客户信息表),
             typeof(ProductLocation),
             typeof(Location)
         );
@@ -193,7 +196,9 @@ public sealed class StoreOrderProductListTests : IDisposable
     {
         await SeedProductAsync("P001", "ITEM-001");
         await SeedProductAsync("P002", "ITEM-002");
+        await SeedProductAsync("P003", "ITEM-003");
         await SeedWarehouseProductAsync("P001", isDeleted: false, oemPrice: 10m, importPrice: 7m);
+        await SeedWarehouseProductAsync("P003", isDeleted: false, isActive: false);
 
         var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
         {
@@ -207,6 +212,42 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal("ITEM-001-BAR", item.Barcode);
         Assert.Equal(10m, item.OEMPrice);
         Assert.Equal(7m, item.ImportPrice);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerIncludesInactiveWarehouseProductsAndFiltersDomesticSupplier()
+    {
+        await SeedChinaSupplierAsync("CN001", "义乌一号");
+        await SeedChinaSupplierAsync("CN002", "义乌二号");
+        await SeedProductAsync("P-INACTIVE", "ITEM-INACTIVE");
+        await SeedWarehouseProductAsync("P-INACTIVE", isActive: false, oemPrice: 11m, importPrice: 8m);
+        await SeedDomesticProductAsync("P-INACTIVE", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN001");
+        await SeedProductAsync("P-OTHER-SUPPLIER", "ITEM-OTHER-SUPPLIER");
+        await SeedWarehouseProductAsync("P-OTHER-SUPPLIER");
+        await SeedDomesticProductAsync("P-OTHER-SUPPLIER", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN002");
+        await SeedProductAsync("P-IN-ORDER", "ITEM-IN-ORDER");
+        await SeedWarehouseProductAsync("P-IN-ORDER");
+        await SeedDomesticProductAsync("P-IN-ORDER", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN001");
+        await SeedDeletedOrderDetailAsync("ORDER-PICKER", "P-IN-ORDER", isDeleted: false);
+        await SeedProductAsync("P-DELETED-WAREHOUSE", "ITEM-DELETED-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-DELETED-WAREHOUSE", isDeleted: true);
+        await SeedDomesticProductAsync("P-DELETED-WAREHOUSE", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN001");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-INACTIVE", item.ProductCode);
+        Assert.Equal("CN001", item.DomesticSupplierCode);
+        Assert.Equal("义乌一号", item.DomesticSupplierName);
+        Assert.Equal(11m, item.OEMPrice);
+        Assert.Equal(8m, item.ImportPrice);
     }
 
     [Fact]
@@ -814,6 +855,126 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(new[] { "S001", "S002", "S010" }, result.Data.Select(item => item.Code));
     }
 
+    [Fact]
+    public async Task GetUnmatchedStoreOrderGroupsAsync_GroupsOnlyOrdersWithoutLocalStoreMatch()
+    {
+        const string hqGuid = "11111111-1111-1111-1111-111111111111";
+        await SeedStoreAsync("local-store-guid", "S001", "本地一店");
+        await SeedStoreAsync("local-store-guid-2", "S002", "本地二店");
+        await SeedStoreOrderAsync("ORDER-CODE", storeCode: "S001", insertStore: false);
+        await SeedStoreOrderAsync("ORDER-GUID", storeCode: "local-store-guid-2", insertStore: false);
+        await SeedStoreOrderAsync("ORDER-HQ-1", storeCode: hqGuid, insertStore: false, orderDate: new DateTime(2026, 6, 10));
+        await SeedStoreOrderAsync("ORDER-HQ-2", storeCode: hqGuid, insertStore: false, orderDate: new DateTime(2026, 6, 12));
+        await SeedStoreOrderAsync("ORDER-UNKNOWN", storeCode: "UNKNOWN-GUID", insertStore: false, orderDate: new DateTime(2026, 6, 11));
+        await SeedExternalCustomerAsync(hqGuid, "Ada - Tas - Kingston");
+
+        var result = await CreateService().GetUnmatchedStoreOrderGroupsAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { hqGuid, "UNKNOWN-GUID" }, result.Data.Select(item => item.SourceStoreCode));
+        var hqGroup = Assert.Single(result.Data, item => item.SourceStoreCode == hqGuid);
+        Assert.Equal("Ada - Tas - Kingston", hqGroup.SourceStoreName);
+        Assert.Equal(2, hqGroup.OrderCount);
+        Assert.Equal(new DateTime(2026, 6, 12), hqGroup.LatestOrderDate);
+    }
+
+    [Fact]
+    public async Task BatchMapStoreOrderStoreCodeAsync_UpdatesOnlyUnmatchedOrderHeaders()
+    {
+        const string hqGuid = "22222222-2222-2222-2222-222222222222";
+        await SeedStoreAsync("target-store-guid", "S100", "目标分店");
+        await SeedStoreAsync("matched-store-guid", "S200", "已匹配分店");
+        await SeedStoreOrderAsync("ORDER-HQ-1", storeCode: hqGuid, insertStore: false);
+        await SeedStoreOrderAsync("ORDER-HQ-2", storeCode: hqGuid, insertStore: false);
+        await SeedStoreOrderAsync("ORDER-MATCHED", storeCode: "S200", insertStore: false);
+        await SeedDeletedOrderDetailAsync("ORDER-HQ-1", "P-DETAIL", storeCode: hqGuid, isDeleted: false);
+
+        var result = await CreateService().BatchMapStoreOrderStoreCodeAsync(
+            new BatchMapStoreOrderStoreCodeDto
+            {
+                Mappings = new List<StoreOrderStoreCodeMappingDto>
+                {
+                    new() { SourceStoreCode = hqGuid, TargetStoreCode = "S100" },
+                    new() { SourceStoreCode = "S200", TargetStoreCode = "S100" },
+                },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data.UpdatedCount);
+        Assert.Equal(1, result.Data.SkippedCount);
+
+        var fixedOrders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => new[] { "ORDER-HQ-1", "ORDER-HQ-2" }.Contains(item.OrderGUID))
+            .ToListAsync();
+        Assert.All(fixedOrders, item => Assert.Equal("S100", item.StoreCode));
+
+        var matchedOrder = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-MATCHED")
+            .FirstAsync();
+        Assert.Equal("S200", matchedOrder.StoreCode);
+
+        var untouchedDetail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-HQ-1")
+            .FirstAsync();
+        Assert.Equal(hqGuid, untouchedDetail.StoreCode);
+    }
+
+    [Fact]
+    public async Task BatchMapStoreOrderStoreCodeAsync_FailsWhenTargetStoreMissing()
+    {
+        const string hqGuid = "33333333-3333-3333-3333-333333333333";
+        await SeedStoreOrderAsync("ORDER-HQ", storeCode: hqGuid, insertStore: false);
+
+        var result = await CreateService().BatchMapStoreOrderStoreCodeAsync(
+            new BatchMapStoreOrderStoreCodeDto
+            {
+                Mappings = new List<StoreOrderStoreCodeMappingDto>
+                {
+                    new() { SourceStoreCode = hqGuid, TargetStoreCode = "MISSING" },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Contains("目标分店不存在", result.Message);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-HQ")
+            .FirstAsync();
+        Assert.Equal(hqGuid, order.StoreCode);
+    }
+
+    [Fact]
+    public async Task BatchMapStoreOrderStoreCodeAsync_AllowsInactiveTargetStoreForHistoricalRepair()
+    {
+        const string hqGuid = "44444444-4444-4444-4444-444444444444";
+        await SeedStoreAsync("inactive-target-store-guid", "S300", "停用目标分店", isActive: false);
+        await SeedStoreOrderAsync("ORDER-INACTIVE-TARGET", storeCode: hqGuid, insertStore: false);
+
+        var result = await CreateService().BatchMapStoreOrderStoreCodeAsync(
+            new BatchMapStoreOrderStoreCodeDto
+            {
+                Mappings = new List<StoreOrderStoreCodeMappingDto>
+                {
+                    new() { SourceStoreCode = hqGuid, TargetStoreCode = "S300" },
+                },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.UpdatedCount);
+        Assert.Equal(0, result.Data.SkippedCount);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-INACTIVE-TARGET")
+            .FirstAsync();
+        Assert.Equal("S300", order.StoreCode);
+    }
+
     [Theory]
     [InlineData("totalOrderAmount", true, "ORDER-HIGH", "ORDER-MID")]
     [InlineData("totalOrderAmount", false, "ORDER-LOW", "ORDER-MID")]
@@ -890,7 +1051,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             PageNumber = 1,
             PageSize = 2,
             StatusList = new List<int> { 1 },
-            SortBy = "totalQuantity",
+            SortBy = "importTotalAmount",
             SortDescending = true,
         });
 
@@ -932,6 +1093,127 @@ public sealed class StoreOrderProductListTests : IDisposable
                 log.Contains("FROM `WareHouseOrderDetails`", StringComparison.OrdinalIgnoreCase)
             ) >= 4
         );
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_FiltersMainColumnFields()
+    {
+        var outboundDate = new DateTime(2026, 6, 10);
+        var createdAt = new DateTime(2026, 6, 1, 8, 0, 0);
+        var updatedAt = new DateTime(2026, 6, 12, 9, 30, 0);
+        await SeedStoreOrderAsync(
+            "ORDER-COLUMN-MATCH",
+            flowStatus: 1,
+            outboundDate: outboundDate,
+            insertStore: true,
+            remarks: "Fragile gift bags",
+            createdAt: createdAt,
+            updatedBy: "stephanie",
+            updatedAt: updatedAt
+        );
+        await SeedOrderLineAsync(
+            "ORDER-COLUMN-MATCH",
+            "P-COLUMN-MATCH",
+            "ITEM-COLUMN-MATCH",
+            quantity: 3m,
+            allocQuantity: 2m
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-COLUMN-OTHER",
+            flowStatus: 1,
+            outboundDate: outboundDate.AddDays(5),
+            insertStore: false,
+            remarks: "Other note",
+            createdAt: createdAt.AddDays(-10),
+            updatedBy: "dong",
+            updatedAt: updatedAt.AddDays(5)
+        );
+        await SeedOrderLineAsync(
+            "ORDER-COLUMN-OTHER",
+            "P-COLUMN-OTHER",
+            "ITEM-COLUMN-OTHER",
+            quantity: 3m,
+            allocQuantity: 2m
+        );
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+            ColumnFilters = new StoreOrderListColumnFilterDto
+            {
+                OrderNo = "MATCH",
+                OutboundDateStart = outboundDate,
+                OutboundDateEnd = outboundDate,
+                Remarks = "gift",
+                CreatedAtStart = createdAt.Date,
+                CreatedAtEnd = createdAt.Date,
+                UpdatedBy = "steph",
+                UpdatedAtStart = updatedAt.Date,
+                UpdatedAtEnd = updatedAt.Date,
+            },
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("ORDER-COLUMN-MATCH", item.OrderGUID);
+        Assert.Equal(1, result.Total);
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_FiltersAggregateAndVolumeColumnsBeforePaging()
+    {
+        await SeedStoreOrderAsync("ORDER-LOW-FILTER", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync(
+            "ORDER-LOW-FILTER",
+            "P-LOW-FILTER",
+            "ITEM-LOW-FILTER",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedStoreOrderAsync("ORDER-MID-FILTER", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync(
+            "ORDER-MID-FILTER",
+            "P-MID-FILTER",
+            "ITEM-MID-FILTER",
+            quantity: 3m,
+            allocQuantity: 2m
+        );
+        await SeedStoreOrderAsync("ORDER-HIGH-FILTER", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync(
+            "ORDER-HIGH-FILTER",
+            "P-HIGH-FILTER",
+            "ITEM-HIGH-FILTER",
+            quantity: 5m,
+            allocQuantity: 4m
+        );
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 1,
+            StatusList = new List<int> { 1 },
+            SortBy = "totalQuantity",
+            SortDescending = true,
+            ColumnFilters = new StoreOrderListColumnFilterDto
+            {
+                TotalQuantityMin = 3m,
+                TotalQuantityMax = 5m,
+                TotalOrderAmountMin = 6m,
+                TotalOrderAmountMax = 10m,
+                TotalOrderVolumeMin = 3m,
+                TotalOrderVolumeMax = 5m,
+                TotalAllocVolumeMin = 2m,
+                TotalAllocVolumeMax = 4m,
+                TotalAllocQuantityMin = 2m,
+                TotalAllocQuantityMax = 4m,
+                ImportTotalAmountMin = 4m,
+                ImportTotalAmountMax = 8m,
+            },
+        });
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal("ORDER-HIGH-FILTER", Assert.Single(result.Items).OrderGUID);
     }
 
     [Fact]
@@ -1071,7 +1353,11 @@ public sealed class StoreOrderProductListTests : IDisposable
         DateTime? orderDate = null,
         DateTime? outboundDate = null,
         bool insertStore = true,
-        string storeCode = "S001"
+        string storeCode = "S001",
+        string? remarks = null,
+        DateTime? createdAt = null,
+        string? updatedBy = null,
+        DateTime? updatedAt = null
     )
     {
         if (insertStore)
@@ -1087,11 +1373,15 @@ public sealed class StoreOrderProductListTests : IDisposable
             OrderDate = orderDate ?? new DateTime(2026, 6, 1),
             OutboundDate = outboundDate,
             FlowStatus = flowStatus,
+            Remarks = remarks,
+            CreatedAt = createdAt ?? new DateTime(2026, 6, 1),
+            UpdatedBy = updatedBy,
+            UpdatedAt = updatedAt,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedStoreAsync(string storeGuid, string storeCode, string storeName)
+    private async Task SeedStoreAsync(string storeGuid, string storeCode, string storeName, bool isActive = true)
     {
         await _db.Insertable(new Store
         {
@@ -1099,7 +1389,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             StoreCode = storeCode,
             StoreName = storeName,
             Address = "测试地址",
-            IsActive = true,
+            IsActive = isActive,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -1202,14 +1492,28 @@ public sealed class StoreOrderProductListTests : IDisposable
     private async Task SeedDomesticProductAsync(
         string productCode,
         decimal unitVolume,
-        int packingQuantity
+        int packingQuantity,
+        string? supplierCode = null
     )
     {
         await _db.Insertable(new DomesticProduct
         {
             ProductCode = productCode,
+            SupplierCode = supplierCode,
             UnitVolume = unitVolume,
             PackingQuantity = packingQuantity,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedChinaSupplierAsync(string supplierCode, string supplierName)
+    {
+        await _db.Insertable(new ChinaSupplier
+        {
+            Guid = $"{supplierCode}-guid",
+            SupplierCode = supplierCode,
+            SupplierName = supplierName,
+            Status = 1,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -1266,7 +1570,8 @@ public sealed class StoreOrderProductListTests : IDisposable
     private async Task SeedDeletedOrderDetailAsync(
         string orderGuid,
         string productCode,
-        bool isDeleted
+        bool isDeleted,
+        string? storeCode = null
     )
     {
         await _db.Insertable(new WareHouseOrderDetails
@@ -1274,7 +1579,18 @@ public sealed class StoreOrderProductListTests : IDisposable
             DetailGUID = $"{orderGuid}-{productCode}",
             OrderGUID = orderGuid,
             ProductCode = productCode,
+            StoreCode = storeCode,
             IsDeleted = isDeleted,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedExternalCustomerAsync(string hguid, string customerName)
+    {
+        await _db.Insertable(new CPT_DIC_外购客户信息表
+        {
+            HGUID = hguid,
+            客户名称 = customerName,
+            状态 = 1,
         }).ExecuteCommandAsync();
     }
 
@@ -1287,7 +1603,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         );
         dbField!.SetValue(context, _db);
 
-        return new StoreOrderReactService(
+        var service = new StoreOrderReactService(
             context,
             NullLogger<StoreOrderReactService>.Instance,
             new HttpContextAccessor(),
@@ -1296,5 +1612,13 @@ public sealed class StoreOrderProductListTests : IDisposable
             Mock.Of<IMapper>(),
             Mock.Of<IInvoiceEmailService>()
         );
+
+        var hqField = typeof(StoreOrderReactService).GetField(
+            "_createHqConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        hqField!.SetValue(service, () => _db);
+
+        return service;
     }
 }

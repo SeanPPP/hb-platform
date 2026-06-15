@@ -421,6 +421,44 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 获取下一个建议分店编码
+        /// </summary>
+        public async Task<ApiResponse<string>> GetNextStoreCodeAsync()
+        {
+            try
+            {
+                var storeCodes = await _context.Db.Queryable<Store>()
+                    .Where(store => !store.IsDeleted && store.StoreCode != null && store.StoreCode != "")
+                    .Select(store => store.StoreCode)
+                    .ToListAsync();
+
+                var maxCode = 0;
+                foreach (var storeCode in storeCodes)
+                {
+                    var normalizedCode = storeCode?.Trim();
+                    // 自动编码只基于纯数字分店编码，避免 S001/GUID 等历史标识干扰。
+                    if (
+                        !string.IsNullOrWhiteSpace(normalizedCode)
+                        && normalizedCode.All(char.IsDigit)
+                        && int.TryParse(normalizedCode, out var numericCode)
+                        && numericCode > maxCode
+                    )
+                    {
+                        maxCode = numericCode;
+                    }
+                }
+
+                var nextCode = Math.Max(maxCode + 1, 1001).ToString();
+                return ApiResponse<string>.OK(nextCode, "获取下一个分店编码成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取下一个分店编码失败");
+                return ApiResponse<string>.Error("获取下一个分店编码失败", "GET_NEXT_STORE_CODE_ERROR");
+            }
+        }
+
+        /// <summary>
         /// 根据GUID更新分店
         /// </summary>
         public async Task<ApiResponse<StoreDto>> UpdateStoreByGuidAsync(
@@ -1014,10 +1052,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var normalizedStoreCode = dto.StoreCode?.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+                {
+                    return ApiResponse<StoreDto>.Error(
+                        "分店代码不能为空",
+                        "STORE_CODE_REQUIRED"
+                    );
+                }
 
                 // 检查分店代码是否重复
                 var existingStore = await db.Queryable<Store>()
-                    .Where(s => s.StoreCode == dto.StoreCode)
+                    .Where(s => s.StoreCode == normalizedStoreCode)
                     .FirstAsync();
 
                 if (existingStore != null)
@@ -1025,19 +1071,20 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<StoreDto>.Error(
                         "分店代码已存在",
                         "DUPLICATE_STORE_CODE",
-                        new { storeCode = dto.StoreCode }
+                        new { storeCode = normalizedStoreCode }
                     );
                 }
 
                 var store = new Store
                 {
                     StoreName = dto.StoreName,
-                    StoreCode = dto.StoreCode,
+                    StoreCode = normalizedStoreCode,
                     Address = dto.Address,
                     ABN = dto.ABN,
                     BrandName = dto.BrandName,
                     StoreGUID = Guid.NewGuid().ToString(),
-                    IsActive = true,
+                    // 新建分店默认不启用收银系统；只有表单显式开启时才写入 true。
+                    IsActive = dto.IsActive,
                     Phone = dto.ContactPhone,
                     ContactEmail = dto.ContactEmail,
                     CreatedAt = DateTime.UtcNow,

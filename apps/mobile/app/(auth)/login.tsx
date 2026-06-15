@@ -34,6 +34,8 @@ import {
 import { prepareDeviceLoginSession } from "@/modules/auth/device-login-session";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
+import { checkLoginUpdateRestartPrompt } from "@/modules/updates/login-update-restart-prompt";
+import { checkAndDownloadAppUpdate, reloadAppToApplyUpdate } from "@/modules/updates/app-update-runtime";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
@@ -124,6 +126,7 @@ export default function Login() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
+  const [updateRestartReady, setUpdateRestartReady] = useState(false);
 
   // 动画 refs
   const logoScale = useRef(new Animated.Value(0)).current;
@@ -164,6 +167,29 @@ export default function Login() {
   useEffect(() => {
     void loadRememberedUsername();
     void loadApiHost();
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function checkLoginUpdate() {
+      const shouldPrompt = await checkLoginUpdateRestartPrompt({
+        checkAndDownload: checkAndDownloadAppUpdate,
+        warn: (error) => {
+          console.warn("[updates] login OTA check failed", error);
+        },
+      });
+
+      if (mounted && shouldPrompt) {
+        setUpdateRestartReady(true);
+      }
+    }
+
+    void checkLoginUpdate();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -309,6 +335,9 @@ export default function Login() {
     setApiHostDraft(apiHost);
     setApiHostModalVisible(true);
   };
+  const handleRestartForUpdate = () => {
+    void reloadAppToApplyUpdate();
+  };
 
   return (
     <View style={styles.root}>
@@ -361,6 +390,22 @@ export default function Login() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.formCard}>
+            {updateRestartReady ? (
+              <View style={styles.updatePrompt}>
+                <Text style={styles.updatePromptText}>{t("updateRestart.message")}</Text>
+                <Button
+                  compact
+                  mode="contained"
+                  buttonColor={BRAND_RED}
+                  textColor="#FFFFFF"
+                  onPress={handleRestartForUpdate}
+                  style={styles.updatePromptButton}
+                >
+                  {t("updateRestart.action")}
+                </Button>
+              </View>
+            ) : null}
+
             {registeredDevice ? (
               <View style={styles.loginModeRow}>
                 <Button
@@ -672,6 +717,28 @@ const styles = StyleSheet.create({
   loginModeButton: {
     flex: 1,
     borderColor: BRAND_RED,
+  },
+  updatePrompt: {
+    alignItems: "center",
+    backgroundColor: "#FFF7F6",
+    borderColor: "#F2D7D5",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  updatePromptText: {
+    color: "#5C1F1B",
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  updatePromptButton: {
+    borderRadius: 10,
+    flexShrink: 0,
   },
   input: { marginBottom: 14, backgroundColor: "#FAFAFA" },
   deviceCard: { gap: 12 },

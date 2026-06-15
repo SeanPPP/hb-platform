@@ -210,7 +210,16 @@ export async function lookupLocations(keyword: string) {
 }
 
 export async function getDefaultUnusedLocations() {
-  const response = await apiClient.get(`${LOCATION_BASE_PATH}/mobile/unused`, buildReadRequestConfig());
+  let response;
+  try {
+    response = await apiClient.get(`${LOCATION_BASE_PATH}/mobile/unused`, buildReadRequestConfig());
+  } catch (error) {
+    // 兼容尚未部署 mobile/unused 的旧后端：默认列表降级为空，搜索和新建货位仍可继续使用。
+    if (error instanceof Error && error.message.includes("404")) {
+      return [];
+    }
+    throw error;
+  }
   const data = response.data as unknown;
   if (Array.isArray(data)) {
     return data.map(normalizeWarehouseLocation);

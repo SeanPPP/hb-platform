@@ -34,6 +34,11 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<StoreDto>> GetStoreByCodeAsync(string storeCode);
 
         /// <summary>
+        /// 获取下一个建议分店编码
+        /// </summary>
+        Task<ApiResponse<string>> GetNextStoreCodeAsync();
+
+        /// <summary>
         /// 创建分店
         /// </summary>
         Task<ApiResponse<StoreDto>> CreateStoreAsync(CreateStoreDto dto);

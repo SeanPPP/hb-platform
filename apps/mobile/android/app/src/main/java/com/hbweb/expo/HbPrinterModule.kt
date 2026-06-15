@@ -752,25 +752,36 @@ class HbPrinterModule(
     val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
     val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(15f), true, "sans-serif-black", 1, w - 30)
     // 货位标签补充商品信息，空货位保持占位，避免打印布局跳动。
-    val itemBitmap = textToBitmap("ITEM $itemNumber", fontSizeToPixels(7f), true, "sans-serif-black")
-    val nameBitmap = longTextToBitmap(productName, fontSizeToPixels(7f), true, "Arial", 1, w - 34)
-    val packBitmap = textToBitmap("MID PACK $middlePackageQuantity", fontSizeToPixels(7f), true, "sans-serif-black")
+    val rightAreaLeft = w - 178
+    val leftTextWidth = rightAreaLeft - 28
+    val itemBitmap = longTextToBitmap("ITEM $itemNumber", fontSizeToPixels(9f), true, "sans-serif-black", 1, leftTextWidth)
+    val nameBitmap = longTextToBitmap("DESC $productName", fontSizeToPixels(7f), true, "Arial", 1, leftTextWidth)
+    val innerBitmap = textToBitmap("INNER", fontSizeToPixels(8f), true, "sans-serif-black")
+    val innerQuantityBitmap = textToBitmap(middlePackageQuantity.toString(), fontSizeToPixels(16f), true, "sans-serif-black")
     val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
     fun centerX(bitmap: Bitmap) = max(0, (w - bitmap.width) / 2)
+    val rightPadding = 20
+    val quantityX = w - rightPadding - innerQuantityBitmap.width
+    val innerX = max(rightAreaLeft, quantityX - innerBitmap.width - 8)
+    val quantityY = 72
+    val innerY = quantityY + max(0, innerQuantityBitmap.height - innerBitmap.height - 3)
+    val dateX = w - rightPadding - dateBitmap.width
+    val dateY = h - dateBitmap.height - 10
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
       bitmapCommand(centerX(titleBitmap), 8, titleBitmap),
       bitmapCommand(centerX(codeBitmap), 28, codeBitmap),
-      bitmapCommand(18, 68, itemBitmap),
-      bitmapCommand(18, 90, nameBitmap),
-      bitmapCommand(18, 112, packBitmap),
-      bitmapCommand(w - dateBitmap.width - 20, 112, dateBitmap),
+      bitmapCommand(18, 78, itemBitmap),
+      bitmapCommand(18, 108, nameBitmap),
+      bitmapCommand(innerX, innerY, innerBitmap),
+      bitmapCommand(quantityX, quantityY, innerQuantityBitmap),
+      bitmapCommand(dateX, dateY, dateBitmap),
     )
 
     if (barcode.isNotBlank()) {
-      commands += "BARCODE 128 1 1 48 60 148 ${cpclText(barcode)}"
+      commands += "BARCODE 128 1 1 44 24 150 ${cpclText(barcode)}"
     }
 
     commands += "PRINT"

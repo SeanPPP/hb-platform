@@ -91,6 +91,153 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateStoreAsync_WhenIsActiveOmitted_DefaultsCashRegisterDisabled()
+        {
+            var service = CreateStoreService();
+
+            var result = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "New Store",
+                StoreCode = "1999",
+            });
+
+            Assert.True(result.Success);
+            Assert.False(result.Data!.IsActive);
+            var createdStore = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreCode == "1999");
+            Assert.NotNull(createdStore);
+            Assert.False(createdStore!.IsActive);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_WhenIsActiveTrue_PersistsCashRegisterEnabled()
+        {
+            var service = CreateStoreService();
+
+            var result = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Cash Store",
+                StoreCode = "1888",
+                IsActive = true,
+            });
+
+            Assert.True(result.Success);
+            Assert.True(result.Data!.IsActive);
+            var createdStore = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreCode == "1888");
+            Assert.NotNull(createdStore);
+            Assert.True(createdStore!.IsActive);
+        }
+
+        [Fact]
+        public async Task GetNextStoreCodeAsync_WhenNoNumericCodes_ReturnsDefaultStartCode()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-alpha",
+                StoreName = "Alpha Store",
+                StoreCode = "S001",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var result = await service.GetNextStoreCodeAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal("1001", result.Data);
+        }
+
+        [Fact]
+        public async Task GetNextStoreCodeAsync_UsesMaxNumericCodePlusOne()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-1001",
+                    StoreName = "Store 1001",
+                    StoreCode = "1001",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-1042",
+                    StoreName = "Store 1042",
+                    StoreCode = "1042",
+                    IsActive = false,
+                    IsDeleted = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-s001",
+                    StoreName = "Store S001",
+                    StoreCode = "S001",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var result = await service.GetNextStoreCodeAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal("1043", result.Data);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_WhenStoreCodeExists_ReturnsDuplicateAndDoesNotInsert()
+        {
+            var service = CreateStoreService();
+            var first = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "First Store",
+                StoreCode = "1043",
+            });
+
+            var duplicate = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Duplicate Store",
+                StoreCode = "1043",
+            });
+
+            Assert.True(first.Success);
+            Assert.False(duplicate.Success);
+            Assert.Equal("DUPLICATE_STORE_CODE", duplicate.ErrorCode);
+            var count = await _db.Queryable<Store>()
+                .Where(store => store.StoreCode == "1043")
+                .CountAsync();
+            Assert.Equal(1, count);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_TrimsStoreCodeBeforeDuplicateCheckAndInsert()
+        {
+            var service = CreateStoreService();
+            var first = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Trimmed Store",
+                StoreCode = " 1044 ",
+            });
+
+            var duplicate = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Duplicate Trimmed Store",
+                StoreCode = "1044",
+            });
+
+            Assert.True(first.Success);
+            Assert.Equal("1044", first.Data!.StoreCode);
+            Assert.False(duplicate.Success);
+            Assert.Equal("DUPLICATE_STORE_CODE", duplicate.ErrorCode);
+            var count = await _db.Queryable<Store>()
+                .Where(store => store.StoreCode == "1044")
+                .CountAsync();
+            Assert.Equal(1, count);
+        }
+
+        [Fact]
         public async Task SetPrimaryUserAsync_UpdatesOnlyTargetStoreManagementFlag()
         {
             await SeedUsersAndStoresAsync();

@@ -22,27 +22,31 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 
 const detailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Detail.tsx')
 const detailSource = readFileSync(detailFile, 'utf8')
+const productPickerSource = detailSource.slice(
+  detailSource.indexOf('function ProductPickerModal'),
+  detailSource.indexOf('function BatchEditModal'),
+)
 
 async function main() {
   const failures: string[] = []
 
-  const supplierFilterFailure = await runTest('商品弹窗应提供澳洲供应商筛选下拉', () => {
+  const supplierFilterFailure = await runTest('商品弹窗应提供国内供应商筛选下拉', () => {
     assert(
-      detailSource.includes("placeholder={t('storeOrders.detail.filterLocalSupplier', '筛选澳洲供应商')}") &&
+      detailSource.includes("placeholder={t('storeOrders.detail.filterDomesticSupplier', '筛选国内供应商')}") &&
         detailSource.includes('showSearch') &&
         detailSource.includes('optionFilterProp="label"') &&
         detailSource.includes('allowClear'),
-      '商品弹窗缺少带中文兜底的澳洲供应商筛选下拉',
+      '商品弹窗缺少带中文兜底的国内供应商筛选下拉',
     )
   })
   if (supplierFilterFailure) failures.push(supplierFilterFailure)
 
   const queryFailure = await runTest('商品弹窗查询必须附带供应商与排除条件', () => {
     assert(
-      detailSource.includes('localSupplierCode: nextSupplierCode || undefined') &&
-        detailSource.includes('excludeExistingWarehouseProducts: true') &&
-        detailSource.includes('excludeOrderGUID: orderGUID'),
-      '商品弹窗查询未附带供应商过滤或排除条件',
+      detailSource.includes('supplierCode: nextSupplierCode || undefined') &&
+        detailSource.includes('excludeOrderGUID: orderGUID') &&
+        !detailSource.includes('excludeExistingWarehouseProducts: true'),
+      '商品弹窗查询未附带国内供应商过滤，或仍在使用未入仓商品查询条件',
     )
   })
   if (queryFailure) failures.push(queryFailure)
@@ -60,12 +64,80 @@ async function main() {
   const supplierColumnFailure = await runTest('商品弹窗应显示供应商名称列', () => {
     assert(
       detailSource.includes("title: t('column.supplierName', '供应商名称')") &&
-        detailSource.includes("dataIndex: 'localSupplierName'") &&
-        detailSource.includes("record.localSupplierCode || '--'"),
-      '商品弹窗缺少供应商名称列或编码兜底',
+        detailSource.includes("dataIndex: 'domesticSupplierName'") &&
+        detailSource.includes("record.domesticSupplierCode || '--'"),
+      '商品弹窗缺少国内供应商名称列或编码兜底',
     )
   })
   if (supplierColumnFailure) failures.push(supplierColumnFailure)
+
+  const paginationFailure = await runTest('商品弹窗默认分页应为 100 且只允许 50/100/500', () => {
+    assert(
+      detailSource.includes('const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100') &&
+        detailSource.includes("const PRODUCT_PICKER_PAGE_SIZE_OPTIONS = ['50', '100', '500']") &&
+        productPickerSource.includes('useState(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)') &&
+        productPickerSource.includes('setPageSize(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)') &&
+        productPickerSource.includes('pageSizeOptions: PRODUCT_PICKER_PAGE_SIZE_OPTIONS'),
+      '商品弹窗分页默认值或页容量选项不符合 100 / 50-100-500 要求',
+    )
+  })
+  if (paginationFailure) failures.push(paginationFailure)
+
+  const compactTableFailure = await runTest('商品弹窗表格应固定布局且不配置横向滚动', () => {
+    assert(
+      productPickerSource.includes('className="store-order-product-picker-table"') &&
+        productPickerSource.includes('tableLayout="fixed"') &&
+        productPickerSource.includes('scroll={{ y: 440 }}') &&
+        !productPickerSource.includes('scroll={{ x:') &&
+        productPickerSource.includes('className="store-order-product-picker-modal"'),
+      '商品弹窗表格缺少固定布局/专用 class，或仍配置了横向 scroll.x',
+    )
+  })
+  if (compactTableFailure) failures.push(compactTableFailure)
+
+  const compactRendererFailure = await runTest('商品弹窗关键列应使用紧凑图片、复制图标和窄数字输入', () => {
+    assert(
+      productPickerSource.includes('width={32}') &&
+        productPickerSource.includes('height={32}') &&
+        productPickerSource.includes('icon={<CopyOutlined />}') &&
+        productPickerSource.includes('className="store-order-picker-copy-button"') &&
+        productPickerSource.includes('className="store-order-picker-two-line"') &&
+        productPickerSource.includes('className="store-order-picker-number-input"') &&
+        productPickerSource.includes('style={{ width: 58 }}'),
+      '商品弹窗未压缩图片、复制按钮、文本列或数字输入框',
+    )
+  })
+  if (compactRendererFailure) failures.push(compactRendererFailure)
+
+  const abortFailure = await runTest('商品弹窗商品请求应支持取消旧请求', () => {
+    assert(
+      productPickerSource.includes('const productRequestControllerRef = useRef<AbortController | null>(null)') &&
+        productPickerSource.includes('productRequestControllerRef.current?.abort()') &&
+        productPickerSource.includes('const currentController = new AbortController()') &&
+        productPickerSource.includes('currentController.signal') &&
+        productPickerSource.includes('if (isAbortError(error))') &&
+        productPickerSource.includes('productRequestControllerRef.current !== currentController'),
+      '商品弹窗商品请求缺少 AbortController 取消或旧请求防回写',
+    )
+  })
+  if (abortFailure) failures.push(abortFailure)
+
+  const supplierLazyFailure = await runTest('国内供应商下拉应首次展开才异步加载并可关闭取消', () => {
+    assert(
+      productPickerSource.includes('const supplierRequestControllerRef = useRef<AbortController | null>(null)') &&
+        productPickerSource.includes('const supplierOptionsLoadedRef = useRef(false)') &&
+        productPickerSource.includes('getActiveChinaSuppliers(currentController.signal)') &&
+        productPickerSource.includes('onOpenChange={(visible) =>') &&
+        productPickerSource.includes('void loadSupplierOptions()') &&
+        productPickerSource.includes('return') &&
+        productPickerSource.includes('supplierRequestControllerRef.current?.abort()') &&
+        productPickerSource.includes('supplierRequestControllerRef.current = null') &&
+        productPickerSource.includes('setSupplierLoading(false)') &&
+        !productPickerSource.includes('void loadSupplierOptions()\n    void loadProducts'),
+      '国内供应商下拉未按首次展开懒加载，或关闭时不能取消未完成请求',
+    )
+  })
+  if (supplierLazyFailure) failures.push(supplierLazyFailure)
 
   const quickAddFailure = await runTest('快速添加请求仍保持原始查询结构', () => {
     assert(

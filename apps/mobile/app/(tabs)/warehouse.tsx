@@ -362,6 +362,7 @@ export default function WarehouseScreen() {
   const [hasLocationLookup, setHasLocationLookup] = useState(false);
   const [defaultLocationLoading, setDefaultLocationLoading] = useState(false);
   const [defaultLocationLoaded, setDefaultLocationLoaded] = useState(false);
+  const [defaultLocationLoadFailed, setDefaultLocationLoadFailed] = useState(false);
   const [bindModalVisible, setBindModalVisible] = useState(false);
   const [bindProductKeyword, setBindProductKeyword] = useState("");
   const [bindProductMatches, setBindProductMatches] = useState<WarehouseProduct[]>([]);
@@ -446,7 +447,7 @@ export default function WarehouseScreen() {
     }
 
     return parsed;
-  }, [t]);
+  }, [getErrorMessage, t]);
 
   const cameraScan = useCameraScan({
     onBarcode: async (barcode) => {
@@ -556,6 +557,7 @@ export default function WarehouseScreen() {
     const requestId = defaultLocationLookupRequestRef.current + 1;
     defaultLocationLookupRequestRef.current = requestId;
     setDefaultLocationLoading(true);
+    setDefaultLocationLoadFailed(false);
     try {
       const items = await getDefaultUnusedLocations();
       if (requestId !== defaultLocationLookupRequestRef.current) {
@@ -565,12 +567,16 @@ export default function WarehouseScreen() {
       // 默认列表是货位页的基础视图，和搜索结果用 hasLocationLookup 区分标题与空状态。
       setHasLocationLookup(false);
       setDefaultLocationLoaded(true);
+      setDefaultLocationLoadFailed(false);
       setLocationResults(items);
       if (options?.clearSelection) {
         applyLocationDetail(null);
       }
     } catch (error) {
       if (requestId === defaultLocationLookupRequestRef.current) {
+        // 失败也标记为已完成，避免 useEffect 立即再次触发默认加载形成无限重试。
+        setDefaultLocationLoaded(true);
+        setDefaultLocationLoadFailed(true);
         setSnackbar(getErrorMessage(error, "messages.locationLookupFailed"));
       }
     } finally {
@@ -951,6 +957,16 @@ export default function WarehouseScreen() {
       setSnackbar(getErrorMessage(error, "messages.printFailed"));
     }
   }, [selectedLocation, t]);
+
+  const handlePrintLocationListItem = useCallback(async (item: WarehouseLocation) => {
+    try {
+      // 未使用货位列表可直接打印标签，避免必须先进入货位详情。
+      await printWarehouseLocationLabel(buildWarehouseLocationLabelPayload(item));
+      setSnackbar(t("messages.printSent"));
+    } catch (error) {
+      setSnackbar(getErrorMessage(error, "messages.printFailed"));
+    }
+  }, [t]);
 
   const handleCapturePhoto = useCallback(async () => {
     if (!product || !photoCameraRef.current) {
@@ -1415,6 +1431,8 @@ export default function WarehouseScreen() {
   const editableProductGrade = productForm.grade.trim().toUpperCase();
   const displayProductGrade = isPdaProductLayout ? savedProductGrade : editableProductGrade;
   const displayWarehouseIsActive = isPdaProductLayout ? product?.warehouseIsActive ?? true : productForm.warehouseIsActive;
+  // 商品已有货位时，“绑定货位”实际会替换旧货位，因此文案显示为“更新货位”。
+  const hasProductLocation = Boolean(product?.locationGuid || product?.locationCode);
   const productGradeColor = displayProductGrade
     ? PRODUCT_GRADE_CONFIG[displayProductGrade]?.color ?? "#98A2B3"
     : "#98A2B3";
@@ -1763,7 +1781,7 @@ export default function WarehouseScreen() {
                     right={() => (
                       productSectionConfig.showLocationAction ? (
                         <Button compact onPress={openProductLocationModal}>
-                          {t("product.bindLocation")}
+                          {t(hasProductLocation ? "product.updateLocation" : "product.bindLocation")}
                         </Button>
                       ) : null
                     )}
@@ -1774,7 +1792,7 @@ export default function WarehouseScreen() {
                     </Text>
                     <View style={styles.locationActionRow}>
                       <Button compact mode="contained" icon="map-marker-plus-outline" onPress={openProductLocationModal}>
-                        {t("product.bindLocation")}
+                        {t(hasProductLocation ? "product.updateLocation" : "product.bindLocation")}
                       </Button>
                       <Button compact mode="outlined" icon="map-marker-remove-outline" onPress={openUnbindLocationConfirm} disabled={!product.locationGuid && !product.locationCode}>
                         {t("product.clearLocation")}
@@ -1823,7 +1841,16 @@ export default function WarehouseScreen() {
               </View>
             ) : null}
 
-            {!defaultLocationLoading && !selectedLocation && locationResults.length === 0 ? (
+            {!defaultLocationLoading && defaultLocationLoadFailed && !hasLocationLookup && locationResults.length === 0 ? (
+              <View style={styles.inlineErrorState}>
+                <Text variant="bodyMedium" style={styles.secondaryText}>{t("location.unusedLoadFailed")}</Text>
+                <Button compact mode="outlined" icon="refresh" onPress={() => void loadDefaultUnusedLocations({ clearSelection: true })}>
+                  {t("location.retry")}
+                </Button>
+              </View>
+            ) : null}
+
+            {!defaultLocationLoading && !defaultLocationLoadFailed && !selectedLocation && locationResults.length === 0 ? (
               <EmptyState
                 title={hasLocationLookup ? t("location.noResultsTitle") : t("location.emptyTitle")}
                 description={hasLocationLookup ? t("location.noResultsDescription") : t("location.emptyDescription")}
@@ -1867,6 +1894,16 @@ export default function WarehouseScreen() {
                           <View style={styles.binFooter}>
                             <Button compact icon="eye-outline" onPress={() => void handleSelectLocation(item.locationGuid)}>
                               {t("common:actions.viewDetail")}
+                            </Button>
+                            <Button
+                              compact
+                              icon="printer-outline"
+                              onPress={(event) => {
+                                event.stopPropagation();
+                                void handlePrintLocationListItem(item);
+                              }}
+                            >
+                              {t("product.printLocation")}
                             </Button>
                           </View>
                         </View>
@@ -2097,7 +2134,7 @@ export default function WarehouseScreen() {
           <View style={styles.bottomSheetHandle} />
           <View style={styles.sheetHeader}>
             <View style={styles.sheetHeaderMeta}>
-              <Text variant="titleLarge">{t("product.locationModalTitle")}</Text>
+              <Text variant="titleLarge">{t(hasProductLocation ? "product.updateLocation" : "product.locationModalTitle")}</Text>
               <Text variant="bodySmall" style={styles.secondaryText} numberOfLines={1}>
                 {t("product.currentLocation")}: {product?.locationCode || t("product.noLocation")}
               </Text>
@@ -2785,6 +2822,11 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 16,
   },
+  inlineErrorState: {
+    gap: 8,
+    alignItems: "flex-start",
+    paddingVertical: 16,
+  },
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2902,7 +2944,9 @@ const styles = StyleSheet.create({
   },
   binFooter: {
     flexDirection: "row",
-    justifyContent: "flex-start",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 8,
   },
   locationProductsSection: {
     gap: 12,

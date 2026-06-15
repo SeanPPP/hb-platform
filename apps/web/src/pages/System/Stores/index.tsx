@@ -264,27 +264,27 @@ export default function SystemStoresPage() {
     {
       title: t('common.index'),
       key: 'rowIndex',
-      width: 72,
+      width: 64,
       render: (_value, _record, index) => (page - 1) * pageSize + index + 1,
     },
     {
       title: t('system.stores.storeName'),
       dataIndex: 'storeName',
-      width: 240,
+      width: 190,
       sorter: true,
       sortOrder: sortBy === 'storeName' ? sortOrder : null,
     },
     {
       title: t('system.stores.storeCode'),
       dataIndex: 'storeCode',
-      width: 140,
+      width: 96,
       sorter: true,
       sortOrder: sortBy === 'storeCode' ? sortOrder : null,
     },
     {
       title: t('system.stores.brandName'),
       dataIndex: 'brandName',
-      width: 180,
+      width: 140,
       filters: brandFilterOptions,
       filteredValue: brandFilter ? [brandFilter] : null,
       sorter: true,
@@ -294,15 +294,28 @@ export default function SystemStoresPage() {
     {
       title: t('system.stores.contactPhone'),
       dataIndex: 'contactPhone',
-      width: 160,
+      width: 130,
       sorter: true,
       sortOrder: sortBy === 'contactPhone' ? sortOrder : null,
       render: (value) => value || '--',
     },
     {
+      title: t('system.stores.address'),
+      dataIndex: 'address',
+      width: 300,
+      sorter: true,
+      sortOrder: sortBy === 'address' ? sortOrder : null,
+      // 地址列按业务要求完整展示；控制列宽并允许换行，避免撑开整张表。
+      render: (value?: string) => value ? (
+        <Typography.Text style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
+          {value}
+        </Typography.Text>
+      ) : '--',
+    },
+    {
       title: t('system.stores.linkedUserCount'),
       dataIndex: 'totalUsers',
-      width: 120,
+      width: 92,
       sorter: true,
       sortOrder: sortBy === 'totalUsers' ? sortOrder : null,
       render: (value: number | undefined, record) => (
@@ -314,7 +327,7 @@ export default function SystemStoresPage() {
     {
       title: t('system.stores.cashRegisterEnabled'),
       dataIndex: 'isActive',
-      width: 100,
+      width: 112,
       filters: [
         { text: t('common.active'), value: 'true' },
         { text: t('common.inactive'), value: 'false' },
@@ -329,14 +342,14 @@ export default function SystemStoresPage() {
     {
       title: t('column.action'),
       key: 'action',
-      width: 160,
+      width: 132,
       render: (_, record) => (
-        <Space size={0}>
-          <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
+        <Space size={4}>
+          <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             {t('common.view')}
           </Button>
           <HasPermission code={P.Stores.Edit}>
-            <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
+            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
               {t('common.edit')}
             </Button>
           </HasPermission>
@@ -373,7 +386,9 @@ export default function SystemStoresPage() {
           loading={loading}
           columns={columns}
           dataSource={data}
-          scroll={{ x: 1080 }}
+          size="small"
+          tableLayout="fixed"
+          scroll={{ x: 1260 }}
           onChange={handleTableChange}
           pagination={{
             current: page,
@@ -409,7 +424,12 @@ export default function SystemStoresPage() {
           <Typography.Text type="danger">{t('system.stores.notFound')}</Typography.Text>
         ) : (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            <Descriptions bordered column={2}>
+            <Descriptions
+              bordered
+              column={2}
+              size="small"
+              labelStyle={{ width: 96, whiteSpace: 'nowrap' }}
+            >
               <Descriptions.Item label={t('system.stores.storeName')}>{detailStore.storeName}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.storeCode')}>{detailStore.storeCode}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.brandName')}>{detailStore.brandName || '--'}</Descriptions.Item>

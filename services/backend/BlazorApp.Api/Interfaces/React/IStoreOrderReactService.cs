@@ -96,6 +96,18 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<List<BranchDto>>> GetUsedBranchesAsync();
 
         /// <summary>
+        /// 获取订单中未能匹配本地分店的旧分店标识聚合。
+        /// </summary>
+        Task<ApiResponse<List<UnmatchedStoreOrderGroupDto>>> GetUnmatchedStoreOrderGroupsAsync();
+
+        /// <summary>
+        /// 批量将订单旧分店标识映射为本地分店编码。
+        /// </summary>
+        Task<ApiResponse<BatchMapStoreOrderStoreCodeResultDto>> BatchMapStoreOrderStoreCodeAsync(
+            BatchMapStoreOrderStoreCodeDto request
+        );
+
+        /// <summary>
         /// 创建新订单 (FlowStatus=1)
         /// </summary>
         Task<ApiResponse<string>> CreateOrderAsync(CreateStoreOrderDto request);

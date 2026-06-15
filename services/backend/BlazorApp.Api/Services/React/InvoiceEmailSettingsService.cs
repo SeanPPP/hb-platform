@@ -52,7 +52,18 @@ namespace BlazorApp.Api.Services.React
         {
             var existing = await QueryModelAsync();
             var now = DateTime.UtcNow;
-            var encryptedPassword = ResolveEncryptedPassword(existing, request);
+            string? encryptedPassword;
+            try
+            {
+                encryptedPassword = ResolveEncryptedPassword(existing, request);
+            }
+            catch (InvoiceEmailPasswordDecryptException)
+            {
+                return ApiResponse<InvoiceEmailSettingsDto>.Error(
+                    "发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置",
+                    "INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED"
+                );
+            }
 
             var model = existing ?? new InvoiceEmailConfiguration
             {
@@ -156,6 +167,12 @@ namespace BlazorApp.Api.Services.React
 
             if (string.IsNullOrWhiteSpace(request.Password))
             {
+                if (!string.IsNullOrWhiteSpace(existing?.EncryptedPassword))
+                {
+                    // 密码留空表示沿用旧密码；先校验旧密文可解，避免继续保存已经失效的 key ring 密文。
+                    _ = UnprotectPassword(existing.EncryptedPassword);
+                }
+
                 return existing?.EncryptedPassword;
             }
 

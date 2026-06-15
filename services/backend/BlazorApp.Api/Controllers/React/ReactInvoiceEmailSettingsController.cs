@@ -103,7 +103,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 _logger.LogError(ex, "测试发票邮件 SMTP 配置时解密已保存密码失败");
                 return BadRequest(ApiResponse<bool>.Error(
-                    "发票邮件 SMTP 密码解密失败，请重新保存发票邮箱配置",
+                    "发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置",
                     "INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED"
                 ));
             }

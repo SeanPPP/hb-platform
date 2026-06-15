@@ -45,7 +45,7 @@ import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { useAuthStore } from '../../../store/auth'
-import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
+import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { getStores } from '../../../services/storeService'
 import ContainerProductPicker from './components/ContainerProductPicker'
 import {
@@ -71,7 +71,7 @@ import {
   updateStoreOrderProductStatus,
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
-import type { LocalSupplierDto } from '../../../types/localSupplier'
+import type { ChinaSupplierItem } from '../../../types/chinaSupplier'
 import type {
   StoreOrderDetail,
   StoreOrderDetailLine,
@@ -212,6 +212,9 @@ interface ProductPickerModalProps {
   onConfirm: (items: Array<{ productCode: string; quantity: number; importPrice?: number }>) => Promise<void>
 }
 
+const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100
+const PRODUCT_PICKER_PAGE_SIZE_OPTIONS = ['50', '100', '500']
+
 interface BatchEditModalProps {
   open: boolean
   loading?: boolean
@@ -227,12 +230,15 @@ interface BatchEditModalProps {
 
 function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: ProductPickerModalProps) {
   const { t } = useTranslation()
+  const productRequestControllerRef = useRef<AbortController | null>(null)
+  const supplierRequestControllerRef = useRef<AbortController | null>(null)
+  const supplierOptionsLoadedRef = useRef(false)
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [products, setProducts] = useState<StoreOrderProductItem[]>([])
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [pageNumber, setPageNumber] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)
   const [total, setTotal] = useState(0)
   const [supplierOptions, setSupplierOptions] = useState<Array<{ label: string; value: string }>>([])
   const [supplierCode, setSupplierCode] = useState<string>()
@@ -252,47 +258,80 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     const nextPageSize = overrides?.pageSize ?? pageSize
     const nextSupplierCode = overrides?.supplierCode ?? supplierCode
 
+    productRequestControllerRef.current?.abort()
+    const currentController = new AbortController()
+    productRequestControllerRef.current = currentController
+
     setFetching(true)
     try {
-      const result = await getStoreOrderProducts({
-        itemNumber: nextKeyword.trim() || undefined,
-        localSupplierCode: nextSupplierCode || undefined,
-        excludeExistingWarehouseProducts: true,
-        excludeOrderGUID: orderGUID,
-        pageNumber: nextPageNumber,
-        pageSize: nextPageSize,
-        sortBy: 'Default',
-      })
+      const result = await getStoreOrderProducts(
+        {
+          itemNumber: nextKeyword.trim() || undefined,
+          supplierCode: nextSupplierCode || undefined,
+          excludeOrderGUID: orderGUID,
+          pageNumber: nextPageNumber,
+          pageSize: nextPageSize,
+          sortBy: 'Default',
+        },
+        currentController.signal,
+      )
+      if (productRequestControllerRef.current !== currentController) {
+        return
+      }
       setProducts(result.items)
       setTotal(result.total)
       setPageNumber(nextPageNumber)
       setPageSize(nextPageSize)
     } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadProductsFailed'))
     } finally {
-      setFetching(false)
+      if (productRequestControllerRef.current === currentController) {
+        productRequestControllerRef.current = null
+        setFetching(false)
+      }
     }
   }
 
   const loadSupplierOptions = async () => {
+    if (supplierOptionsLoadedRef.current || supplierLoading) {
+      return
+    }
+
+    supplierRequestControllerRef.current?.abort()
+    const currentController = new AbortController()
+    supplierRequestControllerRef.current = currentController
+
     setSupplierLoading(true)
     try {
-      const suppliers: LocalSupplierDto[] = await getActiveLocalSuppliers()
-      // 供应商下拉只保留有效编码，便于按编码筛选商品列表。
+      const suppliers: ChinaSupplierItem[] = await getActiveChinaSuppliers(currentController.signal)
+      if (supplierRequestControllerRef.current !== currentController) {
+        return
+      }
+      // 商品选择弹窗按国内供应商过滤，避免误用澳洲供应商编码导致候选商品为空。
       setSupplierOptions(
         suppliers
-          .filter((item) => Boolean(item.localSupplierCode))
+          .filter((item) => Boolean(item.supplierCode))
           .map((item) => ({
-            label: item.name || item.localSupplierCode,
-            value: item.localSupplierCode,
+            label: item.supplierName || item.supplierCode,
+            value: item.supplierCode,
           })),
       )
+      supplierOptionsLoadedRef.current = true
     } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
       console.error(error)
-      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadSuppliersFailed', '加载澳洲供应商失败'))
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadSuppliersFailed', '加载国内供应商失败'))
     } finally {
-      setSupplierLoading(false)
+      if (supplierRequestControllerRef.current === currentController) {
+        supplierRequestControllerRef.current = null
+        setSupplierLoading(false)
+      }
     }
   }
 
@@ -300,36 +339,54 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     if (!open) {
       return
     }
-    void loadSupplierOptions()
     void loadProducts({ pageNumber: 1 })
   }, [open])
 
   useEffect(() => {
     if (!open) {
+      productRequestControllerRef.current?.abort()
+      supplierRequestControllerRef.current?.abort()
+      productRequestControllerRef.current = null
+      supplierRequestControllerRef.current = null
+      supplierOptionsLoadedRef.current = false
       setKeyword('')
       setProducts([])
       setSelectedRowKeys([])
       setPageNumber(1)
-      setPageSize(10)
+      setPageSize(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)
       setTotal(0)
       setSupplierOptions([])
       setSupplierCode(undefined)
+      setFetching(false)
       setSupplierLoading(false)
       setEditingValues({})
     }
   }, [open])
 
+  const renderPickerCopyButton = (value: string, label: string) => (
+    <Tooltip title={t('common.copy')}>
+      <Button
+        aria-label={label}
+        className="store-order-picker-copy-button"
+        icon={<CopyOutlined />}
+        size="small"
+        type="link"
+        onClick={() => void copyTextToClipboard(value)}
+      />
+    </Tooltip>
+  )
+
   const columns: ColumnsType<StoreOrderProductItem> = [
     {
       title: t('column.image'),
       dataIndex: 'productImage',
-      width: 84,
+      width: 48,
       render: (value: string | undefined, record) => (
         <Image
           src={value}
           alt={record.productName}
-          width={40}
-          height={40}
+          width={32}
+          height={32}
           style={{ borderRadius: 4, objectFit: 'cover' }}
           fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
         />
@@ -338,14 +395,12 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
-      width: 140,
+      width: 98,
       render: (value: string | undefined) =>
         value ? (
-          <Space size={4} wrap>
-            <Typography.Text>{value}</Typography.Text>
-            <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
-              {t('common.copy')}
-            </Button>
+          <Space size={2} wrap={false} className="store-order-picker-inline-cell">
+            <Typography.Text className="store-order-picker-nowrap" title={value}>{value}</Typography.Text>
+            {renderPickerCopyButton(value, `${t('common.copy')} ${value}`)}
           </Space>
         ) : (
           renderDangerValue('--')
@@ -354,48 +409,67 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.productName'),
       dataIndex: 'productName',
-      width: 240,
-      ellipsis: true,
-      render: (value: string | undefined) => value || '--',
+      width: 170,
+      render: (value: string | undefined) => (
+        <span className="store-order-picker-two-line" title={value}>
+          {value || '--'}
+        </span>
+      ),
     },
     {
       title: t('column.supplierName', '供应商名称'),
-      dataIndex: 'localSupplierName',
-      width: 180,
-      ellipsis: true,
-      render: (value: string | undefined, record) => value || record.localSupplierCode || '--',
+      dataIndex: 'domesticSupplierName',
+      width: 108,
+      render: (value: string | undefined, record) => {
+        const displayValue = value || record.domesticSupplierCode || '--'
+        return (
+          <span className="store-order-picker-two-line" title={displayValue}>
+            {displayValue}
+          </span>
+        )
+      },
     },
     {
       title: t('column.barcode'),
       dataIndex: 'barcode',
-      width: 170,
-      render: (value: string | undefined) => <BarcodePreview value={value} textMaxWidth={110} />,
+      width: 122,
+      render: (value: string | undefined) =>
+        value ? (
+          <Space size={2} wrap={false} className="store-order-picker-inline-cell store-order-picker-barcode-cell">
+            <Typography.Text className="store-order-picker-nowrap" title={value}>{value}</Typography.Text>
+            {renderPickerCopyButton(value, `${t('common.copy')} ${value}`)}
+          </Space>
+        ) : (
+          renderDangerValue('--')
+        ),
     },
     {
       title: t('column.stock'),
       dataIndex: 'stockQuantity',
-      width: 90,
+      width: 56,
     },
     {
       title: t('column.minOrder'),
       dataIndex: 'minOrderQuantity',
-      width: 110,
+      width: 62,
     },
     {
       title: t('column.defaultImportPrice'),
       dataIndex: 'importPrice',
-      width: 120,
+      width: 76,
       render: (value: number | undefined) => formatAmount(value),
     },
     {
       title: t('column.allocQuantity'),
       key: 'quantity',
-      width: 120,
+      width: 70,
       render: (_, record) => (
         <InputNumber
+          className="store-order-picker-number-input"
           min={0}
           precision={0}
-          style={{ width: '100%' }}
+          size="small"
+          style={{ width: 58 }}
           value={editingValues[record.productCode]?.quantity ?? record.minOrderQuantity ?? 1}
           onChange={(value) =>
             setEditingValues((current) => ({
@@ -412,12 +486,14 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.importPriceShort'),
       key: 'importPriceEdit',
-      width: 120,
+      width: 70,
       render: (_, record) => (
         <InputNumber
+          className="store-order-picker-number-input"
           min={0}
           precision={2}
-          style={{ width: '100%' }}
+          size="small"
+          style={{ width: 58 }}
           value={editingValues[record.productCode]?.importPrice ?? record.importPrice}
           onChange={(value) =>
             setEditingValues((current) => ({
@@ -457,9 +533,10 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 
   return (
     <Modal
+      className="store-order-product-picker-modal"
       title={t('storeOrders.selectProductTitle')}
       open={open}
-      width={1280}
+      width={1080}
       destroyOnClose
       okText={t('storeOrders.addSelected', { count: selectedRowKeys.length })}
       cancelText={t('common.close')}
@@ -482,11 +559,21 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
             allowClear
             showSearch
             optionFilterProp="label"
-            placeholder={t('storeOrders.detail.filterLocalSupplier', '筛选澳洲供应商')}
+            placeholder={t('storeOrders.detail.filterDomesticSupplier', '筛选国内供应商')}
             value={supplierCode}
             loading={supplierLoading}
             options={supplierOptions}
             style={{ width: 260 }}
+            onOpenChange={(visible) => {
+              if (visible) {
+                void loadSupplierOptions()
+                return
+              }
+              // 下拉收起时取消尚未完成的供应商请求，避免旧请求回写已关闭的筛选框。
+              supplierRequestControllerRef.current?.abort()
+              supplierRequestControllerRef.current = null
+              setSupplierLoading(false)
+            }}
             onChange={(value) => {
               // 切换供应商后回到第一页，避免旧分页落在空页。
               setSupplierCode(value)
@@ -495,26 +582,29 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
           />
         </Space>
         <Table
+          className="store-order-product-picker-table"
           rowKey="productCode"
           loading={fetching}
           size="small"
+          tableLayout="fixed"
           dataSource={products}
           columns={columns}
           rowSelection={{
             selectedRowKeys,
             onChange: setSelectedRowKeys,
             preserveSelectedRowKeys: true,
-            columnWidth: 40,
+            columnWidth: 32,
           }}
           pagination={{
             current: pageNumber,
             pageSize,
             total,
             showSizeChanger: true,
+            pageSizeOptions: PRODUCT_PICKER_PAGE_SIZE_OPTIONS,
             onChange: (nextPage, nextPageSize) =>
               void loadProducts({ pageNumber: nextPage, pageSize: nextPageSize }),
           }}
-          scroll={{ x: 1200, y: 480 }}
+          scroll={{ y: 440 }}
         />
       </Space>
     </Modal>

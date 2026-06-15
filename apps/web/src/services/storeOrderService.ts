@@ -16,6 +16,8 @@ import type {
   StoreOrderSyncJobStatus,
   StoreOrderInvoiceEmailJobResult,
   StoreOrderPasteReplaceJobResult,
+  StoreOrderBatchMapStoreCodePayload,
+  StoreOrderBatchMapStoreCodeResult,
   StoreOrderBatchStatusUpdatePayload,
   StoreOrderBranchOption,
   StoreOrderDetail,
@@ -33,6 +35,7 @@ import type {
   StoreOrderProductListResult,
   StoreOrderProductQuery,
   StoreOrderStatusUpdatePayload,
+  UnmatchedStoreOrderGroup,
   SendStoreOrderInvoiceEmailPayload,
   TranslateStoreOrderInvoiceEmailTextPayload,
   TranslateStoreOrderInvoiceEmailTextResult,
@@ -360,6 +363,24 @@ export async function getUsedStoreOrderBranches() {
   return normalizeResult<StoreOrderBranchOption[]>(response)
 }
 
+export async function getUnmatchedStoreOrderGroups() {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/unmatched-store-groups`, {
+    method: 'GET',
+  })
+
+  const result = normalizeResult<UnmatchedStoreOrderGroup[] | null>(response)
+  return Array.isArray(result) ? result : []
+}
+
+export async function batchMapStoreOrderStoreCode(payload: StoreOrderBatchMapStoreCodePayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/batch-map-store-code`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeResult<StoreOrderBatchMapStoreCodeResult>(response)
+}
+
 export async function getStoreOrderDetail(
   orderGuid: string,
   query?: StoreOrderDetailQuery,
@@ -399,10 +420,11 @@ export async function getStoreOrderDetailProductCodes(orderGuid: string, signal?
   return Array.isArray(result) ? result.filter((item): item is string => typeof item === 'string') : []
 }
 
-export async function getStoreOrderProducts(query: StoreOrderProductQuery) {
+export async function getStoreOrderProducts(query: StoreOrderProductQuery, signal?: AbortSignal) {
   const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/products`, {
     method: 'POST',
     data: query,
+    signal,
   })
 
   return normalizeProductPagedList(response)

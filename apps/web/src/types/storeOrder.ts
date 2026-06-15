@@ -38,10 +38,35 @@ export interface StoreOrderListQuery {
   startDate?: string
   endDate?: string
   statusList?: StoreOrderFlowStatus[]
+  columnFilters?: StoreOrderListColumnFilters
   pageNumber: number
   pageSize: number
   sortBy?: string
   sortDescending?: boolean
+}
+
+export interface StoreOrderListColumnFilters {
+  orderNo?: string
+  outboundDateStart?: string
+  outboundDateEnd?: string
+  totalQuantityMin?: number
+  totalQuantityMax?: number
+  totalOrderAmountMin?: number
+  totalOrderAmountMax?: number
+  totalOrderVolumeMin?: number
+  totalOrderVolumeMax?: number
+  totalAllocVolumeMin?: number
+  totalAllocVolumeMax?: number
+  totalAllocQuantityMin?: number
+  totalAllocQuantityMax?: number
+  importTotalAmountMin?: number
+  importTotalAmountMax?: number
+  remarks?: string
+  createdAtStart?: string
+  createdAtEnd?: string
+  updatedBy?: string
+  updatedAtStart?: string
+  updatedAtEnd?: string
 }
 
 export interface StoreOrderListItem {
@@ -99,6 +124,35 @@ export interface StoreOrderStatusUpdatePayload {
 export interface StoreOrderBatchStatusUpdatePayload {
   orderGUIDs: string[]
   newStatus: StoreOrderFlowStatus
+}
+
+export interface UnmatchedStoreOrderGroup {
+  sourceStoreCode: string
+  sourceStoreName?: string
+  orderCount: number
+  latestOrderDate?: string
+}
+
+export interface StoreOrderStoreCodeMapping {
+  sourceStoreCode: string
+  targetStoreCode: string
+}
+
+export interface StoreOrderBatchMapStoreCodePayload {
+  mappings: StoreOrderStoreCodeMapping[]
+}
+
+export interface StoreOrderStoreCodeMappingResultItem {
+  sourceStoreCode: string
+  targetStoreCode: string
+  updatedCount: number
+  skippedCount: number
+}
+
+export interface StoreOrderBatchMapStoreCodeResult {
+  updatedCount: number
+  skippedCount: number
+  items: StoreOrderStoreCodeMappingResultItem[]
 }
 
 export interface SyncMissingStoreOrdersResult {
@@ -227,6 +281,7 @@ export interface StoreOrderProductQuery {
   productName?: string
   categoryGUID?: string
   localSupplierCode?: string
+  supplierCode?: string
   excludeExistingWarehouseProducts?: boolean
   excludeOrderGUID?: string
   pageNumber: number
@@ -243,6 +298,8 @@ export interface StoreOrderProductItem {
   productImage?: string
   localSupplierCode?: string
   localSupplierName?: string
+  domesticSupplierCode?: string
+  domesticSupplierName?: string
   categoryName?: string
   warehouseCategoryGUID?: string
   oemPrice?: number
