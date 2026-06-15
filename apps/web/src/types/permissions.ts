@@ -81,6 +81,7 @@ export const P = {
     ViewLogs: 'System.ViewLogs',
     ManageScheduledTasks: 'System.ManageScheduledTasks',
     ManageSettings: 'System.ManageSettings',
+    ViewAppDownloads: 'System.ViewAppDownloads',
   },
   DeviceRegistration: {
     View: 'DeviceRegistration.View',

@@ -33,6 +33,20 @@ const completeBackendMenus = [
   },
 ]
 
+const warehouseStaffLocalMenus = [
+  {
+    key: '/warehouse',
+    children: [{ key: '/warehouse/store-orders' }],
+  },
+]
+const warehouseStaffBackendMenus = [
+  {
+    key: '/warehouse',
+    children: [{ key: '/warehouse/store-orders' }],
+  },
+]
+const warehouseStaffStaleBackendMenus = [{ key: '/dashboard' }]
+
 assertSameReference(
   chooseNavigationMenus(localStoreManagerMenus, staleBackendMenus),
   localStoreManagerMenus,
@@ -43,6 +57,18 @@ assertSameReference(
   chooseNavigationMenus(localStoreManagerMenus, completeBackendMenus),
   completeBackendMenus,
   'Complete backend navigation should remain authoritative',
+)
+
+assertSameReference(
+  chooseNavigationMenus(warehouseStaffLocalMenus, warehouseStaffBackendMenus),
+  warehouseStaffBackendMenus,
+  'Backend navigation with fewer authorized leaves should remain authoritative when it covers all local leaves',
+)
+
+assertSameReference(
+  chooseNavigationMenus(warehouseStaffLocalMenus, warehouseStaffStaleBackendMenus),
+  warehouseStaffLocalMenus,
+  'Backend navigation missing a locally authorized leaf should still use the local fallback',
 )
 
 console.log('menuFallback.test: ok')

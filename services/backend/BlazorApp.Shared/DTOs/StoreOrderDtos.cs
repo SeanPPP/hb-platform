@@ -155,6 +155,7 @@ namespace BlazorApp.Shared.DTOs
     public string OrderGUID { get; set; } = string.Empty;
     public string? OrderNo { get; set; }
     public string? StoreCode { get; set; }
+    public string? StoreName { get; set; }
     public decimal TotalAmount { get; set; }
     public int TotalQuantity { get; set; }
 

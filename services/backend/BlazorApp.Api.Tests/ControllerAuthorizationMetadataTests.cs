@@ -147,6 +147,14 @@ public class ControllerAuthorizationMetadataTests
             nameof(ReactInvoiceEmailSettingsController.Test),
             Permissions.System.ManageSettings
         );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.Latest),
+            Permissions.System.ViewAppDownloads
+        );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.History),
+            Permissions.System.ViewAppDownloads
+        );
 
         yield return Policy<DomesticProductsController>(
             nameof(DomesticProductsController.GetDomesticProducts),

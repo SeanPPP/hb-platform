@@ -1,0 +1,77 @@
+# HB Expo 移动端
+
+本目录是 HB Platform 的 Expo / React Native 移动端项目。
+
+## EAS APK Webhook 与 App 下载二维码
+
+后台的“App 下载”页面会展示当前 Android APK 下载二维码。EAS Webhook 用于在每次 Expo EAS Android APK 构建完成后，把新的 APK 下载地址同步给后端，再由后端的“App 下载”接口提供给 Web 页面生成二维码。
+
+### 创建 EAS Webhook
+
+在 `apps/mobile` 目录下使用 EAS CLI 创建 `BUILD` 事件 webhook：
+
+```bash
+eas webhook:create --event BUILD --url https://<backend-domain>/api/mobile-app-builds/eas-webhook --secret <secret>
+```
+
+注意事项：
+
+- `<backend-domain>` 必须替换为后端公网域名占位对应的实际部署地址，文档和示例不要提交真实生产域名。
+- `<secret>` 必须使用部署环境中的私密值，不能提交到 Git、README、脚本或前端产物。
+- 当前 `eas.json` 的 `preview` 和 `production` profile 都配置为 Android APK 构建，适合用于二维码下载页。
+
+### 后端配置项
+
+后端 webhook 接口读取以下配置：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `EasWebhook:Secret` | 用于校验 `expo-signature` 的 webhook secret，必须和 `eas webhook:create --secret <secret>` 使用同一个值。 |
+| `EasWebhook:AllowedAccountName` | 允许写入 APK 下载地址的 Expo account 名称；用于避免其他账号的构建误写入。 |
+| `EasWebhook:AllowedProjectName` | 允许写入 APK 下载地址的 Expo project 名称；用于避免同账号其他项目误写入。 |
+| `EasWebhook:AcceptedProfiles` | 允许同步到“App 下载”页的 EAS build profile，默认 `["preview", "production"]`。 |
+
+示例配置只保留占位符：
+
+```json
+{
+  "EasWebhook": {
+    "Secret": "<secret>",
+    "AllowedAccountName": "<expo-account>",
+    "AllowedProjectName": "<expo-project>",
+    "AcceptedProfiles": ["preview", "production"]
+  }
+}
+```
+
+### 本地 mock 验证
+
+本地验证的目标是确认后端可以完成签名校验、解析 EAS BUILD payload、保存最新 APK 地址，并通过最新版本接口读回。
+
+1. 准备一份 Expo `BUILD` 事件 payload，至少包含后端解析所需的账号、项目、profile、平台、构建状态和 APK 下载地址字段。字段值使用测试占位内容，不要使用真实生产下载地址。
+2. 使用与后端 `EasWebhook:Secret` 相同的 `<secret>` 对原始 JSON body 计算 HMAC-SHA1，生成请求头：
+
+```text
+expo-signature: sha1=<hex>
+```
+
+3. 将原始 payload POST 到后端 webhook 接口：
+
+```bash
+curl -X POST "http://localhost:5002/api/mobile-app-builds/eas-webhook" \
+  -H "Content-Type: application/json" \
+  -H "expo-signature: sha1=<hex>" \
+  --data-binary @eas-build-payload.json
+```
+
+4. 调用最新 APK 信息接口确认写入结果：
+
+```bash
+curl "http://localhost:5002/api/mobile-app-builds/latest"
+```
+
+验证通过的判断标准：
+
+- webhook POST 返回成功状态。
+- `/api/mobile-app-builds/latest` 返回的 profile、项目和 APK 下载地址与 mock payload 一致。
+- 不匹配的 secret、非 Android 构建、非成功构建、非允许账号/项目/profile 的 payload 不应更新“App 下载”页。

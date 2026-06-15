@@ -12,6 +12,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
@@ -167,6 +168,46 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_LimitsWarehouseStaffClaimsToStoreOrdersOnly()
+    {
+        var user = CreateUser(
+            new Claim(ClaimTypes.Role, "WarehouseStaff"),
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.Warehouse.Manage),
+            new Claim("permission", Permissions.Warehouse.ManageProducts),
+            new Claim("permission", Permissions.Warehouse.ManageLocations),
+            new Claim("permission", Permissions.Orders.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        AssertWarehouseStaffStoreOrderMenuOnly(menu);
+    }
+
+    [Fact]
+    public async Task BuildMenu_LimitsWarehouseStaffDatabasePermissionsToStoreOrdersOnly()
+    {
+        using var harness = new NavigationTestHarness();
+        await harness.SeedUserWithRoleAsync(
+            "user-1",
+            "role-warehouse-staff",
+            "WarehouseStaff",
+            Permissions.Dashboard.View,
+            Permissions.Warehouse.Manage,
+            Permissions.Warehouse.ManageProducts,
+            Permissions.Warehouse.ManageLocations,
+            Permissions.Orders.View
+        );
+
+        var service = harness.CreateNavigationService();
+        var user = CreateUserWithId("user-1");
+
+        var menu = service.BuildMenu(user);
+
+        AssertWarehouseStaffStoreOrderMenuOnly(menu);
+    }
+
+    [Fact]
     public void BuildMenu_ShowsDeviceRegistrationWithDeviceRegistrationViewPermission()
     {
         var user = CreateUser(
@@ -182,6 +223,35 @@ public class NavigationServiceTests
             child => child.Path == "/system/device-registration"
         );
         Assert.Equal(Permissions.DeviceRegistration.View, item.Permission);
+    }
+
+    [Fact]
+    public void BuildMenu_ShowsAppDownloadsWithAppDownloadsPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.System.ViewAppDownloads)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        var item = Assert.Single(systemMenu.Children!, child => child.Path == "/system/app-downloads");
+        Assert.Equal(Permissions.System.ViewAppDownloads, item.Permission);
+    }
+
+    [Fact]
+    public void BuildMenu_HidesAppDownloadsWithoutAppDownloadsPermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.DeviceRegistration.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        Assert.DoesNotContain(systemMenu.Children!, child => child.Path == "/system/app-downloads");
     }
 
     [Fact]
@@ -779,6 +849,29 @@ public class NavigationServiceTests
         var identityClaims = new List<Claim> { new(ClaimTypes.NameIdentifier, userGuid) };
         identityClaims.AddRange(claims);
         return CreateUser(identityClaims.ToArray());
+    }
+
+    private static void AssertWarehouseStaffStoreOrderMenuOnly(List<NavigationMenuDto> menu)
+    {
+        var warehouseMenu = Assert.Single(menu);
+        Assert.Equal("/warehouse", warehouseMenu.Path);
+
+        var storeOrderMenu = Assert.Single(warehouseMenu.Children!);
+        Assert.Equal("/warehouse/store-orders", storeOrderMenu.Path);
+        Assert.DoesNotContain(menu, item => item.Path == "/dashboard");
+        Assert.DoesNotContain(menu, item => item.Path == "/pos-admin");
+        Assert.DoesNotContain(
+            warehouseMenu.Children!,
+            item => item.Path == "/warehouse/products"
+        );
+        Assert.DoesNotContain(
+            warehouseMenu.Children!,
+            item => item.Path == "/warehouse/categories"
+        );
+        Assert.DoesNotContain(
+            warehouseMenu.Children!,
+            item => item.Path == "/warehouse/locations"
+        );
     }
 
     private static AuthorizeAttribute GetMethodAuthorizeAttribute(string methodName)

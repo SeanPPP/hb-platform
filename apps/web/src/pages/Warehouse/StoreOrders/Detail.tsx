@@ -718,6 +718,7 @@ export default function StoreOrderDetailPage() {
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
   const { access, currentUser } = useAuthStore()
+  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const detailRequestControllerRef = useRef<AbortController | null>(null)
@@ -905,14 +906,19 @@ export default function StoreOrderDetailPage() {
   }
 
   const loadStores = async () => {
+    if (!canUseWarehouseManagerActions) {
+      // 仓库员工只能查看当前订单分店，不能访问完整分店下拉接口；避免辅助数据 403 阻断明细展示。
+      setStores([])
+      lastLoadedStoresQueryKeyRef.current = storesQueryKey
+      return
+    }
+
     setStoresLoading(true)
     try {
-      const canViewAllStores = access.isAdmin || access.isWarehouseManager
       const result = await getStores({
         page: 1,
         pageSize: 300,
         isActive: true,
-        userGUID: canViewAllStores ? undefined : currentUser?.userGUID,
         sortField: 'storeName',
         sortOrder: 'ascend',
       })
@@ -1010,15 +1016,19 @@ export default function StoreOrderDetailPage() {
       }))
 
       if (headerForm.storeCode && !options.some((item) => item.value === headerForm.storeCode)) {
+        const currentStoreLabel = detail?.storeName
+          ? `${detail.storeName} (${headerForm.storeCode})`
+          : `${headerForm.storeCode} (${t('column.currentStore')})`
+
         options.push({
           value: headerForm.storeCode,
-          label: `${headerForm.storeCode} (${t('column.currentStore')})`,
+          label: currentStoreLabel,
         })
       }
 
       return options
     },
-    [headerForm.storeCode, stores],
+    [detail?.storeName, headerForm.storeCode, stores, t],
   )
 
   const totalAllocQuantity =
@@ -1159,7 +1169,7 @@ export default function StoreOrderDetailPage() {
   } = deriveStoreOrderDetailPermissions(detail?.flowStatus)
 
   function ensureOrderEditable() {
-    if (canEditOrder) {
+    if (canUseWarehouseManagerActions && canEditOrder) {
       return true
     }
 
@@ -1199,6 +1209,10 @@ export default function StoreOrderDetailPage() {
 
   const handleSaveHeader = async () => {
     if (!detail) {
+      return
+    }
+    if (!canUseWarehouseManagerActions) {
+      message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
     setSavingHeader(true)
@@ -1769,7 +1783,7 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
-    if (!canCompleteOrder) {
+    if (!canUseWarehouseManagerActions || !canCompleteOrder) {
       message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
@@ -1796,6 +1810,10 @@ export default function StoreOrderDetailPage() {
 
   const handleChangeOrderStatus = (newStatus: StoreOrderFlowStatus) => {
     if (!detail || detail.flowStatus === newStatus) {
+      return
+    }
+    if (!canUseWarehouseManagerActions) {
+      message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
 
@@ -1830,7 +1848,7 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
-    if (!canStartPicking) {
+    if (!canUseWarehouseManagerActions || !canStartPicking) {
       message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
@@ -1883,7 +1901,7 @@ export default function StoreOrderDetailPage() {
     return quantity
   }
 
-  const columns: ColumnsType<StoreOrderDetailLine> = [
+  const columns: ColumnsType<StoreOrderDetailLine> = ([
     {
       title: '#',
       dataIndex: 'index',
@@ -1976,7 +1994,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'allocQuantity', node)}
           min={0}
           precision={0}
-          disabled={isReadonlyOrder}
+          disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
           status={getQuantityHighlight(record)}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.allocQuantity ?? value ?? 0}
@@ -2002,7 +2020,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
-          disabled={isReadonlyOrder}
+          disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.importPrice ?? value}
@@ -2082,7 +2100,7 @@ export default function StoreOrderDetailPage() {
               icon={<SaveOutlined />}
               aria-label={t('common.save')}
               className="store-order-detail-action-button"
-              disabled={isReadonlyOrder}
+              disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
               onClick={() => void handleSaveLine(record)}
             />
           </Tooltip>
@@ -2093,7 +2111,7 @@ export default function StoreOrderDetailPage() {
               icon={<EditOutlined />}
               aria-label={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}
               className="store-order-detail-action-button"
-              disabled={isReadonlyOrder}
+              disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
               onClick={() => void handleToggleLineStatus(record)}
             />
           </Tooltip>
@@ -2111,14 +2129,16 @@ export default function StoreOrderDetailPage() {
                 icon={<DeleteOutlined />}
                 aria-label={t('common.delete')}
                 className="store-order-detail-action-button"
-                disabled={isReadonlyOrder}
+                disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
               />
             </Tooltip>
           </Popconfirm>
         </Space>
       ),
     },
-  ]
+  ] as ColumnsType<StoreOrderDetailLine>).filter(
+    (column) => canUseWarehouseManagerActions || column.key !== 'actions',
+  )
 
   if (!id) {
     return (
@@ -2176,48 +2196,50 @@ export default function StoreOrderDetailPage() {
                 column={3}
                 size="small"
                 extra={
-                  <Space wrap>
-                    <Button
-                      icon={<SaveOutlined />}
-                      loading={savingHeader}
-                      onClick={() => void handleSaveHeader()}
-                    >
-                      {t('storeOrders.saveOrderHeader')}
-                    </Button>
-                    <Button
-                      icon={<CheckOutlined />}
-                      loading={lineActionLoading}
-                      disabled={isReadonlyOrder || !canStartPicking}
-                      onClick={() => void handleStartPicking()}
-                    >
-                      {t('storeOrders.startPicking')}
-                    </Button>
-                    <Button
-                      type="primary"
-                      icon={<CheckOutlined />}
-                      loading={lineActionLoading}
-                      disabled={!canCompleteOrder}
-                      onClick={() => void handleCompleteOrder()}
-                    >
-                      {t('storeOrders.completeOrder')}
-                    </Button>
-                    <Space size={4}>
-                      <Typography.Text type="secondary">{t('storeOrders.detail.changeOrderStatus')}</Typography.Text>
-                      <Select
-                        style={{ width: 150 }}
-                        placeholder={t('storeOrders.detail.changeOrderStatus')}
-                        value={
-                          orderStatusChangeOptions.some((item) => item.value === detail.flowStatus)
-                            ? detail.flowStatus
-                            : undefined
-                        }
-                        loading={statusChanging}
-                        disabled={statusChanging}
-                        options={orderStatusChangeOptions}
-                        onChange={(value) => handleChangeOrderStatus(value)}
-                      />
+                  canUseWarehouseManagerActions ? (
+                    <Space wrap>
+                      <Button
+                        icon={<SaveOutlined />}
+                        loading={savingHeader}
+                        onClick={() => void handleSaveHeader()}
+                      >
+                        {t('storeOrders.saveOrderHeader')}
+                      </Button>
+                      <Button
+                        icon={<CheckOutlined />}
+                        loading={lineActionLoading}
+                        disabled={isReadonlyOrder || !canStartPicking}
+                        onClick={() => void handleStartPicking()}
+                      >
+                        {t('storeOrders.startPicking')}
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<CheckOutlined />}
+                        loading={lineActionLoading}
+                        disabled={!canCompleteOrder}
+                        onClick={() => void handleCompleteOrder()}
+                      >
+                        {t('storeOrders.completeOrder')}
+                      </Button>
+                      <Space size={4}>
+                        <Typography.Text type="secondary">{t('storeOrders.detail.changeOrderStatus')}</Typography.Text>
+                        <Select
+                          style={{ width: 150 }}
+                          placeholder={t('storeOrders.detail.changeOrderStatus')}
+                          value={
+                            orderStatusChangeOptions.some((item) => item.value === detail.flowStatus)
+                              ? detail.flowStatus
+                              : undefined
+                          }
+                          loading={statusChanging}
+                          disabled={statusChanging}
+                          options={orderStatusChangeOptions}
+                          onChange={(value) => handleChangeOrderStatus(value)}
+                        />
+                      </Space>
                     </Space>
-                  </Space>
+                  ) : undefined
                 }
               >
                 <Descriptions.Item label={t('storeOrders.orderNoLabel')}>{detail.orderNo || '--'}</Descriptions.Item>
@@ -2226,7 +2248,7 @@ export default function StoreOrderDetailPage() {
                     showSearch
                     style={{ width: '100%' }}
                     loading={storesLoading}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.storeCode}
                     options={storeOptions}
                     optionFilterProp="label"
@@ -2264,7 +2286,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.orderDateLabel')}>
                   <Input
                     type="date"
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.orderDate ? headerForm.orderDate.slice(0, 10) : ''}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2277,7 +2299,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.outboundDate')}>
                   <Input
                     type="date"
-                    disabled={!canEditOutboundDate}
+                    disabled={!canUseWarehouseManagerActions || !canEditOutboundDate}
                     value={headerForm.outboundDate ? headerForm.outboundDate.slice(0, 10) : ''}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2298,7 +2320,7 @@ export default function StoreOrderDetailPage() {
                   <InputNumber
                     min={0}
                     precision={2}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     style={{ width: '100%' }}
                     value={headerForm.shippingFee}
                     onChange={(value) =>
@@ -2312,7 +2334,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.addressLabel')} span={2}>
                   <Input.TextArea
                     rows={2}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.address}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2326,7 +2348,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.contactEmailLabel')}>
                   <Input
                     type="email"
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.contactEmail}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2341,7 +2363,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>
                   <Input.TextArea
                     rows={3}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.remarks}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2358,80 +2380,82 @@ export default function StoreOrderDetailPage() {
             <Card
               title={t('storeOrders.orderDetailSection')}
               extra={
-                <Space wrap>
-                  <Input
-                    allowClear
-                    disabled={isReadonlyOrder}
-                    placeholder={t('storeOrders.quickAddPlaceholder')}
-                    style={{ width: 220 }}
-                    value={quickAddItemNumber}
-                    onChange={(event) => setQuickAddItemNumber(event.target.value)}
-                    onPressEnter={() => void handleQuickAdd()}
-                  />
-                  <InputNumber
-                    min={1}
-                    precision={0}
-                    disabled={isReadonlyOrder}
-                    placeholder={t('storeOrders.allocQtyPlaceholder')}
-                    value={quickAddQuantity}
-                    onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
-                  />
-                  <Button
-                    icon={<PlusOutlined />}
-                    loading={lineActionLoading}
-                    disabled={isReadonlyOrder}
-                    onClick={() => void handleQuickAdd()}
-                  >
-                    {t('storeOrders.quickAdd')}
-                  </Button>
-                  <Button icon={<SearchOutlined />} disabled={isReadonlyOrder} onClick={() => setPickerOpen(true)}>
-                    {t('storeOrders.selectProduct')}
-                  </Button>
-                  <Button
-                    icon={<ContainerOutlined />}
-                    loading={containerPickerLoading}
-                    disabled={isReadonlyOrder}
-                    onClick={() => void handleOpenContainerPicker()}
-                  >
-                    {t('storeOrders.containerPicker')}
-                  </Button>
-                  <Button
-                    icon={<PrinterOutlined />}
-                    onClick={() => detail && navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
-                  >
-                    {t('storeOrders.pickingList')}
-                  </Button>
-                  <Button
-                    icon={<FileTextOutlined />}
-                    onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
-                  >
-                    {t('storeOrders.invoice')}
-                  </Button>
-                  <Button
-                    icon={<CopyOutlined />}
-                    className="store-order-excel-paste-button"
-                    disabled={isReadonlyOrder}
-                    onClick={() => {
-                      resetPasteState('allocQuantity')
-                      setPasteModalOpen(true)
-                    }}
-                  >
-                    {t('storeOrders.excelPaste')}
-                  </Button>
-                  <Button
-                    icon={<SaveOutlined />}
-                    className="store-order-save-edited-lines-button"
-                    loading={lineActionLoading}
-                    disabled={isReadonlyOrder || editedLineCount === 0}
-                    onClick={() => void handleSaveEditedLines()}
-                  >
-                    {t('storeOrders.detail.saveEditedLines')}
-                  </Button>
-                  <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
-                    {t('storeOrders.batchModify')}
-                  </Button>
-                  <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
-                </Space>
+                canUseWarehouseManagerActions ? (
+                  <Space wrap>
+                    <Input
+                      allowClear
+                      disabled={isReadonlyOrder}
+                      placeholder={t('storeOrders.quickAddPlaceholder')}
+                      style={{ width: 220 }}
+                      value={quickAddItemNumber}
+                      onChange={(event) => setQuickAddItemNumber(event.target.value)}
+                      onPressEnter={() => void handleQuickAdd()}
+                    />
+                    <InputNumber
+                      min={1}
+                      precision={0}
+                      disabled={isReadonlyOrder}
+                      placeholder={t('storeOrders.allocQtyPlaceholder')}
+                      value={quickAddQuantity}
+                      onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
+                    />
+                    <Button
+                      icon={<PlusOutlined />}
+                      loading={lineActionLoading}
+                      disabled={isReadonlyOrder}
+                      onClick={() => void handleQuickAdd()}
+                    >
+                      {t('storeOrders.quickAdd')}
+                    </Button>
+                    <Button icon={<SearchOutlined />} disabled={isReadonlyOrder} onClick={() => setPickerOpen(true)}>
+                      {t('storeOrders.selectProduct')}
+                    </Button>
+                    <Button
+                      icon={<ContainerOutlined />}
+                      loading={containerPickerLoading}
+                      disabled={isReadonlyOrder}
+                      onClick={() => void handleOpenContainerPicker()}
+                    >
+                      {t('storeOrders.containerPicker')}
+                    </Button>
+                    <Button
+                      icon={<PrinterOutlined />}
+                      onClick={() => detail && navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
+                    >
+                      {t('storeOrders.pickingList')}
+                    </Button>
+                    <Button
+                      icon={<FileTextOutlined />}
+                      onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
+                    >
+                      {t('storeOrders.invoice')}
+                    </Button>
+                    <Button
+                      icon={<CopyOutlined />}
+                      className="store-order-excel-paste-button"
+                      disabled={isReadonlyOrder}
+                      onClick={() => {
+                        resetPasteState('allocQuantity')
+                        setPasteModalOpen(true)
+                      }}
+                    >
+                      {t('storeOrders.excelPaste')}
+                    </Button>
+                    <Button
+                      icon={<SaveOutlined />}
+                      className="store-order-save-edited-lines-button"
+                      loading={lineActionLoading}
+                      disabled={isReadonlyOrder || editedLineCount === 0}
+                      onClick={() => void handleSaveEditedLines()}
+                    >
+                      {t('storeOrders.detail.saveEditedLines')}
+                    </Button>
+                    <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
+                      {t('storeOrders.batchModify')}
+                    </Button>
+                    <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
+                  </Space>
+                ) : undefined
               }
             >
               <div className="store-order-detail-filter-bar">
@@ -2494,12 +2518,16 @@ export default function StoreOrderDetailPage() {
                 loading={lineActionLoading}
                 columns={columns}
                 dataSource={detail.items}
-                rowSelection={{
-                  selectedRowKeys: selectedLineKeys,
-                  onChange: setSelectedLineKeys,
-                  preserveSelectedRowKeys: false,
-                  columnWidth: 34,
-                }}
+                rowSelection={
+                  canUseWarehouseManagerActions
+                    ? {
+                        selectedRowKeys: selectedLineKeys,
+                        onChange: setSelectedLineKeys,
+                        preserveSelectedRowKeys: false,
+                        columnWidth: 34,
+                      }
+                    : undefined
+                }
                 pagination={{
                   current: detailPage,
                   pageSize: detailPageSize,
@@ -2585,7 +2613,7 @@ export default function StoreOrderDetailPage() {
                   key="confirm"
                   type="primary"
                   loading={submittingPaste}
-                  disabled={isReadonlyOrder || validPastePreviewCount === 0}
+                  disabled={!canUseWarehouseManagerActions || isReadonlyOrder || validPastePreviewCount === 0}
                   onClick={() => void handleConfirmPaste()}
                 >
                   {t('storeOrders.detail.importValidRows', { count: validPastePreviewCount })}

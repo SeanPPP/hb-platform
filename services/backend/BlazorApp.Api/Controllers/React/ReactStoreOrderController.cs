@@ -41,27 +41,32 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.OrderFront.View,
             Permissions.Orders.View,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] OrderCreatePermissions =
         {
             Permissions.Orders.Create,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] CartWritePermissions =
         {
             Permissions.OrderFront.View,
             Permissions.Orders.Create,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] OrderEditPermissions =
         {
             Permissions.Orders.Edit,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] OrderDeletePermissions =
         {
             Permissions.Orders.Delete,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] WarehouseOrderSyncPermissions =
         {
@@ -228,6 +233,17 @@ namespace BlazorApp.Api.Controllers.React
             return HasAnyRole("Admin", "管理员");
         }
 
+        private async Task<bool> HasGlobalWarehouseOrderScopeAsync()
+        {
+            // 仓库总权限或订货管理权限用户可查看全部分店订货；普通订货前台用户仍走分店范围限制。
+            return HasAnyRole(GlobalStoreScopeRoles)
+                || await HasAnyPermissionAsync(new[]
+                {
+                    Permissions.Warehouse.ManageOrders,
+                    Permissions.Warehouse.Manage
+                });
+        }
+
         private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
         {
             if (string.IsNullOrWhiteSpace(storeCode))
@@ -273,7 +289,7 @@ namespace BlazorApp.Api.Controllers.React
                 return isAllowed ? null : Forbid();
             }
 
-            return HasAnyRole(GlobalStoreScopeRoles) ? null : Forbid();
+            return await HasGlobalWarehouseOrderScopeAsync() ? null : Forbid();
         }
 
         private static string NormalizeAuthorizationStoreCode(string? storeCode)

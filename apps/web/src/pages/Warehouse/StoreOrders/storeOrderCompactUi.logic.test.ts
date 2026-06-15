@@ -133,7 +133,7 @@ async function main() {
     )
     assert(
       storeOrdersSource.includes('const draggableColumnKeys = baseColumns.map((column) => String(column.key) as StoreOrderListTableColumnKey)') &&
-        storeOrdersSource.includes('rowSelection={{') &&
+        storeOrdersSource.includes('rowSelection={') &&
         !storeOrdersSource.includes("columnOrder.includes('selection')"),
       '列表页选择列仍应由 rowSelection 管理，不能进入业务列拖拽顺序',
     )
@@ -308,6 +308,55 @@ async function main() {
     assert(detailSource.includes('setEditingRows((current) => {') && detailSource.includes('savedDetailGUIDs'), '整单保存成功后应清理已保存行编辑状态')
   })
   if (detailBulkSaveFailure) failures.push(detailBulkSaveFailure)
+
+  const warehouseManagerActionFailure = await runTest('仓库员工不应看到订货管理和明细功能按钮', () => {
+    assert(
+      storeOrdersSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
+      '列表页应使用仓库管理员操作权限开关',
+    )
+    assert(
+      storeOrdersSource.includes('{canUseWarehouseManagerActions ? (') &&
+        storeOrdersSource.includes("t('storeOrders.syncIncrementalOrders')") &&
+        storeOrdersSource.includes("t('storeOrders.fixStoreGuid', '修复分店 GUID')") &&
+        storeOrdersSource.includes("t('storeOrders.newOrder')") &&
+        storeOrdersSource.includes("t('storeOrders.copyOrder'") &&
+        storeOrdersSource.includes("t('storeOrders.batchSubmitted')") &&
+        storeOrdersSource.includes("t('storeOrders.batchCompleted')"),
+      '列表页同步、修复、新建、复制和批量状态按钮应仅仓库管理员可见',
+    )
+    assert(
+      storeOrdersSource.includes('canUseWarehouseManagerActions && (record.flowStatus === FlowStatus.Submitted || record.flowStatus === FlowStatus.Picking)'),
+      '列表页配货入口应仅仓库管理员可见',
+    )
+    assert(
+      storeOrdersSource.includes('rowSelection={\n                canUseWarehouseManagerActions'),
+      '列表页勾选列应仅仓库管理员可见',
+    )
+    assert(
+      detailSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
+      '详情页应使用仓库管理员操作权限开关',
+    )
+    assert(
+      detailSource.includes('if (canUseWarehouseManagerActions && canEditOrder)'),
+      '详情页编辑保护应同时检查仓库管理员权限',
+    )
+    assert(
+      detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? (') &&
+        detailSource.includes('extra={\n                canUseWarehouseManagerActions ? ('),
+      '详情页订单头和订单明细功能按钮应仅仓库管理员可见',
+    )
+    assert(
+      detailSource.includes("column.key !== 'actions'") &&
+        detailSource.includes('rowSelection={\n                  canUseWarehouseManagerActions'),
+      '详情页行操作列和勾选列应仅仓库管理员可见',
+    )
+    assert(
+      detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder}') &&
+        detailSource.includes('disabled={!canUseWarehouseManagerActions || !canEditOutboundDate}'),
+      '详情页非仓库管理员应不能编辑订单头和明细输入',
+    )
+  })
+  if (warehouseManagerActionFailure) failures.push(warehouseManagerActionFailure)
 
   const importPriceConfirmFailure = await runTest('详情页保存进口价变更前应提示同步仓库商品表和分店表', () => {
     assert(detailSource.includes('confirmImportPriceSync'), '详情页缺少进口价同步确认 helper')

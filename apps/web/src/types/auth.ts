@@ -93,6 +93,7 @@ export interface AccessControl {
   canViewSystemLogs: boolean
   canManageScheduledTasks: boolean
   canManageSystemSettings: boolean
+  canViewAppDownloads: boolean
   canViewDeviceRegistration: boolean
   canManageDeviceRegistration: boolean
   canViewPosProducts: boolean

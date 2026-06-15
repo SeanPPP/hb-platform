@@ -776,6 +776,43 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderList_AllowsLegacyWarehouseManagePermissionForAllStores()
+    {
+        var expected = new PagedListReactDto<StoreOrderListItemDto>
+        {
+            Items = new List<StoreOrderListItemDto>(),
+            Total = 0,
+            PageNumber = 1,
+            PageSize = 20,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.GetOrderListAsync(
+                    It.Is<StoreOrderListFilterDto>(filter =>
+                        string.IsNullOrWhiteSpace(filter.StoreCode)
+                    )
+                )
+            )
+            .ReturnsAsync(expected);
+
+        var scopeService = CreateScopeService();
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetOrderList(new StoreOrderListFilterDto());
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(expected, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
     public async Task CreateOrder_ForbidsOrderFrontOnlyUser()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);

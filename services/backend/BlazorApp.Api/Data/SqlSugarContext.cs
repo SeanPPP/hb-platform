@@ -336,6 +336,8 @@ namespace BlazorApp.Api.Data
 
         // 多端中心应用日志实体
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
+        public SimpleClient<MobileAppBuild> MobileAppBuildDb =>
+            new SimpleClient<MobileAppBuild>(_db);
 
         // 节日商品相关实体
         public SimpleClient<HolidayProduct> HolidayProductDb =>
@@ -462,6 +464,7 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskInstanceState),
                 typeof(InvoiceEmailConfiguration),
                 typeof(ApplicationLog),
+                typeof(MobileAppBuild),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
@@ -1135,6 +1138,10 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_ApplicationLog_TraceId\" ON \"ApplicationLog\" (\"TraceId\")",
                 ["IX_ApplicationLog_RequestPath"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ApplicationLog_RequestPath\" ON \"ApplicationLog\" (\"RequestPath\")",
+                ["IX_MobileAppBuild_EasBuildId"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppBuild_EasBuildId\" ON \"MobileAppBuild\" (\"EasBuildId\")",
+                ["IX_MobileAppBuild_Profile_CompletedAt"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppBuild_Profile_CompletedAt\" ON \"MobileAppBuild\" (\"BuildProfile\", \"Platform\", \"Status\", \"CompletedAt\")",
             };
 
             foreach (var indexCheck in indexStatements)
@@ -1512,6 +1519,9 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_Project_Level_Time' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_Project_Level_Time ON [ApplicationLog](ProjectCode, Level, TimestampUtc)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_TraceId' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_TraceId ON [ApplicationLog](TraceId)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_RequestPath' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_RequestPath ON [ApplicationLog](RequestPath)",
+                // MobileAppBuild表的索引，支撑 EAS buildId 幂等和最新 APK 查询。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_EasBuildId' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE UNIQUE INDEX IX_MobileAppBuild_EasBuildId ON [MobileAppBuild](EasBuildId)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE INDEX IX_MobileAppBuild_Profile_CompletedAt ON [MobileAppBuild](BuildProfile, Platform, Status, CompletedAt)",
             };
 
             foreach (var sql in normalIndexStatements)

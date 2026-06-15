@@ -18,6 +18,7 @@ import {
   MoneyCollectOutlined,
   NumberOutlined,
   PictureOutlined,
+  QrcodeOutlined,
   ReconciliationOutlined,
   ScheduleOutlined,
   SettingOutlined,
@@ -56,6 +57,7 @@ import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
+import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
 import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
 import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
@@ -117,6 +119,7 @@ const iconMap = {
   MoneyCollectOutlined: <MoneyCollectOutlined />,
   KeyOutlined: <KeyOutlined />,
   PictureOutlined: <PictureOutlined />,
+  QrcodeOutlined: <QrcodeOutlined />,
   TrophyOutlined: <TrophyOutlined />,
   WalletOutlined: <WalletOutlined />,
 }
@@ -230,6 +233,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewDeviceRegistration',
         },
         element: <PosAdminDeviceRegistrationPage />,
+      },
+      {
+        path: '/system/app-downloads',
+        meta: {
+          title: 'menu.appDownloads',
+          icon: 'QrcodeOutlined',
+          keepAlive: true,
+          accessKey: 'canViewAppDownloads',
+        },
+        element: <SystemAppDownloadsPage />,
       },
     ],
   },
@@ -682,8 +695,41 @@ function buildMenusInternal(routes: AppRouteItem[], access: AccessControl): Menu
     .filter(Boolean) as MenuProps['items']
 }
 
+function isWarehouseStaffNavigationLimited(access: AccessControl) {
+  return (
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  )
+}
+
+function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
+  if (!access.canManageWarehouseOrders) {
+    return []
+  }
+
+  // 仓库员工侧边栏只保留分店订货列表，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
+  return [
+    {
+      key: '/warehouse',
+      icon: iconMap.DatabaseOutlined,
+      label: i18n.t('menu.warehouse'),
+      children: [
+        {
+          key: '/warehouse/store-orders',
+          icon: iconMap.ReconciliationOutlined,
+          label: i18n.t('menu.storeOrders'),
+        },
+      ],
+    },
+  ]
+}
+
 export function buildMenus(access: AccessControl, navigationMenu?: NavigationMenuDto[]) {
-  const localMenus = buildMenusInternal(appRoutes, access)
+  const localMenus = isWarehouseStaffNavigationLimited(access)
+    ? buildWarehouseStaffMenus(access)
+    : buildMenusInternal(appRoutes, access)
   if (navigationMenu !== undefined) {
     return chooseNavigationMenus(localMenus, buildMenusFromBackend(navigationMenu))
   }

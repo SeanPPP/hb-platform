@@ -1,4 +1,4 @@
-import { EditOutlined, EyeOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -21,8 +21,9 @@ import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
-import { getStoreByGuid, getStores, updateStore } from '../../../services/storeService'
-import type { StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
+import { createStore, getNextStoreCode, getStoreByGuid, getStores, updateStore } from '../../../services/storeService'
+import type { CreateStoreDto, StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
+import { RequestError } from '../../../utils/request'
 import StoreUserManagement from './StoreUserManagement'
 
 const brandTagPalette = [
@@ -68,6 +69,17 @@ function renderBrandName(value?: string) {
 
 type StoreSortOrder = 'ascend' | 'descend' | null
 
+function getApiErrorCode(error: unknown) {
+  if (!(error instanceof RequestError)) {
+    return undefined
+  }
+
+  const payload = error.payload
+  return typeof payload === 'object' && payload !== null && 'errorCode' in payload
+    ? String(payload.errorCode)
+    : undefined
+}
+
 export default function SystemStoresPage() {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
@@ -86,9 +98,13 @@ export default function SystemStoresPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editingStore, setEditingStore] = useState<StoreDetailDto | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createSaving, setCreateSaving] = useState(false)
+  const [storeCodeLoading, setStoreCodeLoading] = useState(false)
   const [storeUserOpen, setStoreUserOpen] = useState(false)
   const [storeUserTarget, setStoreUserTarget] = useState<StoreDto | null>(null)
   const [form] = Form.useForm<UpdateStoreDto>()
+  const [createForm] = Form.useForm<CreateStoreDto>()
 
   const loadData = async (
     nextPage = page,
@@ -133,6 +149,54 @@ export default function SystemStoresPage() {
     const detail = await getStoreByGuid(storeGuid)
     setDetailStore(detail)
     return detail
+  }
+
+  const loadNextStoreCode = async () => {
+    setStoreCodeLoading(true)
+    try {
+      const nextCode = await getNextStoreCode()
+      createForm.setFieldValue('storeCode', nextCode)
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('system.stores.loadNextStoreCodeFailed'))
+    } finally {
+      setStoreCodeLoading(false)
+    }
+  }
+
+  const handleOpenCreate = () => {
+    createForm.resetFields()
+    // 新建分店默认不启用收银系统，避免刚录入资料就进入 POS 可用范围。
+    createForm.setFieldsValue({ isActive: false })
+    setCreateOpen(true)
+    void loadNextStoreCode()
+  }
+
+  const handleCreateSubmit = async () => {
+    try {
+      const values = await createForm.validateFields()
+      setCreateSaving(true)
+      const created = await createStore({ ...values, isActive: values.isActive ?? false })
+      message.success(t('system.stores.createSuccess'))
+      setCreateOpen(false)
+      createForm.resetFields()
+      setDetailStore(created)
+      setDetailOpen(true)
+      void loadData(1, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+        return
+      }
+
+      console.error(error)
+      message.error(
+        getApiErrorCode(error) === 'DUPLICATE_STORE_CODE'
+          ? t('system.stores.duplicateStoreCode')
+          : error instanceof Error ? error.message : t('system.stores.createFailed'),
+      )
+    } finally {
+      setCreateSaving(false)
+    }
   }
 
   const handleViewDetail = async (record: StoreDto) => {
@@ -379,6 +443,11 @@ export default function SystemStoresPage() {
           <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)}>
             {t('common.refresh')}
           </Button>
+          <HasPermission code={P.Stores.Create}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
+              {t('system.stores.createStore')}
+            </Button>
+          </HasPermission>
         </Space>
 
         <Table
@@ -457,6 +526,74 @@ export default function SystemStoresPage() {
           </Space>
         )}
       </Drawer>
+
+      <Modal
+        title={t('system.stores.createTitle')}
+        open={createOpen}
+        onCancel={() => {
+          setCreateOpen(false)
+          createForm.resetFields()
+        }}
+        onOk={() => void handleCreateSubmit()}
+        confirmLoading={createSaving}
+        width={720}
+        destroyOnHidden
+      >
+        <Form form={createForm} layout="vertical" initialValues={{ isActive: false }} autoComplete="off">
+          {/* 新建与编辑使用同一套前端校验，尽量在提交前拦住后端必填和长度错误。 */}
+          <Form.Item
+            label={t('system.stores.storeName')}
+            name="storeName"
+            rules={[
+              { required: true, message: t('system.stores.storeNameRequired') },
+              { max: 100, message: t('system.stores.storeNameMaxLength') },
+            ]}
+          >
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item
+            label={t('system.stores.storeCode')}
+            name="storeCode"
+            rules={[
+              { required: true, message: t('system.stores.storeCodeRequired') },
+              { max: 20, message: t('system.stores.storeCodeMaxLength') },
+            ]}
+          >
+            <Input
+              autoComplete="off"
+              addonAfter={(
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={storeCodeLoading}
+                  onClick={() => void loadNextStoreCode()}
+                >
+                  {t('system.stores.regenerateStoreCode')}
+                </Button>
+              )}
+            />
+          </Form.Item>
+          <Form.Item label={t('system.stores.brandName')} name="brandName" rules={[{ max: 100, message: t('system.stores.brandNameMaxLength') }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item label={t('system.stores.contactPhone')} name="contactPhone" rules={[{ max: 20, message: t('system.stores.contactPhoneMaxLength') }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item label={t('system.stores.contactEmail')} name="contactEmail" rules={[{ type: 'email', message: t('system.users.emailInvalid') }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item label={t('system.stores.address')} name="address" rules={[{ max: 200, message: t('system.stores.addressMaxLength') }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item label={t('column.description')} name="description" rules={[{ max: 500, message: t('system.stores.descriptionMaxLength') }]}>
+            <Input.TextArea rows={4} autoComplete="off" />
+          </Form.Item>
+          <Form.Item label={t('system.stores.cashRegisterEnabled')} name="isActive" valuePropName="checked">
+            <Switch checkedChildren={t('common.active')} unCheckedChildren={t('common.inactive')} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title={editingStore ? t('system.stores.editTitle', { name: editingStore.storeCode }) : t('system.stores.editTitleShort')}

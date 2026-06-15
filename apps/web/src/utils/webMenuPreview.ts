@@ -46,6 +46,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canViewSystemLogs: [P.System.ViewLogs],
   canManageScheduledTasks: [P.System.ManageScheduledTasks],
   canManageSystemSettings: [P.System.ManageSettings],
+  canViewAppDownloads: [P.System.ViewAppDownloads],
   canReadUser: [P.Users.View],
   canReadRole: [P.Roles.View],
   canViewDeviceRegistration: [P.DeviceRegistration.View, P.DeviceRegistration.Manage],
@@ -87,6 +88,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
       { path: '/system/roles', title: 'menu.systemRoles', accessKey: 'canReadRole' },
       { path: '/system/permissions', title: 'menu.systemPermissions', accessKey: 'canReadRole' },
       { path: '/system/device-registration', title: 'menu.deviceRegistration', accessKey: 'canViewDeviceRegistration' },
+      { path: '/system/app-downloads', title: 'menu.appDownloads', accessKey: 'canViewAppDownloads' },
     ],
   },
   {
@@ -139,6 +141,17 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
   },
 ]
 
+const warehouseStaffVisibleMenuPaths = new Set(['/warehouse', '/warehouse/store-orders'])
+
+function isWarehouseStaffNavigationLimited(access: AccessControl) {
+  return (
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  )
+}
+
 function canAccessRoute(route: WebMenuPreviewRoute, access: AccessControl) {
   const accessKey = route.accessKey
   if (!accessKey) {
@@ -171,12 +184,18 @@ function buildPreviewNodes(
   options: BuildWebRoleMenuPreviewOptions,
 ): WebMenuPreviewNode[] {
   const explicitPermissionCodeSet = new Set(options.explicitPermissionCodes ?? [])
+  const limitWarehouseStaffNavigation = isWarehouseStaffNavigationLimited(access)
 
   return routes.flatMap((route) => {
+    if (limitWarehouseStaffNavigation && !warehouseStaffVisibleMenuPaths.has(route.path)) {
+      return []
+    }
+
     const children = route.children ? buildPreviewNodes(route.children, access, t, options) : undefined
     const hasChildren = Boolean(children?.length)
     const hasSelfAccess = canAccessRoute(route, access)
-    const visible = hasSelfAccess || Boolean(children?.some((child) => child.visible))
+    const hasVisibleChildren = Boolean(children?.some((child) => child.visible))
+    const visible = route.children ? hasVisibleChildren : hasSelfAccess
 
     if (!options.includeHidden && !visible) {
       return []

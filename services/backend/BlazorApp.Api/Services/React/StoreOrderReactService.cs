@@ -3050,6 +3050,7 @@ namespace BlazorApp.Api.Services.React
                         OrderGUID = result.Data.OrderGUID,
                         OrderNo = result.Data.OrderNo,
                         StoreCode = result.Data.StoreCode,
+                        StoreName = result.Data.StoreName,
                         TotalAmount = result.Data.TotalAmount,
                         TotalQuantity = result.Data.TotalQuantity,
                         TotalImportAmount = result.Data.TotalImportAmount,
@@ -3197,7 +3198,17 @@ namespace BlazorApp.Api.Services.React
                     (o, s) => o.StoreCode == s.StoreCode || o.StoreCode == s.StoreGUID
                 )
                 .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
-                .Select((o, s) => new { Order = o, StoreAddress = s.Address, StoreContactEmail = s.ContactEmail })
+                .Select(
+                    (o, s) =>
+                        new
+                        {
+                            Order = o,
+                            // WarehouseStaff 不能加载完整分店列表，明细接口直接带出当前分店名称。
+                            StoreName = s.StoreName,
+                            StoreAddress = s.Address,
+                            StoreContactEmail = s.ContactEmail,
+                        }
+                )
                 .FirstAsync();
 
             if (order == null)
@@ -3395,6 +3406,7 @@ namespace BlazorApp.Api.Services.React
                 OrderGUID = order.Order.OrderGUID,
                 OrderNo = order.Order.OrderNo,
                 StoreCode = order.Order.StoreCode,
+                StoreName = order.StoreName,
                 OrderDate = order.Order.OrderDate,
                 OutboundDate = order.Order.OutboundDate,
                 TotalAmount = order.Order.OEMTotalAmount ?? 0,

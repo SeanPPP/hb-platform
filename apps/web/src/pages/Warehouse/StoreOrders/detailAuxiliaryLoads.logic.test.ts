@@ -59,6 +59,28 @@ async function main() {
   })
   if (auxiliaryWarningFailure) failures.push(auxiliaryWarningFailure)
 
+  const warehouseStaffStoreSelectorFailure = await runTest('仓库员工明细页不应请求完整分店下拉', () => {
+    assert(
+      detailSource.includes('if (!canUseWarehouseManagerActions)') &&
+        detailSource.includes('setStores([])') &&
+        detailSource.includes('lastLoadedStoresQueryKeyRef.current = storesQueryKey') &&
+        detailSource.includes('return\n    }\n\n    setStoresLoading(true)'),
+      '非仓库管理员应跳过完整分店下拉接口，避免 WarehouseStaff 因 /api/stores 403 看到分店显示失败',
+    )
+    assert(
+      detailSource.includes('if (headerForm.storeCode && !options.some((item) => item.value === headerForm.storeCode))') &&
+        detailSource.includes('const currentStoreLabel = detail?.storeName') &&
+        detailSource.includes('`${detail.storeName} (${headerForm.storeCode})`') &&
+        detailSource.includes("`${headerForm.storeCode} (${t('column.currentStore')})`"),
+      '分店下拉跳过后应优先使用明细接口返回的 storeName 显示当前订单分店',
+    )
+    assert(
+      !detailSource.includes('userGUID: canViewAllStores ? undefined : currentUser?.userGUID'),
+      '详情页不应继续为仓库员工请求按用户过滤的完整分店下拉',
+    )
+  })
+  if (warehouseStaffStoreSelectorFailure) failures.push(warehouseStaffStoreSelectorFailure)
+
   const translationFailure = await runTest('分店下拉非阻断提示应有中英文文案', () => {
     assert(
       zhSource.includes('"loadStoreOptionsFailed": "分店下拉加载失败，订单明细可继续查看"'),
@@ -118,24 +140,24 @@ async function main() {
 
   const flowGuardFailure = await runTest('状态流转写入口应有函数内二次门禁', () => {
     assert(
-      detailSource.includes('if (!canStartPicking)') &&
-        detailSource.includes('if (!canCompleteOrder)') &&
+      detailSource.includes('if (!canUseWarehouseManagerActions || !canStartPicking)') &&
+        detailSource.includes('if (!canUseWarehouseManagerActions || !canCompleteOrder)') &&
         detailSource.includes("message.warning(t('storeOrders.detail.orderReadonlyRefresh'))"),
-      '开始配货/完成订单函数入口尚未按状态二次拦截',
+      '开始配货/完成订单函数入口尚未按仓库管理员权限和状态二次拦截',
     )
   })
   if (flowGuardFailure) failures.push(flowGuardFailure)
 
-  const disabledUiFailure = await runTest('不可编辑订单应禁用表头和明细写控件但保留只读动作', () => {
+  const disabledUiFailure = await runTest('非仓库管理员应禁用表头和明细写控件并隐藏明细功能按钮', () => {
     assert(
-      detailSource.includes('disabled={isReadonlyOrder}') &&
-        detailSource.includes('disabled={isReadonlyOrder || !selectedLineKeys.length}') &&
-        detailSource.includes('disabled={isReadonlyOrder || validPastePreviewCount === 0}') &&
+      detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder}') &&
+        detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder || validPastePreviewCount === 0}') &&
         detailSource.includes('disabled={isReadonlyOrder || !canStartPicking}') &&
         detailSource.includes('disabled={!canCompleteOrder}') &&
-        detailSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
-        detailSource.includes('navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)'),
-      '详情页尚未禁用写控件或误影响配货单/发票只读动作',
+        detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? (') &&
+        detailSource.includes('extra={\n                canUseWarehouseManagerActions ? (') &&
+        detailSource.includes('rowSelection={\n                  canUseWarehouseManagerActions'),
+      '详情页尚未按仓库管理员权限禁用写控件或隐藏明细功能按钮',
     )
   })
   if (disabledUiFailure) failures.push(disabledUiFailure)

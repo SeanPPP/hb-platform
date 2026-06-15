@@ -1,4 +1,6 @@
 interface MenuNodeLike {
+  key?: unknown
+  path?: unknown
   children?: unknown
 }
 
@@ -29,6 +31,31 @@ function countMenuLeaves(items: unknown[] | undefined): number {
   }, 0)
 }
 
+function getMenuLeafKey(item: MenuNodeLike): string | undefined {
+  const key = item.key ?? item.path
+  if (typeof key === 'string' || typeof key === 'number') {
+    return String(key)
+  }
+  return undefined
+}
+
+function collectMenuLeafKeys(items: unknown[] | undefined): string[] {
+  if (!items?.length) {
+    return []
+  }
+
+  return items.flatMap((item) => {
+    if (!isMenuNodeLike(item)) {
+      return []
+    }
+    if (hasMenuChildren(item)) {
+      return collectMenuLeafKeys(item.children)
+    }
+    const key = getMenuLeafKey(item)
+    return key ? [key] : []
+  })
+}
+
 export function chooseNavigationMenus<TMenuItem>(
   localMenus: TMenuItem[] | undefined,
   backendMenus: TMenuItem[] | undefined,
@@ -37,7 +64,12 @@ export function chooseNavigationMenus<TMenuItem>(
     return localMenus
   }
 
-  return countMenuLeaves(backendMenus) < countMenuLeaves(localMenus)
+  const localLeafKeys = collectMenuLeafKeys(localMenus as unknown[])
+  const backendLeafKeys = new Set(collectMenuLeafKeys(backendMenus as unknown[]))
+  const backendMissesLocalLeaf = localLeafKeys.some((key) => !backendLeafKeys.has(key))
+
+  // 后端菜单通常是权限裁剪后的权威结果；只有缺少本地已授权叶子菜单时才回退本地菜单。
+  return backendMissesLocalLeaf || countMenuLeaves(backendMenus) === 0
     ? localMenus
     : backendMenus
 }

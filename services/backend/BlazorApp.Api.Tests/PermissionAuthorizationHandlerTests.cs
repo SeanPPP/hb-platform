@@ -283,6 +283,22 @@ public class PermissionAuthorizationHandlerTests
     }
 
     [Fact]
+    public void PermissionSeedData_IncludesAppDownloadPermissionWithoutRoleTemplateGrant()
+    {
+        var appDownloadPermission = Assert.Single(
+            PermissionSeedData.AllPermissions,
+            seed => seed.Code == Permissions.System.ViewAppDownloads
+        );
+
+        Assert.Equal("查看 App 下载", appDownloadPermission.Name);
+        Assert.Equal("系统管理", appDownloadPermission.Category);
+        Assert.DoesNotContain(
+            PermissionSeedData.RolePermissionTemplates.SelectMany(template => template.PermissionCodes),
+            code => code == Permissions.System.ViewAppDownloads
+        );
+    }
+
+    [Fact]
     public async Task AttendanceSelfServicePermission_AllowsAuthenticatedUserWithoutDatabasePermission()
     {
         var roleService = new Mock<IRoleService>();

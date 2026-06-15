@@ -98,9 +98,11 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         var fullResult = await service.GetOrderDetailFullAsync("order-1");
 
         Assert.True(detailResult.Success);
+        Assert.Equal("Test Store", detailResult.Data!.StoreName);
         Assert.Equal("1 Test Street", detailResult.Data!.StoreAddress);
         Assert.Equal("store@example.com", detailResult.Data.StoreContactEmail);
         Assert.True(fullResult.Success);
+        Assert.Equal("Test Store", fullResult.Data!.StoreName);
         Assert.Equal("store@example.com", fullResult.Data!.StoreContactEmail);
     }
 

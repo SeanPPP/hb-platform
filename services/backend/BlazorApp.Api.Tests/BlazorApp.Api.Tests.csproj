@@ -84,6 +84,7 @@
     <Compile Include="ApplicationLogServiceTests.cs" />
     <Compile Include="ApplicationLogQueueTests.cs" />
     <Compile Include="ApplicationLogBackgroundServiceTests.cs" />
+    <Compile Include="MobileAppBuildServiceTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />

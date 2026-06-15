@@ -804,6 +804,7 @@ export default function StoreOrdersPage() {
   const navigate = useNavigate()
   const { message, modal } = AntdApp.useApp()
   const { access, clearAuth } = useAuthStore()
+  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
 
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -1377,6 +1378,10 @@ export default function StoreOrdersPage() {
   }
 
   const handleStatusToggle = (record: StoreOrderListItem) => {
+    if (!canUseWarehouseManagerActions) {
+      return
+    }
+
     if (record.flowStatus !== FlowStatus.Submitted && record.flowStatus !== FlowStatus.Completed) {
       return
     }
@@ -1591,7 +1596,8 @@ export default function StoreOrdersPage() {
             color={StoreOrderStatusColorMap[value] || 'default'}
             style={{
               cursor:
-                value === FlowStatus.Submitted || value === FlowStatus.Completed
+                canUseWarehouseManagerActions &&
+                (value === FlowStatus.Submitted || value === FlowStatus.Completed)
                   ? 'pointer'
                   : 'default',
             }}
@@ -1692,7 +1698,7 @@ export default function StoreOrdersPage() {
         width: 172,
         render: (_, record) => (
           <Space size={0} wrap={false}>
-            {record.flowStatus === FlowStatus.Submitted || record.flowStatus === FlowStatus.Picking ? (
+            {canUseWarehouseManagerActions && (record.flowStatus === FlowStatus.Submitted || record.flowStatus === FlowStatus.Picking) ? (
               <Button size="small" type="link" onClick={() => openShippingModal(record)}>
                 {t('storeOrders.shipOrder')}
               </Button>
@@ -1730,6 +1736,7 @@ export default function StoreOrdersPage() {
     [
       access.canDeleteOrder,
       branchMap,
+      canUseWarehouseManagerActions,
       columnFilters,
       dateRange,
       i18n.language,
@@ -1822,7 +1829,7 @@ export default function StoreOrdersPage() {
               {t('storeOrders.syncFullOrders')}
             </Button>
           ) : null}
-          {access.canManageWarehouseOrders ? (
+          {canUseWarehouseManagerActions ? (
             <Button
               icon={<SyncOutlined />}
               loading={syncingMode === 'Incremental'}
@@ -1832,7 +1839,7 @@ export default function StoreOrdersPage() {
               {t('storeOrders.syncIncrementalOrders')}
             </Button>
           ) : null}
-          {access.canManageWarehouseOrders ? (
+          {canUseWarehouseManagerActions ? (
             <Button
               icon={<ToolOutlined />}
               loading={unmatchedStoreLoading}
@@ -1841,21 +1848,25 @@ export default function StoreOrdersPage() {
               {t('storeOrders.fixStoreGuid', '修复分店 GUID')}
             </Button>
           ) : null}
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            disabled={!access.canWriteOrder}
-            onClick={() => setStorePickerOpen(true)}
-          >
-            {t('storeOrders.newOrder')}
-          </Button>
-          <Button
-            icon={<CopyOutlined />}
-            disabled={!selectedRowKeys.length}
-            onClick={() => setCopyModalOpen(true)}
-          >
-            {t('storeOrders.copyOrder', { count: selectedRowKeys.length })}
-          </Button>
+          {canUseWarehouseManagerActions ? (
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              disabled={!access.canWriteOrder}
+              onClick={() => setStorePickerOpen(true)}
+            >
+              {t('storeOrders.newOrder')}
+            </Button>
+          ) : null}
+          {canUseWarehouseManagerActions ? (
+            <Button
+              icon={<CopyOutlined />}
+              disabled={!selectedRowKeys.length}
+              onClick={() => setCopyModalOpen(true)}
+            >
+              {t('storeOrders.copyOrder', { count: selectedRowKeys.length })}
+            </Button>
+          ) : null}
           <Button
             icon={<ReloadOutlined />}
             onClick={() => {
@@ -1887,18 +1898,22 @@ export default function StoreOrdersPage() {
               {t('containers.actions.resetColumns', '重置列')}
             </Button>
           ) : null}
-          <Button
-            disabled={!selectedRowKeys.length}
-            onClick={() => handleBatchStatusChange(FlowStatus.Submitted)}
-          >
-            {t('storeOrders.batchSubmitted')}
-          </Button>
-          <Button
-            disabled={!selectedRowKeys.length}
-            onClick={() => handleBatchStatusChange(FlowStatus.Completed)}
-          >
-            {t('storeOrders.batchCompleted')}
-          </Button>
+          {canUseWarehouseManagerActions ? (
+            <>
+              <Button
+                disabled={!selectedRowKeys.length}
+                onClick={() => handleBatchStatusChange(FlowStatus.Submitted)}
+              >
+                {t('storeOrders.batchSubmitted')}
+              </Button>
+              <Button
+                disabled={!selectedRowKeys.length}
+                onClick={() => handleBatchStatusChange(FlowStatus.Completed)}
+              >
+                {t('storeOrders.batchCompleted')}
+              </Button>
+            </>
+          ) : null}
         </Space>
       }
     >
@@ -1944,10 +1959,14 @@ export default function StoreOrdersPage() {
               dataSource={data}
               components={{ header: { cell: DraggableHeaderCell } }}
               columns={columns}
-              rowSelection={{
-                selectedRowKeys,
-                onChange: setSelectedRowKeys,
-              }}
+              rowSelection={
+                canUseWarehouseManagerActions
+                  ? {
+                      selectedRowKeys,
+                      onChange: setSelectedRowKeys,
+                    }
+                  : undefined
+              }
               scroll={{ x: 1640, y: 620 }}
               pagination={{
                 current: page,

@@ -254,6 +254,7 @@ export interface StoreOrderDetail {
   orderGUID: string
   orderNo?: string
   storeCode?: string
+  storeName?: string
   totalAmount: number
   totalQuantity: number
   totalImportAmount: number

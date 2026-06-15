@@ -19,6 +19,7 @@ using BlazorApp.Api.Services.Logging;
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.AspNetCore.DataProtection;
@@ -460,6 +461,7 @@ builder.Services.AddScoped<StoreSyncService>(); // 分店数据同步服务
 builder.Services.AddScoped<SeedDataService>(); // 种子数据初始化服务
 builder.Services.AddScoped<IDataInitializationService, DataInitializationService>(); // 数据初始化服务
 builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection("InvoiceEmail"));
+builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
 builder.Services.AddScoped<IChinaSupplierService, ChinaSupplierService>(); // 国内供应商管理服务
@@ -484,6 +486,13 @@ builder.Services.AddScoped<ItemBarcodeService>(); // 货号条码生成服务
 builder.Services.AddScoped<IDomesticProductCreationService, DomesticProductCreationService>(); // 国内商品货号条码批量创建服务
 builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
+builder.Services.AddScoped<IMobileAppBuildService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<EasWebhookOptions>>();
+    var logger = sp.GetRequiredService<ILogger<MobileAppBuildService>>();
+    return new MobileAppBuildService(context.Db, options, logger);
+}); // Expo EAS APK 构建记录服务
 builder.Services.AddScoped<INavigationService, NavigationService>(); // 动态导航菜单服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务
