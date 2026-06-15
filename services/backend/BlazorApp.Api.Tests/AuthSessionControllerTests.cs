@@ -7,6 +7,7 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -38,7 +39,8 @@ public sealed class AuthSessionControllerTests : IDisposable
             InitKeyType = InitKeyType.Attribute,
         });
 
-        _db.CodeFirst.InitTables<User, Role, UserRole>();
+        _db.CodeFirst.InitTables<User, Role, UserRole, SysRolePermission>();
+        _db.CodeFirst.InitTables<SysUserPermission>();
     }
 
     [Fact]
@@ -244,6 +246,56 @@ public sealed class AuthSessionControllerTests : IDisposable
         var store = Assert.Single(result.Data!.Stores!);
         Assert.Equal("Inactive Store", store.StoreName);
         Assert.False(store.IsActive);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_WhenUserHasDirectDashboardPermission_ReturnsDirectPermission()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "direct-permission-user",
+                Username = "whs2",
+                Email = "whs2@example.com",
+                PasswordHash = "hashed",
+                FullName = "WHS2",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new SysUserPermission
+            {
+                Id = "direct-permission-user-dashboard",
+                UserGuid = "direct-permission-user",
+                PermissionCode = Permissions.Dashboard.View,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var userService = new Mock<IUserService>();
+        userService
+            .Setup(service => service.GetUserStoresAsync("direct-permission-user"))
+            .ReturnsAsync(ApiResponse<List<UserStoreDto>>.OK(new List<UserStoreDto>(), "获取用户分店成功"));
+
+        var controller = CreateController(Mock.Of<IAuthService>(), userService: userService.Object);
+        controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim("userId", "direct-permission-user"),
+                    new Claim(ClaimTypes.NameIdentifier, "direct-permission-user"),
+                },
+                "TestAuthType"
+            )
+        );
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.Contains(Permissions.Dashboard.View, result.Data!.Permissions);
     }
 
     public void Dispose()

@@ -157,6 +157,56 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task LoginAsync_WhenUserHasDirectDashboardPermission_AddsPermissionClaim()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var userGuid = Guid.NewGuid().ToString();
+
+            await _db.Insertable(
+                new User
+                {
+                    UserGUID = userGuid,
+                    Username = "whs2",
+                    Email = "whs2@example.com",
+                    PasswordHash = PasswordHasher.HashPassword("Secret123"),
+                    FullName = "WHS2",
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                }
+            ).ExecuteCommandAsync();
+            await _db.Insertable(
+                new SysUserPermission
+                {
+                    Id = $"{userGuid}-dashboard",
+                    UserGuid = userGuid,
+                    PermissionCode = Permissions.Dashboard.View,
+                    IsDeleted = false,
+                }
+            ).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            var result = await service.LoginAsync(new LoginRequest
+            {
+                Username = "whs2",
+                Password = "Secret123",
+                PasswordFormat = PasswordHasher.PasswordFormatRaw,
+            });
+
+            Assert.True(result.Success);
+            var claims = new JwtSecurityTokenHandler().ReadJwtToken(result.Token).Claims.ToList();
+            Assert.Contains(claims, claim =>
+                claim.Type == "permission" && claim.Value == Permissions.Dashboard.View
+            );
+        }
+
+        [Fact]
         public void GenerateJwtToken_WithLegacyLocalInvociePermission_AddsCanonicalLocalPurchaseClaim()
         {
             var service = new AuthService(
@@ -271,6 +321,7 @@ namespace BlazorApp.Api.Tests
         private Task CreateCurrentAuthSchemaAsync()
         {
             _db.CodeFirst.InitTables<User, Role, UserRole, RefreshToken, SysRolePermission>();
+            _db.CodeFirst.InitTables<SysUserPermission>();
             return Task.CompletedTask;
         }
 

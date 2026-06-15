@@ -109,16 +109,7 @@ namespace BlazorApp.Api.Services
                     .UpdateColumns(u => new { u.LastLoginAt, u.UpdatedAt, u.PasswordHash }) // 只更新指定字段，提高性能
                     .ExecuteCommandAsync();
 
-                var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
-                var permissions = new List<string>();
-                if (roleGuids.Any())
-                {
-                    permissions = await _dbContext.Db.Queryable<SysRolePermission>()
-                        .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
-                        .Select(srp => srp.PermissionCode)
-                        .Distinct()
-                        .ToListAsync();
-                }
+                var permissions = await GetEffectivePermissionCodesAsync(user);
 
                 var token = GenerateJwtToken(user, permissions);
 
@@ -330,16 +321,7 @@ namespace BlazorApp.Api.Services
         {
             var jwtSettings = _configuration.GetSection("Jwt").Get<Models.JwtSettings>();
 
-            var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
-            var permissions = new List<string>();
-            if (roleGuids.Any())
-            {
-                permissions = await _dbContext.Db.Queryable<SysRolePermission>()
-                    .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
-                    .Select(srp => srp.PermissionCode)
-                    .Distinct()
-                    .ToListAsync();
-            }
+            var permissions = await GetEffectivePermissionCodesAsync(user);
 
             var accessToken = GenerateAccessToken(user, jwtSettings!, permissions);
 
@@ -531,6 +513,50 @@ namespace BlazorApp.Api.Services
 
             // ✅ 撤销成功
             return true;
+        }
+
+        private async Task<List<string>> GetEffectivePermissionCodesAsync(User user)
+        {
+            var roleGuids = user.Roles?
+                .Select(r => r.RoleGUID)
+                .Where(roleGuid => !string.IsNullOrWhiteSpace(roleGuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? new List<string>();
+
+            var permissions = new List<string>();
+            if (roleGuids.Any())
+            {
+                var rolePermissions = await _dbContext.Db.Queryable<SysRolePermission>()
+                    .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
+                    .Select(srp => srp.PermissionCode)
+                    .ToListAsync();
+                permissions.AddRange(rolePermissions);
+            }
+
+            // 直接授权是权限管理页的真实保存结果之一，登录和刷新令牌必须一起写入权限 claim。
+            if (HasUserPermissionTable())
+            {
+                var directPermissions = await _dbContext.Db.Queryable<SysUserPermission>()
+                    .Where(item => item.UserGuid == user.UserGUID && !item.IsDeleted)
+                    .Select(item => item.PermissionCode)
+                    .ToListAsync();
+                permissions.AddRange(directPermissions);
+            }
+
+            return permissions
+                .Where(permission => !string.IsNullOrWhiteSpace(permission))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private bool HasUserPermissionTable()
+        {
+            return _dbContext.Db.DbMaintenance.GetTableInfoList(false)
+                .Any(table => string.Equals(
+                    table.Name,
+                    "HBwebSysUserPermissions",
+                    StringComparison.OrdinalIgnoreCase
+                ));
         }
 
         /// <summary>

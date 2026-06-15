@@ -223,6 +223,8 @@ namespace BlazorApp.Api.Controllers
                         }
                     }
                 }
+                // 用户直接授权与角色授权共同决定当前会话权限，避免权限管理页显示已授权但前端拿不到入口权限。
+                allPermissions.AddRange(await GetDirectUserPermissionCodesAsync(userId));
 
                 // 获取用户的分店信息
                 _logger.LogInformation("GetCurrentUser: userId={UserId}, roles={Roles}",
@@ -435,6 +437,29 @@ namespace BlazorApp.Api.Controllers
             }
 
             return await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
+        }
+
+        private async Task<List<string>> GetDirectUserPermissionCodesAsync(string userGuid)
+        {
+            if (string.IsNullOrWhiteSpace(userGuid) || !HasUserPermissionTable())
+            {
+                return new List<string>();
+            }
+
+            return await _dbContext.Db.Queryable<SysUserPermission>()
+                .Where(item => item.UserGuid == userGuid && !item.IsDeleted)
+                .Select(item => item.PermissionCode)
+                .ToListAsync();
+        }
+
+        private bool HasUserPermissionTable()
+        {
+            return _dbContext.Db.DbMaintenance.GetTableInfoList(false)
+                .Any(table => string.Equals(
+                    table.Name,
+                    "HBwebSysUserPermissions",
+                    StringComparison.OrdinalIgnoreCase
+                ));
         }
 
         private static SessionResponse CreateSessionResponse(TokenResponse tokenResponse)
