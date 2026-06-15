@@ -79,6 +79,14 @@ async function main() {
   })
   if (emailEntryFailure) failures.push(emailEntryFailure)
 
+  const excelFileNameFailure = await runTest('发票 Excel 导出文件名应固定使用大写 INVOICE 前缀', () => {
+    assert(
+      invoiceSource.includes("link.download = buildDocumentFileName(\n    'INVOICE',"),
+      '发票 Excel 导出文件名应使用 INVOICE 前缀',
+    )
+  })
+  if (excelFileNameFailure) failures.push(excelFileNameFailure)
+
   const invoicePdfBreakFailure = await runTest('发票 PDF 导出应按明细行和页脚边界切页', () => {
     assert(invoiceSource.includes('collectElementBreakOffsets'), '发票页应引入 PDF 行边界收集工具')
     assert(

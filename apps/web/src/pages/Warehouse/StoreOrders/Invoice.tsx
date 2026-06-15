@@ -123,7 +123,7 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
   const link = document.createElement('a')
   link.href = url
   link.download = buildDocumentFileName(
-    t('warehouse.invoice.fileName'),
+    'INVOICE',
     storeName || order.storeCode,
     order.orderNo || order.orderGUID,
     'xlsx',
