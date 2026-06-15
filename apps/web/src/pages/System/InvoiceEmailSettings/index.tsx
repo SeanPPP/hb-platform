@@ -28,6 +28,7 @@ import {
   buildInvoiceEmailSettingsSavePayload,
   buildInvoiceEmailSettingsTestPayload,
   createInvoiceEmailSettingsFormValues,
+  resolveInvoiceEmailSettingsErrorMessage,
   type InvoiceEmailSettingsFormValues,
 } from './pageLogic'
 
@@ -59,7 +60,7 @@ export default function InvoiceEmailSettingsPage() {
       form.setFieldsValue(createInvoiceEmailSettingsFormValues(result))
     } catch (error) {
       console.error(error)
-      message.error(t('invoiceEmailSettings.loadFailed'))
+      message.error(resolveInvoiceEmailSettingsErrorMessage(error, t('invoiceEmailSettings.loadFailed')))
     } finally {
       setLoading(false)
     }
@@ -79,7 +80,7 @@ export default function InvoiceEmailSettingsPage() {
       message.success(t('invoiceEmailSettings.saveSuccess'))
     } catch (error) {
       console.error(error)
-      message.error(t('invoiceEmailSettings.saveFailed'))
+      message.error(resolveInvoiceEmailSettingsErrorMessage(error, t('invoiceEmailSettings.saveFailed')))
     } finally {
       setSaving(false)
     }
@@ -93,7 +94,7 @@ export default function InvoiceEmailSettingsPage() {
       message.success(result.message || t('invoiceEmailSettings.testSuccess'))
     } catch (error) {
       console.error(error)
-      message.error(t('invoiceEmailSettings.testFailed'))
+      message.error(resolveInvoiceEmailSettingsErrorMessage(error, t('invoiceEmailSettings.testFailed')))
     } finally {
       setTesting(false)
     }

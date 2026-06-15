@@ -5,10 +5,12 @@ import { buildAccess } from '../../../utils/access'
 import { buildWebRoleMenuPreview } from '../../../utils/webMenuPreview'
 import type { CurrentUser } from '../../../types/auth'
 import { P } from '../../../types/permissions'
+import { RequestError } from '../../../utils/request'
 import {
   buildInvoiceEmailSettingsSavePayload,
   buildInvoiceEmailSettingsTestPayload,
   createInvoiceEmailSettingsFormValues,
+  resolveInvoiceEmailSettingsErrorMessage,
 } from './pageLogic'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -121,6 +123,21 @@ const testPayload = buildInvoiceEmailSettingsTestPayload({
 
 assertEqual(testPayload.testToEmail, 'qa@test.com', '测试邮件 payload 应携带测试收件邮箱')
 assertEqual(testPayload.password, 'temporary-secret', '测试邮件 payload 应允许携带当前输入的密码')
+
+const smtpFailure = new RequestError(
+  '发票邮件 TLS 握手失败，请检查 SMTP 证书或 InvoiceEmail.CheckCertificateRevocation 配置',
+  400,
+)
+assertEqual(
+  resolveInvoiceEmailSettingsErrorMessage(smtpFailure, '发送测试邮件失败'),
+  smtpFailure.message,
+  '测试邮件失败时应优先展示后端返回的具体原因',
+)
+assertEqual(
+  resolveInvoiceEmailSettingsErrorMessage(new Error(''), '发送测试邮件失败'),
+  '发送测试邮件失败',
+  '错误消息为空时应回退到页面默认文案',
+)
 
 const routeSource = readFileSync('src/router/routes.tsx', 'utf8')
 assert(
