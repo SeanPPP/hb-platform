@@ -425,6 +425,35 @@ public sealed class LocalCatalogRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task LocalSqliteStore_CheckpointWalAsync_ExecutesPassiveCheckpoint()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await using (var connection = await store.OpenConnectionAsync())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE WalCheckpointProbe (Id INTEGER PRIMARY KEY, Name TEXT NOT NULL);
+                    INSERT INTO WalCheckpointProbe (Name) VALUES ('probe');
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await store.CheckpointWalAsync();
+
+            await using var verifyConnection = await store.OpenConnectionAsync();
+            Assert.True(await ReadScalarIntAsync(verifyConnection, "PRAGMA wal_checkpoint(PASSIVE);") >= 0);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     private static async Task<LocalCatalogRepository> CreateRepositoryAsync(string databasePath)
     {
         var store = new LocalSqliteStore(databasePath);

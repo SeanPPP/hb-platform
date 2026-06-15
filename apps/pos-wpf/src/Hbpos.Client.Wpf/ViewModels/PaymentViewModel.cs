@@ -10,7 +10,7 @@ using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public partial class PaymentViewModel : ObservableObject
+public partial class PaymentViewModel : ObservableObject, IDisposable
 {
     private readonly PosCartService _cart;
     private readonly ICashPaymentWorkflowService _workflowService;
@@ -33,6 +33,7 @@ public partial class PaymentViewModel : ObservableObject
     private TaskCompletionSource<bool>? _pendingLinklyFallbackPrompt;
     private int _paymentEntryVersion;
     private decimal _workflowRemainingAmount;
+    private bool _disposed;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -114,7 +115,7 @@ public partial class PaymentViewModel : ObservableObject
         _linklyFallbackPromptCoordinator?.SetPromptHandler(ConfirmLinklyFallbackAsync);
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         NumberInputCommand = new RelayCommand<string>(AppendTenderAmount, _ => IsPaymentInteractionEnabled);
@@ -135,6 +136,26 @@ public partial class PaymentViewModel : ObservableObject
             CanExecuteCardPaymentErrorPrimaryAction);
 
         RefreshCart();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+
+        CompletePendingLinklyFallbackPrompt(confirmed: false);
+        _activeCardPaymentCts?.Dispose();
+        _activeCardPaymentCts = null;
+        _manuallyCancelledCardPaymentCts?.Dispose();
+        _manuallyCancelledCardPaymentCts = null;
     }
 
     public ObservableCollection<CartLine> CartLines { get; } = [];
@@ -1486,6 +1507,11 @@ public partial class PaymentViewModel : ObservableObject
         OnPropertyChanged(nameof(InstallmentMethodText));
         OnPropertyChanged(nameof(CancelText));
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedProperties();
     }
 
     private void CloseCardPaymentErrorOverlay()

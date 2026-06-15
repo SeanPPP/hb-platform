@@ -21,7 +21,7 @@ public sealed record DeviceReregistrationStartResult(bool Started, string Status
     public static DeviceReregistrationStartResult Blocked(string statusMessage) => new(false, statusMessage);
 }
 
-public sealed partial class MainViewModel : ObservableObject
+public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private const string DefaultTestStoreCode = "1002";
     private static readonly TimeSpan StartupCatalogIndexLoadTimeout = TimeSpan.FromSeconds(30);
@@ -69,6 +69,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
+    private readonly IWindowOwnerProvider? _windowOwnerProvider;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _catalogDownloadHideTimer = new();
@@ -87,6 +88,7 @@ public sealed partial class MainViewModel : ObservableObject
     private bool _customerDisplayPrewarmed;
     private Task<IReadOnlyList<SellableItemDto>>? _startupCatalogIndexLoadTask;
     private AppStartupOptions? _startupOptions;
+    private bool _disposed;
 
     [ObservableProperty]
     private PosSessionState _session = new("HB POS", DefaultTestStoreCode, "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
@@ -307,7 +309,8 @@ public sealed partial class MainViewModel : ObservableObject
         ILinklyTerminalDialogPresenter? linklyTerminalDialogPresenter = null,
         ICardPaymentRecoveryService? cardPaymentRecoveryService = null,
         ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
-        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
+        IWindowOwnerProvider? windowOwnerProvider = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -357,14 +360,15 @@ public sealed partial class MainViewModel : ObservableObject
         _cardPaymentRecoveryService = cardPaymentRecoveryService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
+        _windowOwnerProvider = windowOwnerProvider;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
 
         PaymentSuccess = new PaymentSuccessViewModel(
             _receiptQueryService,
             _receiptTextFormatter,
             _receiptPrinterSettingsStore);
-        PaymentSuccess.NewTransactionRequested += (_, _) => ResetForNewTransaction();
-        PaymentSuccess.PrintReceiptRequested += async (_, _) => await PrintPaymentSuccessReceiptAsync();
+        PaymentSuccess.NewTransactionRequested += OnPaymentSuccessNewTransactionRequested;
+        PaymentSuccess.PrintReceiptRequested += OnPaymentSuccessPrintReceiptRequested;
 
         ShowPosCommand = new RelayCommand(ShowPos);
         ShowCashPaymentCommand = new RelayCommand(ShowCashPayment, () => !_cart.IsEmpty);
@@ -393,14 +397,10 @@ public sealed partial class MainViewModel : ObservableObject
 
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
-        _customerDisplayOrchestrator.Closed += (_, _) => CustomerDisplayWindowMode = CustomerDisplayWindowMode.Closed;
-        _clockTimer.Tick += (_, _) => RefreshClock();
-        _connectivityTimer.Tick += async (_, _) => await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
-        _catalogDownloadHideTimer.Tick += (_, _) =>
-        {
-            _catalogDownloadHideTimer.Stop();
-            IsCatalogDownloadProgressVisible = false;
-        };
+        _customerDisplayOrchestrator.Closed += OnCustomerDisplayClosed;
+        _clockTimer.Tick += OnClockTimerTick;
+        _connectivityTimer.Tick += OnConnectivityTimerTick;
+        _catalogDownloadHideTimer.Tick += OnCatalogDownloadHideTimerTick;
         RefreshLocalizedShell(resetStatus: true);
     }
 
@@ -489,6 +489,42 @@ public sealed partial class MainViewModel : ObservableObject
 
     public IAsyncRelayCommand ResetScannerBindingCommand { get; }
 
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        _clockTimer.Stop();
+        _connectivityTimer.Stop();
+        _catalogDownloadHideTimer.Stop();
+        _clockTimer.Tick -= OnClockTimerTick;
+        _connectivityTimer.Tick -= OnConnectivityTimerTick;
+        _catalogDownloadHideTimer.Tick -= OnCatalogDownloadHideTimerTick;
+
+        _cart.CartChanged -= OnCartChanged;
+        _localization.CultureChanged -= OnCultureChanged;
+        _customerDisplayOrchestrator.Closed -= OnCustomerDisplayClosed;
+        if (_cardRecoveryResultDialogService is not null)
+        {
+            _cardRecoveryResultDialogService.DialogRequested -= OnCardRecoveryResultDialogRequested;
+        }
+
+        PaymentSuccess.NewTransactionRequested -= OnPaymentSuccessNewTransactionRequested;
+        PaymentSuccess.PrintReceiptRequested -= OnPaymentSuccessPrintReceiptRequested;
+
+        // 主壳销毁时统一释放当前缓存子页面，避免 singleton 服务事件继续持有旧页面。
+        PosTerminal?.Dispose();
+        SpecialProducts?.Dispose();
+        ReceiptReturns?.Dispose();
+        Settings?.Dispose();
+        ClearCashPaymentCache();
+        CancelStartupCatalogIndexLoad();
+    }
+
     public async Task InitializeAsync(AppStartupOptions startupOptions)
     {
         _startupOptions = startupOptions;
@@ -572,7 +608,7 @@ public sealed partial class MainViewModel : ObservableObject
         await InitializePosExperienceAsync(startupOptions);
         IsDeviceReregistrationDialogOpen = false;
         DeviceRegistration = null;
-        _ = ContinuePosStartupAfterShownAsync(startupOptions, Application.Current.MainWindow);
+        _ = ContinuePosStartupAfterShownAsync(startupOptions, CurrentOwner);
     }
 
     private async Task InitializePosExperienceAsync(AppStartupOptions startupOptions)
@@ -1492,7 +1528,7 @@ public sealed partial class MainViewModel : ObservableObject
         TransactionHistory = null;
         _lastCompletedOrder = null;
         _cart.Clear();
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, Application.Current?.MainWindow);
+        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
         StatusMessage = _localization.T("main.reregister.submitted");
     }
 
@@ -1614,13 +1650,26 @@ public sealed partial class MainViewModel : ObservableObject
         {
             result = await recoveryTask;
         }
-        catch
+        catch (OperationCanceledException)
         {
             if (ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
             {
                 _cardPaymentRecoveryTask = null;
             }
 
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
+            {
+                _cardPaymentRecoveryTask = null;
+            }
+
+            ConsoleLog.WriteError(
+                "CardRecovery",
+                $"recover latest card payment failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
             throw;
         }
 
@@ -1850,6 +1899,39 @@ public sealed partial class MainViewModel : ObservableObject
         ShowCardRecoveryResultDialog(dialog);
     }
 
+    private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;
+
+    private void OnPaymentSuccessNewTransactionRequested(object? sender, EventArgs e)
+    {
+        ResetForNewTransaction();
+    }
+
+    private async void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
+    {
+        await PrintPaymentSuccessReceiptAsync();
+    }
+
+    private void OnCustomerDisplayClosed(object? sender, EventArgs e)
+    {
+        CustomerDisplayWindowMode = CustomerDisplayWindowMode.Closed;
+    }
+
+    private void OnClockTimerTick(object? sender, EventArgs e)
+    {
+        RefreshClock();
+    }
+
+    private async void OnConnectivityTimerTick(object? sender, EventArgs e)
+    {
+        await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
+    }
+
+    private void OnCatalogDownloadHideTimerTick(object? sender, EventArgs e)
+    {
+        _catalogDownloadHideTimer.Stop();
+        IsCatalogDownloadProgressVisible = false;
+    }
+
     private void ShowCardRecoveryResultDialog(CardRecoveryResultDialogViewModel dialog)
     {
         CardRecoveryResultDialog = dialog;
@@ -2012,7 +2094,9 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (CashPayment is not null)
         {
+            CashPayment.PaymentCompleted -= OnPaymentCompleted;
             CashPayment.PropertyChanged -= OnCashPaymentPropertyChanged;
+            CashPayment.Dispose();
         }
 
         CachedCashPaymentScreen = null;
@@ -2265,7 +2349,7 @@ public sealed partial class MainViewModel : ObservableObject
             return Task.CompletedTask;
         }
 
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, Application.Current?.MainWindow);
+        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
         _applicationExitService.Exit();
         return Task.CompletedTask;
     }
@@ -2457,7 +2541,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void ToggleCustomerDisplayWindow()
     {
-        var owner = Application.Current?.MainWindow;
+        var owner = CurrentOwner;
         if (owner is null)
         {
             return;
@@ -2474,17 +2558,17 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void CloseCustomerDisplayWindow()
     {
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, Application.Current?.MainWindow);
+        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
     }
 
     private void ShowCustomerDisplayNormal()
     {
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, Application.Current?.MainWindow);
+        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, CurrentOwner);
     }
 
     private void ShowCustomerDisplayFullscreen()
     {
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Fullscreen, Application.Current?.MainWindow);
+        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Fullscreen, CurrentOwner);
     }
 
     public void SetCustomerDisplayWindowMode(CustomerDisplayWindowMode mode, Window? owner)

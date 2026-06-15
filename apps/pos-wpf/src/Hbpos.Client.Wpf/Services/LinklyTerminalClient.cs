@@ -389,7 +389,7 @@ public sealed class LinklyTerminalClient(
                 fallbackMessage,
                 cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var fallbackMessage = string.Format(
                 CultureInfo.CurrentCulture,
@@ -495,7 +495,7 @@ public sealed class LinklyTerminalClient(
                 fallbackMessage,
                 CancellationToken.None);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LogJson(
                 "cancel",
@@ -504,8 +504,12 @@ public sealed class LinklyTerminalClient(
                 settings.Environment,
                 txnRef,
                 success: false,
-                reason: "unexpected-error",
-                request: cancelRequest);
+                reason: ex.GetType().Name,
+                request: cancelRequest,
+                details: new
+                {
+                    ex.Message
+                });
             return await TryRecoverLastTransactionAsync(
                 settings,
                 amount,
@@ -683,7 +687,7 @@ public sealed class LinklyTerminalClient(
                 });
             return new PaymentAuthorizationResult(false, null, fallbackMessage);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LogJson(
                 "get-last-transaction",
@@ -692,7 +696,11 @@ public sealed class LinklyTerminalClient(
                 settings.Environment,
                 txnRef,
                 success: false,
-                reason: "unexpected-error");
+                reason: ex.GetType().Name,
+                details: new
+                {
+                    ex.Message
+                });
             return new PaymentAuthorizationResult(false, null, fallbackMessage);
         }
         finally
@@ -983,8 +991,12 @@ public sealed class LinklyTerminalClient(
                 response: NormalizeLogPayload(response),
                 details: details);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            ConsoleLog.WriteError(
+                "LinklyLocal",
+                $"linkly json log failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
             // 日志仅用于诊断，不能影响刷卡主流程。
         }
     }

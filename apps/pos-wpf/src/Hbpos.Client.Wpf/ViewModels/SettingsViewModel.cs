@@ -53,7 +53,7 @@ public sealed partial class LinklyModePriorityItem(LinklySettingsMode mode) : Ob
     }
 }
 
-public sealed partial class SettingsViewModel : ObservableObject
+public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     private const string DefaultSquareDeviceCodeName = "HBPOS Terminal";
 
@@ -83,6 +83,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private int _linklySecretStatusVersion;
     private int _linklyCredentialStatusVersion;
     private int _linklyCredentialEditVersion;
+    private bool _disposed;
+    private bool _hasLinklyCloudPasswordInput;
 
     [ObservableProperty]
     private SettingsCategory _selectedCategory = SettingsCategory.DataMaintenance;
@@ -200,7 +202,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         SelectDataMaintenanceCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.DataMaintenance);
@@ -236,6 +238,20 @@ public sealed partial class SettingsViewModel : ObservableObject
         RefreshLocalizedMessages();
     }
 
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+    }
+
     public ObservableCollection<SquareLocationOption> SquareLocations { get; } = [];
 
     public ObservableCollection<SquareDeviceOption> SquareDevices { get; } = [];
@@ -243,6 +259,14 @@ public sealed partial class SettingsViewModel : ObservableObject
     public ObservableCollection<SquareDeviceCodeOption> SquareDeviceCodes { get; } = [];
 
     public ObservableCollection<LinklyModePriorityItem> LinklyModePriorityItems { get; } = [];
+
+    public void RaiseLinklyCloudPasswordInputChanged(bool hasPassword)
+    {
+        _hasLinklyCloudPasswordInput = hasPassword;
+        Interlocked.Increment(ref _linklyCredentialEditVersion);
+        ResetLinklyConnectionTest();
+        RaiseCommandStates();
+    }
 
     public IAsyncRelayCommand LoadCommand { get; }
 
@@ -414,6 +438,13 @@ public sealed partial class SettingsViewModel : ObservableObject
     public string LinklyCloudCredentialStatusText => HasSavedLinklyCloudPassword
         ? T("settings.linkly.cloud.credentialStatus.cached")
         : T("settings.linkly.cloud.credentialStatus.missing");
+
+    public bool CanSaveLinklyCloudCredentialFromView =>
+        CanSaveLinklyCloudCredential() && _hasLinklyCloudPasswordInput;
+
+    public bool CanPairLinklyCloudFromView => CanPairLinklyCloud();
+
+    public bool CanCancelLinklyCloudPairingFromView => CanCancelLinklyCloudPairing();
 
     public CardTerminalEnvironment SelectedSquareEnvironment => IsSquareSandbox
         ? CardTerminalEnvironment.Sandbox
@@ -783,13 +814,17 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private async Task PairLinklyCloudAsync()
     {
+        await PairLinklyCloudAsync(LinklyCloudPasswordText);
+    }
+
+    public async Task PairLinklyCloudAsync(string password)
+    {
         var pairingEnvironment = SelectedLinklyEnvironment;
         var pairCode = LinklyPairCodeText;
         var username = LinklyCloudUsernameText;
-        var password = LinklyCloudPasswordText;
         LogLinklyCloudSettings(
             $"pair clicked environment={pairingEnvironment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasCurrentPassword=REDACTED hasSavedPassword=REDACTED hasPairCode={!string.IsNullOrWhiteSpace(pairCode)}");
-        if (!ValidateLinklyCloudPairingInput())
+        if (!ValidateLinklyCloudPairingInput(password))
         {
             return;
         }
@@ -837,6 +872,11 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private bool ValidateLinklyCloudPairingInput()
     {
+        return ValidateLinklyCloudPairingInput(LinklyCloudPasswordText);
+    }
+
+    private bool ValidateLinklyCloudPairingInput(string password)
+    {
         if (string.IsNullOrWhiteSpace(LinklyCloudUsernameText))
         {
             LogLinklyCloudSettings($"pair validation blocked environment={SelectedLinklyEnvironment} reason=missing-username");
@@ -845,7 +885,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(LinklyCloudPasswordText) && !HasSavedLinklyCloudPassword)
+        if (string.IsNullOrWhiteSpace(password) && !HasSavedLinklyCloudPassword)
         {
             LogLinklyCloudSettings($"pair validation blocked environment={SelectedLinklyEnvironment} reason=missing-password");
             SetLinklyTestStatus("settings.linklyCloud.passwordRequired");
@@ -866,10 +906,14 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private async Task SaveLinklyCloudCredentialAsync()
     {
+        await SaveLinklyCloudCredentialAsync(LinklyCloudPasswordText);
+    }
+
+    public async Task SaveLinklyCloudCredentialAsync(string password)
+    {
         var credentialEnvironment = SelectedLinklyEnvironment;
         var syncBackendCredential = IsLinklyCloudBackendAsyncMode;
         var username = LinklyCloudUsernameText;
-        var password = LinklyCloudPasswordText;
         await RunBusyAsync(async () =>
         {
             try
@@ -908,6 +952,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         LogLinklyCloudSettings($"pair cancel clicked environment={SelectedLinklyEnvironment} hadPassword=REDACTED hadPairCode={!string.IsNullOrWhiteSpace(LinklyPairCodeText)}");
         LinklyPairCodeText = string.Empty;
         LinklyCloudPasswordText = string.Empty;
+        _hasLinklyCloudPasswordInput = false;
         ResetLinklyConnectionTest();
         RaiseCommandStates();
     }
@@ -1128,8 +1173,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         return !IsBusy &&
             IsLinklyCloudMode &&
-            !string.IsNullOrWhiteSpace(LinklyCloudUsernameText) &&
-            !string.IsNullOrWhiteSpace(LinklyCloudPasswordText);
+            !string.IsNullOrWhiteSpace(LinklyCloudUsernameText);
     }
 
     private bool CanCancelLinklyCloudPairing()
@@ -1223,6 +1267,11 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(SquareTokenStatusText));
         OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
         RefreshLocalizedMessages();
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedProperties();
     }
 
     partial void OnSelectedCategoryChanged(SettingsCategory value)
@@ -1394,6 +1443,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnLinklyCloudPasswordTextChanged(string value)
     {
+        _hasLinklyCloudPasswordInput = !string.IsNullOrWhiteSpace(value);
         Interlocked.Increment(ref _linklyCredentialEditVersion);
         ResetLinklyConnectionTest();
         RaiseCommandStates();
@@ -1459,7 +1509,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             ApplyLinklyCloudCredentialFields(
                 credential,
                 username => LinklyCloudUsernameText = username,
-                password => LinklyCloudPasswordText = password,
+                password => { },
                 hasSavedPassword => HasSavedLinklyCloudPassword = hasSavedPassword);
         }
         catch (Exception ex)
@@ -1484,7 +1534,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                 ApplyLinklyCloudCredentialFields(
                     credential,
                     username => LinklyCloudUsernameText = username,
-                    password => LinklyCloudPasswordText = password,
+                    password => { },
                     hasSavedPassword => HasSavedLinklyCloudPassword = hasSavedPassword);
             }
         }
@@ -1589,6 +1639,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         ResetCatalogCommand.NotifyCanExecuteChanged();
         ResetTestSalesDataCommand.NotifyCanExecuteChanged();
         ReregisterDeviceCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanSaveLinklyCloudCredentialFromView));
+        OnPropertyChanged(nameof(CanPairLinklyCloudFromView));
+        OnPropertyChanged(nameof(CanCancelLinklyCloudPairingFromView));
     }
 
     private void ResetLinklyConnectionTest()

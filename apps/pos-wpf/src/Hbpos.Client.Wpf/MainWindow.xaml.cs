@@ -50,7 +50,17 @@ public partial class MainWindow : Window
     private async void MainWindowLoaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindowLoaded;
-        await InitializeForStartupAsync();
+        try
+        {
+            await InitializeForStartupAsync();
+        }
+        catch (Exception ex)
+        {
+            // Loaded 事件是 async void，初始化失败时记录并关闭窗口，避免异常脱离任务链。
+            ConsoleLog.WriteError("Startup", $"main window initialization failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
+            _viewModel.StatusMessage = ex.Message;
+            Close();
+        }
     }
 
     public Task InitializeForStartupAsync()
@@ -125,6 +135,7 @@ public partial class MainWindow : Window
         PreviewTouchDown -= MainWindowUserInput;
         _hwndSource?.RemoveHook(_rawScannerService.ProcessWindowMessage);
         _rawScannerService.Stop();
+        _viewModel.Dispose();
     }
 
     private void MainWindowPreviewKeyDown(object sender, KeyEventArgs e)

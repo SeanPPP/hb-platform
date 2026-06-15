@@ -135,7 +135,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _rawScannerService = rawScannerService;
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+            _localization.CultureChanged += OnCultureChanged;
         }
 
         _cart.CartChanged += OnCartChanged;
@@ -306,9 +306,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public void Dispose()
     {
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+
         _cart.CartChanged -= OnCartChanged;
         _workflowService.CatalogReloaded -= OnWorkflowCatalogReloaded;
         _rawScannerService?.Unsubscribe(PageId);
+    }
+
+    private void OnCultureChanged(object? sender, EventArgs e)
+    {
+        RaiseLocalizedProperties();
     }
 
     partial void OnSelectedItemChanged(SellableItemDto? value)

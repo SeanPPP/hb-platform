@@ -79,29 +79,66 @@ public partial class App : Application
 
             base.OnStartup(e);
         }
-        catch
+        catch (Exception ex)
         {
+            // 启动入口是 async void，异常不能继续抛回调度器，避免未观察异常导致进程崩溃。
+            ConsoleLog.WriteError("Startup", $"startup failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
             FinishStartupExperience();
+            if (_host is not null)
+            {
+                try
+                {
+                    _host.Dispose();
+                }
+                catch (Exception disposeEx)
+                {
+                    ConsoleLog.WriteError("Startup", $"host dispose after startup failure failed error={disposeEx.GetType().Name} message={disposeEx.Message}", exception: disposeEx);
+                }
+
+                _host = null;
+            }
+
             _startupLease?.Dispose();
             _startupLease = null;
-            throw;
+            Shutdown(1);
         }
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        FinishStartupExperience();
-
-        if (_host is not null)
+        try
         {
-            await _host.StopAsync(TimeSpan.FromSeconds(3));
-            _host.Dispose();
+            FinishStartupExperience();
+
+            if (_host is not null)
+            {
+                try
+                {
+                    // 退出入口同样是 async void，StopAsync 失败时记录日志后继续释放资源。
+                    await _host.StopAsync(TimeSpan.FromSeconds(3));
+                }
+                catch (Exception ex)
+                {
+                    ConsoleLog.WriteError("Shutdown", $"host stop failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
+                }
+                finally
+                {
+                    _host.Dispose();
+                    _host = null;
+                }
+            }
+
+            _startupLease?.Dispose();
+            _startupLease = null;
         }
-
-        _startupLease?.Dispose();
-        _startupLease = null;
-
-        base.OnExit(e);
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError("Shutdown", $"shutdown cleanup failed error={ex.GetType().Name} message={ex.Message}", exception: ex);
+        }
+        finally
+        {
+            base.OnExit(e);
+        }
     }
 
     private async Task ReleaseStartupGateAfterClickGuardDelayAsync()

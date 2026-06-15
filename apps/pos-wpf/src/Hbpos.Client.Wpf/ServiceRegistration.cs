@@ -24,6 +24,7 @@ public static class ServiceRegistration
             var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-client-preview-{Environment.ProcessId}.db");
             return new LocalSqliteStore(databasePath);
         });
+        services.AddSingleton<ILocalSqliteCheckpointService>(sp => sp.GetRequiredService<LocalSqliteStore>());
         services.AddSingleton<ILocalSchemaService, LocalSchemaService>();
         services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
         services.AddSingleton<DeviceAuthorizationState>();
@@ -206,6 +207,7 @@ public static class ServiceRegistration
                 sp.GetRequiredService<IUiPriorityCoordinator>(),
                 () => sp.GetRequiredService<IShellCatalogService>().IsCatalogSyncActive));
         services.AddSingleton<IDisplayTopologyService, DisplayTopologyService>();
+        services.AddSingleton<IWindowOwnerProvider, WpfWindowOwnerProvider>();
         services.AddSingleton<ICustomerDisplayWindowService, CustomerDisplayWindowService>();
         services.AddSingleton<RawScannerInputProcessor>();
         services.AddSingleton<IRawScannerService, RawScannerService>();
@@ -255,7 +257,8 @@ public static class ServiceRegistration
             linklyTerminalDialogPresenter: sp.GetRequiredService<ILinklyTerminalDialogPresenter>(),
             cardPaymentRecoveryService: sp.GetRequiredService<ICardPaymentRecoveryService>(),
             cardRecoveryResultDialogService: sp.GetRequiredService<ICardRecoveryResultDialogService>(),
-            linklyFallbackPromptCoordinator: sp.GetRequiredService<ILinklyFallbackPromptCoordinator>()));
+            linklyFallbackPromptCoordinator: sp.GetRequiredService<ILinklyFallbackPromptCoordinator>(),
+            windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>()));
         services.AddSingleton<MainWindow>();
 
         return services;

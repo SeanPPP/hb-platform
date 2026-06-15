@@ -1,4 +1,6 @@
+using System.IO;
 using System.Security.Cryptography;
+using System.Security;
 using System.Text;
 using Microsoft.Win32;
 
@@ -33,8 +35,12 @@ public sealed class DeviceFingerprintService : IDeviceFingerprintService
             using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography");
             return key?.GetValue("MachineGuid")?.ToString() ?? string.Empty;
         }
-        catch
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
         {
+            ConsoleLog.WriteError(
+                "DeviceFingerprint",
+                $"read machine guid failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
             return string.Empty;
         }
     }

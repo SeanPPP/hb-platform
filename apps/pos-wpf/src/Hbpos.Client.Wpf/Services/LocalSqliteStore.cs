@@ -3,7 +3,12 @@ using Microsoft.Data.Sqlite;
 
 namespace Hbpos.Client.Wpf.Services;
 
-public sealed class LocalSqliteStore
+public interface ILocalSqliteCheckpointService
+{
+    Task CheckpointWalAsync(CancellationToken cancellationToken = default);
+}
+
+public sealed class LocalSqliteStore : ILocalSqliteCheckpointService
 {
     private readonly string _connectionString;
 
@@ -31,6 +36,13 @@ public sealed class LocalSqliteStore
         await connection.OpenAsync(cancellationToken);
         await ConfigureConnectionAsync(connection, cancellationToken);
         return connection;
+    }
+
+    public async Task CheckpointWalAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        // WAL checkpoint 只在低频维护点执行，避免每次写入都强制刷盘影响收银性能。
+        await ExecutePragmaAsync(connection, "PRAGMA wal_checkpoint(PASSIVE);", cancellationToken);
     }
 
     private static async Task ConfigureConnectionAsync(

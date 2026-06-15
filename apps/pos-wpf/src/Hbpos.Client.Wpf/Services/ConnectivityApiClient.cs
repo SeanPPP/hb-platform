@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Health;
 
@@ -30,8 +31,12 @@ public sealed class ConnectivityApiClient(HttpClient httpClient) : IConnectivity
         {
             throw;
         }
-        catch
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
+            ConsoleLog.WriteError(
+                "Connectivity",
+                $"online check failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
             return false;
         }
     }

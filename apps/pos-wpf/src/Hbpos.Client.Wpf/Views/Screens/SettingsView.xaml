@@ -951,7 +951,8 @@
                                                          Style="{StaticResource SettingsFieldPasswordBoxStyle}"
                                                          Margin="0,0,0,12" />
 
-                                            <Button Command="{Binding SaveLinklyCloudCredentialCommand}"
+                                            <Button Click="SaveLinklyCloudCredential_Click"
+                                                    IsEnabled="{Binding CanSaveLinklyCloudCredentialFromView}"
                                                     Style="{StaticResource PosSecondaryButtonStyle}"
                                                     Height="42"
                                                     MinWidth="168"
@@ -983,7 +984,8 @@
                                             </Border>
 
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                                <Button Command="{Binding PairLinklyCloudCommand}"
+                                                <Button Click="PairLinklyCloud_Click"
+                                                        IsEnabled="{Binding CanPairLinklyCloudFromView}"
                                                         Style="{StaticResource PosPrimaryButtonStyle}"
                                                         Height="42"
                                                         MinWidth="138"
@@ -994,6 +996,8 @@
                                                     </StackPanel>
                                                 </Button>
                                                 <Button Command="{Binding CancelLinklyCloudPairingCommand}"
+                                                        Click="CancelLinklyCloudPairing_Click"
+                                                        IsEnabled="{Binding CanCancelLinklyCloudPairingFromView}"
                                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                                         Height="42"
                                                         MinWidth="118">
@@ -1072,7 +1076,8 @@
                                                          Style="{StaticResource SettingsFieldPasswordBoxStyle}"
                                                          Margin="0,0,0,12" />
 
-                                            <Button Command="{Binding SaveLinklyCloudCredentialCommand}"
+                                            <Button Click="SaveLinklyCloudCredential_Click"
+                                                    IsEnabled="{Binding CanSaveLinklyCloudCredentialFromView}"
                                                     Style="{StaticResource PosSecondaryButtonStyle}"
                                                     Height="42"
                                                     MinWidth="168"
@@ -1095,7 +1100,8 @@
                                                          Text="{Binding LinklyPairCodeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                          Style="{StaticResource SettingsFieldTextBoxStyle}" />
                                                 <Button Grid.Column="2"
-                                                        Command="{Binding PairLinklyCloudCommand}"
+                                                        Click="PairLinklyCloud_Click"
+                                                        IsEnabled="{Binding CanPairLinklyCloudFromView}"
                                                         Style="{StaticResource PosPrimaryButtonStyle}"
                                                         Height="42"
                                                         MinWidth="138">
@@ -1122,6 +1128,8 @@
 
                                             <StackPanel>
                                                 <Button Command="{Binding CancelLinklyCloudPairingCommand}"
+                                                        Click="CancelLinklyCloudPairing_Click"
+                                                        IsEnabled="{Binding CanCancelLinklyCloudPairingFromView}"
                                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                                         Height="42"
                                                         HorizontalAlignment="Stretch"

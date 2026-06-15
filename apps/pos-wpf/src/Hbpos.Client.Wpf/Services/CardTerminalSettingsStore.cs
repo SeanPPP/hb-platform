@@ -1,3 +1,5 @@
+using System.Net.Http;
+
 namespace Hbpos.Client.Wpf.Services;
 
 public sealed class CardTerminalSettingsStore(
@@ -155,8 +157,12 @@ public sealed class CardTerminalSettingsStore(
                     return remoteToken.AccessToken.Trim();
                 }
             }
-            catch
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
             {
+                ConsoleLog.WriteError(
+                    "CardTerminalSettings",
+                    $"square token refresh failed environment={environment} forceRefresh={forceRefresh} error={ex.GetType().Name} message={ex.Message}",
+                    exception: ex);
                 if (forceRefresh)
                 {
                     return null;

@@ -135,7 +135,9 @@ internal static class DailyClosePeriodFactory
     }
 }
 
-public sealed class DailyCloseService(ILocalDailyCloseRepository repository) : IDailyCloseService
+public sealed class DailyCloseService(
+    ILocalDailyCloseRepository repository,
+    ILocalSqliteCheckpointService? checkpointService = null) : IDailyCloseService
 {
     public static IReadOnlyList<CashDenomination> AustralianDenominations { get; } =
     [
@@ -169,7 +171,9 @@ public sealed class DailyCloseService(ILocalDailyCloseRepository repository) : I
         CancellationToken cancellationToken = default)
     {
         var report = await repository.LoadReportAsync(session, businessDate.Date, cancellationToken);
-        return await repository.SaveAsync(report, NormalizeCounts(cashCounts), cancellationToken);
+        var archive = await repository.SaveAsync(report, NormalizeCounts(cashCounts), cancellationToken);
+        await TryCheckpointWalAfterDailyCloseAsync(cancellationToken);
+        return archive;
     }
 
     public Task<IReadOnlyList<DailyCloseArchive>> GetArchivesAsync(
@@ -178,6 +182,27 @@ public sealed class DailyCloseService(ILocalDailyCloseRepository repository) : I
         CancellationToken cancellationToken = default)
     {
         return repository.GetArchivesAsync(session, businessDate.Date, cancellationToken);
+    }
+
+    private async Task TryCheckpointWalAfterDailyCloseAsync(CancellationToken cancellationToken)
+    {
+        if (checkpointService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // 日结完成后是低频维护点，checkpoint 失败不能回滚已经保存的日结记录。
+            await checkpointService.CheckpointWalAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.WriteError(
+                "SQLite",
+                $"daily close wal checkpoint failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
     }
 
     private static IReadOnlyList<CashDenominationCount> NormalizeCounts(IReadOnlyList<CashDenominationCount> cashCounts)
