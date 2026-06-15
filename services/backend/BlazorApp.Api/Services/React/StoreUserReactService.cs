@@ -99,6 +99,7 @@ namespace BlazorApp.Api.Services.React
                         StoreName = s.StoreName,
                         RoleName = r.RoleName,
                         LastLoginTime = u.LastLoginAt,
+                        LastLoginIp = u.LastLoginIp,
                         u.CreatedAt,
                         u.UpdatedAt,
                         Birthday = profile.Birthday,
@@ -131,6 +132,7 @@ namespace BlazorApp.Api.Services.React
                             Gender = FormatGender(first.Gender),
                             EmploymentType = FormatEmploymentType(first.EmployeeType),
                             LastLoginTime = first.LastLoginTime,
+                            LastLoginIp = first.LastLoginIp,
                             CreatedAt = first.CreatedAt,
                             UpdatedAt = first.UpdatedAt,
                         };
@@ -530,6 +532,7 @@ namespace BlazorApp.Api.Services.React
                     StoreName = s.StoreName,
                     RoleName = r.RoleName,
                     LastLoginTime = u.LastLoginAt,
+                    LastLoginIp = u.LastLoginIp,
                     u.CreatedAt,
                     u.UpdatedAt,
                     Birthday = profile.Birthday,
@@ -567,6 +570,7 @@ namespace BlazorApp.Api.Services.React
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .ToList(),
                         LastLoginTime = first.LastLoginTime,
+                        LastLoginIp = first.LastLoginIp,
                         Birthday = first.Birthday,
                         Gender = FormatGender(first.Gender),
                         EmploymentType = FormatEmploymentType(first.EmployeeType),

@@ -47,6 +47,7 @@
     "emailValue": "Email: {{value}}",
     "phoneValue": "Phone: {{value}}",
     "lastLoginValue": "Last login: {{value}}",
+    "lastLoginIpValue": "Login IP: {{value}}",
     "updatedAtValue": "Updated: {{value}}"
   },
   "filters": {

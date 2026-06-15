@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
@@ -99,6 +100,42 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task EnsureLoginSessionSchema_WhenUserTableMissingLastLoginIp_AddsColumnBeforeLoginQuery()
+        {
+            CreateLegacyUserSchemaWithoutLastLoginIp();
+            CreateLegacyRefreshTokenSchema();
+
+            var dbContext = CreateSqlSugarContext(_db);
+            dbContext.EnsureLoginSessionSchema();
+            await SeedLegacyUserAsync();
+
+            var columns = _db.DbMaintenance.GetColumnInfosByTableName("User", false);
+            Assert.Contains(columns, column =>
+                string.Equals(column.DbColumnName, "LastLoginIp", StringComparison.OrdinalIgnoreCase)
+            );
+
+            var indexes = _db.Ado.GetDataTable("PRAGMA index_list([RefreshToken])");
+            Assert.Contains(indexes.Rows.Cast<System.Data.DataRow>(), row =>
+                string.Equals(row["name"]?.ToString(), "IX_RefreshToken_UserGUID_IpAddress", StringComparison.OrdinalIgnoreCase)
+            );
+
+            var service = new AuthService(
+                dbContext,
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            var result = await service.LoginAsync(new LoginRequest
+            {
+                Username = "admin",
+                Password = "Secret123",
+                PasswordFormat = PasswordHasher.PasswordFormatRaw,
+            });
+
+            Assert.True(result.Success);
+        }
+
+        [Fact]
         public async Task RefreshTokensAsync_WhenUserIsInactive_ReturnsNullAndRevokesRefreshToken()
         {
             await CreateCurrentAuthSchemaAsync();
@@ -154,6 +191,112 @@ namespace BlazorApp.Api.Tests
                 .FirstAsync(token => token.Token == refreshToken);
             Assert.NotNull(storedToken);
             Assert.True(storedToken!.IsRevoked);
+        }
+
+        [Fact]
+        public async Task GenerateTokensAsync_WhenExistingSessionUsesDifferentIp_RevokesOldSession()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("session-user");
+
+            await _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = "old-session",
+                UserGUID = user.UserGUID,
+                Token = "old-refresh",
+                ExpiresAt = DateTime.UtcNow.AddDays(1),
+                IsRevoked = false,
+                IpAddress = "1.1.1.1",
+                UserAgent = "old-agent",
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            var result = await service.GenerateTokensAsync(user, "2.2.2.2", "new-agent");
+
+            var oldSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == "old-refresh");
+            var newSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == result.RefreshToken);
+            var claims = new JwtSecurityTokenHandler().ReadJwtToken(result.AccessToken).Claims.ToList();
+
+            Assert.True(oldSession!.IsRevoked);
+            Assert.False(newSession!.IsRevoked);
+            Assert.Equal("2.2.2.2", newSession.IpAddress);
+            Assert.Contains(claims, claim =>
+                claim.Type == "sessionId" && claim.Value == newSession.RefreshTokenGUID
+            );
+        }
+
+        [Fact]
+        public async Task GenerateTokensAsync_WhenExistingSessionUsesSameIp_KeepsOldSession()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("same-ip-user");
+
+            await _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = "same-ip-session",
+                UserGUID = user.UserGUID,
+                Token = "same-ip-refresh",
+                ExpiresAt = DateTime.UtcNow.AddDays(1),
+                IsRevoked = false,
+                IpAddress = "3.3.3.3",
+                UserAgent = "old-agent",
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            await service.GenerateTokensAsync(user, "3.3.3.3", "new-agent");
+
+            var oldSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == "same-ip-refresh");
+
+            Assert.False(oldSession!.IsRevoked);
+        }
+
+        [Fact]
+        public async Task AuthSessionValidator_WhenSessionRevoked_ReturnsFalseForAccessTokenSession()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("revoked-session-user");
+            var dbContext = CreateSqlSugarContext(_db);
+            var service = new AuthService(
+                dbContext,
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            var result = await service.GenerateTokensAsync(user, "4.4.4.4", "agent");
+            var principal = CreatePrincipalFromAccessToken(result.AccessToken);
+            var validator = new AuthSessionValidator(dbContext);
+
+            Assert.True(await validator.IsAccessSessionActiveAsync(user.UserGUID, principal));
+
+            var session = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == result.RefreshToken);
+            Assert.NotNull(session);
+            session!.IsRevoked = true;
+            session.UpdatedAt = DateTime.UtcNow;
+            await _db.Updateable(session)
+                .UpdateColumns(token => new { token.IsRevoked, token.UpdatedAt })
+                .ExecuteCommandAsync();
+
+            Assert.False(await validator.IsAccessSessionActiveAsync(user.UserGUID, principal));
         }
 
         [Fact]
@@ -253,6 +396,7 @@ namespace BlazorApp.Api.Tests
                     PasswordHash TEXT NOT NULL,
                     FullName TEXT NULL,
                     LastLoginAt TEXT NULL,
+                    LastLoginIp TEXT NULL,
                     IsActive INTEGER NOT NULL,
                     CreatedAt TEXT NOT NULL,
                     CreatedBy TEXT NULL,
@@ -289,17 +433,78 @@ namespace BlazorApp.Api.Tests
             );
         }
 
+        private void CreateLegacyUserSchemaWithoutLastLoginIp()
+        {
+            _db.Ado.ExecuteCommand(
+                """
+                CREATE TABLE [User] (
+                    UserGUID TEXT NOT NULL PRIMARY KEY,
+                    Username TEXT NOT NULL,
+                    Email TEXT NOT NULL,
+                    PasswordHash TEXT NOT NULL,
+                    FullName TEXT NULL,
+                    LastLoginAt TEXT NULL,
+                    IsActive INTEGER NOT NULL,
+                    CreatedAt TEXT NOT NULL,
+                    CreatedBy TEXT NULL,
+                    UpdatedAt TEXT NULL,
+                    UpdatedBy TEXT NULL,
+                    IsDeleted INTEGER NOT NULL
+                );
+
+                CREATE TABLE [Role] (
+                    RoleGUID TEXT NOT NULL PRIMARY KEY,
+                    RoleName TEXT NOT NULL,
+                    Description TEXT NULL,
+                    IsActive INTEGER NOT NULL,
+                    CreatedAt TEXT NOT NULL,
+                    CreatedBy TEXT NULL,
+                    UpdatedAt TEXT NULL,
+                    UpdatedBy TEXT NULL,
+                    IsDeleted INTEGER NOT NULL
+                );
+
+                CREATE TABLE [UserRole] (
+                    UserRoleGUID TEXT NOT NULL PRIMARY KEY,
+                    UserGUID TEXT NOT NULL,
+                    RoleGUID TEXT NOT NULL,
+                    AssignedAt TEXT NOT NULL,
+                    AssignedByGUID TEXT NULL,
+                    CreatedAt TEXT NOT NULL,
+                    CreatedBy TEXT NULL,
+                    UpdatedAt TEXT NULL,
+                    UpdatedBy TEXT NULL,
+                    IsDeleted INTEGER NOT NULL
+                );
+                """
+            );
+        }
+
+        private void CreateLegacyRefreshTokenSchema()
+        {
+            _db.Ado.ExecuteCommand(
+                """
+                CREATE TABLE [RefreshToken] (
+                    RefreshTokenGUID TEXT NOT NULL PRIMARY KEY,
+                    UserGUID TEXT NOT NULL,
+                    Token TEXT NOT NULL,
+                    IpAddress TEXT NULL
+                );
+                """
+            );
+        }
+
         private async Task<string> SeedLegacyUserAsync()
         {
             var legacyHash = PasswordHasher.HashLegacyPassword(PasswordHasher.ComputeSha256("Secret123"));
             await _db.Ado.ExecuteCommandAsync(
                 """
                 INSERT INTO [User] (
-                    UserGUID, Username, Email, PasswordHash, FullName, LastLoginAt, IsActive,
+                    UserGUID, Username, Email, PasswordHash, FullName, LastLoginAt, LastLoginIp, IsActive,
                     CreatedAt, CreatedBy, UpdatedAt, UpdatedBy, IsDeleted
                 )
                 VALUES (
-                    @UserGUID, @Username, @Email, @PasswordHash, @FullName, NULL, 1,
+                    @UserGUID, @Username, @Email, @PasswordHash, @FullName, NULL, NULL, 1,
                     @CreatedAt, NULL, @UpdatedAt, NULL, 0
                 );
                 """,
@@ -318,11 +523,36 @@ namespace BlazorApp.Api.Tests
             return legacyHash;
         }
 
+        private async Task<User> SeedCurrentUserAsync(string username)
+        {
+            var user = new User
+            {
+                UserGUID = Guid.NewGuid().ToString(),
+                Username = username,
+                Email = $"{username}@example.com",
+                PasswordHash = PasswordHasher.HashPassword("Secret123"),
+                FullName = username,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            };
+
+            await _db.Insertable(user).ExecuteCommandAsync();
+            return user;
+        }
+
         private Task CreateCurrentAuthSchemaAsync()
         {
             _db.CodeFirst.InitTables<User, Role, UserRole, RefreshToken, SysRolePermission>();
             _db.CodeFirst.InitTables<SysUserPermission>();
             return Task.CompletedTask;
+        }
+
+        private static ClaimsPrincipal CreatePrincipalFromAccessToken(string accessToken)
+        {
+            var claims = new JwtSecurityTokenHandler().ReadJwtToken(accessToken).Claims;
+            return new ClaimsPrincipal(new ClaimsIdentity(claims, "jwt"));
         }
 
         private static IConfiguration CreateJwtConfiguration()

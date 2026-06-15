@@ -9,8 +9,10 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -42,6 +44,7 @@ namespace BlazorApp.Api.Tests
             });
 
             _db.CodeFirst.InitTables<User, Store, UserStore, Role, UserRole>();
+            _db.CodeFirst.InitTables<RefreshToken>();
         }
 
         [Fact]
@@ -50,6 +53,94 @@ namespace BlazorApp.Api.Tests
             var constructors = typeof(UsersController).GetConstructors();
 
             Assert.Single(constructors);
+        }
+
+        [Fact]
+        public void UsersController_GetUserLoginRecords_UsesUsersViewPermission()
+        {
+            var method = typeof(UsersController).GetMethod(nameof(UsersController.GetUserLoginRecords));
+
+            var authorize = method?.GetCustomAttribute<AuthorizeAttribute>();
+
+            Assert.NotNull(authorize);
+            Assert.Equal(Permissions.Users.View, authorize!.Policy);
+        }
+
+        [Fact]
+        public async Task GetUserLoginRecordsAsync_ReturnsSelectedUserRecordsInCreatedAtDescendingOrder()
+        {
+            await SeedLoginRecordUsersAsync();
+            await SeedRefreshTokenAsync(
+                "session-old",
+                "login-user",
+                DateTime.UtcNow.AddHours(-3),
+                "203.0.113.1"
+            );
+            await SeedRefreshTokenAsync(
+                "session-new",
+                "login-user",
+                DateTime.UtcNow.AddHours(-1),
+                "203.0.113.2"
+            );
+            await SeedRefreshTokenAsync(
+                "session-other-user",
+                "other-user",
+                DateTime.UtcNow,
+                "198.51.100.9"
+            );
+            var service = CreateUserService();
+
+            var result = await service.GetUserLoginRecordsAsync(
+                "login-user",
+                new UserLoginRecordQueryDto { Page = 1, PageSize = 1 }
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Data!.Total);
+            var item = Assert.Single(result.Data.Items!);
+            Assert.Equal("session-new", item.SessionId);
+            Assert.Equal("203.0.113.2", item.IpAddress);
+        }
+
+        [Fact]
+        public async Task GetUserLoginRecordsAsync_ComputesActiveRevokedAndExpiredStatuses()
+        {
+            await SeedLoginRecordUsersAsync();
+            await SeedRefreshTokenAsync(
+                "session-active",
+                "login-user",
+                DateTime.UtcNow.AddMinutes(-3),
+                "203.0.113.1"
+            );
+            await SeedRefreshTokenAsync(
+                "session-revoked",
+                "login-user",
+                DateTime.UtcNow.AddMinutes(-2),
+                "203.0.113.2",
+                isRevoked: true
+            );
+            await SeedRefreshTokenAsync(
+                "session-expired",
+                "login-user",
+                DateTime.UtcNow.AddMinutes(-1),
+                "203.0.113.3",
+                expiresAt: DateTime.UtcNow.AddMinutes(-1)
+            );
+            var service = CreateUserService();
+
+            var result = await service.GetUserLoginRecordsAsync(
+                "login-user",
+                new UserLoginRecordQueryDto { Page = 1, PageSize = 10 }
+            );
+
+            Assert.True(result.Success);
+            var items = result.Data!.Items!.ToDictionary(item => item.SessionId);
+            Assert.Equal("active", items["session-active"].Status);
+            Assert.Equal("revoked", items["session-revoked"].Status);
+            Assert.Equal("expired", items["session-expired"].Status);
+            Assert.False(items["session-active"].IsExpired);
+            Assert.True(items["session-revoked"].IsRevoked);
+            Assert.True(items["session-expired"].IsExpired);
         }
 
         [Fact]
@@ -1046,6 +1137,55 @@ namespace BlazorApp.Api.Tests
                 AssignedAt = DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedLoginRecordUsersAsync()
+        {
+            await _db.Insertable(new[]
+            {
+                new User
+                {
+                    UserGUID = "login-user",
+                    Username = "login-user",
+                    Email = "login-user@example.com",
+                    PasswordHash = "hashed",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new User
+                {
+                    UserGUID = "other-user",
+                    Username = "other-user",
+                    Email = "other-user@example.com",
+                    PasswordHash = "hashed",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+        }
+
+        private Task SeedRefreshTokenAsync(
+            string sessionId,
+            string userGuid,
+            DateTime createdAt,
+            string ipAddress,
+            bool isRevoked = false,
+            DateTime? expiresAt = null
+        )
+        {
+            return _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = sessionId,
+                UserGUID = userGuid,
+                Token = $"{sessionId}-token",
+                IpAddress = ipAddress,
+                UserAgent = $"{sessionId}-agent",
+                ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(1),
+                IsRevoked = isRevoked,
+                IsDeleted = false,
+                CreatedAt = createdAt,
+                UpdatedAt = createdAt,
             }).ExecuteCommandAsync();
         }
 

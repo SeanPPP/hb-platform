@@ -1,4 +1,5 @@
 import type { ApiResponse, PagedResult } from '../types/api'
+import { getClientPublicIpHeaders } from './clientPublicIp'
 import { isCenterLogIngestRequest, reportRequestError } from './centerLogClient'
 
 export interface RequestOptions {
@@ -82,7 +83,10 @@ async function tryRefreshToken(): Promise<boolean> {
       const response = await fetch(refreshUrl, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getClientPublicIpHeaders()),
+        },
         body: JSON.stringify({}),
       })
 

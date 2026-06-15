@@ -323,20 +323,22 @@ namespace BlazorApp.Api.Services
 
             var permissions = await GetEffectivePermissionCodesAsync(user);
 
-            var accessToken = GenerateAccessToken(user, jwtSettings!, permissions);
-
             // 🔄 生成刷新令牌（长令牌，7天有效）
             // 刷新令牌用于获取新的访问令牌，有效期长以改善用户体验
             var refreshToken = GenerateRefreshToken();
+            var refreshTokenGuid = Guid.NewGuid().ToString();
+            var now = DateTime.UtcNow;
+
+            await RevokeOtherPublicIpSessionsAsync(user.UserGUID, ipAddress, now);
 
             // 💾 保存刷新令牌到数据库
             // 存储刷新令牌便于撤销和审计
             var refreshTokenEntity = new RefreshToken
             {
-                RefreshTokenGUID = Guid.NewGuid().ToString(), // 刷新令牌唯一标识
+                RefreshTokenGUID = refreshTokenGuid, // 刷新令牌唯一标识，也是 access token 的 sessionId
                 UserGUID = user.UserGUID, // 关联用户
                 Token = refreshToken, // 刷新令牌值
-                ExpiresAt = DateTime.UtcNow.AddDays(7), // 过期时间（7天）
+                ExpiresAt = now.AddDays(7), // 过期时间（7天）
                 IsRevoked = false, // 是否已撤销
                 IpAddress = ipAddress, // 客户端IP（安全审计）
                 UserAgent = userAgent, // 客户端信息（安全审计）
@@ -345,13 +347,15 @@ namespace BlazorApp.Api.Services
             // 📊 将刷新令牌实体保存到数据库
             await _dbContext.Db.Insertable(refreshTokenEntity).ExecuteCommandAsync();
 
+            var accessToken = GenerateAccessToken(user, jwtSettings!, permissions, refreshTokenGuid);
+
             // 📤 返回令牌响应对象
             return new TokenResponse
             {
                 AccessToken = accessToken, // 访问令牌
                 RefreshToken = refreshToken, // 刷新令牌
-                AccessTokenExpiry = DateTime.UtcNow.AddMinutes(30), // 访问令牌过期时间
-                RefreshTokenExpiry = DateTime.UtcNow.AddDays(7), // 刷新令牌过期时间
+                AccessTokenExpiry = now.AddMinutes(30), // 访问令牌过期时间
+                RefreshTokenExpiry = now.AddDays(7), // 刷新令牌过期时间
                 Success = true, // 操作成功标志
             };
         }
@@ -591,8 +595,15 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="user">用户对象</param>
         /// <param name="jwtSettings">JWT配置设置</param>
+        /// <param name="permissions">用户权限代码列表</param>
+        /// <param name="sessionId">刷新令牌会话 ID，用于 JWT 中绑定当前会话</param>
         /// <returns>JWT访问令牌字符串</returns>
-        private string GenerateAccessToken(User user, Models.JwtSettings jwtSettings, List<string>? permissions = null)
+        private string GenerateAccessToken(
+            User user,
+            Models.JwtSettings jwtSettings,
+            List<string>? permissions = null,
+            string? sessionId = null
+        )
         {
             // 🔑 创建对称安全密钥
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.Key));
@@ -610,6 +621,12 @@ namespace BlazorApp.Api.Services
                 new Claim("userId", user.UserGUID.ToString()), // 用户GUID：统一标识符
                 new Claim("fullName", user.FullName ?? user.Username), // 用户全名：用于显示
             };
+
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                // sessionId 绑定 RefreshToken 记录，使被挤下线的 access token 下一次请求立即失效。
+                claims.Add(new Claim("sessionId", sessionId));
+            }
 
             // 👥 添加用户角色声明（与GenerateJwtToken保持一致）
             if (user.Roles != null && user.Roles.Any())
@@ -673,6 +690,46 @@ namespace BlazorApp.Api.Services
             await _dbContext
                 .Db.Updateable(refreshToken)
                 .UpdateColumns(rt => new { rt.IsRevoked, rt.UpdatedAt })
+                .ExecuteCommandAsync();
+        }
+
+        private async Task RevokeOtherPublicIpSessionsAsync(
+            string userGuid,
+            string ipAddress,
+            DateTime now
+        )
+        {
+            var sessions = await _dbContext.Db.Queryable<RefreshToken>()
+                .Where(token =>
+                    token.UserGUID == userGuid
+                    && !token.IsRevoked
+                    && !token.IsDeleted
+                    && token.ExpiresAt >= now
+                )
+                .ToListAsync();
+
+            var sessionsToRevoke = sessions
+                .Where(token => !string.Equals(
+                    token.IpAddress ?? string.Empty,
+                    ipAddress,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+                .ToList();
+
+            if (sessionsToRevoke.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var session in sessionsToRevoke)
+            {
+                session.IsRevoked = true;
+                session.UpdatedAt = now;
+            }
+
+            // 不同公网 IP 的旧会话被新登录挤下线；同公网 IP 会话保留。
+            await _dbContext.Db.Updateable(sessionsToRevoke)
+                .UpdateColumns(token => new { token.IsRevoked, token.UpdatedAt })
                 .ExecuteCommandAsync();
         }
 

@@ -367,6 +367,7 @@ namespace BlazorApp.Api.Data
                 // 智能初始化：只在需要时创建或更新表
                 InitializeTablesIfNeeded();
                 EnsureEmployeeProfilePhoneColumn();
+                EnsureUserLastLoginIpColumn();
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
@@ -380,6 +381,12 @@ namespace BlazorApp.Api.Data
                 Console.WriteLine($"错误详情: {ex.StackTrace}");
                 throw;
             }
+        }
+
+        public void EnsureLoginSessionSchema()
+        {
+            EnsureUserLastLoginIpColumn();
+            EnsureRefreshTokenUserIpAddressIndex();
         }
 
         public void ForceRecreateAllTables()
@@ -586,6 +593,51 @@ namespace BlazorApp.Api.Data
             {
                 _db.Ado.ExecuteCommand($"ALTER TABLE [{tableName}] ADD COLUMN [Phone] varchar(50) NULL");
                 Console.WriteLine($"✓ {tableName}.Phone 列已补齐");
+            }
+        }
+
+        private void EnsureUserLastLoginIpColumn()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(User));
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return;
+            }
+
+            // 最近登录 IP 是后台安全审计字段，老库启动时需要无损补列。
+            EnsureColumn(tableName, "LastLoginIp", "nvarchar(50)", "varchar(50)", "varchar(50)");
+        }
+
+        private void EnsureRefreshTokenUserIpAddressIndex()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(RefreshToken));
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return;
+            }
+
+            const string indexName = "IX_RefreshToken_UserGUID_IpAddress";
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}')) CREATE INDEX {indexName} ON [{tableName}](UserGUID, IpAddress)"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"UserGUID\", \"IpAddress\")"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] ([UserGUID], [IpAddress])"
+                );
             }
         }
 
@@ -1082,6 +1134,8 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_SysUserPermission_UserGuid\" ON \"HBwebSysUserPermissions\" (\"UserGuid\")",
                 ["IX_RefreshToken_UserGUID"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_RefreshToken_UserGUID\" ON \"RefreshToken\" (\"UserGUID\")",
+                ["IX_RefreshToken_UserGUID_IpAddress"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_RefreshToken_UserGUID_IpAddress\" ON \"RefreshToken\" (\"UserGUID\", \"IpAddress\")",
                 ["IX_RefreshToken_ExpiresAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_RefreshToken_ExpiresAt\" ON \"RefreshToken\" (\"ExpiresAt\")",
                 ["IX_Cart_CartStatus"] =
@@ -1241,6 +1295,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SysUserPermission_UserGuid' AND object_id = OBJECT_ID('HBwebSysUserPermissions')) CREATE INDEX IX_SysUserPermission_UserGuid ON [HBwebSysUserPermissions](UserGuid)",
                 ["IX_RefreshToken_UserGUID"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID ON [RefreshToken](UserGUID)",
+                ["IX_RefreshToken_UserGUID_IpAddress"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID_IpAddress' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID_IpAddress ON [RefreshToken](UserGUID, IpAddress)",
                 ["IX_RefreshToken_ExpiresAt"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_ExpiresAt' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_ExpiresAt ON [RefreshToken](ExpiresAt)",
                 ["IX_Cart_CartStatus"] =
@@ -1424,6 +1480,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SysUserPermission_UserGuid' AND object_id = OBJECT_ID('HBwebSysUserPermissions')) CREATE INDEX IX_SysUserPermission_UserGuid ON [HBwebSysUserPermissions](UserGuid)",
                 // RefreshToken表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID ON [RefreshToken](UserGUID)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID_IpAddress' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID_IpAddress ON [RefreshToken](UserGUID, IpAddress)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_ExpiresAt' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_ExpiresAt ON [RefreshToken](ExpiresAt)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_CreatedAt' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_CreatedAt ON [RefreshToken](CreatedAt)",
                 // Cart表的普通索引
