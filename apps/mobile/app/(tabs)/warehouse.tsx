@@ -1626,6 +1626,12 @@ export default function WarehouseScreen() {
                 style={styles.search}
               />
               <IconButton
+                accessibilityLabel={t("common:actions.search")}
+                icon="magnify"
+                mode="contained"
+                onPress={() => void handleLookupProduct()}
+              />
+              <IconButton
                 icon="barcode-scan"
                 mode="contained-tonal"
                 onPress={() => {
@@ -1826,6 +1832,12 @@ export default function WarehouseScreen() {
                 onBlur={resumeHiddenScannerFocusLater}
                 onSubmitEditing={() => void handleLookupLocations()}
                 style={styles.search}
+              />
+              <IconButton
+                accessibilityLabel={t("common:actions.search")}
+                icon="magnify"
+                mode="contained"
+                onPress={() => void handleLookupLocations()}
               />
               {canMaintainLocations ? (
                 <Button mode="contained" icon="plus" onPress={() => void openCreateLocation()}>
@@ -2154,6 +2166,12 @@ export default function WarehouseScreen() {
                 style={styles.search}
               />
               <IconButton
+                accessibilityLabel={t("common:actions.search")}
+                icon="magnify"
+                mode="contained"
+                onPress={() => void handleLookupLocationsForProduct()}
+              />
+              <IconButton
                 icon="barcode-scan"
                 mode="contained-tonal"
                 onPress={() => {
@@ -2307,6 +2325,12 @@ export default function WarehouseScreen() {
                 onBlur={resumeHiddenScannerFocusLater}
                 onSubmitEditing={() => void handleLookupBindProducts()}
                 style={styles.search}
+              />
+              <IconButton
+                accessibilityLabel={t("common:actions.search")}
+                icon="magnify"
+                mode="contained"
+                onPress={() => void handleLookupBindProducts()}
               />
               <IconButton
                 icon="barcode-scan"
