@@ -176,6 +176,59 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Card_tender_result_unknown_keeps_local_attempt_recoverable()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-397U", "Unknown Card Latte", "930397U", 10m));
+        var orders = new RecordingOrderRepository();
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var linklyAttemptContextAccessor = new LinklyPaymentAttemptContextAccessor();
+        var authorization = new PaymentAuthorizationResult(
+            false,
+            Message: "ANZ Linkly Cloud transaction timed out. Result unknown.",
+            Processor: "ANZ",
+            Environment: "Sandbox",
+            ConnectionMode: LinklyConnectionMode.CloudBackendAsync.ToString(),
+            TxnType: "P",
+            SessionId: "backend-session-unknown",
+            TxnRef: "TXN-UNKNOWN",
+            StatusKey: "linkly.backend.resultUnknown",
+            ResultUnknown: true);
+        var terminal = new BindingCardTerminalClient(
+            linklyAttemptContextAccessor,
+            authorization,
+            beforeBind: () => { },
+            afterBind: () => { });
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: linklyAttemptContextAccessor);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cancellationToken: CancellationToken.None,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal("linkly.backend.resultUnknown", tenderResult.StatusKey);
+        var attempt = Assert.Single(attempts.Attempts);
+        Assert.Equal("backend-session-unknown", attempt.SessionId);
+        Assert.Equal("TXN-UNKNOWN", attempt.TxnRef);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, attempt.Status);
+        Assert.Null(attempt.CompletedAt);
+        Assert.Empty(orders.SavedOrders);
+    }
+
+    [Fact]
     public async Task Card_tender_authorized_amount_mismatch_marks_local_attempt_requires_review()
     {
         var cart = new PosCartService();

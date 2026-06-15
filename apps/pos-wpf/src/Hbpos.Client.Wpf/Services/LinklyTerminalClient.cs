@@ -130,7 +130,7 @@ public sealed class LinklyTerminalClient(
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
-        using var timeoutCts = CreateTimeoutToken(timeout, cancellationToken);
+        using var timeoutCts = CreateConfiguredTimeoutToken(timeout, cancellationToken);
         using var client = clientFactory.Create();
         try
         {
@@ -256,7 +256,7 @@ public sealed class LinklyTerminalClient(
             return new PaymentAuthorizationResult(false, null, T("linkly.local.cancelled", CancelledMessage));
         }
 
-        using var timeoutCts = CreateTimeoutToken(settings.TerminalTimeout, cancellationToken);
+        using var timeoutCts = CreateBusinessWaitTimeoutToken(cancellationToken);
         var txnRef = NormalizeReference(originalReference) ?? BuildTxnRef(session);
         var request = CreateTransactionRequest(transactionType, amount, txnRef);
         var receipts = new List<string>();
@@ -436,7 +436,7 @@ public sealed class LinklyTerminalClient(
     {
         var receipts = new List<string>(capturedReceipts);
         var fallbackMessage = T("linkly.local.cancelOutcomeUnknown", "ANZ Linkly cancellation outcome could not be confirmed.");
-        using var cancelCts = CreateTimeoutToken(settings.TerminalTimeout, CancellationToken.None);
+        using var cancelCts = CreateConfiguredTimeoutToken(settings.TerminalTimeout, CancellationToken.None);
         var cancelRequest = CreateCancelRequest();
 
         try
@@ -529,7 +529,7 @@ public sealed class LinklyTerminalClient(
             return new PaymentAuthorizationResult(false, null, T("linkly.local.cancelled", CancelledMessage));
         }
 
-        using var timeoutCts = CreateTimeoutToken(settings.TerminalTimeout, cancellationToken);
+        using var timeoutCts = CreateConfiguredTimeoutToken(settings.TerminalTimeout, cancellationToken);
         using var client = clientFactory.Create();
         var receipts = new List<string>(capturedReceipts);
         var connectRequest = CreateConnectRequest(settings.LinklyHost, settings.LinklyPort);
@@ -846,12 +846,19 @@ public sealed class LinklyTerminalClient(
         receipts.Add(string.Join(Environment.NewLine, receiptText));
     }
 
-    private static CancellationTokenSource CreateTimeoutToken(
+    private static CancellationTokenSource CreateBusinessWaitTimeoutToken(CancellationToken cancellationToken)
+    {
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(LinklyTimeoutPolicy.BusinessWait);
+        return timeoutCts;
+    }
+
+    private static CancellationTokenSource CreateConfiguredTimeoutToken(
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout <= TimeSpan.Zero ? TimeSpan.FromSeconds(180) : timeout);
+        timeoutCts.CancelAfter(timeout <= TimeSpan.Zero ? LinklyTimeoutPolicy.BusinessWait : timeout);
         return timeoutCts;
     }
 

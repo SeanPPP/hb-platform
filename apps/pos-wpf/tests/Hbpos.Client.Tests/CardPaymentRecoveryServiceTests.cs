@@ -328,6 +328,77 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_pending_resumable_resume_result_unknown_preserves_detail_message()
+    {
+        var attempt = CreateAttempt(sessionId: null, txnRef: "TXN-PENDING");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            ResumableStatus = CreateStatus("Pending", sessionId: "SESSION-PENDING", txnRef: "TXN-PENDING", responseCode: null, responseText: "PRESENT CARD"),
+            ResumeException = new LinklyBackendResultUnknownException("Resume timed out for session SESSION-PENDING / txn TXN-PENDING.")
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Contains("SESSION-PENDING", result.Message);
+        Assert.Contains("TXN-PENDING", result.Message);
+        Assert.Equal("SESSION-PENDING", result.DialogDetails?.SessionId);
+        Assert.Equal("TXN-PENDING", result.DialogDetails?.TxnRef);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(1, backend.ResumeCallCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverActiveSessionAsync_resume_result_unknown_preserves_detail_message()
+    {
+        var attempts = new FakeCardPaymentAttemptRepository(null);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            ResumableStatus = CreateStatus("Pending", sessionId: "ACTIVE-SESSION", txnRef: "TXN-ACTIVE", responseCode: null, responseText: "PRESENT CARD"),
+            ResumeException = new LinklyBackendResultUnknownException("Recovery timed out for session ACTIVE-SESSION / txn TXN-ACTIVE.")
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverActiveSessionAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Contains("ACTIVE-SESSION", result.Message);
+        Assert.Contains("TXN-ACTIVE", result.Message);
+        Assert.Equal("ACTIVE-SESSION", result.DialogDetails?.SessionId);
+        Assert.Equal("TXN-ACTIVE", result.DialogDetails?.TxnRef);
+        Assert.Equal(1, backend.ResumeCallCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverActiveSessionAsync_resume_local_cancel_returns_unknown_with_local_stop_message()
+    {
+        var attempts = new FakeCardPaymentAttemptRepository(null);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            ResumableStatus = CreateStatus("Pending", sessionId: "ACTIVE-SESSION", txnRef: "TXN-ACTIVE", responseCode: null, responseText: "PRESENT CARD"),
+            ResumeException = new LinklyBackendLocalCancelException()
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverActiveSessionAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Contains("stopped waiting", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("cannot be confirmed", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("ACTIVE-SESSION", result.DialogDetails?.SessionId);
+        Assert.Equal("TXN-ACTIVE", result.DialogDetails?.TxnRef);
+        Assert.Equal(1, backend.ResumeCallCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_approved_with_non_empty_current_cart_defers_without_saving_or_acknowledging()
     {
         var attempt = CreateAttempt(sessionId: "SESSION-001", txnRef: "TXN-001");
@@ -873,6 +944,8 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public string? ResumedSessionId { get; private set; }
 
+        public Exception? ResumeException { get; set; }
+
         public Exception? AcknowledgeException { get; set; }
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(CardTerminalEnvironment environment, CancellationToken cancellationToken = default)
@@ -909,6 +982,11 @@ public sealed class CardPaymentRecoveryServiceTests
         {
             ResumeCallCount++;
             ResumedSessionId = activeStatus.SessionId;
+            if (ResumeException is not null)
+            {
+                throw ResumeException;
+            }
+
             return Task.FromResult(Status ?? ResumableStatus ?? activeStatus);
         }
 

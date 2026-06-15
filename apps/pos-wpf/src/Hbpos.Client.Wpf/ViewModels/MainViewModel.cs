@@ -67,6 +67,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ILinklyTerminalDialogPresenter? _linklyTerminalDialogPresenter;
     private readonly ICardPaymentRecoveryService? _cardPaymentRecoveryService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+    private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
@@ -305,7 +306,8 @@ public sealed partial class MainViewModel : ObservableObject
         ITestSalesDataResetService? testSalesDataResetService = null,
         ILinklyTerminalDialogPresenter? linklyTerminalDialogPresenter = null,
         ICardPaymentRecoveryService? cardPaymentRecoveryService = null,
-        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null)
+        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
@@ -354,6 +356,7 @@ public sealed partial class MainViewModel : ObservableObject
         _linklyTerminalDialogPresenter = linklyTerminalDialogPresenter;
         _cardPaymentRecoveryService = cardPaymentRecoveryService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
+        _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
 
         PaymentSuccess = new PaymentSuccessViewModel(
@@ -1104,7 +1107,8 @@ public sealed partial class MainViewModel : ObservableObject
                 _localization,
                 ShowPos,
                 ShowInstallmentCenter,
-                RecoverActiveCardPaymentSessionFromPaymentAsync);
+                RecoverActiveCardPaymentSessionFromPaymentAsync,
+                _linklyFallbackPromptCoordinator);
             CashPayment.PaymentCompleted += OnPaymentCompleted;
             CashPayment.PropertyChanged += OnCashPaymentPropertyChanged;
         }
@@ -1674,11 +1678,11 @@ public sealed partial class MainViewModel : ObservableObject
         return false;
     }
 
-    private async Task RecoverActiveCardPaymentSessionFromPaymentAsync()
+    private async Task<bool> RecoverActiveCardPaymentSessionFromPaymentAsync()
     {
         if (_cardPaymentRecoveryService is null)
         {
-            return;
+            return false;
         }
 
         var result = await _cardPaymentRecoveryService.RecoverActiveSessionAsync(_cart, Session, CancellationToken.None);
@@ -1694,20 +1698,24 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (result.Outcome == CardPaymentRecoveryOutcome.None)
         {
-            return;
+            return true;
         }
 
         if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
         {
             // 付款页主动恢复的是旧 active session，不能把恢复结果自动混入当前购物车。
             ShowRecoveredCardDraftDialog(result);
-            return;
+            return true;
         }
 
         if (result.Outcome is CardPaymentRecoveryOutcome.Unknown or CardPaymentRecoveryOutcome.Checking)
         {
             ShowRecoveredCardFailureDialog(result);
+            return false;
         }
+
+        // 其它已确认结果表示上一笔不再处于未知状态，付款页可以解除本地阻塞。
+        return true;
     }
 
     private async Task<ReceiptPrintResult> PrintRecoveredCardReceiptAsync(LocalOrder order)

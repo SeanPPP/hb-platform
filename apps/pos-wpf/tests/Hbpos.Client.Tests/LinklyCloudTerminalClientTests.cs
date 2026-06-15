@@ -368,6 +368,28 @@ public sealed class LinklyCloudTerminalClientTests
         Assert.True(result.Approved);
     }
 
+    [Fact]
+    public async Task PurchaseAsync_does_not_use_short_configured_timeout_before_linkly_business_wait()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            PendingTransactionCompletion = new TaskCompletionSource<LinklyCloudTransactionResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+            ObservePendingTransactionCancellation = true
+        };
+        var client = new LinklyCloudTerminalClient(apiClient, new FakeLinklyCloudSecretStore());
+        var settings = CreateSettings() with { TerminalTimeout = TimeSpan.FromMilliseconds(30) };
+
+        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), settings);
+        await Task.Delay(120);
+
+        Assert.False(purchaseTask.IsCompleted);
+
+        apiClient.PendingTransactionCompletion.SetResult(Approved(apiClient.LastTransactionSessionId!, "TXN-5"));
+        var result = await purchaseTask;
+        Assert.True(result.Approved);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState(
@@ -507,6 +529,8 @@ public sealed class LinklyCloudTerminalClientTests
 
         public TaskCompletionSource<LinklyCloudTransactionResult>? PendingTransactionCompletion { get; init; }
 
+        public bool ObservePendingTransactionCancellation { get; init; }
+
         public int GetTransactionCallCount { get; private set; }
 
         public int SendKeyCallCount { get; private set; }
@@ -577,7 +601,9 @@ public sealed class LinklyCloudTerminalClientTests
             LastTransactionSessionId = sessionId;
             if (PendingTransactionCompletion is not null)
             {
-                return PendingTransactionCompletion.Task;
+                return ObservePendingTransactionCancellation
+                    ? PendingTransactionCompletion.Task.WaitAsync(cancellationToken)
+                    : PendingTransactionCompletion.Task;
             }
 
             return Task.FromResult(TransactionResultSequence.Count > 0
@@ -631,6 +657,8 @@ public sealed class LinklyCloudTerminalClientTests
         public List<LinklyTerminalDialogState> States { get; } = [];
 
         public int CloseCallCount { get; private set; }
+
+        public CancellationToken LocalCancelToken => CancellationToken.None;
 
         public bool ThrowIfFinalStateUsesCancelableToken { get; init; }
 

@@ -139,13 +139,13 @@ public static class ServiceRegistration
         services.AddSingleton<LinklyTerminalClient>();
         services.AddHttpClient<ILinklyCloudApiClient, LinklyCloudApiClient>(client =>
         {
-            client.Timeout = TimeSpan.FromSeconds(120);
+            client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         });
         services.AddSingleton<ILinklyCloudTerminalClient, LinklyCloudTerminalClient>();
         services.AddHttpClient<ILinklyBackendTerminalClient, LinklyBackendTerminalClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
-            client.Timeout = TimeSpan.FromSeconds(120);
+            client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient(LinklyBackendReceiptPrintedNotifier.HttpClientName, client =>
@@ -155,6 +155,9 @@ public static class ServiceRegistration
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ICardReceiptPrintedNotifier, LinklyBackendReceiptPrintedNotifier>();
+        services.AddSingleton<LinklyFallbackPromptCoordinator>();
+        services.AddSingleton<ILinklyFallbackPromptCoordinator>(sp => sp.GetRequiredService<LinklyFallbackPromptCoordinator>());
+        services.AddSingleton<ILinklyFallbackPromptService>(sp => sp.GetRequiredService<LinklyFallbackPromptCoordinator>());
         services.AddSingleton<ILinklyTerminalClient, ConfiguredLinklyTerminalClient>();
         services.AddHttpClient<ISquareTerminalSetupClient, SquareTerminalSetupClient>(client =>
         {
@@ -175,7 +178,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<DeviceAuthorizationState>()));
         services.AddHttpClient<ICardTerminalClient, ConfiguredCardTerminalClient>(client =>
         {
-            client.Timeout = TimeSpan.FromSeconds(120);
+            client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
         });
         services.AddSingleton<IVoucherTenderClient>(sp => sp.GetRequiredService<IVoucherApiClient>());
         services.AddSingleton<IDeviceRegistrationWorkflowService, DeviceRegistrationWorkflowService>();
@@ -251,7 +254,8 @@ public static class ServiceRegistration
             testSalesDataResetService: sp.GetRequiredService<ITestSalesDataResetService>(),
             linklyTerminalDialogPresenter: sp.GetRequiredService<ILinklyTerminalDialogPresenter>(),
             cardPaymentRecoveryService: sp.GetRequiredService<ICardPaymentRecoveryService>(),
-            cardRecoveryResultDialogService: sp.GetRequiredService<ICardRecoveryResultDialogService>()));
+            cardRecoveryResultDialogService: sp.GetRequiredService<ICardRecoveryResultDialogService>(),
+            linklyFallbackPromptCoordinator: sp.GetRequiredService<ILinklyFallbackPromptCoordinator>()));
         services.AddSingleton<MainWindow>();
 
         return services;

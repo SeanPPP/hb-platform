@@ -222,6 +222,10 @@
   <data name="payment.card.error.overlay.activeSession.recover" xml:space="preserve"><value>Recover previous</value></data>
   <data name="payment.card.error.overlay.activeSession.close" xml:space="preserve"><value>Close</value></data>
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve"><value>Recovering previous Linkly transaction...</value></data>
+  <data name="payment.card.error.overlay.fallback.title" xml:space="preserve"><value>Use Backup Card Payment?</value></data>
+  <data name="payment.card.error.overlay.fallback.message" xml:space="preserve"><value>The selected Linkly mode is unavailable and no transaction was submitted. Switch to {0}?</value></data>
+  <data name="payment.card.error.overlay.fallback.use" xml:space="preserve"><value>Use backup mode</value></data>
+  <data name="payment.card.error.overlay.fallback.cancel" xml:space="preserve"><value>Cancel</value></data>
 
   <data name="success.subtitle" xml:space="preserve"><value>The transaction has been processed successfully.</value></data>
   <data name="success.totalPaid" xml:space="preserve"><value>Total Amount Paid</value></data>
@@ -403,8 +407,9 @@
   <data name="payment.status.alreadyFullyPaid" xml:space="preserve"><value>The order is already fully paid.</value></data>
   <data name="payment.status.cashTenderAdded" xml:space="preserve"><value>Cash tender added.</value></data>
   <data name="payment.status.cardTenderAdded" xml:space="preserve"><value>Card tender approved.</value></data>
-  <data name="payment.linklyFallback.succeeded" xml:space="preserve"><value>Card approved after Linkly automatically switched from {0} to {1}. {2}</value></data>
+  <data name="payment.linklyFallback.succeeded" xml:space="preserve"><value>Card approved after the cashier confirmed switching from {0} to {1}. {2}</value></data>
   <data name="payment.linklyFallback.allFailed" xml:space="preserve"><value>All configured Linkly modes failed before a final payment result was received.</value></data>
+  <data name="payment.linklyFallback.cancelled" xml:space="preserve"><value>Backup Linkly payment was cancelled. No additional card payment was started.</value></data>
   <data name="payment.linklyFallback.promotePrimary" xml:space="preserve"><value>Ask a supervisor to change the preferred Linkly mode in Settings if needed.</value></data>
   <data name="payment.status.voucherTenderAdded" xml:space="preserve"><value>Voucher tender added.</value></data>
   <data name="payment.status.tenderRemoved" xml:space="preserve"><value>Tender removed.</value></data>
@@ -603,7 +608,10 @@
   <data name="linkly.backend.refundMissingReference" xml:space="preserve"><value>Linkly Cloud refund requires an original RFN reference.</value></data>
   <data name="linkly.backend.amountMustBePositive" xml:space="preserve"><value>Card amount must be greater than zero.</value></data>
   <data name="linkly.backend.timeout" xml:space="preserve"><value>ANZ Linkly Cloud transaction timed out.</value></data>
+  <data name="linkly.backend.waitCancelled" xml:space="preserve"><value>Waiting for the ANZ Linkly Cloud backend response was cancelled before the transaction result could be confirmed.</value></data>
   <data name="linkly.backend.communicationFailed" xml:space="preserve"><value>ANZ Linkly Cloud backend communication failed.</value></data>
+  <data name="linkly.backend.unavailable" xml:space="preserve"><value>ANZ Linkly Cloud backend API is offline. Cloud backend card payment was not started. Check the network or use another payment method.</value></data>
+  <data name="linkly.backend.cancelledUnknown" xml:space="preserve"><value>Stopped waiting for the ANZ Linkly Cloud backend card result. The transaction may have reached the terminal; recover the previous transaction or confirm the result in Linkly before retrying.</value></data>
   <data name="linkly.backend.invalidResponse" xml:space="preserve"><value>ANZ Linkly Cloud backend returned an invalid response.</value></data>
   <data name="linkly.backend.activeSessionResume" xml:space="preserve"><value>Current terminal has an unfinished card transaction. Continuing to poll/recover that session.</value></data>
   <data name="linkly.backend.activeSessionUnavailable" xml:space="preserve"><value>Current terminal has an unfinished card transaction, but no recoverable active session was returned. Try again later.</value></data>

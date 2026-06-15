@@ -1,5 +1,6 @@
 using Hbpos.Api;
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Linkly;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -65,5 +66,20 @@ public sealed class ServiceRegistrationTests
 
         var descriptor = Assert.Single(services, x => x.ServiceType == typeof(IStoreSchemaInitializer));
         Assert.Equal(typeof(SqlSugarStoreSchemaInitializer), descriptor.ImplementationType);
+    }
+
+    [Fact]
+    public void AddHbposApiServices_configures_linkly_cloud_backend_http_clients_above_business_wait()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+
+        Assert.True(LinklyTimeoutConstants.HttpTimeout > LinklyTimeoutConstants.BusinessWait);
+        Assert.Equal(LinklyTimeoutConstants.HttpTimeout, factory.CreateClient(nameof(ILinklyCloudBackendAsyncTransport)).Timeout);
+        Assert.Equal(LinklyTimeoutConstants.HttpTimeout, factory.CreateClient(nameof(ILinklyCloudBackendTokenProvider)).Timeout);
     }
 }

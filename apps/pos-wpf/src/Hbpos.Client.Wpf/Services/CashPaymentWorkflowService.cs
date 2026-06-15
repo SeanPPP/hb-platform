@@ -791,6 +791,13 @@ public sealed class CashPaymentWorkflowService(
                 cancellationToken);
         }
 
+        if (authorization.ResultUnknown)
+        {
+            // 已提交到终端但结果未知时必须保留为可恢复状态，避免被当作普通超时失败后允许重新刷卡。
+            await cardPaymentAttemptRepository!.MarkRecoveringAsync(attemptGuid, now, cancellationToken);
+            return;
+        }
+
         var firstTransaction = authorization.CardTransactions?.FirstOrDefault();
         var status = statusOverride ?? (authorization.Approved
             ? LocalCardPaymentAttemptStatus.Approved

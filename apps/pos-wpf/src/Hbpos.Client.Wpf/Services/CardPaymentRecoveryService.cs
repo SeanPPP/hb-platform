@@ -142,6 +142,30 @@ public sealed class CardPaymentRecoveryService(
                 attempt = await BindRecoveredSessionAsync(attempt, status, cancellationToken);
             }
         }
+        // 未知结果异常自带 session/txn 明细，不能再被通用失败文案覆盖。
+        catch (LinklyBackendResultUnknownException ex)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover result-unknown attemptGuid={attempt.AttemptGuid} sessionId={LogValue(status?.SessionId ?? attempt.SessionId)} txnRef={LogValue(status?.TxnRef ?? attempt.TxnRef)} error={ex.GetType().Name}");
+            LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "result-unknown", ex.GetType().Name);
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                ex.Message,
+                DialogDetails: BuildDialogDetails(attempt, status));
+        }
+        // 本地停止等待后仍要保留未知结果语义，提醒人工确认 Linkly 后端状态。
+        catch (LinklyBackendLocalCancelException ex)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover local-cancel-result-unknown attemptGuid={attempt.AttemptGuid} sessionId={LogValue(status?.SessionId ?? attempt.SessionId)} txnRef={LogValue(status?.TxnRef ?? attempt.TxnRef)} error={ex.GetType().Name}");
+            LogRecoveryResult(settings, attempt, status, CardPaymentRecoveryOutcome.Unknown, "local-cancel-result-unknown", ex.GetType().Name);
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.localCancelUnknown", "Stopped waiting for the previous card result locally, so the final Linkly backend result is still unknown. Ask a supervisor to confirm Linkly before continuing."),
+                DialogDetails: BuildDialogDetails(attempt, status));
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             ConsoleLog.Write(
@@ -257,6 +281,28 @@ public sealed class CardPaymentRecoveryService(
                     $"recover active-session resume start sessionId={LogValue(status.SessionId)} txnRef={LogValue(status.TxnRef)} status={status.Status}");
                 status = await backendTerminalClient.ResumeSessionUntilFinalAsync(settings, status, cancellationToken);
             }
+        }
+        // 未知结果异常自带 session/txn 明细，不能再被付款页的兜底文案覆盖。
+        catch (LinklyBackendResultUnknownException ex)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover active-session result-unknown sessionId={LogValue(status?.SessionId)} txnRef={LogValue(status?.TxnRef)} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                ex.Message,
+                DialogDetails: BuildDialogDetails(status));
+        }
+        // 本地停止等待后要明确告诉收银员结果未知，而不是落回通用 active-session 失败文案。
+        catch (LinklyBackendLocalCancelException ex)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover active-session local-cancel-result-unknown sessionId={LogValue(status?.SessionId)} txnRef={LogValue(status?.TxnRef)} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.activeSessionLocalCancelUnknown", "Stopped waiting for the previous Linkly session locally, so the final result is still unknown. Ask a supervisor to confirm Linkly before charging again."),
+                DialogDetails: BuildDialogDetails(status));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

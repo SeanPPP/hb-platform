@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -16,7 +17,8 @@ public partial class PaymentViewModel : ObservableObject
     private readonly ILocalizationService? _localization;
     private readonly Action? _onBackToPos;
     private readonly Action? _onShowInstallmentCenter;
-    private readonly Func<Task>? _recoverPreviousCardTransactionAsync;
+    private readonly Func<Task<bool>>? _recoverPreviousCardTransactionAsync;
+    private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private string _statusKey = "payment.status.ready";
     private string? _statusTextOverride;
     private Guid? _pendingVoucherUploadOrderGuid;
@@ -27,6 +29,8 @@ public partial class PaymentViewModel : ObservableObject
     private bool _cardPaymentCancellationRequested;
     private bool _awaitingLateCardResultAfterManualCancel;
     private bool _discardLateCardResultAfterManualCancel;
+    private bool _cardPaymentResultUnknownRequiresRecovery;
+    private TaskCompletionSource<bool>? _pendingLinklyFallbackPrompt;
     private int _paymentEntryVersion;
     private decimal _workflowRemainingAmount;
 
@@ -75,7 +79,8 @@ public partial class PaymentViewModel : ObservableObject
         ILocalizationService? localization = null,
         Action? onBackToPos = null,
         Action? onShowInstallmentCenter = null,
-        Func<Task>? recoverPreviousCardTransactionAsync = null)
+        Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -83,7 +88,8 @@ public partial class PaymentViewModel : ObservableObject
             localization,
             onBackToPos,
             onShowInstallmentCenter,
-            recoverPreviousCardTransactionAsync)
+            recoverPreviousCardTransactionAsync,
+            linklyFallbackPromptCoordinator)
     {
     }
 
@@ -94,7 +100,8 @@ public partial class PaymentViewModel : ObservableObject
         ILocalizationService? localization = null,
         Action? onBackToPos = null,
         Action? onShowInstallmentCenter = null,
-        Func<Task>? recoverPreviousCardTransactionAsync = null)
+        Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
     {
         _cart = cart;
         _workflowService = workflowService;
@@ -103,6 +110,8 @@ public partial class PaymentViewModel : ObservableObject
         _onBackToPos = onBackToPos;
         _onShowInstallmentCenter = onShowInstallmentCenter;
         _recoverPreviousCardTransactionAsync = recoverPreviousCardTransactionAsync;
+        _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
+        _linklyFallbackPromptCoordinator?.SetPromptHandler(ConfirmLinklyFallbackAsync);
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
@@ -113,8 +122,7 @@ public partial class PaymentViewModel : ObservableObject
         SelectCashCommand = new AsyncRelayCommand(() => AddTenderByMethodAsync(PaymentMethodKind.Cash), () => CanAddTender(PaymentMethodKind.Cash, allowDefaultAmount: true));
         SelectCardCommand = new AsyncRelayCommand(
             () => AddTenderByMethodAsync(PaymentMethodKind.Card),
-            () => CanAddTender(PaymentMethodKind.Card, allowDefaultAmount: true),
-            AsyncRelayCommandOptions.AllowConcurrentExecutions);
+            () => CanAddTender(PaymentMethodKind.Card, allowDefaultAmount: true));
         SelectVoucherCommand = new AsyncRelayCommand(() => AddTenderByMethodAsync(PaymentMethodKind.Voucher), () => CanAddTender(PaymentMethodKind.Voucher, allowDefaultAmount: true));
         RemoveTenderCommand = new RelayCommand<PaymentTender>(RemoveTender, CanRemoveTender);
         ConfirmPaymentCommand = new AsyncRelayCommand(ConfirmPaymentAsync, CanConfirmPayment);
@@ -195,7 +203,7 @@ public partial class PaymentViewModel : ObservableObject
 
     public string StatusMessage => _statusTextOverride ?? T(_statusKey);
 
-    public bool IsPaymentInteractionEnabled => !IsPaymentInteractionLocked;
+    public bool IsPaymentInteractionEnabled => !IsPaymentInteractionLocked && !_cardPaymentResultUnknownRequiresRecovery;
 
     // 普通支付状态隐藏取消入口，避免将取消误用为返回收银页。
     public bool IsCancelPaymentVisible => IsCardPaymentInProgress || _awaitingLateCardResultAfterManualCancel;
@@ -309,6 +317,7 @@ public partial class PaymentViewModel : ObservableObject
         _paymentEntryVersion++;
         _awaitingLateCardResultAfterManualCancel = false;
         _discardLateCardResultAfterManualCancel = false;
+        _cardPaymentResultUnknownRequiresRecovery = false;
         CancelActiveCardPayment();
         DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
@@ -342,7 +351,7 @@ public partial class PaymentViewModel : ObservableObject
 
     private void AppendTenderAmount(string? value)
     {
-        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null)
+        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery)
         {
             return;
         }
@@ -380,7 +389,7 @@ public partial class PaymentViewModel : ObservableObject
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
-        if (IsPaymentInteractionLocked)
+        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery)
         {
             return;
         }
@@ -553,6 +562,13 @@ public partial class PaymentViewModel : ObservableObject
             if (method == PaymentMethodKind.Card)
             {
                 ShowOverlayIfTerminalError(result);
+                if (IsCardResultUnknownStatusKey(result.StatusKey))
+                {
+                    SetCardResultUnknownRecoveryRequired(result);
+                    ResetManualCardCancellationState();
+                    NotifyPaymentCommandStates();
+                    return;
+                }
             }
 
             if (method == PaymentMethodKind.Card && TrySetCardTerminalFailureStatus(result))
@@ -569,6 +585,7 @@ public partial class PaymentViewModel : ObservableObject
         }
 
         ResetManualCardCancellationState();
+        _cardPaymentResultUnknownRequiresRecovery = false;
         PaymentTenders.Add(result.Tender);
         if (method == PaymentMethodKind.Voucher)
         {
@@ -731,6 +748,7 @@ public partial class PaymentViewModel : ObservableObject
     {
         if (IsPaymentInteractionLocked ||
             _activeCardPaymentCts is not null ||
+            _cardPaymentResultUnknownRequiresRecovery ||
             _pendingVoucherUploadOrderGuid is not null ||
             _cart.IsEmpty || _cart.HasNonIntegerQuantity || _cart.HasZeroPriceLine || IsZeroSettlementMode)
         {
@@ -778,7 +796,7 @@ public partial class PaymentViewModel : ObservableObject
 
     private bool CanConfirmPayment()
     {
-        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null)
+        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery)
         {
             return false;
         }
@@ -967,6 +985,7 @@ public partial class PaymentViewModel : ObservableObject
     {
         return !IsPaymentInteractionLocked &&
             !IsCardPaymentInProgress &&
+            !_cardPaymentResultUnknownRequiresRecovery &&
             !_awaitingLateCardResultAfterManualCancel;
     }
 
@@ -981,6 +1000,7 @@ public partial class PaymentViewModel : ObservableObject
         return IsPaymentMode &&
             !IsPaymentInteractionLocked &&
             _activeCardPaymentCts is null &&
+            !_cardPaymentResultUnknownRequiresRecovery &&
             !_cart.IsEmpty;
     }
 
@@ -1086,6 +1106,22 @@ public partial class PaymentViewModel : ObservableObject
         }
 
         return false;
+    }
+
+    private void SetCardResultUnknownRecoveryRequired(PaymentTenderAttemptResult result)
+    {
+        // 已提交到终端的未知结果不能当作普通失败处理；必须先恢复或确认上一笔，防止重复扣款。
+        _cardPaymentResultUnknownRequiresRecovery = true;
+        IsPaymentInteractionLocked = true;
+        SetStatus(result.StatusKey, result.StatusMessage);
+    }
+
+    private static bool IsCardResultUnknownStatusKey(string statusKey)
+    {
+        return statusKey is
+            "linkly.backend.resultUnknown" or
+            "linkly.backend.cancelledUnknown" or
+            "linkly.cloud.resultUnknown";
     }
 
     private static bool IsTimeoutMessage(string? message)
@@ -1454,35 +1490,124 @@ public partial class PaymentViewModel : ObservableObject
 
     private void CloseCardPaymentErrorOverlay()
     {
+        CompletePendingLinklyFallbackPrompt(confirmed: false);
         if (CardPaymentErrorOverlay is not null)
         {
             CardPaymentErrorOverlay.IsOpen = false;
         }
 
+        ReleaseFallbackPromptLockIfIdle();
         CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
     }
 
     private bool CanExecuteCardPaymentErrorPrimaryAction()
     {
-        return CardPaymentErrorOverlay is { IsOpen: true, HasPrimaryAction: true } &&
-            _recoverPreviousCardTransactionAsync is not null;
+        return CardPaymentErrorOverlay is { IsOpen: true, HasPrimaryAction: true } overlay &&
+            (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback ||
+             _recoverPreviousCardTransactionAsync is not null);
     }
 
     private async Task ExecuteCardPaymentErrorPrimaryActionAsync()
     {
-        if (!CanExecuteCardPaymentErrorPrimaryAction() || _recoverPreviousCardTransactionAsync is null)
+        if (!CanExecuteCardPaymentErrorPrimaryAction())
+        {
+            return;
+        }
+
+        if (CardPaymentErrorOverlay?.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback)
+        {
+            CompletePendingLinklyFallbackPrompt(confirmed: true);
+            CardPaymentErrorOverlay.IsOpen = false;
+            ReleaseFallbackPromptLockIfIdle();
+            CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
+        if (_recoverPreviousCardTransactionAsync is null)
         {
             return;
         }
 
         SetStatus("payment.card.error.overlay.activeSession.recovering");
-        await _recoverPreviousCardTransactionAsync();
-        if (CardPaymentErrorOverlay is not null)
+        var recoveryResolved = await _recoverPreviousCardTransactionAsync();
+        if (recoveryResolved)
+        {
+            // 恢复确认已经解除未知结果阻塞后，当前付款页必须重新开放，允许收银员继续处理本单。
+            _cardPaymentResultUnknownRequiresRecovery = false;
+            IsPaymentInteractionLocked = false;
+            NotifyPaymentCommandStates();
+        }
+
+        if (CardPaymentErrorOverlay is not null && !_cardPaymentResultUnknownRequiresRecovery)
         {
             CardPaymentErrorOverlay.IsOpen = false;
         }
 
         CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+    }
+
+    private Task<bool> ConfirmLinklyFallbackAsync(
+        LinklyFallbackPromptRequest request,
+        CancellationToken cancellationToken)
+    {
+        CompletePendingLinklyFallbackPrompt(confirmed: false);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(false);
+        }
+
+        var prompt = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingLinklyFallbackPrompt = prompt;
+        // fallback 只代表当前模式未提交交易；切换到备用模式前必须让收银员确认，不能静默再次刷卡。
+        CardPaymentErrorOverlay = CardPaymentErrorOverlayViewModel.Fallback(FormatLinklyFallbackPromptMessage(request));
+        CardPaymentErrorOverlay.IsOpen = true;
+        IsPaymentInteractionLocked = true;
+        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+        NotifyPaymentCommandStates();
+        cancellationToken.Register(() => CompletePendingLinklyFallbackPrompt(confirmed: false));
+        return prompt.Task;
+    }
+
+    private void CompletePendingLinklyFallbackPrompt(bool confirmed)
+    {
+        var prompt = _pendingLinklyFallbackPrompt;
+        if (prompt is null)
+        {
+            return;
+        }
+
+        _pendingLinklyFallbackPrompt = null;
+        prompt.TrySetResult(confirmed);
+    }
+
+    private void ReleaseFallbackPromptLockIfIdle()
+    {
+        if (_activeCardPaymentCts is null && !_cardPaymentResultUnknownRequiresRecovery)
+        {
+            IsPaymentInteractionLocked = false;
+            NotifyPaymentCommandStates();
+        }
+    }
+
+    private string FormatLinklyFallbackPromptMessage(LinklyFallbackPromptRequest request)
+    {
+        return string.Format(
+            CultureInfo.CurrentCulture,
+            T("payment.card.error.overlay.fallback.message"),
+            FormatLinklyModeDisplayName(request.NextMode.ToString()));
+    }
+
+    private string FormatLinklyModeDisplayName(string? modeText)
+    {
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(modeText, LinklyConnectionMode.LocalIp);
+        var key = mode switch
+        {
+            LinklyConnectionMode.CloudDirectSync => "settings.linkly.mode.cloudDirectSync",
+            LinklyConnectionMode.CloudBackendAsync => "settings.linkly.mode.cloudBackendAsync",
+            _ => "settings.linkly.mode.localIp"
+        };
+
+        return T(key);
     }
 
     private static CardPaymentErrorOverlayViewModel? ClassifyCardPaymentError(
@@ -1535,7 +1660,10 @@ public partial class PaymentViewModel : ObservableObject
             "linkly.cloud.communicationFailed" or
             "linkly.backend.communicationFailed" => CardPaymentErrorOverlayViewModel.CloudCommunicationFailed(),
 
-            "linkly.backend.activeSessionRequiresRecovery" => CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery(),
+            "linkly.backend.activeSessionRequiresRecovery" or
+            "linkly.backend.resultUnknown" or
+            "linkly.backend.cancelledUnknown" or
+            "linkly.cloud.resultUnknown" => CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery(),
 
             "payment.card.squareCommunicationFailed" => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
 

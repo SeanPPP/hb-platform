@@ -295,6 +295,31 @@ public sealed class LinklyTerminalClientTests
         Assert.Contains("DECLINED", result.Message);
     }
 
+    [Fact]
+    public async Task TestConnectionAsync_uses_supplied_timeout_instead_of_linkly_business_wait()
+    {
+        using var callerCts = new CancellationTokenSource();
+        var eftClient = new FakeLinklyEftClient { WaitForCancellationOnConnect = true };
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var resultTask = client.TestConnectionAsync(
+            "127.0.0.1",
+            2011,
+            TimeSpan.FromMilliseconds(30),
+            callerCts.Token);
+        await Task.Delay(120);
+
+        if (!resultTask.IsCompleted)
+        {
+            callerCts.Cancel();
+            Assert.Fail("Connection test ignored the supplied timeout and kept waiting.");
+        }
+
+        var result = await resultTask;
+        Assert.False(result.Succeeded);
+        Assert.Contains("timed out", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState(
@@ -365,14 +390,23 @@ public sealed class LinklyTerminalClientTests
 
         public Action? OnRead { get; init; }
 
-        public Task<bool> ConnectAsync(string hostName, int hostPort, bool useSsl, bool useKeepAlive)
+        public bool WaitForCancellationOnConnect { get; init; }
+
+        public bool WaitForCancellationOnRead { get; init; }
+
+        public async Task<bool> ConnectAsync(string hostName, int hostPort, bool useSsl, bool useKeepAlive)
         {
             if (ConnectException is not null)
             {
                 throw ConnectException;
             }
 
-            return Task.FromResult(ConnectResult);
+            if (WaitForCancellationOnConnect)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+            }
+
+            return ConnectResult;
         }
 
         public Task<bool> WriteRequestAsync(EFTRequest request)
@@ -390,9 +424,14 @@ public sealed class LinklyTerminalClientTests
             return Task.FromResult(CancelRequestResult);
         }
 
-        public Task<EFTResponse?> ReadResponseAsync(CancellationToken cancellationToken)
+        public async Task<EFTResponse?> ReadResponseAsync(CancellationToken cancellationToken)
         {
             OnRead?.Invoke();
+            if (WaitForCancellationOnRead)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
             if (ReadExceptions.Count > 0)
             {
                 throw ReadExceptions.Dequeue();
@@ -403,7 +442,7 @@ public sealed class LinklyTerminalClientTests
                 throw new OperationCanceledException(cancellationToken);
             }
 
-            return Task.FromResult<EFTResponse?>(_responses.Dequeue());
+            return _responses.Dequeue();
         }
 
         public bool Disconnect()

@@ -747,7 +747,7 @@
                                    TextAlignment="Center"
                                    Margin="0,0,0,12" />
                         <!-- 正文 -->
-                        <TextBlock Text="{Binding CardPaymentErrorOverlay.MessageKey, Converter={StaticResource LocalizationKeyConverter}}"
+                        <TextBlock Text="{Binding CardPaymentErrorOverlay.DisplayMessage}"
                                    FontSize="14"
                                    Foreground="{StaticResource PosMutedForegroundBrush}"
                                    TextWrapping="Wrap"

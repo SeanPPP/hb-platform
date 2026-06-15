@@ -76,6 +76,7 @@ public static class LinklyTerminalDialogKeys
     public const string Yes = "1";
     public const string No = "2";
     public const string Auth = "3";
+    public const string LocalCancel = "__LOCAL_CANCEL__";
 
     public static string Normalize(string key)
     {
@@ -94,6 +95,8 @@ public static class LinklyTerminalDialogKeys
 
 public interface ILinklyTerminalDialogService
 {
+    CancellationToken LocalCancelToken { get; }
+
     Task<LinklyTerminalDialogAction?> UpdateAsync(
         LinklyTerminalDialogState state,
         CancellationToken cancellationToken);
@@ -150,7 +153,10 @@ public sealed class WpfLinklyTerminalDialogService :
     ILinklyTerminalDialogPresenter
 {
     private readonly ILocalizationService _localization;
+    // 这个 CTS 会被 UI 线程和后台轮询线程同时访问，替换必须串行化，避免读到已释放实例。
+    private readonly object _localCancelGate = new();
     private LinklyTerminalDialogAction? _pendingAction;
+    private CancellationTokenSource _localCancelCts = new();
     private bool _isOpen;
     private string? _sessionId;
     private string _statusText = string.Empty;
@@ -260,11 +266,21 @@ public sealed class WpfLinklyTerminalDialogService :
 
     public bool IsCancelPaymentVisible =>
         IsOpen &&
-        _mode == LinklyTerminalDialogMode.CloudDirectStatus &&
         IsInteractive &&
         !IsFinal;
 
     public string CancelPaymentText => _localization.T("linkly.backend.dialog.button.cancelPayment");
+
+    public CancellationToken LocalCancelToken
+    {
+        get
+        {
+            lock (_localCancelGate)
+            {
+                return _localCancelCts.Token;
+            }
+        }
+    }
 
     public ObservableCollection<LinklyTerminalDialogButtonViewModel> DisplayButtons { get; } = [];
 
@@ -303,6 +319,11 @@ public sealed class WpfLinklyTerminalDialogService :
 
     private LinklyTerminalDialogAction? UpdateOnUiThread(LinklyTerminalDialogState state)
     {
+        if (!string.Equals(SessionId, state.SessionId, StringComparison.Ordinal))
+        {
+            ResetLocalCancelToken();
+        }
+
         _mode = state.Mode;
         IsOpen = true;
         SessionId = state.SessionId;
@@ -349,7 +370,20 @@ public sealed class WpfLinklyTerminalDialogService :
         }
 
         // 只有 direct 模式保留独立取消；backend async 取消按钮必须来自 Linkly display flag。
-        _pendingAction = new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.OkCancel, null);
+        // Direct 模式取消要发 Linkly OK/CANCEL；backend async 固定取消只停止本地等待。
+        var key = _mode == LinklyTerminalDialogMode.CloudDirectStatus
+            ? LinklyTerminalDialogKeys.OkCancel
+            : LinklyTerminalDialogKeys.LocalCancel;
+        if (_mode == LinklyTerminalDialogMode.CloudBackendInteractive)
+        {
+            // backend async 的取消必须能打断本地等待/轮询，不能只排队到下一次 UI 更新。
+            lock (_localCancelGate)
+            {
+                _localCancelCts.Cancel();
+            }
+        }
+
+        _pendingAction = new LinklyTerminalDialogAction(key, null);
     }
 
     private Task CloseOrCancelAsync()
@@ -367,6 +401,7 @@ public sealed class WpfLinklyTerminalDialogService :
     private void CloseOnUiThread()
     {
         _pendingAction = null;
+        ResetLocalCancelToken();
         _mode = LinklyTerminalDialogMode.CloudBackendInteractive;
         IsOpen = false;
         SessionId = null;
@@ -380,6 +415,20 @@ public sealed class WpfLinklyTerminalDialogService :
         DisplayButtons.Clear();
         SubmitActionCommand.NotifyCanExecuteChanged();
         RaiseDialogButtonStateChanged();
+    }
+
+    private void ResetLocalCancelToken()
+    {
+        lock (_localCancelGate)
+        {
+            if (!_localCancelCts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _localCancelCts.Dispose();
+            _localCancelCts = new CancellationTokenSource();
+        }
     }
 
     private void RaiseLocalizedTextChanged()

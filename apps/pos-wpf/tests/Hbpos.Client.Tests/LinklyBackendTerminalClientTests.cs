@@ -381,6 +381,142 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_returns_result_unknown_when_start_response_read_is_cancelled_after_backend_submit()
+    {
+        using var logs = new ConsoleLogCapture();
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => throw new OperationCanceledException("start response read cancelled"),
+                _ => throw new InvalidOperationException("No further backend calls are expected.")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.resultUnknown", result.StatusKey);
+        Assert.DoesNotContain("timed out", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cancelled", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("unknown", result.Message, StringComparison.OrdinalIgnoreCase);
+        AssertContainsOperationCancelledLog(logs.Lines, transactionSubmitted: true, businessTimeoutCancelled: false);
+        Assert.Equal(2, requests.Count);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_allows_fallback_when_active_session_read_is_cancelled_before_backend_submit()
+    {
+        using var logs = new ConsoleLogCapture();
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => throw new OperationCanceledException("active session read cancelled"),
+                _ => throw new InvalidOperationException("No further backend calls are expected.")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.True(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.waitCancelled", result.StatusKey);
+        Assert.DoesNotContain("timed out", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cancelled", result.Message, StringComparison.OrdinalIgnoreCase);
+        AssertContainsOperationCancelledLog(logs.Lines, transactionSubmitted: false, businessTimeoutCancelled: false);
+        Assert.Single(requests);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_blocks_cloud_backend_when_health_request_is_offline_before_start()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(
+            request =>
+            {
+                requests.Add(CloneRequestWithBody(request));
+                if (request.RequestUri!.AbsolutePath.EndsWith("/health", StringComparison.Ordinal))
+                {
+                    throw new HttpRequestException("backend offline");
+                }
+
+                throw new InvalidOperationException("Transaction should not start when backend health is offline.");
+            },
+            passHealthRequestsToHandler: true);
+        var dialog = new FakeLinklyTerminalDialogService();
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.True(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.unavailable", result.StatusKey);
+        Assert.Single(requests);
+        Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/health?environment=Sandbox", requests[0].RequestUri!.AbsoluteUri);
+        Assert.Empty(dialog.States);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_blocks_cloud_backend_when_health_is_not_ready_before_start()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(
+            request =>
+            {
+                requests.Add(CloneRequestWithBody(request));
+                return request.RequestUri!.AbsolutePath switch
+                {
+                    "/api/v1/linkly/cloud-backend/health" => JsonResponse(
+                        """
+                        {
+                          "success": true,
+                          "data": {
+                            "environment": "Sandbox",
+                            "storeCode": "S01",
+                            "deviceCode": "TERM-1",
+                            "isReady": false,
+                            "publicNotificationBaseUrl": null,
+                            "checks": [
+                              {
+                                "code": "PUBLIC_CALLBACK_URL",
+                                "isReady": false,
+                                "message": "Linkly Cloud notification callback URL must be public HTTPS."
+                              }
+                            ]
+                          }
+                        }
+                        """),
+                    _ => throw new InvalidOperationException("Transaction should not start when backend health is not ready.")
+                };
+            },
+            passHealthRequestsToHandler: true);
+        var dialog = new FakeLinklyTerminalDialogService();
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.True(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.unavailable", result.StatusKey);
+        Assert.Contains("public HTTPS", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(requests);
+        Assert.Empty(dialog.States);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_allows_fallback_when_backend_rejects_start_before_session()
     {
         var requests = new List<HttpRequestMessage>();
@@ -1162,6 +1298,164 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Null(TryReadJsonString(sendKeyBody, "data"));
         Assert.Null(TryReadJsonString(sendKeyBody, "accessToken"));
         Assert.Contains(dialog.States, state => state.DisplayText == "PRESS OK");
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_returns_cancelled_unknown_when_backend_async_dialog_requests_local_cancel()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "local-cancel-session",
+                        "status": "Pending",
+                        "txnRef": "260601120130",
+                        "displayText": "PRESENT CARD",
+                        "receiptText": null,
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 500,
+                        "recoveryAction": "Retry",
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException("Local cancel should stop polling before the next status request.")
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.LocalCancel, null));
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.cancelledUnknown", result.StatusKey);
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(1, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_stops_waiting_when_local_cancel_is_requested_during_poll_delay()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var dialog = new FakeLinklyTerminalDialogService();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "delay-cancel-session",
+                        "status": "Pending",
+                        "txnRef": "260601120132",
+                        "displayText": "PRESENT CARD",
+                        "receiptText": null,
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 500,
+                        "recoveryAction": "Retry",
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException("Local cancel during delay should stop before the next status request.")
+            };
+        });
+        var client = CreateClient(
+            handler,
+            dialog,
+            TimeSpan.FromMilliseconds(10),
+            (_, token) =>
+            {
+                dialog.RequestLocalCancel();
+                return Task.Delay(TimeSpan.FromMilliseconds(10), token);
+            });
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.cancelledUnknown", result.StatusKey);
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(1, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_returns_cancelled_unknown_when_cancel_sendkey_fails_after_submission()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "cancel-key-session",
+                        "status": "Pending",
+                        "txnRef": "260601120131",
+                        "displayText": "PRESS CANCEL",
+                        "receiptText": null,
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "cancelKeyFlag": true,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{ \"Response\": { \"DisplayText\": [\"PRESS CANCEL\"], \"CancelKeyFlag\": \"1\" } }",
+                            "receivedAt": "2026-06-01T02:00:04Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                3 => throw new HttpRequestException("backend offline while sending cancel"),
+                _ => throw new InvalidOperationException("Cancel sendkey failure should not continue polling until timeout.")
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.OkCancel, null));
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.False(result.FallbackAllowed);
+        Assert.Equal("linkly.backend.cancelledUnknown", result.StatusKey);
+        Assert.Equal(3, requests.Count);
+        Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/cancel-key-session/sendkey", requests[2].RequestUri!.AbsoluteUri);
     }
 
     [Fact]
@@ -2001,6 +2295,149 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.True(finalState.IsFinal);
     }
 
+    [Fact]
+    public async Task PurchaseAsync_does_not_use_short_configured_timeout_before_linkly_business_wait()
+    {
+        var requests = new List<string>();
+        var statusWait = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new StubHttpMessageHandler(
+            (request, cancellationToken) =>
+            {
+                requests.Add($"{request.Method} {request.RequestUri!.AbsoluteUri}");
+                if (request.RequestUri!.AbsolutePath.EndsWith("/active", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                }
+
+                if (request.RequestUri.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(JsonResponse(PendingSessionJson("short-timeout-session", "TXN-SHORT")));
+                }
+
+                if (request.RequestUri.AbsolutePath.Contains("/transactions/short-timeout-session", StringComparison.Ordinal))
+                {
+                    return statusWait.Task.WaitAsync(cancellationToken);
+                }
+
+                throw new InvalidOperationException($"Unexpected request {request.RequestUri}");
+            });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+        var settings = CreateSettings() with { TerminalTimeout = TimeSpan.FromMilliseconds(30) };
+
+        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), settings);
+        await Task.Delay(120);
+
+        if (purchaseTask.IsCompleted)
+        {
+            var early = await purchaseTask;
+            Assert.Fail($"Purchase completed before business wait. statusKey={early.StatusKey} unknown={early.ResultUnknown} message={early.Message} requests={string.Join(" | ", requests)}");
+        }
+
+        statusWait.SetResult(JsonResponse(ApprovedSessionJson("short-timeout-session", "TXN-SHORT")));
+        var result = await purchaseTask;
+        Assert.True(result.Approved);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_starts_transaction_business_wait_after_preflight()
+    {
+        var tokens = new Dictionary<string, CancellationToken>(StringComparer.Ordinal);
+        var handler = new StubHttpMessageHandler(
+            (request, cancellationToken) =>
+            {
+                var path = request.RequestUri!.AbsolutePath;
+                if (path.EndsWith("/active", StringComparison.Ordinal))
+                {
+                    tokens["active"] = cancellationToken;
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                }
+
+                if (path.EndsWith("/transactions", StringComparison.Ordinal))
+                {
+                    tokens["start"] = cancellationToken;
+                    return Task.FromResult(JsonResponse(PendingSessionJson("fresh-business-wait-session", "TXN-FRESH")));
+                }
+
+                if (path.Contains("/transactions/fresh-business-wait-session", StringComparison.Ordinal))
+                {
+                    tokens["status"] = cancellationToken;
+                    return Task.FromResult(JsonResponse(ApprovedSessionJson("fresh-business-wait-session", "TXN-FRESH")));
+                }
+
+                throw new InvalidOperationException($"Unexpected request {request.RequestUri}");
+            },
+            (request, cancellationToken) =>
+            {
+                tokens["health"] = cancellationToken;
+                return ReadyHealthResponse();
+            });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.NotEqual(tokens["health"], tokens["start"]);
+        Assert.NotEqual(tokens["active"], tokens["start"]);
+        Assert.NotEqual(tokens["health"], tokens["status"]);
+        Assert.NotEqual(tokens["active"], tokens["status"]);
+    }
+
+    [Fact]
+    public async Task ResumeSessionUntilFinalAsync_times_out_with_result_unknown_details()
+    {
+        var recoverWait = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new StubHttpMessageHandler((request, cancellationToken) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/transactions/recovery-timeout-session/recover", StringComparison.Ordinal))
+            {
+                return recoverWait.Task.WaitAsync(cancellationToken);
+            }
+
+            throw new InvalidOperationException($"Unexpected request {request.RequestUri}");
+        });
+        var client = CreateClient(
+            handler,
+            new FakeLinklyTerminalDialogService(),
+            TimeSpan.Zero,
+            delayAsync: null,
+            localization: null,
+            businessWait: TimeSpan.FromMilliseconds(20));
+        var activeStatus = new LinklyCloudBackendSessionResponse(
+            "Sandbox",
+            "S01",
+            "TERM-1",
+            "recovery-timeout-session",
+            "Pending",
+            "TXN-RECOVERY",
+            ResponseCode: null,
+            ResponseText: null,
+            RecoveryAction: "Retry",
+            DisplayText: "PRESENT CARD",
+            CancelKeyFlag: false,
+            OKKeyFlag: false,
+            AcceptYesKeyFlag: false,
+            DeclineNoKeyFlag: false,
+            AuthoriseKeyFlag: false,
+            InputType: null,
+            GraphicCode: null,
+            DisplayLines: null,
+            ReceiptText: null,
+            RecoveryCount: 0,
+            ReceiptPrintedAt: null,
+            ClientAcknowledgedAt: null,
+            LastHttpStatus: 202,
+            Notifications: []);
+
+        var exception = await Assert.ThrowsAsync<LinklyBackendResultUnknownException>(
+            () => client.ResumeSessionUntilFinalAsync(CreateSettings(), activeStatus));
+
+        Assert.Contains("recovery timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SessionId=recovery-timeout-session", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("TxnRef=TXN-RECOVERY", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Status=Pending", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("result is unknown", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static LinklyBackendTerminalClient CreateClient(
         StubHttpMessageHandler handler,
         FakeLinklyTerminalDialogService dialog)
@@ -2031,7 +2468,8 @@ public sealed class LinklyBackendTerminalClientTests
         TimeSpan pollInterval,
         Func<TimeSpan, CancellationToken, Task>? delayAsync,
         ILocalizationService? localization,
-        ILinklyPaymentAttemptContextAccessor? paymentAttemptContextAccessor = null)
+        ILinklyPaymentAttemptContextAccessor? paymentAttemptContextAccessor = null,
+        TimeSpan? businessWait = null)
     {
         return new LinklyBackendTerminalClient(
             new HttpClient(handler) { BaseAddress = new Uri("https://api.example/") },
@@ -2039,7 +2477,8 @@ public sealed class LinklyBackendTerminalClientTests
             pollInterval,
             delayAsync,
             localization,
-            paymentAttemptContextAccessor);
+            paymentAttemptContextAccessor,
+            businessWait);
     }
 
     private static PosSessionState CreateSession()
@@ -2072,6 +2511,77 @@ public sealed class LinklyBackendTerminalClientTests
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
+    }
+
+    private static HttpResponseMessage ReadyHealthResponse()
+    {
+        return JsonResponse(
+            """
+            {
+              "success": true,
+              "data": {
+                "environment": "Sandbox",
+                "storeCode": "S01",
+                "deviceCode": "TERM-1",
+                "isReady": true,
+                "publicNotificationBaseUrl": "https://pos.example/linkly/",
+                "checks": [
+                  {
+                    "code": "STORE_CREDENTIAL",
+                    "isReady": true,
+                    "message": "Linkly Cloud store credential is configured."
+                  }
+                ]
+              }
+            }
+            """);
+    }
+
+    private static string PendingSessionJson(string sessionId, string txnRef)
+    {
+        return $$"""
+            {
+              "success": true,
+              "data": {
+                "environment": "Sandbox",
+                "storeCode": "S01",
+                "deviceCode": "TERM-1",
+                "sessionId": "{{sessionId}}",
+                "status": "Pending",
+                "txnRef": "{{txnRef}}",
+                "responseCode": null,
+                "responseText": null,
+                "displayText": "Processing",
+                "recoveryCount": 0,
+                "lastHttpStatus": 202,
+                "notifications": []
+              }
+            }
+            """;
+    }
+
+    private static string ApprovedSessionJson(string sessionId, string txnRef)
+    {
+        return $$"""
+            {
+              "success": true,
+              "data": {
+                "environment": "Sandbox",
+                "storeCode": "S01",
+                "deviceCode": "TERM-1",
+                "sessionId": "{{sessionId}}",
+                "status": "Completed",
+                "txnRef": "{{txnRef}}",
+                "responseCode": "00",
+                "responseText": "APPROVED",
+                "displayText": "APPROVED",
+                "receiptText": "APPROVED RECEIPT",
+                "recoveryCount": 0,
+                "lastHttpStatus": 200,
+                "notifications": []
+              }
+            }
+            """;
     }
 
     private static HttpRequestMessage CloneRequestWithBody(HttpRequestMessage request)
@@ -2111,28 +2621,68 @@ public sealed class LinklyBackendTerminalClientTests
         };
     }
 
-    private sealed class StubHttpMessageHandler(
-        Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
+    private sealed class StubHttpMessageHandler : HttpMessageHandler
     {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
+        private readonly Func<HttpRequestMessage, CancellationToken, HttpResponseMessage>? _healthHandler;
+        private readonly bool _passHealthRequestsToHandler;
+
+        public StubHttpMessageHandler(
+            Func<HttpRequestMessage, HttpResponseMessage> handler,
+            bool passHealthRequestsToHandler = false)
+            : this((request, _) => Task.FromResult(handler(request)), passHealthRequestsToHandler)
+        {
+        }
+
+        public StubHttpMessageHandler(
+            Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler,
+            bool passHealthRequestsToHandler = false)
+        {
+            _handler = handler;
+            _passHealthRequestsToHandler = passHealthRequestsToHandler;
+        }
+
+        public StubHttpMessageHandler(
+            Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler,
+            Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> healthHandler)
+        {
+            _handler = handler;
+            _healthHandler = healthHandler;
+        }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult(handler(request));
+            if (!_passHealthRequestsToHandler &&
+                request.RequestUri!.AbsolutePath.EndsWith("/api/v1/linkly/cloud-backend/health", StringComparison.Ordinal))
+            {
+                return Task.FromResult(_healthHandler?.Invoke(request, cancellationToken) ?? ReadyHealthResponse());
+            }
+
+            return _handler(request, cancellationToken);
         }
     }
 
     private sealed class FakeLinklyTerminalDialogService : ILinklyTerminalDialogService
     {
         private readonly Queue<LinklyTerminalDialogAction?> _actions = new();
+        private readonly CancellationTokenSource _localCancelCts = new();
 
         public List<LinklyTerminalDialogState> States { get; } = [];
 
         public int CloseCallCount { get; private set; }
 
+        public CancellationToken LocalCancelToken => _localCancelCts.Token;
+
         public void EnqueueAction(LinklyTerminalDialogAction? action)
         {
             _actions.Enqueue(action);
+        }
+
+        public void RequestLocalCancel()
+        {
+            _localCancelCts.Cancel();
         }
 
         public Task<LinklyTerminalDialogAction?> UpdateAsync(
@@ -2174,6 +2724,19 @@ public sealed class LinklyBackendTerminalClientTests
         }
 
         throw new Xunit.Sdk.XunitException($"Expected Linkly JSON log operation={operation} phase={phase}.");
+    }
+
+    private static void AssertContainsOperationCancelledLog(
+        IReadOnlyList<string> lines,
+        bool transactionSubmitted,
+        bool businessTimeoutCancelled)
+    {
+        var logLine = Assert.Single(lines, line => line.Contains("operation-cancelled", StringComparison.Ordinal));
+        Assert.Contains("source=OperationCanceledException", logLine, StringComparison.Ordinal);
+        Assert.Contains($"transactionSubmitted={transactionSubmitted}", logLine, StringComparison.Ordinal);
+        Assert.Contains($"businessTimeoutCancelled={businessTimeoutCancelled}", logLine, StringComparison.Ordinal);
+        Assert.Contains("localCancelRequested=False", logLine, StringComparison.Ordinal);
+        Assert.Contains("callerCancelled=False", logLine, StringComparison.Ordinal);
     }
 
     private sealed class ConsoleLogCapture : IDisposable

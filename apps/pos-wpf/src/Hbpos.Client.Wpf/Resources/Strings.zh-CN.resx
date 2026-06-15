@@ -600,6 +600,18 @@
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve">
     <value>正在恢复上一笔 Linkly 交易...</value>
   </data>
+  <data name="payment.card.error.overlay.fallback.title" xml:space="preserve">
+    <value>是否使用备用刷卡方式？</value>
+  </data>
+  <data name="payment.card.error.overlay.fallback.message" xml:space="preserve">
+    <value>当前 Linkly 模式不可用，且交易尚未提交。是否切换到 {0}？</value>
+  </data>
+  <data name="payment.card.error.overlay.fallback.use" xml:space="preserve">
+    <value>使用备用方式</value>
+  </data>
+  <data name="payment.card.error.overlay.fallback.cancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
   <data name="success.subtitle" xml:space="preserve">
     <value>本次交易已成功处理。</value>
   </data>
@@ -1168,10 +1180,13 @@
     <value>银行卡支付已授权。</value>
   </data>
   <data name="payment.linklyFallback.succeeded" xml:space="preserve">
-    <value>已从 {0} 自动切换到 {1} 完成收款。{2}</value>
+    <value>收银员确认从 {0} 切换到 {1} 后刷卡成功。{2}</value>
   </data>
   <data name="payment.linklyFallback.allFailed" xml:space="preserve">
     <value>所有已配置的 Linkly 模式都未能在产生最终支付结果前完成通信。</value>
+  </data>
+  <data name="payment.linklyFallback.cancelled" xml:space="preserve">
+    <value>已取消备用 Linkly 支付方式，未再次发起刷卡。</value>
   </data>
   <data name="payment.linklyFallback.promotePrimary" xml:space="preserve">
     <value>如需要，请主管到设置页调整首选 Linkly 模式。</value>
@@ -1767,8 +1782,17 @@
   <data name="linkly.backend.timeout" xml:space="preserve">
     <value>ANZ Linkly Cloud 交易超时。</value>
   </data>
+  <data name="linkly.backend.waitCancelled" xml:space="preserve">
+    <value>Linkly 后端等待被中断，交易结果未确认，请确认状态后再重试。</value>
+  </data>
   <data name="linkly.backend.communicationFailed" xml:space="preserve">
     <value>ANZ Linkly Cloud 后端通讯失败。</value>
+  </data>
+  <data name="linkly.backend.unavailable" xml:space="preserve">
+    <value>后端 API 离线，已阻止云后端刷卡支付。请检查网络或切换其他支付方式。</value>
+  </data>
+  <data name="linkly.backend.cancelledUnknown" xml:space="preserve">
+    <value>已停止等待云后端刷卡结果。交易可能已到达终端，请恢复上一笔交易或在 Linkly 后台确认结果。</value>
   </data>
   <data name="linkly.backend.invalidResponse" xml:space="preserve">
     <value>ANZ Linkly Cloud 后端返回了无效响应。</value>
