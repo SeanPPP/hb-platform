@@ -14,8 +14,9 @@ import {
   Typography,
   message,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
-import { useEffect, useState } from 'react'
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { FilterValue, SorterResult } from 'antd/es/table/interface'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
@@ -65,6 +66,8 @@ function renderBrandName(value?: string) {
   )
 }
 
+type StoreSortOrder = 'ascend' | 'descend' | null
+
 export default function SystemStoresPage() {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
@@ -73,6 +76,10 @@ export default function SystemStoresPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const [brandFilter, setBrandFilter] = useState<string | undefined>()
+  const [isActiveFilter, setIsActiveFilter] = useState<boolean | undefined>()
+  const [sortBy, setSortBy] = useState<string | undefined>()
+  const [sortOrder, setSortOrder] = useState<StoreSortOrder>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailStore, setDetailStore] = useState<StoreDetailDto | null>(null)
@@ -83,18 +90,33 @@ export default function SystemStoresPage() {
   const [storeUserTarget, setStoreUserTarget] = useState<StoreDto | null>(null)
   const [form] = Form.useForm<UpdateStoreDto>()
 
-  const loadData = async (nextPage = page, nextPageSize = pageSize) => {
+  const loadData = async (
+    nextPage = page,
+    nextPageSize = pageSize,
+    nextBrandFilter = brandFilter,
+    nextIsActiveFilter = isActiveFilter,
+    nextSortBy = sortBy,
+    nextSortOrder = sortOrder,
+  ) => {
     setLoading(true)
     try {
       const result = await getStores({
         page: nextPage,
         pageSize: nextPageSize,
         search: keyword || undefined,
+        brandName: nextBrandFilter || undefined,
+        isActive: nextIsActiveFilter,
+        sortField: nextSortBy,
+        sortOrder: nextSortOrder === 'ascend' ? 'asc' : nextSortOrder === 'descend' ? 'desc' : undefined,
       })
       setData(result.items)
       setTotal(result.total)
       setPage(result.page)
       setPageSize(result.pageSize)
+      setBrandFilter(nextBrandFilter)
+      setIsActiveFilter(nextIsActiveFilter)
+      setSortBy(nextSortBy)
+      setSortOrder(nextSortOrder ?? null)
     } catch (error) {
       console.error(error)
       message.error(t('system.stores.loadListFailed'))
@@ -190,15 +212,99 @@ export default function SystemStoresPage() {
     setStoreUserOpen(true)
   }
 
+  const brandFilterOptions = useMemo(() => {
+    const brands = new Set<string>()
+    data.forEach((store) => {
+      const brandName = store.brandName?.trim()
+      if (brandName) {
+        brands.add(brandName)
+      }
+    })
+    if (brandFilter) {
+      brands.add(brandFilter)
+    }
+
+    return Array.from(brands)
+      .sort((a, b) => a.localeCompare(b))
+      .map((brandName) => ({ text: brandName, value: brandName }))
+  }, [brandFilter, data])
+
+  const handleTableChange = (
+    pagination: TablePaginationConfig,
+    filters: Record<string, FilterValue | null>,
+    sorter: SorterResult<StoreDto> | SorterResult<StoreDto>[],
+    extra: { action: 'paginate' | 'sort' | 'filter' },
+  ) => {
+    const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    const rawField = currentSorter?.field || currentSorter?.column?.dataIndex
+    const field = Array.isArray(rawField) ? rawField.join('.') : rawField ? String(rawField) : undefined
+    const order = currentSorter?.order as StoreSortOrder | undefined
+    const nextSortBy = field && order ? field : undefined
+    const nextSortOrder = field && order ? order : null
+
+    const nextBrandValue = filters.brandName?.[0]
+    const nextBrandFilter = typeof nextBrandValue === 'string' ? nextBrandValue : undefined
+    const nextIsActiveValue = filters.isActive?.[0]
+    const nextIsActiveFilter =
+      nextIsActiveValue === 'true' ? true : nextIsActiveValue === 'false' ? false : undefined
+
+    // 表格筛选和排序都走服务端查询，避免分页后只在当前页内处理数据。
+    const nextPage = extra.action === 'paginate' ? pagination.current ?? 1 : 1
+    void loadData(
+      nextPage,
+      pagination.pageSize ?? pageSize,
+      nextBrandFilter,
+      nextIsActiveFilter,
+      nextSortBy,
+      nextSortOrder,
+    )
+  }
+
   const columns: ColumnsType<StoreDto> = [
-    { title: t('system.stores.storeName'), dataIndex: 'storeName', width: 240 },
-    { title: t('system.stores.storeCode'), dataIndex: 'storeCode', width: 140 },
-    { title: t('system.stores.brandName'), dataIndex: 'brandName', width: 180, render: renderBrandName },
-    { title: t('system.stores.contactPhone'), dataIndex: 'contactPhone', width: 160, render: (value) => value || '--' },
+    {
+      title: t('common.index'),
+      key: 'rowIndex',
+      width: 72,
+      render: (_value, _record, index) => (page - 1) * pageSize + index + 1,
+    },
+    {
+      title: t('system.stores.storeName'),
+      dataIndex: 'storeName',
+      width: 240,
+      sorter: true,
+      sortOrder: sortBy === 'storeName' ? sortOrder : null,
+    },
+    {
+      title: t('system.stores.storeCode'),
+      dataIndex: 'storeCode',
+      width: 140,
+      sorter: true,
+      sortOrder: sortBy === 'storeCode' ? sortOrder : null,
+    },
+    {
+      title: t('system.stores.brandName'),
+      dataIndex: 'brandName',
+      width: 180,
+      filters: brandFilterOptions,
+      filteredValue: brandFilter ? [brandFilter] : null,
+      sorter: true,
+      sortOrder: sortBy === 'brandName' ? sortOrder : null,
+      render: renderBrandName,
+    },
+    {
+      title: t('system.stores.contactPhone'),
+      dataIndex: 'contactPhone',
+      width: 160,
+      sorter: true,
+      sortOrder: sortBy === 'contactPhone' ? sortOrder : null,
+      render: (value) => value || '--',
+    },
     {
       title: t('system.stores.linkedUserCount'),
       dataIndex: 'totalUsers',
       width: 120,
+      sorter: true,
+      sortOrder: sortBy === 'totalUsers' ? sortOrder : null,
       render: (value: number | undefined, record) => (
         <Button type="link" style={{ paddingInline: 0 }} onClick={() => handleOpenStoreUsers(record)}>
           {value ?? 0}
@@ -209,6 +315,13 @@ export default function SystemStoresPage() {
       title: t('system.stores.cashRegisterEnabled'),
       dataIndex: 'isActive',
       width: 100,
+      filters: [
+        { text: t('common.active'), value: 'true' },
+        { text: t('common.inactive'), value: 'false' },
+      ],
+      filteredValue: isActiveFilter === undefined ? null : [String(isActiveFilter)],
+      sorter: true,
+      sortOrder: sortBy === 'isActive' ? sortOrder : null,
       render: (value: boolean) => (
         <Tag color={value ? 'success' : 'default'}>{value ? t('common.active') : t('common.inactive')}</Tag>
       ),
@@ -247,10 +360,10 @@ export default function SystemStoresPage() {
             style={{ width: 260 }}
             allowClear
           />
-          <Button type="primary" onClick={() => void loadData(1, pageSize)}>
+          <Button type="primary" onClick={() => void loadData(1, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)}>
             {t('common.query')}
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize)}>
+          <Button icon={<ReloadOutlined />} onClick={() => void loadData(page, pageSize, brandFilter, isActiveFilter, sortBy, sortOrder)}>
             {t('common.refresh')}
           </Button>
         </Space>
@@ -260,14 +373,13 @@ export default function SystemStoresPage() {
           loading={loading}
           columns={columns}
           dataSource={data}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1080 }}
+          onChange={handleTableChange}
           pagination={{
             current: page,
             pageSize,
             total,
-            onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize)
-            },
+            showSizeChanger: true,
           }}
         />
       </Card>

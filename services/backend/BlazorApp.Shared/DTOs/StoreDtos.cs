@@ -28,6 +28,11 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsActive { get; set; }
 
         /// <summary>
+        /// 品牌名称精确筛选
+        /// </summary>
+        public string? BrandName { get; set; }
+
+        /// <summary>
         /// 用户GUID过滤
         /// </summary>
         public string? UserGUID { get; set; }

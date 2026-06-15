@@ -20,6 +20,7 @@ export interface StoreQueryDto {
   pageSize?: number
   search?: string
   isActive?: boolean
+  brandName?: string
   userGUID?: string
   sortField?: string
   sortOrder?: string

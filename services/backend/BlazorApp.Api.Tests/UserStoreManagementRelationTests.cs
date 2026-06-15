@@ -147,6 +147,61 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetStoresAsync_FiltersByBrandNameAndSortsStoreColumns()
+        {
+            await SeedStoresForListQueryAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserStore("user-a", "store-hot-a", false),
+                CreateUserStore("user-b", "store-hot-b", false),
+                CreateUserStore("user-c", "store-hot-b", false),
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var filtered = await service.GetStoresAsync(
+                new StoreQueryDto { BrandName = "Hot Bargain", Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(filtered.Success);
+            var filteredData = filtered.Data!;
+            var filteredItems = filteredData.Items!;
+            Assert.Equal(2, filteredData.Total);
+            Assert.All(filteredItems, item => Assert.Equal("Hot Bargain", item.BrandName));
+
+            var brandSorted = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    SortField = "BrandName",
+                    SortOrder = "desc",
+                }
+            );
+
+            Assert.True(brandSorted.Success);
+            var brandSortedItems = brandSorted.Data!.Items!;
+            Assert.Equal("Other Brand", brandSortedItems[0].BrandName);
+
+            var userCountSorted = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    SortField = "totalUsers",
+                    SortOrder = "desc",
+                }
+            );
+
+            Assert.True(userCountSorted.Success);
+            var userCountSortedItems = userCountSorted.Data!.Items!;
+            Assert.Equal(
+                new[] { "store-hot-b", "store-hot-a", "store-other" },
+                userCountSortedItems.Select(item => item.StoreGUID).ToArray()
+            );
+            Assert.Equal(new[] { 2, 1, 0 }, userCountSortedItems.Select(item => item.TotalUsers).ToArray());
+        }
+
+        [Fact]
         public async Task GetUsersOptimizedAsync_WhenLinkedStoreInactive_IncludesStoreName()
         {
             await SeedInactiveStoreUserAsync();
@@ -620,6 +675,40 @@ namespace BlazorApp.Api.Tests
                     StoreGUID = "store-2",
                     StoreCode = "S002",
                     StoreName = "Store 2",
+                    IsActive = true,
+                },
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedStoresForListQueryAsync()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-hot-a",
+                    StoreCode = "S001",
+                    StoreName = "Hot Store A",
+                    BrandName = "Hot Bargain",
+                    Phone = "0731000001",
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-hot-b",
+                    StoreCode = "S002",
+                    StoreName = "Hot Store B",
+                    BrandName = "Hot Bargain",
+                    Phone = "0731000002",
+                    IsActive = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-other",
+                    StoreCode = "S003",
+                    StoreName = "Other Store",
+                    BrandName = "Other Brand",
+                    Phone = "0731000003",
                     IsActive = true,
                 },
             }).ExecuteCommandAsync();

@@ -11,12 +11,13 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5002
       - ASPNETCORE_HTTP_PORTS=5002
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
+      # 生产连接字符串只从服务器 .env 注入，避免把敏感值写入 compose。
+      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
+      - ConnectionStrings__StoreHzgHQConnection=${CONNECTION_STRING_STORE_HQ}
+      - ConnectionStrings__HBSalesConnection=${CONNECTION_STRING_SALES}
+      - ConnectionStrings__PostgresConnection=${CONNECTION_STRING_POSTGRES}
+      - ConnectionStrings__HBPOSMConnection=${CONNECTION_STRING_POSM}
+      - ConnectionStrings__HBSalesRecord=${CONNECTION_STRING_SALES_RECORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=${JWT_ISSUER:-BlazorApp}
       - Jwt__Audience=${JWT_AUDIENCE:-BlazorAppUsers}

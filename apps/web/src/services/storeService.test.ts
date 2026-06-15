@@ -1,4 +1,4 @@
-import { getActiveStores } from './storeService'
+import { getActiveStores, getStores } from './storeService'
 import type { StoreDto } from '../types/store'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
@@ -46,6 +46,46 @@ try {
       { label: 'Robinson', value: '1001' },
     ],
     '分店选项应该按照名称升序排列',
+  )
+
+  let requestedUrl = ''
+  globalThis.fetch = (async (input) => {
+    requestedUrl = String(input)
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        items: [],
+        total: 0,
+        page: 2,
+        pageSize: 50,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  await getStores({
+    page: 2,
+    pageSize: 50,
+    brandName: 'Hot Bargain',
+    isActive: true,
+    sortField: 'brandName',
+    sortOrder: 'desc',
+  })
+
+  const requestUrl = new URL(requestedUrl, 'http://localhost')
+  assertDeepEqual(
+    Array.from(requestUrl.searchParams.entries()),
+    [
+      ['page', '2'],
+      ['pageSize', '50'],
+      ['brandName', 'Hot Bargain'],
+      ['isActive', 'true'],
+      ['sortField', 'brandName'],
+      ['sortOrder', 'desc'],
+    ],
+    '分店列表查询应该透传品牌、状态和排序参数',
   )
 } finally {
   globalThis.fetch = originalFetch

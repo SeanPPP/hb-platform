@@ -94,7 +94,19 @@ import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
 import type { StoreOption } from '../../../services/storeService'
-import { compareProductStoreRecordsByName } from './storeRecordSorting'
+import {
+  compareProductStoreRecordsByActive,
+  compareProductStoreRecordsByAutoPricing,
+  compareProductStoreRecordsByDiscountRate,
+  compareProductStoreRecordsByName,
+  compareProductStoreRecordsByPurchasePrice,
+  compareProductStoreRecordsByRetailPrice,
+  compareProductStoreRecordsBySpecialProduct,
+  compareProductStoreRecordsByStoreCode,
+  compareProductStoreRecordsByStoreProductCode,
+  compareProductStoreRecordsByUpdatedAt,
+  compareProductStoreRecordsByUpdatedBy,
+} from './storeRecordSorting'
 import {
   clearActiveSupplierImageBatchJob,
   normalizeSupplierImageBatchJobKey,
@@ -114,6 +126,11 @@ import {
   getDefaultSupplierImageBatchScope,
   type SupplierImageBatchScope,
 } from './productImageBatchScope'
+import {
+  buildProductIntegrityFixSummary,
+  buildProductIntegritySummary,
+  type ProductIntegrityIssueRow,
+} from './productIntegrityReport'
 
 type ProductRow = PosProductDto & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
@@ -404,6 +421,10 @@ export default function ProductManagementPage() {
   const [integrityLoading, setIntegrityLoading] = useState(false)
   const [integrityResult, setIntegrityResult] = useState<ProductIntegrityCheckResultDto | null>(null)
   const [fixLoading, setFixLoading] = useState(false)
+  const integritySummary = useMemo(
+    () => buildProductIntegritySummary(integrityResult),
+    [integrityResult],
+  )
 
   // 供应商列表接口有时只返回编码，使用筛选下拉中的供应商资料补齐名称。
   const supplierNameMap = useMemo(
@@ -2219,10 +2240,11 @@ export default function ProductManagementPage() {
     try {
       const result = await checkIntegrity()
       setIntegrityResult(result)
-      if (!result.issues?.length) {
+      const summary = buildProductIntegritySummary(result)
+      if (summary.issueCount === 0) {
         message.success(t('posAdmin.products.integrityCheckPassed', '数据一致性检查通过，没有发现问题'))
       } else {
-        message.warning(t('posAdmin.products.foundIssues', '发现 {{count}} 个问题', { count: result.failedCount }))
+        message.warning(t('posAdmin.products.foundIssues', '发现 {{count}} 个问题', { count: summary.issueCount }))
       }
     } catch {
       message.error(t('posAdmin.products.integrityCheckFailed', '一致性检查失败'))
@@ -2235,12 +2257,22 @@ export default function ProductManagementPage() {
     if (!ensureCanManagePosProducts()) return
     setFixLoading(true)
     try {
-      const result: ProductIntegrityFixResultDto = await fixIntegrity({ fixAll: true })
-      message.success(t('posAdmin.products.fixComplete', '修复完成：成功 {{success}}，失败 {{failed}}', { success: result.fixedCount ?? 0, failed: result.failedCount ?? 0 }))
-      if (result.errors?.length) {
+      const result: ProductIntegrityFixResultDto = await fixIntegrity({
+        fixStoreRetailPrice: true,
+        fixStoreMultiCodeProduct: true,
+        fixProductSetCode: true,
+        dryRun: false,
+      })
+      const summary = buildProductIntegrityFixSummary(result)
+      message.success(t('posAdmin.products.fixComplete', '修复完成：删除 {{deleted}}，新增 {{added}}，错误 {{errors}}', {
+        deleted: summary.deletedCount,
+        added: summary.addedCount,
+        errors: summary.errorCount,
+      }))
+      if (summary.errors.length) {
         Modal.error({
           title: t('posAdmin.products.partialFixError', '部分修复错误'),
-          content: result.errors.join('\n'),
+          content: summary.errors.join('\n'),
         })
       }
       await handleCheckIntegrity()
@@ -3331,7 +3363,7 @@ export default function ProductManagementPage() {
             columnWidth: 40,
           }}
           columns={[
-            { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110 },
+            { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110, sorter: compareProductStoreRecordsByStoreCode },
             {
               title: t('common.storeName', '分店名称'),
               dataIndex: 'storeName',
@@ -3339,21 +3371,22 @@ export default function ProductManagementPage() {
               sorter: compareProductStoreRecordsByName,
               render: (value: string) => value || '-',
             },
-            { title: t('posAdmin.products.storeProductCode', '分店商品编码'), dataIndex: 'storeProductCode', width: 160, render: (value: string) => value || '-' },
-            { title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), dataIndex: 'purchasePrice', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
-            { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'storeRetailPriceValue', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
-            { title: t('posAdmin.productPrice.discountRate', '折扣率'), dataIndex: 'discountRate', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(4) : '-' },
-            { title: t('posAdmin.products.autoPricing', '自动定价'), dataIndex: 'isAutoPricing', width: 100, align: 'center' as const, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
-            { title: t('posAdmin.products.specialProduct', '特殊商品'), dataIndex: 'isSpecialProduct', width: 100, align: 'center' as const, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
+            { title: t('posAdmin.products.storeProductCode', '分店商品编码'), dataIndex: 'storeProductCode', width: 160, sorter: compareProductStoreRecordsByStoreProductCode, render: (value: string) => value || '-' },
+            { title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), dataIndex: 'purchasePrice', width: 100, align: 'right' as const, sorter: compareProductStoreRecordsByPurchasePrice, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
+            { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'storeRetailPriceValue', width: 100, align: 'right' as const, sorter: compareProductStoreRecordsByRetailPrice, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
+            { title: t('posAdmin.productPrice.discountRate', '折扣率'), dataIndex: 'discountRate', width: 100, align: 'right' as const, sorter: compareProductStoreRecordsByDiscountRate, render: (value: number) => value != null ? Number(value).toFixed(4) : '-' },
+            { title: t('posAdmin.products.autoPricing', '自动定价'), dataIndex: 'isAutoPricing', width: 100, align: 'center' as const, sorter: compareProductStoreRecordsByAutoPricing, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
+            { title: t('posAdmin.products.specialProduct', '特殊商品'), dataIndex: 'isSpecialProduct', width: 100, align: 'center' as const, sorter: compareProductStoreRecordsBySpecialProduct, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
             {
               title: t('posAdmin.cashierUsers.status', '状态'),
               dataIndex: 'isActive',
               width: 90,
               align: 'center' as const,
+              sorter: compareProductStoreRecordsByActive,
               render: (value: boolean) => <Tag color={value ? 'green' : 'red'}>{value ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag>,
             },
-            { title: t('posAdmin.productPrice.updatedAt', '更新时间'), dataIndex: 'updatedAt', width: 160, render: (value: string) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' },
-            { title: t('posAdmin.products.updatedBy', '更新人'), dataIndex: 'updatedBy', width: 120, render: (value: string) => value || '-' },
+            { title: t('posAdmin.productPrice.updatedAt', '更新时间'), dataIndex: 'updatedAt', width: 160, sorter: compareProductStoreRecordsByUpdatedAt, render: (value: string) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' },
+            { title: t('posAdmin.products.updatedBy', '更新人'), dataIndex: 'updatedBy', width: 120, sorter: compareProductStoreRecordsByUpdatedBy, render: (value: string) => value || '-' },
           ]}
         />
       </Modal>
@@ -3704,7 +3737,7 @@ export default function ProductManagementPage() {
           <Button key="check" type="primary" loading={integrityLoading} onClick={handleCheckIntegrity} icon={<SafetyCertificateOutlined />}>
             {t('posAdmin.products.check', '检查')}
           </Button>,
-          canManagePosProducts && integrityResult && integrityResult.issues?.length > 0 ? (
+          canManagePosProducts && integrityResult && integritySummary.issueCount > 0 ? (
             <Button key="fix" type="primary" danger loading={fixLoading} onClick={handleFixIntegrity} icon={<CloudSyncOutlined />}>
               {t('posAdmin.products.autoFix', '自动修复')}
             </Button>
@@ -3717,31 +3750,34 @@ export default function ProductManagementPage() {
           {integrityResult ? (
             <div>
               <Descriptions bordered size="small" column={3} style={{ marginBottom: 16 }}>
-                <Descriptions.Item label={t('posAdmin.products.totalProducts', '总商品数')}>{integrityResult.totalProducts}</Descriptions.Item>
-                <Descriptions.Item label={t('posAdmin.products.pass', '通过')}>
-                  <Tag color="green">{integrityResult.passedCount}</Tag>
+                <Descriptions.Item label={t('posAdmin.products.checkedStores', '检查分店数')}>{integritySummary.storeCount}</Descriptions.Item>
+                <Descriptions.Item label={t('posAdmin.products.checkedRecords', '检查记录数')}>
+                  {integritySummary.totalChecked}
                 </Descriptions.Item>
-                <Descriptions.Item label={t('posAdmin.products.issue', '问题')}>
-                  <Tag color="red">{integrityResult.failedCount}</Tag>
+                <Descriptions.Item label={t('posAdmin.products.issueRecords', '问题记录数')}>
+                  <Tag color={integritySummary.issueCount > 0 ? 'red' : 'green'}>{integritySummary.issueCount}</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label={t('posAdmin.products.durationSeconds', '耗时')}>
+                  {integritySummary.durationSeconds.toFixed(2)}s
                 </Descriptions.Item>
               </Descriptions>
-              {integrityResult.issues?.length > 0 ? (
-                <Table
-                  rowKey={(r, i) => `${r.productCode}_${r.issueType}_${i}`}
-                  dataSource={integrityResult.issues}
+              {integritySummary.issueRows.length > 0 ? (
+                <Table<ProductIntegrityIssueRow>
+                  rowKey="key"
+                  dataSource={integritySummary.issueRows}
                   pagination={false}
                   size="small"
                   scroll={{ y: 300 }}
                   columns={[
-                    { title: t('posAdmin.products.productCode', '商品代码'), dataIndex: 'productCode', width: 140 },
+                    { title: t('posAdmin.products.scope', '范围'), dataIndex: 'scope', width: 160 },
+                    { title: t('posAdmin.products.tableName', '数据表'), dataIndex: 'tableName', width: 170 },
                     { title: t('posAdmin.products.issueType', '问题类型'), dataIndex: 'issueType', width: 140 },
-                    { title: t('posAdmin.products.description', '描述'), dataIndex: 'description' },
+                    { title: t('posAdmin.products.issueCount', '数量'), dataIndex: 'count', width: 100 },
                     {
-                      title: t('posAdmin.products.severity', '严重程度'),
-                      dataIndex: 'severity',
-                      width: 100,
-                      render: (v: string) => (
-                        <Tag color={v === 'Error' ? 'red' : 'orange'}>{v === 'Error' ? t('posAdmin.products.error', '错误') : t('posAdmin.products.warning', '警告')}</Tag>
+                      title: t('posAdmin.products.sampleProductCodes', '样本商品代码'),
+                      dataIndex: 'sampleProductCodes',
+                      render: (codes: string[]) => (
+                        codes.length ? codes.join(', ') : '-'
                       ),
                     },
                   ]}

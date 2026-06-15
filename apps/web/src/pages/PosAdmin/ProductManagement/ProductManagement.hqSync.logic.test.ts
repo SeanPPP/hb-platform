@@ -3,7 +3,23 @@ import path from 'node:path'
 import type { CurrentUser } from '../../../types/auth'
 import type { ProductStoreRecordDto } from '../../../types/posProduct'
 import { buildAccess } from '../../../utils/access'
-import { compareProductStoreRecordsByName } from './storeRecordSorting'
+import {
+  compareProductStoreRecordsByActive,
+  compareProductStoreRecordsByAutoPricing,
+  compareProductStoreRecordsByDiscountRate,
+  compareProductStoreRecordsByName,
+  compareProductStoreRecordsByPurchasePrice,
+  compareProductStoreRecordsByRetailPrice,
+  compareProductStoreRecordsBySpecialProduct,
+  compareProductStoreRecordsByStoreCode,
+  compareProductStoreRecordsByStoreProductCode,
+  compareProductStoreRecordsByUpdatedAt,
+  compareProductStoreRecordsByUpdatedBy,
+} from './storeRecordSorting'
+import {
+  buildProductIntegrityFixSummary,
+  buildProductIntegritySummary,
+} from './productIntegrityReport'
 
 function createCurrentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -44,10 +60,14 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/ProductManagement/index.tsx')
 const typeFile = path.resolve(process.cwd(), 'src/types/posProduct.ts')
+const productIntegrityTypeFile = path.resolve(process.cwd(), 'src/types/productIntegrity.ts')
 const serviceFile = path.resolve(process.cwd(), 'src/services/posProductService.ts')
+const productIntegrityHelperFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/ProductManagement/productIntegrityReport.ts')
 const pageSource = readFileSync(pageFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
+const productIntegrityTypeSource = readFileSync(productIntegrityTypeFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
+const productIntegrityHelperSource = readFileSync(productIntegrityHelperFile, 'utf8')
 
 function assertSourceOrder(source: string, first: string, second: string, message: string) {
   const firstIndex = source.indexOf(first)
@@ -73,6 +93,161 @@ async function main() {
     assertEqual(access.isWarehouseStaff, true, 'WarehouseStaff 应被识别为仓库员工')
   })
   if (warehouseAccessFailure) failures.push(warehouseAccessFailure)
+
+  const productIntegritySummaryFailure = await runTest('商品一致性检查应把后端分组报告转换成页面问题行', () => {
+    const summary = buildProductIntegritySummary({
+      checkTime: '2026-06-15T00:00:00Z',
+      durationSeconds: 1.25,
+      productSetCodeReport: {
+        tableName: 'ProductSetCode',
+        totalChecked: 10,
+        orphanedCount: 2,
+        missingCount: 0,
+        orphanedProductCodes: ['P001', 'P002'],
+        missingProductCodes: [],
+      },
+      storeReports: [
+        {
+          storeCode: 'S1',
+          storeName: 'Sunnybank',
+          tableReports: [
+            {
+              tableName: 'StoreRetailPrice',
+              totalChecked: 100,
+              orphanedCount: 0,
+              missingCount: 3,
+              orphanedProductCodes: [],
+              missingProductCodes: ['P100', 'P101'],
+            },
+            {
+              tableName: 'StoreMultiCodeProduct',
+              totalChecked: 8,
+              orphanedCount: 1,
+              missingCount: 4,
+              orphanedProductCodes: ['P200'],
+              missingProductCodes: ['P201', 'P202'],
+            },
+          ],
+        },
+      ],
+    })
+
+    assertEqual(summary.storeCount, 1, '应统计检查分店数量')
+    assertEqual(summary.totalChecked, 118, '应汇总总部和分店表的检查记录数')
+    assertEqual(summary.issueCount, 10, '问题数应为孤立记录和缺失记录合计')
+    assertEqual(summary.issueRows.length, 4, '应按范围、表名和问题类型生成问题行')
+    assert(summary.issueRows.some((row) =>
+      row.scope === '总部' &&
+      row.tableName === 'ProductSetCode' &&
+      row.issueType === '孤立记录' &&
+      row.count === 2 &&
+      row.sampleProductCodes.includes('P001'),
+    ), 'ProductSetCode 孤立记录应生成总部问题行')
+    assert(summary.issueRows.some((row) =>
+      row.scope === 'Sunnybank (S1)' &&
+      row.tableName === 'StoreRetailPrice' &&
+      row.issueType === '缺失记录' &&
+      row.count === 3 &&
+      row.sampleProductCodes.includes('P100'),
+    ), 'StoreRetailPrice 缺失记录应生成分店问题行')
+    assert(summary.issueRows.some((row) =>
+      row.tableName === 'StoreMultiCodeProduct' &&
+      row.issueType === '孤立记录' &&
+      row.sampleProductCodes.includes('P200'),
+    ), 'StoreMultiCodeProduct 孤立记录应保留样本编码')
+    assert(summary.issueRows.some((row) =>
+      row.tableName === 'StoreMultiCodeProduct' &&
+      row.issueType === '缺失记录' &&
+      row.sampleProductCodes.includes('P202'),
+    ), 'StoreMultiCodeProduct 缺失记录应保留样本编码')
+  })
+  if (productIntegritySummaryFailure) failures.push(productIntegritySummaryFailure)
+
+  const productIntegrityAllPassFailure = await runTest('商品一致性检查无问题时 issueCount 应为 0', () => {
+    const summary = buildProductIntegritySummary({
+      checkTime: '2026-06-15T00:00:00Z',
+      durationSeconds: 0.5,
+      productSetCodeReport: {
+        tableName: 'ProductSetCode',
+        totalChecked: 1,
+        orphanedCount: 0,
+        missingCount: 0,
+        orphanedProductCodes: [],
+        missingProductCodes: [],
+      },
+      storeReports: [],
+    })
+
+    assertEqual(summary.issueCount, 0, '无孤立和缺失记录时应视为检查通过')
+    assertEqual(summary.issueRows.length, 0, '无问题时不应生成表格行')
+  })
+  if (productIntegrityAllPassFailure) failures.push(productIntegrityAllPassFailure)
+
+  const productIntegrityFixSummaryFailure = await runTest('商品一致性修复结果应从 reports 汇总', () => {
+    const summary = buildProductIntegrityFixSummary({
+      fixTime: '2026-06-15T00:00:00Z',
+      durationSeconds: 2,
+      isDryRun: false,
+      reports: [
+        {
+          tableName: 'StoreRetailPrice',
+          deletedCount: 2,
+          addedCount: 3,
+          errorCount: 0,
+          errors: [],
+        },
+        {
+          tableName: 'StoreMultiCodeProduct',
+          deletedCount: 1,
+          addedCount: 4,
+          errorCount: 1,
+          errors: ['S1 修复失败'],
+        },
+      ],
+    })
+
+    assertEqual(summary.deletedCount, 3, '修复结果应汇总删除数量')
+    assertEqual(summary.addedCount, 7, '修复结果应汇总新增数量')
+    assertEqual(summary.errorCount, 1, '修复结果应汇总错误数量')
+    assert(summary.errors.includes('S1 修复失败'), '修复结果应保留错误明细')
+  })
+  if (productIntegrityFixSummaryFailure) failures.push(productIntegrityFixSummaryFailure)
+
+  const productIntegritySourceFailure = await runTest('商品一致性检查页面和类型应使用后端分组报告结构', () => {
+    assert(
+      productIntegrityTypeSource.includes('storeReports: StoreIntegrityReport[]') &&
+        productIntegrityTypeSource.includes('productSetCodeReport?: TableIntegrityReport | null') &&
+        productIntegrityTypeSource.includes('reports: TableFixReport[]'),
+      '商品一致性类型应声明后端真实返回的分组报告和修复 reports',
+    )
+    assert(
+      productIntegrityHelperSource.includes('后端返回的是按分店、按表聚合的报告') &&
+        productIntegrityHelperSource.includes('issueCount') &&
+        productIntegrityHelperSource.includes('sampleProductCodes'),
+      '商品一致性 helper 应把后端分组报告转换成页面 summary 和问题行',
+    )
+    assert(
+      pageSource.includes('buildProductIntegritySummary') &&
+        pageSource.includes('integritySummary.issueCount') &&
+        pageSource.includes('sampleProductCodes'),
+      '商品管理页应通过 summary 展示检查结果',
+    )
+    assert(
+      pageSource.includes('fixStoreRetailPrice: true') &&
+        pageSource.includes('fixStoreMultiCodeProduct: true') &&
+        pageSource.includes('fixProductSetCode: true') &&
+        pageSource.includes('buildProductIntegrityFixSummary'),
+      '商品管理页自动修复应提交后端真实字段并汇总 reports',
+    )
+    assert(
+      !pageSource.includes('integrityResult.issues') &&
+        !pageSource.includes('integrityResult.totalProducts') &&
+        !pageSource.includes('integrityResult.passedCount') &&
+        !pageSource.includes('result.fixedCount'),
+      '商品管理页不应再读取旧版扁平字段',
+    )
+  })
+  if (productIntegritySourceFailure) failures.push(productIntegritySourceFailure)
 
   const adminButtonGuardFailure = await runTest('页面应使用 Admin 权限控制 HQ 同步按钮', () => {
     assert(
@@ -758,6 +933,72 @@ async function main() {
     assertEqual(sortedCodes.join(','), 'S03,S04,S01,S02,S99', '分店记录排序应先按分店名称，再按分店代码稳定排序')
   })
   if (storeRecordSorterFailure) failures.push(storeRecordSorterFailure)
+
+  const storeRecordColumnSorterFailure = await runTest('分店记录弹窗各列应支持前端排序', () => {
+    assert(
+      pageSource.includes('sorter: compareProductStoreRecordsByStoreCode') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByName') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByStoreProductCode') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByPurchasePrice') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByRetailPrice') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByDiscountRate') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByAutoPricing') &&
+        pageSource.includes('sorter: compareProductStoreRecordsBySpecialProduct') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByActive') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByUpdatedAt') &&
+        pageSource.includes('sorter: compareProductStoreRecordsByUpdatedBy'),
+      '分店记录弹窗应给分店代码、名称、编码、价格、折扣率、布尔状态、更新时间和更新人列绑定前端 sorter',
+    )
+
+    const records: ProductStoreRecordDto[] = [
+      {
+        storeCode: '1002',
+        storeName: 'Beta',
+        storeProductCode: 'B',
+        purchasePrice: 4.87,
+        storeRetailPriceValue: 12.5,
+        discountRate: 0,
+        isAutoPricing: true,
+        isSpecialProduct: false,
+        isActive: true,
+        updatedAt: '2025-01-01T00:00:00Z',
+        updatedBy: 'ReactSync',
+      },
+      {
+        storeCode: '1001',
+        storeName: 'Alpha',
+        storeProductCode: 'A',
+        purchasePrice: 1.25,
+        storeRetailPriceValue: 9.99,
+        discountRate: 0.1,
+        isAutoPricing: false,
+        isSpecialProduct: true,
+        isActive: false,
+        updatedAt: '2024-01-01T00:00:00Z',
+        updatedBy: 'admin',
+      },
+      {
+        storeCode: '1003',
+        storeName: 'Gamma',
+        storeProductCode: 'C',
+        isAutoPricing: true,
+        isSpecialProduct: false,
+        isActive: true,
+      },
+    ]
+
+    assertEqual(records.slice().sort(compareProductStoreRecordsByStoreCode)[0]?.storeCode, '1001', '分店代码应按文本升序排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByStoreProductCode)[0]?.storeProductCode, 'A', '分店商品编码应按文本升序排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByPurchasePrice)[0]?.purchasePrice, 1.25, '进货价应按数字升序排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByRetailPrice)[0]?.storeRetailPriceValue, 9.99, '零售价应按数字升序排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByDiscountRate)[0]?.discountRate, 0, '折扣率应按数字升序排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByAutoPricing)[0]?.isAutoPricing, false, '自动定价应按否到是排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsBySpecialProduct)[0]?.isSpecialProduct, false, '特殊商品应按否到是排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByActive)[0]?.isActive, false, '状态应按禁用到启用排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByUpdatedAt)[0]?.updatedAt, '2024-01-01T00:00:00Z', '更新时间应按时间升序排序')
+    assertEqual(records.slice().sort(compareProductStoreRecordsByUpdatedBy)[0]?.updatedBy, undefined, '更新人空值应按文本空值排序')
+  })
+  if (storeRecordColumnSorterFailure) failures.push(storeRecordColumnSorterFailure)
 
   const pushToHqFailure = await runTest('选中商品发送到 HQ 应复用选择、权限和防重复提交保护', () => {
     assert(

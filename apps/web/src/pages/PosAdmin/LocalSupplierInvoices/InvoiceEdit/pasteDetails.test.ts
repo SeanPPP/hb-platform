@@ -109,6 +109,17 @@ async function main() {
   })
   if (barcodeLabelFailure) failures.push(barcodeLabelFailure)
 
+  const itemNumberQuoteFailure = await runTest('粘贴货号列应去掉 Excel 文本格式前导单引号', () => {
+    const [excelTextRow] = parsePasteText("'027000040\t8719987314001\t商品1\t1\t5\t5\t5", defaultPasteFieldOrder)
+    const [multiQuoteRow] = parsePasteText("''SKU-1\t8719987314002\t商品2\t1\t5\t5\t5", defaultPasteFieldOrder)
+    const [middleQuoteRow] = parsePasteText("SKU-'KEEP\t8719987314003\t商品3\t1\t5\t5\t5", defaultPasteFieldOrder)
+
+    assertEqual(excelTextRow?.itemNumber, '027000040', '货号前导单引号应被去掉')
+    assertEqual(multiQuoteRow?.itemNumber, 'SKU-1', '货号多个前导单引号应全部去掉')
+    assertEqual(middleQuoteRow?.itemNumber, "SKU-'KEEP", '货号中间单引号应保留')
+  })
+  if (itemNumberQuoteFailure) failures.push(itemNumberQuoteFailure)
+
   if (failures.length) {
     throw new Error(failures.join('\n'))
   }
