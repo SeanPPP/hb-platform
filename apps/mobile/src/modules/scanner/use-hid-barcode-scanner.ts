@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { NativeSyntheticEvent, TextInputSubmitEditingEventData, TextInput } from "react-native";
 import { getItemAsync, setItemAsync } from "expo-secure-store";
+import { createHidBarcodeKeyBuffer, normalizeHidBarcode, type HidBarcodeKeyEvent } from "./hid-barcode-buffer";
 import { createHiddenInputFocusController, type HiddenInputFocusController } from "./hid-hidden-input-focus";
 
 interface UseHidBarcodeScannerOptions {
@@ -62,10 +63,6 @@ export function getHidScannerAvailability() {
   return getNativeModule() != null;
 }
 
-function normalizeBarcode(rawValue: string) {
-  return rawValue.replace(/[\r\n\t]/g, "").trim();
-}
-
 export function useHidBarcodeScanner({
   enabled = true,
   idleMs = 50,
@@ -85,6 +82,22 @@ export function useHidBarcodeScanner({
   const lastSubmittedRef = useRef("");
   const lastSubmittedTimeRef = useRef(0);
 
+  const switchToTextInputMode = useCallback(() => {
+    if (cachedForceTextInput === true) {
+      return;
+    }
+    console.log("[HID-Scanner] scanner uses unmapped keyCodes, switching to TextInput mode");
+    void persistForceTextInput(true);
+    setForceTextInput(true);
+  }, []);
+
+  const nativeKeyBuffer = useMemo(() => createHidBarcodeKeyBuffer({
+    idleMs,
+    minLength,
+    onBarcode: (barcode) => onScanRef.current?.(barcode),
+    onFallbackToTextInput: switchToTextInputMode,
+  }), [idleMs, minLength, switchToTextInputMode]);
+
   // 隐藏输入框只在扫码场景抢焦点，避免覆盖用户正在编辑的可见输入框。
   focusTargetRef.current = () => {
     if (enabled) {
@@ -98,7 +111,7 @@ export function useHidBarcodeScanner({
 
   const submitBarcode = useCallback(
     (rawValue: string) => {
-      const barcode = normalizeBarcode(rawValue);
+      const barcode = normalizeHidBarcode(rawValue);
       if (!barcode || barcode.length < minLength) {
         return;
       }
@@ -121,6 +134,7 @@ export function useHidBarcodeScanner({
       if (textInputTimerRef.current) {
         clearTimeout(textInputTimerRef.current);
       }
+      // 隐藏 TextInput 模式兼容不能提供 character 的扫码枪，仍按输入停顿自动提交。
       textInputTimerRef.current = setTimeout(() => {
         submitBarcode(nextValue);
         setTextInputValue("");
@@ -196,8 +210,9 @@ export function useHidBarcodeScanner({
       if (textInputTimerRef.current) {
         clearTimeout(textInputTimerRef.current);
       }
+      nativeKeyBuffer.dispose();
     };
-  }, []);
+  }, [nativeKeyBuffer]);
 
   useEffect(() => {
     const mod = getNativeModule();
@@ -205,22 +220,12 @@ export function useHidBarcodeScanner({
       return;
     }
 
-    const onKeyPress = (event: { key: string; character?: string }) => {
+    const onKeyPress = (event: HidBarcodeKeyEvent) => {
       if (!enabled) {
         return;
       }
 
-      const character = event.character || "";
-      const key = event.key || "";
-
-      if (/^\d+$/.test(key) && !character) {
-        if (cachedForceTextInput !== true) {
-          console.log("[HID-Scanner] scanner uses unmapped keyCodes, switching to TextInput mode");
-          void persistForceTextInput(true);
-          setForceTextInput(true);
-        }
-        return;
-      }
+      nativeKeyBuffer.handleKeyPress(event);
     };
 
     mod.addListener("onKeyPress", onKeyPress);
@@ -228,7 +233,7 @@ export function useHidBarcodeScanner({
     return () => {
       mod.removeListener("onKeyPress", onKeyPress);
     };
-  }, [enabled]);
+  }, [enabled, nativeKeyBuffer]);
 
   useEffect(() => {
     const mod = getNativeModule();
