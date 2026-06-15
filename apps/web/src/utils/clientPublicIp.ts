@@ -30,6 +30,11 @@ function isPublicIpv4(value?: string | null) {
     (first === 169 && second === 254) ||
     (first === 172 && second >= 16 && second <= 31) ||
     (first === 192 && second === 168) ||
+    (first === 192 && second === 0 && (parts[2] === 0 || parts[2] === 2)) ||
+    (first === 192 && second === 88 && parts[2] === 99) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    (first === 198 && second === 51 && parts[2] === 100) ||
+    (first === 203 && second === 0 && parts[2] === 113) ||
     (first === 100 && second >= 64 && second <= 127)
   )
 }

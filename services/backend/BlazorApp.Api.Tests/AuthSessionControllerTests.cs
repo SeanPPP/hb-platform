@@ -162,7 +162,7 @@ public sealed class AuthSessionControllerTests : IDisposable
             .Setup(service =>
                 service.GenerateTokensAsync(
                     It.Is<User>(user => user.UserGUID == "ip-user-1"),
-                    "203.0.113.9",
+                    "8.8.8.9",
                     It.IsAny<string>()
                 )
             )
@@ -179,7 +179,7 @@ public sealed class AuthSessionControllerTests : IDisposable
 
         var controller = CreateController(authService.Object);
         controller.ControllerContext.HttpContext.Request.Headers["X-Forwarded-For"] =
-            "203.0.113.9, 10.0.0.1";
+            "8.8.8.9, 10.0.0.1";
 
         var result = await InvokeAsync(controller, "SessionLogin", new LoginRequest
         {
@@ -191,12 +191,12 @@ public sealed class AuthSessionControllerTests : IDisposable
         Assert.True(GetBoolean(result!, "Success"));
 
         var user = await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "ip-user-1");
-        Assert.Equal("203.0.113.9", user!.LastLoginIp);
+        Assert.Equal("8.8.8.9", user!.LastLoginIp);
         Assert.NotNull(user.LastLoginAt);
         authService.Verify(
             service => service.GenerateTokensAsync(
                 It.Is<User>(item => item.UserGUID == "ip-user-1"),
-                "203.0.113.9",
+                "8.8.8.9",
                 It.IsAny<string>()
             ),
             Times.Once

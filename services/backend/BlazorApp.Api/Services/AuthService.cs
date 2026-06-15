@@ -699,6 +699,12 @@ namespace BlazorApp.Api.Services
             DateTime now
         )
         {
+            var newPublicIp = ClientIpResolver.NormalizeKnownPublicIpv4(ipAddress);
+            if (string.IsNullOrWhiteSpace(newPublicIp))
+            {
+                return;
+            }
+
             var sessions = await _dbContext.Db.Queryable<RefreshToken>()
                 .Where(token =>
                     token.UserGUID == userGuid
@@ -709,11 +715,12 @@ namespace BlazorApp.Api.Services
                 .ToListAsync();
 
             var sessionsToRevoke = sessions
-                .Where(token => !string.Equals(
-                    token.IpAddress ?? string.Empty,
-                    ipAddress,
-                    StringComparison.OrdinalIgnoreCase
-                ))
+                .Where(token =>
+                {
+                    var existingPublicIp = ClientIpResolver.NormalizeKnownPublicIpv4(token.IpAddress);
+                    return !string.IsNullOrWhiteSpace(existingPublicIp)
+                        && !string.Equals(existingPublicIp, newPublicIp, StringComparison.OrdinalIgnoreCase);
+                })
                 .ToList();
 
             if (sessionsToRevoke.Count == 0)

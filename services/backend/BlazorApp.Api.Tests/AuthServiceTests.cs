@@ -270,6 +270,142 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GenerateTokensAsync_WhenExistingSessionUsesMappedIpv4SameIp_KeepsOldSession()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("mapped-same-ip-user");
+
+            await _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = "mapped-same-ip-session",
+                UserGUID = user.UserGUID,
+                Token = "mapped-same-ip-refresh",
+                ExpiresAt = DateTime.UtcNow.AddDays(1),
+                IsRevoked = false,
+                IpAddress = "::ffff:7.7.7.7",
+                UserAgent = "old-agent",
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            await service.GenerateTokensAsync(user, "7.7.7.7", "new-agent");
+
+            var oldSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == "mapped-same-ip-refresh");
+
+            Assert.False(oldSession!.IsRevoked);
+        }
+
+        [Fact]
+        public async Task GenerateTokensAsync_WhenNewIpIsUnknown_KeepsExistingPublicIpSessions()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("unknown-ip-user");
+
+            await _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = "public-session",
+                UserGUID = user.UserGUID,
+                Token = "public-refresh",
+                ExpiresAt = DateTime.UtcNow.AddDays(1),
+                IsRevoked = false,
+                IpAddress = "4.4.4.4",
+                UserAgent = "old-agent",
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            await service.GenerateTokensAsync(user, "unknown", "new-agent");
+
+            var oldSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == "public-refresh");
+
+            Assert.False(oldSession!.IsRevoked);
+        }
+
+        [Fact]
+        public async Task GenerateTokensAsync_WhenExistingSessionIpIsUnknown_KeepsExistingSession()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("old-unknown-ip-user");
+
+            await _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = "unknown-session",
+                UserGUID = user.UserGUID,
+                Token = "unknown-refresh",
+                ExpiresAt = DateTime.UtcNow.AddDays(1),
+                IsRevoked = false,
+                IpAddress = "unknown",
+                UserAgent = "old-agent",
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            await service.GenerateTokensAsync(user, "5.5.5.5", "new-agent");
+
+            var oldSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == "unknown-refresh");
+
+            Assert.False(oldSession!.IsRevoked);
+        }
+
+        [Fact]
+        public async Task GenerateTokensAsync_WhenExistingSessionIpIsPrivate_KeepsExistingSession()
+        {
+            await CreateCurrentAuthSchemaAsync();
+            var user = await SeedCurrentUserAsync("old-private-ip-user");
+
+            await _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = "private-session",
+                UserGUID = user.UserGUID,
+                Token = "private-refresh",
+                ExpiresAt = DateTime.UtcNow.AddDays(1),
+                IsRevoked = false,
+                IpAddress = "172.19.0.1",
+                UserAgent = "old-agent",
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+
+            var service = new AuthService(
+                CreateSqlSugarContext(_db),
+                CreateJwtConfiguration(),
+                new HttpContextAccessor()
+            );
+
+            await service.GenerateTokensAsync(user, "6.6.6.6", "new-agent");
+
+            var oldSession = await _db.Queryable<RefreshToken>()
+                .FirstAsync(token => token.Token == "private-refresh");
+
+            Assert.False(oldSession!.IsRevoked);
+        }
+
+        [Fact]
         public async Task AuthSessionValidator_WhenSessionRevoked_ReturnsFalseForAccessTokenSession()
         {
             await CreateCurrentAuthSchemaAsync();

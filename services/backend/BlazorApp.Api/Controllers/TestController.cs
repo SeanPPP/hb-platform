@@ -124,11 +124,7 @@ namespace BlazorApp.Api.Controllers
         /// </summary>
         /// <returns>测试令牌信息</returns>
         /// <remarks>
-        /// 生成的令牌可以在Swagger中使用：
-        /// 1. 点击"Authorize"按钮
-        /// 2. 输入格式：Bearer + 空格 + 令牌值
-        /// 3. 示例：Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-        /// 4. 注意：必须包含"Bearer"前缀和空格，不能使用大括号{}
+        /// 该接口仅验证 JWT 签名格式；正式受保护 API 需要登录流程签发的 sessionId 绑定令牌。
         /// </remarks>
         [HttpGet("test-jwt")]
         [AllowAnonymous]
@@ -155,14 +151,15 @@ namespace BlazorApp.Api.Controllers
                 // 获取AuthService
                 var authService = HttpContext.RequestServices.GetRequiredService<IAuthService>();
 
-                // 生成JWT令牌
+                // 该测试令牌不写入 RefreshToken，因此不会通过正式 sessionId 会话校验。
                 var token = authService.GenerateJwtToken(testUser);
 
                 return Ok(
                     new
                     {
-                        message = "JWT令牌生成测试",
+                        message = "JWT令牌生成测试（不绑定登录会话，不能用于正式受保护接口）",
                         token = token,
+                        usableForProtectedApis = false,
                         user = new
                         {
                             testUser.UserGUID,
