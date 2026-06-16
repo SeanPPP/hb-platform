@@ -24,16 +24,15 @@ public sealed class InstallmentServiceTests
     }
 
     [Fact]
-    public async Task Create_allows_small_order_when_paid_off()
+    public async Task Create_rejects_installment_total_below_minimum()
     {
         var service = CreateService();
-        var request = CreateRequest(totalAmount: 12m, downPaymentAmount: 12m);
+        var request = CreateRequest(totalAmount: 49.99m, downPaymentAmount: 20m);
 
-        var response = await service.CreateAsync(request, CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CreateAsync(request, CancellationToken.None));
 
-        Assert.Equal(InstallmentStatus.PaidOff, response.Status);
-        Assert.Equal(12m, response.PaidAmount);
-        Assert.Equal(0m, response.BalanceAmount);
+        Assert.Contains("$50", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -133,7 +132,7 @@ public sealed class InstallmentServiceTests
     public async Task Confirm_pickup_rejects_device_scope_mismatch()
     {
         var service = CreateService();
-        var created = await service.CreateAsync(CreateRequest(totalAmount: 20m, downPaymentAmount: 20m), CancellationToken.None);
+        var created = await service.CreateAsync(CreateRequest(totalAmount: 50m, downPaymentAmount: 50m), CancellationToken.None);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.ConfirmPickupAsync(CreatePickup(created.InstallmentGuid) with { DeviceCode = "POS02" }, CancellationToken.None));
@@ -184,7 +183,7 @@ public sealed class InstallmentServiceTests
     public async Task Confirm_pickup_is_idempotent_after_success()
     {
         var service = CreateService();
-        var created = await service.CreateAsync(CreateRequest(totalAmount: 20m, downPaymentAmount: 20m), CancellationToken.None);
+        var created = await service.CreateAsync(CreateRequest(totalAmount: 50m, downPaymentAmount: 50m), CancellationToken.None);
         var first = await service.ConfirmPickupAsync(CreatePickup(created.InstallmentGuid), CancellationToken.None);
 
         var second = await service.ConfirmPickupAsync(CreatePickup(created.InstallmentGuid), CancellationToken.None);
@@ -392,7 +391,7 @@ public sealed class InstallmentServiceTests
     public async Task Cancel_and_void_reject_paid_off_installment()
     {
         var service = CreateService();
-        var created = await service.CreateAsync(CreateRequest(totalAmount: 20m, downPaymentAmount: 20m), CancellationToken.None);
+        var created = await service.CreateAsync(CreateRequest(totalAmount: 50m, downPaymentAmount: 50m), CancellationToken.None);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.CancelAsync(

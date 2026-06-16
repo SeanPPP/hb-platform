@@ -32,6 +32,41 @@ public sealed class InstallmentCreateViewModelTests
     }
 
     [Fact]
+    public void SubmitCommand_rejects_order_total_below_installment_minimum_with_friendly_status()
+    {
+        var viewModel = new InstallmentCreateViewModel(
+            new FakeInstallmentOrderService(),
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { });
+
+        viewModel.Prepare(CreateSession(), CreateCartSnapshot(actualAmount: 49.99m));
+        viewModel.CustomerName = "Alice";
+        viewModel.CustomerPhone = "0400111222";
+
+        Assert.False(viewModel.SubmitCommand.CanExecute(null));
+        Assert.Contains("$50", viewModel.DownPaymentStatusText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SubmitCommand_rejects_down_payment_below_minimum_with_friendly_status()
+    {
+        var viewModel = new InstallmentCreateViewModel(
+            new FakeInstallmentOrderService(),
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { });
+
+        viewModel.Prepare(CreateSession(), CreateCartSnapshot(actualAmount: 55m));
+        viewModel.CustomerName = "Alice";
+        viewModel.CustomerPhone = "0400111222";
+        viewModel.DownPaymentAmount = 19.99m;
+
+        Assert.False(viewModel.SubmitCommand.CanExecute(null));
+        Assert.Contains("$20", viewModel.DownPaymentStatusText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PaymentMethodOptions_refresh_when_language_changes()
     {
         var localization = new LocalizationService();
@@ -96,19 +131,43 @@ public sealed class InstallmentCreateViewModelTests
         Assert.Equal("Installment order created.", viewModel.StatusMessage);
     }
 
+    [Fact]
+    public async Task SubmitCommand_allows_minimum_installment_total_and_down_payment()
+    {
+        var service = new FakeInstallmentOrderService();
+        var viewModel = new InstallmentCreateViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { });
+
+        viewModel.Prepare(CreateSession(), CreateCartSnapshot(actualAmount: 55m));
+        viewModel.CustomerName = "Alice";
+        viewModel.CustomerPhone = "0400111222";
+        viewModel.DownPaymentAmount = 20m;
+
+        Assert.True(viewModel.SubmitCommand.CanExecute(null));
+
+        await viewModel.SubmitCommand.ExecuteAsync(null);
+
+        Assert.NotNull(service.LastCreateRequest);
+        Assert.Equal(55m, service.LastCreateRequest!.CartSnapshot.ActualAmount);
+        Assert.Equal(20m, service.LastCreateRequest.DownPaymentAmount);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
     }
 
-    private static PosCartServiceSnapshot CreateCartSnapshot()
+    private static PosCartServiceSnapshot CreateCartSnapshot(decimal totalAmount = 130m, decimal discountAmount = 10m, decimal actualAmount = 120m)
     {
         return new PosCartServiceSnapshot(
-            130m,
-            10m,
-            120m,
+            totalAmount,
+            discountAmount,
+            actualAmount,
             [
-                new PosCartLineServiceSnapshot("SKU-001", null, "Premium Rice Cooker", "690001", "ITEM-001", 1m, 130m, 10m, 120m)
+                new PosCartLineServiceSnapshot("SKU-001", null, "Premium Rice Cooker", "690001", "ITEM-001", 1m, totalAmount, discountAmount, actualAmount)
             ]);
     }
 

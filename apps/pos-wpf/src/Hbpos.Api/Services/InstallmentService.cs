@@ -46,6 +46,7 @@ public sealed class InstallmentService(
     TimeProvider? timeProvider = null,
     ILogger<InstallmentService>? logger = null) : IInstallmentService, IInstallmentHistoryService
 {
+    public const decimal MinimumInstallmentTotalAmount = 50m;
     public const decimal MinimumDownPaymentAmount = 20m;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
@@ -683,6 +684,12 @@ public sealed class InstallmentService(
             throw new InvalidOperationException("Total amount must be greater than zero.");
         }
 
+        if (totalAmount < MinimumInstallmentTotalAmount)
+        {
+            // 中文说明：API 层保留分期总额兜底，防止客户端校验被绕过后创建小额分期单。
+            throw new InvalidOperationException("Installment order total must be at least $50.");
+        }
+
         if (downPaymentAmount <= 0m)
         {
             throw new InvalidOperationException("Down payment amount must be greater than zero.");
@@ -693,12 +700,7 @@ public sealed class InstallmentService(
             throw new InvalidOperationException("Down payment amount cannot exceed total amount.");
         }
 
-        if (totalAmount < MinimumDownPaymentAmount && downPaymentAmount != totalAmount)
-        {
-            throw new InvalidOperationException("Down payment must pay off orders below the minimum amount.");
-        }
-
-        if (totalAmount >= MinimumDownPaymentAmount && downPaymentAmount < MinimumDownPaymentAmount)
+        if (downPaymentAmount < MinimumDownPaymentAmount)
         {
             throw new InvalidOperationException("Down payment amount must be at least $20.");
         }

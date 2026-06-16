@@ -198,7 +198,11 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject
     }
 
     private Task CreateInstallmentAsync() => _showCreateAsync(CartSnapshot);
-    private bool CanCreateInstallment() => !IsBusy && !IsOffline && CartSnapshot is { ActualAmount: > 0m };
+    private bool CanCreateInstallment()
+    {
+        // 中文说明：创建入口只要求当前有可分期订单；提交阶段会继续校验在线状态并给出明确提示。
+        return !IsBusy && CartSnapshot is { ActualAmount: > 0m };
+    }
 
     private async Task AddRepaymentAsync()
     {

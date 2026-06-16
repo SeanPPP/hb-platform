@@ -684,7 +684,9 @@
   <data name="installment.create.order.financed" xml:space="preserve"><value>Financed {0:C2}</value></data>
   <data name="installment.create.status.ready" xml:space="preserve"><value>Complete the customer, down payment, and installment details.</value></data>
   <data name="installment.create.status.missingCart" xml:space="preserve"><value>There is no current order available for installment creation.</value></data>
+  <data name="installment.create.status.totalBelowMinimum" xml:space="preserve"><value>Installment order total must be at least $50. Use regular payment for orders below $50.</value></data>
   <data name="installment.create.payment.status.offline" xml:space="preserve"><value>Offline mode cannot submit a down payment.</value></data>
+  <data name="installment.create.payment.status.downPaymentBelowMinimum" xml:space="preserve"><value>First payment must be at least $20.</value></data>
   <data name="installment.create.payment.status.cash" xml:space="preserve"><value>Cash down payment does not require an additional reference.</value></data>
   <data name="installment.create.payment.status.card.empty" xml:space="preserve"><value>Card down payment may include a transaction reference for reconciliation.</value></data>
   <data name="installment.create.payment.status.card.ready" xml:space="preserve"><value>Card down payment reference is ready.</value></data>

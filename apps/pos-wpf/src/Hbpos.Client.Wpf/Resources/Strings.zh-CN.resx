@@ -2010,8 +2010,14 @@
   <data name="installment.create.status.missingCart" xml:space="preserve">
     <value>当前没有可用于创建分期的订单。</value>
   </data>
+  <data name="installment.create.status.totalBelowMinimum" xml:space="preserve">
+    <value>分期订单总额需不少于 $50，低于 $50 的订单请使用普通支付。</value>
+  </data>
   <data name="installment.create.payment.status.offline" xml:space="preserve">
     <value>当前为离线状态，暂不能提交首付。</value>
+  </data>
+  <data name="installment.create.payment.status.downPaymentBelowMinimum" xml:space="preserve">
+    <value>首次支付金额需不少于 $20。</value>
   </data>
   <data name="installment.create.payment.status.cash" xml:space="preserve">
     <value>现金首付无需额外凭证。</value>

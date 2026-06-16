@@ -10,6 +10,7 @@ namespace Hbpos.Client.Wpf.ViewModels;
 
 public sealed partial class InstallmentCreateViewModel : ObservableObject
 {
+    private const decimal MinimumInstallmentTotalAmount = 50m;
     private const decimal MinimumDownPaymentAmount = 20m;
 
     private readonly IInstallmentOrderService _installmentOrderService;
@@ -265,12 +266,17 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject
             !IsOffline &&
             CartSnapshot is not null &&
             CartSnapshot.Lines.Count > 0 &&
-            TotalAmount > 0m &&
+            IsValidInstallmentTotal() &&
             !string.IsNullOrWhiteSpace(CustomerName) &&
             !string.IsNullOrWhiteSpace(CustomerPhone) &&
             IsValidDownPayment() &&
             (DownPaymentMethod != PaymentMethodKind.Voucher ||
              (!string.IsNullOrWhiteSpace(DownPaymentReference) && !string.IsNullOrWhiteSpace(VoucherReservationToken)));
+    }
+
+    private bool IsValidInstallmentTotal()
+    {
+        return TotalAmount >= MinimumInstallmentTotalAmount;
     }
 
     private bool IsValidDownPayment()
@@ -280,9 +286,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject
             return false;
         }
 
-        return TotalAmount < MinimumDownPaymentAmount
-            ? DownPaymentAmount == TotalAmount
-            : DownPaymentAmount >= MinimumDownPaymentAmount;
+        return DownPaymentAmount >= MinimumDownPaymentAmount;
     }
 
     private void BackToCenter()
@@ -337,6 +341,18 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject
         if (IsOffline)
         {
             return T("installment.create.payment.status.offline", "Offline mode cannot submit a down payment.");
+        }
+
+        if (!IsValidInstallmentTotal())
+        {
+            // 中文说明：分期只服务达到最低金额门槛的订单，小额订单引导用户走普通支付。
+            return T("installment.create.status.totalBelowMinimum", "Installment order total must be at least $50. Use regular payment for orders below $50.");
+        }
+
+        if (DownPaymentAmount < MinimumDownPaymentAmount)
+        {
+            // 中文说明：首付门槛先于支付方式提示展示，避免按钮禁用但用户不知道原因。
+            return T("installment.create.payment.status.downPaymentBelowMinimum", "First payment must be at least $20.");
         }
 
         return DownPaymentMethod switch

@@ -10,6 +10,31 @@ namespace Hbpos.Client.Tests;
 public sealed class InstallmentCenterViewModelTests
 {
     [Fact]
+    public async Task CreateInstallmentCommand_opens_create_screen_for_offline_current_cart()
+    {
+        PosCartServiceSnapshot? capturedSnapshot = null;
+        var viewModel = new InstallmentCenterViewModel(
+            new FakeInstallmentOrderService(),
+            CreateSession() with { IsOnline = false },
+            snapshot =>
+            {
+                capturedSnapshot = snapshot;
+                return Task.CompletedTask;
+            },
+            () => { });
+        var cartSnapshot = CreateCartSnapshot();
+
+        viewModel.Prepare(viewModel.Session, cartSnapshot);
+
+        Assert.True(viewModel.IsOffline);
+        Assert.True(viewModel.CreateInstallmentCommand.CanExecute(null));
+
+        await viewModel.CreateInstallmentCommand.ExecuteAsync(null);
+
+        Assert.Same(cartSnapshot, capturedSnapshot);
+    }
+
+    [Fact]
     public void PaymentMethodOptions_refresh_when_language_changes()
     {
         var localization = new LocalizationService();
@@ -233,6 +258,17 @@ public sealed class InstallmentCenterViewModelTests
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+    }
+
+    private static PosCartServiceSnapshot CreateCartSnapshot()
+    {
+        return new PosCartServiceSnapshot(
+            55m,
+            0m,
+            55m,
+            [
+                new PosCartLineServiceSnapshot("SKU-001", null, "Premium Rice Cooker", "690001", "ITEM-001", 1m, 55m, 0m, 55m)
+            ]);
     }
 
     private sealed class FakeInstallmentOrderService : IInstallmentOrderService
