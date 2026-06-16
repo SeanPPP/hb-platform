@@ -8,6 +8,7 @@ using Hbpos.Client.Wpf.Converters;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Devices;
@@ -41,27 +42,40 @@ public sealed class MainViewModelScannerTests
     [Fact]
     public async Task Active_page_title_uses_payment_mode_for_payment_screen()
     {
+        var priceIndex = new LocalSellableItemIndex();
         var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            cart,
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepo, new FakeCatalogSyncService()),
+            catalogRepo,
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -153,26 +167,40 @@ public sealed class MainViewModelScannerTests
     public async Task Reset_scanner_binding_command_resets_scanner_and_updates_status()
     {
         var scanner = new FakeRawScannerService();
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository();
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepo, new FakeCatalogSyncService()),
+            catalogRepo,
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository(),
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.ResetScannerBindingCommand.ExecuteAsync(null);
 
@@ -469,26 +497,39 @@ public sealed class MainViewModelScannerTests
         {
             BeforeLoadSellableItemsAsync = () => allowCatalogLoad.Task
         };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository();
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository(),
-            deviceApi,
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(deviceApi, deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalog, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -509,26 +550,38 @@ public sealed class MainViewModelScannerTests
             Items = [CreateItem("1042", "SKU-001", "9528502522381")],
             BeforeLoadSellableItemsAsync = () => allowCatalogLoad.Task
         };
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(index, cart, catalog, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         var startupOptions = new AppStartupOptions([], false, null, null);
         var changedProperties = new List<string?>();
@@ -572,26 +625,40 @@ public sealed class MainViewModelScannerTests
         {
             CheckOnlineException = new InvalidOperationException("API unavailable")
         };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository { Items = [CreateItem("1042", "SKU-001", "9528502522381")] };
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository { Items = [CreateItem("1042", "SKU-001", "9528502522381")] },
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(connectivity, new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepo, new FakeCatalogSyncService()),
+            catalogRepo,
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            connectivity,
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            authorizationState,
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, authorizationState),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
         var startupOptions = new AppStartupOptions([], false, null, null);
 
         await viewModel.InitializeAsync(startupOptions);
@@ -614,26 +681,39 @@ public sealed class MainViewModelScannerTests
         {
             FullSyncException = new InvalidOperationException("catalog API unavailable")
         };
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository { Items = [CreateItem("1042", "SKU-001", "9528502522381")] };
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository { Items = [CreateItem("1042", "SKU-001", "9528502522381")] },
-            catalogSync,
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(true), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalogRepo, catalogSync),
+            catalogRepo,
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(true),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(index, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
         var startupOptions = new AppStartupOptions([], false, null, null);
 
         await viewModel.InitializeAsync(startupOptions);
@@ -718,26 +798,40 @@ public sealed class MainViewModelScannerTests
         {
             GetStoresException = new InvalidOperationException("store API unavailable")
         };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository();
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepo, new FakeCatalogSyncService()),
+            catalogRepo,
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository(),
-            deviceApi,
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(deviceApi, deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
         var startupOptions = new AppStartupOptions([], false, null, null);
 
         await viewModel.InitializeAsync(startupOptions);
@@ -758,26 +852,39 @@ public sealed class MainViewModelScannerTests
             SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")],
             BeforeLoadSpecialProductItemsAsync = async () => await Task.Delay(25)
         };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalog, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -810,26 +917,39 @@ public sealed class MainViewModelScannerTests
             .Select(item => item.ProductImage!)
             .ToArray();
         var loadedImages = new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalog, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
         var converter = new ProductThumbnailImageSourceConverter();
         using var remoteImages = ProductThumbnailImageSourceConverter.UseRemoteImageBytesLoaderForTests((uri, _) =>
         {
@@ -868,25 +988,29 @@ public sealed class MainViewModelScannerTests
             BeforeLoadSpecialProductItemsAsync = () => releaseLoad.Task
         };
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], true, null, null));
 
@@ -915,25 +1039,29 @@ public sealed class MainViewModelScannerTests
             SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
         };
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
         var startupOptions = new AppStartupOptions([], false, null, null);
 
         await viewModel.InitializeAsync(startupOptions);
@@ -953,29 +1081,43 @@ public sealed class MainViewModelScannerTests
     [Fact]
     public async Task BackFromSpecialProducts_keeps_special_host_cached_and_returns_to_pos()
     {
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var catalogRepo = new FakeCatalogRepository
+        {
+            SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
+        };
+        var specialProduct = new FakeSpecialProductService();
+        var deviceRepo = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprint = new FakeDeviceFingerprintService();
+        var orderRepo = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var localization = new LocalizationService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository
-            {
-                SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
-            },
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepo, new FakeCatalogSyncService()),
+            catalogRepo,
             new FakeRemoteLookupRefreshService(),
-            new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            specialProduct,
+            new MainShellStartupService(deviceRepo, fingerprint, new DeviceAuthorizationState()),
+            orderRepo,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepo),
+            new CashPaymentWorkflowService(checkout, orderRepo, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepo, fingerprint),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepo, specialProduct),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                priceIndex,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await viewModel.PosTerminal!.OpenSpecialProductsCommand.ExecuteAsync(null);
@@ -995,25 +1137,29 @@ public sealed class MainViewModelScannerTests
     {
         var scanner = new FakeRawScannerService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), new FakeCatalogRepository(), new FakeCatalogSyncService()),
             new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), new FakeCatalogRepository(), new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -1038,25 +1184,29 @@ public sealed class MainViewModelScannerTests
             Items = [CreateItem("S001", "SKU-RETURN", "690RET")]
         };
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("S001") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("S001") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("S001") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await WaitUntilAsync(() => index.FindExactMatches("S001", "690RET").Count == 1);
@@ -1087,25 +1237,29 @@ public sealed class MainViewModelScannerTests
             SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
         };
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await viewModel.PosTerminal!.OpenSpecialProductsCommand.ExecuteAsync(null);
@@ -1129,25 +1283,29 @@ public sealed class MainViewModelScannerTests
             SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
         };
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await viewModel.PosTerminal!.OpenSpecialProductsCommand.ExecuteAsync(null);
@@ -1169,28 +1327,38 @@ public sealed class MainViewModelScannerTests
     {
         var scanner = new FakeRawScannerService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), new FakeCatalogRepository
+            {
+                SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
+            }, new FakeCatalogSyncService()),
             new FakeCatalogRepository
             {
                 SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
             },
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), new FakeCatalogRepository
+            {
+                SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
+            }, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -1215,26 +1383,34 @@ public sealed class MainViewModelScannerTests
         {
             Items = [CreateItem("1042", "SKU-001", "930110")]
         };
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, cart, catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -1267,25 +1443,29 @@ public sealed class MainViewModelScannerTests
     {
         var scanner = new FakeRawScannerService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), new FakeCatalogRepository(), new FakeCatalogSyncService()),
             new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository(),
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository(), new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository(), new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), new FakeCatalogRepository(), new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -1306,26 +1486,34 @@ public sealed class MainViewModelScannerTests
                 CreateItem("1042", "SKU-002", "930111")
             ]
         };
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, cart, catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await WaitUntilAsync(() => index.FindExactMatches("1042", "930110").Count == 1);
@@ -1353,26 +1541,34 @@ public sealed class MainViewModelScannerTests
         {
             Items = [CreateItem("1042", "SKU-001", "930110")]
         };
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, cart, catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await WaitUntilAsync(() => index.FindExactMatches("1042", "930110").Count == 1);
@@ -1412,25 +1608,29 @@ public sealed class MainViewModelScannerTests
     public async Task BeginDeviceReregistration_ClearsCachedCashPaymentScreen()
     {
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), new FakeCatalogRepository(), new FakeCatalogSyncService()),
             new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), new FakeCatalogRepository(), new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -1605,26 +1805,34 @@ public sealed class MainViewModelScannerTests
             ]
         };
         var index = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, cart, catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await WaitUntilAsync(() => index.FindExactMatches("1042", "930110").Count == 1);
@@ -1648,30 +1856,40 @@ public sealed class MainViewModelScannerTests
     public async Task RawScannerInput_FromSpecialProductsEditModeSearchesCandidatesWithoutAddingCart()
     {
         var scanner = new FakeRawScannerService();
+        var index = new LocalSellableItemIndex();
+        var catalog = new FakeCatalogRepository
+        {
+            Items = [CreateItem("1042", "SKU-001", "319844731768")],
+            SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
+        };
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var syncQueue = new FakeSyncQueueRepository();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository
-            {
-                Items = [CreateItem("1042", "SKU-001", "319844731768")],
-                SpecialItems = [CreateItem("1042", "SKU-SP", "9528502522399")]
-            },
-            new FakeCatalogSyncService(),
+            new PosCoreServices(index, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), scanner, null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
+            catalog,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            scanner);
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, cart, catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                cart,
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await viewModel.PosTerminal!.OpenSpecialProductsCommand.ExecuteAsync(null);
@@ -1693,25 +1911,29 @@ public sealed class MainViewModelScannerTests
             LoadSellableItemsException = new InvalidOperationException("catalog load failed")
         };
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(new LocalSellableItemIndex(), new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(new LocalSellableItemIndex(), catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(new LocalSellableItemIndex(), new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                new LocalSellableItemIndex(),
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await WaitUntilAsync(() => viewModel.StatusMessage.Contains("catalog load failed", StringComparison.Ordinal));
@@ -1731,25 +1953,29 @@ public sealed class MainViewModelScannerTests
             LoadSellableItemsException = new OperationCanceledException("catalog load canceled")
         };
         var viewModel = new MainViewModel(
-            index,
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
+            new PosCoreServices(index, new PosCartService(), new CashCheckoutService(), new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(new LocalizationService(), new FakeSettingsRepository()),
+            new ShellCatalogService(index, catalog, new FakeCatalogSyncService()),
             catalog,
-            new FakeCatalogSyncService(),
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
+            new MainShellStartupService(new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService(), new DeviceAuthorizationState()),
             new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
+            new ShellSyncCenterService(new FakeSyncQueueRepository()),
             new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(new FakeLocalOrderRepository()),
+            new CashPaymentWorkflowService(new CashCheckoutService(), new FakeLocalOrderRepository(), new FakeSyncQueueRepository()),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") }, new FakeDeviceFingerprintService()),
+            new SpecialProductsWorkflowService(index, new PosCartService(), catalog, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
+                index,
+                new PosCartService(),
+                remoteLookupRefreshAsync,
+                reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -1990,26 +2216,35 @@ public sealed class MainViewModelScannerTests
     [Fact]
     public async Task ReregisterDevice_WithPendingSync_StaysOnPosAndShowsStatus()
     {
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var localization = new LocalizationService();
+        var catalogRepository = new FakeCatalogRepository();
+        var syncQueue = new FakeSyncQueueRepository { Overview = new SyncQueueOverview(1, 0, 0, null) };
+        var deviceRepository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprintService = new FakeDeviceFingerprintService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
+            catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            new FakeDeviceApiClient(),
-            new FakeDeviceFingerprintService(),
-            new DeviceAuthorizationState(),
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository { Overview = new SyncQueueOverview(1, 0, 0, null) },
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new MainShellStartupService(deviceRepository, fingerprintService, new DeviceAuthorizationState()),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepository, fingerprintService),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepository, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         await viewModel.PosTerminal!.ReregisterDeviceCommand.ExecuteAsync(null);
@@ -2536,26 +2771,35 @@ public sealed class MainViewModelScannerTests
             ],
             ReregisterResponse = new DeviceReregisterResponse("POS-NEW", "2042", "New Store", -1, false, "Pending approval")
         };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var localization = new LocalizationService();
+        var catalogRepository = new FakeCatalogRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var deviceRepository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprintService = new FakeDeviceFingerprintService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
+            catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            deviceApi,
-            new FakeDeviceFingerprintService(),
-            authorizationState,
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new MainShellStartupService(deviceRepository, fingerprintService, authorizationState),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(deviceApi, deviceRepository, fingerprintService),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepository, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         Assert.NotNull(authorizationState.Current);
@@ -2584,26 +2828,35 @@ public sealed class MainViewModelScannerTests
             ],
             PendingReregisterResponse = pendingReregister
         };
+        var priceIndex = new LocalSellableItemIndex();
+        var cart = new PosCartService();
+        var checkout = new CashCheckoutService();
+        var orderRepository = new FakeLocalOrderRepository();
+        var localization = new LocalizationService();
+        var catalogRepository = new FakeCatalogRepository();
+        var syncQueue = new FakeSyncQueueRepository();
+        var deviceRepository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
+        var fingerprintService = new FakeDeviceFingerprintService();
         var viewModel = new MainViewModel(
-            new LocalSellableItemIndex(),
-            new PosCartService(),
-            new CashCheckoutService(),
-            new FakeLocalSchemaService(),
-            new FakeSettingsRepository(),
-            new FakeCatalogRepository(),
-            new FakeCatalogSyncService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
+            new ShellCultureService(localization, new FakeSettingsRepository()),
+            new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
+            catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
-            new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
-            deviceApi,
-            new FakeDeviceFingerprintService(),
-            authorizationState,
-            new FakeLocalOrderRepository(),
-            new FakeSyncQueueRepository(),
-            new LocalizationService(),
-            new FakeCustomerDisplayWindowService(),
-            new FakeRawScannerService());
+            new MainShellStartupService(deviceRepository, fingerprintService, authorizationState),
+            orderRepository,
+            new ShellSyncCenterService(syncQueue),
+            localization,
+            new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
+            new ReceiptQueryService(orderRepository),
+            new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
+            new DeviceRegistrationWorkflowService(deviceApi, deviceRepository, fingerprintService),
+            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepository, new FakeSpecialProductService()),
+            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync));
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         var originalAuthorization = Assert.IsType<DeviceAuthorizationContext>(authorizationState.Current);
@@ -2700,22 +2953,32 @@ public sealed class MainViewModelScannerTests
         var deviceRepository = new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") };
         var fingerprintService = new FakeDeviceFingerprintService();
         return new MainViewModel(
-            priceIndex,
-            effectiveCart,
-            checkout,
-            new FakeLocalSchemaService(),
+            new PosCoreServices(priceIndex, effectiveCart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(
+                connectivityApiClient ?? new FakeConnectivityApiClient(),
+                new FakeRawScannerService(),
+                userFeedbackService: null,
+                applicationExitService: applicationExitService,
+                confirmationDialogService: confirmationDialogService),
+            new PaymentTerminalFacade(
+                voucherApiClient: null,
+                cardTerminalClient: null,
+                cardTerminalSetupService: null,
+                linklyTerminalDialogPresenter: null,
+                cardPaymentRecoveryService: cardPaymentRecoveryService,
+                cardRecoveryResultDialogService: null,
+                linklyFallbackPromptCoordinator: null),
+            new PrintFacade(receiptPrintService, receiptPrinterSettingsStore: null, receiptTextFormatter: null),
             new ShellCultureService(localization, new FakeSettingsRepository()),
             new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
             catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            connectivityApiClient ?? new FakeConnectivityApiClient(),
             new MainShellStartupService(deviceRepository, fingerprintService, new DeviceAuthorizationState()),
             orderRepository,
             new ShellSyncCenterService(syncQueue),
             localization,
             new CustomerDisplayOrchestrator(customerDisplayWindow),
-            new FakeRawScannerService(),
             new ReceiptQueryService(orderRepository),
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
             new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepository, fingerprintService),
@@ -2725,12 +2988,8 @@ public sealed class MainViewModelScannerTests
                 effectiveCart,
                 remoteLookupRefreshAsync,
                 reloadCatalogAsync),
-            receiptPrintService: receiptPrintService,
             orderUploadExecutionService: orderUploadExecutionService,
-            cashDrawerService: cashDrawerService,
-            applicationExitService: applicationExitService,
-            confirmationDialogService: confirmationDialogService,
-            cardPaymentRecoveryService: cardPaymentRecoveryService);
+            cashDrawerService: cashDrawerService);
     }
 
     private static MainViewModel CreateMainViewModelWithShellCatalog(
@@ -2748,22 +3007,20 @@ public sealed class MainViewModelScannerTests
         var syncQueue = new FakeSyncQueueRepository();
 
         return new MainViewModel(
-            priceIndex,
-            cart,
-            checkout,
-            new FakeLocalSchemaService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(connectivityApiClient, new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, null, null, null, null, null),
+            new PrintFacade(null, null, null),
             new ShellCultureService(localization, new FakeSettingsRepository()),
             shellCatalogService,
             catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            connectivityApiClient,
             new MainShellStartupService(deviceRepository, fingerprintService, new DeviceAuthorizationState()),
             orderRepository,
             new ShellSyncCenterService(syncQueue),
             localization,
             new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
-            new FakeRawScannerService(),
             new ReceiptQueryService(orderRepository),
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
             new DeviceRegistrationWorkflowService(new FakeDeviceApiClient(), deviceRepository, fingerprintService),
@@ -2833,16 +3090,15 @@ public sealed class MainViewModelScannerTests
             cardTerminalClient: cardTerminalClient);
 
         return new MainViewModel(
-            priceIndex,
-            cart,
-            checkout,
-            new FakeLocalSchemaService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, cardTerminalClient, null, null, null, null, null),
+            new PrintFacade(null, null, null),
             new ShellCultureService(localization, new FakeSettingsRepository()),
             new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
             catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
             new MainShellStartupService(
                 new FakeLocalDeviceRepository { Latest = CreateAllowedDevice("1042") },
                 new FakeDeviceFingerprintService(),
@@ -2851,7 +3107,6 @@ public sealed class MainViewModelScannerTests
             new ShellSyncCenterService(syncQueue),
             localization,
             new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
-            new FakeRawScannerService(),
             new ReceiptQueryService(orderRepository),
             workflow,
             new DeviceRegistrationWorkflowService(
@@ -2883,22 +3138,20 @@ public sealed class MainViewModelScannerTests
         var syncQueue = syncQueueRepository ?? new FakeSyncQueueRepository();
 
         return new MainViewModel(
-            priceIndex,
-            cart,
-            checkout,
-            new FakeLocalSchemaService(),
+            new PosCoreServices(priceIndex, cart, checkout, new FakeLocalSchemaService()),
+            new PosInfrastructureFacade(new FakeConnectivityApiClient(), new FakeRawScannerService(), null, null, null),
+            new PaymentTerminalFacade(null, null, new FakeCardTerminalSetupService(), null, null, null, null),
+            new PrintFacade(null, null, null),
             new ShellCultureService(localization, settingsRepository),
             new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
             catalogRepository,
             new FakeRemoteLookupRefreshService(),
             new FakeSpecialProductService(),
-            new FakeConnectivityApiClient(),
             new MainShellStartupService(deviceRepository, fingerprintService, new DeviceAuthorizationState()),
             orderRepository,
             new ShellSyncCenterService(syncQueue),
             localization,
             new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService()),
-            new FakeRawScannerService(),
             new ReceiptQueryService(orderRepository),
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueue),
             new DeviceRegistrationWorkflowService(deviceApi, deviceRepository, fingerprintService),
@@ -2907,8 +3160,7 @@ public sealed class MainViewModelScannerTests
                 priceIndex,
                 cart,
                 remoteLookupRefreshAsync,
-                reloadCatalogAsync),
-            cardTerminalSetupService: new FakeCardTerminalSetupService());
+                reloadCatalogAsync));
     }
 
     private static SyncQueueListItem CreateSyncQueueItem(Guid entityId, string status, string? errorMessage = null)

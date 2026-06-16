@@ -25,7 +25,6 @@ public sealed record DeviceReregistrationStartResult(bool Started, string Status
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private const string DefaultTestStoreCode = "1002";
-    private static readonly TimeSpan StartupCatalogIndexLoadTimeout = TimeSpan.FromSeconds(30);
 
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
@@ -77,6 +76,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
     private readonly ScreenNavigator _screenNavigator;
     private readonly IWindowOwnerProvider? _windowOwnerProvider;
+    private readonly CustomerDisplayShellController _customerDisplayShellController;
+    private readonly DeviceReregistrationCoordinator _deviceReregistrationCoordinator;
+    private readonly CatalogStartupCoordinator _catalogStartupCoordinator;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private readonly DispatcherTimer _catalogDownloadHideTimer = new();
@@ -87,17 +89,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool _schemaReady;
     private LocalOrder? _lastCompletedOrder;
     private LocalDeviceCache? _pendingDeviceRegistrationCache;
-    private CancellationTokenSource? _startupCatalogIndexLoadCts;
     private Task? _deviceRegistrationStoreLoadTask;
     private Task? _posPostShowStartupTask;
-    private bool _customerDisplayPrewarmed;
-    private Task<IReadOnlyList<SellableItemDto>>? _startupCatalogIndexLoadTask;
     private AppStartupOptions? _startupOptions;
     private bool _disposed;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
-    private MainReceiptCoordinator _receiptCoordinator = null!;
+    private readonly MainReceiptCoordinator _receiptCoordinator;
 
     [ObservableProperty]
     private PosSessionState _session = new("HB POS", DefaultTestStoreCode, "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
@@ -391,7 +390,80 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _linklyFallbackPromptCoordinator = paymentTerminal.LinklyFallbackPromptCoordinator;
         _windowOwnerProvider = windowOwnerProvider;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
-        _mainChildViewModelFactory = new MainChildViewModelFactory(
+        _mainChildViewModelFactory = CreateMainChildViewModelFactory();
+
+        _cardRecoveryPresenter = CreateCardRecoveryPresenter();
+
+        _syncOrchestrator = CreateSyncOrchestrator();
+
+        _screenNavigator = CreateScreenNavigator();
+
+        _screenNavigator.PaymentSuccess = _mainChildViewModelFactory.CreatePaymentSuccessViewModel();
+        PaymentSuccess.NewTransactionRequested += OnPaymentSuccessNewTransactionRequested;
+        PaymentSuccess.PrintReceiptRequested += OnPaymentSuccessPrintReceiptRequested;
+
+        _receiptCoordinator = new MainReceiptCoordinator(
+            _receiptPrintService,
+            _cashDrawerService,
+            _localization,
+            msg => StatusMessage = msg ?? string.Empty);
+
+        _customerDisplayShellController = new CustomerDisplayShellController(
+            _customerDisplayOrchestrator,
+            _localization,
+            () => CustomerDisplay,
+            () => Session,
+            () => _cart,
+            mode => CustomerDisplayWindowMode = mode,
+            () => CustomerDisplayWindowMode,
+            msg => StatusMessage = msg ?? string.Empty);
+
+        _deviceReregistrationCoordinator = new DeviceReregistrationCoordinator(
+            _mainShellStartupService,
+            _localization,
+            _shellSyncCenterService,
+            _cart,
+            snapshot => ApplySyncCenterSnapshot(snapshot),
+            msg => StatusMessage = msg ?? string.Empty,
+            () => _startupOptions?.PreviewMode == true);
+
+        _catalogStartupCoordinator = new CatalogStartupCoordinator(
+            _shellCatalogService,
+            _catalogRepository,
+            _localization,
+            msg => StatusMessage = msg ?? string.Empty);
+
+        ShowPosCommand = _screenNavigator.ShowPosCommand;
+        ShowCashPaymentCommand = _screenNavigator.ShowCashPaymentCommand;
+        ShowReturnsCommand = _screenNavigator.ShowReturnsCommand;
+        ShowPaymentSuccessCommand = _screenNavigator.ShowPaymentSuccessCommand;
+        ShowHistoryCommand = _screenNavigator.ShowHistoryCommand;
+        ShowDailyCloseCommand = _screenNavigator.ShowDailyCloseCommand;
+        ShowCustomerDisplayCommand = _screenNavigator.ShowCustomerDisplayCommand;
+        ShowSettingsCommand = _screenNavigator.ShowSettingsCommand;
+        ToggleSyncCenterCommand = _syncOrchestrator.ToggleSyncCenterCommand;
+        RetrySyncOrderCommand = _syncOrchestrator.RetrySyncOrderCommand;
+        RetryAllSyncOrdersCommand = _syncOrchestrator.RetryAllSyncOrdersCommand;
+        ToggleCustomerDisplayWindowCommand = new RelayCommand(ToggleCustomerDisplayWindow);
+        CloseCustomerDisplayWindowCommand = new RelayCommand(() => _customerDisplayShellController.Close(CurrentOwner));
+        ShowCustomerDisplayNormalCommand = new RelayCommand(() => _customerDisplayShellController.ShowNormal(CurrentOwner));
+        ShowCustomerDisplayFullscreenCommand = new RelayCommand(() => _customerDisplayShellController.ShowFullscreen(CurrentOwner));
+        ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
+        ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
+        CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
+        PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
+
+        _cart.CartChanged += OnCartChanged;
+        _localization.CultureChanged += OnCultureChanged;
+        _customerDisplayOrchestrator.Closed += OnCustomerDisplayClosed;
+        _clockTimer.Tick += OnClockTimerTick;
+        _connectivityTimer.Tick += OnConnectivityTimerTick;
+        _catalogDownloadHideTimer.Tick += OnCatalogDownloadHideTimerTick;
+        RefreshLocalizedShell(resetStatus: true);
+    }
+
+    private MainChildViewModelFactory CreateMainChildViewModelFactory() =>
+        new(
             _deviceRegistrationWorkflowService,
             _receiptQueryService,
             _suspendedOrderService,
@@ -416,7 +488,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _receiptPrintService,
             _cardRecoveryResultDialogService);
 
-        _cardRecoveryPresenter = new CardRecoveryPresenter(
+    private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
+        new(
             _cardPaymentRecoveryService,
             _cardRecoveryResultDialogService,
             _receiptQueryService,
@@ -430,7 +503,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
-                PrepareCachedCashPaymentScreen();
+                _screenNavigator.PrepareCachedCashPaymentScreen();
                 CashPayment?.PrepareForEntry(Session);
                 CurrentScreen = CashPayment;
                 return Task.CompletedTask;
@@ -456,7 +529,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             notifyPrintRecoveredReceiptCanExecuteChanged: () => PrintRecoveredReceiptCommand!.NotifyCanExecuteChanged(),
             notifyPropertyChanged: name => OnPropertyChanged(name));
 
-        _syncOrchestrator = new SyncOrchestrator(
+    private SyncOrchestrator CreateSyncOrchestrator() =>
+        new(
             _shellSyncCenterService,
             _orderUploadExecutionService,
             _localization,
@@ -466,7 +540,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             refreshShell: () => RefreshLocalizedShell(),
             notifyPropertyChanged: name => OnPropertyChanged(name));
 
-        _screenNavigator = new ScreenNavigator(
+    private ScreenNavigator CreateScreenNavigator() =>
+        new(
             _mainChildViewModelFactory,
             _cart,
             _localization,
@@ -480,17 +555,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ResetCatalogAndReloadAsync,
             BeginDeviceReregistrationAsync,
             () => _cardRecoveryPresenter!.RecoverActiveCardPaymentSessionFromPaymentAsync(),
-            setScreen: value =>
-            {
-                OnPropertyChanged(nameof(CurrentScreen));
-                var receiptReturns = _screenNavigator!.ReceiptReturns;
-                if (!ReferenceEquals(value, receiptReturns))
-                {
-                    _screenNavigator.ReceiptReturns?.ResetToDefault();
-                }
-                RaiseScreenHostStateChanged();
-                _rawScannerService.SetActivePage((value as IScannerInputTarget)?.ScannerPageId);
-            },
+            setScreen: OnScreenChanged,
             onPaymentCreated: vm =>
             {
                 vm.PaymentCompleted += OnPaymentCompleted;
@@ -505,45 +570,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             setStatusMessage: msg => StatusMessage = msg,
             getLastCompletedOrder: () => _lastCompletedOrder,
             setLastCompletedOrder: value => _lastCompletedOrder = value);
-
-        _screenNavigator.PaymentSuccess = _mainChildViewModelFactory.CreatePaymentSuccessViewModel();
-        PaymentSuccess.NewTransactionRequested += OnPaymentSuccessNewTransactionRequested;
-        PaymentSuccess.PrintReceiptRequested += OnPaymentSuccessPrintReceiptRequested;
-
-        _receiptCoordinator = new MainReceiptCoordinator(
-            _receiptPrintService,
-            _cashDrawerService,
-            _localization,
-            msg => StatusMessage = msg ?? string.Empty);
-
-        ShowPosCommand = _screenNavigator.ShowPosCommand;
-        ShowCashPaymentCommand = _screenNavigator.ShowCashPaymentCommand;
-        ShowReturnsCommand = _screenNavigator.ShowReturnsCommand;
-        ShowPaymentSuccessCommand = _screenNavigator.ShowPaymentSuccessCommand;
-        ShowHistoryCommand = _screenNavigator.ShowHistoryCommand;
-        ShowDailyCloseCommand = _screenNavigator.ShowDailyCloseCommand;
-        ShowCustomerDisplayCommand = _screenNavigator.ShowCustomerDisplayCommand;
-        ShowSettingsCommand = _screenNavigator.ShowSettingsCommand;
-        ToggleSyncCenterCommand = _syncOrchestrator.ToggleSyncCenterCommand;
-        RetrySyncOrderCommand = _syncOrchestrator.RetrySyncOrderCommand;
-        RetryAllSyncOrdersCommand = _syncOrchestrator.RetryAllSyncOrdersCommand;
-        ToggleCustomerDisplayWindowCommand = new RelayCommand(ToggleCustomerDisplayWindow);
-        CloseCustomerDisplayWindowCommand = new RelayCommand(CloseCustomerDisplayWindow);
-        ShowCustomerDisplayNormalCommand = new RelayCommand(ShowCustomerDisplayNormal);
-        ShowCustomerDisplayFullscreenCommand = new RelayCommand(ShowCustomerDisplayFullscreen);
-        ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
-        ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
-        CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
-        PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
-
-        _cart.CartChanged += OnCartChanged;
-        _localization.CultureChanged += OnCultureChanged;
-        _customerDisplayOrchestrator.Closed += OnCustomerDisplayClosed;
-        _clockTimer.Tick += OnClockTimerTick;
-        _connectivityTimer.Tick += OnConnectivityTimerTick;
-        _catalogDownloadHideTimer.Tick += OnCatalogDownloadHideTimerTick;
-        RefreshLocalizedShell(resetStatus: true);
-    }
 
     public PosTerminalViewModel? PosTerminal
     {
@@ -787,7 +813,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _screenNavigator.ClearScreens();
         _screenNavigator.SetCachedPosTerminalScreen(null);
         _screenNavigator.SetCachedSpecialProductsScreen(null);
-        _customerDisplayPrewarmed = false;
         CancelStartupCatalogIndexLoad();
         IReadOnlyList<SellableItemDto> cachedItems = [];
         if (startupOptions.PreviewMode)
@@ -799,31 +824,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var posWorkflowService = _posTerminalWorkflowFactory(RefreshRemoteLookupAsync, ReloadCatalogIndexAsync);
         PosTerminal = _mainChildViewModelFactory.CreatePosTerminalViewModel(
             Session,
-            ShowCashPayment,
-            ShowSpecialProductsAsync,
-            onHoldOrderAsync: SuspendCurrentOrderAsync,
-            onRecallOrderAsync: ShowSuspendedHistoryAsync,
-            onOpenHistoryAsync: ShowHistoryAsync,
-            onOpenDailyCloseAsync: ShowDailyCloseAsync,
-            onOpenSettingsAsync: ShowSettingsAsync,
-            onOpenCustomerDisplay: ShowCustomerDisplay,
+            _screenNavigator.ShowCashPayment,
+            _screenNavigator.ShowSpecialProductsAsync,
+            onHoldOrderAsync: _screenNavigator.SuspendCurrentOrderAsync,
+            onRecallOrderAsync: _screenNavigator.ShowSuspendedHistoryAsync,
+            onOpenHistoryAsync: _screenNavigator.ShowHistoryAsync,
+            onOpenDailyCloseAsync: _screenNavigator.ShowDailyCloseAsync,
+            onOpenSettingsAsync: _screenNavigator.ShowSettingsAsync,
+            onOpenCustomerDisplay: _screenNavigator.ShowCustomerDisplay,
             syncCatalogAsync: SyncCatalogAndReloadAsync,
             resetCatalogAsync: ResetCatalogAndReloadAsync,
             refreshOnlineAsync: RefreshOnlineStateAsync,
             onReregisterDeviceAsync: BeginDeviceReregistrationFromPosAsync,
             workflowService: posWorkflowService,
-            onOpenReturns: ShowReturns,
+            onOpenReturns: _screenNavigator.ShowReturns,
             onPrintLastReceiptAsync: PrintLatestReceiptAsync,
             onOpenCashDrawerAsync: OpenCashDrawerAsync,
             onExitApplicationAsync: ExitApplicationAsync);
         SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
             Session,
-            ShowPos,
+            _screenNavigator.ShowPos,
             line => PosTerminal?.RevealCartLine(line));
         _screenNavigator.SetCachedPosTerminalScreen(PosTerminal);
         ReceiptReturns = _mainChildViewModelFactory.CreateReceiptReturnsViewModel(
             Session,
-            ShowPos,
+            _screenNavigator.ShowPos,
             line => PosTerminal?.RevealCartLine(line));
         if (cachedItems.Count > 0)
         {
@@ -842,14 +867,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RefreshClock();
         _clockTimer.Start();
         _screenNavigator.ApplySessionToScreens();
-        PrepareCachedCashPaymentScreen();
+        _screenNavigator.PrepareCachedCashPaymentScreen();
         // 诊断启动卡顿时先关闭客显预热，避免启动阶段创建隐藏窗口。
         ConsoleLog.Write(
             "CustomerDisplay",
             $"startup prewarm skipped store={Session.StoreCode} device={Session.DeviceCode} reason=auto-open-disabled");
         await BeginStartupCatalogIndexLoadAsync(startupOptions);
         await PreloadStartupSpecialProductsDataAsync(startupOptions);
-        NavigateFromStartup(startupOptions.InitialScreen);
+        _screenNavigator.NavigateFromStartup(startupOptions.InitialScreen);
     }
 
     private Task ContinuePosStartupAfterShownAsync(AppStartupOptions startupOptions, Window? owner)
@@ -900,79 +925,43 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task<IReadOnlyList<SellableItemDto>> LoadStartupCatalogIndexAsync(CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
-        ConsoleLog.Write("CatalogStartup", $"local catalog load start store={Session.StoreCode}");
-        try
-        {
-            var cachedItems = await _shellCatalogService.LoadLocalCatalogAsync(Session.StoreCode, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            PosTerminal?.LoadMatches(cachedItems);
-            PosTerminal?.RefreshCart();
-            CashPayment?.RefreshCart();
-            stopwatch.Stop();
-            ConsoleLog.Write("CatalogStartup", $"local catalog load completed store={Session.StoreCode} items={cachedItems.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return cachedItems;
-        }
-        catch (OperationCanceledException)
-        {
-            stopwatch.Stop();
-            ConsoleLog.Write("CatalogStartup", $"local catalog load canceled store={Session.StoreCode} elapsedMs={stopwatch.ElapsedMilliseconds}");
-            return [];
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            ConsoleLog.Write("CatalogStartup", $"local catalog load failed store={Session.StoreCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
-            StatusMessage = ex.Message;
-            return [];
-        }
+        return await _catalogStartupCoordinator.LoadLocalCatalogForStartupAsync(
+            Session.StoreCode,
+            cancellationToken,
+            items => PosTerminal?.LoadMatches(items),
+            () => { PosTerminal?.RefreshCart(); CashPayment?.RefreshCart(); });
     }
 
     private async Task<IReadOnlyList<SellableItemDto>> BeginStartupCatalogIndexLoadAsync(AppStartupOptions startupOptions)
-    {
-        if (startupOptions.PreviewMode)
-        {
-            return [];
-        }
+        => await _catalogStartupCoordinator.LoadStartupCatalogIndexAsync(
+            Session.StoreCode,
+            startupOptions.PreviewMode,
+            items => PosTerminal?.LoadMatches(items),
+            () => { PosTerminal?.RefreshCart(); CashPayment?.RefreshCart(); });
 
-        _startupCatalogIndexLoadCts ??= new CancellationTokenSource();
-        _startupCatalogIndexLoadCts.CancelAfter(StartupCatalogIndexLoadTimeout);
-        _startupCatalogIndexLoadTask ??= LoadStartupCatalogIndexAsync(_startupCatalogIndexLoadCts.Token);
-        var cts = _startupCatalogIndexLoadCts;
-        var loadTask = _startupCatalogIndexLoadTask;
-        try
-        {
-            return await loadTask;
-        }
-        finally
-        {
-            if (ReferenceEquals(_startupCatalogIndexLoadCts, cts))
-            {
-                _startupCatalogIndexLoadCts = null;
-            }
-
-            if (ReferenceEquals(_startupCatalogIndexLoadTask, loadTask))
-            {
-                _startupCatalogIndexLoadTask = null;
-            }
-
-            cts.Dispose();
-        }
-    }
-
-    private void CancelStartupCatalogIndexLoad()
-    {
-        var cts = _startupCatalogIndexLoadCts;
-        _startupCatalogIndexLoadCts = null;
-        _startupCatalogIndexLoadTask = null;
-        cts?.Cancel();
-    }
+    private void CancelStartupCatalogIndexLoad() => _catalogStartupCoordinator.CancelStartupLoad();
 
     partial void OnSessionChanged(PosSessionState value)
     {
         _screenNavigator.Session = value;
         RefreshLocalizedShell();
         _screenNavigator.ApplySessionToScreens();
+    }
+
+    /// <summary>
+    /// 屏幕切换的统一入口：通知绑定刷新 CurrentScreen、缓存屏幕、active state、页面标题和扫码 active page。
+    /// 集中在此方法内，避免多处分散通知导致的绑定遗漏（如"顶部显示收银但内容为空"）。
+    /// </summary>
+    private void OnScreenChanged(object? screen)
+    {
+        OnPropertyChanged(nameof(CurrentScreen));
+        if (!ReferenceEquals(screen, _screenNavigator!.ReceiptReturns))
+        {
+            _screenNavigator.ReceiptReturns?.ResetToDefault();
+        }
+
+        RaiseScreenHostStateChanged();
+        _rawScannerService.SetActivePage((screen as IScannerInputTarget)?.ScannerPageId);
     }
 
     private void RaiseScreenHostStateChanged()
@@ -1148,8 +1137,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CurrentTime = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
     }
 
-    private void ApplySessionToScreens() => _screenNavigator.ApplySessionToScreens();
-
     private void BeginInitialCatalogSync()
     {
         if (!Session.IsOnline)
@@ -1167,7 +1154,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        PrepareCachedSpecialProductsScreen();
+        _screenNavigator.PrepareCachedSpecialProductsScreen();
         _ = TryPreloadSpecialProductsHomeAsync();
     }
 
@@ -1182,7 +1169,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ConsoleLog.Write("SpecialProducts", $"startup data preload start store={Session.StoreCode}");
         try
         {
-            PrepareCachedSpecialProductsScreen();
+            _screenNavigator.PrepareCachedSpecialProductsScreen();
             // 启动阶段只预加载特殊商品数据，图片缩略图留给页面进入后异步加载。
             await SpecialProducts.PreloadAsync(CancellationToken.None);
             stopwatch.Stop();
@@ -1198,10 +1185,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 $"startup data preload failed store={Session.StoreCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
         }
     }
-
-    private void PrepareCachedCashPaymentScreen() => _screenNavigator.PrepareCachedCashPaymentScreen();
-
-    private void PrepareCachedSpecialProductsScreen() => _screenNavigator.PrepareCachedSpecialProductsScreen();
 
     private async Task TryPreloadSpecialProductsHomeAsync()
     {
@@ -1460,38 +1443,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         return await _shellCatalogService.LoadLocalCatalogAsync(storeCode, cancellationToken);
     }
 
-    private void PrewarmCustomerDisplay()
-    {
-        if (_customerDisplayPrewarmed)
-        {
-            ConsoleLog.Write(
-                "CustomerDisplay",
-                $"startup prewarm skipped store={Session.StoreCode} device={Session.DeviceCode} reason=already-prewarmed");
-            return;
-        }
-
-        var stopwatch = Stopwatch.StartNew();
-        ConsoleLog.Write(
-            "CustomerDisplay",
-            $"startup prewarm start store={Session.StoreCode} device={Session.DeviceCode} currentMode={CustomerDisplayWindowMode}");
-        try
-        {
-            _customerDisplayOrchestrator.Prewarm(CustomerDisplay, Session, _cart);
-            _customerDisplayPrewarmed = true;
-            stopwatch.Stop();
-            ConsoleLog.Write(
-                "CustomerDisplay",
-                $"startup prewarm completed store={Session.StoreCode} device={Session.DeviceCode} currentMode={CustomerDisplayWindowMode} elapsedMs={stopwatch.ElapsedMilliseconds}");
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            ConsoleLog.Write(
-                "CustomerDisplay",
-                $"startup prewarm failed store={Session.StoreCode} device={Session.DeviceCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
-            throw;
-        }
-    }
+    private void PrewarmCustomerDisplay() => _customerDisplayShellController.Prewarm();
 
     private async Task BeginDeviceReregistrationFromPosAsync()
     {
@@ -1500,32 +1452,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task<DeviceReregistrationStartResult> BeginDeviceReregistrationAsync()
     {
-        if (_startupOptions?.PreviewMode == true)
+        var blocked = await _deviceReregistrationCoordinator.CheckCanBeginAsync();
+        if (blocked is not null)
         {
-            StatusMessage = _localization.T("main.reregister.previewUnsupported");
-            return DeviceReregistrationStartResult.Blocked(StatusMessage);
-        }
-
-        if (!_cart.IsEmpty)
-        {
-            StatusMessage = _localization.T("main.reregister.cartNotEmpty");
-            return DeviceReregistrationStartResult.Blocked(StatusMessage);
-        }
-
-        var syncSnapshot = await _shellSyncCenterService.GetSnapshotAsync();
-        var overview = syncSnapshot.Overview;
-        if (overview.PendingCount > 0 || overview.FailedCount > 0 || overview.SyncingCount > 0)
-        {
-            StatusMessage = _localization.T("main.reregister.syncPending");
-            ApplySyncCenterSnapshot(syncSnapshot);
-            return DeviceReregistrationStartResult.Blocked(StatusMessage);
+            return blocked;
         }
 
         var startupOptions = _startupOptions ?? new AppStartupOptions([], false, null, null);
         DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
         _pendingDeviceRegistrationCache = null;
         _deviceRegistrationStoreLoadTask = null;
-        ClearCashPaymentCache();
+        _screenNavigator.ClearCashPaymentCache();
         DeviceRegistration.PrepareReregister(Session.StoreCode);
         IsDeviceReregistrationDialogOpen = true;
         // 弹窗打开后立即加载可切换分店，避免用户首次看到空列表。
@@ -1542,7 +1479,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void ApplyDeviceReregistered()
     {
-        _mainShellStartupService.ClearAuthorization();
+        _deviceReregistrationCoordinator.ClearAuthorization();
         _posPostShowStartupTask = null;
         CancelStartupCatalogIndexLoad();
         _screenNavigator.ClearScreens();
@@ -1557,7 +1494,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _lastCompletedOrder = null;
         _cart.Clear();
         SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
-        StatusMessage = _localization.T("main.reregister.submitted");
+        StatusMessage = _deviceReregistrationCoordinator.SubmittedStatusMessage;
     }
 
     private void CancelDeviceReregistration()
@@ -1575,9 +1512,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _deviceRegistrationStoreLoadTask = null;
         if (wasCurrentScreen)
         {
-            ShowPos();
+            _screenNavigator.ShowPos();
         }
-        StatusMessage = _localization.T("main.reregister.cancelled");
+        StatusMessage = _deviceReregistrationCoordinator.CancelStatusMessage;
     }
 
     private void OnCartChanged(object? sender, EventArgs e)
@@ -1586,14 +1523,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _screenNavigator.LoadCustomerDisplayFromCart();
     }
 
-    private void ShowPos() => _screenNavigator.ShowPos();
-
-    private Task ShowSpecialProductsAsync() => _screenNavigator.ShowSpecialProductsAsync();
-
-    private void ShowReturns() => _screenNavigator.ShowReturns();
-
-    private void ShowCashPayment() => _screenNavigator.ShowCashPayment();
-
     private Task<bool> RecoverCardPaymentAttemptAsync(bool navigateToPaymentOnDraft) =>
         _cardRecoveryPresenter?.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft) ?? Task.FromResult(false);
 
@@ -1601,7 +1530,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnPaymentSuccessNewTransactionRequested(object? sender, EventArgs e)
     {
-        ResetForNewTransaction();
+        _screenNavigator.ResetForNewTransaction();
     }
 
     private async void OnPaymentSuccessPrintReceiptRequested(object? sender, EventArgs e)
@@ -1630,12 +1559,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsCatalogDownloadProgressVisible = false;
     }
 
-    private void ShowInstallmentCenter() => _screenNavigator.ShowInstallmentCenter();
-
     private async Task ShowInstallmentCreateAsync(PosCartServiceSnapshot? cartSnapshot) =>
         await _screenNavigator.ShowInstallmentCreateAsync(cartSnapshot);
-
-    private void ClearCashPaymentCache() => _screenNavigator.ClearCashPaymentCache();
 
     private void OnCashPaymentPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -1668,18 +1593,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             await _receiptCoordinator.PrintReceiptAsync(ReceiptQueryService.CreateReceipt(e.Order), ReceiptPrintReason.CardAuto);
         }
     }
-
-    private async Task ShowPaymentSuccessLatestAsync() => await _screenNavigator.ShowPaymentSuccessLatestAsync();
-
-    private async Task ShowHistoryAsync() => await _screenNavigator.ShowHistoryAsync();
-
-    private async Task ShowDailyCloseAsync() => await _screenNavigator.ShowDailyCloseAsync();
-
-    private async Task ShowSettingsAsync() => await _screenNavigator.ShowSettingsAsync();
-
-    private async Task ShowSuspendedHistoryAsync() => await _screenNavigator.ShowSuspendedHistoryAsync();
-
-    private async Task SuspendCurrentOrderAsync() => await _screenNavigator.SuspendCurrentOrderAsync();
 
     private async Task<ReceiptPrintResult> PrintLatestReceiptAsync() =>
         await _receiptCoordinator.PrintLatestAsync();
@@ -1721,10 +1634,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task<ReceiptPrintResult> PrintReceiptAsync(ReceiptDetails receipt, ReceiptPrintReason reason) =>
         await _receiptCoordinator.PrintReceiptAsync(receipt, reason);
 
-    private Task OnSuspendedOrderRecalledAsync() => _screenNavigator.OnSuspendedOrderRecalledAsync();
-
-    private void ShowCustomerDisplay() => _screenNavigator.ShowCustomerDisplay();
-
     private void ToggleCustomerDisplayWindow()
     {
         var owner = CurrentOwner;
@@ -1733,70 +1642,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        ToggleCustomerDisplayWindow(owner);
+        _customerDisplayShellController.Toggle(owner);
     }
 
-    public void ToggleCustomerDisplayWindow(Window? owner)
-    {
-        var targetMode = _customerDisplayOrchestrator.GetNextMode(CustomerDisplayWindowMode);
-        SetCustomerDisplayWindowMode(targetMode, owner);
-    }
+    public void ToggleCustomerDisplayWindow(Window? owner) => _customerDisplayShellController.Toggle(owner);
 
-    private void CloseCustomerDisplayWindow()
-    {
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
-    }
+    public void SetCustomerDisplayWindowMode(CustomerDisplayWindowMode mode, Window? owner) => _customerDisplayShellController.SetMode(mode, owner);
 
-    private void ShowCustomerDisplayNormal()
-    {
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Normal, CurrentOwner);
-    }
-
-    private void ShowCustomerDisplayFullscreen()
-    {
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Fullscreen, CurrentOwner);
-    }
-
-    public void SetCustomerDisplayWindowMode(CustomerDisplayWindowMode mode, Window? owner)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        ConsoleLog.Write(
-            "CustomerDisplay",
-            $"viewmodel set-mode start requestedMode={mode} currentMode={CustomerDisplayWindowMode} ownerPresent={owner is not null} store={Session.StoreCode} device={Session.DeviceCode}");
-        var result = _customerDisplayOrchestrator.SetMode(mode, CustomerDisplay, Session, _cart, owner);
-        ApplyCustomerDisplayWindowResult(result);
-        stopwatch.Stop();
-        ConsoleLog.Write(
-            "CustomerDisplay",
-            $"viewmodel set-mode completed requestedMode={mode} resultMode={result.Mode} open={IsCustomerDisplayOpen} elapsedMs={stopwatch.ElapsedMilliseconds}");
-    }
-
-    private void OpenCustomerDisplayWindow(Window? owner)
-    {
-        ConsoleLog.Write(
-            "CustomerDisplay",
-            $"startup open-window request store={Session.StoreCode} device={Session.DeviceCode} ownerPresent={owner is not null}");
-        SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Fullscreen, owner);
-    }
-
-    private void ApplyCustomerDisplayWindowResult(CustomerDisplayWindowResult result)
-    {
-        CustomerDisplayWindowMode = result.Mode;
-        if (!string.IsNullOrWhiteSpace(result.StatusMessageKey))
-        {
-            StatusMessage = _localization.T(result.StatusMessageKey);
-        }
-    }
+    private void OpenCustomerDisplayWindow(Window? owner) => _customerDisplayShellController.Open(owner);
 
     private async Task ResetScannerBindingAsync()
     {
         await _rawScannerService.ResetBindingAsync();
         StatusMessage = _localization.T("main.scannerBindingReset");
     }
-
-    private void ResetForNewTransaction() => _screenNavigator.ResetForNewTransaction();
-
-    private void NavigateFromStartup(string? initialScreen) => _screenNavigator.NavigateFromStartup(initialScreen);
 
     private void AddPreviewCartItems(IReadOnlyList<SellableItemDto> items)
     {
