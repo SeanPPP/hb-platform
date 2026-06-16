@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
@@ -30,6 +31,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly PosCartService _cart;
     private readonly CashCheckoutService _checkout;
     private readonly ILocalSchemaService _schema;
+    private readonly IPosCoreServices _core;
+    private readonly IPaymentTerminalFacade _paymentTerminal;
+    private readonly IPrintFacade _print;
+    private readonly IPosInfrastructureFacade _infra;
     private readonly ILocalCatalogRepository _catalogRepository;
     private readonly IShellCultureService _shellCultureService;
     private readonly IShellCatalogService _shellCatalogService;
@@ -70,6 +75,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
+    private readonly ScreenNavigator _screenNavigator;
     private readonly IWindowOwnerProvider? _windowOwnerProvider;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
@@ -84,27 +90,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _startupCatalogIndexLoadCts;
     private Task? _deviceRegistrationStoreLoadTask;
     private Task? _posPostShowStartupTask;
-    private Task<CardPaymentRecoveryResult>? _cardPaymentRecoveryTask;
-    private ReceiptDetails? _cardRecoveryDialogReceipt;
     private bool _customerDisplayPrewarmed;
     private Task<IReadOnlyList<SellableItemDto>>? _startupCatalogIndexLoadTask;
     private AppStartupOptions? _startupOptions;
     private bool _disposed;
 
+    private SyncOrchestrator? _syncOrchestrator;
+    private CardRecoveryPresenter? _cardRecoveryPresenter;
+
     [ObservableProperty]
     private PosSessionState _session = new("HB POS", DefaultTestStoreCode, "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
-    [ObservableProperty]
-    private object? _currentScreen;
+    public object? CurrentScreen
+    {
+        get => _screenNavigator.CurrentScreen;
+        set => _screenNavigator.SetCurrentScreen(value);
+    }
 
-    [ObservableProperty]
-    private PosTerminalViewModel? _cachedPosTerminalScreen;
+    public PosTerminalViewModel? CachedPosTerminalScreen => _screenNavigator.CachedPosTerminalScreen;
 
-    [ObservableProperty]
-    private PaymentViewModel? _cachedCashPaymentScreen;
+    public PaymentViewModel? CachedCashPaymentScreen => _screenNavigator.CachedCashPaymentScreen;
 
-    [ObservableProperty]
-    private SpecialProductsViewModel? _cachedSpecialProductsScreen;
+    public SpecialProductsViewModel? CachedSpecialProductsScreen => _screenNavigator.CachedSpecialProductsScreen;
 
     [ObservableProperty]
     private string _selectedCultureName = LocalizationService.DefaultCultureName;
@@ -112,8 +119,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _onlineStateText = string.Empty;
 
-    [ObservableProperty]
-    private string _pendingSyncText = string.Empty;
+    public string PendingSyncText
+    {
+        get => _syncOrchestrator?.PendingSyncText ?? string.Empty;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.PendingSyncText = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
@@ -133,26 +150,86 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _versionStatusText = string.Empty;
 
-    [ObservableProperty]
-    private string _orderSyncStatusText = string.Empty;
+    public string OrderSyncStatusText
+    {
+        get => _syncOrchestrator?.OrderSyncStatusText ?? string.Empty;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.OrderSyncStatusText = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
-    [ObservableProperty]
-    private string _syncCenterDetailTitle = string.Empty;
+    public string SyncCenterDetailTitle
+    {
+        get => _syncOrchestrator?.SyncCenterDetailTitle ?? string.Empty;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.SyncCenterDetailTitle = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
-    [ObservableProperty]
-    private string _lastOrderSyncErrorText = string.Empty;
+    public string LastOrderSyncErrorText
+    {
+        get => _syncOrchestrator?.LastOrderSyncErrorText ?? string.Empty;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.LastOrderSyncErrorText = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
-    [ObservableProperty]
-    private bool _isSyncCenterExpanded;
+    public bool IsSyncCenterExpanded
+    {
+        get => _syncOrchestrator?.IsSyncCenterExpanded ?? false;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.IsSyncCenterExpanded = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
     [ObservableProperty]
     private bool _isDeviceReregistrationDialogOpen;
 
-    [ObservableProperty]
-    private bool _isCardRecoveryResultDialogOpen;
+    public bool IsCardRecoveryResultDialogOpen
+    {
+        get => _cardRecoveryPresenter?.IsCardRecoveryResultDialogOpen ?? false;
+        set
+        {
+            if (_cardRecoveryPresenter is not null)
+            {
+                _cardRecoveryPresenter.IsCardRecoveryResultDialogOpen = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
-    [ObservableProperty]
-    private CardRecoveryResultDialogViewModel? _cardRecoveryResultDialog;
+    public CardRecoveryResultDialogViewModel? CardRecoveryResultDialog
+    {
+        get => _cardRecoveryPresenter?.CardRecoveryResultDialog;
+        set
+        {
+            if (_cardRecoveryPresenter is not null)
+            {
+                _cardRecoveryPresenter.CardRecoveryResultDialog = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
     [ObservableProperty]
     private bool _isCustomerDisplayOpen;
@@ -160,14 +237,44 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private CustomerDisplayWindowMode _customerDisplayWindowMode = CustomerDisplayWindowMode.Closed;
 
-    [ObservableProperty]
-    private int _pendingUploadCount;
+    public int PendingUploadCount
+    {
+        get => _syncOrchestrator?.PendingUploadCount ?? 0;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.PendingUploadCount = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
-    [ObservableProperty]
-    private int _failedUploadCount;
+    public int FailedUploadCount
+    {
+        get => _syncOrchestrator?.FailedUploadCount ?? 0;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.FailedUploadCount = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
-    [ObservableProperty]
-    private int _syncingOrderCount;
+    public int SyncingOrderCount
+    {
+        get => _syncOrchestrator?.SyncingOrderCount ?? 0;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.SyncingOrderCount = value;
+                OnPropertyChanged();
+            }
+        }
+    }
 
     [ObservableProperty]
     private bool _isCatalogDownloadProgressVisible;
@@ -184,106 +291,35 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _isCatalogDownloadProgressFailed;
 
-    [ObservableProperty]
-    private bool _isOrderSyncRetrying;
-
-    [ActivatorUtilitiesConstructor]
-    public MainViewModel(
-        LocalSellableItemIndex priceIndex,
-        PosCartService cart,
-        CashCheckoutService checkout,
-        ILocalSchemaService schema,
-        ILocalAppSettingsRepository settingsRepository,
-        ILocalCatalogRepository catalogRepository,
-        ILocalCatalogSyncService catalogSync,
-        IRemoteLookupRefreshService remoteLookupRefresh,
-        ISpecialProductService specialProductService,
-        IConnectivityApiClient connectivityApiClient,
-        ILocalDeviceRepository deviceRepository,
-        IDeviceApiClient deviceApiClient,
-        IDeviceFingerprintService fingerprintService,
-        DeviceAuthorizationState deviceAuthorizationState,
-        ILocalOrderRepository orderRepository,
-        ISyncQueueRepository syncQueueRepository,
-        ILocalizationService localization,
-        ICustomerDisplayWindowService customerDisplayWindowService,
-        IRawScannerService rawScannerService,
-        IUserFeedbackService? userFeedbackService = null,
-        IReceiptPrintService? receiptPrintService = null,
-        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
-        IReceiptTextFormatter? receiptTextFormatter = null,
-        IOrderUploadExecutionService? orderUploadExecutionService = null,
-        IDailyCloseService? dailyCloseService = null,
-        IDailyClosePrintService? dailyClosePrintService = null,
-        ICashDrawerService? cashDrawerService = null,
-        IApplicationExitService? applicationExitService = null,
-        IConfirmationDialogService? confirmationDialogService = null,
-        ITestSalesDataResetService? testSalesDataResetService = null)
-        : this(
-            priceIndex,
-            cart,
-            checkout,
-            schema,
-            new ShellCultureService(localization, settingsRepository),
-            new ShellCatalogService(priceIndex, catalogRepository, catalogSync),
-            catalogRepository,
-            remoteLookupRefresh,
-            specialProductService,
-            connectivityApiClient,
-            new MainShellStartupService(deviceRepository, fingerprintService, deviceAuthorizationState),
-            orderRepository,
-            new ShellSyncCenterService(syncQueueRepository),
-            localization,
-            new CustomerDisplayOrchestrator(customerDisplayWindowService),
-            rawScannerService,
-            new ReceiptQueryService(orderRepository),
-            new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
-            new DeviceRegistrationWorkflowService(deviceApiClient, deviceRepository, fingerprintService),
-            new SpecialProductsWorkflowService(priceIndex, cart, catalogRepository, specialProductService),
-            (remoteLookupRefreshAsync, reloadCatalogAsync) => new PosTerminalWorkflowService(
-                priceIndex,
-                cart,
-                remoteLookupRefreshAsync,
-                reloadCatalogAsync),
-            receiptReturnsWorkflowService: new ReceiptReturnsWorkflowService(
-                new ReceiptQueryService(orderRepository),
-                orderRepository,
-                null,
-                priceIndex,
-                cart,
-                localization),
-            installmentOrderService: NoopInstallmentOrderService.Instance,
-            userFeedbackService: userFeedbackService ?? NoopUserFeedbackService.Instance,
-            receiptPrintService: receiptPrintService ?? new NoopReceiptPrintService(localization),
-            receiptPrinterSettingsStore: receiptPrinterSettingsStore,
-            receiptTextFormatter: receiptTextFormatter ?? new ReceiptTextFormatter(),
-            orderUploadExecutionService: orderUploadExecutionService,
-            dailyCloseService: dailyCloseService,
-            dailyClosePrintService: dailyClosePrintService,
-            cashDrawerService: cashDrawerService,
-            applicationExitService: applicationExitService,
-            confirmationDialogService: confirmationDialogService,
-            testSalesDataResetService: testSalesDataResetService)
+    public bool IsOrderSyncRetrying
     {
+        get => _syncOrchestrator?.IsOrderSyncRetrying ?? false;
+        set
+        {
+            if (_syncOrchestrator is not null)
+            {
+                _syncOrchestrator.IsOrderSyncRetrying = value;
+                OnPropertyChanged();
+            }
+        }
     }
 
+
     public MainViewModel(
-        LocalSellableItemIndex priceIndex,
-        PosCartService cart,
-        CashCheckoutService checkout,
-        ILocalSchemaService schema,
+        IPosCoreServices core,
+        IPosInfrastructureFacade infra,
+        IPaymentTerminalFacade paymentTerminal,
+        IPrintFacade print,
         IShellCultureService shellCultureService,
         IShellCatalogService shellCatalogService,
         ILocalCatalogRepository catalogRepository,
         IRemoteLookupRefreshService remoteLookupRefresh,
         ISpecialProductService specialProductService,
-        IConnectivityApiClient connectivityApiClient,
         IMainShellStartupService mainShellStartupService,
         ILocalOrderRepository orderRepository,
         IShellSyncCenterService shellSyncCenterService,
         ILocalizationService localization,
         ICustomerDisplayOrchestrator customerDisplayOrchestrator,
-        IRawScannerService rawScannerService,
         IReceiptQueryService receiptQueryService,
         ICashPaymentWorkflowService cashPaymentWorkflowService,
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -291,57 +327,48 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PosTerminalWorkflowFactory posTerminalWorkflowFactory,
         ISuspendedOrderService? suspendedOrderService = null,
         IRemoteOrderHistoryService? remoteOrderHistoryService = null,
-        IUserFeedbackService? userFeedbackService = null,
         IReceiptReturnsWorkflowService? receiptReturnsWorkflowService = null,
-        IVoucherApiClient? voucherApiClient = null,
-        ICardTerminalClient? cardTerminalClient = null,
-        ICardTerminalSetupService? cardTerminalSetupService = null,
-        IReceiptPrintService? receiptPrintService = null,
-        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
-        IReceiptTextFormatter? receiptTextFormatter = null,
         IOrderUploadExecutionService? orderUploadExecutionService = null,
         IDailyCloseService? dailyCloseService = null,
         IDailyClosePrintService? dailyClosePrintService = null,
         ICashDrawerService? cashDrawerService = null,
-        IApplicationExitService? applicationExitService = null,
-        IConfirmationDialogService? confirmationDialogService = null,
         IInstallmentOrderService? installmentOrderService = null,
         ITestSalesDataResetService? testSalesDataResetService = null,
-        ILinklyTerminalDialogPresenter? linklyTerminalDialogPresenter = null,
-        ICardPaymentRecoveryService? cardPaymentRecoveryService = null,
-        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
-        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
         IWindowOwnerProvider? windowOwnerProvider = null)
     {
-        _priceIndex = priceIndex;
-        _cart = cart;
-        _checkout = checkout;
-        _schema = schema;
+        _core = core;
+        _infra = infra;
+        _paymentTerminal = paymentTerminal;
+        _print = print;
+        _priceIndex = core.PriceIndex;
+        _cart = core.Cart;
+        _checkout = core.Checkout;
+        _schema = core.Schema;
         _shellCultureService = shellCultureService;
         _shellCatalogService = shellCatalogService;
         _catalogRepository = catalogRepository;
         _remoteLookupRefresh = remoteLookupRefresh;
         _specialProductService = specialProductService;
-        _connectivityApiClient = connectivityApiClient;
+        _connectivityApiClient = infra.ConnectivityApiClient;
         _mainShellStartupService = mainShellStartupService;
         _orderRepository = orderRepository;
         _shellSyncCenterService = shellSyncCenterService;
         _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
         _localization = localization;
         _customerDisplayOrchestrator = customerDisplayOrchestrator;
-        _rawScannerService = rawScannerService;
-        _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
+        _rawScannerService = infra.RawScannerService;
+        _userFeedbackService = infra.UserFeedbackService ?? NoopUserFeedbackService.Instance;
         _receiptQueryService = receiptQueryService;
-        _receiptPrintService = receiptPrintService ?? new NoopReceiptPrintService(_localization);
-        _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
-        _receiptTextFormatter = receiptTextFormatter ?? new ReceiptTextFormatter();
+        _receiptPrintService = print.ReceiptPrintService ?? new NoopReceiptPrintService(_localization);
+        _receiptPrinterSettingsStore = print.ReceiptPrinterSettingsStore;
+        _receiptTextFormatter = print.ReceiptTextFormatter ?? new ReceiptTextFormatter();
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _suspendedOrderService = suspendedOrderService;
         _remoteOrderHistoryService = remoteOrderHistoryService;
         _cashPaymentWorkflowService = cashPaymentWorkflowService;
-        _voucherApiClient = voucherApiClient;
-        _cardTerminalClient = cardTerminalClient;
-        _cardTerminalSetupService = cardTerminalSetupService;
+        _voucherApiClient = paymentTerminal.VoucherApiClient;
+        _cardTerminalClient = paymentTerminal.CardTerminalClient;
+        _cardTerminalSetupService = paymentTerminal.CardTerminalSetupService;
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _specialProductsWorkflowService = specialProductsWorkflowService;
         _receiptReturnsWorkflowService = receiptReturnsWorkflowService ?? new ReceiptReturnsWorkflowService(
@@ -354,13 +381,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _dailyCloseService = dailyCloseService ?? NoopDailyCloseService.Instance;
         _dailyClosePrintService = dailyClosePrintService ?? NoopDailyClosePrintService.Instance;
         _cashDrawerService = cashDrawerService ?? new NoopCashDrawerService(_localization);
-        _applicationExitService = applicationExitService ?? new WpfApplicationExitService();
-        _confirmationDialogService = confirmationDialogService ?? new WpfConfirmationDialogService();
+        _applicationExitService = infra.ApplicationExitService ?? new WpfApplicationExitService();
+        _confirmationDialogService = infra.ConfirmationDialogService ?? new WpfConfirmationDialogService();
         _testSalesDataResetService = testSalesDataResetService;
-        _linklyTerminalDialogPresenter = linklyTerminalDialogPresenter;
-        _cardPaymentRecoveryService = cardPaymentRecoveryService;
-        _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
-        _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
+        _linklyTerminalDialogPresenter = paymentTerminal.LinklyTerminalDialogPresenter;
+        _cardPaymentRecoveryService = paymentTerminal.CardPaymentRecoveryService;
+        _cardRecoveryResultDialogService = paymentTerminal.CardRecoveryResultDialogService;
+        _linklyFallbackPromptCoordinator = paymentTerminal.LinklyFallbackPromptCoordinator;
         _windowOwnerProvider = windowOwnerProvider;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
         _mainChildViewModelFactory = new MainChildViewModelFactory(
@@ -372,39 +399,134 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _receiptPrinterSettingsStore,
             _installmentOrderService,
             _localization,
-            _cardTerminalClient);
+            _cardTerminalClient,
+            _priceIndex,
+            _cart,
+            _catalogRepository,
+            _specialProductService,
+            _specialProductsWorkflowService,
+            _receiptReturnsWorkflowService,
+            _cashPaymentWorkflowService,
+            _cardTerminalSetupService,
+            _rawScannerService,
+            _dailyCloseService,
+            _dailyClosePrintService,
+            _userFeedbackService,
+            _receiptPrintService,
+            _cardRecoveryResultDialogService);
 
-        PaymentSuccess = new PaymentSuccessViewModel(
+        _cardRecoveryPresenter = new CardRecoveryPresenter(
+            _cardPaymentRecoveryService,
+            _cardRecoveryResultDialogService,
             _receiptQueryService,
+            _receiptPrinterSettingsStore,
             _receiptTextFormatter,
-            _receiptPrinterSettingsStore);
+            _localization,
+            _linklyFallbackPromptCoordinator,
+            _mainChildViewModelFactory,
+            _cart,
+            setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
+            getOwner: () => CurrentOwner,
+            navigateToPaymentOnDraft: () =>
+            {
+                PrepareCachedCashPaymentScreen();
+                CashPayment?.PrepareForEntry(Session);
+                CurrentScreen = CashPayment;
+                return Task.CompletedTask;
+            },
+            getSession: () => Session,
+            setSession: value => Session = value,
+            onCardRecoveryOrderCompleted: order =>
+            {
+                _lastCompletedOrder = order;
+                PaymentSuccess.LoadFromOrder(order);
+                CurrentScreen = PaymentSuccess;
+                PosTerminal?.RefreshCart();
+                CashPayment?.RefreshCart();
+            },
+            onCardRecoveryDraftRestored: () =>
+            {
+                PosTerminal?.RefreshCart();
+                CashPayment?.RefreshCart();
+            },
+            refreshPendingSyncAsync: () => RefreshPendingSyncAsync(),
+            printReceiptAsync: (receipt, reason) => PrintReceiptAsync(receipt, reason),
+            notifyShowCashPaymentCanExecuteChanged: () => ShowCashPaymentCommand!.NotifyCanExecuteChanged(),
+            notifyPrintRecoveredReceiptCanExecuteChanged: () => PrintRecoveredReceiptCommand!.NotifyCanExecuteChanged(),
+            notifyPropertyChanged: name => OnPropertyChanged(name));
+
+        _syncOrchestrator = new SyncOrchestrator(
+            _shellSyncCenterService,
+            _orderUploadExecutionService,
+            _localization,
+            setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
+            onPendingSyncCountChanged: count => Session = Session with { PendingSyncCount = count },
+            getPendingSyncCount: () => Session.PendingSyncCount,
+            refreshShell: () => RefreshLocalizedShell(),
+            notifyPropertyChanged: name => OnPropertyChanged(name));
+
+        _screenNavigator = new ScreenNavigator(
+            _mainChildViewModelFactory,
+            _cart,
+            _localization,
+            _suspendedOrderService,
+            _cardTerminalSetupService,
+            _testSalesDataResetService,
+            _confirmationDialogService,
+            _customerDisplayOrchestrator,
+            _linklyFallbackPromptCoordinator,
+            SyncCatalogAndReloadAsync,
+            ResetCatalogAndReloadAsync,
+            BeginDeviceReregistrationAsync,
+            () => _cardRecoveryPresenter!.RecoverActiveCardPaymentSessionFromPaymentAsync(),
+            setScreen: value =>
+            {
+                OnPropertyChanged(nameof(CurrentScreen));
+                if (!ReferenceEquals(value, _screenNavigator.ReceiptReturns))
+                {
+                    _screenNavigator.ReceiptReturns?.ResetToDefault();
+                }
+                RaiseScreenHostStateChanged();
+                _rawScannerService.SetActivePage((value as IScannerInputTarget)?.ScannerPageId);
+            },
+            onPaymentCreated: vm =>
+            {
+                vm.PaymentCompleted += OnPaymentCompleted;
+                vm.PropertyChanged += OnCashPaymentPropertyChanged;
+            },
+            onPaymentDisposed: vm =>
+            {
+                vm.PaymentCompleted -= OnPaymentCompleted;
+                vm.PropertyChanged -= OnCashPaymentPropertyChanged;
+            },
+            printSelectedHistoryReceiptAsync: vm => PrintSelectedHistoryReceiptAsync(vm),
+            setStatusMessage: msg => StatusMessage = msg,
+            getLastCompletedOrder: () => _lastCompletedOrder,
+            setLastCompletedOrder: value => _lastCompletedOrder = value);
+
+        _screenNavigator.PaymentSuccess = _mainChildViewModelFactory.CreatePaymentSuccessViewModel();
         PaymentSuccess.NewTransactionRequested += OnPaymentSuccessNewTransactionRequested;
         PaymentSuccess.PrintReceiptRequested += OnPaymentSuccessPrintReceiptRequested;
 
-        ShowPosCommand = new RelayCommand(ShowPos);
-        ShowCashPaymentCommand = new RelayCommand(ShowCashPayment, () => !_cart.IsEmpty);
-        ShowReturnsCommand = new RelayCommand(ShowReturns);
-        ShowPaymentSuccessCommand = new AsyncRelayCommand(ShowPaymentSuccessLatestAsync);
-        ShowHistoryCommand = new AsyncRelayCommand(ShowHistoryAsync);
-        ShowDailyCloseCommand = new AsyncRelayCommand(ShowDailyCloseAsync);
-        ShowCustomerDisplayCommand = new RelayCommand(ShowCustomerDisplay);
-        ShowSettingsCommand = new AsyncRelayCommand(ShowSettingsAsync);
-        ToggleSyncCenterCommand = new AsyncRelayCommand(ToggleSyncCenterAsync);
-        RetrySyncOrderCommand = new AsyncRelayCommand<SyncQueueListItem?>(RetrySyncOrderAsync, CanRetrySyncOrder);
-        RetryAllSyncOrdersCommand = new AsyncRelayCommand(RetryAllSyncOrdersAsync, CanRetryAllSyncOrders);
+        ShowPosCommand = _screenNavigator.ShowPosCommand;
+        ShowCashPaymentCommand = _screenNavigator.ShowCashPaymentCommand;
+        ShowReturnsCommand = _screenNavigator.ShowReturnsCommand;
+        ShowPaymentSuccessCommand = _screenNavigator.ShowPaymentSuccessCommand;
+        ShowHistoryCommand = _screenNavigator.ShowHistoryCommand;
+        ShowDailyCloseCommand = _screenNavigator.ShowDailyCloseCommand;
+        ShowCustomerDisplayCommand = _screenNavigator.ShowCustomerDisplayCommand;
+        ShowSettingsCommand = _screenNavigator.ShowSettingsCommand;
+        ToggleSyncCenterCommand = _syncOrchestrator.ToggleSyncCenterCommand;
+        RetrySyncOrderCommand = _syncOrchestrator.RetrySyncOrderCommand;
+        RetryAllSyncOrdersCommand = _syncOrchestrator.RetryAllSyncOrdersCommand;
         ToggleCustomerDisplayWindowCommand = new RelayCommand(ToggleCustomerDisplayWindow);
         CloseCustomerDisplayWindowCommand = new RelayCommand(CloseCustomerDisplayWindow);
         ShowCustomerDisplayNormalCommand = new RelayCommand(ShowCustomerDisplayNormal);
         ShowCustomerDisplayFullscreenCommand = new RelayCommand(ShowCustomerDisplayFullscreen);
         ToggleCultureCommand = new AsyncRelayCommand(ToggleCultureAsync);
         ResetScannerBindingCommand = new AsyncRelayCommand(ResetScannerBindingAsync);
-        CloseCardRecoveryResultDialogCommand = new RelayCommand(CloseCardRecoveryResultDialog);
-        PrintRecoveredReceiptCommand = new AsyncRelayCommand(PrintRecoveredReceiptAsync, CanPrintRecoveredReceipt);
-
-        if (_cardRecoveryResultDialogService is not null)
-        {
-            _cardRecoveryResultDialogService.DialogRequested += OnCardRecoveryResultDialogRequested;
-        }
+        CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
+        PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
 
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
@@ -415,25 +537,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RefreshLocalizedShell(resetStatus: true);
     }
 
-    public PosTerminalViewModel? PosTerminal { get; private set; }
+    public PosTerminalViewModel? PosTerminal
+    {
+        get => _screenNavigator.PosTerminal;
+        set => _screenNavigator.PosTerminal = value;
+    }
 
-    public SpecialProductsViewModel? SpecialProducts { get; private set; }
+    public SpecialProductsViewModel? SpecialProducts
+    {
+        get => _screenNavigator.SpecialProducts;
+        set => _screenNavigator.SpecialProducts = value;
+    }
 
-    public PaymentViewModel? CashPayment { get; private set; }
+    public PaymentViewModel? CashPayment
+    {
+        get => _screenNavigator.CashPayment;
+        set => _screenNavigator.CashPayment = value;
+    }
 
-    public InstallmentCenterViewModel? InstallmentCenter { get; private set; }
+    public InstallmentCenterViewModel? InstallmentCenter
+    {
+        get => _screenNavigator.InstallmentCenter;
+        set => _screenNavigator.InstallmentCenter = value;
+    }
 
-    public InstallmentCreateViewModel? InstallmentCreate { get; private set; }
+    public InstallmentCreateViewModel? InstallmentCreate
+    {
+        get => _screenNavigator.InstallmentCreate;
+        set => _screenNavigator.InstallmentCreate = value;
+    }
 
-    public ReceiptReturnsViewModel? ReceiptReturns { get; private set; }
+    public ReceiptReturnsViewModel? ReceiptReturns
+    {
+        get => _screenNavigator.ReceiptReturns;
+        set => _screenNavigator.ReceiptReturns = value;
+    }
 
-    public PaymentSuccessViewModel PaymentSuccess { get; }
+    public PaymentSuccessViewModel PaymentSuccess
+    {
+        get => _screenNavigator.PaymentSuccess;
+    }
 
-    public TransactionHistoryViewModel? TransactionHistory { get; private set; }
+    public TransactionHistoryViewModel? TransactionHistory
+    {
+        get => _screenNavigator.TransactionHistory;
+        set => _screenNavigator.TransactionHistory = value;
+    }
 
-    public DailyCloseViewModel? DailyClose { get; private set; }
+    public DailyCloseViewModel? DailyClose
+    {
+        get => _screenNavigator.DailyClose;
+        set => _screenNavigator.DailyClose = value;
+    }
 
-    public CustomerDisplayViewModel CustomerDisplay { get; } = new();
+    public CustomerDisplayViewModel CustomerDisplay => _screenNavigator.CustomerDisplay;
 
     private DeviceRegistrationViewModel? _deviceRegistration;
 
@@ -443,7 +600,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _deviceRegistration, value);
     }
 
-    public SettingsViewModel? Settings { get; private set; }
+    public SettingsViewModel? Settings => _screenNavigator.Settings;
 
     public ILinklyTerminalDialogPresenter? LinklyTerminalDialog => _linklyTerminalDialogPresenter;
 
@@ -460,7 +617,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public string ActivePageTitleText => GetActivePageTitleText();
 
-    public ObservableCollection<SyncQueueListItem> SyncCenterOrders { get; } = [];
+    private static readonly ObservableCollection<SyncQueueListItem> _emptySyncOrders = [];
+
+    public ObservableCollection<SyncQueueListItem> SyncCenterOrders => _syncOrchestrator?.SyncCenterOrders ?? _emptySyncOrders;
 
     public IRelayCommand ShowPosCommand { get; }
 
@@ -519,20 +678,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cart.CartChanged -= OnCartChanged;
         _localization.CultureChanged -= OnCultureChanged;
         _customerDisplayOrchestrator.Closed -= OnCustomerDisplayClosed;
-        if (_cardRecoveryResultDialogService is not null)
-        {
-            _cardRecoveryResultDialogService.DialogRequested -= OnCardRecoveryResultDialogRequested;
-        }
+        _cardRecoveryPresenter?.DetachDialogService();
 
         PaymentSuccess.NewTransactionRequested -= OnPaymentSuccessNewTransactionRequested;
         PaymentSuccess.PrintReceiptRequested -= OnPaymentSuccessPrintReceiptRequested;
 
         // 主壳销毁时统一释放当前缓存子页面，避免 singleton 服务事件继续持有旧页面。
-        PosTerminal?.Dispose();
-        SpecialProducts?.Dispose();
-        ReceiptReturns?.Dispose();
-        Settings?.Dispose();
-        ClearCashPaymentCache();
+        _screenNavigator.ClearScreens();
         CancelStartupCatalogIndexLoad();
     }
 
@@ -624,12 +776,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task InitializePosExperienceAsync(AppStartupOptions startupOptions)
     {
-        PosTerminal?.Dispose();
-        SpecialProducts?.Dispose();
-        ReceiptReturns?.Dispose();
-        CachedPosTerminalScreen = null;
-        ClearCashPaymentCache();
-        CachedSpecialProductsScreen = null;
+        _screenNavigator.ClearScreens();
+        _screenNavigator.SetCachedPosTerminalScreen(null);
+        _screenNavigator.SetCachedSpecialProductsScreen(null);
         _customerDisplayPrewarmed = false;
         CancelStartupCatalogIndexLoad();
         IReadOnlyList<SellableItemDto> cachedItems = [];
@@ -640,14 +789,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         var posWorkflowService = _posTerminalWorkflowFactory(RefreshRemoteLookupAsync, ReloadCatalogIndexAsync);
-        PosTerminal = new PosTerminalViewModel(
-            _priceIndex,
-            _cart,
+        PosTerminal = _mainChildViewModelFactory.CreatePosTerminalViewModel(
             Session,
             ShowCashPayment,
             ShowSpecialProductsAsync,
-            _localization,
-            userFeedbackService: _userFeedbackService,
             onHoldOrderAsync: SuspendCurrentOrderAsync,
             onRecallOrderAsync: ShowSuspendedHistoryAsync,
             onOpenHistoryAsync: ShowHistoryAsync,
@@ -657,38 +802,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             syncCatalogAsync: SyncCatalogAndReloadAsync,
             resetCatalogAsync: ResetCatalogAndReloadAsync,
             refreshOnlineAsync: RefreshOnlineStateAsync,
-            rawScannerService: _rawScannerService,
             onReregisterDeviceAsync: BeginDeviceReregistrationFromPosAsync,
             workflowService: posWorkflowService,
             onOpenReturns: ShowReturns,
             onPrintLastReceiptAsync: PrintLatestReceiptAsync,
             onOpenCashDrawerAsync: OpenCashDrawerAsync,
             onExitApplicationAsync: ExitApplicationAsync);
-        SpecialProducts = new SpecialProductsViewModel(
-            _priceIndex,
-            _cart,
-            _catalogRepository,
-            _specialProductService,
-            Session,
-            _localization,
-            ShowPos,
-            line => PosTerminal?.RevealCartLine(line),
-            _specialProductsWorkflowService,
-            _rawScannerService);
-        CachedPosTerminalScreen = PosTerminal;
-        ReceiptReturns = new ReceiptReturnsViewModel(
-            _receiptReturnsWorkflowService,
+        SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
             Session,
             ShowPos,
-            line => PosTerminal?.RevealCartLine(line),
-            _rawScannerService,
-            _localization);
+            line => PosTerminal?.RevealCartLine(line));
+        _screenNavigator.SetCachedPosTerminalScreen(PosTerminal);
+        ReceiptReturns = _mainChildViewModelFactory.CreateReceiptReturnsViewModel(
+            Session,
+            ShowPos,
+            line => PosTerminal?.RevealCartLine(line));
         if (cachedItems.Count > 0)
         {
             PosTerminal.LoadMatches(cachedItems);
         }
 
-        TransactionHistory = CreateTransactionHistoryViewModel();
+        TransactionHistory = _screenNavigator.CreateTransactionHistoryViewModel();
 
         if (startupOptions.PreviewMode)
         {
@@ -699,7 +833,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await RefreshPendingSyncAsync();
         RefreshClock();
         _clockTimer.Start();
-        ApplySessionToScreens();
+        _screenNavigator.ApplySessionToScreens();
         PrepareCachedCashPaymentScreen();
         // 诊断启动卡顿时先关闭客显预热，避免启动阶段创建隐藏窗口。
         ConsoleLog.Write(
@@ -828,49 +962,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        _screenNavigator.Session = value;
         RefreshLocalizedShell();
-        ApplySessionToScreens();
-    }
-
-    partial void OnPendingUploadCountChanged(int value)
-    {
-        RefreshSyncRetryCommandStates();
-    }
-
-    partial void OnFailedUploadCountChanged(int value)
-    {
-        RefreshSyncRetryCommandStates();
-    }
-
-    partial void OnIsOrderSyncRetryingChanged(bool value)
-    {
-        RefreshSyncRetryCommandStates();
-    }
-
-    partial void OnCurrentScreenChanged(object? value)
-    {
-        if (!ReferenceEquals(value, ReceiptReturns))
-        {
-            ReceiptReturns?.ResetToDefault();
-        }
-
-        RaiseScreenHostStateChanged();
-        _rawScannerService.SetActivePage((value as IScannerInputTarget)?.ScannerPageId);
-    }
-
-    partial void OnCachedPosTerminalScreenChanged(PosTerminalViewModel? value)
-    {
-        RaiseScreenHostStateChanged();
-    }
-
-    partial void OnCachedCashPaymentScreenChanged(PaymentViewModel? value)
-    {
-        RaiseScreenHostStateChanged();
-    }
-
-    partial void OnCachedSpecialProductsScreenChanged(SpecialProductsViewModel? value)
-    {
-        RaiseScreenHostStateChanged();
+        _screenNavigator.ApplySessionToScreens();
     }
 
     private void RaiseScreenHostStateChanged()
@@ -921,21 +1015,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void RefreshLocalizedShell(bool resetStatus = false)
     {
         OnlineStateText = _localization.T(Session.IsOnline ? "Online" : "Offline");
-        PendingSyncText = string.Format(_localization.CurrentCulture, _localization.T("pos.status.pendingSync"), Session.PendingSyncCount);
+        _syncOrchestrator?.RefreshLocalizedText();
         TerminalInfo = string.Format(_localization.CurrentCulture, _localization.T("shell.footer.terminalInfo"), Session.DeviceCode);
         StoreInfo = string.Format(_localization.CurrentCulture, _localization.T("shell.top.storeInfo"), Session.StoreName, Session.StoreCode);
         CashierInfo = string.Format(_localization.CurrentCulture, _localization.T("shell.top.cashierInfo"), Session.CashierName);
         VersionStatusText = _localization.T("shell.footer.versionReady");
-        OrderSyncStatusText = string.Format(
-            _localization.CurrentCulture,
-            _localization.T("shell.sync.orderStatus"),
-            PendingUploadCount,
-            FailedUploadCount,
-            SyncingOrderCount);
-        SyncCenterDetailTitle = string.Format(
-            _localization.CurrentCulture,
-            _localization.T("shell.sync.detailTitle"),
-            SyncCenterOrders.Count);
         OnPropertyChanged(nameof(ActivePageTitleText));
         if (resetStatus || string.IsNullOrWhiteSpace(StatusMessage))
         {
@@ -1020,8 +1104,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task RefreshPendingSyncAsync()
     {
-        ApplySyncCenterSnapshot(await _shellSyncCenterService.GetSnapshotAsync());
+        if (_syncOrchestrator is not null)
+        {
+            await _syncOrchestrator.RefreshPendingSyncAsync();
+        }
     }
+
 
     private DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(AppStartupOptions startupOptions)
     {
@@ -1040,13 +1128,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void ApplySyncCenterSnapshot(ShellSyncCenterSnapshot snapshot)
     {
-        PendingUploadCount = snapshot.Overview.PendingCount;
-        FailedUploadCount = snapshot.Overview.FailedCount;
-        SyncingOrderCount = snapshot.Overview.SyncingCount;
-        LastOrderSyncErrorText = snapshot.Overview.LastError ?? _localization.T("shell.sync.noErrors");
-        SyncCenterOrders.ReplaceWith(snapshot.ActiveItems);
-        Session = Session with { PendingSyncCount = snapshot.Overview.PendingCount };
-        RefreshLocalizedShell();
+        _syncOrchestrator?.ApplySyncCenterSnapshot(snapshot);
     }
 
     private void RefreshClock()
@@ -1054,44 +1136,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CurrentTime = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
     }
 
-    private void ApplySessionToScreens()
-    {
-        if (PosTerminal is not null)
-        {
-            PosTerminal.Session = Session;
-        }
-
-        if (CashPayment is not null)
-        {
-            CashPayment.Session = Session;
-        }
-
-        if (SpecialProducts is not null)
-        {
-            SpecialProducts.Session = Session;
-        }
-
-        if (ReceiptReturns is not null)
-        {
-            ReceiptReturns.Session = Session;
-        }
-
-        if (TransactionHistory is not null)
-        {
-            TransactionHistory.Session = Session;
-        }
-
-        if (DailyClose is not null)
-        {
-            DailyClose.Session = Session;
-        }
-
-        InstallmentCenter?.Prepare(Session, CreateCurrentCartSnapshot());
-        if (InstallmentCreate is not null)
-        {
-            InstallmentCreate.Session = Session;
-        }
-    }
+    private void ApplySessionToScreens() => _screenNavigator.ApplySessionToScreens();
 
     private void BeginInitialCatalogSync()
     {
@@ -1142,45 +1187,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void PrepareCachedCashPaymentScreen()
-    {
-        if (CashPayment is null)
-        {
-            CashPayment = new PaymentViewModel(
-                _cart,
-                _cashPaymentWorkflowService,
-                Session,
-                _localization,
-                ShowPos,
-                ShowInstallmentCenter,
-                RecoverActiveCardPaymentSessionFromPaymentAsync,
-                _linklyFallbackPromptCoordinator);
-            CashPayment.PaymentCompleted += OnPaymentCompleted;
-            CashPayment.PropertyChanged += OnCashPaymentPropertyChanged;
-        }
+    private void PrepareCachedCashPaymentScreen() => _screenNavigator.PrepareCachedCashPaymentScreen();
 
-        if (ReferenceEquals(CachedCashPaymentScreen, CashPayment))
-        {
-            return;
-        }
-
-        CachedCashPaymentScreen = CashPayment;
-    }
-
-    private void PrepareCachedSpecialProductsScreen()
-    {
-        if (SpecialProducts is null || ReferenceEquals(CachedSpecialProductsScreen, SpecialProducts))
-        {
-            return;
-        }
-
-        var stopwatch = Stopwatch.StartNew();
-        CachedSpecialProductsScreen = SpecialProducts;
-        stopwatch.Stop();
-        ConsoleLog.Write(
-            "SpecialProducts",
-            $"special screen view prepared store={Session.StoreCode} elapsedMs={stopwatch.ElapsedMilliseconds}");
-    }
+    private void PrepareCachedSpecialProductsScreen() => _screenNavigator.PrepareCachedSpecialProductsScreen();
 
     private async Task TryPreloadSpecialProductsHomeAsync()
     {
@@ -1524,18 +1533,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _mainShellStartupService.ClearAuthorization();
         _posPostShowStartupTask = null;
         CancelStartupCatalogIndexLoad();
-        PosTerminal?.Dispose();
-        SpecialProducts?.Dispose();
-        ReceiptReturns?.Dispose();
-        PosTerminal = null;
-        SpecialProducts = null;
-        CachedPosTerminalScreen = null;
-        ClearCashPaymentCache();
-        CachedSpecialProductsScreen = null;
-        InstallmentCenter = null;
-        InstallmentCreate = null;
-        ReceiptReturns = null;
-        TransactionHistory = null;
+        _screenNavigator.ClearScreens();
+        _screenNavigator.SetCachedPosTerminalScreen(null);
+        _screenNavigator.SetCachedSpecialProductsScreen(null);
+        _screenNavigator.PosTerminal = null;
+        _screenNavigator.SpecialProducts = null;
+        _screenNavigator.InstallmentCenter = null;
+        _screenNavigator.InstallmentCreate = null;
+        _screenNavigator.ReceiptReturns = null;
+        _screenNavigator.TransactionHistory = null;
         _lastCompletedOrder = null;
         _cart.Clear();
         SetCustomerDisplayWindowMode(CustomerDisplayWindowMode.Closed, CurrentOwner);
@@ -1564,350 +1570,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void OnCartChanged(object? sender, EventArgs e)
     {
-        CashPayment?.RefreshCart();
-        InstallmentCenter?.Prepare(Session, CreateCurrentCartSnapshot());
-        if (InstallmentCreate is not null)
-        {
-            InstallmentCreate.CartSnapshot = CreateCurrentCartSnapshot();
-        }
-        LoadCustomerDisplayFromCart();
-        ShowCashPaymentCommand.NotifyCanExecuteChanged();
+        _screenNavigator.RefreshCartRelatedState();
+        _screenNavigator.LoadCustomerDisplayFromCart();
     }
 
-    private void ShowPos()
-    {
-        if (PosTerminal is null)
-        {
-            return;
-        }
+    private void ShowPos() => _screenNavigator.ShowPos();
 
-        CurrentScreen = PosTerminal;
-    }
+    private Task ShowSpecialProductsAsync() => _screenNavigator.ShowSpecialProductsAsync();
 
-    private Task ShowSpecialProductsAsync()
-    {
-        if (SpecialProducts is null)
-        {
-            return Task.CompletedTask;
-        }
+    private void ShowReturns() => _screenNavigator.ShowReturns();
 
-        SpecialProducts.Session = Session;
-        PrepareCachedSpecialProductsScreen();
-        SpecialProducts.ActivateForEntry();
-        CurrentScreen = SpecialProducts;
-        _ = EnsureSpecialProductsLoadedAsync(SpecialProducts);
-        return Task.CompletedTask;
-    }
+    private void ShowCashPayment() => _screenNavigator.ShowCashPayment();
 
-    private void ShowReturns()
-    {
-        if (ReceiptReturns is null)
-        {
-            return;
-        }
-
-        ReceiptReturns.Session = Session;
-        CurrentScreen = ReceiptReturns;
-    }
-
-    private static async Task EnsureSpecialProductsLoadedAsync(SpecialProductsViewModel specialProducts)
-    {
-        try
-        {
-            await specialProducts.EnsureLoadedAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            ConsoleLog.Write("SpecialProducts", $"background load failed error={ex.Message}");
-        }
-    }
-
-    private void ShowCashPayment()
-    {
-        if (_cart.IsEmpty)
-        {
-            ShowPos();
-            return;
-        }
-
-        PrepareCachedCashPaymentScreen();
-        if (CashPayment is null)
-        {
-            ShowPos();
-            return;
-        }
-
-        CashPayment.PrepareForEntry(Session);
-        CurrentScreen = CashPayment;
-    }
-
-    private async Task<bool> RecoverCardPaymentAttemptAsync(bool navigateToPaymentOnDraft)
-    {
-        if (_cardPaymentRecoveryService is null)
-        {
-            return false;
-        }
-
-        var recoveryTask = _cardPaymentRecoveryTask;
-        if (recoveryTask is null)
-        {
-            recoveryTask = _cardPaymentRecoveryService.RecoverLatestAsync(_cart, Session, CancellationToken.None);
-            _cardPaymentRecoveryTask = recoveryTask;
-        }
-
-        CardPaymentRecoveryResult result;
-        try
-        {
-            result = await recoveryTask;
-        }
-        catch (OperationCanceledException)
-        {
-            if (ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
-            {
-                _cardPaymentRecoveryTask = null;
-            }
-
-            throw;
-        }
-        catch (Exception ex)
-        {
-            if (ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
-            {
-                _cardPaymentRecoveryTask = null;
-            }
-
-            ConsoleLog.WriteError(
-                "CardRecovery",
-                $"recover latest card payment failed error={ex.GetType().Name} message={ex.Message}",
-                exception: ex);
-            throw;
-        }
-
-        if (ShouldRetryCardPaymentRecovery(result.Outcome) &&
-            ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
-        {
-            _cardPaymentRecoveryTask = null;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.None)
-        {
-            return false;
-        }
-
-        StatusMessage = result.Message;
-        if (result.UpdatedSession is not null)
-        {
-            Session = result.UpdatedSession;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted && result.Order is not null)
-        {
-            _lastCompletedOrder = result.Order;
-            await RefreshPendingSyncAsync();
-            await PaymentSuccess.LoadFromOrderAsync(result.Order);
-            CurrentScreen = PaymentSuccess;
-            LogRecoveredCardOrderCompleted(result.Order);
-            var printResult = await PrintRecoveredCardReceiptAsync(result.Order);
-            await ShowRecoveredCardOrderDialogAsync(result, printResult);
-            ShowCashPaymentCommand.NotifyCanExecuteChanged();
-            return true;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
-        {
-            PosTerminal?.RefreshCart();
-            CashPayment?.RefreshCart();
-            ShowCashPaymentCommand.NotifyCanExecuteChanged();
-            if (navigateToPaymentOnDraft && !_cart.IsEmpty)
-            {
-                PrepareCachedCashPaymentScreen();
-                CashPayment?.PrepareForEntry(Session);
-                CurrentScreen = CashPayment;
-            }
-
-            ShowRecoveredCardDraftDialog(result);
-            return true;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.Unknown)
-        {
-            ShowRecoveredCardFailureDialog(result);
-        }
-
-        return false;
-    }
-
-    private async Task<bool> RecoverActiveCardPaymentSessionFromPaymentAsync()
-    {
-        if (_cardPaymentRecoveryService is null)
-        {
-            return false;
-        }
-
-        var result = await _cardPaymentRecoveryService.RecoverActiveSessionAsync(_cart, Session, CancellationToken.None);
-        if (!string.IsNullOrWhiteSpace(result.Message))
-        {
-            StatusMessage = result.Message;
-        }
-
-        if (result.UpdatedSession is not null)
-        {
-            Session = result.UpdatedSession;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.None)
-        {
-            return true;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
-        {
-            // 付款页主动恢复的是旧 active session，不能把恢复结果自动混入当前购物车。
-            ShowRecoveredCardDraftDialog(result);
-            return true;
-        }
-
-        if (result.Outcome is CardPaymentRecoveryOutcome.Unknown or CardPaymentRecoveryOutcome.Checking)
-        {
-            ShowRecoveredCardFailureDialog(result);
-            return false;
-        }
-
-        // 其它已确认结果表示上一笔不再处于未知状态，付款页可以解除本地阻塞。
-        return true;
-    }
-
-    private async Task<ReceiptPrintResult> PrintRecoveredCardReceiptAsync(LocalOrder order)
-    {
-        var evidence = GetCardRecoveryEvidence(order);
-        LinklyJsonLog.Write(
-            "CardRecovery",
-            "card-recovery",
-            "power-fail-recovery-print",
-            "request",
-            direction: "request",
-            sessionId: evidence.SessionId,
-            request: new
-            {
-                reason = ReceiptPrintReason.CardAuto.ToString(),
-                orderGuid = order.OrderGuid
-            },
-            details: new
-            {
-                timestamp = DateTimeOffset.Now,
-                certCase = "4.1.3",
-                orderGuid = order.OrderGuid,
-                transactionReference = evidence.TransactionReference,
-                evidence.TxnRef,
-                evidence.SessionId,
-                reason = "4.1.3"
-            });
-
-        var printResult = await PrintReceiptAsync(ReceiptQueryService.CreateReceipt(order), ReceiptPrintReason.CardAuto);
-        LinklyJsonLog.Write(
-            "CardRecovery",
-            "card-recovery",
-            "power-fail-recovery-print",
-            "response",
-            direction: "response",
-            sessionId: evidence.SessionId,
-            success: printResult.Succeeded,
-            reason: printResult.Succeeded ? null : "receipt-print-failed",
-            response: new
-            {
-                printResult.Succeeded,
-                printResult.Message,
-                printResult.OrderGuid
-            },
-            details: new
-            {
-                timestamp = DateTimeOffset.Now,
-                certCase = "4.1.3",
-                orderGuid = order.OrderGuid,
-                transactionReference = evidence.TransactionReference,
-                evidence.TxnRef,
-                evidence.SessionId,
-                reason = "4.1.3"
-            });
-        return printResult;
-    }
-
-    private async Task ShowRecoveredCardOrderDialogAsync(
-        CardPaymentRecoveryResult result,
-        ReceiptPrintResult printResult)
-    {
-        if (result.Order is null)
-        {
-            return;
-        }
-
-        var receipt = ReceiptQueryService.CreateReceipt(result.Order);
-        _cardRecoveryDialogReceipt = receipt;
-        var previewRows = await BuildReceiptPreviewRowsAsync(receipt);
-        var details = result.DialogDetails;
-        var printMessage = printResult.Succeeded
-            ? _localization.T("cardRecovery.dialog.message.autoPrintSucceeded")
-            : string.Format(
-                _localization.CurrentCulture,
-                _localization.T("cardRecovery.dialog.message.autoPrintFailed"),
-                printResult.Message);
-
-        ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
-            _localization.T("cardRecovery.dialog.title.completed"),
-            printMessage,
-            printResult.Succeeded ? CardRecoveryResultSeverity.Success : CardRecoveryResultSeverity.Warning,
-            result.Order.OrderGuid,
-            result.Order.ActualAmount,
-            details?.SessionId ?? GetCardRecoveryEvidence(result.Order).SessionId,
-            details?.TxnRef ?? GetCardRecoveryEvidence(result.Order).TxnRef,
-            details?.ResponseCode ?? GetCardRecoveryResponseCode(result.Order),
-            details?.ResponseText ?? GetCardRecoveryResponseText(result.Order),
-            details?.Timestamp ?? DateTimeOffset.Now,
-            previewRows,
-            canPrintReceipt: true,
-            printButtonText: _localization.T("cardRecovery.dialog.action.printReceipt")));
-    }
-
-    private void ShowRecoveredCardDraftDialog(CardPaymentRecoveryResult result)
-    {
-        var details = result.DialogDetails;
-        ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
-            _localization.T("cardRecovery.dialog.title.draftRestored"),
-            string.IsNullOrWhiteSpace(result.Message)
-                ? _localization.T("cardRecovery.dialog.message.draftRestoredFallback")
-                : result.Message,
-            CardRecoveryResultSeverity.Warning,
-            orderGuid: null,
-            amount: details?.Amount,
-            sessionId: details?.SessionId,
-            txnRef: details?.TxnRef,
-            responseCode: details?.ResponseCode,
-            responseText: details?.ResponseText,
-            timestamp: details?.Timestamp ?? DateTimeOffset.Now));
-    }
-
-    private void ShowRecoveredCardFailureDialog(CardPaymentRecoveryResult result)
-    {
-        var details = result.DialogDetails;
-        ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
-            _localization.T("cardRecovery.dialog.title.failed"),
-            string.IsNullOrWhiteSpace(result.Message)
-                ? _localization.T("cardRecovery.dialog.message.failedFallback")
-                : result.Message,
-            CardRecoveryResultSeverity.Error,
-            orderGuid: null,
-            amount: details?.Amount,
-            sessionId: details?.SessionId,
-            txnRef: details?.TxnRef,
-            responseCode: details?.ResponseCode,
-            responseText: details?.ResponseText,
-            timestamp: details?.Timestamp ?? DateTimeOffset.Now));
-    }
-
-    private void OnCardRecoveryResultDialogRequested(object? sender, CardRecoveryResultDialogViewModel dialog)
-    {
-        ShowCardRecoveryResultDialog(dialog);
-    }
+    private Task<bool> RecoverCardPaymentAttemptAsync(bool navigateToPaymentOnDraft) =>
+        _cardRecoveryPresenter?.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft) ?? Task.FromResult(false);
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;
 
@@ -1942,176 +1618,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsCatalogDownloadProgressVisible = false;
     }
 
-    private void ShowCardRecoveryResultDialog(CardRecoveryResultDialogViewModel dialog)
-    {
-        CardRecoveryResultDialog = dialog;
-        IsCardRecoveryResultDialogOpen = true;
-        PrintRecoveredReceiptCommand.NotifyCanExecuteChanged();
-    }
+    private void ShowInstallmentCenter() => _screenNavigator.ShowInstallmentCenter();
 
-    private void CloseCardRecoveryResultDialog()
-    {
-        IsCardRecoveryResultDialogOpen = false;
-        CardRecoveryResultDialog = null;
-        _cardRecoveryDialogReceipt = null;
-        PrintRecoveredReceiptCommand.NotifyCanExecuteChanged();
-    }
+    private async Task ShowInstallmentCreateAsync(PosCartServiceSnapshot? cartSnapshot) =>
+        await _screenNavigator.ShowInstallmentCreateAsync(cartSnapshot);
 
-    private bool CanPrintRecoveredReceipt()
-    {
-        return CardRecoveryResultDialog?.CanPrintReceipt == true &&
-            _cardRecoveryDialogReceipt is not null;
-    }
-
-    private async Task PrintRecoveredReceiptAsync()
-    {
-        if (_cardRecoveryDialogReceipt is null)
-        {
-            return;
-        }
-
-        await PrintReceiptAsync(_cardRecoveryDialogReceipt, ReceiptPrintReason.CardAuto);
-    }
-
-    private async Task<IReadOnlyList<ReceiptPreviewRow>> BuildReceiptPreviewRowsAsync(ReceiptDetails receipt)
-    {
-        var settings = ReceiptPrinterSettings.Default;
-        if (_receiptPrinterSettingsStore is not null)
-        {
-            try
-            {
-                settings = await _receiptPrinterSettingsStore.LoadAsync();
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                settings = ReceiptPrinterSettings.Default;
-            }
-        }
-
-        try
-        {
-            return _receiptTextFormatter.Build(receipt, settings, receipt.SoldAt).PreviewRows;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return [];
-        }
-    }
-
-    private static string? GetCardRecoveryResponseCode(LocalOrder order)
-    {
-        return order.Payments
-            .FirstOrDefault(payment => payment.Method == PaymentMethodKind.Card)?
-            .CardTransactions?
-            .FirstOrDefault()?
-            .ResponseCode;
-    }
-
-    private static string? GetCardRecoveryResponseText(LocalOrder order)
-    {
-        return order.Payments
-            .FirstOrDefault(payment => payment.Method == PaymentMethodKind.Card)?
-            .CardTransactions?
-            .FirstOrDefault()?
-            .ResponseText;
-    }
-
-    private static void LogRecoveredCardOrderCompleted(LocalOrder order)
-    {
-        var evidence = GetCardRecoveryEvidence(order);
-        LinklyJsonLog.Write(
-            "CardRecovery",
-            "card-recovery",
-            "power-fail-recovery",
-            "order-completed",
-            sessionId: evidence.SessionId,
-            success: true,
-            details: new
-            {
-                timestamp = DateTimeOffset.Now,
-                certCase = "4.1.2",
-                orderGuid = order.OrderGuid,
-                transactionReference = evidence.TransactionReference,
-                evidence.TxnRef,
-                evidence.SessionId,
-                reason = "4.1.2"
-            });
-    }
-
-    private static CardRecoveryEvidence GetCardRecoveryEvidence(LocalOrder order)
-    {
-        var cardPayment = order.Payments.FirstOrDefault(payment => payment.Method == PaymentMethodKind.Card);
-        var cardTransaction = cardPayment?.CardTransactions?.FirstOrDefault();
-        var txnRef = NormalizeEvidenceValue(cardTransaction?.TxnRef) ?? TryReadLinklyBackendTxnRef(cardPayment?.Reference);
-        var sessionId = LinklyBackendPaymentReference.TryGetPrintMarker(cardPayment?.Reference, out _, out var markerSessionId)
-            ? NormalizeEvidenceValue(markerSessionId)
-            : null;
-        return new CardRecoveryEvidence(
-            NormalizeEvidenceValue(sessionId) ?? NormalizeEvidenceValue(txnRef) ?? order.OrderGuid.ToString("D"),
-            NormalizeEvidenceValue(txnRef),
-            NormalizeEvidenceValue(sessionId));
-    }
-
-    private static string? TryReadLinklyBackendTxnRef(string? reference)
-    {
-        if (string.IsNullOrWhiteSpace(reference) ||
-            !reference.StartsWith($"{LinklyBackendPaymentReference.Prefix}:", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        var parts = reference.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length >= 2 ? NormalizeEvidenceValue(parts[1]) : null;
-    }
-
-    private static string? NormalizeEvidenceValue(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    }
-
-    private sealed record CardRecoveryEvidence(string TransactionReference, string? TxnRef, string? SessionId);
-
-    private static bool ShouldRetryCardPaymentRecovery(CardPaymentRecoveryOutcome outcome)
-    {
-        return outcome is CardPaymentRecoveryOutcome.None or
-            CardPaymentRecoveryOutcome.Checking or
-            CardPaymentRecoveryOutcome.Unknown;
-    }
-
-    private void ShowInstallmentCenter()
-    {
-        if (CashPayment is null)
-        {
-            return;
-        }
-
-        // 分期入口从支付页进入，先带上当前购物车汇总做 UI 骨架展示。
-        InstallmentCenter ??= CreateInstallmentCenterViewModel();
-        InstallmentCenter.Prepare(Session, CreateCurrentCartSnapshot());
-        CurrentScreen = InstallmentCenter;
-        _ = InstallmentCenter.LoadAsync();
-    }
-
-    private async Task ShowInstallmentCreateAsync(PosCartServiceSnapshot? cartSnapshot)
-    {
-        InstallmentCreate ??= CreateInstallmentCreateViewModel();
-        InstallmentCreate.Prepare(Session, cartSnapshot);
-        CurrentScreen = InstallmentCreate;
-        await Task.CompletedTask;
-    }
-
-    private void ClearCashPaymentCache()
-    {
-        if (CashPayment is not null)
-        {
-            CashPayment.PaymentCompleted -= OnPaymentCompleted;
-            CashPayment.PropertyChanged -= OnCashPaymentPropertyChanged;
-            CashPayment.Dispose();
-        }
-
-        CachedCashPaymentScreen = null;
-        CashPayment = null;
-    }
+    private void ClearCashPaymentCache() => _screenNavigator.ClearCashPaymentCache();
 
     private void OnCashPaymentPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -2145,172 +1657,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task ShowPaymentSuccessLatestAsync()
-    {
-        if (_lastCompletedOrder is not null)
-        {
-            await PaymentSuccess.LoadFromOrderAsync(_lastCompletedOrder);
-        }
-        else
-        {
-            await PaymentSuccess.LoadLatestAsync();
-        }
+    private async Task ShowPaymentSuccessLatestAsync() => await _screenNavigator.ShowPaymentSuccessLatestAsync();
 
-        CurrentScreen = PaymentSuccess;
-    }
+    private async Task ShowHistoryAsync() => await _screenNavigator.ShowHistoryAsync();
 
-    private async Task ShowHistoryAsync()
-    {
-        TransactionHistory ??= CreateTransactionHistoryViewModel();
-        await TransactionHistory.LoadAsync();
-        CurrentScreen = TransactionHistory;
-    }
+    private async Task ShowDailyCloseAsync() => await _screenNavigator.ShowDailyCloseAsync();
 
-    private async Task ShowDailyCloseAsync()
-    {
-        DailyClose ??= new DailyCloseViewModel(
-            _dailyCloseService,
-            _dailyClosePrintService,
-            Session,
-            _localization,
-            ShowPos);
-        DailyClose.Session = Session;
-        await DailyClose.LoadAsync();
-        CurrentScreen = DailyClose;
-    }
+    private async Task ShowSettingsAsync() => await _screenNavigator.ShowSettingsAsync();
 
-    private async Task ShowSettingsAsync()
-    {
-        if (_cardTerminalSetupService is null)
-        {
-            StatusMessage = _localization.T("main.settingsUnavailable");
-            return;
-        }
+    private async Task ShowSuspendedHistoryAsync() => await _screenNavigator.ShowSuspendedHistoryAsync();
 
-        Func<CancellationToken, Task>? resetTestSalesDataAsync = null;
-        Func<bool>? confirmResetTestSalesData = null;
-#if DEBUG
-        resetTestSalesDataAsync = async cancellationToken =>
-        {
-            if (_testSalesDataResetService is null)
-            {
-                throw new InvalidOperationException(_localization.T("settings.status.testSalesDataResetNotConfigured"));
-            }
-
-            await _testSalesDataResetService.ResetAsync(cancellationToken);
-        };
-        confirmResetTestSalesData = _confirmationDialogService.ConfirmResetTestSalesData;
-#endif
-
-        Settings ??= new SettingsViewModel(
-            _cardTerminalSetupService,
-            _localization,
-            async cancellationToken =>
-            {
-                await SyncCatalogAndReloadAsync(cancellationToken);
-            },
-            async cancellationToken =>
-            {
-                await ResetCatalogAndReloadAsync(cancellationToken);
-            },
-            BeginDeviceReregistrationAsync,
-            ShowPos,
-            _receiptPrinterSettingsStore,
-            _receiptPrintService,
-            resetTestSalesDataAsync: resetTestSalesDataAsync,
-            confirmResetTestSalesData: confirmResetTestSalesData,
-            cardRecoveryResultDialogService: _cardRecoveryResultDialogService);
-        await Settings.LoadAsync();
-        CurrentScreen = Settings;
-    }
-
-    private async Task ShowSuspendedHistoryAsync()
-    {
-        TransactionHistory ??= CreateTransactionHistoryViewModel();
-        await TransactionHistory.ShowSuspendedOrdersAsync();
-        CurrentScreen = TransactionHistory;
-    }
-
-    private async Task SuspendCurrentOrderAsync()
-    {
-        if (_suspendedOrderService is null)
-        {
-            StatusMessage = _localization.T("main.suspendedUnavailable");
-            return;
-        }
-
-        try
-        {
-            var suspended = await _suspendedOrderService.SuspendCurrentOrderAsync(Session);
-            PosTerminal?.RefreshCart();
-            CashPayment?.RefreshCart();
-            StatusMessage = string.Format(_localization.CurrentCulture, _localization.T("main.suspendedSaved"), suspended.SuspendedOrderGuid.ToString("N")[..8].ToUpperInvariant());
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = ex.Message;
-        }
-    }
-
-    private TransactionHistoryViewModel CreateTransactionHistoryViewModel()
-    {
-        return _mainChildViewModelFactory.CreateTransactionHistoryViewModel(
-            Session,
-            OnSuspendedOrderRecalledAsync,
-            ShowPos,
-            viewModel => PrintSelectedHistoryReceiptAsync(viewModel));
-    }
-
-    private InstallmentCenterViewModel CreateInstallmentCenterViewModel()
-    {
-        return _mainChildViewModelFactory.CreateInstallmentCenterViewModel(
-            Session,
-            ShowInstallmentCreateAsync,
-            ShowCashPayment);
-    }
-
-    private InstallmentCreateViewModel CreateInstallmentCreateViewModel()
-    {
-        return _mainChildViewModelFactory.CreateInstallmentCreateViewModel(
-            Session,
-            async order =>
-            {
-                InstallmentCenter ??= CreateInstallmentCenterViewModel();
-                InstallmentCenter.Prepare(Session, CreateCurrentCartSnapshot());
-                InstallmentCenter.AppendOrUpdateOrder(order);
-                CurrentScreen = InstallmentCenter;
-                await InstallmentCenter.LoadAsync();
-            },
-            () =>
-            {
-                InstallmentCenter ??= CreateInstallmentCenterViewModel();
-                InstallmentCenter.Prepare(Session, CreateCurrentCartSnapshot());
-                CurrentScreen = InstallmentCenter;
-            });
-    }
-
-    private PosCartServiceSnapshot? CreateCurrentCartSnapshot()
-    {
-        if (_cart.IsEmpty)
-        {
-            return null;
-        }
-
-        return new PosCartServiceSnapshot(
-            _cart.TotalAmount,
-            _cart.DiscountAmount,
-            _cart.ActualAmount,
-            _cart.Lines.Select(line => new PosCartLineServiceSnapshot(
-                line.ProductCode,
-                line.ReferenceCode,
-                line.DisplayName,
-                line.LookupCode,
-                line.ItemNumber,
-                line.Quantity,
-                line.UnitPrice,
-                line.DiscountAmount,
-                line.ActualAmount)).ToList());
-    }
+    private async Task SuspendCurrentOrderAsync() => await _screenNavigator.SuspendCurrentOrderAsync();
 
     private async Task<ReceiptPrintResult> PrintLatestReceiptAsync()
     {
@@ -2424,118 +1781,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         return order.Payments.Any(payment => payment.Method == PaymentMethodKind.Cash);
     }
 
-    private Task OnSuspendedOrderRecalledAsync()
-    {
-        PosTerminal?.RefreshCart();
-        CashPayment?.RefreshCart();
-        ShowPos();
-        StatusMessage = _localization.T("main.suspendedRecalled");
-        return Task.CompletedTask;
-    }
+    private Task OnSuspendedOrderRecalledAsync() => _screenNavigator.OnSuspendedOrderRecalledAsync();
 
-    private void ShowCustomerDisplay()
-    {
-        LoadCustomerDisplayFromCart();
-        CurrentScreen = CustomerDisplay;
-    }
-
-    private void LoadCustomerDisplayFromCart()
-    {
-        _customerDisplayOrchestrator.LoadFromCart(CustomerDisplay, Session, _cart);
-    }
-
-    private async Task ToggleSyncCenterAsync()
-    {
-        if (!IsSyncCenterExpanded)
-        {
-            await RefreshPendingSyncAsync();
-        }
-
-        IsSyncCenterExpanded = !IsSyncCenterExpanded;
-    }
-
-    private async Task RetrySyncOrderAsync(SyncQueueListItem? item)
-    {
-        if (item is null)
-        {
-            return;
-        }
-
-        await ExecuteOrderSyncRetryAsync(
-            () => _orderUploadExecutionService.ExecuteOneAsync(item.EntityId),
-            "shell.sync.retryingOne");
-    }
-
-    private async Task RetryAllSyncOrdersAsync()
-    {
-        await ExecuteOrderSyncRetryAsync(
-            () => _orderUploadExecutionService.ExecutePendingAsync(),
-            "shell.sync.retryingAll");
-    }
-
-    private async Task ExecuteOrderSyncRetryAsync(
-        Func<Task<OrderUploadExecutionResult>> executeAsync,
-        string retryingStatusKey)
-    {
-        if (IsOrderSyncRetrying)
-        {
-            return;
-        }
-
-        IsOrderSyncRetrying = true;
-        StatusMessage = _localization.T(retryingStatusKey);
-        try
-        {
-            var result = await executeAsync();
-            await RefreshPendingSyncAsync();
-            StatusMessage = string.Format(
-                _localization.CurrentCulture,
-                _localization.T("shell.sync.retryCompleted"),
-                result.UploadedCount,
-                result.FailedCount);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            await RefreshPendingSyncAsync();
-            StatusMessage = string.Format(
-                _localization.CurrentCulture,
-                _localization.T("shell.sync.retryFailed"),
-                ex.Message);
-        }
-        finally
-        {
-            IsOrderSyncRetrying = false;
-        }
-    }
-
-    private bool CanRetrySyncOrder(SyncQueueListItem? item)
-    {
-        return !IsOrderSyncRetrying &&
-            item is not null &&
-            item.EntityType.Equals("Order", StringComparison.OrdinalIgnoreCase) &&
-            IsRetryableSyncStatus(item.Status);
-    }
-
-    private bool CanRetryAllSyncOrders()
-    {
-        return !IsOrderSyncRetrying && PendingUploadCount + FailedUploadCount > 0;
-    }
-
-    private static bool IsRetryableSyncStatus(string status)
-    {
-        return status.Equals("Pending", StringComparison.OrdinalIgnoreCase) ||
-            status.Equals("Failed", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void RefreshSyncRetryCommandStates()
-    {
-        RetrySyncOrderCommand.NotifyCanExecuteChanged();
-        RetryAllSyncOrdersCommand.NotifyCanExecuteChanged();
-    }
+    private void ShowCustomerDisplay() => _screenNavigator.ShowCustomerDisplay();
 
     private void ToggleCustomerDisplayWindow()
     {
@@ -2606,43 +1854,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         StatusMessage = _localization.T("main.scannerBindingReset");
     }
 
-    private void ResetForNewTransaction()
-    {
-        _cart.Clear();
-        ShowCashPaymentCommand.NotifyCanExecuteChanged();
-        ShowPos();
-    }
+    private void ResetForNewTransaction() => _screenNavigator.ResetForNewTransaction();
 
-    private void NavigateFromStartup(string? initialScreen)
-    {
-        switch ((initialScreen ?? "pos").Trim().ToLowerInvariant())
-        {
-            case "cash":
-            case "payment":
-                ShowCashPayment();
-                break;
-            case "success":
-                CurrentScreen = PaymentSuccess;
-                if (_lastCompletedOrder is not null)
-                {
-                    PaymentSuccess.LoadFromOrder(_lastCompletedOrder);
-                }
-                break;
-            case "history":
-                _ = ShowHistoryAsync();
-                break;
-            case "settings":
-                _ = ShowSettingsAsync();
-                break;
-            case "customer":
-            case "display":
-                ShowCustomerDisplay();
-                break;
-            default:
-                ShowPos();
-                break;
-        }
-    }
+    private void NavigateFromStartup(string? initialScreen) => _screenNavigator.NavigateFromStartup(initialScreen);
 
     private void AddPreviewCartItems(IReadOnlyList<SellableItemDto> items)
     {

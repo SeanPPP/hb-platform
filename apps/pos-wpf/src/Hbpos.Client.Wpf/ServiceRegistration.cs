@@ -1,6 +1,7 @@
 using System.IO;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Client.Wpf.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -214,23 +215,48 @@ public static class ServiceRegistration
         services.AddSingleton<LocalSellableItemIndex>();
         services.AddSingleton<PosCartService>();
         services.AddSingleton<CashCheckoutService>();
-        services.AddSingleton(sp => new MainViewModel(
+        services.AddSingleton<IPosCoreServices>(sp => new PosCoreServices(
             sp.GetRequiredService<LocalSellableItemIndex>(),
             sp.GetRequiredService<PosCartService>(),
             sp.GetRequiredService<CashCheckoutService>(),
-            sp.GetRequiredService<ILocalSchemaService>(),
+            sp.GetRequiredService<ILocalSchemaService>()));
+
+        services.AddSingleton<IPaymentTerminalFacade>(sp => new PaymentTerminalFacade(
+            sp.GetRequiredService<IVoucherApiClient>(),
+            sp.GetRequiredService<ICardTerminalClient>(),
+            sp.GetRequiredService<ICardTerminalSetupService>(),
+            sp.GetRequiredService<ILinklyTerminalDialogPresenter>(),
+            sp.GetRequiredService<ICardPaymentRecoveryService>(),
+            sp.GetRequiredService<ICardRecoveryResultDialogService>(),
+            sp.GetRequiredService<ILinklyFallbackPromptCoordinator>()));
+
+        services.AddSingleton<IPrintFacade>(sp => new PrintFacade(
+            sp.GetRequiredService<IReceiptPrintService>(),
+            sp.GetRequiredService<IReceiptPrinterSettingsStore>(),
+            sp.GetRequiredService<IReceiptTextFormatter>()));
+
+        services.AddSingleton<IPosInfrastructureFacade>(sp => new PosInfrastructureFacade(
+            sp.GetRequiredService<IConnectivityApiClient>(),
+            sp.GetRequiredService<IRawScannerService>(),
+            sp.GetRequiredService<IUserFeedbackService>(),
+            sp.GetRequiredService<IApplicationExitService>(),
+            sp.GetRequiredService<IConfirmationDialogService>()));
+
+        services.AddSingleton(sp => new MainViewModel(
+            sp.GetRequiredService<IPosCoreServices>(),
+            sp.GetRequiredService<IPosInfrastructureFacade>(),
+            sp.GetRequiredService<IPaymentTerminalFacade>(),
+            sp.GetRequiredService<IPrintFacade>(),
             sp.GetRequiredService<IShellCultureService>(),
             sp.GetRequiredService<IShellCatalogService>(),
             sp.GetRequiredService<ILocalCatalogRepository>(),
             sp.GetRequiredService<IRemoteLookupRefreshService>(),
             sp.GetRequiredService<ISpecialProductService>(),
-            sp.GetRequiredService<IConnectivityApiClient>(),
             sp.GetRequiredService<IMainShellStartupService>(),
             sp.GetRequiredService<ILocalOrderRepository>(),
             sp.GetRequiredService<IShellSyncCenterService>(),
             sp.GetRequiredService<ILocalizationService>(),
             sp.GetRequiredService<ICustomerDisplayOrchestrator>(),
-            sp.GetRequiredService<IRawScannerService>(),
             sp.GetRequiredService<IReceiptQueryService>(),
             sp.GetRequiredService<ICashPaymentWorkflowService>(),
             sp.GetRequiredService<IDeviceRegistrationWorkflowService>(),
@@ -238,26 +264,13 @@ public static class ServiceRegistration
             sp.GetRequiredService<PosTerminalWorkflowFactory>(),
             sp.GetRequiredService<ISuspendedOrderService>(),
             sp.GetRequiredService<IRemoteOrderHistoryService>(),
-            userFeedbackService: sp.GetRequiredService<IUserFeedbackService>(),
             receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>(),
-            voucherApiClient: sp.GetRequiredService<IVoucherApiClient>(),
-            cardTerminalClient: sp.GetRequiredService<ICardTerminalClient>(),
-            cardTerminalSetupService: sp.GetRequiredService<ICardTerminalSetupService>(),
-            receiptPrintService: sp.GetRequiredService<IReceiptPrintService>(),
-            receiptPrinterSettingsStore: sp.GetRequiredService<IReceiptPrinterSettingsStore>(),
-            receiptTextFormatter: sp.GetRequiredService<IReceiptTextFormatter>(),
             orderUploadExecutionService: sp.GetRequiredService<IOrderUploadExecutionService>(),
             dailyCloseService: sp.GetRequiredService<IDailyCloseService>(),
             dailyClosePrintService: sp.GetRequiredService<IDailyClosePrintService>(),
             cashDrawerService: sp.GetRequiredService<ICashDrawerService>(),
-            applicationExitService: sp.GetRequiredService<IApplicationExitService>(),
-            confirmationDialogService: sp.GetRequiredService<IConfirmationDialogService>(),
             installmentOrderService: sp.GetRequiredService<IInstallmentOrderService>(),
             testSalesDataResetService: sp.GetRequiredService<ITestSalesDataResetService>(),
-            linklyTerminalDialogPresenter: sp.GetRequiredService<ILinklyTerminalDialogPresenter>(),
-            cardPaymentRecoveryService: sp.GetRequiredService<ICardPaymentRecoveryService>(),
-            cardRecoveryResultDialogService: sp.GetRequiredService<ICardRecoveryResultDialogService>(),
-            linklyFallbackPromptCoordinator: sp.GetRequiredService<ILinklyFallbackPromptCoordinator>(),
             windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>()));
         services.AddSingleton<MainWindow>();
 

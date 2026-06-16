@@ -1,6 +1,7 @@
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.ViewModels;
@@ -18,6 +19,22 @@ internal sealed class MainChildViewModelFactory
     private readonly ILocalizationService _localization;
     private readonly ICardTerminalClient? _cardTerminalClient;
 
+    // Phase 2: new dependencies for additional child VMs.
+    private readonly LocalSellableItemIndex _priceIndex;
+    private readonly PosCartService _cart;
+    private readonly ILocalCatalogRepository _catalogRepository;
+    private readonly ISpecialProductService _specialProductService;
+    private readonly ISpecialProductsWorkflowService _specialProductsWorkflowService;
+    private readonly IReceiptReturnsWorkflowService _receiptReturnsWorkflowService;
+    private readonly ICashPaymentWorkflowService _cashPaymentWorkflowService;
+    private readonly ICardTerminalSetupService? _cardTerminalSetupService;
+    private readonly IRawScannerService _rawScannerService;
+    private readonly IDailyCloseService _dailyCloseService;
+    private readonly IDailyClosePrintService _dailyClosePrintService;
+    private readonly IUserFeedbackService? _userFeedbackService;
+    private readonly IReceiptPrintService? _receiptPrintService;
+    private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
         IReceiptQueryService receiptQueryService,
@@ -27,7 +44,22 @@ internal sealed class MainChildViewModelFactory
         IReceiptPrinterSettingsStore? receiptPrinterSettingsStore,
         IInstallmentOrderService installmentOrderService,
         ILocalizationService localization,
-        ICardTerminalClient? cardTerminalClient)
+        ICardTerminalClient? cardTerminalClient,
+        // Phase 2: new dependencies.
+        LocalSellableItemIndex priceIndex,
+        PosCartService cart,
+        ILocalCatalogRepository catalogRepository,
+        ISpecialProductService specialProductService,
+        ISpecialProductsWorkflowService specialProductsWorkflowService,
+        IReceiptReturnsWorkflowService receiptReturnsWorkflowService,
+        ICashPaymentWorkflowService cashPaymentWorkflowService,
+        ICardTerminalSetupService? cardTerminalSetupService,
+        IRawScannerService rawScannerService,
+        IDailyCloseService dailyCloseService,
+        IDailyClosePrintService dailyClosePrintService,
+        IUserFeedbackService? userFeedbackService = null,
+        IReceiptPrintService? receiptPrintService = null,
+        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -38,6 +70,21 @@ internal sealed class MainChildViewModelFactory
         _installmentOrderService = installmentOrderService;
         _localization = localization;
         _cardTerminalClient = cardTerminalClient;
+
+        _priceIndex = priceIndex;
+        _cart = cart;
+        _catalogRepository = catalogRepository;
+        _specialProductService = specialProductService;
+        _specialProductsWorkflowService = specialProductsWorkflowService;
+        _receiptReturnsWorkflowService = receiptReturnsWorkflowService;
+        _cashPaymentWorkflowService = cashPaymentWorkflowService;
+        _cardTerminalSetupService = cardTerminalSetupService;
+        _rawScannerService = rawScannerService;
+        _dailyCloseService = dailyCloseService;
+        _dailyClosePrintService = dailyClosePrintService;
+        _userFeedbackService = userFeedbackService;
+        _receiptPrintService = receiptPrintService;
+        _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -98,5 +145,148 @@ internal sealed class MainChildViewModelFactory
             onCreatedAsync,
             backToCenter,
             _localization);
+    }
+
+    public PaymentSuccessViewModel CreatePaymentSuccessViewModel()
+    {
+        return new PaymentSuccessViewModel(
+            _receiptQueryService,
+            _receiptTextFormatter,
+            _receiptPrinterSettingsStore);
+    }
+
+    public PosTerminalViewModel CreatePosTerminalViewModel(
+        PosSessionState session,
+        Action? onOpenPayment,
+        Func<Task>? onOpenSpecialProductsAsync = null,
+        Func<Task>? onHoldOrderAsync = null,
+        Func<Task>? onRecallOrderAsync = null,
+        Func<Task>? onOpenHistoryAsync = null,
+        Func<Task>? onOpenDailyCloseAsync = null,
+        Func<Task>? onOpenSettingsAsync = null,
+        Action? onOpenCustomerDisplay = null,
+        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? syncCatalogAsync = null,
+        Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? resetCatalogAsync = null,
+        Func<CancellationToken, Task<bool>>? refreshOnlineAsync = null,
+        Func<Task>? onReregisterDeviceAsync = null,
+        IPosTerminalWorkflowService? workflowService = null,
+        Action? onOpenReturns = null,
+        Func<Task<ReceiptPrintResult>>? onPrintLastReceiptAsync = null,
+        Func<Task<ReceiptPrintResult>>? onOpenCashDrawerAsync = null,
+        Func<Task>? onExitApplicationAsync = null)
+    {
+        return new PosTerminalViewModel(
+            _priceIndex,
+            _cart,
+            session,
+            onOpenPayment,
+            onOpenSpecialProductsAsync,
+            _localization,
+            userFeedbackService: _userFeedbackService,
+            onHoldOrderAsync: onHoldOrderAsync,
+            onRecallOrderAsync: onRecallOrderAsync,
+            onOpenHistoryAsync: onOpenHistoryAsync,
+            onOpenDailyCloseAsync: onOpenDailyCloseAsync,
+            onOpenSettingsAsync: onOpenSettingsAsync,
+            onOpenCustomerDisplay: onOpenCustomerDisplay,
+            syncCatalogAsync: syncCatalogAsync,
+            resetCatalogAsync: resetCatalogAsync,
+            refreshOnlineAsync: refreshOnlineAsync,
+            rawScannerService: _rawScannerService,
+            onReregisterDeviceAsync: onReregisterDeviceAsync,
+            workflowService: workflowService,
+            onOpenReturns: onOpenReturns,
+            onPrintLastReceiptAsync: onPrintLastReceiptAsync,
+            onOpenCashDrawerAsync: onOpenCashDrawerAsync,
+            onExitApplicationAsync: onExitApplicationAsync);
+    }
+
+    public SpecialProductsViewModel CreateSpecialProductsViewModel(
+        PosSessionState session,
+        Action onBack,
+        Action<CartLine>? onCartLineAdded = null)
+    {
+        return new SpecialProductsViewModel(
+            _priceIndex,
+            _cart,
+            _catalogRepository,
+            _specialProductService,
+            session,
+            _localization,
+            onBack,
+            onCartLineAdded,
+            _specialProductsWorkflowService,
+            _rawScannerService);
+    }
+
+    public ReceiptReturnsViewModel CreateReceiptReturnsViewModel(
+        PosSessionState session,
+        Action onBack,
+        Action<CartLine>? onReturnLineAdded = null)
+    {
+        return new ReceiptReturnsViewModel(
+            _receiptReturnsWorkflowService,
+            session,
+            onBack,
+            onReturnLineAdded,
+            _rawScannerService,
+            _localization);
+    }
+
+    public PaymentViewModel CreatePaymentViewModel(
+        PosSessionState session,
+        Action? onBackToPos = null,
+        Action? onShowInstallmentCenter = null,
+        Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
+    {
+        return new PaymentViewModel(
+            _cart,
+            _cashPaymentWorkflowService,
+            session,
+            _localization,
+            onBackToPos,
+            onShowInstallmentCenter,
+            recoverPreviousCardTransactionAsync,
+            linklyFallbackPromptCoordinator);
+    }
+
+    public DailyCloseViewModel CreateDailyCloseViewModel(
+        PosSessionState session,
+        Action? returnToPos = null)
+    {
+        return new DailyCloseViewModel(
+            _dailyCloseService,
+            _dailyClosePrintService,
+            session,
+            _localization,
+            returnToPos);
+    }
+
+    public SettingsViewModel CreateSettingsViewModel(
+        Func<CancellationToken, Task>? downloadCatalogAsync = null,
+        Func<CancellationToken, Task>? resetCatalogAsync = null,
+        Func<Task<DeviceReregistrationStartResult>>? reregisterDeviceAsync = null,
+        Action? returnToPos = null,
+        Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
+        Func<bool>? confirmResetTestSalesData = null)
+    {
+        return new SettingsViewModel(
+            _cardTerminalSetupService!,
+            _localization,
+            downloadCatalogAsync,
+            resetCatalogAsync,
+            reregisterDeviceAsync,
+            returnToPos,
+            _receiptPrinterSettingsStore,
+            _receiptPrintService,
+            resetTestSalesDataAsync: resetTestSalesDataAsync,
+            confirmResetTestSalesData: confirmResetTestSalesData,
+            cardRecoveryResultDialogService: _cardRecoveryResultDialogService);
+    }
+
+    public CustomerDisplayViewModel CreateCustomerDisplayViewModel()
+    {
+        return new CustomerDisplayViewModel();
     }
 }
