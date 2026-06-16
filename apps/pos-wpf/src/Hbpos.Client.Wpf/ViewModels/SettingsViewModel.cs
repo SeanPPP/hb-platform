@@ -55,7 +55,7 @@ public sealed partial class LinklyModePriorityItem(LinklySettingsMode mode) : Ob
 
 public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
-    private const string DefaultSquareDeviceCodeName = "HBPOS Terminal";
+    internal const string DefaultSquareDeviceCodeName = "HBPOS Terminal";
 
     private readonly ICardTerminalSetupService _setupService;
     private readonly ILocalizationService? _localization;
@@ -87,6 +87,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private int _linklyCredentialEditVersion;
     private bool _disposed;
     private bool _hasLinklyCloudPasswordInput;
+    private bool _syncingLinkly;
+    private bool _syncingSquare;
+    private readonly SquareSettingsState _squareState = new();
+    private readonly SquareSettingsCoordinator _squareCoordinator;
+    private readonly LinklySettingsState _linklyState = new();
+    private readonly LinklySettingsCoordinator _linklyCoordinator;
 
     [ObservableProperty]
     private SettingsCategory _selectedCategory = SettingsCategory.DataMaintenance;
@@ -227,6 +233,28 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 ReceiptPrinterTestStatusMessage = message;
                 _receiptPrinterTestStatusOverride = message;
             }));
+        _squareCoordinator = new SquareSettingsCoordinator(
+            _setupService,
+            () => SelectedSquareEnvironment,
+            (action, name) => RunBusyAsync(action, name),
+            (key, args) => SetStatus(key, args),
+            SetStatusOverride,
+            RaiseCommandStates);
+        _linklyCoordinator = new LinklySettingsCoordinator(
+            _setupService,
+            _cardRecoveryResultDialogService,
+            () => SelectedLinklyEnvironment,
+            (action, name) => RunBusyAsync(action, name),
+            (key, args) => SetStatus(key, args),
+            SetStatusOverride,
+            (key, args) => SetLinklyTestStatus(key, args),
+            SetLinklyTestStatusOverride,
+            ClearLinklyTestStatus,
+            () => ResetLinklyConnectionTest(),
+            RaiseCommandStates,
+            T,
+            () => PrimaryLinklyMode,
+            item => SelectLinklyPriorityMode(item));
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -510,6 +538,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             ResetSquareDeviceCodes();
             SelectedSquareLocation = null;
             SelectedSquareDevice = null;
+            SyncSquareInputs();
+            SyncLinklyInputs();
             LogSquareSettings(
                 $"load settings succeeded squareEnvironment={SelectedSquareEnvironment} linklyEnvironment={SelectedLinklyEnvironment} hasSavedToken={HasSavedSquareToken} savedLocationId={LogValue(_savedSquareLocationId)} savedDeviceId={LogValue(_savedSquareDeviceId)}");
             SetStatus("settings.status.loaded");
@@ -518,248 +548,45 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task LoadLocationsAsync()
     {
-        LogSquareSettings($"load locations requested environment={SelectedSquareEnvironment}");
-        await RunBusyAsync(async () =>
-        {
-            SquareLocations.ReplaceWith(await _setupService.ListSquareLocationsAsync(
-                accessToken: null,
-                SelectedSquareEnvironment));
-            SquareDevices.Clear();
-            ResetSquareDeviceCodes();
-            _devicesLoadedForLocationId = null;
-            SelectedSquareDevice = null;
-            SelectedSquareLocation = SquareLocations.FirstOrDefault(location =>
-                string.Equals(location.Id, _savedSquareLocationId, StringComparison.OrdinalIgnoreCase));
-            HasSavedSquareToken = true;
-            LogSquareSettings(
-                $"load locations succeeded environment={SelectedSquareEnvironment} count={SquareLocations.Count} selectedLocationId={LogValue(SelectedSquareLocation?.Id)}");
-            SetStatus(
-                SquareLocations.Count == 0 ? "settings.status.noSquareLocations" : "settings.status.squareLocationsLoaded",
-                SquareLocations.Count);
-        }, operationName: "load square locations");
+        await _squareCoordinator.LoadLocationsAsync(SquareLocations, SquareDevices, SquareDeviceCodes, _squareState);
+        SyncSquareState();
     }
 
     private async Task LoadDevicesAsync()
     {
-        if (SelectedSquareLocation is null)
-        {
-            SetStatus("settings.status.selectSquareLocation");
-            return;
-        }
-
-        LogSquareSettings($"load devices requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)}");
-        await RunBusyAsync(async () =>
-        {
-            await LoadSquareDevicesForLocationAsync(SelectedSquareLocation.Id, selectSavedDevice: true);
-            HasSavedSquareToken = true;
-            LogSquareSettings(
-                $"load devices succeeded environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} count={SquareDevices.Count} selectedDeviceId={LogValue(SelectedSquareDevice?.Id)}");
-            SetStatus(
-                SquareDevices.Count == 0 ? "settings.status.noSquareDevices" : "settings.status.squareDevicesLoaded",
-                SquareDevices.Count);
-        }, operationName: "load square devices");
+        await _squareCoordinator.LoadDevicesAsync(SquareDevices, _squareState);
+        SyncSquareState();
     }
 
     private async Task SaveSquareAsync()
     {
-        if (SelectedSquareLocation is null)
-        {
-            SetStatus("settings.status.selectSquareLocation");
-            return;
-        }
-
-        if (SelectedSquareDevice is null)
-        {
-            SetStatus("settings.status.selectSquareDevice");
-            return;
-        }
-
-        if (!SquareLocations.Any(location => string.Equals(location.Id, SelectedSquareLocation.Id, StringComparison.OrdinalIgnoreCase)) ||
-            !SquareDevices.Any(device => SquareDeviceIdNormalizer.AreEquivalent(device.Id, SelectedSquareDevice.Id)) ||
-            !string.Equals(_devicesLoadedForLocationId, SelectedSquareLocation.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            SetStatus("settings.status.loadSquareBeforeSave");
-            return;
-        }
-
-        LogSquareSettings(
-            $"save square requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} deviceId={LogValue(SelectedSquareDevice.Id)}");
-        await RunBusyAsync(async () =>
-        {
-            var savedDeviceId = SquareDeviceIdNormalizer.NormalizeForTerminalCheckout(SelectedSquareDevice.Id);
-            var configuration = new CardTerminalConfiguration(
-                CardProcessorKind.Square,
-                SelectedSquareEnvironment,
-                NormalizeHost(LinklyHostText),
-                ParsePort(LinklyPortText),
-                SelectedSquareLocation.Id,
-                savedDeviceId,
-                HasSavedSquareToken,
-                ParseTimeoutSeconds(TimeoutSecondsText));
-
-            await _setupService.SaveSquareAsync(
-                configuration,
-                squareAccessToken: null);
-            _loadedConfiguration = configuration;
-            _savedSquareLocationId = configuration.SquareLocationId;
-            _savedSquareDeviceId = configuration.SquareDeviceId;
-            HasSavedSquareToken = configuration.HasProtectedSquareAccessToken;
-            LogSquareSettings(
-                $"save square succeeded environment={SelectedSquareEnvironment} locationId={LogValue(configuration.SquareLocationId)} selectedDeviceId={LogValue(SelectedSquareDevice.Id)} savedDeviceId={LogValue(configuration.SquareDeviceId)}");
-            SetStatus("settings.status.squareSaved", SelectedSquareDevice.Name);
-        }, operationName: "save square settings");
+        await _squareCoordinator.SaveAsync(SquareLocations, SquareDevices, _squareState, LinklyHostText, LinklyPortText, TimeoutSecondsText);
+        SyncSquareState();
     }
 
     private async Task LoadDeviceCodesAsync()
     {
-        if (SelectedSquareLocation is null)
-        {
-            SetStatus("settings.status.selectSquareLocation");
-            return;
-        }
-
-        LogSquareSettings($"load device codes requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)}");
-        await RunBusyAsync(async () =>
-        {
-            SquareDeviceCodes.ReplaceWith(await _setupService.ListSquareDeviceCodesAsync(
-                accessToken: null,
-                SelectedSquareEnvironment,
-                SelectedSquareLocation.Id));
-            SelectedSquareDeviceCode = SquareDeviceCodes.FirstOrDefault(deviceCode =>
-                SquareDeviceIdNormalizer.AreEquivalent(deviceCode.DeviceId, _savedSquareDeviceId));
-            HasSavedSquareToken = true;
-            SuggestSquareDeviceCodeName(force: false);
-            LogSquareSettings(
-                $"load device codes succeeded environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} count={SquareDeviceCodes.Count} selectedDeviceCodeId={LogValue(SelectedSquareDeviceCode?.Id)}");
-            SetStatus("settings.status.squareDeviceCodesLoaded", SquareDeviceCodes.Count);
-        }, operationName: "load square device codes");
+        await _squareCoordinator.LoadDeviceCodesAsync(SquareDeviceCodes, _squareState);
+        SyncSquareState();
     }
 
     private async Task CreateDeviceCodeAsync()
     {
-        if (SelectedSquareLocation is null)
-        {
-            SetStatus("settings.status.selectSquareLocation");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(SquareDeviceCodeNameText))
-        {
-            SetStatus("settings.status.squareDeviceCodeNameRequired");
-            return;
-        }
-
-        LogSquareSettings(
-            $"create device code requested environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} name={LogValue(SquareDeviceCodeNameText.Trim())}");
-        await RunBusyAsync(async () =>
-        {
-            var created = await _setupService.CreateSquareDeviceCodeAsync(
-                accessToken: null,
-                SelectedSquareEnvironment,
-                SelectedSquareLocation.Id,
-                SquareDeviceCodeNameText);
-            SquareDeviceCodes.Insert(0, created);
-            SelectedSquareDeviceCode = created;
-            HasSavedSquareToken = true;
-            LogSquareSettings(
-                $"create device code succeeded environment={SelectedSquareEnvironment} locationId={LogValue(SelectedSquareLocation.Id)} deviceCodeId={created.Id} status={created.Status}");
-            SetStatus("settings.status.squareDeviceCodeCreated", created.Code, created.Name);
-        }, operationName: "create square device code");
+        await _squareCoordinator.CreateDeviceCodeAsync(SquareDeviceCodes, _squareState);
+        SyncSquareState();
     }
 
     private async Task RefreshDeviceCodeStatusAsync()
     {
-        if (SelectedSquareDeviceCode is null)
-        {
-            SetStatus("settings.status.selectSquareDeviceCode");
-            return;
-        }
-
-        LogSquareSettings(
-            $"refresh device code requested environment={SelectedSquareEnvironment} deviceCodeId={LogValue(SelectedSquareDeviceCode.Id)}");
-        await RunBusyAsync(async () =>
-        {
-            var refreshed = await _setupService.GetSquareDeviceCodeAsync(
-                accessToken: null,
-                SelectedSquareEnvironment,
-                SelectedSquareDeviceCode.Id);
-            ReplaceSquareDeviceCode(refreshed);
-            SelectedSquareDeviceCode = refreshed;
-            HasSavedSquareToken = true;
-
-            if (string.Equals(refreshed.Status, "PAIRED", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(refreshed.DeviceId) &&
-                SelectedSquareLocation is not null)
-            {
-                await LoadSquareDevicesForLocationAsync(SelectedSquareLocation.Id, selectSavedDevice: false);
-                SelectedSquareDevice = SquareDevices.FirstOrDefault(device =>
-                    SquareDeviceIdNormalizer.AreEquivalent(device.Id, refreshed.DeviceId));
-
-                if (SelectedSquareDevice is not null)
-                {
-                    LogSquareSettings(
-                        $"refresh device code paired environment={SelectedSquareEnvironment} deviceCodeId={refreshed.Id} squareDeviceId={LogValue(refreshed.DeviceId)} selectedDeviceId={LogValue(SelectedSquareDevice.Id)}");
-                    SetStatus("settings.status.squareDeviceCodePaired", SelectedSquareDevice.Name);
-                    return;
-                }
-            }
-
-            LogSquareSettings(
-                $"refresh device code completed environment={SelectedSquareEnvironment} deviceCodeId={refreshed.Id} status={refreshed.Status} squareDeviceId={LogValue(refreshed.DeviceId)}");
-            SetStatus("settings.status.squareDeviceCodeNotPaired", refreshed.Status);
-        }, operationName: "refresh square device code");
+        await _squareCoordinator.RefreshDeviceCodeStatusAsync(SquareDevices, SquareDeviceCodes, _squareState);
+        SyncSquareState();
     }
 
     private async Task TestLinklyAsync()
     {
-        await RunBusyAsync(async () =>
-        {
-            try
-            {
-                LinklyConnectionSucceeded = false;
-                ClearLinklyTestStatus();
-                LinklyConnectionTestResult result;
-                var testMode = PrimaryLinklyMode;
-                if (testMode == LinklySettingsMode.CloudBackendAsync)
-                {
-                    result = await _setupService.TestLinklyCloudBackendConnectionAsync(SelectedLinklyEnvironment);
-                }
-                else if (testMode == LinklySettingsMode.CloudDirectSync)
-                {
-                    result = await _setupService.TestLinklyCloudConnectionAsync(SelectedLinklyEnvironment);
-                }
-                else
-                {
-                    result = await _setupService.TestLinklyConnectionAsync(
-                        NormalizeHost(LinklyHostText),
-                        ParsePort(LinklyPortText),
-                        TimeSpan.FromSeconds(ParseTimeoutSeconds(TimeoutSecondsText)));
-                }
-
-                LinklyConnectionSucceeded = result.Succeeded;
-
-                if (string.IsNullOrWhiteSpace(result.Message))
-                {
-                    var key = result.Succeeded
-                        ? "settings.status.linklyTestSuccess"
-                        : "settings.status.linklyTestFailed";
-                    SetLinklyTestStatus(key);
-                    SetStatus(key);
-                }
-                else
-                {
-                    SetLinklyTestStatusOverride(result.Message);
-                    SetStatusOverride(result.Message);
-                }
-
-            }
-            catch (Exception ex)
-            {
-                SetLinklyTestStatusOverride(ex.Message);
-                SetStatusOverride(ex.Message);
-                throw;
-            }
-        });
+        SyncLinklyInputs();
+        await _linklyCoordinator.TestAsync(_linklyState);
+        SyncLinklyState();
     }
 
     private void ShowFailedLastTransactionDialogIfNeeded(LinklyConnectionTestResult result)
@@ -808,35 +635,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task TestLinklyTransactionStatusAsync()
     {
-        await RunBusyAsync(async () =>
-        {
-            try
-            {
-                ClearLinklyTestStatus();
-                var result = await _setupService.TestLinklyCloudBackendTransactionStatusAsync(SelectedLinklyEnvironment);
-                if (string.IsNullOrWhiteSpace(result.Message))
-                {
-                    var key = result.Succeeded
-                        ? "settings.status.linklyTestSuccess"
-                        : "settings.status.linklyTestFailed";
-                    SetLinklyTestStatus(key);
-                    SetStatus(key);
-                }
-                else
-                {
-                    SetLinklyTestStatusOverride(result.Message);
-                    SetStatusOverride(result.Message);
-                }
-
-                ShowFailedLastTransactionDialogIfNeeded(result);
-            }
-            catch (Exception ex)
-            {
-                SetLinklyTestStatusOverride(ex.Message);
-                SetStatusOverride(ex.Message);
-                throw;
-            }
-        });
+        SyncLinklyInputs();
+        await _linklyCoordinator.TestTransactionStatusAsync(_linklyState);
+        SyncLinklyState();
     }
 
     private async Task PairLinklyCloudAsync()
@@ -846,55 +647,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public async Task PairLinklyCloudAsync(string password)
     {
-        var pairingEnvironment = SelectedLinklyEnvironment;
-        var pairCode = LinklyPairCodeText;
-        var username = LinklyCloudUsernameText;
-        LogLinklyCloudSettings(
-            $"pair clicked environment={pairingEnvironment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasCurrentPassword=REDACTED hasSavedPassword=REDACTED hasPairCode={!string.IsNullOrWhiteSpace(pairCode)}");
-        if (!ValidateLinklyCloudPairingInput(password))
-        {
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            try
-            {
-                LinklyConnectionSucceeded = false;
-                ClearLinklyTestStatus();
-                var result = await _setupService.PairLinklyCloudAsync(
-                    pairingEnvironment,
-                    pairCode,
-                    username,
-                    password,
-                    syncBackendTerminalCredential: IsLinklyCloudBackendAsyncMode);
-                LogLinklyCloudSettings($"pair completed environment={pairingEnvironment} currentEnvironment={SelectedLinklyEnvironment} success={result.Succeeded} hasMessage={!string.IsNullOrWhiteSpace(result.Message)}");
-                if (SelectedLinklyEnvironment == pairingEnvironment)
-                {
-                    HasSavedLinklyCloudSecret = result.Succeeded || HasSavedLinklyCloudSecret;
-                }
-
-                if (string.IsNullOrWhiteSpace(result.Message))
-                {
-                    var key = result.Succeeded
-                        ? "settings.status.linklyCloudPaired"
-                        : "settings.status.linklyCloudPairFailed";
-                    SetLinklyTestStatus(key);
-                    SetStatus(key);
-                }
-                else
-                {
-                    SetLinklyTestStatusOverride(result.Message);
-                    SetStatusOverride(result.Message);
-                }
-            }
-            catch (Exception ex)
-            {
-                SetLinklyTestStatusOverride(ex.Message);
-                SetStatusOverride(ex.Message);
-                throw;
-            }
-        });
+        SyncLinklyInputs();
+        await _linklyCoordinator.PairCloudAsync(password, _linklyState);
+        SyncLinklyState();
     }
 
     private bool ValidateLinklyCloudPairingInput()
@@ -938,86 +693,23 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public async Task SaveLinklyCloudCredentialAsync(string password)
     {
-        var credentialEnvironment = SelectedLinklyEnvironment;
-        var syncBackendCredential = IsLinklyCloudBackendAsyncMode;
-        var username = LinklyCloudUsernameText;
-        await RunBusyAsync(async () =>
-        {
-            try
-            {
-                LogLinklyCloudSettings($"save credential clicked environment={credentialEnvironment} hasUsername={!string.IsNullOrWhiteSpace(username)} hasPassword=REDACTED");
-                await _setupService.SaveLinklyCloudCredentialAsync(
-                    credentialEnvironment,
-                    username,
-                    password,
-                    syncBackendCredential: syncBackendCredential);
-                if (SelectedLinklyEnvironment == credentialEnvironment)
-                {
-                    HasSavedLinklyCloudPassword = true;
-                    LinklyCloudPasswordText = string.Empty;
-                }
-
-                LogLinklyCloudSettings($"save credential completed environment={credentialEnvironment} currentEnvironment={SelectedLinklyEnvironment} success=true");
-                var statusKey = syncBackendCredential
-                    ? "settings.status.linklyCloudCredentialSynced"
-                    : "settings.status.linklyCloudCredentialSaved";
-                SetLinklyTestStatus(statusKey);
-                SetStatus(statusKey);
-            }
-            catch (Exception ex)
-            {
-                SetLinklyTestStatusOverride(ex.Message);
-                SetStatusOverride(ex.Message);
-                throw;
-            }
-        }, operationName: "save linkly cloud credential");
+        SyncLinklyInputs();
+        await _linklyCoordinator.SaveCloudCredentialAsync(password, _linklyState);
+        SyncLinklyState();
     }
 
     private void CancelLinklyCloudPairing()
     {
-        // 取消配对时清空本地输入，避免旧凭据继续影响后续 Cloud API 操作。
-        LogLinklyCloudSettings($"pair cancel clicked environment={SelectedLinklyEnvironment} hadPassword=REDACTED hadPairCode={!string.IsNullOrWhiteSpace(LinklyPairCodeText)}");
-        LinklyPairCodeText = string.Empty;
-        LinklyCloudPasswordText = string.Empty;
-        _hasLinklyCloudPasswordInput = false;
-        ResetLinklyConnectionTest();
-        RaiseCommandStates();
+        SyncLinklyInputs();
+        _linklyCoordinator.CancelCloudPairing(_linklyState);
+        SyncLinklyState();
     }
 
     private async Task SaveLinklyAsync()
     {
-        if (!LinklyConnectionSucceeded)
-        {
-            SetStatus("settings.status.testLinklyBeforeSave");
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            var configuration = _loadedConfiguration with
-            {
-                Processor = CardProcessorKind.Linkly,
-                Environment = SelectedLinklyEnvironment,
-                LinklyConnectionMode = ToConnectionMode(PrimaryLinklyMode),
-                LinklyConnectionModePriority = GetLinklyConnectionModePriority(),
-                LinklyHost = NormalizeHost(LinklyHostText),
-                LinklyPort = ParsePort(LinklyPortText),
-                TerminalTimeoutSeconds = ParseTimeoutSeconds(TimeoutSecondsText),
-                HasProtectedLinklyCloudSecret = HasSavedLinklyCloudSecret
-            };
-
-            if (IsLinklyCloudMode)
-            {
-                await _setupService.SaveLinklyCloudAsync(configuration);
-            }
-            else
-            {
-                await _setupService.SaveLinklyAsync(configuration);
-            }
-
-            _loadedConfiguration = configuration;
-            SetStatus("settings.status.linklySaved");
-        });
+        SyncLinklyInputs();
+        await _linklyCoordinator.SaveAsync(_linklyState, LinklyModePriorityItems);
+        SyncLinklyState();
     }
 
     private async Task SaveReceiptPrinterAsync()
@@ -1250,6 +942,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnIsSquareSandboxChanged(bool value)
     {
+        if (_syncingSquare) return;
         LogSquareSettings($"square environment changed environment={SelectedSquareEnvironment}");
         SquareLocations.Clear();
         SquareDevices.Clear();
@@ -1267,6 +960,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnIsLinklySandboxChanged(bool value)
     {
+        if (_syncingLinkly) return;
+        SyncLinklyInputs();
         LogLinklyCloudSettings($"linkly environment changed environment={SelectedLinklyEnvironment}");
         ResetLinklyConnectionTest();
         LinklyCloudUsernameText = string.Empty;
@@ -1290,6 +985,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedLinklyModeChanged(LinklySettingsMode value)
     {
+        if (_syncingLinkly) return;
+        SyncLinklyInputs();
         PromoteLinklyModeToPrimary(value);
 
         ResetLinklyConnectionTest();
@@ -1315,57 +1012,32 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private bool CanMoveLinklyPriorityUp(LinklyModePriorityItem? item)
     {
-        return !IsBusy && item is not null && LinklyModePriorityItems.IndexOf(item) > 0;
+        return _linklyCoordinator.CanMovePriorityUp(item, LinklyModePriorityItems, IsBusy);
     }
 
     private bool CanMoveLinklyPriorityDown(LinklyModePriorityItem? item)
     {
-        return !IsBusy &&
-            item is not null &&
-            LinklyModePriorityItems.IndexOf(item) is var index &&
-            index >= 0 &&
-            index < LinklyModePriorityItems.Count - 1;
+        return _linklyCoordinator.CanMovePriorityDown(item, LinklyModePriorityItems, IsBusy);
     }
 
     private void MoveLinklyPriorityUp(LinklyModePriorityItem? item)
     {
-        if (item is null)
-        {
-            return;
-        }
-
-        MoveLinklyPriority(item, -1);
+        _linklyCoordinator.MovePriorityUp(item, LinklyModePriorityItems, _linklyState);
+        SyncLinklyState();
+        OnPropertyChanged(nameof(PrimaryLinklyMode));
     }
 
     private void MoveLinklyPriorityDown(LinklyModePriorityItem? item)
     {
-        if (item is null)
-        {
-            return;
-        }
-
-        MoveLinklyPriority(item, 1);
-    }
-
-    private void MoveLinklyPriority(LinklyModePriorityItem item, int offset)
-    {
-        var oldIndex = LinklyModePriorityItems.IndexOf(item);
-        var newIndex = oldIndex + offset;
-        if (oldIndex < 0 || newIndex < 0 || newIndex >= LinklyModePriorityItems.Count)
-        {
-            return;
-        }
-
-        LinklyModePriorityItems.Move(oldIndex, newIndex);
-        RefreshLinklyPriorityRanks();
-        SelectedLinklyMode = PrimaryLinklyMode;
-        ResetLinklyConnectionTest();
-        RaiseCommandStates();
+        _linklyCoordinator.MovePriorityDown(item, LinklyModePriorityItems, _linklyState);
+        SyncLinklyState();
         OnPropertyChanged(nameof(PrimaryLinklyMode));
     }
 
     partial void OnLinklyCloudUsernameTextChanged(string value)
     {
+        if (_syncingLinkly) return;
+        SyncLinklyInputs();
         Interlocked.Increment(ref _linklyCredentialEditVersion);
         ResetLinklyConnectionTest();
         RaiseCommandStates();
@@ -1373,7 +1045,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnLinklyCloudPasswordTextChanged(string value)
     {
+        if (_syncingLinkly) return;
         _hasLinklyCloudPasswordInput = !string.IsNullOrWhiteSpace(value);
+        SyncLinklyInputs();
         Interlocked.Increment(ref _linklyCredentialEditVersion);
         ResetLinklyConnectionTest();
         RaiseCommandStates();
@@ -1482,6 +1156,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedSquareLocationChanged(SquareLocationOption? value)
     {
+        if (_syncingSquare) return;
         LogSquareSettings($"selected location changed locationId={LogValue(value?.Id)}");
         if (!string.Equals(_devicesLoadedForLocationId, value?.Id, StringComparison.OrdinalIgnoreCase))
         {
@@ -1496,6 +1171,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedSquareDeviceChanged(SquareDeviceOption? value)
     {
+        if (_syncingSquare) return;
         SuggestSquareDeviceCodeName(force: false);
         LogSquareSettings($"selected device changed deviceId={LogValue(value?.Id)}");
         if (!IsBusy &&
@@ -1518,21 +1194,29 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     partial void OnSquareDeviceCodeNameTextChanged(string value)
     {
+        if (_syncingSquare) return;
+        SyncSquareInputs();
         RaiseCommandStates();
     }
 
     partial void OnLinklyHostTextChanged(string value)
     {
+        if (_syncingLinkly) return;
+        SyncLinklyInputs();
         ResetLinklyConnectionTest();
     }
 
     partial void OnLinklyPortTextChanged(string value)
     {
+        if (_syncingLinkly) return;
+        SyncLinklyInputs();
         ResetLinklyConnectionTest();
     }
 
     partial void OnTimeoutSecondsTextChanged(string value)
     {
+        if (_syncingLinkly) return;
+        SyncLinklyInputs();
         ResetLinklyConnectionTest();
     }
 
@@ -1574,10 +1258,90 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanCancelLinklyCloudPairingFromView));
     }
 
+    private void SyncSquareState()
+    {
+        _syncingSquare = true;
+        // Non-triggering fields first.
+        HasSavedSquareToken = _squareState.HasSavedToken;
+        SquareDeviceCodeNameText = _squareState.DeviceCodeNameText;
+        _savedSquareLocationId = _squareState.SavedLocationId;
+        _savedSquareDeviceId = _squareState.SavedDeviceId;
+        _devicesLoadedForLocationId = _squareState.DevicesLoadedForLocationId;
+        _lastSquareDeviceCodeNameSuggestion = _squareState.LastDeviceCodeNameSuggestion;
+        _loadedConfiguration = _squareState.LoadedConfiguration;
+        _linklyState.LoadedConfiguration = _squareState.LoadedConfiguration;
+        // Triggering fields last.
+        SelectedSquareLocation = _squareState.SelectedLocation;
+        SelectedSquareDevice = _squareState.SelectedDevice;
+        SelectedSquareDeviceCode = _squareState.SelectedDeviceCode;
+        _syncingSquare = false;
+    }
+
+    private void SyncSquareInputs()
+    {
+        if (_syncingSquare) return;
+        _squareState.HasSavedToken = HasSavedSquareToken;
+        _squareState.DeviceCodeNameText = SquareDeviceCodeNameText;
+        _squareState.SavedLocationId = _savedSquareLocationId;
+        _squareState.SavedDeviceId = _savedSquareDeviceId;
+        _squareState.DevicesLoadedForLocationId = _devicesLoadedForLocationId;
+        _squareState.LastDeviceCodeNameSuggestion = _lastSquareDeviceCodeNameSuggestion;
+        _squareState.LoadedConfiguration = _loadedConfiguration;
+        _squareState.SelectedLocation = SelectedSquareLocation;
+        _squareState.SelectedDevice = SelectedSquareDevice;
+        _squareState.SelectedDeviceCode = SelectedSquareDeviceCode;
+    }
+
+    private void SyncLinklyState()
+    {
+        _syncingLinkly = true;
+        // Set non-triggering fields first to avoid re-entrant SyncLinklyInputs() overwrites.
+        HasSavedLinklyCloudPassword = _linklyState.HasSavedCloudPassword;
+        HasSavedLinklyCloudSecret = _linklyState.HasSavedCloudSecret;
+        LinklyConnectionSucceeded = _linklyState.ConnectionSucceeded;
+        LinklyPairCodeText = _linklyState.PairCodeText;
+        _loadedConfiguration = _linklyState.LoadedConfiguration;
+        _linklySecretStatusVersion = _linklyState.SecretStatusVersion;
+        _linklyCredentialStatusVersion = _linklyState.CredentialStatusVersion;
+        _linklyCredentialEditVersion = _linklyState.CredentialEditVersion;
+        _hasLinklyCloudPasswordInput = _linklyState.HasCloudPasswordInput;
+        // Triggering fields last — their On*Changed handlers may call SyncLinklyInputs back.
+        SelectedLinklyMode = _linklyState.SelectedMode;
+        IsLinklySandbox = _linklyState.IsSandbox;
+        LinklyHostText = _linklyState.HostText;
+        LinklyPortText = _linklyState.PortText;
+        TimeoutSecondsText = _linklyState.TimeoutSecondsText;
+        LinklyCloudUsernameText = _linklyState.CloudUsernameText;
+        LinklyCloudPasswordText = _linklyState.CloudPasswordText;
+        _squareState.LoadedConfiguration = _linklyState.LoadedConfiguration;
+        _syncingLinkly = false;
+    }
+
+    private void SyncLinklyInputs()
+    {
+        if (_syncingLinkly) return;
+        _linklyState.HasSavedCloudPassword = HasSavedLinklyCloudPassword;
+        _linklyState.HasSavedCloudSecret = HasSavedLinklyCloudSecret;
+        _linklyState.ConnectionSucceeded = LinklyConnectionSucceeded;
+        _linklyState.PairCodeText = LinklyPairCodeText;
+        _linklyState.LoadedConfiguration = _loadedConfiguration;
+        _linklyState.SecretStatusVersion = _linklySecretStatusVersion;
+        _linklyState.CredentialStatusVersion = _linklyCredentialStatusVersion;
+        _linklyState.CredentialEditVersion = _linklyCredentialEditVersion;
+        _linklyState.HasCloudPasswordInput = _hasLinklyCloudPasswordInput;
+        _linklyState.SelectedMode = SelectedLinklyMode;
+        _linklyState.IsSandbox = IsLinklySandbox;
+        _linklyState.HostText = LinklyHostText;
+        _linklyState.PortText = LinklyPortText;
+        _linklyState.TimeoutSecondsText = TimeoutSecondsText;
+        _linklyState.CloudUsernameText = LinklyCloudUsernameText;
+        _linklyState.CloudPasswordText = LinklyCloudPasswordText;
+    }
+
     private void ResetLinklyConnectionTest()
     {
-        LinklyConnectionSucceeded = false;
-        ClearLinklyTestStatus();
+        _linklyCoordinator.ResetConnectionTest(_linklyState);
+        LinklyConnectionSucceeded = _linklyState.ConnectionSucceeded;
     }
 
     private void SetStatus(string key, params object[] args)
@@ -1685,16 +1449,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void ResetLinklyModePriority(IReadOnlyList<LinklyConnectionMode>? priority)
     {
-        LinklyModePriorityItems.Clear();
-        var normalized = CardTerminalSettings.NormalizeLinklyConnectionModePriority(
-            priority,
-            _loadedConfiguration.LinklyConnectionMode);
-        foreach (var mode in normalized)
-        {
-            LinklyModePriorityItems.Add(new LinklyModePriorityItem(ToSettingsMode(mode)));
-        }
-
-        RefreshLinklyPriorityRanks();
+        _linklyCoordinator.ResetModePriority(priority, LinklyModePriorityItems, _linklyState);
         OnPropertyChanged(nameof(PrimaryLinklyMode));
         MoveLinklyPriorityUpCommand.NotifyCanExecuteChanged();
         MoveLinklyPriorityDownCommand.NotifyCanExecuteChanged();
@@ -1702,95 +1457,34 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void PromoteLinklyModeToPrimary(LinklySettingsMode mode)
     {
-        var item = LinklyModePriorityItems.FirstOrDefault(candidate => candidate.Mode == mode);
-        if (item is null)
-        {
-            return;
-        }
-
-        var index = LinklyModePriorityItems.IndexOf(item);
-        if (index <= 0)
-        {
-            return;
-        }
-
-        // 选中某个模式后把它移动到第一位，让优先级顺序和当前主模式保持一致。
-        LinklyModePriorityItems.Move(index, 0);
-        RefreshLinklyPriorityRanks();
+        _linklyCoordinator.PromoteModeToPrimary(mode, LinklyModePriorityItems);
         OnPropertyChanged(nameof(PrimaryLinklyMode));
     }
 
     private IReadOnlyList<LinklyConnectionMode> GetLinklyConnectionModePriority()
     {
-        return LinklyModePriorityItems
-            .Select(item => ToConnectionMode(item.Mode))
-            .ToArray();
+        return _linklyCoordinator.GetConnectionModePriority(LinklyModePriorityItems);
     }
 
     private void RefreshLinklyPriorityRanks()
     {
-        for (var index = 0; index < LinklyModePriorityItems.Count; index++)
-        {
-            LinklyModePriorityItems[index].Rank = index + 1;
-        }
-
+        _linklyCoordinator.RefreshPriorityRanks(LinklyModePriorityItems);
         MoveLinklyPriorityUpCommand.NotifyCanExecuteChanged();
         MoveLinklyPriorityDownCommand.NotifyCanExecuteChanged();
     }
 
-    private async Task LoadSquareDevicesForLocationAsync(string locationId, bool selectSavedDevice)
-    {
-        SquareDevices.ReplaceWith(await _setupService.ListSquareDevicesAsync(
-            accessToken: null,
-            SelectedSquareEnvironment,
-            locationId));
-        _devicesLoadedForLocationId = locationId;
-        SelectedSquareDevice = selectSavedDevice
-            ? SquareDevices.FirstOrDefault(device =>
-                SquareDeviceIdNormalizer.AreEquivalent(device.Id, _savedSquareDeviceId))
-            : SelectedSquareDevice is not null
-                ? SquareDevices.FirstOrDefault(device =>
-                    SquareDeviceIdNormalizer.AreEquivalent(device.Id, SelectedSquareDevice.Id))
-                : null;
-    }
-
     private void ResetSquareDeviceCodes()
     {
-        SquareDeviceCodes.Clear();
-        SelectedSquareDeviceCode = null;
-        SuggestSquareDeviceCodeName(force: true);
-    }
-
-    private void ReplaceSquareDeviceCode(SquareDeviceCodeOption updated)
-    {
-        for (var index = 0; index < SquareDeviceCodes.Count; index++)
-        {
-            if (string.Equals(SquareDeviceCodes[index].Id, updated.Id, StringComparison.OrdinalIgnoreCase))
-            {
-                SquareDeviceCodes[index] = updated;
-                return;
-            }
-        }
-
-        SquareDeviceCodes.Insert(0, updated);
+        SyncSquareInputs();
+        _squareCoordinator.ResetDeviceCodes(SquareDeviceCodes, _squareState);
+        SyncSquareState();
     }
 
     private void SuggestSquareDeviceCodeName(bool force)
     {
-        var suggestion = SelectedSquareDevice?.Name?.Trim();
-        if (string.IsNullOrWhiteSpace(suggestion))
-        {
-            suggestion = DefaultSquareDeviceCodeName;
-        }
-
-        if (force ||
-            string.IsNullOrWhiteSpace(SquareDeviceCodeNameText) ||
-            string.Equals(SquareDeviceCodeNameText, _lastSquareDeviceCodeNameSuggestion, StringComparison.Ordinal))
-        {
-            SquareDeviceCodeNameText = suggestion;
-        }
-
-        _lastSquareDeviceCodeNameSuggestion = suggestion;
+        SyncSquareInputs();
+        _squareCoordinator.SuggestDeviceCodeName(force, _squareState);
+        SyncSquareState();
     }
 
     private static void LogSquareSettings(string message)

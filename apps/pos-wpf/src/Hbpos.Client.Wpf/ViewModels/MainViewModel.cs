@@ -1252,7 +1252,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task TryInitialCatalogSyncAsync()
     {
-        var hasLocalCatalogItems = await HasLocalCatalogItemsAsync();
+        var hasLocalCatalogItems = await _catalogStartupCoordinator.HasLocalCatalogItemsAsync(Session.StoreCode);
         var syncMode = hasLocalCatalogItems ? "background-refresh" : "initial-full-download";
         try
         {
@@ -1278,24 +1278,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 ? "main.catalogSync.failed"
                 : "main.catalogSync.initialDownloadFailed";
             StatusMessage = string.Format(_localization.CurrentCulture, _localization.T(statusKey), ex.Message);
-        }
-    }
-
-    private async Task<bool> HasLocalCatalogItemsAsync()
-    {
-        try
-        {
-            var firstPage = await _catalogRepository.LoadSellableItemComparePageAsync(
-                Session.StoreCode,
-                afterLookupCodeNormalized: null,
-                pageSize: 1);
-            return firstPage.Count > 0;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // 本地探测失败只影响提示文案，不阻止后台同步继续尝试。
-            ConsoleLog.Write("CatalogSync", $"initial sync local cache probe failed store={Session.StoreCode} error={ex.Message}");
-            return true;
         }
     }
 

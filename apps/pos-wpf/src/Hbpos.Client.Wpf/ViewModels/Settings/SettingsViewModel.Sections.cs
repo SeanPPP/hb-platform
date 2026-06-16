@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Threading;
 using Hbpos.Client.Wpf.Services;
 
@@ -215,4 +216,6 @@ public sealed partial class SettingsViewModel
             }, null);
         }
     }
+
+    // ── Square payment terminal ──
 }
