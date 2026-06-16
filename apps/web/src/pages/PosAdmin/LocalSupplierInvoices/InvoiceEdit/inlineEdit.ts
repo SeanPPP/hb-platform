@@ -1,4 +1,5 @@
 import type {
+  BatchEditFields,
   InvoiceDetailUpsertItemDto,
   LocalSupplierInvoiceItemDto,
 } from '../../../../types/localSupplierInvoice'
@@ -86,6 +87,40 @@ export function applyInvoiceDetailInlineEdit(
         nextDetail.quantity,
         nextDetail.purchasePrice,
       )
+    }
+
+    return nextDetail
+  })
+}
+
+export function applyInvoiceDetailBatchEdit(
+  details: LocalSupplierInvoiceItemDto[],
+  detailGuids: readonly string[],
+  editFields: BatchEditFields,
+) {
+  const targetGuidSet = new Set(detailGuids)
+
+  return details.map((detail) => {
+    if (!targetGuidSet.has(detail.detailGUID)) return detail
+
+    const nextDetail: LocalSupplierInvoiceItemDto = { ...detail }
+
+    // 批量编辑只应用用户勾选的字段；0 和 false 都是有效业务值，不能用 truthy 判断。
+    if (editFields.updatePurchasePrice && editFields.purchasePrice !== undefined) {
+      nextDetail.purchasePrice = editFields.purchasePrice
+      nextDetail.amount = recalculateInvoiceDetailAmount(nextDetail.quantity, editFields.purchasePrice)
+    }
+    if (editFields.updateRetailPrice && editFields.retailPrice !== undefined) {
+      nextDetail.retailPrice = editFields.retailPrice
+    }
+    if (editFields.updateIsAutoPricing && editFields.isAutoPricing !== undefined) {
+      nextDetail.autoPricing = editFields.isAutoPricing
+    }
+    if (editFields.updateIsSpecialProduct && editFields.isSpecialProduct !== undefined) {
+      nextDetail.isSpecialProduct = editFields.isSpecialProduct
+    }
+    if (editFields.updateDiscountRate && editFields.discountRate !== undefined) {
+      nextDetail.discountRate = editFields.discountRate
     }
 
     return nextDetail
