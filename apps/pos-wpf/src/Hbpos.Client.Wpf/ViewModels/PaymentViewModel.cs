@@ -15,9 +15,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly PosCartService _cart;
     private readonly ICashPaymentWorkflowService _workflowService;
     private readonly ILocalizationService? _localization;
-    private readonly Action? _onBackToPos;
-    private readonly Action? _onShowInstallmentCenter;
-    private readonly Func<Task<bool>>? _recoverPreviousCardTransactionAsync;
+    private readonly PaymentNavigationActions _navigationActions;
+    private readonly PaymentTenderController _tenderController = new();
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private string _statusKey = "payment.status.ready";
     private string? _statusTextOverride;
@@ -108,9 +107,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _workflowService = workflowService;
         _session = session;
         _localization = localization;
-        _onBackToPos = onBackToPos;
-        _onShowInstallmentCenter = onShowInstallmentCenter;
-        _recoverPreviousCardTransactionAsync = recoverPreviousCardTransactionAsync;
+        _navigationActions = PaymentNavigationActions.FromLegacyCallbacks(
+            onBackToPos,
+            onShowInstallmentCenter,
+            recoverPreviousCardTransactionAsync);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _linklyFallbackPromptCoordinator?.SetPromptHandler(ConfirmLinklyFallbackAsync);
         if (_localization is not null)
@@ -399,64 +399,22 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task ApplyQuickCashAsync(QuickCashOption? option)
     {
-        if (option is null)
-        {
-            return;
-        }
-
-        TenderAmountText = option.Amount.ToString("0.00");
-        await AddTenderByMethodAsync(PaymentMethodKind.Cash);
+        await _tenderController.ApplyQuickCashAsync(
+            option,
+            amountText => TenderAmountText = amountText,
+            AddTenderByMethodAsync);
     }
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
-        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery)
+        if (!TryApplyAddTenderPlan(
+                _tenderController.CreateAddTenderPlan(BuildAddTenderRequest(method)),
+                out var amountText,
+                out var referenceText))
         {
             return;
         }
 
-        if (_pendingVoucherUploadOrderGuid is not null)
-        {
-            SetStatus("payment.status.retryVoucherUpload");
-            return;
-        }
-
-        if (IsOfflineVoucherRefundUnavailable(method))
-        {
-            SetOfflineVoucherRefundUnavailableStatus();
-            return;
-        }
-
-        if (HasTenderForMethod(method) && !(IsRefundMode && method == PaymentMethodKind.Card))
-        {
-            SelectedPaymentMethod = method;
-            SetStatus("payment.status.duplicatePaymentMethod");
-            NotifyPaymentCommandStates();
-            return;
-        }
-
-        if (TrySetBlockingCartIssueStatus())
-        {
-            NotifyPaymentCommandStates();
-            return;
-        }
-
-        var shouldUseMethodDefaultAmount = IsRefundMode &&
-            method == PaymentMethodKind.Card &&
-            SelectedPaymentMethod != method;
-        SelectedPaymentMethod = method;
-        if (!IsRefundMode &&
-            method == PaymentMethodKind.Voucher &&
-            string.IsNullOrWhiteSpace(VoucherCodeText))
-        {
-            SetStatus("payment.status.voucherCodeRequired");
-            NotifyPaymentCommandStates();
-            return;
-        }
-
-        var amountText = shouldUseMethodDefaultAmount
-            ? ResolveDefaultTenderAmountText(method)
-            : ResolveTenderAmountText(method);
         PaymentTenderAttemptResult result;
         CancellationTokenSource? cardPaymentCts = null;
         var cardPaymentWasManuallyCancelled = false;
@@ -476,11 +434,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 SetStatus("payment.status.cardProcessing");
             }
 
-            var referenceText = method == PaymentMethodKind.Voucher
-                ? VoucherCodeText
-                : IsRefundMode && method == PaymentMethodKind.Card
-                    ? GetRefundReference(method)
-                    : null;
             if (IsRefundMode && method == PaymentMethodKind.Card)
             {
                 ConsoleLog.Write(
@@ -850,19 +803,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool TrySetBlockingCartIssueStatus()
     {
-        if (_cart.HasNonIntegerQuantity)
+        var statusKey = GetBlockingCartIssueStatusKey();
+        if (statusKey is null)
         {
-            SetStatus("cart.status.quantityMustBeInteger");
-            return true;
+            return false;
         }
 
-        if (_cart.HasZeroPriceLine)
-        {
-            SetStatus("cart.status.zeroPriceItem");
-            return true;
-        }
-
-        return false;
+        SetStatus(statusKey);
+        return true;
     }
 
     private void RecalculateTenderSummary()
@@ -999,7 +947,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _onBackToPos?.Invoke();
+        _navigationActions.BackToPos?.Invoke();
     }
 
     private bool CanBackToPos()
@@ -1013,7 +961,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private void ShowInstallmentCenter()
     {
         // 分期流程暂时独立于现有收款流程，只负责跳转到新骨架页面。
-        _onShowInstallmentCenter?.Invoke();
+        _navigationActions.ShowInstallmentCenter?.Invoke();
     }
 
     private bool CanShowInstallmentCenter()
@@ -1399,6 +1347,21 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         return _cart.HasNonIntegerQuantity || _cart.HasZeroPriceLine;
     }
 
+    private string? GetBlockingCartIssueStatusKey()
+    {
+        if (_cart.HasNonIntegerQuantity)
+        {
+            return "cart.status.quantityMustBeInteger";
+        }
+
+        if (_cart.HasZeroPriceLine)
+        {
+            return "cart.status.zeroPriceItem";
+        }
+
+        return null;
+    }
+
     private string GetScreenTitleKey()
     {
         return PaymentMode switch
@@ -1530,7 +1493,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         return CardPaymentErrorOverlay is { IsOpen: true, HasPrimaryAction: true } overlay &&
             (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback ||
-             _recoverPreviousCardTransactionAsync is not null);
+             _navigationActions.CanRecoverPreviousCardTransaction);
     }
 
     private async Task ExecuteCardPaymentErrorPrimaryActionAsync()
@@ -1549,13 +1512,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (_recoverPreviousCardTransactionAsync is null)
+        if (!_navigationActions.CanRecoverPreviousCardTransaction)
         {
             return;
         }
 
         SetStatus("payment.card.error.overlay.activeSession.recovering");
-        var recoveryResolved = await _recoverPreviousCardTransactionAsync();
+        var recoveryResolved = await (_navigationActions.RecoverPreviousCardTransactionAsync?.Invoke() ?? Task.FromResult(false));
         if (recoveryResolved)
         {
             // 恢复确认已经解除未知结果阻塞后，当前付款页必须重新开放，允许收银员继续处理本单。
@@ -1592,6 +1555,56 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         NotifyPaymentCommandStates();
         cancellationToken.Register(() => CompletePendingLinklyFallbackPrompt(confirmed: false));
         return prompt.Task;
+    }
+
+    private PaymentTenderAddRequest BuildAddTenderRequest(PaymentMethodKind method)
+    {
+        return new PaymentTenderAddRequest(
+            method,
+            SelectedPaymentMethod,
+            IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery,
+            _pendingVoucherUploadOrderGuid is not null,
+            IsRefundMode,
+            IsOfflineVoucherRefundUnavailable(method),
+            HasTenderForMethod(method) && !(IsRefundMode && method == PaymentMethodKind.Card),
+            GetBlockingCartIssueStatusKey(),
+            VoucherCodeText,
+            ResolveTenderAmountText,
+            ResolveDefaultTenderAmountText,
+            GetRefundReference);
+    }
+
+    private bool TryApplyAddTenderPlan(
+        PaymentTenderAddPlan plan,
+        out string amountText,
+        out string? referenceText)
+    {
+        if (plan.SelectedPaymentMethod is PaymentMethodKind selectedPaymentMethod)
+        {
+            SelectedPaymentMethod = selectedPaymentMethod;
+        }
+
+        if (!plan.ShouldProceed)
+        {
+            if (plan.StatusKey is not null)
+            {
+                // 中文注释：controller 只返回入口决策，真正的状态投影和命令刷新仍由 VM 统一处理。
+                SetStatus(plan.StatusKey);
+            }
+
+            if (plan.NotifyCommandStates)
+            {
+                NotifyPaymentCommandStates();
+            }
+
+            amountText = string.Empty;
+            referenceText = null;
+            return false;
+        }
+
+        amountText = plan.AmountText ?? string.Empty;
+        referenceText = plan.ReferenceText;
+        return true;
     }
 
     private void CompletePendingLinklyFallbackPrompt(bool confirmed)

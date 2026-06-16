@@ -1097,6 +1097,29 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void CancelLinklyCloudPairingCommand_uses_password_box_input_state_when_password_text_is_empty()
+    {
+        var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService())
+        {
+            IsLinklyCloudMode = true,
+            LinklyCloudUsernameText = "sandbox-user"
+        };
+
+        viewModel.RaiseLinklyCloudPasswordInputChanged(true);
+
+        Assert.True(viewModel.CanCancelLinklyCloudPairingFromView);
+        Assert.True(viewModel.CancelLinklyCloudPairingCommand.CanExecute(null));
+
+        viewModel.CancelLinklyCloudPairingCommand.Execute(null);
+
+        Assert.Equal("sandbox-user", viewModel.LinklyCloudUsernameText);
+        Assert.Equal(string.Empty, viewModel.LinklyCloudPasswordText);
+        Assert.Equal(string.Empty, viewModel.LinklyPairCodeText);
+        Assert.False(viewModel.CanCancelLinklyCloudPairingFromView);
+        Assert.False(viewModel.CancelLinklyCloudPairingCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task LoadAsync_loads_linkly_cloud_username_and_password_status_without_password()
     {
         var service = new FakeCardTerminalSetupService(CardTerminalConfiguration.Default with

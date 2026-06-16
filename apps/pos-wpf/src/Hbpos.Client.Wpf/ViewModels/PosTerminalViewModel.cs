@@ -27,19 +27,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
     private readonly IPosTerminalWorkflowService _workflowService;
-    private readonly Action? _onOpenPayment;
-    private readonly Action? _onOpenReturns;
-    private readonly Func<Task>? _onOpenSpecialProductsAsync;
-    private readonly Func<Task>? _onHoldOrderAsync;
-    private readonly Func<Task>? _onRecallOrderAsync;
-    private readonly Func<Task>? _onOpenHistoryAsync;
-    private readonly Func<Task>? _onOpenDailyCloseAsync;
-    private readonly Func<Task>? _onOpenSettingsAsync;
-    private readonly Action? _onOpenCustomerDisplay;
-    private readonly Func<Task<ReceiptPrintResult>>? _onPrintLastReceiptAsync;
-    private readonly Func<Task<ReceiptPrintResult>>? _onOpenCashDrawerAsync;
-    private readonly Func<Task>? _onExitApplicationAsync;
-    private readonly Func<Task>? _onReregisterDeviceAsync;
+    private readonly PosTerminalActions _actions;
+    private readonly PosTerminalScanController _scanController;
     private readonly ILocalizationService? _localization;
     private readonly IUserFeedbackService _userFeedbackService;
     private readonly IRawScannerService? _rawScannerService;
@@ -49,7 +38,6 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
-    private int _scanTraceSequence;
     private string? _activeScanTraceId;
     private DateTimeOffset? _activeScanStartedAt;
 
@@ -113,20 +101,22 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _priceIndex = priceIndex;
         _cart = cart;
         _workflowService = workflowService ?? new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync);
+        _actions = PosTerminalActions.FromLegacyCallbacks(
+            onOpenPayment,
+            onOpenReturns,
+            onOpenSpecialProductsAsync,
+            onHoldOrderAsync,
+            onRecallOrderAsync,
+            onOpenHistoryAsync,
+            onOpenDailyCloseAsync,
+            onOpenSettingsAsync,
+            onOpenCustomerDisplay,
+            onPrintLastReceiptAsync,
+            onOpenCashDrawerAsync,
+            onExitApplicationAsync,
+            onReregisterDeviceAsync);
+        _scanController = new PosTerminalScanController(cart);
         _session = session;
-        _onOpenPayment = onOpenPayment;
-        _onOpenReturns = onOpenReturns;
-        _onOpenSpecialProductsAsync = onOpenSpecialProductsAsync;
-        _onHoldOrderAsync = onHoldOrderAsync;
-        _onRecallOrderAsync = onRecallOrderAsync;
-        _onOpenHistoryAsync = onOpenHistoryAsync;
-        _onOpenDailyCloseAsync = onOpenDailyCloseAsync;
-        _onOpenSettingsAsync = onOpenSettingsAsync;
-        _onOpenCustomerDisplay = onOpenCustomerDisplay;
-        _onPrintLastReceiptAsync = onPrintLastReceiptAsync;
-        _onOpenCashDrawerAsync = onOpenCashDrawerAsync;
-        _onExitApplicationAsync = onExitApplicationAsync;
-        _onReregisterDeviceAsync = onReregisterDeviceAsync;
         _localization = localization;
         _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
         _syncCatalogAsync = syncCatalogAsync;
@@ -168,9 +158,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OpenDailyCloseCommand = new AsyncRelayCommand(OpenDailyCloseAsync);
         OpenSettingsCommand = new AsyncRelayCommand(OpenSettingsAsync);
         OpenCustomerDisplayCommand = new RelayCommand(OpenCustomerDisplay);
-        PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _onPrintLastReceiptAsync is not null);
-        OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _onOpenCashDrawerAsync is not null);
-        ExitApplicationCommand = new AsyncRelayCommand(ExitApplicationAsync, () => _onExitApplicationAsync is not null);
+        PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _actions.CanPrintLastReceipt);
+        OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _actions.CanOpenCashDrawer);
+        ExitApplicationCommand = new AsyncRelayCommand(ExitApplicationAsync, () => _actions.CanExitApplication);
         SyncCommand = new AsyncRelayCommand(SyncAsync);
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync);
@@ -547,43 +537,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void SearchAndAdd()
     {
-        var traceId = NextScanTraceId("manual");
-        var startedAt = DateTimeOffset.Now;
-        var submittedScanText = ScanText;
-        var stopwatch = Stopwatch.StartNew();
-        var cartLinesBefore = _cart.Lines.Count;
-        ConsoleLog.Write(
-            "PosScan",
-            $"traceId={traceId} manual scan flow start barcode={submittedScanText} storeCode={Session.StoreCode} cartLinesBefore={cartLinesBefore}");
-
-        _activeScanTraceId = traceId;
-        _activeScanStartedAt = startedAt;
-        var workflowStopwatch = Stopwatch.StartNew();
-        PosTerminalWorkflowResult result;
-        var applyStopwatch = new Stopwatch();
-        try
-        {
-            result = _workflowService.ProcessScan(Session, submittedScanText, preferExactLookup: false, source: "manual", traceId);
-            workflowStopwatch.Stop();
-            applyStopwatch.Start();
-            ApplyWorkflowResult(result);
-            applyStopwatch.Stop();
-        }
-        finally
-        {
-            _activeScanTraceId = null;
-            _activeScanStartedAt = null;
-        }
-
-        stopwatch.Stop();
-        if (result.SelectedCartLine is not null && string.Equals(result.StatusKey, "pos.status.added", StringComparison.Ordinal))
-        {
-            LogCartOperation("scan-auto-add", result.SelectedCartLine, success: true, stopwatch.ElapsedMilliseconds, traceId: traceId);
-        }
-
-        ConsoleLog.Write(
-            "PosScan",
-            $"traceId={traceId} manual scan flow end barcode={submittedScanText} statusKey={result.StatusKey ?? "<null>"} autoAdded={FormatBool(result.SelectedCartLine is not null)} cartLinesBefore={cartLinesBefore} cartLinesAfter={_cart.Lines.Count} workflowElapsedMs={workflowStopwatch.ElapsedMilliseconds} applyResultElapsedMs={applyStopwatch.ElapsedMilliseconds} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
+        ExecuteScan(_scanController.CreateManual(ScanText), statusTextOverrideFactory: null);
     }
 
     private bool CanAddOpenItem()
@@ -746,12 +700,6 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         return string.IsNullOrWhiteSpace(value) ? "<null>" : value.Trim();
     }
 
-    private string NextScanTraceId(string source)
-    {
-        var normalizedSource = string.IsNullOrWhiteSpace(source) ? "scan" : source.Trim();
-        return $"{normalizedSource}-{++_scanTraceSequence}";
-    }
-
     private void OnRawBarcodeScanned(RawBarcodeScannedEventArgs e)
     {
         ProcessScannerBarcode(e.Barcode, e.DevicePath, "raw", e.ScannedAt);
@@ -765,49 +713,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void ProcessScannerBarcode(string barcode, string devicePath, string source, DateTimeOffset? scannedAt)
     {
-        var traceId = NextScanTraceId(source);
-        var startedAt = DateTimeOffset.Now;
-        var stopwatch = Stopwatch.StartNew();
-        var cartLinesBefore = _cart.Lines.Count;
-        ConsoleLog.Write(
-            "PosScan",
-            $"traceId={traceId} {source} scanner event received barcode={barcode} devicePath={devicePath} eventAgeMs={FormatElapsedSince(scannedAt)} cartLinesBefore={cartLinesBefore}");
-        var setScanTextStopwatch = Stopwatch.StartNew();
-        ScanText = barcode;
-        IsTouchKeyboardOpen = false;
-        setScanTextStopwatch.Stop();
-        ConsoleLog.Write(
-            "PosScan",
-            $"traceId={traceId} scanner ui input applied barcode={barcode} setInputElapsedMs={setScanTextStopwatch.ElapsedMilliseconds}");
-
-        _activeScanTraceId = traceId;
-        _activeScanStartedAt = startedAt;
-        var workflowStopwatch = Stopwatch.StartNew();
-        PosTerminalWorkflowResult result;
-        var applyStopwatch = new Stopwatch();
-        try
-        {
-            result = _workflowService.ProcessScan(Session, barcode, preferExactLookup: true, source, traceId);
-            workflowStopwatch.Stop();
-            applyStopwatch.Start();
-            ApplyWorkflowResult(result, statusTextOverride: FormatScannerResultStatus(barcode, result));
-            applyStopwatch.Stop();
-        }
-        finally
-        {
-            _activeScanTraceId = null;
-            _activeScanStartedAt = null;
-        }
-
-        stopwatch.Stop();
-        if (result.SelectedCartLine is not null && string.Equals(result.StatusKey, "pos.status.added", StringComparison.Ordinal))
-        {
-            LogCartOperation("scan-auto-add", result.SelectedCartLine, success: true, stopwatch.ElapsedMilliseconds, traceId: traceId);
-        }
-
-        ConsoleLog.Write(
-            "PosScan",
-            $"traceId={traceId} scanner flow end barcode={barcode} statusKey={result.StatusKey ?? "<null>"} autoAdded={FormatBool(result.SelectedCartLine is not null)} cartLinesBefore={cartLinesBefore} cartLinesAfter={_cart.Lines.Count} workflowElapsedMs={workflowStopwatch.ElapsedMilliseconds} applyResultElapsedMs={applyStopwatch.ElapsedMilliseconds} totalElapsedMs={stopwatch.ElapsedMilliseconds}");
+        ExecuteScan(
+            _scanController.CreateScanner(barcode, devicePath, source, scannedAt),
+            result => FormatScannerResultStatus(barcode, result));
     }
 
     private void ClearSearch()
@@ -834,78 +742,78 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         PaymentRequested?.Invoke(this, EventArgs.Empty);
-        _onOpenPayment?.Invoke();
+        _actions.OpenPayment?.Invoke();
         stopwatch.Stop();
         LogCartOperation("open-payment", (CartLine?)null, success: true, stopwatch.ElapsedMilliseconds);
     }
 
     private void OpenReturns()
     {
-        _onOpenReturns?.Invoke();
+        _actions.OpenReturns?.Invoke();
     }
 
     private async Task OpenSpecialProductsAsync()
     {
-        if (_onOpenSpecialProductsAsync is not null)
+        if (_actions.OpenSpecialProductsAsync is not null)
         {
-            await _onOpenSpecialProductsAsync();
+            await _actions.OpenSpecialProductsAsync();
         }
     }
 
     private async Task HoldOrderAsync()
     {
-        if (_onHoldOrderAsync is not null)
+        if (_actions.HoldOrderAsync is not null)
         {
-            await _onHoldOrderAsync();
+            await _actions.HoldOrderAsync();
         }
     }
 
     private async Task RecallOrderAsync()
     {
-        if (_onRecallOrderAsync is not null)
+        if (_actions.RecallOrderAsync is not null)
         {
-            await _onRecallOrderAsync();
+            await _actions.RecallOrderAsync();
         }
     }
 
     private async Task OpenHistoryAsync()
     {
-        if (_onOpenHistoryAsync is not null)
+        if (_actions.OpenHistoryAsync is not null)
         {
-            await _onOpenHistoryAsync();
+            await _actions.OpenHistoryAsync();
         }
     }
 
     private async Task OpenDailyCloseAsync()
     {
-        if (_onOpenDailyCloseAsync is not null)
+        if (_actions.OpenDailyCloseAsync is not null)
         {
-            await _onOpenDailyCloseAsync();
+            await _actions.OpenDailyCloseAsync();
         }
     }
 
     private async Task OpenSettingsAsync()
     {
-        if (_onOpenSettingsAsync is not null)
+        if (_actions.OpenSettingsAsync is not null)
         {
-            await _onOpenSettingsAsync();
+            await _actions.OpenSettingsAsync();
         }
     }
 
     private void OpenCustomerDisplay()
     {
-        _onOpenCustomerDisplay?.Invoke();
+        _actions.OpenCustomerDisplay?.Invoke();
     }
 
     private async Task PrintLastReceiptAsync()
     {
-        if (_onPrintLastReceiptAsync is null)
+        if (_actions.PrintLastReceiptAsync is null)
         {
             return;
         }
 
         SetStatusText(T("receipt.print.printing"));
-        var result = await _onPrintLastReceiptAsync();
+        var result = await _actions.PrintLastReceiptAsync();
         SetStatusText(
             result.Message,
             result.Succeeded ? StatusFeedbackKind.Success : StatusFeedbackKind.Error,
@@ -914,13 +822,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenCashDrawerAsync()
     {
-        if (_onOpenCashDrawerAsync is null)
+        if (_actions.OpenCashDrawerAsync is null)
         {
             return;
         }
 
         SetStatusText(T("cashDrawer.opening"));
-        var result = await _onOpenCashDrawerAsync();
+        var result = await _actions.OpenCashDrawerAsync();
         SetStatusText(
             result.Succeeded ? T("cashDrawer.opened") : result.Message,
             result.Succeeded ? StatusFeedbackKind.Success : StatusFeedbackKind.Error,
@@ -929,18 +837,74 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task ExitApplicationAsync()
     {
-        if (_onExitApplicationAsync is not null)
+        if (_actions.ExitApplicationAsync is not null)
         {
-            await _onExitApplicationAsync();
+            await _actions.ExitApplicationAsync();
         }
     }
 
     private async Task ReregisterDeviceAsync()
     {
-        if (_onReregisterDeviceAsync is not null)
+        if (_actions.ReregisterDeviceAsync is not null)
         {
-            await _onReregisterDeviceAsync();
+            await _actions.ReregisterDeviceAsync();
         }
+    }
+
+    private void ExecuteScan(
+        PosTerminalScanPlan plan,
+        Func<PosTerminalWorkflowResult, string?>? statusTextOverrideFactory)
+    {
+        // 中文注释：统一承接手动检索与扫描枪入口，只让 VM 负责 UI 状态投影和结果应用。
+        var totalStopwatch = Stopwatch.StartNew();
+        _scanController.LogStarted(plan, Session.StoreCode);
+
+        if (plan.ApplyBarcodeToScanText)
+        {
+            var setScanTextStopwatch = Stopwatch.StartNew();
+            ScanText = plan.Barcode;
+            if (plan.CloseTouchKeyboard)
+            {
+                IsTouchKeyboardOpen = false;
+            }
+
+            setScanTextStopwatch.Stop();
+            _scanController.LogInputApplied(plan, setScanTextStopwatch.ElapsedMilliseconds);
+        }
+
+        _activeScanTraceId = plan.TraceId;
+        _activeScanStartedAt = plan.StartedAt;
+        var workflowStopwatch = Stopwatch.StartNew();
+        PosTerminalWorkflowResult result;
+        var applyStopwatch = new Stopwatch();
+        try
+        {
+            result = _workflowService.ProcessScan(Session, plan.Barcode, plan.PreferExactLookup, plan.Source, plan.TraceId);
+            workflowStopwatch.Stop();
+            applyStopwatch.Start();
+            ApplyWorkflowResult(result, statusTextOverrideFactory?.Invoke(result));
+            applyStopwatch.Stop();
+        }
+        finally
+        {
+            _activeScanTraceId = null;
+            _activeScanStartedAt = null;
+        }
+
+        totalStopwatch.Stop();
+        if (result.SelectedCartLine is not null && string.Equals(result.StatusKey, "pos.status.added", StringComparison.Ordinal))
+        {
+            LogCartOperation("scan-auto-add", result.SelectedCartLine, success: true, totalStopwatch.ElapsedMilliseconds, traceId: plan.TraceId);
+        }
+
+        _scanController.LogFinished(
+            plan,
+            result.StatusKey,
+            result.SelectedCartLine is not null,
+            _cart.Lines.Count,
+            workflowStopwatch.ElapsedMilliseconds,
+            applyStopwatch.ElapsedMilliseconds,
+            totalStopwatch.ElapsedMilliseconds);
     }
 
     private async Task SyncAsync()

@@ -68,6 +68,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly IReceiptPrintService? _receiptPrintService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+    private readonly DataMaintenanceSection _dataMaintenanceSection;
+    private readonly ReceiptPrinterSection _receiptPrinterSection;
     private CardTerminalConfiguration _loadedConfiguration = CardTerminalConfiguration.Default;
     private string? _savedSquareLocationId;
     private string? _savedSquareDeviceId;
@@ -200,6 +202,31 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         _receiptPrintService = receiptPrintService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
+        _dataMaintenanceSection = new DataMaintenanceSection(new DataMaintenanceContext(
+            IsBusy: () => IsBusy,
+            DownloadCatalogAsync: _downloadCatalogAsync,
+            ResetCatalogAsync: _resetCatalogAsync,
+            ResetTestSalesDataAsync: _resetTestSalesDataAsync,
+            ConfirmResetTestSalesData: _confirmResetTestSalesData,
+            ReregisterDeviceAsync: _reregisterDeviceAsync,
+            RunBusyAsync: (action, operationName) => RunBusyAsync(action, operationName),
+            SetStatus: key => SetStatus(key),
+            SetStatusOverride: SetStatusOverride));
+        _receiptPrinterSection = new ReceiptPrinterSection(new ReceiptPrinterContext(
+            SettingsStore: _receiptPrinterSettingsStore,
+            PrintService: _receiptPrintService,
+            IsBusy: () => IsBusy,
+            CreateSettingsFromFields: CreateReceiptPrinterSettingsFromFields,
+            ApplySettings: ApplyReceiptPrinterSettings,
+            RunBusyAsync: (action, operationName) => RunBusyAsync(action, operationName),
+            SetStatus: key => SetStatus(key),
+            SetStatusOverride: SetStatusOverride,
+            ClearReceiptPrinterTestStatus: () => ReceiptPrinterTestStatusMessage = string.Empty,
+            SetReceiptPrinterTestStatus: message =>
+            {
+                ReceiptPrinterTestStatusMessage = message;
+                _receiptPrinterTestStatusOverride = message;
+            }));
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -948,7 +975,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private void CancelLinklyCloudPairing()
     {
-        // 鍙栨秷閰嶅鍙竻绌烘湰娆¤緭鍏ワ紝涓嶅垹闄ゆ湰鏈哄凡淇濆瓨鐨?Cloud API 娴嬭瘯璐﹀彿銆?
+        // 取消配对时清空本地输入，避免旧凭据继续影响后续 Cloud API 操作。
         LogLinklyCloudSettings($"pair cancel clicked environment={SelectedLinklyEnvironment} hadPassword=REDACTED hadPairCode={!string.IsNullOrWhiteSpace(LinklyPairCodeText)}");
         LinklyPairCodeText = string.Empty;
         LinklyCloudPasswordText = string.Empty;
@@ -995,120 +1022,32 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task SaveReceiptPrinterAsync()
     {
-        if (_receiptPrinterSettingsStore is null)
-        {
-            SetStatus("settings.status.receiptPrinterNotConfigured");
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            var settings = CreateReceiptPrinterSettingsFromFields();
-            await _receiptPrinterSettingsStore.SaveAsync(settings);
-            ApplyReceiptPrinterSettings(settings);
-            SetStatus("settings.status.receiptPrinterSaved");
-        });
+        await _receiptPrinterSection.SaveAsync();
     }
 
     private async Task TestReceiptPrinterAsync()
     {
-        if (_receiptPrintService is null)
-        {
-            SetStatus("settings.status.receiptPrinterNotConfigured");
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            ReceiptPrinterTestStatusMessage = string.Empty;
-            if (_receiptPrinterSettingsStore is not null)
-            {
-                await _receiptPrinterSettingsStore.SaveAsync(CreateReceiptPrinterSettingsFromFields());
-            }
-
-            var result = await _receiptPrintService.TestPrinterAsync();
-            ReceiptPrinterTestStatusMessage = result.Message;
-            _receiptPrinterTestStatusOverride = result.Message;
-            SetStatusOverride(result.Message);
-        });
+        await _receiptPrinterSection.TestAsync();
     }
 
     private async Task DownloadCatalogAsync(CancellationToken cancellationToken)
     {
-        if (_downloadCatalogAsync is null)
-        {
-            SetStatus("settings.status.catalogDownloadNotConfigured");
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            SetStatus("settings.status.catalogDownloading");
-            await _downloadCatalogAsync(cancellationToken);
-            SetStatus("settings.status.catalogDownloadCompleted");
-        });
+        await _dataMaintenanceSection.DownloadCatalogAsync(cancellationToken);
     }
 
     private async Task ResetCatalogAsync(CancellationToken cancellationToken)
     {
-        if (_resetCatalogAsync is null)
-        {
-            SetStatus("settings.status.catalogResetNotConfigured");
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            SetStatus("settings.status.catalogResetting");
-            await _resetCatalogAsync(cancellationToken);
-            SetStatus("settings.status.catalogResetCompleted");
-        });
+        await _dataMaintenanceSection.ResetCatalogAsync(cancellationToken);
     }
 
     private async Task ResetTestSalesDataAsync(CancellationToken cancellationToken)
     {
-#if DEBUG
-        if (_resetTestSalesDataAsync is null)
-        {
-            SetStatus("settings.status.testSalesDataResetNotConfigured");
-            return;
-        }
-
-        if (_confirmResetTestSalesData?.Invoke() != true)
-        {
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            SetStatus("settings.status.testSalesDataResetting");
-            await _resetTestSalesDataAsync(cancellationToken);
-            SetStatus("settings.status.testSalesDataResetCompleted");
-        });
-#else
-        await Task.CompletedTask;
-        SetStatus("settings.status.testSalesDataResetNotConfigured");
-#endif
+        await _dataMaintenanceSection.ResetTestSalesDataAsync(cancellationToken);
     }
 
     private async Task ReregisterDeviceAsync()
     {
-        if (_reregisterDeviceAsync is null)
-        {
-            SetStatus("settings.status.reregisterNotConfigured");
-            return;
-        }
-
-        await RunBusyAsync(async () =>
-        {
-            SetStatus("settings.status.reregisterStarting");
-            var result = await _reregisterDeviceAsync();
-            // 璁剧疆椤典笉鍒囨崲灞忓箷锛屽惎鍔ㄨ鎷︽埅鏃堕渶瑕佹妸鍘熷洜鐣欏湪褰撳墠椤电姸鎬佹爮銆?
-            if (!result.Started && !string.IsNullOrWhiteSpace(result.StatusMessage))
-            {
-                SetStatusOverride(result.StatusMessage);
-            }
-        });
+        await _dataMaintenanceSection.ReregisterDeviceAsync();
     }
 
     private bool CanLoadLocations()
@@ -1181,41 +1120,38 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         return !IsBusy &&
             IsLinklyCloudMode &&
             (!string.IsNullOrWhiteSpace(LinklyPairCodeText) ||
+             _hasLinklyCloudPasswordInput ||
              !string.IsNullOrWhiteSpace(LinklyCloudPasswordText));
     }
 
     private bool CanSaveReceiptPrinter()
     {
-        return !IsBusy && _receiptPrinterSettingsStore is not null;
+        return _receiptPrinterSection.CanSave();
     }
 
     private bool CanTestReceiptPrinter()
     {
-        return !IsBusy && _receiptPrintService is not null;
+        return _receiptPrinterSection.CanTest();
     }
 
     private bool CanDownloadCatalog()
     {
-        return !IsBusy && _downloadCatalogAsync is not null;
+        return _dataMaintenanceSection.CanDownloadCatalog();
     }
 
     private bool CanResetCatalog()
     {
-        return !IsBusy && _resetCatalogAsync is not null;
+        return _dataMaintenanceSection.CanResetCatalog();
     }
 
     private bool CanResetTestSalesData()
     {
-#if DEBUG
-        return !IsBusy && _resetTestSalesDataAsync is not null;
-#else
-        return false;
-#endif
+        return _dataMaintenanceSection.CanResetTestSalesData();
     }
 
     private bool CanReregisterDevice()
     {
-        return !IsBusy && _reregisterDeviceAsync is not null;
+        return _dataMaintenanceSection.CanReregisterDevice();
     }
 
     private void ReturnToPos()
@@ -1285,13 +1221,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task LoadReceiptPrinterSettingsAsync()
     {
-        if (_receiptPrinterSettingsStore is null)
-        {
-            ApplyReceiptPrinterSettings(ReceiptPrinterSettings.Default);
-            return;
-        }
-
-        ApplyReceiptPrinterSettings(await _receiptPrinterSettingsStore.LoadAsync());
+        await _receiptPrinterSection.LoadAsync();
     }
 
     private void ApplyReceiptPrinterSettings(ReceiptPrinterSettings settings)
@@ -1327,7 +1257,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _devicesLoadedForLocationId = null;
         SelectedSquareLocation = null;
         SelectedSquareDevice = null;
-        // Square 和 Linkly 的沙盒环境必须隔离，切换 Square 时不能清空 Linkly Cloud 输入。
+        // Square 和 Linkly 的编辑环境需要隔离，切换 Square 时不要清空 Linkly Cloud 输入。
         RaiseCommandStates();
         OnPropertyChanged(nameof(SelectedSquareEnvironment));
         OnPropertyChanged(nameof(IsSquareDeviceCodesSupported));
@@ -1344,7 +1274,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         HasSavedLinklyCloudPassword = false;
         LinklyCloudPasswordText = string.Empty;
         LinklyPairCodeText = string.Empty;
-        // Square 和 Linkly 的沙盒环境必须隔离，切换 Linkly 时不能清空 Square 门店和设备列表。
+        // Square 和 Linkly 的编辑环境需要隔离，切换 Linkly 时不要清空 Square 门店和设备列表。
         _ = RefreshLinklyCloudSecretStatusAsync(SelectedLinklyEnvironment);
         _ = RefreshLinklyCloudCredentialStatusAsync(SelectedLinklyEnvironment);
         RaiseCommandStates();
@@ -1379,7 +1309,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // 鎺掑簭鍒楄〃涓殑閫夋嫨涔熶唬琛ㄢ€滆涓洪閫夆€濓紝纭繚閰嶇疆闈㈡澘銆佹祴璇曡繛鎺ュ拰淇濆瓨鐩爣涓€鑷淬€?
+        // 选择某个模式时同步提升为主模式，保证测试和保存目标一致。
         SelectedLinklyMode = item.Mode;
     }
 
@@ -1526,7 +1456,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         try
         {
             var credential = await _setupService.LoadLinklyCloudCredentialAsync(environment);
-            // 鍙湁鏈€鏂板埛鏂般€佺幆澧冧粛鍖归厤涓旂敤鎴锋病鏈夌户缁紪杈戞椂鎵嶅洖鍐欙紝閬垮厤寮傛缁撴灉瑕嗙洊姝ｅ湪杈撳叆鐨勫嚟鎹€?
+            // 只有环境和编辑版本都未变化时，才回写异步加载结果，避免覆盖用户正在输入的内容。
             if (version == _linklyCredentialStatusVersion &&
                 editVersion == _linklyCredentialEditVersion &&
                 SelectedLinklyEnvironment == environment)
@@ -1784,7 +1714,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // 鍏煎鏃у崟閫夊叆鍙ｏ細鐩存帴璁剧疆妯″紡鏃剁瓑鍚屼簬鎶婅妯″紡鎻愬崌涓洪閫夛紝浣嗘帓搴忓垪琛ㄧ殑閰嶇疆鎸夐挳浼氭樉寮忔姂鍒舵琛屼负銆?
+        // 选中某个模式后把它移动到第一位，让优先级顺序和当前主模式保持一致。
         LinklyModePriorityItems.Move(index, 0);
         RefreshLinklyPriorityRanks();
         OnPropertyChanged(nameof(PrimaryLinklyMode));

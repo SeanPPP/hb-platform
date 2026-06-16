@@ -69,6 +69,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
+    private readonly MainChildViewModelFactory _mainChildViewModelFactory;
     private readonly IWindowOwnerProvider? _windowOwnerProvider;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
@@ -362,6 +363,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _windowOwnerProvider = windowOwnerProvider;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
+        _mainChildViewModelFactory = new MainChildViewModelFactory(
+            _deviceRegistrationWorkflowService,
+            _receiptQueryService,
+            _suspendedOrderService,
+            _remoteOrderHistoryService,
+            _receiptTextFormatter,
+            _receiptPrinterSettingsStore,
+            _installmentOrderService,
+            _localization,
+            _cardTerminalClient);
 
         PaymentSuccess = new PaymentSuccessViewModel(
             _receiptQueryService,
@@ -1014,11 +1025,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(AppStartupOptions startupOptions)
     {
-        var viewModel = new DeviceRegistrationViewModel(_deviceRegistrationWorkflowService, _localization);
-        viewModel.DeviceActivatedAsync += (_, args) => ActivateDeviceAsync(args, startupOptions);
-        viewModel.DeviceReregistered += (_, _) => ApplyDeviceReregistered();
-        viewModel.CancelRequested += (_, _) => CancelDeviceReregistration();
-        return viewModel;
+        return _mainChildViewModelFactory.CreateDeviceRegistrationViewModel(
+            args => ActivateDeviceAsync(args, startupOptions),
+            ApplyDeviceReregistered,
+            CancelDeviceReregistration);
     }
 
     private void ApplySelectedCultureName(string cultureName)
@@ -2244,35 +2254,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private TransactionHistoryViewModel CreateTransactionHistoryViewModel()
     {
-        var viewModel = new TransactionHistoryViewModel(
-            _receiptQueryService,
-            _suspendedOrderService,
-            _remoteOrderHistoryService,
+        return _mainChildViewModelFactory.CreateTransactionHistoryViewModel(
             Session,
             OnSuspendedOrderRecalledAsync,
             ShowPos,
-            _localization,
-            _receiptTextFormatter,
-            _receiptPrinterSettingsStore);
-        viewModel.ReprintRequested += async (_, _) => await PrintSelectedHistoryReceiptAsync(viewModel);
-        return viewModel;
+            viewModel => PrintSelectedHistoryReceiptAsync(viewModel));
     }
 
     private InstallmentCenterViewModel CreateInstallmentCenterViewModel()
     {
-        return new InstallmentCenterViewModel(
-            _installmentOrderService,
+        return _mainChildViewModelFactory.CreateInstallmentCenterViewModel(
             Session,
             ShowInstallmentCreateAsync,
-            ShowCashPayment,
-            _localization,
-            _cardTerminalClient);
+            ShowCashPayment);
     }
 
     private InstallmentCreateViewModel CreateInstallmentCreateViewModel()
     {
-        return new InstallmentCreateViewModel(
-            _installmentOrderService,
+        return _mainChildViewModelFactory.CreateInstallmentCreateViewModel(
             Session,
             async order =>
             {
@@ -2287,8 +2286,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 InstallmentCenter ??= CreateInstallmentCenterViewModel();
                 InstallmentCenter.Prepare(Session, CreateCurrentCartSnapshot());
                 CurrentScreen = InstallmentCenter;
-            },
-            _localization);
+            });
     }
 
     private PosCartServiceSnapshot? CreateCurrentCartSnapshot()
