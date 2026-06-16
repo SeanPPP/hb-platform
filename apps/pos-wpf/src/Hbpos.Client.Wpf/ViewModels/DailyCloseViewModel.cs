@@ -9,7 +9,7 @@ using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public sealed partial class DailyCloseViewModel : ObservableObject
+public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 {
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
@@ -507,6 +507,16 @@ public sealed partial class DailyCloseViewModel : ObservableObject
             _localization?.CurrentCulture ?? CultureInfo.CurrentCulture,
             _localization?.T(key) ?? fallback,
             args);
+    }
+
+    public void Dispose()
+    {
+        foreach (var entry in Denominations)
+        {
+            entry.PropertyChanged -= OnDenominationChanged;
+        }
+
+        Denominations.Clear();
     }
 }
 

@@ -8,7 +8,7 @@ using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public sealed partial class InstallmentCreateViewModel : ObservableObject
+public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisposable
 {
     private const decimal MinimumInstallmentTotalAmount = 50m;
     private const decimal MinimumDownPaymentAmount = 20m;
@@ -17,6 +17,7 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject
     private readonly Func<InstallmentOrderSummary, Task> _onCreatedAsync;
     private readonly Action _backToCenter;
     private readonly ILocalizationService? _localization;
+    private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
     private object[] _statusResourceArgs = [];
@@ -68,7 +69,8 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject
         _localization = localization;
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+            _onCultureChanged = (_, _) => RaiseLocalizedProperties();
+            _localization.CultureChanged += _onCultureChanged;
         }
 
         SubmitCommand = new AsyncRelayCommand(SubmitAsync, CanSubmit);
@@ -431,6 +433,16 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject
     }
 
     private IFormatProvider GetCulture() => _localization?.CurrentCulture ?? System.Globalization.CultureInfo.CurrentCulture;
+
+    public void Dispose()
+    {
+        if (_localization is not null && _onCultureChanged is not null)
+        {
+            _localization.CultureChanged -= _onCultureChanged;
+        }
+
+        _onCultureChanged = null;
+    }
 }
 
 public sealed record InstallmentPaymentMethodOption(PaymentMethodKind Method, string DisplayName);

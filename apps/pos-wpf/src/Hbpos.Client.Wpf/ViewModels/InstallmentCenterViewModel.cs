@@ -8,13 +8,14 @@ using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public sealed partial class InstallmentCenterViewModel : ObservableObject
+public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisposable
 {
     private readonly IInstallmentOrderService _installmentOrderService;
     private readonly Func<PosCartServiceSnapshot?, Task> _showCreateAsync;
     private readonly Action _backToPayment;
     private readonly ILocalizationService? _localization;
     private readonly ICardTerminalClient? _cardTerminalClient;
+    private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
     private object[] _statusResourceArgs = [];
@@ -47,7 +48,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject
         _cardTerminalClient = cardTerminalClient;
         if (_localization is not null)
         {
-            _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
+            _onCultureChanged = (_, _) => RaiseLocalizedProperties();
+            _localization.CultureChanged += _onCultureChanged;
         }
 
         LoadCommand = new AsyncRelayCommand(LoadAsync, () => !IsBusy);
@@ -363,4 +365,14 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject
 
     private IFormatProvider GetCulture() => _localization?.CurrentCulture ?? System.Globalization.CultureInfo.CurrentCulture;
     private static string? Normalize(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose()
+    {
+        if (_localization is not null && _onCultureChanged is not null)
+        {
+            _localization.CultureChanged -= _onCultureChanged;
+        }
+
+        _onCultureChanged = null;
+    }
 }

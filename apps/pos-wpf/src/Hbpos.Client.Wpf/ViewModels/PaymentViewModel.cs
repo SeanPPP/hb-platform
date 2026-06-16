@@ -16,20 +16,23 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly ICashPaymentWorkflowService _workflowService;
     private readonly ILocalizationService? _localization;
     private readonly PaymentNavigationActions _navigationActions;
+
+    internal PaymentNavigationActions NavigationActions => _navigationActions;
     private readonly PaymentTenderController _tenderController = new();
+    private readonly CardPaymentSession _cardSession;
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
+
+    private static readonly Dictionary<PaymentMethodKind, IPaymentMethodStrategy> PaymentStrategies = new()
+    {
+        [PaymentMethodKind.Cash] = CashStrategy.Instance,
+        [PaymentMethodKind.Card] = CardStrategy.Instance,
+        [PaymentMethodKind.Voucher] = VoucherStrategy.Instance
+    };
     private string _statusKey = "payment.status.ready";
     private string? _statusTextOverride;
     private Guid? _pendingVoucherUploadOrderGuid;
     private decimal _pendingVoucherTenderedAmount;
     private decimal _pendingVoucherChangeAmount;
-    private CancellationTokenSource? _activeCardPaymentCts;
-    private CancellationTokenSource? _manuallyCancelledCardPaymentCts;
-    private bool _cardPaymentCancellationRequested;
-    private bool _awaitingLateCardResultAfterManualCancel;
-    private bool _discardLateCardResultAfterManualCancel;
-    private bool _cardPaymentResultUnknownRequiresRecovery;
-    private TaskCompletionSource<bool>? _pendingLinklyFallbackPrompt;
     private int _paymentEntryVersion;
     private decimal _workflowRemainingAmount;
     private bool _disposed;
@@ -112,7 +115,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
-        _linklyFallbackPromptCoordinator?.SetPromptHandler(ConfirmLinklyFallbackAsync);
+        _cardSession = new CardPaymentSession(this);
+        _linklyFallbackPromptCoordinator?.SetPromptHandler(_cardSession.ConfirmLinklyFallbackAsync);
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -151,11 +155,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _localization.CultureChanged -= OnCultureChanged;
         }
 
-        CompletePendingLinklyFallbackPrompt(confirmed: false);
-        _activeCardPaymentCts?.Dispose();
-        _activeCardPaymentCts = null;
-        _manuallyCancelledCardPaymentCts?.Dispose();
-        _manuallyCancelledCardPaymentCts = null;
+        _cardSession.Dispose();
     }
 
     public ObservableCollection<CartLine> CartLines { get; } = [];
@@ -212,11 +212,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public string NoTendersText => T(GetNoTendersKey());
 
-    public string CashMethodText => T(IsRefundMode ? "payment.method.refundCash" : "payment.method.cash");
+    public string CashMethodText => T(GetMethodTextKey(PaymentMethodKind.Cash));
 
-    public string CardMethodText => T(IsRefundMode ? "payment.method.refundCard" : "payment.method.card");
+    public string CardMethodText => T(GetMethodTextKey(PaymentMethodKind.Card));
 
-    public string VoucherMethodText => T(IsRefundMode ? "payment.method.refundVoucher" : "payment.method.voucher");
+    public string VoucherMethodText => T(GetMethodTextKey(PaymentMethodKind.Voucher));
 
     public string InstallmentMethodText => T("payment.method.installment");
 
@@ -224,10 +224,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public string StatusMessage => _statusTextOverride ?? T(_statusKey);
 
-    public bool IsPaymentInteractionEnabled => !IsPaymentInteractionLocked && !_cardPaymentResultUnknownRequiresRecovery;
+    public bool IsPaymentInteractionEnabled => !IsPaymentInteractionLocked && !_cardSession.HasUnknownResult;
 
     // 普通支付状态隐藏取消入口，避免将取消误用为返回收银页。
-    public bool IsCancelPaymentVisible => IsCardPaymentInProgress || _awaitingLateCardResultAfterManualCancel;
+    public bool IsCancelPaymentVisible => IsCardPaymentInProgress || _cardSession.IsAwaitingLateResult;
 
     public decimal TotalAmount => _cart.TotalAmount;
 
@@ -310,14 +310,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     partial void OnPaymentModeChanged(PaymentEntryMode value)
     {
-        OnPropertyChanged(nameof(ScreenTitleText));
-        OnPropertyChanged(nameof(RemainingAmountText));
-        OnPropertyChanged(nameof(ConfirmPaymentText));
-        OnPropertyChanged(nameof(NoTendersText));
-        OnPropertyChanged(nameof(CashMethodText));
-        OnPropertyChanged(nameof(CardMethodText));
-        OnPropertyChanged(nameof(VoucherMethodText));
-        OnPropertyChanged(nameof(InstallmentMethodText));
+        RaiseLocalizedProperties();
         OnPropertyChanged(nameof(IsRefundMode));
         OnPropertyChanged(nameof(IsZeroSettlementMode));
         OnPropertyChanged(nameof(IsPaymentMode));
@@ -336,11 +329,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
         _paymentEntryVersion++;
-        _awaitingLateCardResultAfterManualCancel = false;
-        _discardLateCardResultAfterManualCancel = false;
-        _cardPaymentResultUnknownRequiresRecovery = false;
-        CancelActiveCardPayment();
-        DetachCanceledActiveCardPayment();
+        _cardSession.ResetManualCancellationState();
+        _cardSession.SetResultUnknownRecoveryRequired(false);
+        _cardSession.Cancel();
+        _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
         IsPaymentInteractionLocked = false;
         PaymentTenders.Clear();
@@ -372,7 +364,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void AppendTenderAmount(string? value)
     {
-        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery)
+        if (IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult)
         {
             return;
         }
@@ -418,23 +410,16 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         PaymentTenderAttemptResult result;
         CancellationTokenSource? cardPaymentCts = null;
         var cardPaymentWasManuallyCancelled = false;
+        var isCard = method == PaymentMethodKind.Card;
         var paymentEntryVersion = _paymentEntryVersion;
         try
         {
-            if (method == PaymentMethodKind.Card)
+            if (isCard)
             {
-                _cardPaymentCancellationRequested = false;
-                _awaitingLateCardResultAfterManualCancel = false;
-                _discardLateCardResultAfterManualCancel = false;
-                _activeCardPaymentCts?.Dispose();
-                _activeCardPaymentCts = new CancellationTokenSource();
-                cardPaymentCts = _activeCardPaymentCts;
-                IsCardPaymentInProgress = true;
-                IsPaymentInteractionLocked = true;
-                SetStatus("payment.status.cardProcessing");
+                cardPaymentCts = _cardSession.BeginCardPayment();
             }
 
-            if (IsRefundMode && method == PaymentMethodKind.Card)
+            if (IsRefundMode && isCard)
             {
                 ConsoleLog.Write(
                     "CardRefund",
@@ -449,43 +434,28 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 PaymentTenders.ToList(),
                 amountText,
                 referenceText,
-                method == PaymentMethodKind.Card ? cardPaymentCts?.Token ?? CancellationToken.None : CancellationToken.None,
-                method == PaymentMethodKind.Card ? _cart.CreateSnapshot() : null);
-            if (method == PaymentMethodKind.Card && cardPaymentCts?.IsCancellationRequested == true)
+                isCard ? cardPaymentCts?.Token ?? CancellationToken.None : CancellationToken.None,
+                isCard ? _cart.CreateSnapshot() : null);
+            if (isCard && cardPaymentCts?.IsCancellationRequested == true)
             {
-                cardPaymentWasManuallyCancelled = IsManualCardCancellation(cardPaymentCts);
+                cardPaymentWasManuallyCancelled = _cardSession.IsManualCancellation(cardPaymentCts);
             }
         }
-        catch (OperationCanceledException) when (method == PaymentMethodKind.Card)
+        catch (OperationCanceledException) when (isCard)
         {
-            if (IsCurrentPaymentEntry(paymentEntryVersion))
-            {
-                SetCardCancellationStatus(IsManualCardCancellation(cardPaymentCts));
-                ResetManualCardCancellationState();
-                NotifyPaymentCommandStates();
-            }
-
+            _cardSession.HandleOperationCanceledException(cardPaymentCts, paymentEntryVersion);
             return;
         }
-        catch (Exception ex) when (method == PaymentMethodKind.Card && ex is not OperationCanceledException)
+        catch (Exception ex) when (isCard && ex is not OperationCanceledException)
         {
-            ConsoleLog.Write("CardPayment", $"unexpected card payment exception: {ex}");
-            if (IsCurrentPaymentEntry(paymentEntryVersion))
-            {
-                var overlay = CardPaymentErrorOverlayViewModel.Unexpected();
-                overlay.IsOpen = true;
-                CardPaymentErrorOverlay = overlay;
-                SetStatus("payment.card.status.failed", ex.Message);
-                NotifyPaymentCommandStates();
-            }
-
+            _cardSession.HandleUnexpectedException(ex, paymentEntryVersion);
             return;
         }
         finally
         {
-            if (method == PaymentMethodKind.Card)
+            if (isCard)
             {
-                ClearActiveCardPayment(cardPaymentCts);
+                _cardSession.EndCardPayment(cardPaymentCts);
             }
         }
 
@@ -494,72 +464,48 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (method == PaymentMethodKind.Card &&
+        if (isCard &&
             cardPaymentCts?.IsCancellationRequested == true &&
             (!result.Succeeded || result.Tender is null))
         {
-            if (cardPaymentWasManuallyCancelled && IsConfirmedCardCancellation(result.StatusMessage))
-            {
-                SetCardCancellationStatus(wasManuallyCancelled: true);
-            }
-            else if (!cardPaymentWasManuallyCancelled)
-            {
-                SetCardCancellationStatus(wasManuallyCancelled: false);
-            }
-            else
-            {
-                SetStatus(result.StatusKey, result.StatusMessage);
-            }
-
-            ResetManualCardCancellationState();
-            NotifyPaymentCommandStates();
+            _cardSession.TryHandleCancelledResult(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
             return;
         }
 
-        if (method == PaymentMethodKind.Card && _discardLateCardResultAfterManualCancel)
+        if (isCard && _cardSession.ShouldDiscardLateResult)
         {
-            SetCardCancellationStatus(wasManuallyCancelled: true);
-            ResetManualCardCancellationState();
+            _cardSession.SetCancellationStatus(wasManuallyCancelled: true);
+            _cardSession.ResetManualCancellationState();
             NotifyPaymentCommandStates();
             return;
         }
 
         if (!result.Succeeded || result.Tender is null)
         {
-            if (IsRefundMode && method == PaymentMethodKind.Card)
+            if (IsRefundMode && isCard)
             {
                 ConsoleLog.Write(
                     "CardRefund",
                     $"payment view card refund tender failed statusKey={result.StatusKey} message={LogValue(result.StatusMessage)}");
             }
 
-            if (method == PaymentMethodKind.Card)
+            if (isCard)
             {
-                ShowOverlayIfTerminalError(result);
-                if (IsCardResultUnknownStatusKey(result.StatusKey))
-                {
-                    SetCardResultUnknownRecoveryRequired(result);
-                    ResetManualCardCancellationState();
-                    NotifyPaymentCommandStates();
-                    return;
-                }
-            }
-
-            if (method == PaymentMethodKind.Card && TrySetCardTerminalFailureStatus(result))
-            {
-                ResetManualCardCancellationState();
-                NotifyPaymentCommandStates();
+                _cardSession.TryHandleFailedResult(result);
                 return;
             }
 
             SetStatus(result.StatusKey, result.StatusMessage);
-            ResetManualCardCancellationState();
             NotifyPaymentCommandStates();
             return;
         }
 
-        ResetManualCardCancellationState();
-        _cardPaymentResultUnknownRequiresRecovery = false;
+        if (isCard)
+        {
+            _cardSession.ResetManualCancellationState();
+            _cardSession.SetResultUnknownRecoveryRequired(false);
+        }
+
         PaymentTenders.Add(result.Tender);
         if (method == PaymentMethodKind.Voucher)
         {
@@ -570,12 +516,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         RecalculateTenderSummary();
         SetStatus(result.StatusKey, result.StatusMessage);
         NotifyPaymentCommandStates();
-        if (method == PaymentMethodKind.Card &&
+        if (isCard &&
             !cardPaymentWasManuallyCancelled &&
             IsSettlementComplete() &&
             (IsPaymentMode || IsRefundMode))
         {
-            // 全额卡支付或全额退卡已由终端批准，立即落单，后续主窗口沿用 CardAuto 小票打印。
             await CompletePaymentFromTendersAsync();
         }
     }
@@ -604,7 +549,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         return tender is not null &&
             IsPaymentInteractionEnabled &&
-            _activeCardPaymentCts is null &&
+            !_cardSession.IsActive &&
             _pendingVoucherUploadOrderGuid is null;
     }
 
@@ -721,8 +666,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private bool CanAddTender(PaymentMethodKind method, bool allowDefaultAmount)
     {
         if (IsPaymentInteractionLocked ||
-            _activeCardPaymentCts is not null ||
-            _cardPaymentResultUnknownRequiresRecovery ||
+            _cardSession.IsActive ||
+            _cardSession.HasUnknownResult ||
             _pendingVoucherUploadOrderGuid is not null ||
             _cart.IsEmpty || _cart.HasNonIntegerQuantity || _cart.HasZeroPriceLine || IsZeroSettlementMode)
         {
@@ -740,27 +685,24 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        var remainingAmount = IsRefundMode
-            ? GetRefundRemainingAmount(method)
-            : method == PaymentMethodKind.Cash
-                ? GetCashRemainingAmount()
-                : GetExternalRemainingAmount();
+        var remainingAmount = PaymentStrategies[method].ResolveDefaultAmount(
+            IsRefundMode,
+            ActualAmount,
+            GetCashRemainingAmount,
+            GetExternalRemainingAmount,
+            GetRefundRemainingAmount);
         if (remainingAmount <= 0m)
         {
             return false;
         }
 
-        if (IsRefundMode &&
-            method == PaymentMethodKind.Card &&
-            string.IsNullOrWhiteSpace(GetRefundReference(method)))
-        {
-            return false;
-        }
-
-        if (!IsRefundMode &&
-            method == PaymentMethodKind.Voucher &&
-            !allowDefaultAmount &&
-            string.IsNullOrWhiteSpace(VoucherCodeText))
+        var additionalCheck = PaymentStrategies[method].CanAddTenderAdditionalCheck(
+            IsRefundMode,
+            allowDefaultAmount,
+            VoucherCodeText,
+            GetRefundReference(method),
+            remainingAmount);
+        if (additionalCheck is not null)
         {
             return false;
         }
@@ -770,7 +712,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanConfirmPayment()
     {
-        if (IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery)
+        if (IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult)
         {
             return false;
         }
@@ -847,11 +789,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var amount = SelectedPaymentMethod == PaymentMethodKind.Cash
-            ? GetCashRemainingAmount()
-            : IsRefundMode
-                ? GetRefundRemainingAmount(SelectedPaymentMethod)
-                : GetExternalRemainingAmount();
+        var amount = PaymentStrategies[SelectedPaymentMethod].ResolveDefaultAmount(
+            IsRefundMode,
+            ActualAmount,
+            GetCashRemainingAmount,
+            GetExternalRemainingAmount,
+            GetRefundRemainingAmount);
         TenderAmountText = amount > 0m ? amount.ToString("0.00") : string.Empty;
     }
 
@@ -877,11 +820,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private string ResolveDefaultTenderAmountText(PaymentMethodKind method)
     {
-        var amount = method == PaymentMethodKind.Cash
-            ? GetCashRemainingAmount()
-            : IsRefundMode
-                ? GetRefundRemainingAmount(method)
-                : GetExternalRemainingAmount();
+        var amount = PaymentStrategies[method].ResolveDefaultAmount(
+            IsRefundMode,
+            ActualAmount,
+            GetCashRemainingAmount,
+            GetExternalRemainingAmount,
+            GetRefundRemainingAmount);
         return amount > 0m ? amount.ToString("0.00") : string.Empty;
     }
 
@@ -954,8 +898,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         return !IsPaymentInteractionLocked &&
             !IsCardPaymentInProgress &&
-            !_cardPaymentResultUnknownRequiresRecovery &&
-            !_awaitingLateCardResultAfterManualCancel;
+            !_cardSession.HasUnknownResult &&
+            !_cardSession.IsAwaitingLateResult;
     }
 
     private void ShowInstallmentCenter()
@@ -968,8 +912,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         return IsPaymentMode &&
             !IsPaymentInteractionLocked &&
-            _activeCardPaymentCts is null &&
-            !_cardPaymentResultUnknownRequiresRecovery &&
+            !_cardSession.IsActive &&
+            !_cardSession.HasUnknownResult &&
             !_cart.IsEmpty;
     }
 
@@ -977,13 +921,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         if (IsCardPaymentInProgress)
         {
-            CancelActiveCardPayment();
+            _cardSession.Cancel();
             return;
         }
 
-        if (_awaitingLateCardResultAfterManualCancel)
+        if (_cardSession.IsAwaitingLateResult)
         {
-            _discardLateCardResultAfterManualCancel = true;
+            _cardSession.ShouldDiscardLateResult = true;
             NotifyPaymentCommandStates();
         }
     }
@@ -991,131 +935,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private bool CanCancelPayment()
     {
         return IsCardPaymentInProgress ||
-            _awaitingLateCardResultAfterManualCancel;
+            _cardSession.IsAwaitingLateResult;
     }
 
-    private void CancelActiveCardPayment()
-    {
-        if (_activeCardPaymentCts is null || _activeCardPaymentCts.IsCancellationRequested)
-        {
-            return;
-        }
-
-        _cardPaymentCancellationRequested = true;
-        _awaitingLateCardResultAfterManualCancel = true;
-        _discardLateCardResultAfterManualCancel = false;
-        _manuallyCancelledCardPaymentCts = _activeCardPaymentCts;
-        _activeCardPaymentCts.Cancel();
-        IsCardPaymentInProgress = false;
-        IsPaymentInteractionLocked = false;
-        SetStatus("payment.status.cardCancelled");
-        NotifyPaymentCommandStates();
-    }
-
-    private void ClearActiveCardPayment(CancellationTokenSource? cardPaymentCts)
-    {
-        if (!ReferenceEquals(_activeCardPaymentCts, cardPaymentCts))
-        {
-            return;
-        }
-
-        // 先清掉活动 CTS，再解锁并刷新命令；按钮可用性会检查 _activeCardPaymentCts 是否为空。
-        var activeCardPaymentCts = _activeCardPaymentCts;
-        _activeCardPaymentCts = null;
-        if (ReferenceEquals(_manuallyCancelledCardPaymentCts, cardPaymentCts))
-        {
-            _manuallyCancelledCardPaymentCts = null;
-        }
-
-        _cardPaymentCancellationRequested = false;
-        IsCardPaymentInProgress = false;
-        IsPaymentInteractionLocked = false;
-        activeCardPaymentCts?.Dispose();
-        NotifyPaymentCommandStates();
-    }
-
-    private void DetachCanceledActiveCardPayment()
-    {
-        if (_activeCardPaymentCts?.IsCancellationRequested != true)
-        {
-            return;
-        }
-
-        if (ReferenceEquals(_manuallyCancelledCardPaymentCts, _activeCardPaymentCts))
-        {
-            _manuallyCancelledCardPaymentCts = null;
-        }
-
-        _activeCardPaymentCts = null;
-        _cardPaymentCancellationRequested = false;
-    }
-
-    private void SetCardCancellationStatus(bool wasManuallyCancelled)
-    {
-        SetStatus(wasManuallyCancelled ? "payment.status.cardCancelled" : "payment.status.cardTimedOut");
-    }
-
-    private bool IsManualCardCancellation(CancellationTokenSource? cardPaymentCts)
-    {
-        return _cardPaymentCancellationRequested || ReferenceEquals(_manuallyCancelledCardPaymentCts, cardPaymentCts);
-    }
-
-    private bool TrySetCardTerminalFailureStatus(PaymentTenderAttemptResult result)
-    {
-        if (IsConfirmedCardCancellation(result.StatusMessage))
-        {
-            SetStatus("payment.status.cardCancelled");
-            return true;
-        }
-
-        if (IsTimeoutMessage(result.StatusMessage))
-        {
-            SetStatus("payment.status.cardTimedOut");
-            return true;
-        }
-
-        return false;
-    }
-
-    private void SetCardResultUnknownRecoveryRequired(PaymentTenderAttemptResult result)
-    {
-        // 已提交到终端的未知结果不能当作普通失败处理；必须先恢复或确认上一笔，防止重复扣款。
-        _cardPaymentResultUnknownRequiresRecovery = true;
-        IsPaymentInteractionLocked = true;
-        SetStatus(result.StatusKey, result.StatusMessage);
-    }
-
-    private static bool IsCardResultUnknownStatusKey(string statusKey)
-    {
-        return statusKey is
-            "linkly.backend.resultUnknown" or
-            "linkly.backend.cancelledUnknown" or
-            "linkly.cloud.resultUnknown";
-    }
-
-    private static bool IsTimeoutMessage(string? message)
-    {
-        return !string.IsNullOrWhiteSpace(message) &&
-            (message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-             message.Contains("timeout", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsConfirmedCardCancellation(string? message)
-    {
-        return !string.IsNullOrWhiteSpace(message) &&
-            message.Contains("cancel", StringComparison.OrdinalIgnoreCase) &&
-            !message.Contains("could not be confirmed", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool IsCurrentPaymentEntry(int paymentEntryVersion)
+    internal bool IsCurrentPaymentEntry(int paymentEntryVersion)
     {
         return paymentEntryVersion == _paymentEntryVersion;
-    }
-
-    private void ResetManualCardCancellationState()
-    {
-        _awaitingLateCardResultAfterManualCancel = false;
-        _discardLateCardResultAfterManualCancel = false;
     }
 
     private PaymentEntryMode CalculatePaymentMode()
@@ -1142,21 +967,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private decimal GetRefundRemainingAmount(PaymentMethodKind method)
     {
-        var netRemaining = Math.Abs(decimal.Round(_workflowRemainingAmount, 2, MidpointRounding.AwayFromZero));
-        if (netRemaining <= 0m)
-        {
-            return 0m;
-        }
-
-        if (method != PaymentMethodKind.Card)
-        {
-            return netRemaining;
-        }
-
-        var nextCardCapacity = GetNextCardRefundCapacity();
-        return nextCardCapacity is null
-            ? 0m
-            : Math.Min(netRemaining, nextCardCapacity.Value.RemainingAmount);
+        return PaymentStrategies[method].GetRefundRemainingAmount(
+            _workflowRemainingAmount,
+            _ => GetNextCardRefundCapacity()?.RemainingAmount) ?? 0m;
     }
 
     private string? GetRefundReference(PaymentMethodKind method)
@@ -1166,9 +979,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return null;
         }
 
-        return method == PaymentMethodKind.Card
-            ? GetNextCardRefundCapacity()?.Reference
-            : null;
+        return PaymentStrategies[method].GetRefundReference(() => GetNextCardRefundCapacity()?.Reference);
     }
 
     private (string Reference, decimal RemainingAmount)? GetNextCardRefundCapacity()
@@ -1372,6 +1183,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         };
     }
 
+    private string GetMethodTextKey(PaymentMethodKind method)
+    {
+        return method switch
+        {
+            PaymentMethodKind.Cash => IsRefundMode ? "payment.method.refundCash" : "payment.method.cash",
+            PaymentMethodKind.Card => IsRefundMode ? "payment.method.refundCard" : "payment.method.card",
+            PaymentMethodKind.Voucher => IsRefundMode ? "payment.method.refundVoucher" : "payment.method.voucher",
+            _ => "payment.method.installment"
+        };
+    }
+
     private string GetRemainingAmountKey()
     {
         return IsRefundMode ? "payment.refund.remaining" : "payment.remaining";
@@ -1424,7 +1246,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             statusKey == "payment.zeroSettlement.status.ready";
     }
 
-    private void NotifyPaymentCommandStates()
+    internal void NotifyPaymentCommandStates()
     {
         NumberInputCommand.NotifyCanExecuteChanged();
         SelectCashCommand.NotifyCanExecuteChanged();
@@ -1440,35 +1262,45 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsConfirmPaymentVisible));
     }
 
-    private void SetStatus(string key, string? statusText = null)
+    internal void SetStatus(string key, string? statusText = null)
     {
         _statusKey = key;
         _statusTextOverride = statusText;
         OnPropertyChanged(nameof(StatusMessage));
     }
 
-    private string T(string key)
+    internal string T(string key)
     {
         return _localization?.T(key) ?? key;
     }
 
+    private static readonly string[] LocalizedPropertyNames =
+    [
+        nameof(ScreenTitleText),
+        nameof(OrderSummaryText),
+        nameof(CurrentTenderTextLabel),
+        nameof(AmountTenderedTextLabel),
+        nameof(RemainingAmountText),
+        nameof(ChangeDueText),
+        nameof(QuickCashText),
+        nameof(PaymentMethodText),
+        nameof(AppliedTendersText),
+        nameof(ConfirmPaymentText),
+        nameof(NoTendersText),
+        nameof(CashMethodText),
+        nameof(CardMethodText),
+        nameof(VoucherMethodText),
+        nameof(InstallmentMethodText),
+        nameof(CancelText)
+    ];
+
     private void RaiseLocalizedProperties()
     {
-        OnPropertyChanged(nameof(ScreenTitleText));
-        OnPropertyChanged(nameof(OrderSummaryText));
-        OnPropertyChanged(nameof(CurrentTenderTextLabel));
-        OnPropertyChanged(nameof(RemainingAmountText));
-        OnPropertyChanged(nameof(ChangeDueText));
-        OnPropertyChanged(nameof(QuickCashText));
-        OnPropertyChanged(nameof(PaymentMethodText));
-        OnPropertyChanged(nameof(AppliedTendersText));
-        OnPropertyChanged(nameof(ConfirmPaymentText));
-        OnPropertyChanged(nameof(NoTendersText));
-        OnPropertyChanged(nameof(CashMethodText));
-        OnPropertyChanged(nameof(CardMethodText));
-        OnPropertyChanged(nameof(VoucherMethodText));
-        OnPropertyChanged(nameof(InstallmentMethodText));
-        OnPropertyChanged(nameof(CancelText));
+        foreach (var name in LocalizedPropertyNames)
+        {
+            OnPropertyChanged(name);
+        }
+
         OnPropertyChanged(nameof(StatusMessage));
     }
 
@@ -1479,82 +1311,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void CloseCardPaymentErrorOverlay()
     {
-        CompletePendingLinklyFallbackPrompt(confirmed: false);
-        if (CardPaymentErrorOverlay is not null)
-        {
-            CardPaymentErrorOverlay.IsOpen = false;
-        }
-
-        ReleaseFallbackPromptLockIfIdle();
-        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+        _cardSession.CloseErrorOverlay();
     }
 
     private bool CanExecuteCardPaymentErrorPrimaryAction()
     {
-        return CardPaymentErrorOverlay is { IsOpen: true, HasPrimaryAction: true } overlay &&
-            (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback ||
-             _navigationActions.CanRecoverPreviousCardTransaction);
+        return _cardSession.CanExecuteErrorPrimaryAction();
     }
 
     private async Task ExecuteCardPaymentErrorPrimaryActionAsync()
     {
-        if (!CanExecuteCardPaymentErrorPrimaryAction())
-        {
-            return;
-        }
-
-        if (CardPaymentErrorOverlay?.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback)
-        {
-            CompletePendingLinklyFallbackPrompt(confirmed: true);
-            CardPaymentErrorOverlay.IsOpen = false;
-            ReleaseFallbackPromptLockIfIdle();
-            CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
-            return;
-        }
-
-        if (!_navigationActions.CanRecoverPreviousCardTransaction)
-        {
-            return;
-        }
-
-        SetStatus("payment.card.error.overlay.activeSession.recovering");
-        var recoveryResolved = await (_navigationActions.RecoverPreviousCardTransactionAsync?.Invoke() ?? Task.FromResult(false));
-        if (recoveryResolved)
-        {
-            // 恢复确认已经解除未知结果阻塞后，当前付款页必须重新开放，允许收银员继续处理本单。
-            _cardPaymentResultUnknownRequiresRecovery = false;
-            IsPaymentInteractionLocked = false;
-            NotifyPaymentCommandStates();
-        }
-
-        if (CardPaymentErrorOverlay is not null && !_cardPaymentResultUnknownRequiresRecovery)
-        {
-            CardPaymentErrorOverlay.IsOpen = false;
-        }
-
-        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
-    }
-
-    private Task<bool> ConfirmLinklyFallbackAsync(
-        LinklyFallbackPromptRequest request,
-        CancellationToken cancellationToken)
-    {
-        CompletePendingLinklyFallbackPrompt(confirmed: false);
-        if (cancellationToken.IsCancellationRequested)
-        {
-            return Task.FromResult(false);
-        }
-
-        var prompt = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingLinklyFallbackPrompt = prompt;
-        // fallback 只代表当前模式未提交交易；切换到备用模式前必须让收银员确认，不能静默再次刷卡。
-        CardPaymentErrorOverlay = CardPaymentErrorOverlayViewModel.Fallback(FormatLinklyFallbackPromptMessage(request));
-        CardPaymentErrorOverlay.IsOpen = true;
-        IsPaymentInteractionLocked = true;
-        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
-        NotifyPaymentCommandStates();
-        cancellationToken.Register(() => CompletePendingLinklyFallbackPrompt(confirmed: false));
-        return prompt.Task;
+        await _cardSession.ExecuteErrorPrimaryActionAsync();
     }
 
     private PaymentTenderAddRequest BuildAddTenderRequest(PaymentMethodKind method)
@@ -1562,7 +1329,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         return new PaymentTenderAddRequest(
             method,
             SelectedPaymentMethod,
-            IsPaymentInteractionLocked || _activeCardPaymentCts is not null || _cardPaymentResultUnknownRequiresRecovery,
+            IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult,
             _pendingVoucherUploadOrderGuid is not null,
             IsRefundMode,
             IsOfflineVoucherRefundUnavailable(method),
@@ -1605,124 +1372,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         amountText = plan.AmountText ?? string.Empty;
         referenceText = plan.ReferenceText;
         return true;
-    }
-
-    private void CompletePendingLinklyFallbackPrompt(bool confirmed)
-    {
-        var prompt = _pendingLinklyFallbackPrompt;
-        if (prompt is null)
-        {
-            return;
-        }
-
-        _pendingLinklyFallbackPrompt = null;
-        prompt.TrySetResult(confirmed);
-    }
-
-    private void ReleaseFallbackPromptLockIfIdle()
-    {
-        if (_activeCardPaymentCts is null && !_cardPaymentResultUnknownRequiresRecovery)
-        {
-            IsPaymentInteractionLocked = false;
-            NotifyPaymentCommandStates();
-        }
-    }
-
-    private string FormatLinklyFallbackPromptMessage(LinklyFallbackPromptRequest request)
-    {
-        return string.Format(
-            CultureInfo.CurrentCulture,
-            T("payment.card.error.overlay.fallback.message"),
-            FormatLinklyModeDisplayName(request.NextMode.ToString()));
-    }
-
-    private string FormatLinklyModeDisplayName(string? modeText)
-    {
-        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(modeText, LinklyConnectionMode.LocalIp);
-        var key = mode switch
-        {
-            LinklyConnectionMode.CloudDirectSync => "settings.linkly.mode.cloudDirectSync",
-            LinklyConnectionMode.CloudBackendAsync => "settings.linkly.mode.cloudBackendAsync",
-            _ => "settings.linkly.mode.localIp"
-        };
-
-        return T(key);
-    }
-
-    private static CardPaymentErrorOverlayViewModel? ClassifyCardPaymentError(
-        string statusKey,
-        string? statusMessage)
-    {
-        var overlay = ClassifyCardPaymentErrorByStatusKey(statusKey);
-        if (overlay is not null)
-        {
-            return overlay;
-        }
-
-        if (string.IsNullOrWhiteSpace(statusMessage))
-            return null;
-
-        var message = statusMessage;
-
-        if (message.Contains("unfinished card transaction", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery();
-
-        if (message.Contains("connection failed", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("connection was closed", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("could not be sent", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.ConnectionFailed();
-
-        if (message.Contains("communication failed", StringComparison.OrdinalIgnoreCase))
-        {
-            if (message.Contains("Square", StringComparison.OrdinalIgnoreCase))
-                return CardPaymentErrorOverlayViewModel.SquareCommunicationFailed();
-            return CardPaymentErrorOverlayViewModel.CloudCommunicationFailed();
-        }
-
-        if (message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.Timeout();
-
-        if (message.Contains("unavailable", StringComparison.OrdinalIgnoreCase))
-            return CardPaymentErrorOverlayViewModel.ConnectionFailed();
-
-        return null;
-    }
-
-    private static CardPaymentErrorOverlayViewModel? ClassifyCardPaymentErrorByStatusKey(string statusKey)
-    {
-        return statusKey switch
-        {
-            "linkly.local.connectionFailed" or
-            "payment.card.linklyUnavailable" => CardPaymentErrorOverlayViewModel.ConnectionFailed(),
-
-            "linkly.cloud.communicationFailed" or
-            "linkly.backend.communicationFailed" => CardPaymentErrorOverlayViewModel.CloudCommunicationFailed(),
-
-            "linkly.backend.activeSessionRequiresRecovery" or
-            "linkly.backend.resultUnknown" or
-            "linkly.backend.cancelledUnknown" or
-            "linkly.cloud.resultUnknown" => CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery(),
-
-            "payment.card.squareCommunicationFailed" => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
-
-            "linkly.local.timeout" or
-            "linkly.cloud.timeout" or
-            "linkly.backend.timeout" => CardPaymentErrorOverlayViewModel.Timeout(),
-
-            _ => null
-        };
-    }
-
-    private void ShowOverlayIfTerminalError(PaymentTenderAttemptResult result)
-    {
-        var overlay = ClassifyCardPaymentError(result.StatusKey, result.StatusMessage);
-        if (overlay is null)
-            return;
-
-        overlay.IsOpen = true;
-        CardPaymentErrorOverlay = overlay;
-        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
     }
 }
 

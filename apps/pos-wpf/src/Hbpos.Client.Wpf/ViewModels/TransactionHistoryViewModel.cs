@@ -39,7 +39,7 @@ public sealed record HistoryOrderListItem(
     public string SoldAtDisplay => OccurredAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm", CultureInfo.CurrentCulture);
 }
 
-public sealed partial class TransactionHistoryViewModel : ObservableObject
+public sealed partial class TransactionHistoryViewModel : ObservableObject, IDisposable
 {
     private readonly IReceiptQueryService? _receiptQueryService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
@@ -709,5 +709,15 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject
                 return [];
             }
         }
+    }
+
+    public void Dispose()
+    {
+        if (_localization is not null)
+        {
+            _localization.CultureChanged -= OnCultureChanged;
+        }
+
+        ReprintRequested = null;
     }
 }

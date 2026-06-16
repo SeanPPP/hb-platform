@@ -97,6 +97,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
+    private MainReceiptCoordinator _receiptCoordinator = null!;
 
     [ObservableProperty]
     private PosSessionState _session = new("HB POS", DefaultTestStoreCode, "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
@@ -507,6 +508,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _screenNavigator.PaymentSuccess = _mainChildViewModelFactory.CreatePaymentSuccessViewModel();
         PaymentSuccess.NewTransactionRequested += OnPaymentSuccessNewTransactionRequested;
         PaymentSuccess.PrintReceiptRequested += OnPaymentSuccessPrintReceiptRequested;
+
+        _receiptCoordinator = new MainReceiptCoordinator(
+            _receiptPrintService,
+            _cashDrawerService,
+            _localization,
+            msg => StatusMessage = msg ?? string.Empty);
 
         ShowPosCommand = _screenNavigator.ShowPosCommand;
         ShowCashPaymentCommand = _screenNavigator.ShowCashPaymentCommand;
@@ -1642,7 +1649,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CurrentScreen = PaymentSuccess;
 
         ShowCashPaymentCommand.NotifyCanExecuteChanged();
-        if (ContainsCashPayment(e.Order))
+        if (MainReceiptCoordinator.ContainsCashPayment(e.Order))
         {
             var cashDrawerResult = await OpenCashDrawerAsync();
             if (!cashDrawerResult.Succeeded)
@@ -1651,9 +1658,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
         }
 
-        if (ContainsCardPayment(e.Order))
+        if (MainReceiptCoordinator.ContainsCardPayment(e.Order))
         {
-            await PrintReceiptAsync(ReceiptQueryService.CreateReceipt(e.Order), ReceiptPrintReason.CardAuto);
+            await _receiptCoordinator.PrintReceiptAsync(ReceiptQueryService.CreateReceipt(e.Order), ReceiptPrintReason.CardAuto);
         }
     }
 
@@ -1669,33 +1676,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task SuspendCurrentOrderAsync() => await _screenNavigator.SuspendCurrentOrderAsync();
 
-    private async Task<ReceiptPrintResult> PrintLatestReceiptAsync()
-    {
-        ReceiptPrintResult result;
-        try
-        {
-            result = await _receiptPrintService.PrintLatestReceiptAsync(ReceiptPrintReason.LastReceipt);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            result = new ReceiptPrintResult(false, ex.Message);
-        }
+    private async Task<ReceiptPrintResult> PrintLatestReceiptAsync() =>
+        await _receiptCoordinator.PrintLatestAsync();
 
-        ApplyReceiptPrintStatus(result);
-        return result;
-    }
-
-    private async Task<ReceiptPrintResult> OpenCashDrawerAsync()
-    {
-        try
-        {
-            return await _cashDrawerService.OpenAsync();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return new ReceiptPrintResult(false, ex.Message);
-        }
-    }
+    private async Task<ReceiptPrintResult> OpenCashDrawerAsync() =>
+        await _receiptCoordinator.OpenCashDrawerAsync();
 
     private Task ExitApplicationAsync()
     {
@@ -1711,75 +1696,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task PrintPaymentSuccessReceiptAsync()
     {
-        if (PaymentSuccess.TransactionId is not Guid orderGuid)
+        if (PaymentSuccess.TransactionId is Guid orderGuid)
         {
-            return;
+            await _receiptCoordinator.PrintSuccessAsync(orderGuid);
         }
-
-        await PrintReceiptAsync(orderGuid, ReceiptPrintReason.Manual);
     }
 
     private async Task PrintSelectedHistoryReceiptAsync(TransactionHistoryViewModel history)
     {
-        if (history.SelectedOrder is null)
+        if (history.SelectedOrder is not null)
         {
-            return;
+            await _receiptCoordinator.PrintHistoryAsync(history.SelectedOrder.OrderGuid);
         }
-
-        await PrintReceiptAsync(history.SelectedOrder.OrderGuid, ReceiptPrintReason.Reprint);
     }
 
-    private async Task<ReceiptPrintResult> PrintReceiptAsync(Guid orderGuid, ReceiptPrintReason reason)
-    {
-        ReceiptPrintResult result;
-        try
-        {
-            result = await _receiptPrintService.PrintReceiptAsync(orderGuid, reason);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            result = new ReceiptPrintResult(false, ex.Message, orderGuid);
-        }
+    private async Task<ReceiptPrintResult> PrintReceiptAsync(Guid orderGuid, ReceiptPrintReason reason) =>
+        await _receiptCoordinator.PrintReceiptAsync(orderGuid, reason);
 
-        ApplyReceiptPrintStatus(result);
-        return result;
-    }
-
-    private async Task<ReceiptPrintResult> PrintReceiptAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
-    {
-        ReceiptPrintResult result;
-        try
-        {
-            result = await _receiptPrintService.PrintReceiptAsync(receipt, reason);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            result = new ReceiptPrintResult(false, ex.Message, receipt.OrderGuid);
-        }
-
-        ApplyReceiptPrintStatus(result);
-        return result;
-    }
-
-    private void ApplyReceiptPrintStatus(ReceiptPrintResult result)
-    {
-        StatusMessage = result.Succeeded
-            ? _localization.T("receipt.print.success")
-            : string.Format(
-                _localization.CurrentCulture,
-                _localization.T("receipt.print.failed"),
-                result.Message);
-    }
-
-    private static bool ContainsCardPayment(LocalOrder order)
-    {
-        return order.Payments.Any(payment => payment.Method == PaymentMethodKind.Card);
-    }
-
-    private static bool ContainsCashPayment(LocalOrder order)
-    {
-        return order.Payments.Any(payment => payment.Method == PaymentMethodKind.Cash);
-    }
+    private async Task<ReceiptPrintResult> PrintReceiptAsync(ReceiptDetails receipt, ReceiptPrintReason reason) =>
+        await _receiptCoordinator.PrintReceiptAsync(receipt, reason);
 
     private Task OnSuspendedOrderRecalledAsync() => _screenNavigator.OnSuspendedOrderRecalledAsync();
 

@@ -458,13 +458,13 @@ internal sealed class ScreenNavigator
         ReceiptReturns = null;
         Settings?.Dispose();
         Settings = null;
-        DailyClose?.Dispose();
+        (DailyClose as IDisposable)?.Dispose();
         DailyClose = null;
-        InstallmentCenter?.Dispose();
+        (InstallmentCenter as IDisposable)?.Dispose();
         InstallmentCenter = null;
-        InstallmentCreate?.Dispose();
+        (InstallmentCreate as IDisposable)?.Dispose();
         InstallmentCreate = null;
-        TransactionHistory?.Dispose();
+        (TransactionHistory as IDisposable)?.Dispose();
         TransactionHistory = null;
         ClearCashPaymentCache();
         _customerDisplay = null;
