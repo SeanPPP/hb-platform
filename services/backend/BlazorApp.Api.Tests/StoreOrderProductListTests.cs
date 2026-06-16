@@ -356,6 +356,37 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_OrderPickerResolvesDomesticSupplierByBarcodeOnly()
+    {
+        await SeedChinaSupplierAsync("CN001", "义乌一号");
+        await SeedProductAsync("P-HB249", "HB249-001", barcode: "9528502490011");
+        await SeedWarehouseProductAsync("P-HB249");
+        await SeedDomesticProductAsync(
+            "DP-HB249-DIFFERENT",
+            unitVolume: 0.1m,
+            packingQuantity: 12,
+            supplierCode: "CN001",
+            hbProductNo: "HB249-OTHER",
+            barcode: "9528502490011"
+        );
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN001",
+            ItemNumber = "HB249-001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-HB249", item.ProductCode);
+        Assert.Equal("CN001", item.DomesticSupplierCode);
+        Assert.Equal("义乌一号", item.DomesticSupplierName);
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_OrderPickerUnifiedKeywordMatchesProductName()
     {
         await SeedProductAsync("P-NAME", "TABLE-01", productName: "Kids Chair + Table");

@@ -825,34 +825,35 @@ namespace BlazorApp.Api.Services.React
                 return;
             }
 
-            var hasProductCodes = productCodes.Count > 0;
-            var hasItemNumbers = itemNumbers.Count > 0;
-            var hasBarcodes = barcodes.Count > 0;
+            // 不要把 C# 布尔开关放进 SqlSugar 表达式；SQL Server 会生成裸布尔条件并报 4145。
+            var supplierMatchExpression = Expressionable.Create<DomesticProduct, ChinaSupplier>();
+            if (productCodes.Count > 0)
+            {
+                supplierMatchExpression = supplierMatchExpression.Or(
+                    (dp, cs) => dp.ProductCode != null && productCodes.Contains(dp.ProductCode)
+                );
+            }
+
+            if (itemNumbers.Count > 0)
+            {
+                supplierMatchExpression = supplierMatchExpression.Or(
+                    (dp, cs) => dp.HBProductNo != null && itemNumbers.Contains(dp.HBProductNo)
+                );
+            }
+
+            if (barcodes.Count > 0)
+            {
+                supplierMatchExpression = supplierMatchExpression.Or(
+                    (dp, cs) => dp.Barcode != null && barcodes.Contains(dp.Barcode)
+                );
+            }
+
             var candidates = await _db.Queryable<DomesticProduct>()
                 .InnerJoin<ChinaSupplier>(
                     (dp, cs) => dp.SupplierCode == cs.SupplierCode && !cs.IsDeleted
                 )
-                .Where(
-                    (dp, cs) =>
-                        !dp.IsDeleted
-                        && (
-                            (
-                                hasProductCodes
-                                && dp.ProductCode != null
-                                && productCodes.Contains(dp.ProductCode)
-                            )
-                            || (
-                                hasItemNumbers
-                                && dp.HBProductNo != null
-                                && itemNumbers.Contains(dp.HBProductNo)
-                            )
-                            || (
-                                hasBarcodes
-                                && dp.Barcode != null
-                                && barcodes.Contains(dp.Barcode)
-                            )
-                        )
-                )
+                .Where((dp, cs) => !dp.IsDeleted)
+                .Where(supplierMatchExpression.ToExpression())
                 .Select(
                     (dp, cs) =>
                         new StoreOrderDomesticSupplierCandidate
