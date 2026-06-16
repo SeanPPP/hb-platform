@@ -292,6 +292,40 @@ function readCssNumber(rule: string, property: string) {
   return Number(rule.match(new RegExp(`${property}:\\s*(\\d+(?:\\.\\d+)?)`))?.[1] ?? Number.NaN)
 }
 
+runTest('配货单页头应将店名和单号同一行居中放大显示', () => {
+  const pickingListSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx'), 'utf8')
+  const printCssSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/print.css'), 'utf8')
+  const headerSource = pickingListSource.slice(
+    pickingListSource.indexOf('const renderPickingHeader'),
+    pickingListSource.indexOf('return (', pickingListSource.indexOf('const renderPickingHeader')),
+  )
+  const headerRule = readCssRule(printCssSource, '.store-order-picking-header')
+  const primaryRule = readCssRule(printCssSource, '.store-order-picking-primary')
+  const primaryLineRule = readCssRule(printCssSource, '.store-order-picking-primary-line')
+  const storeRule = readCssRule(printCssSource, '.store-order-picking-store')
+  const orderNoRule = readCssRule(printCssSource, '.store-order-picking-order-no')
+  const metaRule = readCssRule(printCssSource, '.store-order-picking-meta')
+
+  assertEqual(headerSource.includes('className="store-order-picking-primary-line"'), true, '页头应有店名和单号同一行主信息容器')
+  assertEqual(headerSource.includes('className="store-order-picking-store"'), true, '店名应挂载主字号样式')
+  assertEqual(headerSource.includes('{displayStoreText}'), true, '主信息行应显示店名')
+  assertEqual(headerSource.includes('className="store-order-picking-order-no"'), true, '单号应挂载主字号样式')
+  assertEqual(headerSource.includes("t('warehouse.pickingList.orderNoLabel')"), false, '主信息行不应继续显示订单号文字标签')
+  assertEqual(headerSource.includes('#{orderNoText}'), true, '主信息行应使用 # 前缀显示单号')
+  assertEqual(headerSource.includes("t('warehouse.pickingList.storeLabel')"), false, '店名不应继续作为右侧小号元数据显示')
+  assertEqual(/grid-template-columns:\s*minmax\(80px,\s*1fr\)\s*minmax\(0,\s*2fr\)\s*minmax\(120px,\s*1fr\)/.test(headerRule), true, '页头应使用三栏布局承载居中主信息')
+  assertEqual(/text-align:\s*center/.test(primaryRule), true, '主信息区应居中')
+  assertEqual(/display:\s*inline-flex/.test(primaryLineRule), true, '店名和单号应水平排列')
+  assertEqual(/white-space:\s*nowrap/.test(primaryLineRule), true, '店名和单号应保持同一行')
+  assertEqual(/gap:\s*18px/.test(primaryLineRule), true, '店名和单号之间应有清晰间距')
+  assertEqual(readCssNumber(storeRule, 'font-size'), 22, '店名字号应放大到 22px')
+  assertEqual(readCssNumber(orderNoRule, 'font-size'), 28, '单号字号应放大到 28px')
+  assertEqual(/font-weight:\s*800/.test(orderNoRule), true, '单号应加粗突出显示')
+  assertEqual(readCssNumber(storeRule, 'font-size') > readCssNumber(metaRule, 'font-size'), true, '店名字号应大于右侧辅助信息')
+  assertEqual(/flex-direction:\s*column/.test(metaRule), true, '右侧辅助信息应改为单列显示')
+  assertEqual(/align-items:\s*flex-end/.test(metaRule), true, '右侧辅助信息应右对齐')
+})
+
 runTest('配货单打印行高和字体应控制在每页约 30 行', () => {
   const printCssSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/print.css'), 'utf8')
   const tableRule = readCssRule(printCssSource, '.store-order-picking-table')

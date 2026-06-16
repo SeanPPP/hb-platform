@@ -30,8 +30,9 @@
 }
 
 .store-order-picking-header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr) minmax(120px, 1fr);
+  align-items: start;
   gap: 12px;
   margin-bottom: 6px;
   padding-bottom: 6px;
@@ -39,19 +40,49 @@
 }
 
 .store-order-picking-title {
-  flex: 0 0 auto;
   font-size: 21px;
   font-weight: 700;
   line-height: 1.1;
 }
 
+.store-order-picking-primary {
+  min-width: 0;
+  text-align: center;
+}
+
+.store-order-picking-primary-line {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  max-width: 100%;
+  gap: 18px;
+  white-space: nowrap;
+}
+
+.store-order-picking-store {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.store-order-picking-order-no {
+  flex: 0 0 auto;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
 .store-order-picking-meta {
-  display: grid;
-  grid-template-columns: auto auto;
-  gap: 3px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
   font-size: 12px;
   line-height: 1.15;
-  text-align: left;
+  text-align: right;
 }
 
 .store-order-picking-table {

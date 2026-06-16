@@ -357,6 +357,30 @@ export default function PickingListPage() {
     ? `${displayStoreName} (${store.storeCode})`
     : displayStoreName
   const orderNoText = order.orderNo || order.orderGUID || t('warehouse.pickingList.unknownOrder')
+  const renderPickingHeader = () => (
+    <div className="store-order-picking-header">
+      <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
+      <div className="store-order-picking-primary">
+        {/* 店名和单号放在同一视觉主线，方便仓库打印后快速识别单据归属。 */}
+        <div className="store-order-picking-primary-line">
+          <span className="store-order-picking-store">{displayStoreText}</span>
+          <span className="store-order-picking-order-no">
+            #{orderNoText}
+          </span>
+        </div>
+      </div>
+      <div className="store-order-picking-meta">
+        <div>
+          <strong>{t('warehouse.pickingList.printTime')}</strong>
+          {formatPrintDate(undefined, true, printLocale)}
+        </div>
+        <div>
+          <strong>{t('warehouse.pickingList.orderDate')}</strong>
+          {formatPrintDate(order.orderDate, false, printLocale)}
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className="store-order-print-page">
@@ -393,27 +417,7 @@ export default function PickingListPage() {
           <thead>
             <tr>
               <td colSpan={9} className="store-order-picking-header-cell">
-                <div className="store-order-picking-header">
-                  <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
-                  <div className="store-order-picking-meta">
-                    <div>
-                      <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                      {orderNoText}
-                    </div>
-                    <div>
-                      <strong>{t('warehouse.pickingList.printTime')}</strong>
-                      {formatPrintDate(undefined, true, printLocale)}
-                    </div>
-                    <div>
-                      <strong>{t('warehouse.pickingList.storeLabel')}</strong>
-                      {displayStoreText}
-                    </div>
-                    <div>
-                      <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                      {formatPrintDate(order.orderDate, false, printLocale)}
-                    </div>
-                  </div>
-                </div>
+                {renderPickingHeader()}
               </td>
             </tr>
             <tr>
@@ -484,27 +488,7 @@ export default function PickingListPage() {
                 <thead>
                   <tr>
                     <td colSpan={9} className="store-order-picking-header-cell">
-                      <div className="store-order-picking-header">
-                        <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
-                        <div className="store-order-picking-meta">
-                          <div>
-                            <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                            {orderNoText}
-                          </div>
-                          <div>
-                            <strong>{t('warehouse.pickingList.printTime')}</strong>
-                            {formatPrintDate(undefined, true, printLocale)}
-                          </div>
-                          <div>
-                            <strong>{t('warehouse.pickingList.storeLabel')}</strong>
-                            {displayStoreText}
-                          </div>
-                          <div>
-                            <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                            {formatPrintDate(order.orderDate, false, printLocale)}
-                          </div>
-                        </div>
-                      </div>
+                      {renderPickingHeader()}
                     </td>
                   </tr>
                   <tr>
