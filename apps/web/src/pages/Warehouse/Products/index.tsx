@@ -5,7 +5,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
-import type { SorterResult } from 'antd/es/table/interface';
+import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
 import type { CSSProperties, HTMLAttributes } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -28,7 +28,8 @@ import CategoryTreePicker from './CategoryTreePicker';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
-import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, resolveCategoryProductFilterMode, } from '../Categories/categoryProductFilters';
+import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, } from '../Categories/categoryProductFilters';
+import { buildCategoryQueryValue, buildRangeFilterTokens, findFilterTokenValue, getSingleFilterValue, normalizeTableFilters, resolveCategoryFilterValueFromTableFilters, setFilterValues, type WarehouseProductColumnFilters, } from './columnFilters';
 interface ProductFormValues {
     supplierCode?: string;
     productName: string;
@@ -519,6 +520,7 @@ export default function WarehouseProductsPage() {
     const [categories, setCategories] = useState<WarehouseCategoryNode[]>([]);
     const [categoryLoading, setCategoryLoading] = useState(false);
     const [categoryFilterValue, setCategoryFilterValue] = useState<string>(ALL_PRODUCTS_FILTER_KEY);
+    const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({});
     const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([]);
     const [batchCategoryOpen, setBatchCategoryOpen] = useState(false);
     const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>();
@@ -569,6 +571,22 @@ export default function WarehouseProductsPage() {
     const { access } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const categoryFilterOptions = useMemo(() => buildFilterCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t]);
+    const domesticSupplierFilterOptions = useMemo(() => buildSupplierOptions(suppliers).map((item) => ({
+        text: String(item.label),
+        value: String(item.value),
+    })), [suppliers]);
+    const localSupplierFilterOptions = useMemo(() => Object.entries(localSupplierNameMap)
+        .sort(([leftCode, leftName], [rightCode, rightName]) => `${leftCode} ${leftName}`.localeCompare(`${rightCode} ${rightName}`))
+        .map(([code, name]) => ({
+        text: `${code} - ${name}`,
+        value: code,
+    })), [localSupplierNameMap]);
+    const categoryColumnFilterOptions = useMemo(() => categoryFilterOptions
+        .filter((option) => option.value !== ALL_PRODUCTS_FILTER_KEY)
+        .map((option) => ({
+        text: option.label,
+        value: option.value,
+    })), [categoryFilterOptions]);
     const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories]);
     const selectedTargetCategory = useMemo(() => findWarehouseCategory(categories, targetCategoryGuid), [categories, targetCategoryGuid]);
     const selectedTargetCategoryPath = targetCategoryGuid ? getWarehouseProductCategoryTooltip({
@@ -576,12 +594,8 @@ export default function WarehouseProductsPage() {
         warehouseCategoryGUID: targetCategoryGuid,
     }, categoryLookup, i18n.language) : undefined;
     const buildGridQuery = (overrides: Partial<WarehouseProductsTableQuery> = {}): WarehouseProductsTableQuery => {
-        const filterMode = resolveCategoryProductFilterMode(categoryFilterValue);
-        const categoryQuery: Partial<WarehouseProductsTableQuery> = filterMode.type === 'category'
-            ? { categoryGuid: filterMode.categoryGuid, uncategorizedOnly: false }
-            : filterMode.type === 'uncategorized'
-                ? { categoryGuid: undefined, uncategorizedOnly: true }
-                : { categoryGuid: undefined, uncategorizedOnly: false };
+        const categoryQuery = buildCategoryQueryValue(categoryFilterValue);
+        const mergedFilters = overrides.filters ?? columnFilters;
         return {
             page,
             pageSize,
@@ -589,13 +603,113 @@ export default function WarehouseProductsPage() {
             supplierCode,
             productType,
             isActive,
+            filters: Object.keys(mergedFilters).length ? mergedFilters : undefined,
             sortField,
             sortOrder,
-            // 分类筛选使用后端顶层字段，避免把未分类塞进普通 Filters 后被后端清洗掉。
+            // 列头筛选走后端 Filters，分类仍走顶层字段，避免未分类语义被普通 Filters 吞掉。
             ...categoryQuery,
             ...overrides,
         };
     };
+    const filterIcon = (filtered?: boolean) => <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }}/>;
+    const buildTextFilterDropdown = (filterKey: string, placeholder: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+        const value = String(selectedKeys[0] ?? columnFilters[filterKey]?.[0] ?? '');
+        return (<div onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+          <Input value={value} placeholder={placeholder} allowClear onChange={(event) => {
+                const nextValue = event.target.value;
+                setSelectedKeys(nextValue ? [nextValue] : []);
+            }} onPressEnter={() => confirm()}/>
+          <Space style={{ marginTop: 8 }}>
+            <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+            <Button size="small" onClick={() => {
+                setSelectedKeys([]);
+                clearFilters?.();
+                confirm();
+            }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+          </Space>
+        </div>);
+    };
+    const buildNumberRangeFilterDropdown = (filterKey: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+        const values = (selectedKeys.length ? selectedKeys : columnFilters[filterKey] ?? []).map((value) => String(value));
+        const minValue = findFilterTokenValue(values, 'gte:');
+        const maxValue = findFilterTokenValue(values, 'lte:');
+        const updateRange = (nextValue: { min?: string | number; max?: string | number; }) => {
+            setSelectedKeys(buildRangeFilterTokens(nextValue.min, nextValue.max));
+        };
+        return (<div onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+          <Space.Compact>
+            <InputNumber value={minValue !== '' ? Number(minValue) : undefined} placeholder={t('containers.placeholders.minValue', '最小值')} controls={false} onChange={(nextValue) => updateRange({
+                min: nextValue == null ? undefined : Number(nextValue),
+                max: maxValue || undefined,
+            })}/>
+            <InputNumber value={maxValue !== '' ? Number(maxValue) : undefined} placeholder={t('containers.placeholders.maxValue', '最大值')} controls={false} onChange={(nextValue) => updateRange({
+                min: minValue || undefined,
+                max: nextValue == null ? undefined : Number(nextValue),
+            })}/>
+          </Space.Compact>
+          <Space style={{ marginTop: 8 }}>
+            <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+            <Button size="small" onClick={() => {
+                setSelectedKeys([]);
+                clearFilters?.();
+                confirm();
+            }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+          </Space>
+        </div>);
+    };
+    const buildDateRangeFilterDropdown = (filterKey: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+        const values = (selectedKeys.length ? selectedKeys : columnFilters[filterKey] ?? []).map((value) => String(value));
+        const minValue = findFilterTokenValue(values, 'gte:');
+        const maxValue = findFilterTokenValue(values, 'lte:');
+        const updateRange = (nextValue: { min?: string; max?: string; }) => {
+            setSelectedKeys(buildRangeFilterTokens(nextValue.min, nextValue.max));
+        };
+        return (<div onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+          <Space direction="vertical" size={8}>
+            <Input type="date" value={minValue} onChange={(event) => updateRange({
+                min: event.target.value || undefined,
+                max: maxValue || undefined,
+            })}/>
+            <Input type="date" value={maxValue} onChange={(event) => updateRange({
+                min: minValue || undefined,
+                max: event.target.value || undefined,
+            })}/>
+          </Space>
+          <Space style={{ marginTop: 8 }}>
+            <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+            <Button size="small" onClick={() => {
+                setSelectedKeys([]);
+                clearFilters?.();
+                confirm();
+            }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+          </Space>
+        </div>);
+    };
+    const textFilterProps = (filterKey: string, placeholder: string) => ({
+        filterDropdown: buildTextFilterDropdown(filterKey, placeholder),
+        filterIcon,
+        filtered: Boolean(columnFilters[filterKey]?.[0]?.trim()),
+        filteredValue: columnFilters[filterKey] ?? null,
+    });
+    const numberRangeFilterProps = (filterKey: string) => ({
+        filterDropdown: buildNumberRangeFilterDropdown(filterKey),
+        filterIcon,
+        filtered: Boolean(columnFilters[filterKey]?.length),
+        filteredValue: columnFilters[filterKey] ?? null,
+    });
+    const dateRangeFilterProps = (filterKey: string) => ({
+        filterDropdown: buildDateRangeFilterDropdown(filterKey),
+        filterIcon,
+        filtered: Boolean(columnFilters[filterKey]?.length),
+        filteredValue: columnFilters[filterKey] ?? null,
+    });
+    const enumFilterProps = (filterKey: string, options: Array<{ text: string; value: string; }>) => ({
+        filters: options,
+        filterIcon,
+        filtered: Boolean(columnFilters[filterKey]?.length),
+        filteredValue: columnFilters[filterKey] ?? null,
+        filterMultiple: true,
+    });
     const loadData = async (overrides: Partial<WarehouseProductsTableQuery> = {}) => {
         const query = buildGridQuery(overrides);
         setLoading(true);
@@ -1229,6 +1343,7 @@ export default function WarehouseProductsPage() {
             width: 112,
             fixed: 'left',
             sorter: true,
+            ...textFilterProps('itemNumber', t('warehouse.searchProductByItemNumber', '按货号筛选')),
             render: (value: string) => value ? (<Space size={4}>
               <span>{value}</span>
               <Tooltip title={t('common.copy')}>
@@ -1251,6 +1366,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'domesticSupplierCode',
             width: 132,
             sorter: true,
+            ...enumFilterProps('domesticSupplierCode', domesticSupplierFilterOptions),
             render: (_value, record) => {
                 const supplierDisplayName = record.domesticSupplierName || record.domesticSupplierCode;
                 return supplierDisplayName ? (<div className="warehouse-products-supplier-cell">
@@ -1263,6 +1379,11 @@ export default function WarehouseProductsPage() {
             title: t('column.category'),
             dataIndex: 'categoryName',
             width: 128,
+            filters: categoryColumnFilterOptions,
+            filterIcon,
+            filtered: categoryFilterValue !== ALL_PRODUCTS_FILTER_KEY,
+            filteredValue: categoryFilterValue === ALL_PRODUCTS_FILTER_KEY ? null : [categoryFilterValue],
+            filterMultiple: false,
             render: (_value, record) => renderWarehouseProductCategoryCell(record, categoryLookup, i18n.language),
         },
         {
@@ -1270,6 +1391,7 @@ export default function WarehouseProductsPage() {
             title: t('column.englishName'),
             dataIndex: 'nameEn',
             width: 176,
+            ...textFilterProps('nameEn', t('warehouse.searchProductByEnglishName', '按英文名筛选')),
             render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
         },
         {
@@ -1277,6 +1399,7 @@ export default function WarehouseProductsPage() {
             title: t('warehouse.middlePackQuantity', '中包数'),
             dataIndex: 'minOrderQuantity',
             width: 84,
+            ...numberRangeFilterProps('minOrderQuantity'),
             render: (value: number | undefined) => value !== undefined && value !== null ? value : '--',
         },
         {
@@ -1284,6 +1407,7 @@ export default function WarehouseProductsPage() {
             title: t('column.domesticPrice'),
             dataIndex: 'domesticPrice',
             width: 82,
+            ...numberRangeFilterProps('domesticPrice'),
             render: (value: number | undefined) => formatPrice(value),
         },
         {
@@ -1291,6 +1415,7 @@ export default function WarehouseProductsPage() {
             title: t('column.importPrice'),
             dataIndex: 'importPrice',
             width: 82,
+            ...numberRangeFilterProps('importPrice'),
             render: (value: number | undefined) => formatPrice(value),
         },
         {
@@ -1298,6 +1423,7 @@ export default function WarehouseProductsPage() {
             title: t('column.oemPrice'),
             dataIndex: 'labelPrice',
             width: 82,
+            ...numberRangeFilterProps('oemPrice'),
             render: (value: number | undefined) => formatPrice(value),
         },
         {
@@ -1305,6 +1431,10 @@ export default function WarehouseProductsPage() {
             title: t('column.status'),
             dataIndex: 'isActive',
             width: 92,
+            ...enumFilterProps('isActive', [
+                { text: getShelfStatusLabel(true, t), value: 'true' },
+                { text: getShelfStatusLabel(false, t), value: 'false' },
+            ]),
             render: (value: boolean, record) => (<Switch checked={value} checkedChildren={getShelfStatusLabel(true, t)} unCheckedChildren={getShelfStatusLabel(false, t)} disabled={!access.canWriteProduct || togglingProductCodes.includes(record.productCode)} loading={togglingProductCodes.includes(record.productCode)} onChange={(nextChecked) => void handleToggleSingleActive(record, nextChecked)}/>),
         },
         {
@@ -1312,6 +1442,10 @@ export default function WarehouseProductsPage() {
             title: t('column.productType'),
             dataIndex: 'productType',
             width: 92,
+            ...enumFilterProps('productType', productTypeOptions.map((option) => ({
+                text: String(option.label),
+                value: String(option.value),
+            }))),
             render: (value: ProductType) => <Tag color={getProductTypeTagColor(value)}>{getProductTypeLabel(value, t)}</Tag>,
         },
         {
@@ -1319,6 +1453,7 @@ export default function WarehouseProductsPage() {
             title: t('column.barcode'),
             dataIndex: 'barcode',
             width: 156,
+            ...textFilterProps('barcode', t('warehouse.searchProductByBarcode', '按条码筛选')),
             render: (value: string | undefined) => value ? (<div className="warehouse-products-barcode-cell">
               <BarcodePreview value={value} textMaxWidth={150} compactCopy/>
             </div>) : ('--'),
@@ -1329,6 +1464,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'name',
             width: 176,
             sorter: true,
+            ...textFilterProps('productName', t('warehouse.searchProductByName', '按商品名筛选')),
             render: (value: string | undefined) => value ? <div className="warehouse-products-text-2line">{value}</div> : '--',
         },
         {
@@ -1336,6 +1472,7 @@ export default function WarehouseProductsPage() {
             title: t('column.packingQuantity'),
             dataIndex: 'packingQty',
             width: 96,
+            ...numberRangeFilterProps('packingQty'),
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
               <span>{value}</span>
               {record.isPackingQtyFallback ? <Tag color="gold">{t('warehouse.domestic')}</Tag> : <Tag color="green">{t('warehouse.warehouse')}</Tag>}
@@ -1346,6 +1483,7 @@ export default function WarehouseProductsPage() {
             title: t('column.volume'),
             dataIndex: 'volume',
             width: 96,
+            ...numberRangeFilterProps('volume'),
             render: (value: number | undefined, record) => value !== undefined && value !== null ? (<Space size={4}>
               <span>{value}</span>
               {record.isVolumeFallback ? <Tag color="gold">{t('warehouse.domestic')}</Tag> : <Tag color="green">{t('warehouse.warehouse')}</Tag>}
@@ -1357,6 +1495,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'localSupplierCode',
             width: 150,
             sorter: true,
+            ...enumFilterProps('localSupplierCode', localSupplierFilterOptions),
             render: (_value, record) => {
                 // 表格接口只返回澳洲供应商代码时，用活跃供应商列表补齐名称。
                 const supplierDisplayName = record.localSupplierName || localSupplierNameMap[record.localSupplierCode || ''] || record.localSupplierCode;
@@ -1371,6 +1510,7 @@ export default function WarehouseProductsPage() {
             dataIndex: 'updatedAt',
             width: 150,
             sorter: true,
+            ...dateRangeFilterProps('updatedAt'),
             render: (value: string | undefined) => formatDateTime(value, i18n.language),
         },
         {
@@ -1398,7 +1538,7 @@ export default function WarehouseProductsPage() {
               </Tooltip>)}
           </Space>),
         },
-    ], [access.canWriteProduct, categoryLookup, i18n.language, localSupplierNameMap, togglingProductCodes]);
+    ], [access.canWriteProduct, categoryColumnFilterOptions, categoryFilterValue, categoryLookup, columnFilters, domesticSupplierFilterOptions, i18n.language, localSupplierFilterOptions, localSupplierNameMap, productTypeOptions, t, togglingProductCodes]);
     const draggableColumnKeys = [...WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER];
     useEffect(() => {
         setColumnOrder((current) => {
@@ -1505,14 +1645,24 @@ export default function WarehouseProductsPage() {
         <Card>
           <Space wrap style={{ marginBottom: 16 }}>
           <Input value={searchText} onChange={(event) => setSearchText(event.target.value)} prefix={<SearchOutlined />} placeholder={t('warehouse.searchProductFull')} style={{ width: 300 }} allowClear/>
-          <Select value={supplierCode} onChange={setSupplierCode} options={buildSupplierOptions(suppliers)} placeholder={t('warehouse.allDomesticSuppliers')} style={{ width: 240 }} showSearch filterOption={filterSupplierOption} allowClear/>
+          <Select value={supplierCode} onChange={(value) => {
+            setSupplierCode(value);
+            setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode', value ? [value] : undefined));
+        }} options={buildSupplierOptions(suppliers)} placeholder={t('warehouse.allDomesticSuppliers')} style={{ width: 240 }} showSearch filterOption={filterSupplierOption} allowClear/>
           <Select value={categoryFilterValue} onChange={(value) => setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY)} options={categoryFilterOptions} placeholder={t('warehouse.categories.category', '分类')} style={{ width: 220 }} showSearch optionFilterProp="label" loading={categoryLoading} allowClear/>
-          <Select value={productType} onChange={setProductType} options={productTypeOptions} placeholder={t('warehouse.allProductTypes')} style={{ width: 160 }} allowClear/>
-          <Select value={isActive} onChange={setIsActive} options={getStatusOptions(t)} placeholder={t('warehouse.allStatus')} style={{ width: 140 }} allowClear/>
+          <Select value={productType} onChange={(value) => {
+            setProductType(value);
+            setColumnFilters((current) => setFilterValues(current, 'productType', value === undefined ? undefined : [String(value)]));
+        }} options={productTypeOptions} placeholder={t('warehouse.allProductTypes')} style={{ width: 160 }} allowClear/>
+          <Select value={isActive} onChange={(value) => {
+            setIsActive(value);
+            setColumnFilters((current) => setFilterValues(current, 'isActive', value === undefined ? undefined : [String(value)]));
+        }} options={getStatusOptions(t)} placeholder={t('warehouse.allStatus')} style={{ width: 140 }} allowClear/>
           <Button onClick={() => {
             setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);
             void loadData({
                 page: 1,
+                filters: columnFilters,
                 categoryGuid: undefined,
                 uncategorizedOnly: true,
             });
@@ -1528,12 +1678,14 @@ export default function WarehouseProductsPage() {
             setCategoryFilterValue(ALL_PRODUCTS_FILTER_KEY);
             setProductType(undefined);
             setIsActive(undefined);
+            setColumnFilters({});
             setSortField('createdAt');
             setSortOrder('descend');
             void loadData({
                 page: 1,
                 searchText: '',
                 supplierCode: undefined,
+                filters: {},
                 categoryGuid: undefined,
                 uncategorizedOnly: false,
                 productType: undefined,
@@ -1561,19 +1713,36 @@ export default function WarehouseProductsPage() {
                 pageSize,
                 total,
                 showSizeChanger: true,
-            }} onChange={(pagination: TablePaginationConfig, _, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[]) => {
+            }} onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[], extra) => {
                 const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
                 const nextSortField = typeof nextSorter?.field === 'string' ? nextSorter.field : sortField;
                 const nextSortOrder = nextSorter?.order === 'ascend' || nextSorter?.order === 'descend'
                     ? nextSorter.order
                     : sortOrder;
+                const nextColumnFilters = normalizeTableFilters(filters);
+                const nextCategoryFilterValue = resolveCategoryFilterValueFromTableFilters(filters);
+                const nextSupplierCode = getSingleFilterValue(nextColumnFilters.domesticSupplierCode);
+                const nextProductType = getSingleFilterValue(nextColumnFilters.productType);
+                const nextIsActive = getSingleFilterValue(nextColumnFilters.isActive);
+                // 列头筛选统一走后端 filters，分类列头则继续映射成顶层分类字段。
+                const categoryQuery = buildCategoryQueryValue(nextCategoryFilterValue);
+                setColumnFilters(nextColumnFilters);
+                setCategoryFilterValue(nextCategoryFilterValue);
+                setSupplierCode(nextSupplierCode);
+                setProductType(nextProductType === undefined ? undefined : Number(nextProductType) as ProductType);
+                setIsActive(nextIsActive === undefined ? undefined : nextIsActive === 'true');
                 setSortField(nextSortField);
                 setSortOrder(nextSortOrder);
                 void loadData({
-                    page: pagination.current || 1,
+                    page: extra.action === 'paginate' ? pagination.current || 1 : 1,
                     pageSize: pagination.pageSize || pageSize,
+                    supplierCode: nextSupplierCode,
+                    productType: nextProductType === undefined ? undefined : Number(nextProductType) as ProductType,
+                    isActive: nextIsActive === undefined ? undefined : nextIsActive === 'true',
                     sortField: nextSortField,
                     sortOrder: nextSortOrder,
+                    filters: nextColumnFilters,
+                    ...categoryQuery,
                 });
             }}/>
             </SortableContext>

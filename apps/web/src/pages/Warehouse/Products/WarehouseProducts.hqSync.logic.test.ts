@@ -7,6 +7,18 @@ import {
 } from '../../../services/warehouseProductService'
 import type { CurrentUser } from '../../../types/auth'
 import { buildAccess } from '../../../utils/access'
+import {
+  ALL_PRODUCTS_FILTER_KEY,
+  UNCATEGORIZED_PRODUCTS_FILTER_KEY,
+} from '../Categories/categoryProductFilters'
+import {
+  buildCategoryQueryValue,
+  buildRangeFilterTokens,
+  getSingleFilterValue,
+  normalizeTableFilters,
+  resolveCategoryFilterValueFromTableFilters,
+  setFilterValues,
+} from './columnFilters'
 
 function createCurrentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -29,6 +41,14 @@ function assert(condition: unknown, message: string): asserts condition {
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
     throw new Error(`${message}。Expected: ${String(expected)}, received: ${String(actual)}`)
+  }
+}
+
+function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
+  const actualText = JSON.stringify(actual)
+  const expectedText = JSON.stringify(expected)
+  if (actualText !== expectedText) {
+    throw new Error(`${message}。Expected: ${expectedText}, received: ${actualText}`)
   }
 }
 
@@ -69,6 +89,8 @@ function extractSection(source: string, startText: string, endText: string) {
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/index.tsx')
 const pageSource = readFileSync(pageFile, 'utf8')
+const columnFiltersFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/columnFilters.ts')
+const columnFiltersSource = readFileSync(columnFiltersFile, 'utf8')
 const categoryTreePickerFile = path.resolve(process.cwd(), 'src/pages/Warehouse/Products/CategoryTreePicker.tsx')
 const categoryTreePickerSource = readFileSync(categoryTreePickerFile, 'utf8')
 
@@ -882,6 +904,172 @@ async function main() {
     }
   })
   if (jobServiceFailure) failures.push(jobServiceFailure)
+
+  const columnFilterHelperFailure = await runTest('仓库商品列头筛选 helper 应保持运行时语义', () => {
+    assertDeepEqual(
+      setFilterValues({ domesticSupplierCode: ['CN-001'] }, 'domesticSupplierCode', ['  ', undefined]),
+      {},
+      '空值应移除对应列头筛选',
+    )
+    assertDeepEqual(
+      buildRangeFilterTokens(' 5 ', 10),
+      ['gte:5', 'lte:10'],
+      '数字范围应生成后端识别的 gte/lte token',
+    )
+    assertDeepEqual(
+      normalizeTableFilters({
+        name: [' Clock '],
+        labelPrice: ['gte:2', 'lte:9'],
+        categoryName: [UNCATEGORIZED_PRODUCTS_FILTER_KEY],
+        domesticSupplierCode: ['CN-001'],
+      }),
+      {
+        productName: ['Clock'],
+        oemPrice: ['gte:2', 'lte:9'],
+        domesticSupplierCode: ['CN-001'],
+      },
+      '普通列头筛选应映射后端 key，分类不应混入普通 Filters',
+    )
+    assertEqual(
+      resolveCategoryFilterValueFromTableFilters({ categoryName: [UNCATEGORIZED_PRODUCTS_FILTER_KEY] }),
+      UNCATEGORIZED_PRODUCTS_FILTER_KEY,
+      '分类列头值应单独解析',
+    )
+    assertDeepEqual(
+      buildCategoryQueryValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY),
+      { categoryGuid: undefined, uncategorizedOnly: true },
+      '未分类列头应转成顶层 UncategorizedOnly',
+    )
+    assertDeepEqual(
+      buildCategoryQueryValue('cat-runtime-001'),
+      { categoryGuid: 'cat-runtime-001', uncategorizedOnly: false },
+      '具体分类列头应转成顶层 CategoryGuids 查询值',
+    )
+    assertDeepEqual(
+      buildCategoryQueryValue(ALL_PRODUCTS_FILTER_KEY),
+      { categoryGuid: undefined, uncategorizedOnly: false },
+      '全部商品列头应清空分类顶层字段',
+    )
+    assertEqual(getSingleFilterValue(['true']), 'true', '单选筛选应能同步回顶部筛选')
+    assertEqual(getSingleFilterValue(['true', 'false']), undefined, '多选筛选不应强行同步为顶部单值')
+  })
+  if (columnFilterHelperFailure) failures.push(columnFilterHelperFailure)
+
+  const columnFilterStateFailure = await runTest('仓库商品页应维护列头后端筛选状态并区分分类顶层字段', () => {
+    assert(
+      pageSource.includes('const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({})') &&
+        pageSource.includes('const mergedFilters = overrides.filters ?? columnFilters;') &&
+        pageSource.includes("filters: Object.keys(mergedFilters).length ? mergedFilters : undefined") &&
+        pageSource.includes('列头筛选走后端 Filters，分类仍走顶层字段'),
+      '页面应维护 columnFilters 状态，并在 buildGridQuery 中把普通列头筛选发到后端 Filters',
+    )
+    assert(
+      pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode'") &&
+        pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'productType'") &&
+        pageSource.includes("setColumnFilters((current) => setFilterValues(current, 'isActive'"),
+      '顶部供应商、商品类型和状态筛选变化时应同步 columnFilters，避免旧列头值残留',
+    )
+  })
+  if (columnFilterStateFailure) failures.push(columnFilterStateFailure)
+
+  const tableChangeColumnFilterFailure = await runTest('表格 onChange 应读取列头 filters 并重查第一页', () => {
+    const tableSection = extractSection(
+      pageSource,
+      'onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter:',
+      '}/>',
+    )
+
+    assert(
+      tableSection.includes('const nextColumnFilters = normalizeTableFilters(filters);') &&
+        tableSection.includes('const nextCategoryFilterValue = resolveCategoryFilterValueFromTableFilters(filters);') &&
+        tableSection.includes('setColumnFilters(nextColumnFilters);'),
+      '表格 onChange 应接收 AntD filters，并转换后回写 columnFilters',
+    )
+    assert(
+      tableSection.includes("page: extra.action === 'paginate' ? pagination.current || 1 : 1,") &&
+        tableSection.includes('filters: nextColumnFilters,') &&
+        tableSection.includes('...categoryQuery,'),
+      '列头筛选或排序变化后应带 filters 重查数据，并在非分页场景回到第一页',
+    )
+    assert(
+      tableSection.includes('const categoryQuery = buildCategoryQueryValue(nextCategoryFilterValue);') &&
+        tableSection.includes('setCategoryFilterValue(nextCategoryFilterValue);'),
+      '分类列头变化时应转成顶层分类查询字段，而不是混入普通 Filters',
+    )
+  })
+  if (tableChangeColumnFilterFailure) failures.push(tableChangeColumnFilterFailure)
+
+  const columnFilterUiFailure = await runTest('仓库商品表格应为文本数字日期枚举列接入列头过滤 UI', () => {
+    const columnsSection = extractSection(
+      pageSource,
+      'const baseColumns = useMemo',
+      'const draggableColumnKeys',
+    )
+
+    assert(
+      pageSource.includes('const buildTextFilterDropdown = (filterKey: string, placeholder: string) =>') &&
+        pageSource.includes('const buildNumberRangeFilterDropdown = (filterKey: string) =>') &&
+        pageSource.includes('const buildDateRangeFilterDropdown = (filterKey: string) =>'),
+      '页面应提供文本、数字区间和日期区间列头筛选 helper',
+    )
+    assert(
+      columnFiltersSource.includes("const filterKeyMap: Record<string, string> = {") &&
+        columnFiltersSource.includes("name: 'productName'") &&
+        columnFiltersSource.includes("labelPrice: 'oemPrice'"),
+      'normalizeTableFilters 应显式维护列 key 到后端 filter key 的映射',
+    )
+    assert(
+      columnsSection.includes("...textFilterProps('itemNumber'") &&
+        columnsSection.includes("...textFilterProps('productName'") &&
+        columnsSection.includes("...textFilterProps('nameEn'") &&
+        columnsSection.includes("...textFilterProps('barcode'"),
+      '货号、商品名、英文名和条码列应接入文本列头筛选',
+    )
+    assert(
+      columnsSection.includes("...numberRangeFilterProps('minOrderQuantity')") &&
+        columnsSection.includes("...numberRangeFilterProps('domesticPrice')") &&
+        columnsSection.includes("...numberRangeFilterProps('importPrice')") &&
+        columnsSection.includes("...numberRangeFilterProps('oemPrice')") &&
+        columnsSection.includes("...numberRangeFilterProps('packingQty')") &&
+        columnsSection.includes("...numberRangeFilterProps('volume')") &&
+        columnsSection.includes("...dateRangeFilterProps('updatedAt')"),
+      '中包数、价格、装箱数、体积和更新时间列应接入数字/日期列头筛选',
+    )
+    assert(
+      columnsSection.includes("...enumFilterProps('domesticSupplierCode'") &&
+        columnsSection.includes("...enumFilterProps('localSupplierCode'") &&
+        columnsSection.includes("...enumFilterProps('isActive'") &&
+        columnsSection.includes("...enumFilterProps('productType'") &&
+        columnsSection.includes('filters: categoryColumnFilterOptions') &&
+        columnsSection.includes('filteredValue: categoryFilterValue === ALL_PRODUCTS_FILTER_KEY ? null : [categoryFilterValue]'),
+      '供应商、状态、商品类型和分类列应暴露 filters / filteredValue 形式的列头过滤 UI',
+    )
+    assert(
+      columnsSection.includes("key: 'name'") &&
+        columnsSection.includes("dataIndex: 'name'") &&
+        columnsSection.includes("...textFilterProps('productName'") &&
+        columnsSection.includes("key: 'labelPrice'") &&
+        columnsSection.includes("dataIndex: 'labelPrice'") &&
+        columnsSection.includes("...numberRangeFilterProps('oemPrice')"),
+      '商品名和 OEM 列应保留原列 key，同时继续使用后端 productName / oemPrice filter key',
+    )
+  })
+  if (columnFilterUiFailure) failures.push(columnFilterUiFailure)
+
+  const resetColumnFilterFailure = await runTest('重置查询应清空列头筛选状态', () => {
+    const resetSection = extractSection(
+      pageSource,
+      "<Button icon={<ReloadOutlined />} onClick={() => {",
+      "{t('common.reset')}",
+    )
+
+    assert(
+      resetSection.includes('setColumnFilters({});') &&
+        resetSection.includes('filters: {},'),
+      '点击重置时应清空 columnFilters，并按空 Filters 重查列表',
+    )
+  })
+  if (resetColumnFilterFailure) failures.push(resetColumnFilterFailure)
 
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)

@@ -53,7 +53,8 @@ namespace BlazorApp.Api.Tests
                 typeof(ProductLocation),
                 typeof(Location),
                 typeof(ProductGrade),
-                typeof(WarehouseCategory)
+                typeof(WarehouseCategory),
+                typeof(HBLocalSupplier)
             );
         }
 
@@ -145,6 +146,399 @@ namespace BlazorApp.Api.Tests
 
             var item = Assert.Single(result.Items);
             Assert.Equal("P-BLANK-UNCAT", item.ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersWarehouseTextAndLookupColumns()
+        {
+            await SeedWarehouseCategoryAsync("cat-filter-a", null, "厨房用品");
+            await SeedWarehouseCategoryAsync("cat-filter-b", null, "卧室用品");
+            await SeedWarehouseTableProductAsync(
+                "P-FILTER-001",
+                "ITEM-MUG-001",
+                "大理石马克杯",
+                "cat-filter-a",
+                englishName: "Marble Mug",
+                barcode: "BAR-MUG-001",
+                supplierCode: "CN-001",
+                supplierName: "义乌杯厂",
+                localSupplierCode: "AU-001",
+                localSupplierName: "Sydney Local Trading"
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-FILTER-002",
+                "ITEM-LAMP-001",
+                "北欧台灯",
+                "cat-filter-b",
+                englishName: "Nordic Lamp",
+                barcode: "BAR-LAMP-002",
+                supplierCode: "CN-002",
+                supplierName: "义乌灯饰",
+                localSupplierCode: "AU-002",
+                localSupplierName: "Melbourne Supply"
+            );
+
+            var service = CreateService();
+
+            var productNameResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productName"] = new[] { "马克" },
+                },
+            });
+            var barcodeResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["barcode"] = new[] { "LAMP-002" },
+                },
+            });
+            var itemNumberResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["itemNumber"] = new[] { "MUG-001" },
+                },
+            });
+            var nameEnResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["nameEn"] = new[] { "Nordic" },
+                },
+            });
+            var supplierResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["domesticSupplierCode"] = new[] { "CN-001" },
+                    ["domesticSupplierName"] = new[] { "杯厂" },
+                    ["localSupplierCode"] = new[] { "AU-001" },
+                    ["localSupplierName"] = new[] { "Sydney" },
+                    ["categoryName"] = new[] { "厨房" },
+                },
+            });
+
+            var productNameItem = Assert.Single(productNameResult.Items);
+            Assert.Equal("P-FILTER-001", productNameItem.ProductCode);
+
+            var barcodeItem = Assert.Single(barcodeResult.Items);
+            Assert.Equal("P-FILTER-002", barcodeItem.ProductCode);
+
+            var itemNumberItem = Assert.Single(itemNumberResult.Items);
+            Assert.Equal("P-FILTER-001", itemNumberItem.ProductCode);
+
+            var nameEnItem = Assert.Single(nameEnResult.Items);
+            Assert.Equal("P-FILTER-002", nameEnItem.ProductCode);
+
+            var supplierItem = Assert.Single(supplierResult.Items);
+            Assert.Equal("P-FILTER-001", supplierItem.ProductCode);
+            Assert.Equal("Sydney Local Trading", supplierItem.LocalSupplierName);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_SupplierCodeFiltersUseExactMatch()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-SUPPLIER-EXACT-001",
+                "ITEM-SUPPLIER-EXACT-001",
+                "供应商精确命中商品",
+                null,
+                supplierCode: "CN-001",
+                supplierName: "义乌精确厂",
+                localSupplierCode: "AU-001",
+                localSupplierName: "Exact Local"
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-SUPPLIER-EXACT-002",
+                "ITEM-SUPPLIER-EXACT-002",
+                "供应商前缀碰撞商品",
+                null,
+                supplierCode: "CN-001A",
+                supplierName: "义乌精确厂",
+                localSupplierCode: "AU-001A",
+                localSupplierName: "Exact Local Branch"
+            );
+
+            var service = CreateService();
+
+            var domesticResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["domesticSupplierCode"] = new[] { "CN-001" },
+                },
+            });
+            var localResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["localSupplierCode"] = new[] { "AU-001" },
+                },
+            });
+
+            var domesticItem = Assert.Single(domesticResult.Items);
+            Assert.Equal("P-SUPPLIER-EXACT-001", domesticItem.ProductCode);
+
+            var localItem = Assert.Single(localResult.Items);
+            Assert.Equal("P-SUPPLIER-EXACT-001", localItem.ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersWarehouseStatusTypeAndRanges()
+        {
+            var baseUpdatedAt = new DateTime(2026, 6, 16, 10, 30, 0, DateTimeKind.Utc);
+            await SeedWarehouseTableProductAsync(
+                "P-RANGE-001",
+                "ITEM-RANGE-001",
+                "范围命中商品",
+                null,
+                supplierCode: "CN-010",
+                supplierName: "义乌范围厂",
+                localSupplierCode: "AU-010",
+                localSupplierName: "Adelaide Local",
+                productType: 2,
+                isActive: true,
+                domesticPrice: 12.50m,
+                oemPrice: 25.80m,
+                importPrice: 9.60m,
+                minOrderQuantity: 6,
+                packingQuantity: 24,
+                volume: 0.45m,
+                updatedAt: baseUpdatedAt
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-RANGE-002",
+                "ITEM-RANGE-002",
+                "范围未命中商品",
+                null,
+                supplierCode: "CN-011",
+                supplierName: "义乌范围厂二",
+                localSupplierCode: "AU-011",
+                localSupplierName: "Perth Local",
+                productType: 1,
+                isActive: false,
+                domesticPrice: 45.10m,
+                oemPrice: 60.00m,
+                importPrice: 30.00m,
+                minOrderQuantity: 30,
+                packingQuantity: 120,
+                volume: 2.35m,
+                updatedAt: baseUpdatedAt.AddDays(-10)
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["isActive"] = new[] { "true" },
+                    ["productType"] = new[] { "2" },
+                    ["minOrderQuantity"] = new[] { "gte:5", "lte:10" },
+                    ["domesticPrice"] = new[] { "gte:10", "lte:15" },
+                    ["oemPrice"] = new[] { "gte:20", "lte:30" },
+                    ["importPrice"] = new[] { "gte:8", "lte:12" },
+                    ["packingQuantity"] = new[] { "gte:20", "lte:30" },
+                    ["volume"] = new[] { "gte:0.4", "lte:0.5" },
+                    ["updatedAt"] = new[] { "gte:2026-06-15", "lte:2026-06-16" },
+                },
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-RANGE-001", item.ProductCode);
+            Assert.Equal("Adelaide Local", item.LocalSupplierName);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_PackingQuantityFilterMatchesDisplayedDomesticValue()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-PACK-VISIBLE-001",
+                "ITEM-PACK-VISIBLE-001",
+                "装箱数显示命中商品",
+                null,
+                supplierCode: "CN-PACK-001",
+                packingQuantity: 24,
+                warehousePackingQuantity: 120
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-PACK-VISIBLE-002",
+                "ITEM-PACK-VISIBLE-002",
+                "装箱数仓库值碰撞商品",
+                null,
+                supplierCode: "CN-PACK-002",
+                packingQuantity: 120,
+                warehousePackingQuantity: 24
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["packingQty"] = new[] { "gte:20", "lte:30" },
+                },
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-PACK-VISIBLE-001", item.ProductCode);
+            Assert.Equal(24, item.PackingQuantity);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_NumberFilter_RangeAndExactUseOrSemantics()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-MIX-001",
+                "ITEM-MIX-001",
+                "范围命中商品",
+                null,
+                domesticPrice: 12.5m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-MIX-002",
+                "ITEM-MIX-002",
+                "精确命中商品",
+                null,
+                domesticPrice: 25m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-MIX-003",
+                "ITEM-MIX-003",
+                "不命中商品",
+                null,
+                domesticPrice: 18m
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["domesticPrice"] = new[] { "gte:10", "lte:15", "25" },
+                },
+            });
+
+            Assert.Equal(2, result.Total);
+            Assert.Contains(result.Items, item => item.ProductCode == "P-MIX-001");
+            Assert.Contains(result.Items, item => item.ProductCode == "P-MIX-002");
+            Assert.DoesNotContain(result.Items, item => item.ProductCode == "P-MIX-003");
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_IntNumberFilter_RangeAndExactUseOrSemantics()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-INT-MIX-001",
+                "ITEM-INT-MIX-001",
+                "整数范围命中商品",
+                null,
+                minOrderQuantity: 12
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-INT-MIX-002",
+                "ITEM-INT-MIX-002",
+                "整数精确命中商品",
+                null,
+                minOrderQuantity: 25
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-INT-MIX-003",
+                "ITEM-INT-MIX-003",
+                "整数不命中商品",
+                null,
+                minOrderQuantity: 18
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["minOrderQuantity"] = new[] { "gte:10", "lte:15", "25" },
+                },
+            });
+
+            Assert.Equal(2, result.Total);
+            Assert.Contains(result.Items, item => item.ProductCode == "P-INT-MIX-001");
+            Assert.Contains(result.Items, item => item.ProductCode == "P-INT-MIX-002");
+            Assert.DoesNotContain(result.Items, item => item.ProductCode == "P-INT-MIX-003");
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_LocalSupplierNameFallsBackToCodeWhenLookupMissing()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-LOCAL-FALLBACK",
+                "ITEM-LOCAL-FALLBACK",
+                "本地供应商回退商品",
+                null,
+                localSupplierCode: "AU-FALLBACK",
+                seedLocalSupplierRow: false
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-LOCAL-DELETED",
+                "ITEM-LOCAL-DELETED",
+                "本地供应商软删商品",
+                null,
+                localSupplierCode: "AU-DELETED",
+                localSupplierName: "Deleted Supplier",
+                localSupplierIsDeleted: true
+            );
+
+            var service = CreateService();
+
+            var fallbackResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["itemNumber"] = new[] { "LOCAL-FALLBACK" },
+                },
+            });
+            var deletedResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["itemNumber"] = new[] { "LOCAL-DELETED" },
+                },
+            });
+
+            var fallbackItem = Assert.Single(fallbackResult.Items);
+            Assert.Equal("AU-FALLBACK", fallbackItem.LocalSupplierName);
+
+            var deletedItem = Assert.Single(deletedResult.Items);
+            Assert.Equal("AU-DELETED", deletedItem.LocalSupplierName);
         }
 
         [Fact]
@@ -1391,24 +1785,112 @@ namespace BlazorApp.Api.Tests
             string productCode,
             string itemNumber,
             string productName,
-            string? warehouseCategoryGuid
+            string? warehouseCategoryGuid,
+            string? englishName = null,
+            string? barcode = null,
+            string? supplierCode = null,
+            string? supplierName = null,
+            string? localSupplierCode = null,
+            string? localSupplierName = null,
+            int? productType = null,
+            bool isActive = true,
+            decimal? domesticPrice = null,
+            decimal? oemPrice = null,
+            decimal? importPrice = null,
+            int? minOrderQuantity = null,
+            int? packingQuantity = null,
+            int? warehousePackingQuantity = null,
+            decimal? volume = null,
+            bool seedLocalSupplierRow = true,
+            bool localSupplierIsDeleted = false,
+            DateTime? createdAt = null,
+            DateTime? updatedAt = null
         )
         {
+            if (!string.IsNullOrWhiteSpace(supplierCode))
+            {
+                var existingSupplier = await _db.Queryable<ChinaSupplier>()
+                    .AnyAsync(s => s.SupplierCode == supplierCode);
+                if (!existingSupplier)
+                {
+                    await _db
+                        .Insertable(new ChinaSupplier
+                        {
+                            Guid = $"{supplierCode}-guid",
+                            SupplierCode = supplierCode,
+                            SupplierName = supplierName ?? supplierCode,
+                            Status = 1,
+                            IsDeleted = false,
+                        })
+                        .ExecuteCommandAsync();
+                }
+
+                await _db
+                    .Insertable(new DomesticProduct
+                    {
+                        ProductCode = productCode,
+                        SupplierCode = supplierCode,
+                        ProductName = productName,
+                        EnglishProductName = englishName,
+                        HBProductNo = itemNumber,
+                        Barcode = barcode,
+                        ProductType = productType ?? 0,
+                        PackingQuantity = packingQuantity,
+                        UnitVolume = volume,
+                        IsActive = isActive,
+                        IsDeleted = false,
+                    })
+                    .ExecuteCommandAsync();
+            }
+
+            if (!string.IsNullOrWhiteSpace(localSupplierCode) && seedLocalSupplierRow)
+            {
+                var existingLocalSupplier = await _db.Queryable<HBLocalSupplier>()
+                    .AnyAsync(s => s.LocalSupplierCode == localSupplierCode);
+                if (!existingLocalSupplier)
+                {
+                    await _db
+                        .Insertable(new HBLocalSupplier
+                        {
+                            Guid = $"{localSupplierCode}-guid",
+                            LocalSupplierCode = localSupplierCode,
+                            Name = localSupplierName ?? localSupplierCode,
+                            Status = 1,
+                            IsDeleted = localSupplierIsDeleted,
+                        })
+                        .ExecuteCommandAsync();
+                }
+            }
+
             await _db.Insertable(new Product
             {
                 UUID = $"{productCode}-uuid",
                 ProductCode = productCode,
                 ItemNumber = itemNumber,
                 ProductName = productName,
+                EnglishName = englishName,
+                Barcode = barcode,
+                LocalSupplierCode = localSupplierCode,
                 WarehouseCategoryGUID = warehouseCategoryGuid,
-                IsActive = true,
+                ProductType = productType,
+                IsActive = isActive,
+                CreatedAt = createdAt ?? DateTime.UtcNow,
+                UpdatedAt = updatedAt ?? DateTime.UtcNow,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
 
             await _db.Insertable(new WarehouseProduct
             {
                 ProductCode = productCode,
-                IsActive = true,
+                DomesticPrice = domesticPrice,
+                OEMPrice = oemPrice,
+                ImportPrice = importPrice,
+                MinOrderQuantity = minOrderQuantity,
+                PackingQuantity = warehousePackingQuantity ?? packingQuantity,
+                Volume = volume,
+                IsActive = isActive,
+                CreatedAt = createdAt ?? DateTime.UtcNow,
+                UpdatedAt = updatedAt ?? DateTime.UtcNow,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
         }
