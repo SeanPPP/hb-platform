@@ -36,6 +36,20 @@ import {
 const API_BASE = '/api/react/v1/products'
 const SYNC_API_BASE = '/api/react/v1/sync'
 
+const TEXT_FILTER_TYPE_MAP = {
+  equals: 0,
+  startsWith: 2,
+  endsWith: 3,
+  contains: 4,
+} as const
+
+const NUMBER_FILTER_TYPE_MAP = {
+  equals: 0,
+  gte: 3,
+  lte: 5,
+  between: 6,
+} as const
+
 export { HqProductSyncPollingTimeoutError, createProductHqSyncJobPoller }
 export type { HqProductSyncPollingOptions }
 
@@ -58,6 +72,122 @@ export interface PushProductsToHqJobResult {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function readColumnFilterToken(value: string | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined
+  try {
+    const parsed = JSON.parse(value)
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function getColumnFilterValues(params: PosProductFilterParams, key: string): string[] {
+  return params.columnFilters?.[key]?.filter((value) => typeof value === 'string' && value.trim()) ?? []
+}
+
+function applyTextColumnFilter(
+  payload: Record<string, unknown>,
+  params: PosProductFilterParams,
+  key: string,
+  valueField: string,
+  typeField: string,
+) {
+  const token = readColumnFilterToken(getColumnFilterValues(params, key)[0])
+  const value = typeof token?.value === 'string' ? token.value.trim() : ''
+  const operator = typeof token?.operator === 'string' ? token.operator : 'contains'
+  if (!value) return
+  payload[valueField] = value
+  payload[typeField] = TEXT_FILTER_TYPE_MAP[operator as keyof typeof TEXT_FILTER_TYPE_MAP] ?? TEXT_FILTER_TYPE_MAP.contains
+}
+
+function applyNumberColumnFilter(
+  payload: Record<string, unknown>,
+  params: PosProductFilterParams,
+  key: string,
+  minField: string,
+  maxField: string,
+  typeField?: string,
+) {
+  const token = readColumnFilterToken(getColumnFilterValues(params, key)[0])
+  const operator = typeof token?.operator === 'string' ? token.operator : 'between'
+  const value = token?.value !== undefined && token.value !== null && String(token.value).trim()
+    ? Number(token.value)
+    : undefined
+  const min = token?.min !== undefined && token.min !== null && String(token.min).trim()
+    ? Number(token.min)
+    : undefined
+  const max = token?.max !== undefined && token.max !== null && String(token.max).trim()
+    ? Number(token.max)
+    : undefined
+
+  if (operator === 'equals' || operator === 'gte' || operator === 'lte') {
+    if (value === undefined || Number.isNaN(value)) return
+    if (typeField) {
+      payload[minField] = value
+      payload[typeField] = NUMBER_FILTER_TYPE_MAP[operator as keyof typeof NUMBER_FILTER_TYPE_MAP]
+      return
+    }
+    // 无筛选类型字段的数量列只能通过 min/max 表达方向，避免 lte 被误传为最小值。
+    if (operator === 'lte') {
+      payload[maxField] = value
+    } else {
+      payload[minField] = value
+      if (operator === 'equals') payload[maxField] = value
+    }
+    return
+  }
+
+  if (min !== undefined && !Number.isNaN(min)) payload[minField] = min
+  if (max !== undefined && !Number.isNaN(max)) payload[maxField] = max
+  if ((min !== undefined || max !== undefined) && typeField) payload[typeField] = NUMBER_FILTER_TYPE_MAP.between
+}
+
+function buildDateBoundsFromColumnFilter(params: PosProductFilterParams, key: string) {
+  const token = readColumnFilterToken(getColumnFilterValues(params, key)[0])
+  const operator = typeof token?.operator === 'string' ? token.operator : 'between'
+  const value = typeof token?.value === 'string' ? token.value : ''
+  const start = typeof token?.start === 'string' ? token.start : ''
+  const end = typeof token?.end === 'string' ? token.end : ''
+
+  const toStartOfDay = (date: string) => date ? `${date}T00:00:00` : undefined
+  const toNextDayStart = (date: string) => {
+    if (!date) return undefined
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+    if (!match) return undefined
+    const parsed = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + 1))
+    return `${parsed.toISOString().slice(0, 10)}T00:00:00`
+  }
+
+  if (operator === 'equals') {
+    return { from: toStartOfDay(value), toExclusive: toNextDayStart(value) }
+  }
+  if (operator === 'gte') {
+    return { from: toStartOfDay(value), toExclusive: undefined }
+  }
+  if (operator === 'lte') {
+    return { from: undefined, toExclusive: toNextDayStart(value) }
+  }
+  return { from: toStartOfDay(start), toExclusive: toNextDayStart(end) }
+}
+
+function applyDateColumnFilter(
+  payload: Record<string, unknown>,
+  params: PosProductFilterParams,
+  key: string,
+  fromField: string,
+  toExclusiveField: string,
+) {
+  const bounds = buildDateBoundsFromColumnFilter(params, key)
+  if (bounds.from) payload[fromField] = bounds.from
+  if (bounds.toExclusive) payload[toExclusiveField] = bounds.toExclusive
+}
+
+function getColumnFilterStrings(params: PosProductFilterParams, key: string): string[] | undefined {
+  const values = getColumnFilterValues(params, key).map((value) => String(value).trim()).filter(Boolean)
+  return values.length ? values : undefined
 }
 
 function assertApiSuccess<T>(response: ApiResponse<T>, fallbackMessage: string): void {
@@ -214,14 +344,41 @@ export async function getProducts(params: PosProductFilterParams) {
     pageSize: params.pageSize,
     search: params.keyword || undefined,
     localSupplierCode: params.supplierCode || undefined,
-    productCategoryGUIDs: params.categoryGuid ? [params.categoryGuid] : undefined,
+    productCategoryGUIDs: params.categoryGuid
+      ? [params.categoryGuid]
+      : getColumnFilterStrings(params, 'categoryGuid'),
     isActive: params.isActive,
-    isSet: params.isSet,
     storeRecordCountMin: params.storeRecordCountMin,
     storeRecordCountMax: params.storeRecordCountMax,
     sortBy: params.sortBy || undefined,
     sortOrder: params.sortOrder ? sortOrderMap[params.sortOrder] || params.sortOrder : undefined,
   }
+
+  if (!params.supplierCode) {
+    payload.localSupplierCodes = getColumnFilterStrings(params, 'localSupplierCode')
+  }
+  if (params.isActive === undefined) {
+    payload.isActiveValues = getColumnFilterStrings(params, 'isActive')?.map((value) => value === 'true')
+  }
+  if (params.isSet !== undefined) {
+    payload.productType = params.isSet ? 1 : 0
+  } else {
+    payload.productTypeValues = getColumnFilterStrings(params, 'productType')?.map((value) => Number(value)).filter((value) => !Number.isNaN(value))
+  }
+  payload.isAutoPricingValues = getColumnFilterStrings(params, 'isAutoPricing')?.map((value) => value === 'true')
+
+  applyTextColumnFilter(payload, params, 'itemNumber', 'itemNumber', 'itemNumberFilterType')
+  applyTextColumnFilter(payload, params, 'barcode', 'barcode', 'barcodeFilterType')
+  applyTextColumnFilter(payload, params, 'productName', 'productName', 'productNameFilterType')
+  applyTextColumnFilter(payload, params, 'productCode', 'productCode', 'productCodeFilterType')
+  applyNumberColumnFilter(payload, params, 'purchasePrice', 'purchasePriceMin', 'purchasePriceMax', 'purchasePriceFilterType')
+  applyNumberColumnFilter(payload, params, 'retailPrice', 'retailPriceMin', 'retailPriceMax', 'retailPriceFilterType')
+  if (params.storeRecordCountMin === undefined && params.storeRecordCountMax === undefined) {
+    applyNumberColumnFilter(payload, params, 'storeRecordCount', 'storeRecordCountMin', 'storeRecordCountMax')
+  }
+  applyDateColumnFilter(payload, params, 'createdAt', 'createdAtFrom', 'createdAtToExclusive')
+  applyDateColumnFilter(payload, params, 'updatedAt', 'updatedAtFrom', 'updatedAtToExclusive')
+
   const response = await request.post<ApiResponse<PagedResult<PosProductDto>> | PagedResult<PosProductDto> | PosProductDto[]>(
     `${API_BASE}/list`,
     payload,

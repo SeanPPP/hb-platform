@@ -334,6 +334,11 @@
   max-width: 58px;
 }
 
+.store-order-product-picker-table .store-order-picker-price-input {
+  width: 70px !important;
+  max-width: 70px;
+}
+
 .store-order-product-picker-table .store-order-picker-number-input .ant-input-number-input {
   padding-inline: 4px;
   font-variant-numeric: tabular-nums;

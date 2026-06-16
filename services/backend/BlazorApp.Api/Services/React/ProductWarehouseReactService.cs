@@ -1366,69 +1366,133 @@ namespace BlazorApp.Api.Services.React
                     if (!values.Any())
                         continue;
 
-                    // 列头筛选 token 约定：文本直接模糊匹配，数字/日期识别 gte:/lte: 做范围过滤。
+                    // 列头筛选 token 约定：旧裸文本保持 contains；新匹配模式使用 __filter: 前缀，避免误伤旧值。
                     switch (key)
                     {
                         case "productname":
                         case "name":
-                            query = ApplyWarehouseTextContainsFilter(
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.ProductName != null
-                                        && p.ProductName.ToLower().Contains(value)
+                                        && p.ProductName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null && p.ProductName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null
+                                        && p.ProductName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null
+                                        && p.ProductName.ToLower().EndsWith(value)
                             );
                             break;
                         case "nameen":
-                            query = ApplyWarehouseTextContainsFilter(
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.EnglishName != null
-                                        && p.EnglishName.ToLower().Contains(value)
+                                        && p.EnglishName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null && p.EnglishName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null
+                                        && p.EnglishName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null
+                                        && p.EnglishName.ToLower().EndsWith(value)
                             );
                             break;
                         case "itemnumber":
-                            query = ApplyWarehouseTextContainsFilter(
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.ItemNumber != null
-                                        && p.ItemNumber.ToLower().Contains(value)
+                                        && p.ItemNumber.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null && p.ItemNumber.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null
+                                        && p.ItemNumber.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null
+                                        && p.ItemNumber.ToLower().EndsWith(value)
                             );
                             break;
                         case "barcode":
-                            query = ApplyWarehouseTextContainsFilter(
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.Barcode != null
-                                        && p.Barcode.ToLower().Contains(value)
+                                        p.Barcode != null && p.Barcode.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower().EndsWith(value)
                             );
                             break;
                         case "categoryname":
-                            query = ApplyWarehouseTextContainsFilter(
+                            // 兼容旧客户端的分类名称文本筛选；新仓库商品页分类筛选走顶层 CategoryGuids/UncategorizedOnly。
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         c.CategoryName != null
-                                        && c.CategoryName.ToLower().Contains(value)
+                                        && c.CategoryName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null && c.CategoryName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null
+                                        && c.CategoryName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null
+                                        && c.CategoryName.ToLower().EndsWith(value)
                             );
                             break;
                         case "suppliername":
                         case "domesticsuppliername":
-                            query = ApplyWarehouseTextContainsFilter(
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         s.SupplierName != null
-                                        && s.SupplierName.ToLower().Contains(value)
+                                        && s.SupplierName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null && s.SupplierName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null
+                                        && s.SupplierName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null
+                                        && s.SupplierName.ToLower().EndsWith(value)
                             );
                             break;
                         case "suppliercode":
@@ -1454,12 +1518,21 @@ namespace BlazorApp.Api.Services.React
                             }
                             break;
                         case "localsuppliername":
-                            query = ApplyWarehouseTextContainsFilter(
+                            query = ApplyWarehouseTextMatchFilter(
                                 query,
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        ls.Name != null && ls.Name.ToLower().Contains(value)
+                                        ls.Name != null && ls.Name.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower().EndsWith(value)
                             );
                             break;
                         case "domesticprice":
@@ -1836,7 +1909,7 @@ namespace BlazorApp.Api.Services.React
             Product,
             WarehouseCategory,
             HBLocalSupplier
-        > ApplyWarehouseTextContainsFilter(
+        > ApplyWarehouseTextMatchFilter(
             ISugarQueryable<
                 WarehouseProduct,
                 DomesticProduct,
@@ -1859,15 +1932,53 @@ namespace BlazorApp.Api.Services.React
                         bool
                     >
                 >
-            > expressionFactory
+            > containsFactory,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > equalsFactory,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > startsFactory,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > endsFactory
         )
         {
-            var normalizedValues = values
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Select(v => v.Trim())
-                .Distinct()
-                .ToList();
-            if (!normalizedValues.Any())
+            var tokens = ParseTextMatchFilterTokens(values);
+            if (!tokens.Any())
             {
                 return query;
             }
@@ -1880,13 +1991,60 @@ namespace BlazorApp.Api.Services.React
                 WarehouseCategory,
                 HBLocalSupplier
             >();
-            foreach (var value in normalizedValues)
+            foreach (var token in tokens)
             {
-                var currentValue = value;
-                expression = expression.Or(expressionFactory(currentValue));
+                var currentValue = token.Value;
+                expression = token.Mode switch
+                {
+                    "eq" => expression.Or(equalsFactory(currentValue)),
+                    "starts" => expression.Or(startsFactory(currentValue)),
+                    "ends" => expression.Or(endsFactory(currentValue)),
+                    _ => expression.Or(containsFactory(currentValue)),
+                };
             }
 
             return query.Where(expression.ToExpression());
+        }
+
+        private static List<(string Mode, string Value)> ParseTextMatchFilterTokens(
+            IEnumerable<string> values
+        )
+        {
+            var tokens = new List<(string Mode, string Value)>();
+            foreach (var rawValue in values)
+            {
+                var value = rawValue?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "contains", out var containsToken, requireNamespace: true))
+                {
+                    tokens.Add(("contains", containsToken.ToLowerInvariant()));
+                    continue;
+                }
+                if (TryParseFilterToken(value, "eq", out var equalsToken, requireNamespace: true))
+                {
+                    tokens.Add(("eq", equalsToken.ToLowerInvariant()));
+                    continue;
+                }
+                if (TryParseFilterToken(value, "starts", out var startsToken, requireNamespace: true))
+                {
+                    tokens.Add(("starts", startsToken.ToLowerInvariant()));
+                    continue;
+                }
+                if (TryParseFilterToken(value, "ends", out var endsToken, requireNamespace: true))
+                {
+                    tokens.Add(("ends", endsToken.ToLowerInvariant()));
+                    continue;
+                }
+
+                // 兼容旧调用方：无模式前缀的文本值按 contains 处理。
+                tokens.Add(("contains", value.ToLowerInvariant()));
+            }
+
+            return tokens.Distinct().ToList();
         }
 
         private static List<string> NormalizeWarehouseExactTextFilterValues(IEnumerable<string> values)
@@ -2156,17 +2314,59 @@ namespace BlazorApp.Api.Services.React
             > endFactory
         )
         {
-            var (startAt, endAt) = ParseDateRangeTokens(values);
-            if (startAt.HasValue)
+            var (startAt, endAt, equalRanges) = ParseDateRangeTokens(values);
+            var expression = Expressionable.Create<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            >();
+            var hasCondition = false;
+
+            if (startAt.HasValue || endAt.HasValue)
             {
-                query = query.Where(startFactory(startAt.Value));
-            }
-            if (endAt.HasValue)
-            {
-                query = query.Where(endFactory(endAt.Value));
+                var rangeExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >();
+                if (startAt.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(startFactory(startAt.Value));
+                }
+                if (endAt.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(endFactory(endAt.Value));
+                }
+
+                expression = expression.Or(rangeExpression.ToExpression());
+                hasCondition = true;
             }
 
-            return query;
+            foreach (var (start, end) in equalRanges)
+            {
+                var currentStart = start;
+                var currentEnd = end;
+                var equalExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >()
+                    .And(startFactory(currentStart))
+                    .And(endFactory(currentEnd));
+                expression = expression.Or(equalExpression.ToExpression());
+                hasCondition = true;
+            }
+
+            return hasCondition ? query.Where(expression.ToExpression()) : query;
         }
 
         private static (decimal? Minimum, decimal? Maximum, List<decimal> ExactValues) ParseDecimalRangeTokens(
@@ -2205,6 +2405,18 @@ namespace BlazorApp.Api.Services.React
                     ))
                 {
                     maximum = parsedMaximum;
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "eq", out var equalToken, requireNamespace: true)
+                    && decimal.TryParse(
+                        equalToken,
+                        NumberStyles.Number,
+                        CultureInfo.InvariantCulture,
+                        out var parsedTokenEqual
+                    ))
+                {
+                    equals.Add(parsedTokenEqual);
                     continue;
                 }
 
@@ -2263,6 +2475,18 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
+                if (TryParseFilterToken(value, "eq", out var equalToken, requireNamespace: true)
+                    && int.TryParse(
+                        equalToken,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var parsedTokenEqual
+                    ))
+                {
+                    equals.Add(parsedTokenEqual);
+                    continue;
+                }
+
                 if (
                     int.TryParse(
                         value,
@@ -2279,12 +2503,13 @@ namespace BlazorApp.Api.Services.React
             return (minimum, maximum, equals.Distinct().ToList());
         }
 
-        private static (DateTime? StartAt, DateTime? EndAt) ParseDateRangeTokens(
+        private static (DateTime? StartAt, DateTime? EndAt, List<(DateTime StartAt, DateTime EndAt)> EqualRanges) ParseDateRangeTokens(
             IEnumerable<string> values
         )
         {
             DateTime? startAt = null;
             DateTime? endAt = null;
+            var equalRanges = new List<(DateTime StartAt, DateTime EndAt)>();
             foreach (var rawValue in values)
             {
                 var value = rawValue?.Trim();
@@ -2304,10 +2529,21 @@ namespace BlazorApp.Api.Services.React
                     && TryParseFilterDate(endToken, out var parsedEnd))
                 {
                     endAt = NormalizeFilterEndDate(endToken, parsedEnd);
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "eq", out var equalToken, requireNamespace: true)
+                    && TryParseFilterDate(equalToken, out var parsedEqual))
+                {
+                    // 日期等于始终按自然日匹配，避免带时间值时只命中一个瞬间。
+                    equalRanges.Add((
+                        parsedEqual.Date,
+                        parsedEqual.Date.AddDays(1).AddTicks(-1)
+                    ));
                 }
             }
 
-            return (startAt, endAt);
+            return (startAt, endAt, equalRanges.Distinct().ToList());
         }
 
         private static List<bool> ParseBooleanFilterValues(IEnumerable<string> values)
@@ -2354,9 +2590,14 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private static bool TryParseFilterToken(string value, string token, out string parsedValue)
+        private static bool TryParseFilterToken(
+            string value,
+            string token,
+            out string parsedValue,
+            bool requireNamespace = false
+        )
         {
-            var prefix = $"{token}:";
+            var prefix = requireNamespace ? $"__filter:{token}:" : $"{token}:";
             if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
                 parsedValue = value.Substring(prefix.Length).Trim();

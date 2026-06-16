@@ -127,6 +127,11 @@ function formatAmount(value?: number) {
   return value.toFixed(2)
 }
 
+function formatCurrencyAmount(value?: number) {
+  const amount = formatAmount(value)
+  return amount === '--' ? amount : `$${amount}`
+}
+
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
@@ -254,6 +259,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     supplierCode?: string
   }) => {
     const nextKeyword = overrides?.keyword ?? keyword
+    const trimmedKeyword = nextKeyword.trim()
     const nextPageNumber = overrides?.pageNumber ?? pageNumber
     const nextPageSize = overrides?.pageSize ?? pageSize
     const nextSupplierCode = overrides?.supplierCode ?? supplierCode
@@ -266,7 +272,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     try {
       const result = await getStoreOrderProducts(
         {
-          itemNumber: nextKeyword.trim() || undefined,
+          // 商品弹窗只有一个搜索框，需要同时覆盖货号/条码和商品名称。
+          itemNumber: trimmedKeyword || undefined,
+          productName: trimmedKeyword || undefined,
           supplierCode: nextSupplierCode || undefined,
           excludeOrderGUID: orderGUID,
           pageNumber: nextPageNumber,
@@ -456,8 +464,8 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.defaultImportPrice'),
       dataIndex: 'importPrice',
-      width: 76,
-      render: (value: number | undefined) => formatAmount(value),
+      width: 84,
+      render: (value: number | undefined) => formatCurrencyAmount(value),
     },
     {
       title: t('column.allocQuantity'),
@@ -486,14 +494,16 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.importPriceShort'),
       key: 'importPriceEdit',
-      width: 70,
+      width: 82,
       render: (_, record) => (
         <InputNumber
-          className="store-order-picker-number-input"
+          className="store-order-picker-number-input store-order-picker-price-input"
           min={0}
+          // 商品弹窗价格直接显示 $，方便和数量列区分。
+          prefix="$"
           precision={2}
           size="small"
-          style={{ width: 58 }}
+          style={{ width: 70 }}
           value={editingValues[record.productCode]?.importPrice ?? record.importPrice}
           onChange={(value) =>
             setEditingValues((current) => ({

@@ -41,6 +41,15 @@ namespace BlazorApp.Api.Services.React
             public DateTime? LatestOrderDate { get; set; }
         }
 
+        private sealed class StoreOrderDomesticSupplierCandidate
+        {
+            public string? ProductCode { get; set; }
+            public string? HBProductNo { get; set; }
+            public string? Barcode { get; set; }
+            public string? SupplierCode { get; set; }
+            public string? SupplierName { get; set; }
+        }
+
         private string GetScanTraceId()
         {
             // 同一次扫码的前后端日志使用同一个 traceId，方便按链路聚合耗时。
@@ -218,23 +227,35 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
             {
-                var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
                     (p, wp, wc, ls) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
                 );
             }
-
-            if (!string.IsNullOrWhiteSpace(filter.ProductName))
+            else
             {
-                var keyword = filter.ProductName.Trim().ToLower();
-                q = q.Where(
-                    (p, wp, wc, ls) =>
-                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                );
+                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+                {
+                    var keyword = filter.ItemNumber.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc, ls) =>
+                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(filter.ProductName))
+                {
+                    var keyword = filter.ProductName.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc, ls) =>
+                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    );
+                }
             }
 
             if (normalizedGrades.Count > 0)
@@ -494,23 +515,35 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
             {
-                var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
                     (p, wc, ls) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
                 );
             }
-
-            if (!string.IsNullOrWhiteSpace(filter.ProductName))
+            else
             {
-                var keyword = filter.ProductName.Trim().ToLower();
-                q = q.Where(
-                    (p, wc, ls) =>
-                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                );
+                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+                {
+                    var keyword = filter.ItemNumber.Trim().ToLower();
+                    q = q.Where(
+                        (p, wc, ls) =>
+                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(filter.ProductName))
+                {
+                    var keyword = filter.ProductName.Trim().ToLower();
+                    q = q.Where(
+                        (p, wc, ls) =>
+                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    );
+                }
             }
 
             if (normalizedGrades.Count > 0)
@@ -599,14 +632,8 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
-                .LeftJoin<DomesticProduct>(
-                    (p, wp, wc, dp) => p.ProductCode == dp.ProductCode && !dp.IsDeleted
-                )
-                .LeftJoin<ChinaSupplier>(
-                    (p, wp, wc, dp, cs) => dp.SupplierCode == cs.SupplierCode && !cs.IsDeleted
-                )
                 .Where(
-                    (p, wp, wc, dp, cs) =>
+                    (p, wp, wc) =>
                         !p.IsDeleted
                         && !wp.IsDeleted
                         && p.ProductCode != null
@@ -623,7 +650,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var categoryIds = GetAllSubCategoryIds(filter.CategoryGUID);
                 q = q.Where(
-                    (p, wp, wc, dp, cs) =>
+                    (p, wp, wc) =>
                         p.WarehouseCategoryGUID != null
                         && categoryIds.Contains(p.WarehouseCategoryGUID)
                 );
@@ -632,32 +659,70 @@ namespace BlazorApp.Api.Services.React
             if (!string.IsNullOrWhiteSpace(filter.SupplierCode))
             {
                 var supplierCode = filter.SupplierCode.Trim();
-                q = q.Where((p, wp, wc, dp, cs) => dp.SupplierCode == supplierCode);
-            }
-
-            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
-            {
-                var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc, dp, cs) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    (p, wp, wc) =>
+                        SqlFunc.Subqueryable<DomesticProduct>()
+                            .Where(dp =>
+                                dp.SupplierCode == supplierCode
+                                && !dp.IsDeleted
+                                && SqlFunc.Subqueryable<ChinaSupplier>()
+                                    .Where(cs =>
+                                        cs.SupplierCode == dp.SupplierCode && !cs.IsDeleted
+                                    )
+                                    .Any()
+                                && (
+                                    dp.ProductCode == p.ProductCode
+                                    || (
+                                        dp.HBProductNo != null
+                                        && p.ItemNumber != null
+                                        && dp.HBProductNo == p.ItemNumber
+                                    )
+                                    || (
+                                        dp.Barcode != null
+                                        && p.Barcode != null
+                                        && dp.Barcode == p.Barcode
+                                    )
+                                )
+                            )
+                            .Any()
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.ProductName))
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
             {
-                var keyword = filter.ProductName.Trim().ToLower();
                 q = q.Where(
-                    (p, wp, wc, dp, cs) =>
-                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    (p, wp, wc) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
                 );
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+                {
+                    var keyword = filter.ItemNumber.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc) =>
+                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(filter.ProductName))
+                {
+                    var keyword = filter.ProductName.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc) =>
+                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    );
+                }
             }
 
             if (normalizedGrades.Count > 0)
             {
                 q = q.Where(
-                    (p, wp, wc, dp, cs) =>
+                    (p, wp, wc) =>
                         SqlFunc.Subqueryable<ProductGrade>()
                             .Where(pg =>
                                 pg.ProductCode == p.ProductCode
@@ -673,27 +738,27 @@ namespace BlazorApp.Api.Services.React
                 switch (filter.SortBy.ToLower())
                 {
                     case "priceasc":
-                        q = q.OrderBy((p, wp, wc, dp, cs) => wp.OEMPrice, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc);
                         break;
                     case "pricedesc":
-                        q = q.OrderBy((p, wp, wc, dp, cs) => wp.OEMPrice, OrderByType.Desc);
+                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc);
                         break;
                     case "name":
-                        q = q.OrderBy((p, wp, wc, dp, cs) => p.ProductName, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc);
                         break;
                     default:
-                        q = q.OrderBy((p, wp, wc, dp, cs) => p.ItemNumber, OrderByType.Asc);
+                        q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
                         break;
                 }
             }
             else
             {
-                q = q.OrderBy((p, wp, wc, dp, cs) => p.ItemNumber, OrderByType.Asc);
+                q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
             }
 
             var total = await q.CountAsync();
             var items = await q.Select(
-                    (p, wp, wc, dp, cs) =>
+                    (p, wp, wc) =>
                         new StoreOrderProductDto
                         {
                             ProductCode = p.ProductCode ?? string.Empty,
@@ -704,8 +769,6 @@ namespace BlazorApp.Api.Services.React
                             CategoryName = wc.CategoryName,
                             WarehouseCategoryGUID = p.WarehouseCategoryGUID,
                             LocalSupplierCode = p.LocalSupplierCode,
-                            DomesticSupplierCode = dp.SupplierCode,
-                            DomesticSupplierName = cs.SupplierName,
                             OEMPrice = wp.OEMPrice,
                             MinOrderQuantity = wp.MinOrderQuantity ?? 1,
                             StockQuantity = wp.StockQuantity ?? 0,
@@ -717,6 +780,7 @@ namespace BlazorApp.Api.Services.React
                 .Take(filter.PageSize)
                 .ToListAsync();
 
+            await PopulateDomesticSuppliersForOrderPickerAsync(items);
             await PopulateGradesAsync(_db, items, normalizedGrades);
 
             return new PagedListReactDto<StoreOrderProductDto>
@@ -726,6 +790,132 @@ namespace BlazorApp.Api.Services.React
                 PageNumber = filter.PageNumber,
                 PageSize = filter.PageSize,
             };
+        }
+
+        private async Task PopulateDomesticSuppliersForOrderPickerAsync(
+            List<StoreOrderProductDto> items
+        )
+        {
+            if (items.Count == 0)
+            {
+                return;
+            }
+
+            var productCodes = items
+                .Select(item => NormalizeMatchKey(item.ProductCode))
+                .Where(key => key != null)
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var itemNumbers = items
+                .Select(item => NormalizeMatchKey(item.ItemNumber))
+                .Where(key => key != null)
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var barcodes = items
+                .Select(item => NormalizeMatchKey(item.Barcode))
+                .Where(key => key != null)
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count == 0 && itemNumbers.Count == 0 && barcodes.Count == 0)
+            {
+                return;
+            }
+
+            var hasProductCodes = productCodes.Count > 0;
+            var hasItemNumbers = itemNumbers.Count > 0;
+            var hasBarcodes = barcodes.Count > 0;
+            var candidates = await _db.Queryable<DomesticProduct>()
+                .InnerJoin<ChinaSupplier>(
+                    (dp, cs) => dp.SupplierCode == cs.SupplierCode && !cs.IsDeleted
+                )
+                .Where(
+                    (dp, cs) =>
+                        !dp.IsDeleted
+                        && (
+                            (
+                                hasProductCodes
+                                && dp.ProductCode != null
+                                && productCodes.Contains(dp.ProductCode)
+                            )
+                            || (
+                                hasItemNumbers
+                                && dp.HBProductNo != null
+                                && itemNumbers.Contains(dp.HBProductNo)
+                            )
+                            || (
+                                hasBarcodes
+                                && dp.Barcode != null
+                                && barcodes.Contains(dp.Barcode)
+                            )
+                        )
+                )
+                .Select(
+                    (dp, cs) =>
+                        new StoreOrderDomesticSupplierCandidate
+                        {
+                            ProductCode = dp.ProductCode,
+                            HBProductNo = dp.HBProductNo,
+                            Barcode = dp.Barcode,
+                            SupplierCode = dp.SupplierCode,
+                            SupplierName = cs.SupplierName,
+                        }
+                )
+                .ToListAsync();
+
+            var orderedCandidates = candidates
+                .Where(candidate =>
+                    !string.IsNullOrWhiteSpace(candidate.SupplierCode)
+                    || !string.IsNullOrWhiteSpace(candidate.SupplierName)
+                )
+                .OrderBy(candidate => candidate.SupplierCode ?? string.Empty)
+                .ThenBy(candidate => candidate.ProductCode ?? string.Empty)
+                .ToList();
+
+            foreach (var item in items)
+            {
+                // 真实 HBweb 数据里国内商品编码和仓库商品编码经常不一致，需按货号/条码兜底补齐供应商。
+                var candidate = FindDomesticSupplierCandidate(item, orderedCandidates);
+                if (candidate == null)
+                {
+                    continue;
+                }
+
+                item.DomesticSupplierCode = candidate.SupplierCode;
+                item.DomesticSupplierName = candidate.SupplierName;
+            }
+        }
+
+        private static StoreOrderDomesticSupplierCandidate? FindDomesticSupplierCandidate(
+            StoreOrderProductDto item,
+            List<StoreOrderDomesticSupplierCandidate> candidates
+        )
+        {
+            return candidates.FirstOrDefault(candidate =>
+                    MatchNonEmpty(candidate.ProductCode, item.ProductCode)
+                )
+                ?? candidates.FirstOrDefault(candidate =>
+                    MatchNonEmpty(candidate.HBProductNo, item.ItemNumber)
+                )
+                ?? candidates.FirstOrDefault(candidate => MatchNonEmpty(candidate.Barcode, item.Barcode));
+        }
+
+        private static string? NormalizeMatchKey(string? value)
+        {
+            var trimmed = value?.Trim();
+            return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+        }
+
+        private static bool MatchNonEmpty(string? left, string? right)
+        {
+            var normalizedLeft = NormalizeMatchKey(left);
+            var normalizedRight = NormalizeMatchKey(right);
+            return normalizedLeft != null
+                && normalizedRight != null
+                && string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
         }
 
         private ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
@@ -921,6 +1111,33 @@ namespace BlazorApp.Api.Services.React
                 && string.IsNullOrWhiteSpace(filter.SupplierCode)
                 && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
                 && !filter.ExcludeExistingWarehouseProducts;
+        }
+
+        private static bool TryGetUnifiedProductSearchKeyword(
+            StoreOrderFilterDto filter,
+            out string keyword
+        )
+        {
+            keyword = string.Empty;
+            var itemNumberKeyword = filter.ItemNumber?.Trim();
+            var productNameKeyword = filter.ProductName?.Trim();
+
+            if (
+                string.IsNullOrWhiteSpace(itemNumberKeyword)
+                || string.IsNullOrWhiteSpace(productNameKeyword)
+                || !string.Equals(
+                    itemNumberKeyword,
+                    productNameKeyword,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return false;
+            }
+
+            // 前端商品弹窗的单搜索框会把同一关键词同时传给货号和商品名称，后端需保持 OR 语义。
+            keyword = itemNumberKeyword.ToLower();
+            return true;
         }
 
         private ISqlSugarClient CreateHomePageWarmUpQueryConnection()
@@ -3301,11 +3518,12 @@ namespace BlazorApp.Api.Services.React
             }
             else if (statFilter is "active" or "1" or "true")
             {
-                detailQuery = detailQuery.Where((d, p, wp, dp) => p.IsActive);
+                // 订单明细状态展示仓库商品上下架口径，筛选必须和返回字段保持一致。
+                detailQuery = detailQuery.Where((d, p, wp, dp) => wp.IsActive);
             }
             else if (statFilter is "inactive" or "0" or "false")
             {
-                detailQuery = detailQuery.Where((d, p, wp, dp) => !p.IsActive);
+                detailQuery = detailQuery.Where((d, p, wp, dp) => !wp.IsActive);
             }
 
             var itemsTotal = await detailQuery.CountAsync();
@@ -3324,7 +3542,7 @@ namespace BlazorApp.Api.Services.React
                     orderType
                 ),
                 "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
-                "isactive" => detailQuery.OrderBy((d, p, wp, dp) => p.IsActive, orderType),
+                "isactive" => detailQuery.OrderBy((d, p, wp, dp) => wp.IsActive, orderType),
                 "locationcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
                 _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
             };
@@ -3361,7 +3579,8 @@ namespace BlazorApp.Api.Services.React
                                     ? (dp.UnitVolume / dp.PackingQuantity)
                                     : dp.UnitVolume,
                             MinOrderQuantity = wp.MinOrderQuantity ?? 1,
-                            IsActive = p.IsActive,
+                            // 前端“上架/下架”列对应仓库表 WarehouseProduct.IsActive。
+                            IsActive = wp.IsActive,
                             RRP = p.RetailPrice,
                         }
                 );

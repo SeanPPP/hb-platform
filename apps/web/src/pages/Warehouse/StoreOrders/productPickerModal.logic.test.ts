@@ -41,12 +41,15 @@ async function main() {
   })
   if (supplierFilterFailure) failures.push(supplierFilterFailure)
 
-  const queryFailure = await runTest('商品弹窗查询必须附带供应商与排除条件', () => {
+  const queryFailure = await runTest('商品弹窗搜索应同时支持货号与商品名称', () => {
     assert(
-      detailSource.includes('supplierCode: nextSupplierCode || undefined') &&
+      detailSource.includes('const trimmedKeyword = nextKeyword.trim()') &&
+        detailSource.includes('itemNumber: trimmedKeyword || undefined') &&
+        detailSource.includes('productName: trimmedKeyword || undefined') &&
+        detailSource.includes('supplierCode: nextSupplierCode || undefined') &&
         detailSource.includes('excludeOrderGUID: orderGUID') &&
         !detailSource.includes('excludeExistingWarehouseProducts: true'),
-      '商品弹窗查询未附带国内供应商过滤，或仍在使用未入仓商品查询条件',
+      '商品弹窗搜索未同时传递货号/条码与商品名称查询，或缺少国内供应商/排除条件',
     )
   })
   if (queryFailure) failures.push(queryFailure)
@@ -95,7 +98,7 @@ async function main() {
   })
   if (compactTableFailure) failures.push(compactTableFailure)
 
-  const compactRendererFailure = await runTest('商品弹窗关键列应使用紧凑图片、复制图标和窄数字输入', () => {
+  const compactRendererFailure = await runTest('商品弹窗关键列应使用紧凑图片、复制图标、窄数字输入和价格 $ 前缀', () => {
     assert(
       productPickerSource.includes('width={32}') &&
         productPickerSource.includes('height={32}') &&
@@ -103,8 +106,12 @@ async function main() {
         productPickerSource.includes('className="store-order-picker-copy-button"') &&
         productPickerSource.includes('className="store-order-picker-two-line"') &&
         productPickerSource.includes('className="store-order-picker-number-input"') &&
-        productPickerSource.includes('style={{ width: 58 }}'),
-      '商品弹窗未压缩图片、复制按钮、文本列或数字输入框',
+        productPickerSource.includes('className="store-order-picker-number-input store-order-picker-price-input"') &&
+        productPickerSource.includes('prefix="$"') &&
+        productPickerSource.includes('formatCurrencyAmount(value)') &&
+        productPickerSource.includes('style={{ width: 58 }}') &&
+        productPickerSource.includes('style={{ width: 70 }}'),
+      '商品弹窗未压缩图片、复制按钮、文本列、数字输入框或价格 $ 前缀',
     )
   })
   if (compactRendererFailure) failures.push(compactRendererFailure)

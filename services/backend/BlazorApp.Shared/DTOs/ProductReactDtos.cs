@@ -69,11 +69,44 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 日期筛选类型枚举
+    /// </summary>
+    public enum DateFilterType
+    {
+        /// <summary>
+        /// 等于某日
+        /// </summary>
+        equals = 0,
+        /// <summary>
+        /// 晚于或等于
+        /// </summary>
+        greaterThanOrEqual = 3,
+        /// <summary>
+        /// 早于或等于
+        /// </summary>
+        lessThanOrEqual = 5,
+        /// <summary>
+        /// 日期范围
+        /// </summary>
+        between = 6
+    }
+
+    /// <summary>
     /// React专用：商品查询过滤DTO
     /// </summary>
     public class ProductReactFilterDto
     {
         #region 文本字段高级筛选
+
+        /// <summary>
+        /// 商品编码筛选值
+        /// </summary>
+        public string? ProductCode { get; set; }
+
+        /// <summary>
+        /// 商品编码筛选类型
+        /// </summary>
+        public TextFilterType ProductCodeFilterType { get; set; } = TextFilterType.contains;
 
         /// <summary>
         /// 货号筛选值
@@ -176,6 +209,40 @@ namespace BlazorApp.Shared.DTOs
 
         #endregion
 
+        #region 日期字段高级筛选
+
+        /// <summary>
+        /// 创建时间起始（包含）
+        /// </summary>
+        public DateTime? CreatedAtFrom { get; set; }
+
+        /// <summary>
+        /// 创建时间结束（不包含）
+        /// </summary>
+        public DateTime? CreatedAtToExclusive { get; set; }
+
+        /// <summary>
+        /// 创建时间筛选类型
+        /// </summary>
+        public DateFilterType CreatedAtFilterType { get; set; } = DateFilterType.between;
+
+        /// <summary>
+        /// 更新时间起始（包含）
+        /// </summary>
+        public DateTime? UpdatedAtFrom { get; set; }
+
+        /// <summary>
+        /// 更新时间结束（不包含）
+        /// </summary>
+        public DateTime? UpdatedAtToExclusive { get; set; }
+
+        /// <summary>
+        /// 更新时间筛选类型
+        /// </summary>
+        public DateFilterType UpdatedAtFilterType { get; set; } = DateFilterType.between;
+
+        #endregion
+
         #region 原有筛选参数
         /// <summary>
         /// 搜索关键词（商品名称、货号、条码）
@@ -186,11 +253,26 @@ namespace BlazorApp.Shared.DTOs
         /// 本地供应商代码过滤
         /// </summary>
         public string? LocalSupplierCode { get; set; }
+
+        /// <summary>
+        /// 本地供应商代码多选过滤
+        /// </summary>
+        public List<string>? LocalSupplierCodes { get; set; }
         
         /// <summary>
         /// 是否启用状态过滤
         /// </summary>
         public bool? IsActive { get; set; }
+
+        /// <summary>
+        /// 启用状态多选过滤
+        /// </summary>
+        public List<bool>? IsActiveValues { get; set; }
+
+        /// <summary>
+        /// 自动定价多选过滤
+        /// </summary>
+        public List<bool>? IsAutoPricingValues { get; set; }
         
         /// <summary>
         /// 是否特殊产品过滤
@@ -207,6 +289,11 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public List<string>? ProductCategoryGUIDs { get; set; }
         public int? ProductType { get; set; }
+
+        /// <summary>
+        /// 商品类型多选过滤
+        /// </summary>
+        public List<int>? ProductTypeValues { get; set; }
 
         #endregion
 

@@ -63,11 +63,13 @@ const typeFile = path.resolve(process.cwd(), 'src/types/posProduct.ts')
 const productIntegrityTypeFile = path.resolve(process.cwd(), 'src/types/productIntegrity.ts')
 const serviceFile = path.resolve(process.cwd(), 'src/services/posProductService.ts')
 const productIntegrityHelperFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/ProductManagement/productIntegrityReport.ts')
+const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
 const pageSource = readFileSync(pageFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
 const productIntegrityTypeSource = readFileSync(productIntegrityTypeFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const productIntegrityHelperSource = readFileSync(productIntegrityHelperFile, 'utf8')
+const globalStyleSource = readFileSync(globalStyleFile, 'utf8')
 
 function assertSourceOrder(source: string, first: string, second: string, message: string) {
   const firstIndex = source.indexOf(first)
@@ -804,6 +806,80 @@ async function main() {
     )
   })
   if (storeRecordListSortFailure) failures.push(storeRecordListSortFailure)
+
+  const productColumnFiltersFailure = await runTest('商品管理主列表应支持列头筛选并走后端查询参数', () => {
+    assert(
+      typeSource.includes('columnFilters?: PosProductColumnFilters') &&
+        typeSource.includes("export type PosProductTextFilterOperator = 'contains' | 'equals' | 'startsWith' | 'endsWith'") &&
+        typeSource.includes("export type PosProductNumberFilterOperator = 'equals' | 'between' | 'gte' | 'lte'") &&
+        typeSource.includes("export type PosProductDateFilterOperator = 'equals' | 'between' | 'gte' | 'lte'"),
+      '商品查询类型应声明列头筛选和文本/数字/日期操作符',
+    )
+    assert(
+      serviceSource.includes('TEXT_FILTER_TYPE_MAP') &&
+        serviceSource.includes('NUMBER_FILTER_TYPE_MAP') &&
+        serviceSource.includes('applyTextColumnFilter') &&
+        serviceSource.includes('applyNumberColumnFilter') &&
+        serviceSource.includes('applyDateColumnFilter') &&
+        serviceSource.includes('localSupplierCodes') &&
+        serviceSource.includes('isAutoPricingValues') &&
+        serviceSource.includes('productTypeValues') &&
+        serviceSource.includes("if (operator === 'lte')") &&
+        serviceSource.includes('payload[maxField] = value'),
+      '商品服务应把列头筛选映射为后端 ProductReactFilterDto 字段',
+    )
+    assert(
+      pageSource.includes('const [columnFilters, setColumnFilters] = useState<PosProductColumnFilters>({})') &&
+        pageSource.includes('columnFilters,') &&
+        pageSource.includes('normalizeProductTableFilters(filters as Record<string, FilterValue | null>)') &&
+        pageSource.includes('setColumnFilters(nextColumnFilters)') &&
+        pageSource.includes('setPage(1)') &&
+        pageSource.includes('setSelectedRowKeys([])'),
+      '页面应保存列头筛选状态，并在表格筛选/排序变化后回到第一页且清空选择',
+    )
+    assert(
+      pageSource.includes('function hasProductColumnFilterValue') &&
+        pageSource.includes('提交查询时再过滤空筛选') &&
+        pageSource.includes("return JSON.stringify({ operator, value: value.trim() })"),
+      '列头筛选下拉应保留空值 draft token，避免先选操作符时被重置',
+    )
+    assert(
+      pageSource.includes('buildTextFilterDropdown') &&
+        pageSource.includes('buildNumberFilterDropdown') &&
+        pageSource.includes('buildDateFilterDropdown') &&
+        pageSource.includes('renderColumnFilterPanel') &&
+        pageSource.includes('pos-products-column-filter-panel') &&
+        pageSource.includes("textFilterProps('productCode'") &&
+        pageSource.includes("textFilterProps('itemNumber'") &&
+        pageSource.includes("numberFilterProps('purchasePrice')") &&
+        pageSource.includes("dateFilterProps('createdAt')") &&
+        pageSource.includes("enumFilterProps('isActive'"),
+      '页面应给文本、数字、日期和枚举列绑定列头筛选控件',
+    )
+    assert(
+      globalStyleSource.includes('.pos-products-column-filter-panel') &&
+        globalStyleSource.includes('.pos-products-column-filter-actions') &&
+        globalStyleSource.includes('.pos-products-compact-table .ant-table-filter-column') &&
+        globalStyleSource.includes('.pos-products-compact-table .ant-table-filter-column-title'),
+      '商品管理列头筛选弹层和表头应有统一样式，避免控件拥挤和标题竖排',
+    )
+    assert(
+      pageSource.includes("title: t('posAdmin.products.productCode', '商品编码')") &&
+        pageSource.includes('width: 86') &&
+        pageSource.includes("title: t('posAdmin.products.autoPricing', '自动定价')") &&
+        pageSource.includes('width: 92') &&
+        pageSource.includes("title: t('posAdmin.products.productTypeLabel', '商品类型')") &&
+        pageSource.includes('width: 88') &&
+        pageSource.includes('scroll={{ x: 1640, y: tableScrollY }}'),
+      '接入筛选/排序后的窄列表头应放宽列宽，并同步表格横向滚动宽度',
+    )
+    assert(
+      pageSource.includes('setColumnFilters({})') &&
+        !pageSource.includes("title: t('posAdmin.products.unitWeight', '重量')"),
+      '重置应清空列头筛选，且主表重量列应移除',
+    )
+  })
+  if (productColumnFiltersFailure) failures.push(productColumnFiltersFailure)
 
   const productAutoPricingColumnFailure = await runTest('商品管理主列表应显示自动定价列', () => {
     const columnsStart = pageSource.indexOf('const columns: ColumnsType<ProductRow> = [')

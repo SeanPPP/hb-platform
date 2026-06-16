@@ -6,6 +6,11 @@ import {
 
 export type WarehouseProductColumnFilters = Record<string, string[]>;
 export type WarehouseProductTableFilters = Record<string, readonly unknown[] | null | undefined>;
+export type TextFilterMode = 'contains' | 'eq' | 'starts' | 'ends';
+export type ComparableFilterMode = 'eq' | 'range' | 'gte' | 'lte';
+
+const FILTER_TOKEN_PREFIXES = ['contains', 'eq', 'starts', 'ends', 'gte', 'lte'] as const;
+const FILTER_TOKEN_NAMESPACE = '__filter';
 
 export function setFilterValues(
   filters: WarehouseProductColumnFilters,
@@ -42,6 +47,93 @@ export function buildRangeFilterTokens(min?: string | number, max?: string | num
 
 export function findFilterTokenValue(values: string[] | undefined, prefix: 'gte:' | 'lte:') {
   return values?.find((value) => value.startsWith(prefix))?.slice(prefix.length) ?? '';
+}
+
+function buildModeToken(mode: (typeof FILTER_TOKEN_PREFIXES)[number], value?: string | number) {
+  const normalizedValue = value === undefined || value === null ? '' : String(value).trim();
+  return normalizedValue ? `${FILTER_TOKEN_NAMESPACE}:${mode}:${normalizedValue}` : undefined;
+}
+
+function splitFilterToken(value?: string) {
+  const normalizedValue = value?.trim() ?? '';
+  const namespacePrefix = `${FILTER_TOKEN_NAMESPACE}:`;
+  if (!normalizedValue.startsWith(namespacePrefix)) {
+    return { mode: undefined, value: normalizedValue };
+  }
+
+  const tokenBody = normalizedValue.slice(namespacePrefix.length);
+  const separatorIndex = tokenBody.indexOf(':');
+  if (separatorIndex <= 0) {
+    return { mode: undefined, value: normalizedValue };
+  }
+
+  const rawMode = tokenBody.slice(0, separatorIndex);
+  const tokenValue = tokenBody.slice(separatorIndex + 1).trim();
+  const mode = FILTER_TOKEN_PREFIXES.find((item) => item === rawMode);
+  if (!mode) {
+    return { mode: undefined, value: normalizedValue };
+  }
+  return { mode, value: tokenValue };
+}
+
+export function buildTextFilterTokens(mode: TextFilterMode, value?: string | number) {
+  const token = buildModeToken(mode, value);
+  return token ? [token] : [];
+}
+
+export function parseTextFilterTokens(values?: string[]) {
+  const firstValue = values?.find((value) => value.trim()) ?? '';
+  const parsed = splitFilterToken(firstValue);
+  if (parsed.mode === 'eq' || parsed.mode === 'starts' || parsed.mode === 'ends') {
+    return { mode: parsed.mode, value: parsed.value } satisfies { mode: TextFilterMode; value: string };
+  }
+
+  return {
+    // 兼容旧列头筛选：没有模式前缀的文本值继续按 contains 处理。
+    mode: 'contains' as TextFilterMode,
+    value: parsed.mode === 'contains' ? parsed.value : firstValue.trim(),
+  };
+}
+
+export function buildComparableFilterTokens(
+  mode: ComparableFilterMode,
+  values: { value?: string | number; min?: string | number; max?: string | number },
+) {
+  if (mode === 'range') {
+    return buildRangeFilterTokens(values.min, values.max);
+  }
+  if (mode === 'gte') {
+    return buildRangeFilterTokens(values.value, undefined);
+  }
+  if (mode === 'lte') {
+    return buildRangeFilterTokens(undefined, values.value);
+  }
+
+  const token = buildModeToken(mode, values.value);
+  return token ? [token] : [];
+}
+
+export function parseComparableFilterTokens(values?: string[]) {
+  const normalizedValues = values?.map((value) => value.trim()).filter(Boolean) ?? [];
+  const gteValue = findFilterTokenValue(normalizedValues, 'gte:');
+  const lteValue = findFilterTokenValue(normalizedValues, 'lte:');
+  if (gteValue && lteValue) {
+    return { mode: 'range' as ComparableFilterMode, min: gteValue, max: lteValue, value: '' };
+  }
+  if (gteValue) {
+    return { mode: 'gte' as ComparableFilterMode, value: gteValue, min: '', max: '' };
+  }
+  if (lteValue) {
+    return { mode: 'lte' as ComparableFilterMode, value: lteValue, min: '', max: '' };
+  }
+
+  const parsed = splitFilterToken(normalizedValues[0]);
+  if (parsed.mode === 'eq') {
+    return { mode: 'eq' as ComparableFilterMode, value: parsed.value, min: '', max: '' };
+  }
+
+  // 兼容旧数字/日期筛选：裸值默认视为精确匹配。
+  return { mode: 'eq' as ComparableFilterMode, value: normalizedValues[0] ?? '', min: '', max: '' };
 }
 
 export function normalizeTableFilters(filters: WarehouseProductTableFilters): WarehouseProductColumnFilters {

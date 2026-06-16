@@ -3194,6 +3194,90 @@ body {
   overflow: visible;
 }
 
+.pos-products-compact-table .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.pos-products-compact-table .ant-table-filter-column {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pos-products-compact-table .ant-table-filter-column-title,
+.pos-products-compact-table .ant-table-column-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pos-products-compact-table .ant-table-column-sorters {
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+}
+
+.pos-products-compact-table .ant-table-filter-trigger {
+  flex: 0 0 auto;
+  margin-inline: 0;
+}
+
+.pos-products-column-filter-panel {
+  width: 280px;
+  padding: 0;
+}
+
+.pos-products-column-filter-panel-wide {
+  width: 320px;
+}
+
+.pos-products-column-filter-title {
+  padding: 10px 12px 8px;
+  color: #262626;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.pos-products-column-filter-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.pos-products-column-filter-label {
+  color: #595959;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.pos-products-column-filter-body .ant-select,
+.pos-products-column-filter-body .ant-input-number,
+.pos-products-column-filter-body .ant-picker {
+  width: 100%;
+}
+
+.pos-products-column-filter-range {
+  display: flex;
+  width: 100%;
+}
+
+.pos-products-column-filter-range .ant-input-number {
+  flex: 1 1 0;
+}
+
+.pos-products-column-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
 .pos-products-compact-table .ant-tag,
 .store-product-price-compact-table .ant-tag {
   margin-inline-end: 0;

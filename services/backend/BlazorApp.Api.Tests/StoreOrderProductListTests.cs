@@ -314,6 +314,71 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_OrderPickerResolvesDomesticSupplierByItemNumberWhenProductCodesDiffer()
+    {
+        await SeedChinaSupplierAsync("CN001", "义乌一号");
+        await SeedChinaSupplierAsync("CN002", "义乌二号");
+        await SeedProductAsync("P-HB008", "HB008-01", barcode: "9528500822001");
+        await SeedWarehouseProductAsync("P-HB008");
+        await SeedDomesticProductAsync(
+            "DP-HB008-01",
+            unitVolume: 0.1m,
+            packingQuantity: 12,
+            supplierCode: "CN001",
+            hbProductNo: "HB008-01",
+            barcode: "9528500822001"
+        );
+
+        var included = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(included.Items);
+        Assert.Equal("P-HB008", item.ProductCode);
+        Assert.Equal("CN001", item.DomesticSupplierCode);
+        Assert.Equal("义乌一号", item.DomesticSupplierName);
+
+        var excluded = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN002",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        Assert.Empty(excluded.Items);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerUnifiedKeywordMatchesProductName()
+    {
+        await SeedProductAsync("P-NAME", "TABLE-01", productName: "Kids Chair + Table");
+        await SeedWarehouseProductAsync("P-NAME");
+        await SeedProductAsync("P-ITEM", "CHAIR-ITEM", productName: "Unrelated Product");
+        await SeedWarehouseProductAsync("P-ITEM");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            ItemNumber = "Kids",
+            ProductName = "Kids",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-NAME", item.ProductCode);
+        Assert.Equal("Kids Chair + Table", item.ProductName);
+    }
+
+    [Fact]
     public async Task ScanLookupProductsAsync_UsesSingleFieldLookupWhenBarcodeMatches()
     {
         await SeedProductAsync("P-BAR", "ITEM-BAR", barcode: "SCAN-001");
@@ -769,7 +834,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             "ITEM-002",
             quantity: 2m,
             allocQuantity: 1m,
-            isActive: false
+            isActive: true,
+            warehouseIsActive: false
         );
         await SeedOrderLineAsync("ORDER-003", "P003", "ITEM-003", quantity: 3m, allocQuantity: 1m);
 
@@ -808,6 +874,19 @@ public sealed class StoreOrderProductListTests : IDisposable
         var inactiveItem = Assert.Single(inactiveResult.Data.Items);
         Assert.Equal("P002", inactiveItem.ProductCode);
         Assert.False(inactiveItem.IsActive);
+
+        var activeResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-003",
+            new StoreOrderDetailQueryDto
+            {
+                StatFilter = "active",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        Assert.NotNull(activeResult.Data);
+        Assert.DoesNotContain(activeResult.Data.Items, item => item.ProductCode == "P002");
     }
 
     [Fact]
@@ -1500,12 +1579,13 @@ public sealed class StoreOrderProductListTests : IDisposable
         decimal quantity,
         decimal allocQuantity,
         bool isActive = true,
+        bool warehouseIsActive = true,
         bool isDeleted = false,
         bool productIsDeleted = false
     )
     {
         await SeedProductAsync(productCode, itemNumber, isActive: isActive, isDeleted: productIsDeleted);
-        await SeedWarehouseProductAsync(productCode, importPrice: 2m);
+        await SeedWarehouseProductAsync(productCode, importPrice: 2m, isActive: warehouseIsActive);
         await _db.Insertable(new DomesticProduct
         {
             ProductCode = productCode,
@@ -1557,13 +1637,17 @@ public sealed class StoreOrderProductListTests : IDisposable
         string productCode,
         decimal unitVolume,
         int packingQuantity,
-        string? supplierCode = null
+        string? supplierCode = null,
+        string? hbProductNo = null,
+        string? barcode = null
     )
     {
         await _db.Insertable(new DomesticProduct
         {
             ProductCode = productCode,
             SupplierCode = supplierCode,
+            HBProductNo = hbProductNo,
+            Barcode = barcode,
             UnitVolume = unitVolume,
             PackingQuantity = packingQuantity,
             IsDeleted = false,

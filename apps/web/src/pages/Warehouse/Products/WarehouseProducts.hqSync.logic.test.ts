@@ -13,9 +13,13 @@ import {
 } from '../Categories/categoryProductFilters'
 import {
   buildCategoryQueryValue,
+  buildComparableFilterTokens,
   buildRangeFilterTokens,
+  buildTextFilterTokens,
   getSingleFilterValue,
   normalizeTableFilters,
+  parseComparableFilterTokens,
+  parseTextFilterTokens,
   resolveCategoryFilterValueFromTableFilters,
   setFilterValues,
 } from './columnFilters'
@@ -622,8 +626,10 @@ async function main() {
       pageSource.includes('.warehouse-products-table .ant-table-thead > tr > th,') &&
         pageSource.includes('padding: 4px 6px !important') &&
         pageSource.includes('.warehouse-products-table .ant-table-column-title') &&
-        pageSource.includes('-webkit-line-clamp: 2'),
-      '商品管理主表应使用紧凑单元格 padding，且表头标题允许两行截断',
+        pageSource.includes('-webkit-line-clamp: 2') &&
+        pageSource.includes('.warehouse-products-table .ant-table-filter-column') &&
+        pageSource.includes('.warehouse-products-table .ant-table-filter-trigger'),
+      '商品管理主表应使用紧凑单元格 padding，且表头标题、排序和筛选图标应稳定排列',
     )
     assert(
       pageSource.includes('min-height: 48px') &&
@@ -643,21 +649,25 @@ async function main() {
       columnsSection.includes("key: 'productImage'") &&
         columnsSection.includes('width: 64') &&
         columnsSection.includes('<Image src={value} alt="" width={36} height={36}') &&
+        columnsSection.includes("key: 'itemNumber'") &&
+        columnsSection.includes('width: 122') &&
         columnsSection.includes("key: 'isActive'") &&
-        columnsSection.includes('width: 92') &&
+        columnsSection.includes('width: 104') &&
         columnsSection.includes("key: 'productType'") &&
         columnsSection.includes("key: 'domesticPrice'") &&
-        columnsSection.includes('width: 82') &&
-        columnsSection.includes("key: 'packingQty'") &&
         columnsSection.includes('width: 96') &&
+        columnsSection.includes("key: 'packingQty'") &&
+        columnsSection.includes('width: 108') &&
         columnsSection.includes("key: 'minOrderQuantity'") &&
         columnsSection.includes("dataIndex: 'minOrderQuantity'") &&
-        columnsSection.includes('width: 84'),
-      '图片、状态、商品类型、价格、装箱数和中包数等关键列应使用压缩列宽，且中包数仍绑定 minOrderQuantity',
+        columnsSection.includes('width: 96') &&
+        columnsSection.includes("key: 'updatedAt'") &&
+        columnsSection.includes('width: 164'),
+      '图片、状态、商品类型、价格、装箱数、中包数和更新时间等关键列应使用筛选友好列宽，且中包数仍绑定 minOrderQuantity',
     )
     assert(
       columnsSection.includes('BarcodePreview value={value} textMaxWidth={150} compactCopy') &&
-        pageSource.includes('scroll={{ x: 2130, y: 620 }}'),
+        pageSource.includes('scroll={{ x: 2260, y: 620 }}'),
       '条码列和表格横向滚动宽度应按紧凑布局更新',
     )
     assert(
@@ -916,6 +926,25 @@ async function main() {
       ['gte:5', 'lte:10'],
       '数字范围应生成后端识别的 gte/lte token',
     )
+    assertDeepEqual(buildTextFilterTokens('contains', 'Clock'), ['__filter:contains:Clock'], '文本包含应生成命名空间 contains token')
+    assertDeepEqual(buildTextFilterTokens('eq', 'HB001'), ['__filter:eq:HB001'], '文本等于应生成命名空间 eq token')
+    assertDeepEqual(buildTextFilterTokens('starts', 'HB'), ['__filter:starts:HB'], '文本开头是应生成命名空间 starts token')
+    assertDeepEqual(buildTextFilterTokens('ends', '001'), ['__filter:ends:001'], '文本结尾是应生成命名空间 ends token')
+    assertDeepEqual(parseTextFilterTokens(['Clock']), { mode: 'contains', value: 'Clock' }, '旧文本裸值应兼容为 contains')
+    assertDeepEqual(parseTextFilterTokens(['starts:HB']), { mode: 'contains', value: 'starts:HB' }, '旧文本保留前缀字面值')
+    assertDeepEqual(parseTextFilterTokens(['__filter:starts:HB']), { mode: 'starts', value: 'HB' }, '文本 token 应能还原模式和值')
+    assertDeepEqual(buildComparableFilterTokens('eq', { value: 12 }), ['__filter:eq:12'], '数字等于应生成命名空间 eq token')
+    assertDeepEqual(buildComparableFilterTokens('range', { min: 5, max: 10 }), ['gte:5', 'lte:10'], '数字范围应生成 gte/lte token')
+    assertDeepEqual(buildComparableFilterTokens('gte', { value: 8 }), ['gte:8'], '数字大于等于应生成 gte token')
+    assertDeepEqual(buildComparableFilterTokens('lte', { value: 9 }), ['lte:9'], '数字小于等于应生成 lte token')
+    assertDeepEqual(parseComparableFilterTokens(['18']), { mode: 'eq', value: '18', min: '', max: '' }, '旧数字裸值应兼容为 eq')
+    assertDeepEqual(parseComparableFilterTokens(['__filter:eq:18']), { mode: 'eq', value: '18', min: '', max: '' }, '数字 eq token 应能还原模式和值')
+    assertDeepEqual(parseComparableFilterTokens(['gte:2026-06-01', 'lte:2026-06-16']), {
+      mode: 'range',
+      min: '2026-06-01',
+      max: '2026-06-16',
+      value: '',
+    }, '日期范围 token 应能还原为 range 模式')
     assertDeepEqual(
       normalizeTableFilters({
         name: [' Clock '],
@@ -1007,10 +1036,21 @@ async function main() {
     )
 
     assert(
+      pageSource.includes('const renderColumnFilterPanel = (content: ReactNode, onApply: () => void, onReset: () => void) =>') &&
+        pageSource.includes('统一列头筛选面板骨架') &&
+        pageSource.includes('warehouse-products-column-filter-panel') &&
+        pageSource.includes('warehouse-products-column-filter-body') &&
+        pageSource.includes('warehouse-products-column-filter-actions') &&
+        !pageSource.includes('style={{ width: 112 }}'),
+      '文本、数字和日期列头筛选应复用统一面板，不能回退到窄 Select 下拉',
+    )
+    assert(
       pageSource.includes('const buildTextFilterDropdown = (filterKey: string, placeholder: string) =>') &&
         pageSource.includes('const buildNumberRangeFilterDropdown = (filterKey: string) =>') &&
-        pageSource.includes('const buildDateRangeFilterDropdown = (filterKey: string) =>'),
-      '页面应提供文本、数字区间和日期区间列头筛选 helper',
+        pageSource.includes('const buildDateRangeFilterDropdown = (filterKey: string) =>') &&
+        pageSource.includes('textFilterModeOptions') &&
+        pageSource.includes('comparableFilterModeOptions'),
+      '页面应提供文本、数字和日期列头筛选 helper，并显示匹配方式选择',
     )
     assert(
       columnFiltersSource.includes("const filterKeyMap: Record<string, string> = {") &&

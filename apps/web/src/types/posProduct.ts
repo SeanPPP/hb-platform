@@ -54,7 +54,13 @@ export interface PosProductFilterParams {
   storeCode?: string
   sortBy?: string
   sortOrder?: 'ascend' | 'descend'
+  columnFilters?: PosProductColumnFilters
 }
+
+export type PosProductTextFilterOperator = 'contains' | 'equals' | 'startsWith' | 'endsWith'
+export type PosProductNumberFilterOperator = 'equals' | 'between' | 'gte' | 'lte'
+export type PosProductDateFilterOperator = 'equals' | 'between' | 'gte' | 'lte'
+export type PosProductColumnFilters = Record<string, string[]>
 
 export interface BatchUpdatePosProductDto {
   productCode: string

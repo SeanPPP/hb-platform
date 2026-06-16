@@ -186,7 +186,7 @@ namespace BlazorApp.Api.Tests
                 PageSize = 20,
                 Filters = new Dictionary<string, string[]>
                 {
-                    ["productName"] = new[] { "马克" },
+                    ["productName"] = new[] { "__filter:contains:马克" },
                 },
             });
             var barcodeResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
@@ -195,7 +195,7 @@ namespace BlazorApp.Api.Tests
                 PageSize = 20,
                 Filters = new Dictionary<string, string[]>
                 {
-                    ["barcode"] = new[] { "LAMP-002" },
+                    ["barcode"] = new[] { "__filter:ends:002" },
                 },
             });
             var itemNumberResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
@@ -204,7 +204,7 @@ namespace BlazorApp.Api.Tests
                 PageSize = 20,
                 Filters = new Dictionary<string, string[]>
                 {
-                    ["itemNumber"] = new[] { "MUG-001" },
+                    ["itemNumber"] = new[] { "__filter:starts:ITEM-MUG" },
                 },
             });
             var nameEnResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
@@ -213,7 +213,7 @@ namespace BlazorApp.Api.Tests
                 PageSize = 20,
                 Filters = new Dictionary<string, string[]>
                 {
-                    ["nameEn"] = new[] { "Nordic" },
+                    ["nameEn"] = new[] { "__filter:eq:Nordic Lamp" },
                 },
             });
             var supplierResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
@@ -245,6 +245,50 @@ namespace BlazorApp.Api.Tests
             var supplierItem = Assert.Single(supplierResult.Items);
             Assert.Equal("P-FILTER-001", supplierItem.ProductCode);
             Assert.Equal("Sydney Local Trading", supplierItem.LocalSupplierName);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_TreatsLegacyPrefixedTextAsLiteralContains()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-LEGACY-PREFIX-001",
+                "ITEM-LEGACY-PREFIX-001",
+                "eq:ABC 旧值商品",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-LEGACY-PREFIX-002",
+                "ITEM-LEGACY-PREFIX-002",
+                "ABC",
+                null
+            );
+
+            var service = CreateService();
+
+            var legacyResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productName"] = new[] { "eq:ABC" },
+                },
+            });
+            var exactResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productName"] = new[] { "__filter:eq:ABC" },
+                },
+            });
+
+            var legacyItem = Assert.Single(legacyResult.Items);
+            Assert.Equal("P-LEGACY-PREFIX-001", legacyItem.ProductCode);
+
+            var exactItem = Assert.Single(exactResult.Items);
+            Assert.Equal("P-LEGACY-PREFIX-002", exactItem.ProductCode);
         }
 
         [Fact]
@@ -365,6 +409,91 @@ namespace BlazorApp.Api.Tests
             var item = Assert.Single(result.Items);
             Assert.Equal("P-RANGE-001", item.ProductCode);
             Assert.Equal("Adelaide Local", item.LocalSupplierName);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersWarehouseNumberColumnsByEqualToken()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-NUM-EQ-001",
+                "ITEM-NUM-EQ-001",
+                "数值等于命中商品",
+                null,
+                supplierCode: "CN-NUM-EQ-001",
+                domesticPrice: 12.50m,
+                oemPrice: 25.80m,
+                importPrice: 9.60m,
+                minOrderQuantity: 6,
+                packingQuantity: 24,
+                volume: 0.45m
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-NUM-EQ-002",
+                "ITEM-NUM-EQ-002",
+                "数值等于未命中商品",
+                null,
+                supplierCode: "CN-NUM-EQ-002",
+                domesticPrice: 13.50m,
+                oemPrice: 26.80m,
+                importPrice: 10.60m,
+                minOrderQuantity: 8,
+                packingQuantity: 36,
+                volume: 0.60m
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["minOrderQuantity"] = new[] { "__filter:eq:6" },
+                    ["domesticPrice"] = new[] { "__filter:eq:12.50" },
+                    ["oemPrice"] = new[] { "__filter:eq:25.80" },
+                    ["importPrice"] = new[] { "__filter:eq:9.60" },
+                    ["packingQuantity"] = new[] { "__filter:eq:24" },
+                    ["volume"] = new[] { "__filter:eq:0.45" },
+                },
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-NUM-EQ-001", item.ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersUpdatedAtByEqualDateToken()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-DATE-EQ-001",
+                "ITEM-DATE-EQ-001",
+                "日期等于命中商品",
+                null,
+                updatedAt: new DateTime(2026, 6, 16, 10, 30, 0, DateTimeKind.Utc)
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-DATE-EQ-002",
+                "ITEM-DATE-EQ-002",
+                "日期等于未命中商品",
+                null,
+                updatedAt: new DateTime(2026, 6, 15, 23, 59, 0, DateTimeKind.Utc)
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["updatedAt"] = new[] { "__filter:eq:2026-06-16" },
+                },
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-DATE-EQ-001", item.ProductCode);
         }
 
         [Fact]
