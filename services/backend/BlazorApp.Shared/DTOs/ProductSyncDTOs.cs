@@ -467,8 +467,8 @@ namespace BlazorApp.Shared.DTOs
         public bool? WarehouseIsActive { get; set; }
 
         /// <summary>
-        /// 是否为新商品候选。
-        /// 新商品不参与推送，只保留旧商品 upsert。
+        /// 前端页面上的新商品状态提示。
+        /// 后端不会信任该字段做最终判断，会实时查询本地 Product 后决定是否允许推送。
         /// </summary>
         public bool IsNewProduct { get; set; }
     }

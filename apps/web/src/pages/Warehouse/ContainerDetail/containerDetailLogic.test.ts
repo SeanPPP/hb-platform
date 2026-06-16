@@ -20,6 +20,7 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
+  canUseContainerDetailLocalTagFilters,
   mergeContainerDetailColumnOrder,
   isContainerDetailColumnOrderCustomized,
   buildContainerDetailSaveFailureKeys,
@@ -866,6 +867,72 @@ assertDeepEqual(
   '商品类型统计 tag 应转换为 productTypes 参数，且不混入 selectedTags',
 )
 
+assertEqual(
+  canUseContainerDetailLocalTagFilters({
+    loadedQueryKey: 'base-query',
+    baseQueryKey: 'base-query',
+    loadedRowsLength: 83,
+    itemsTotal: 83,
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+  }),
+  true,
+  '当前非标签查询已全量加载时应允许前端标签过滤',
+)
+assertEqual(
+  canUseContainerDetailLocalTagFilters({
+    loadedQueryKey: 'base-query',
+    baseQueryKey: 'base-query',
+    loadedRowsLength: 50,
+    itemsTotal: 83,
+    hasMore: true,
+    loading: false,
+    loadingMore: false,
+  }),
+  false,
+  '仍有下一页时不能前端标签过滤，必须由后端兜底',
+)
+assertEqual(
+  canUseContainerDetailLocalTagFilters({
+    loadedQueryKey: 'scoped-query',
+    baseQueryKey: 'base-query',
+    loadedRowsLength: 12,
+    itemsTotal: 12,
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+  }),
+  false,
+  '最近加载的是带标签查询时不能当作 base 全量结果做本地标签切换',
+)
+assertEqual(
+  canUseContainerDetailLocalTagFilters({
+    loadedQueryKey: 'base-query',
+    baseQueryKey: 'base-query',
+    loadedRowsLength: 82,
+    itemsTotal: 83,
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+  }),
+  false,
+  '已加载数量小于总数时不能前端标签过滤',
+)
+assertEqual(
+  canUseContainerDetailLocalTagFilters({
+    loadedQueryKey: 'base-query',
+    baseQueryKey: 'base-query',
+    loadedRowsLength: 83,
+    itemsTotal: 83,
+    hasMore: false,
+    loading: true,
+    loadingMore: false,
+  }),
+  false,
+  '明细加载中不能前端标签过滤，避免使用半截数据',
+)
+
 assertDeepEqual(
   mergeContainerDetailLoadedItems(
     [
@@ -1566,10 +1633,10 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[active, detailQueryKey]') &&
-    pageSource.includes('detailQueryKey 已包含货柜、远程筛选和 tag，列头排序只在前端当前已加载数据内处理'),
+  pageSource.includes('[active, activeLoadQueryKey]') &&
+    pageSource.includes('activeLoadQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤'),
   true,
-  '远程重载 effect 应监听 active 和远程查询 key，列头排序不应进入远程重载依赖',
+  '远程重载 effect 应监听 active 和当前加载查询 key，全量加载后标签切换不应触发远程重载',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -1631,7 +1698,7 @@ const hqSelectionRows: ContainerDetail[] = [
 assertDeepEqual(
   buildContainerDetailHqPushSelection(hqSelectionRows),
   {
-    productCodes: ['HB001', 'HB003'],
+    productCodes: ['HB001', 'HB002', 'HB003'],
     items: [
       {
         productCode: 'HB001',
@@ -1647,6 +1714,19 @@ assertDeepEqual(
         isNewProduct: false,
       },
       {
+        productCode: 'HB002',
+        localSupplierCode: undefined,
+        itemNumber: undefined,
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
+        domesticPrice: undefined,
+        importPrice: undefined,
+        oemPrice: undefined,
+        isNewProduct: true,
+      },
+      {
         productCode: 'HB003',
         localSupplierCode: undefined,
         itemNumber: undefined,
@@ -1660,10 +1740,10 @@ assertDeepEqual(
         isNewProduct: false,
       },
     ],
-    skippedNewProductCount: 1,
+    skippedNewProductCount: 0,
     missingProductCodeCount: 1,
   },
-  '发送到 HQ 应只收集本地已有且有商品编码的选中明细，并对商品编码去重',
+  '发送到 HQ 应收集有有效匹配信息的选中明细，并对商品编码去重',
 )
 
 assertDeepEqual(
@@ -1696,8 +1776,21 @@ assertDeepEqual(
     { id: 17, hguid: 'detail-17', 商品编码: 'HB017', 是否新商品: true, warehouseIsActive: true },
   ]),
   {
-    productCodes: ['HB016'],
+    productCodes: ['HB015', 'HB016', 'HB017'],
     items: [
+      {
+        productCode: 'HB015',
+        localSupplierCode: 'DATS',
+        itemNumber: '72653',
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
+        domesticPrice: 4.2,
+        importPrice: 1.55,
+        oemPrice: 1.72,
+        isNewProduct: true,
+      },
       {
         productCode: 'HB016',
         localSupplierCode: 'COS',
@@ -1711,11 +1804,24 @@ assertDeepEqual(
         oemPrice: 3.21,
         isNewProduct: false,
       },
+      {
+        productCode: 'HB017',
+        localSupplierCode: undefined,
+        itemNumber: undefined,
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
+        domesticPrice: undefined,
+        importPrice: undefined,
+        oemPrice: undefined,
+        isNewProduct: true,
+      },
     ],
-    skippedNewProductCount: 2,
+    skippedNewProductCount: 0,
     missingProductCodeCount: 0,
   },
-  '发送到 HQ 应把 1 也视为新商品跳过，并在明细编码为空白时回退商品信息编码',
+  '发送到 HQ 不应因新商品页面状态跳过候选，并在明细编码为空白时回退商品信息编码',
 )
 
 assertDeepEqual(
@@ -1735,8 +1841,21 @@ assertDeepEqual(
     },
   ]),
   {
-    productCodes: [],
+    productCodes: ['HB020'],
     items: [
+      {
+        productCode: 'HB020',
+        localSupplierCode: undefined,
+        itemNumber: undefined,
+        productName: undefined,
+        englishName: undefined,
+        barcode: undefined,
+        imageUrl: undefined,
+        domesticPrice: undefined,
+        importPrice: undefined,
+        oemPrice: undefined,
+        isNewProduct: true,
+      },
       {
         productCode: undefined,
         localSupplierCode: 'DATS',
@@ -1751,10 +1870,10 @@ assertDeepEqual(
         isNewProduct: false,
       },
     ],
-    skippedNewProductCount: 1,
+    skippedNewProductCount: 0,
     missingProductCodeCount: 0,
   },
-  '缺商品编码但有供应商和货号时，发送到 HQ 仍应携带候选项',
+  '新商品页面状态不拦截发送，缺商品编码但有供应商和货号时也应携带候选项',
 )
 
 assertDeepEqual(
@@ -1880,7 +1999,7 @@ const pushToHqPollingSource = pageSource.slice(
 )
 assertEqual(pushToHqPollingSource.includes('loadData()'), false, '发送到 HQ job 终态不应重新加载货柜明细表格')
 assertEqual(pushToHqPollingSource.includes('showPushToHqResult'), false, '发送到 HQ job 终态只使用右上角通知，不应再弹结果 Modal')
-assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), true, '选中明细包含新商品时应给出友好 warning')
+assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), false, '发送到 HQ 不应再因页面新商品状态给出跳过 warning')
 assertEqual(pageSource.includes('发送 HQ 的结果统一收敛到右上角通知'), true, '发送到 HQ 提交失败也应使用右上角通知承载结果')
 assertEqual(pageSource.includes("message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败通知而不是部分成功')
 assertEqual(pageSource.includes('result.warehouseInventoriesCreated'), true, '结果弹窗应展示仓库库存新增统计')
@@ -2237,12 +2356,12 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes("const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)") &&
-    pageSource.includes('applyContainerDetailLoadedTextFilters(baseFilteredRows, itemNumberFilter, columnFilters)') &&
+    pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
+    pageSource.includes('applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)') &&
     pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
-    !pageSource.includes('categoryFilterValue, sortState') &&
-    !pageSource.includes('categoryFilterValue, selectedTagFilters'),
+    !pageSource.includes('categoryFilterValue, sortState'),
   true,
-  '顶部货号、列头文字和分类过滤应在前端过滤已加载行，不应进入远程 detailQuery 依赖',
+  '标签、顶部货号、列头文字和分类过滤应在前端过滤已加载行，分类和排序不应进入远程加载查询依赖',
 )
 assertEqual(
   pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
@@ -2260,21 +2379,36 @@ assertEqual(
 )
 assertEqual(
   (() => {
-    const detailQueryStart = pageSource.indexOf('const detailQuery = useMemo(() => buildContainerDetailQuery({')
-    const detailQueryEnd = pageSource.indexOf('const detailQueryKey', detailQueryStart)
-    const detailQuerySource = pageSource.slice(detailQueryStart, detailQueryEnd)
-    return detailQueryStart >= 0 &&
-      pageSource.includes('filters: remoteColumnFilters') &&
-      !detailQuerySource.includes('sortState')
+    const baseQueryStart = pageSource.indexOf('const baseDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const scopedQueryStart = pageSource.indexOf('const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', scopedQueryStart)
+    const baseQuerySource = pageSource.slice(baseQueryStart, scopedQueryStart)
+    const scopedQuerySource = pageSource.slice(scopedQueryStart, queryEnd)
+    return baseQueryStart >= 0 &&
+      scopedQueryStart > baseQueryStart &&
+      baseQuerySource.includes('selectedTags: []') &&
+      scopedQuerySource.includes('selectedTags: selectedTagFilters') &&
+      pageSource.includes('const activeLoadQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery') &&
+      pageSource.includes('const activeLoadQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey') &&
+      !scopedQuerySource.includes('sortState')
   })(),
   true,
-  '非文本列头过滤和标签筛选应继续转换为服务端查询条件，列头排序不应进入远程 detailQuery',
+  '明细加载查询应拆分为无标签 base 查询和带标签 scoped 查询，列头排序不应进入远程查询',
 )
 assertEqual(
   !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
     pageSource.includes('const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])'),
   true,
   '顶部货号和列头文字筛选不应合并进远程查询条件',
+)
+assertEqual(
+  pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
+    pageSource.includes('applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)') &&
+    pageSource.includes('canUseLocalTagFilters ? localTagStats : remoteTagStats') &&
+    pageSource.includes(': { query: scopedDetailQuery }') &&
+    pageSource.includes('...scopedDetailQuery,'),
+  true,
+  '标签全量加载时应进入前端过滤链路，批量作用域和全量拉取仍必须使用带标签 scoped 查询',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -2742,9 +2876,9 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)') &&
-    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }') &&
-    pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
-    pageSource.includes('lastLoadedContainerDetailSuccessRef.current?.queryKey') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: activeLoadQueryKey }') &&
+    pageSource.includes('const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+    pageSource.includes('loadedDetailQueryKey: loadedDetailQueryKey') &&
     !pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current'),
   true,
   '明细自动跳过判断只能使用明细成功加载记录，不能沿用头部加载状态或旧查询 key',
