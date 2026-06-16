@@ -56,13 +56,15 @@
   justify-content: center;
   max-width: 100%;
   gap: 18px;
-  white-space: nowrap;
 }
 
 .store-order-picking-store {
   min-width: 0;
+  display: -webkit-box;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   font-size: 22px;
   font-weight: 800;
   line-height: 1.15;
