@@ -344,6 +344,7 @@ export default function LocalSupplierInvoicesScreen() {
   const [snackbar, setSnackbar] = useState("");
   const pendingRestoreRef = useRef<ReturnType<typeof decodeLocalSupplierInvoicesReturnParams>>(null);
   const handledRestoreKeyRef = useRef<string | null>(null);
+  const suppliersLoadingRef = useRef(false);
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const restoreState = useMemo(
@@ -472,11 +473,12 @@ export default function LocalSupplierInvoicesScreen() {
   }, [detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
 
   const loadSuppliers = useCallback(async () => {
-    if (suppliersLoading) {
+    if (suppliersLoadingRef.current) {
       return;
     }
 
     setSuppliersLoading(true);
+    suppliersLoadingRef.current = true;
     try {
       const module = (await import("@/modules/local-supplier-invoices/api")) as {
         fetchActiveLocalSuppliers?: () => Promise<unknown>;
@@ -492,9 +494,10 @@ export default function LocalSupplierInvoicesScreen() {
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.suppliersLoadFailed"));
     } finally {
+      suppliersLoadingRef.current = false;
       setSuppliersLoading(false);
     }
-  }, [getErrorMessage, suppliersLoading, t]);
+  }, [getErrorMessage, t]);
 
   useEffect(() => {
     void loadInvoices();

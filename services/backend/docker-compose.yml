@@ -27,7 +27,8 @@ services:
       # SMTP 密码密文依赖 DataProtection key ring，必须落到宿主机目录以跨容器重建保留。
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
       - Translation__Provider=deepseek
-      - Translation__DeepSeek__ApiKey=REDACTED
+      # 生产翻译密钥只从服务器 .env 注入，避免在 compose 中写入明文或占位值。
+      - Translation__DeepSeek__ApiKey=${DEEPSEEK_API_KEY}
       - TencentCloud__SecretId=${TENCENT_SECRET_ID}
       - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
       - TencentCloud__BucketName=${TENCENT_BUCKET_NAME}

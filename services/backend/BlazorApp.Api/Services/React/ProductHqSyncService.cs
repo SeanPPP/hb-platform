@@ -919,8 +919,7 @@ namespace BlazorApp.Api.Services.React
                 .Where(item =>
                     item != null
                     && (
-                        item.IsNewProduct
-                        || !string.IsNullOrWhiteSpace(item.ProductCode)
+                        !string.IsNullOrWhiteSpace(item.ProductCode)
                         || !string.IsNullOrWhiteSpace(item.LocalSupplierCode)
                         || !string.IsNullOrWhiteSpace(item.ItemNumber)
                     )
@@ -1035,15 +1034,8 @@ namespace BlazorApp.Api.Services.React
 
             foreach (var item in requestItems)
             {
-                if (item.IsNewProduct)
-                {
-                    result.Errors.Add($"新商品候选不推送: {DescribePushItem(item)}");
-                    failedCandidateCount++;
-                    itemFailureCount++;
-                    continue;
-                }
-
                 var errorCountBeforeResolve = result.Errors.Count;
+                // 前端 IsNewProduct 可能来自未刷新的页面状态；后端只信任本地 Product 实时匹配结果。
                 var matchedProduct = ResolveMatchedProduct(productsByCode, productsBySupplierItem, item, result);
                 var finalProductCode = NormalizeCode(matchedProduct?.ProductCode);
                 if (matchedProduct == null)

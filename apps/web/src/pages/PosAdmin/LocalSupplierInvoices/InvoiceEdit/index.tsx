@@ -119,7 +119,17 @@ import {
   filterBooleanColumn,
   filterProductStatusColumn,
   matchesTextColumnFilter,
+  matchesNumberColumnFilter,
+  matchesActionTypeColumnFilter,
+  parseNumberColumnFilter,
+  parseTextColumnFilter,
+  serializeNumberColumnFilter,
+  serializeTextColumnFilter,
+  type NumberFilterField,
+  type NumberFilterMode,
+  type TextColumnFilterModel,
   type TextFilterField,
+  type TextFilterMode,
 } from './tableColumnFilters'
 import { defaultPasteFieldOrder, parsePasteText, type PasteFieldKey } from './pasteDetails'
 import {
@@ -134,6 +144,7 @@ import {
 } from './backgroundJobGuards'
 import {
   applyInvoiceDetailInlineEdit,
+  applyInvoiceDetailBatchEdit,
   buildInvoiceDetailSaveItems,
   normalizeInvoiceDetailInlineValue,
   type InvoiceDetailInlineEditableField,
@@ -690,6 +701,8 @@ export default function InvoiceEditPage() {
   const [productStatusFilter, setProductStatusFilter] = useState<StatusFilterValue<ProductStatusFilter>>('all')
   const [barcodeStatusFilter, setBarcodeStatusFilter] = useState<StatusFilterValue<BarcodeStatusFilter>>('all')
   const [actionTypeFilter, setActionTypeFilter] = useState<ActionTypeFilterValue>('all')
+  // 列头过滤只作用于当前前端明细，不请求后端；保持受控后才能被“清空过滤”统一重置。
+  const [columnFilteredValues, setColumnFilteredValues] = useState<Record<string, (React.Key | boolean)[] | null>>({})
 
   /* ---- 表单 ---- */
   const [form] = Form.useForm()
@@ -991,9 +1004,15 @@ export default function InvoiceEditPage() {
     setProductStatusFilter('all')
     setBarcodeStatusFilter('all')
     setActionTypeFilter('all')
+    setColumnFilteredValues({})
   }, [])
 
-  // 当前过滤栏：只展示页面外层过滤，不包含表格列头自带过滤。
+  const activeColumnFilterCount = useMemo(
+    () => Object.values(columnFilteredValues).filter((values) => Array.isArray(values) && values.length > 0).length,
+    [columnFilteredValues],
+  )
+
+  // 当前过滤栏展示页面外层过滤和列头过滤摘要，方便一键清空所有前端过滤条件。
   const activeFilterTags = useMemo<ActiveFilterTag[]>(() => {
     const tags: ActiveFilterTag[] = []
     const keyword = searchText.trim()
@@ -1056,8 +1075,18 @@ export default function InvoiceEditPage() {
       })
     }
 
+    if (activeColumnFilterCount > 0) {
+      tags.push({
+        key: 'column-filters',
+        color: 'geekblue',
+        label: t('posAdmin.invoiceDetail.activeColumnFilters', '列头过滤：{{count}}', { count: activeColumnFilterCount }),
+        onClose: () => setColumnFilteredValues({}),
+      })
+    }
+
     return tags
   }, [
+    activeColumnFilterCount,
     actionTypeFilter,
     barcodeStatusFilter,
     barcodeStatusFilterLabels,
@@ -1255,22 +1284,30 @@ export default function InvoiceEditPage() {
       return
     }
 
+    const submittedInvoiceGuid = invoiceGuid
+    const submittedDetailGuids = selectedRowKeys.map(String)
+    const items = submittedDetailGuids.map((detailGUID) => ({ detailGUID }))
+
     setBatchEditLoading(true)
-    try {
-      const items = selectedRowKeys.map((key) => ({
-        detailGUID: String(key),
-      }))
-      await batchUpdateDetails(invoiceGuid, items, editFields)
-      message.success(t('posAdmin.invoiceDetail.batchUpdateSuccess', '批量更新成功'))
-      setBatchEditVisible(false)
-      batchEditForm.resetFields()
-      setSelectedRowKeys([])
-      await loadDetails()
-    } catch {
-      message.error(t('posAdmin.invoiceDetail.batchUpdateFailed', '批量更新失败'))
-    } finally {
-      setBatchEditLoading(false)
-    }
+    // 批量编辑确认后先更新前端当前明细，后端批量落库在后台继续执行，避免弹窗等待长请求。
+    setDetails((prev) => applyInvoiceDetailBatchEdit(prev, submittedDetailGuids, editFields))
+    setBatchEditVisible(false)
+    batchEditForm.resetFields()
+    setSelectedRowKeys([])
+    setBatchEditLoading(false)
+    message.success(t('posAdmin.invoiceDetail.batchUpdateSubmitted', '批量更新已提交'))
+
+    void (async () => {
+      try {
+        await batchUpdateDetails(submittedInvoiceGuid, items, editFields)
+        message.success(t('posAdmin.invoiceDetail.batchUpdateSuccess', '批量更新成功'))
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : t('posAdmin.invoiceDetail.batchUpdateFailed', '批量更新失败'))
+        if (canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid)) {
+          await loadDetails()
+        }
+      }
+    })()
   }
 
   const openStorePriceModal = () => {
@@ -1957,41 +1994,69 @@ export default function InvoiceEditPage() {
     field: TextFilterField,
     label: string,
   ): ColumnType<LocalSupplierInvoiceItemDto> => ({
+    filteredValue: (columnFilteredValues[field] ?? null) as React.Key[] | null,
     filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
-      <div style={{ padding: 8 }} onKeyDown={(event) => event.stopPropagation()}>
-        <Input
-          autoFocus
-          allowClear
-          size="small"
-          placeholder={t('posAdmin.invoiceDetail.columnSearchPlaceholder', '搜索{{label}}', { label })}
-          value={String(selectedKeys[0] ?? '')}
-          onChange={(event) => {
-            const value = event.target.value
-            setSelectedKeys(value ? [value] : [])
-          }}
-          onPressEnter={() => confirm()}
-          style={{ width: 180, marginBottom: 8, display: 'block' }}
-        />
-        <Space size={8}>
-          <Button
-            type="primary"
-            size="small"
-            icon={<SearchOutlined />}
-            onClick={() => confirm()}
-          >
-            {t('common.search', '搜索')}
-          </Button>
-          <Button
-            size="small"
-            onClick={() => {
-              clearFilters?.()
-              confirm()
-            }}
-          >
-            {t('common.reset', '重置')}
-          </Button>
-        </Space>
-      </div>
+      (() => {
+        const current = parseTextColumnFilter(selectedKeys[0] ?? '')
+        const setModel = (next: TextColumnFilterModel) => {
+          if ((next.mode === 'empty' || next.mode === 'notEmpty') || String(next.value ?? '').trim()) {
+            setSelectedKeys([serializeTextColumnFilter(next)])
+          } else {
+            setSelectedKeys([])
+          }
+        }
+        const textModeOptions: Array<{ label: string; value: TextFilterMode }> = [
+          { label: t('posAdmin.invoiceDetail.filterContains', '包含'), value: 'contains' },
+          { label: t('posAdmin.invoiceDetail.filterEquals', '等于'), value: 'equals' },
+          { label: t('posAdmin.invoiceDetail.filterStartsWith', '开头是'), value: 'startsWith' },
+          { label: t('posAdmin.invoiceDetail.filterEndsWith', '结尾是'), value: 'endsWith' },
+          { label: t('posAdmin.invoiceDetail.filterEmpty', '为空'), value: 'empty' },
+          { label: t('posAdmin.invoiceDetail.filterNotEmpty', '非空'), value: 'notEmpty' },
+        ]
+
+        return (
+          <div style={{ padding: 8 }} onKeyDown={(event) => event.stopPropagation()}>
+            <Select<TextFilterMode>
+              size="small"
+              value={current.mode}
+              options={textModeOptions}
+              onChange={(mode) => setModel({ ...current, mode })}
+              style={{ width: 180, marginBottom: 8, display: 'block' }}
+            />
+            {current.mode !== 'empty' && current.mode !== 'notEmpty' && (
+              <Input
+                autoFocus
+                allowClear
+                size="small"
+                placeholder={t('posAdmin.invoiceDetail.columnSearchPlaceholder', '搜索{{label}}', { label })}
+                value={String(current.value ?? '')}
+                onChange={(event) => setModel({ ...current, value: event.target.value })}
+                onPressEnter={() => confirm()}
+                style={{ width: 180, marginBottom: 8, display: 'block' }}
+              />
+            )}
+            <Space size={8}>
+              <Button
+                type="primary"
+                size="small"
+                icon={<SearchOutlined />}
+                onClick={() => confirm()}
+              >
+                {t('common.search', '搜索')}
+              </Button>
+              <Button
+                size="small"
+                onClick={() => {
+                  clearFilters?.()
+                  confirm()
+                }}
+              >
+                {t('common.reset', '重置')}
+              </Button>
+            </Space>
+          </div>
+        )
+      })()
     ),
     filterIcon: (filtered) => (
       <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
@@ -1999,12 +2064,112 @@ export default function InvoiceEditPage() {
     onFilter: (value, record) => matchesTextColumnFilter(record, field, value),
   })
 
+  const getNumberColumnFilterProps = (
+    field: NumberFilterField,
+    label: string,
+  ): ColumnType<LocalSupplierInvoiceItemDto> => ({
+    filteredValue: (columnFilteredValues[field] ?? null) as React.Key[] | null,
+    filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+      (() => {
+        const current = parseNumberColumnFilter(selectedKeys[0] ?? '')
+        const setModel = (next: ReturnType<typeof parseNumberColumnFilter>) => {
+          if (
+            next.mode === 'empty' ||
+            next.mode === 'notEmpty' ||
+            (next.mode === 'between' && (next.min !== undefined || next.max !== undefined)) ||
+            (next.mode !== 'between' && next.value !== undefined)
+          ) {
+            setSelectedKeys([serializeNumberColumnFilter(next)])
+          } else {
+            setSelectedKeys([])
+          }
+        }
+        const numberModeOptions: Array<{ label: string; value: NumberFilterMode }> = [
+          { label: t('posAdmin.invoiceDetail.filterEquals', '等于'), value: 'equals' },
+          { label: t('posAdmin.invoiceDetail.filterGreaterThan', '大于'), value: 'gt' },
+          { label: t('posAdmin.invoiceDetail.filterGreaterThanOrEqual', '大于等于'), value: 'gte' },
+          { label: t('posAdmin.invoiceDetail.filterLessThan', '小于'), value: 'lt' },
+          { label: t('posAdmin.invoiceDetail.filterLessThanOrEqual', '小于等于'), value: 'lte' },
+          { label: t('posAdmin.invoiceDetail.filterBetween', '区间'), value: 'between' },
+          { label: t('posAdmin.invoiceDetail.filterEmpty', '为空'), value: 'empty' },
+          { label: t('posAdmin.invoiceDetail.filterNotEmpty', '非空'), value: 'notEmpty' },
+        ]
+
+        return (
+          <div style={{ padding: 8 }} onKeyDown={(event) => event.stopPropagation()}>
+            <Select<NumberFilterMode>
+              size="small"
+              value={current.mode}
+              options={numberModeOptions}
+              onChange={(mode) => setModel({ ...current, mode })}
+              style={{ width: 180, marginBottom: 8, display: 'block' }}
+            />
+            {current.mode === 'between' && (
+              <Space size={6} style={{ marginBottom: 8 }}>
+                <InputNumber
+                  size="small"
+                  placeholder={t('posAdmin.invoiceDetail.filterMin', '最小')}
+                  value={current.min ?? null}
+                  onChange={(value) => setModel({ ...current, min: value ?? undefined })}
+                  style={{ width: 86 }}
+                />
+                <InputNumber
+                  size="small"
+                  placeholder={t('posAdmin.invoiceDetail.filterMax', '最大')}
+                  value={current.max ?? null}
+                  onChange={(value) => setModel({ ...current, max: value ?? undefined })}
+                  style={{ width: 86 }}
+                />
+              </Space>
+            )}
+            {current.mode !== 'between' && current.mode !== 'empty' && current.mode !== 'notEmpty' && (
+              <InputNumber
+                autoFocus
+                size="small"
+                placeholder={t('posAdmin.invoiceDetail.columnNumberFilterPlaceholder', '过滤{{label}}', { label })}
+                value={current.value ?? null}
+                onChange={(value) => setModel({ ...current, value: value ?? undefined })}
+                onPressEnter={() => confirm()}
+                style={{ width: 180, marginBottom: 8, display: 'block' }}
+              />
+            )}
+            <Space size={8}>
+              <Button
+                type="primary"
+                size="small"
+                icon={<SearchOutlined />}
+                onClick={() => confirm()}
+              >
+                {t('common.search', '搜索')}
+              </Button>
+              <Button
+                size="small"
+                onClick={() => {
+                  clearFilters?.()
+                  confirm()
+                }}
+              >
+                {t('common.reset', '重置')}
+              </Button>
+            </Space>
+          </div>
+        )
+      })()
+    ),
+    filterIcon: (filtered) => (
+      <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
+    ),
+    onFilter: (value, record) => matchesNumberColumnFilter(record, field, value),
+  })
+
   const handleTableChange: TableProps<LocalSupplierInvoiceItemDto>['onChange'] = (
     _pagination,
-    _filters,
+    filters,
     _sorter,
     extra,
   ) => {
+    setColumnFilteredValues(filters as Record<string, (React.Key | boolean)[] | null>)
+    // 选中行按过滤后可见数据收敛，避免隐藏明细继续参与批量执行或批量删除。
     setSelectedRowKeys((prev) => constrainSelectedRowKeysToVisibleDetails(prev, extra.currentDataSource))
   }
 
@@ -2283,6 +2448,7 @@ export default function InvoiceEditPage() {
       width: 58,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.quantity, b.quantity),
+      ...getNumberColumnFilterProps('quantity', t('posAdmin.invoiceDetail.quantity', '数量')),
       render: (v: number, record) => (
         <EditableNumberCell
           value={v}
@@ -2300,6 +2466,7 @@ export default function InvoiceEditPage() {
       width: 82,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.lastPurchasePrice, b.lastPurchasePrice),
+      ...getNumberColumnFilterProps('lastPurchasePrice', t('posAdmin.invoiceDetail.lastPurchasePrice', '上次进货价')),
       render: (v: number) => renderNumericCell(formatAmount(v)),
     },
     {
@@ -2308,6 +2475,7 @@ export default function InvoiceEditPage() {
       width: 86,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.purchasePrice, b.purchasePrice),
+      ...getNumberColumnFilterProps('purchasePrice', t('posAdmin.invoiceDetail.currentPurchasePrice', '本次进货价')),
       render: (v: number, record) => {
         const bg = getPriceChangeBg(record.lastPurchasePrice, v)
         const bgStyle = bg ? { backgroundColor: bg, padding: '2px 6px', borderRadius: 4 } : undefined
@@ -2330,6 +2498,7 @@ export default function InvoiceEditPage() {
       width: 72,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.retailPrice, b.retailPrice),
+      ...getNumberColumnFilterProps('retailPrice', t('posAdmin.invoiceDetail.retailPrice', '零售价')),
       render: (v: number, record) => (
         <EditableNumberCell
           value={v}
@@ -2346,6 +2515,7 @@ export default function InvoiceEditPage() {
       width: 76,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.pricingFloatRate, b.pricingFloatRate),
+      ...getNumberColumnFilterProps('pricingFloatRate', t('posAdmin.invoiceDetail.pricingRate', '定价浮率')),
       render: (v: number, record) => (
         <EditableNumberCell
           value={v}
@@ -2362,6 +2532,7 @@ export default function InvoiceEditPage() {
       width: 92,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.newAutoRetailPrice, b.newAutoRetailPrice),
+      ...getNumberColumnFilterProps('newAutoRetailPrice', t('posAdmin.invoiceDetail.newAutoRetailPrice', '新自动零售价')),
       render: (v: number, record) => (
         <EditableNumberCell
           value={v}
@@ -2381,6 +2552,7 @@ export default function InvoiceEditPage() {
         { text: t('posAdmin.invoiceDetail.auto', '自动'), value: true },
         { text: t('posAdmin.invoiceDetail.manual', '手动'), value: false },
       ],
+      filteredValue: (columnFilteredValues.autoPricing ?? null) as React.Key[] | null,
       onFilter: (value, record) => filterBooleanColumn(record.autoPricing, value),
       render: (v: boolean, record) => (
         <EditableBooleanCell
@@ -2403,6 +2575,7 @@ export default function InvoiceEditPage() {
         { text: t('posAdmin.invoiceDetail.yes', '是'), value: true },
         { text: t('posAdmin.invoiceDetail.no', '否'), value: false },
       ],
+      filteredValue: (columnFilteredValues.isSpecialProduct ?? null) as React.Key[] | null,
       onFilter: (value, record) => filterBooleanColumn(record.isSpecialProduct, value),
       render: (v: boolean, record) => (
         <EditableBooleanCell
@@ -2422,6 +2595,7 @@ export default function InvoiceEditPage() {
       width: 68,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.discountRate, b.discountRate),
+      ...getNumberColumnFilterProps('discountRate', t('posAdmin.invoiceDetail.discountRate', '折扣率')),
       render: (v: number, record) => (
         <EditableNumberCell
           value={discountRateToPercent(v)}
@@ -2441,6 +2615,7 @@ export default function InvoiceEditPage() {
       width: 82,
       align: 'right',
       sorter: (a, b) => compareNullableNumbers(a.amount, b.amount),
+      ...getNumberColumnFilterProps('amount', t('posAdmin.invoiceDetail.amount', '金额')),
       render: (v: number) => renderNumericCell(formatAmount(v)),
     },
     {
@@ -2453,6 +2628,7 @@ export default function InvoiceEditPage() {
         { text: t('posAdmin.invoiceDetail.exists', '已存在'), value: 'exists' },
         { text: t('posAdmin.invoiceDetail.notExistsShort', '不存在'), value: 'notExists' },
       ],
+      filteredValue: (columnFilteredValues.existingProductCount ?? null) as React.Key[] | null,
       onFilter: (value, record) => filterProductStatusColumn(record, value),
       render: (_: number, record) => {
         const count = record.existingProductCount
@@ -2477,6 +2653,7 @@ export default function InvoiceEditPage() {
         { text: t('posAdmin.invoiceDetail.noMatch', '无匹配'), value: 'noMatch' },
         { text: t('posAdmin.invoiceDetail.multiMatchShort', '多匹配'), value: 'multiMatch' },
       ],
+      filteredValue: (columnFilteredValues.barcodeMatchCount ?? null) as React.Key[] | null,
       onFilter: (value, record) => filterBarcodeStatusColumn(record, value),
       render: (_: number, record) => {
         const count = record.barcodeMatchCount ?? 0
@@ -2503,6 +2680,12 @@ export default function InvoiceEditPage() {
       key: 'action',
       width: 98,
       fixed: 'right',
+      filters: actionTypeFilters.map((actionType) => {
+        const config = detailActionConfig[actionType] ?? detailActionConfig[DetailActionEnum.None]
+        return { text: config.label, value: actionType }
+      }),
+      filteredValue: (columnFilteredValues.action ?? null) as React.Key[] | null,
+      onFilter: (value, record) => matchesActionTypeColumnFilter(record, value, rowActions),
       render: (_, record) => {
         const currentAction = rowActions[record.detailGUID] ?? record.activityType ?? 0
         const actionConfig = DETAIL_ACTION_CONFIG(t)

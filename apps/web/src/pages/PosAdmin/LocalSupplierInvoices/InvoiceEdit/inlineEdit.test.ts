@@ -1,4 +1,5 @@
 import {
+  applyInvoiceDetailBatchEdit,
   applyInvoiceDetailInlineEdit,
   buildInvoiceDetailSaveItems,
   normalizeInvoiceDetailInlineValue,
@@ -83,6 +84,71 @@ async function main() {
     assertEqual(updated[0].discountRate, 0.125, '明细应保存折扣率小数值')
   })
   if (discountFailure) failures.push(discountFailure)
+
+  const batchOptimisticFailure = await runTest('批量编辑本地乐观更新应只改勾选字段并保留 0 和 false', () => {
+    const details: LocalSupplierInvoiceItemDto[] = [
+      ...baseDetails,
+      {
+        ...baseDetails[0],
+        detailGUID: 'detail-2',
+        quantity: 5,
+        purchasePrice: 1,
+        retailPrice: 3,
+        amount: 5,
+        autoPricing: true,
+        isSpecialProduct: false,
+        discountRate: 0.2,
+      },
+    ]
+
+    const updated = applyInvoiceDetailBatchEdit(details, ['detail-1'], {
+      updatePurchasePrice: true,
+      purchasePrice: 0,
+      updateRetailPrice: true,
+      retailPrice: 0,
+      updateIsAutoPricing: true,
+      isAutoPricing: false,
+      updateIsSpecialProduct: true,
+      isSpecialProduct: true,
+      updateDiscountRate: true,
+      discountRate: 0,
+      updateAction: false,
+    })
+
+    assertEqual(updated[0].purchasePrice, 0, '进货价 0 应作为有效值写入')
+    assertEqual(updated[0].amount, 0, '进货价变为 0 后金额应重算为 0')
+    assertEqual(updated[0].retailPrice, 0, '零售价 0 应作为有效值写入')
+    assertEqual(updated[0].autoPricing, false, '自动定价 false 应作为有效值写入')
+    assertEqual(updated[0].isSpecialProduct, true, '特殊商品应按勾选值写入')
+    assertEqual(updated[0].discountRate, 0, '折扣率 0 应作为有效值写入')
+    assertEqual(updated[0].pricingFloatRate, 2.5, '前端乐观更新不应复制后端自动定价策略')
+    assertDeepEqual(updated[1], details[1], '未选中的明细不应变化')
+  })
+  if (batchOptimisticFailure) failures.push(batchOptimisticFailure)
+
+  const batchUncheckedFieldFailure = await runTest('批量编辑未勾选字段应保持不变', () => {
+    const updated = applyInvoiceDetailBatchEdit(baseDetails, ['detail-1'], {
+      updatePurchasePrice: false,
+      purchasePrice: 0,
+      updateRetailPrice: true,
+      retailPrice: 1.99,
+      updateIsAutoPricing: false,
+      isAutoPricing: false,
+      updateIsSpecialProduct: false,
+      isSpecialProduct: true,
+      updateDiscountRate: false,
+      discountRate: 0.5,
+      updateAction: false,
+    })
+
+    assertEqual(updated[0].purchasePrice, 0.44, '未勾选进货价时不应修改')
+    assertEqual(updated[0].amount, 5.28, '未勾选进货价时金额不应重算')
+    assertEqual(updated[0].retailPrice, 1.99, '勾选零售价时应修改')
+    assertEqual(updated[0].autoPricing, true, '未勾选自动定价时不应修改')
+    assertEqual(updated[0].isSpecialProduct, false, '未勾选特殊商品时不应修改')
+    assertEqual(updated[0].discountRate, 0, '未勾选折扣率时不应修改')
+  })
+  if (batchUncheckedFieldFailure) failures.push(batchUncheckedFieldFailure)
 
   const payloadFailure = await runTest('保存明细 payload 应只包含业务可改字段和主键', () => {
     const items = buildInvoiceDetailSaveItems(baseDetails)

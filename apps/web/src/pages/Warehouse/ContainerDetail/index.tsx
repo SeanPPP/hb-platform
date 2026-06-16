@@ -125,6 +125,7 @@ import {
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
+  canUseContainerDetailLocalTagFilters,
   getContainerDetailBatchCategoryProductCodes,
   buildContainerDetailTranslationUpdates,
   calculateContainerSetCodePurchasePrice,
@@ -154,6 +155,7 @@ import {
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
   mergeContainerDetailPatch,
+  matchesContainerDetailSelectedTags,
   omitContainerDetailTextFilters,
   resolveContainerDetailOemPrice,
   rollbackContainerDetailWarehouseStatuses,
@@ -662,7 +664,15 @@ export default function ContainerDetailPage() {
 
   const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
 
-  const detailQuery = useMemo(() => buildContainerDetailQuery({
+  const baseDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: remoteColumnFilters,
+    selectedTags: [],
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+  }), [containerGuid, remoteColumnFilters])
+
+  const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({
     containerGuid,
     filters: remoteColumnFilters,
     selectedTags: selectedTagFilters,
@@ -670,7 +680,23 @@ export default function ContainerDetailPage() {
     pageSize: CONTAINER_DETAIL_PAGE_SIZE,
   }), [containerGuid, remoteColumnFilters, selectedTagFilters])
 
-  const detailQueryKey = useMemo(() => JSON.stringify(detailQuery), [detailQuery])
+  const baseDetailQueryKey = useMemo(() => JSON.stringify(baseDetailQuery), [baseDetailQuery])
+  const scopedDetailQueryKey = useMemo(() => JSON.stringify(scopedDetailQuery), [scopedDetailQuery])
+  const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+    ? lastLoadedContainerDetailSuccessRef.current?.queryKey
+    : null
+  const canUseLocalTagFilters = canUseContainerDetailLocalTagFilters({
+    loadedQueryKey: loadedDetailQueryKey,
+    baseQueryKey: baseDetailQueryKey,
+    loadedRowsLength: rows.length,
+    itemsTotal: detailItemsTotal,
+    hasMore: detailHasMore,
+    loading: detailLoading,
+    loadingMore: detailLoadingMore,
+  })
+  // 当前非标签查询已全量加载时，标签只在前端切换；未全量时仍用带标签查询交给后端兜底。
+  const activeLoadQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery
+  const activeLoadQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey
 
   const reconcileLoadedMatchStatus = async (products: ContainerDetail[], requestId: number) => {
     const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
@@ -765,7 +791,7 @@ export default function ContainerDetailPage() {
     try {
       const result = await queryContainerProducts(
         containerGuid,
-        { ...detailQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
+        { ...activeLoadQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
         controller.signal,
       )
       if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
@@ -778,7 +804,7 @@ export default function ContainerDetailPage() {
       setDetailHasMore(result.hasMore)
       setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
       if (mode === 'reset') {
-        lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
+        lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: activeLoadQueryKey }
       }
       void reconcileLoadedMatchStatus(result.items, currentRequestId)
     } catch (error) {
@@ -835,10 +861,8 @@ export default function ContainerDetailPage() {
       requestedDetailId: containerGuid,
       loadedDetailId: loadedContainerGuidRef.current,
       visibleDetailId: visibleContainerGuidRef.current,
-      requestedDetailQueryKey: detailQueryKey,
-      loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
-        ? lastLoadedContainerDetailSuccessRef.current?.queryKey
-        : null,
+      requestedDetailQueryKey: activeLoadQueryKey,
+      loadedDetailQueryKey: loadedDetailQueryKey,
     })) {
       return
     }
@@ -847,9 +871,14 @@ export default function ContainerDetailPage() {
     return () => {
       detailAbortControllerRef.current?.abort()
     }
-    // detailQueryKey 已包含货柜、远程筛选和 tag，列头排序只在前端当前已加载数据内处理。
+    // activeLoadQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, detailQueryKey])
+  }, [active, activeLoadQueryKey])
+
+  useEffect(() => {
+    // 标签可能只在前端过滤，不再触发远程重载；主动清空选择，保持批量操作范围清晰。
+    setSelectedRowKeys([])
+  }, [selectedTagFilters])
 
   useEffect(() => {
     const wasActive = wasContainerDetailTabActiveRef.current
@@ -881,9 +910,17 @@ export default function ContainerDetailPage() {
     return rows
   }, [rows])
 
+  const tagFilteredRows = useMemo(() => {
+    // 后端已通过 scopedDetailQuery 返回过滤后数据时，跳过前端过滤避免冗余扫描
+    if (!canUseLocalTagFilters) return baseFilteredRows
+    return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
+  }, [baseFilteredRows, selectedTagFilters, canUseLocalTagFilters])
+
   const textFilteredRows = useMemo(() => {
-    return applyContainerDetailLoadedTextFilters(baseFilteredRows, itemNumberFilter, columnFilters)
-  }, [baseFilteredRows, columnFilters, itemNumberFilter])
+    return applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)
+  }, [columnFilters, itemNumberFilter, tagFilteredRows])
+
+  const localTagStats = useMemo(() => buildContainerDetailTagStats(tagFilteredRows), [tagFilteredRows])
 
   const filteredRows = useMemo(() => {
     return applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)
@@ -969,13 +1006,13 @@ export default function ContainerDetailPage() {
 
   const localProductTypeStats = useMemo(() => buildContainerDetailTagStats(rows), [rows])
   const tagStats: ContainerDetailTagStats = useMemo(() => ({
-    ...remoteTagStats,
+    ...(canUseLocalTagFilters ? localTagStats : remoteTagStats),
     // 商品类型统计由前端按当前已加载明细实时计算，后端仍只负责已有业务 tag 统计。
-    normal: localProductTypeStats.normal,
-    set: localProductTypeStats.set,
-    multi: localProductTypeStats.multi,
-    setChild: localProductTypeStats.setChild,
-  }), [localProductTypeStats, remoteTagStats])
+    normal: canUseLocalTagFilters ? localTagStats.normal : localProductTypeStats.normal,
+    set: canUseLocalTagFilters ? localTagStats.set : localProductTypeStats.set,
+    multi: canUseLocalTagFilters ? localTagStats.multi : localProductTypeStats.multi,
+    setChild: canUseLocalTagFilters ? localTagStats.setChild : localProductTypeStats.setChild,
+  }), [canUseLocalTagFilters, localProductTypeStats, localTagStats, remoteTagStats])
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
@@ -1092,7 +1129,7 @@ export default function ContainerDetailPage() {
   const buildDetailBatchScope = (): ContainerDetailBatchScope => (
     selectedRowKeys.length
       ? { selectedHguids: selectedRowKeys.map(String) }
-      : { query: detailQuery }
+      : { query: scopedDetailQuery }
   )
 
   const fetchAllRowsForCurrentQuery = async () => {
@@ -1103,7 +1140,7 @@ export default function ContainerDetailPage() {
     while (hasMore) {
       // 导出和上下架必须作用于当前筛选结果全量，不能只拿虚拟表格已加载块。
       const result = await queryContainerProducts(containerGuid, {
-        ...detailQuery,
+        ...scopedDetailQuery,
         pageNumber,
         pageSize: 500,
       })
@@ -1866,11 +1903,6 @@ export default function ContainerDetailPage() {
     if (!selection.items.length) {
       message.warning(t('containers.messages.noExistingLocalProductsToPushHq', '选中明细没有可发送到 HQ 的本地已有商品'))
       return
-    }
-    if (selection.skippedNewProductCount > 0) {
-      message.warning(t('containers.messages.pushToHqSkippedNewProducts', '选中的新商品不会发送到 HQ，请先创建新商品后再发送。已跳过 {{count}} 条。', {
-        count: selection.skippedNewProductCount,
-      }))
     }
 
     try {

@@ -1005,6 +1005,37 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_新商品页面状态且缺商品编码时_按供应商和货号唯一命中成功()
+    {
+        await SeedProductGraphAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                new()
+                {
+                    LocalSupplierCode = " SUP01 ",
+                    ItemNumber = " HB001-ITEM ",
+                    DomesticPrice = 16.5m,
+                    ImportPrice = 26.5m,
+                    OemPrice = 36.5m,
+                    IsNewProduct = true,
+                },
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(1, response.Data?.SuccessCount);
+        Assert.Equal(0, response.Data?.FailedCount);
+        Assert.Equal(1, response.Data?.WarehouseInventoriesCreated);
+
+        var inventory = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal(16.5m, inventory.H国内价格);
+    }
+
+    [Fact]
     public async Task PushToHqAsync_Items混合有效和无效候选_整体失败且不写Hq()
     {
         await SeedProductGraphAsync();
@@ -1155,7 +1186,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task PushToHqAsync_新商品候选_不会发送()
+    public async Task PushToHqAsync_新商品页面状态但本地商品存在_允许发送()
     {
         await SeedProductGraphAsync();
 
@@ -1172,14 +1203,39 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             },
         });
 
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(1, response.Data?.SuccessCount);
+        Assert.Equal(0, response.Data?.FailedCount);
+        Assert.Equal(1, response.Data?.TotalCount);
+        Assert.Equal(1, await _hqDb.Queryable<DIC_商品信息字典表>().Where(row => row.H商品编码 == "HB001").CountAsync());
+        Assert.Equal(1, await _hqDb.Queryable<CBP_DIC_商品库存表>().Where(row => row.H商品编码 == "HB001").CountAsync());
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_新商品页面状态且本地商品不存在_后端兜底拒绝()
+    {
+        await SeedProductGraphAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                new()
+                {
+                    ProductCode = "HB404",
+                    DomesticPrice = 8.8m,
+                    IsNewProduct = true,
+                },
+            },
+        });
+
         Assert.False(response.Success);
         Assert.Equal("PRODUCT_HQ_PUSH_NO_PRODUCTS", response.ErrorCode);
         Assert.Equal(0, response.Data?.SuccessCount);
         Assert.Equal(1, response.Data?.FailedCount);
+        Assert.Contains(response.Data?.Errors ?? new List<string>(), item => item.Contains("HB404"));
         Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
         Assert.Equal(0, await _hqDb.Queryable<CBP_DIC_商品库存表>().CountAsync());
-        Assert.Equal(0, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
-        Assert.Equal(0, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
     }
 
     [Fact]

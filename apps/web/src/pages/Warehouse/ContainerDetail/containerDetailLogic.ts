@@ -644,6 +644,34 @@ export function matchesContainerDetailSelectedTags(row: ContainerDetail, selecte
   })
 }
 
+export interface ContainerDetailLocalTagFilterState {
+  loadedQueryKey?: string | null
+  baseQueryKey: string
+  loadedRowsLength: number
+  itemsTotal: number
+  hasMore: boolean
+  loading: boolean
+  loadingMore: boolean
+}
+
+export function canUseContainerDetailLocalTagFilters({
+  loadedQueryKey,
+  baseQueryKey,
+  loadedRowsLength,
+  itemsTotal,
+  hasMore,
+  loading,
+  loadingMore,
+}: ContainerDetailLocalTagFilterState) {
+  return (
+    loadedQueryKey === baseQueryKey &&
+    !hasMore &&
+    !loading &&
+    !loadingMore &&
+    loadedRowsLength >= itemsTotal
+  )
+}
+
 export function buildContainerDetailTagStats(rows: ContainerDetail[]): ContainerDetailTagStats {
   const stats: ContainerDetailTagStats = {
     all: rows.length,
@@ -1522,12 +1550,6 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
 
   rows.forEach((row) => {
     const isNewProduct = Boolean(row.是否新商品)
-    // 本地没有的新商品不能写 HQ，避免误创建还未补齐资料的商品。
-    if (isNewProduct) {
-      skippedNewProductCount += 1
-      return
-    }
-
     const productCode = row.商品编码?.trim() || row.商品信息?.商品编码?.trim()
     const localSupplierCode = row.localSupplierCode?.trim() || row.商品信息?.localSupplierCode?.trim()
     const itemNumber = row.商品信息?.货号?.trim()
@@ -1553,7 +1575,7 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
       productCodes.push(productCode)
     }
 
-    // 发送候选项时保留供应商、货号和有效价格；贴牌价读取仓库商品优先、明细兜底。
+    // 前端的新商品标记可能滞后；这里只提交候选信息，最终是否能写 HQ 由后端实时查询本地 Product 兜底。
     items.push({
       productCode: productCode || undefined,
       localSupplierCode,
