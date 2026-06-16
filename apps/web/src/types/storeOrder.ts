@@ -284,6 +284,7 @@ export interface StoreOrderProductQuery {
   localSupplierCode?: string
   supplierCode?: string
   excludeExistingWarehouseProducts?: boolean
+  includeInactiveWarehouseProducts?: boolean
   excludeOrderGUID?: string
   pageNumber: number
   pageSize: number

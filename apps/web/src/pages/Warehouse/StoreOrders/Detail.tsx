@@ -1287,6 +1287,8 @@ export default function StoreOrderDetailPage() {
     try {
       const result = await getStoreOrderProducts({
         itemNumber: normalizedItemNumber,
+        // 快速加入允许下架商品按货号加入，但后端仍会排除已删除商品。
+        includeInactiveWarehouseProducts: true,
         pageNumber: 1,
         pageSize: 50,
         sortBy: 'Default',

@@ -143,6 +143,7 @@ async function main() {
     assert(
       detailSource.includes('const result = await getStoreOrderProducts({') &&
         detailSource.includes('itemNumber: normalizedItemNumber') &&
+        detailSource.includes('includeInactiveWarehouseProducts: true') &&
         detailSource.includes('pageNumber: 1') &&
         detailSource.includes('pageSize: 50') &&
         detailSource.includes("sortBy: 'Default'"),

@@ -94,6 +94,11 @@ namespace BlazorApp.Shared.DTOs
     public bool ExcludeExistingWarehouseProducts { get; set; }
 
     /// <summary>
+    /// 后台订货快速加入专用：允许查询上下架商品，但仍必须排除已删除商品。
+    /// </summary>
+    public bool IncludeInactiveWarehouseProducts { get; set; } = false;
+
+    /// <summary>
     /// 排除指定订货单中已有未删除明细的商品。
     /// </summary>
     public string? ExcludeOrderGUID { get; set; }

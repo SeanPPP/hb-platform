@@ -215,6 +215,69 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_QuickAddQueryIncludesInactiveWarehouseProductsWhenFlagEnabled()
+    {
+        await SeedProductAsync("P-QUICK-ACTIVE", "QUICK-ACTIVE");
+        await SeedWarehouseProductAsync("P-QUICK-ACTIVE");
+        await SeedProductAsync("P-QUICK-INACTIVE-PRODUCT", "QUICK-INACTIVE-PRODUCT", isActive: false);
+        await SeedWarehouseProductAsync("P-QUICK-INACTIVE-PRODUCT");
+        await SeedProductAsync("P-QUICK-INACTIVE-WAREHOUSE", "QUICK-INACTIVE-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-QUICK-INACTIVE-WAREHOUSE", isActive: false);
+        await SeedProductAsync("P-QUICK-DELETED-PRODUCT", "QUICK-DELETED-PRODUCT", isDeleted: true);
+        await SeedWarehouseProductAsync("P-QUICK-DELETED-PRODUCT");
+        await SeedProductAsync("P-QUICK-DELETED-WAREHOUSE", "QUICK-DELETED-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-QUICK-DELETED-WAREHOUSE", isDeleted: true);
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "QUICK",
+            IncludeInactiveWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var productCodes = result.Items.Select(item => item.ProductCode).ToList();
+        Assert.Contains("P-QUICK-ACTIVE", productCodes);
+        Assert.Contains("P-QUICK-INACTIVE-PRODUCT", productCodes);
+        Assert.Contains("P-QUICK-INACTIVE-WAREHOUSE", productCodes);
+        Assert.DoesNotContain("P-QUICK-DELETED-PRODUCT", productCodes);
+        Assert.DoesNotContain("P-QUICK-DELETED-WAREHOUSE", productCodes);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_IncludeInactiveFlagDoesNotBypassStatusOutsideQuickAddShape()
+    {
+        await SeedProductAsync(
+            "P-ABUSE-ACTIVE",
+            "ABUSE-ACTIVE",
+            productName: "Inactive Search Active"
+        );
+        await SeedWarehouseProductAsync("P-ABUSE-ACTIVE");
+        await SeedProductAsync(
+            "P-ABUSE-INACTIVE",
+            "ABUSE-INACTIVE",
+            isActive: false,
+            productName: "Inactive Search Hidden"
+        );
+        await SeedWarehouseProductAsync("P-ABUSE-INACTIVE");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "ABUSE",
+            ProductName = "Inactive Search",
+            IncludeInactiveWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var productCodes = result.Items.Select(item => item.ProductCode).ToList();
+        Assert.Contains("P-ABUSE-ACTIVE", productCodes);
+        Assert.DoesNotContain("P-ABUSE-INACTIVE", productCodes);
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_OrderPickerIncludesInactiveWarehouseProductsAndFiltersDomesticSupplier()
     {
         await SeedChinaSupplierAsync("CN001", "义乌一号");
@@ -1310,14 +1373,15 @@ public sealed class StoreOrderProductListTests : IDisposable
         string? localSupplierCode = null,
         decimal? purchasePrice = null,
         bool isActive = true,
-        bool isDeleted = false
+        bool isDeleted = false,
+        string? productName = null
     )
     {
         await _db.Insertable(new Product
         {
             UUID = $"{productCode}-uuid",
             ProductCode = productCode,
-            ProductName = $"商品 {productCode}",
+            ProductName = productName ?? $"商品 {productCode}",
             ItemNumber = itemNumber,
             Barcode = barcode ?? $"{itemNumber}-BAR",
             LocalSupplierCode = localSupplierCode,

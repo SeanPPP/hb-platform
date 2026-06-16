@@ -177,7 +177,10 @@ namespace BlazorApp.Api.Services.React
                 return await GetDefaultHomePageProductPageAsync(filter, normalizedGrades);
             }
 
-            var q = CreateDefaultWarehouseProductQuery(_db);
+            var includeInactiveForQuickAdd = ShouldIncludeInactiveWarehouseProductsForQuickAdd(
+                filter
+            );
+            var q = CreateDefaultWarehouseProductQuery(_db, includeInactiveForQuickAdd);
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
@@ -726,9 +729,12 @@ namespace BlazorApp.Api.Services.React
         }
 
         private ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
-            CreateDefaultWarehouseProductQuery(ISqlSugarClient db)
+            CreateDefaultWarehouseProductQuery(
+                ISqlSugarClient db,
+                bool includeInactiveWarehouseProducts = false
+            )
         {
-            return CreateDefaultWarehouseProductBaseQuery(db)
+            return CreateDefaultWarehouseProductBaseQuery(db, includeInactiveWarehouseProducts)
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
@@ -738,12 +744,21 @@ namespace BlazorApp.Api.Services.React
         }
 
         private ISugarQueryable<Product, WarehouseProduct> CreateDefaultWarehouseProductBaseQuery(
-            ISqlSugarClient db
+            ISqlSugarClient db,
+            bool includeInactiveWarehouseProducts = false
         )
         {
-            return db.Queryable<Product>()
+            var query = db.Queryable<Product>()
                 .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
-                .Where((p, wp) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+                .Where((p, wp) => !p.IsDeleted && !wp.IsDeleted);
+
+            if (!includeInactiveWarehouseProducts)
+            {
+                // 默认列表仍只展示上架商品；快速加入会显式放开上下架限制。
+                query = query.Where((p, wp) => p.IsActive && wp.IsActive);
+            }
+
+            return query;
         }
 
         private async Task<PagedListReactDto<StoreOrderProductDto>> GetDefaultHomePageProductPageAsync(
@@ -885,11 +900,27 @@ namespace BlazorApp.Api.Services.React
                 && string.IsNullOrWhiteSpace(filter.ItemNumber)
                 && string.IsNullOrWhiteSpace(filter.ProductName)
                 && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
+                && !filter.IncludeInactiveWarehouseProducts
                 && (
                     string.IsNullOrWhiteSpace(filter.SortBy)
                     || filter.SortBy.Equals("default", StringComparison.OrdinalIgnoreCase)
                 )
                 && normalizedGrades.Count == 0;
+        }
+
+        private static bool ShouldIncludeInactiveWarehouseProductsForQuickAdd(
+            StoreOrderFilterDto filter
+        )
+        {
+            // 下架商品只对后台订货“货号快速加入”放开，避免共享 DTO 被其它商品列表查询误用。
+            return filter.IncludeInactiveWarehouseProducts
+                && !string.IsNullOrWhiteSpace(filter.ItemNumber)
+                && string.IsNullOrWhiteSpace(filter.ProductName)
+                && string.IsNullOrWhiteSpace(filter.CategoryGUID)
+                && string.IsNullOrWhiteSpace(filter.LocalSupplierCode)
+                && string.IsNullOrWhiteSpace(filter.SupplierCode)
+                && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
+                && !filter.ExcludeExistingWarehouseProducts;
         }
 
         private ISqlSugarClient CreateHomePageWarmUpQueryConnection()
