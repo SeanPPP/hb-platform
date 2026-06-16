@@ -531,6 +531,8 @@ public sealed class MainViewModelScannerTests
             new FakeRawScannerService());
 
         var startupOptions = new AppStartupOptions([], false, null, null);
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
 
         var initializeTask = viewModel.InitializeAsync(startupOptions);
         await WaitUntilAsync(() => catalog.LoadSellableItemsCallCount > 0);
@@ -548,6 +550,9 @@ public sealed class MainViewModelScannerTests
         Assert.Same(viewModel.PosTerminal, viewModel.CachedPosTerminalScreen);
         Assert.Same(viewModel.CashPayment, viewModel.CachedCashPaymentScreen);
         Assert.Same(viewModel.SpecialProducts, viewModel.CachedSpecialProductsScreen);
+        Assert.Contains(nameof(MainViewModel.CachedPosTerminalScreen), changedProperties);
+        Assert.Contains(nameof(MainViewModel.CachedCashPaymentScreen), changedProperties);
+        Assert.Contains(nameof(MainViewModel.CachedSpecialProductsScreen), changedProperties);
         Assert.True(viewModel.IsPosTerminalScreenActive);
         Assert.False(viewModel.IsCashPaymentScreenActive);
         Assert.False(viewModel.IsSpecialProductsScreenActive);

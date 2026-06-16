@@ -483,7 +483,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             setScreen: value =>
             {
                 OnPropertyChanged(nameof(CurrentScreen));
-                if (!ReferenceEquals(value, _screenNavigator.ReceiptReturns))
+                var receiptReturns = _screenNavigator!.ReceiptReturns;
+                if (!ReferenceEquals(value, receiptReturns))
                 {
                     _screenNavigator.ReceiptReturns?.ResetToDefault();
                 }
@@ -976,6 +977,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RaiseScreenHostStateChanged()
     {
+        // 缓存屏幕在 ScreenNavigator 内部创建，切换页面时必须通知宿主重新读取内容绑定。
+        OnPropertyChanged(nameof(CachedPosTerminalScreen));
+        OnPropertyChanged(nameof(CachedCashPaymentScreen));
+        OnPropertyChanged(nameof(CachedSpecialProductsScreen));
         OnPropertyChanged(nameof(IsPosTerminalScreenActive));
         OnPropertyChanged(nameof(IsCashPaymentScreenActive));
         OnPropertyChanged(nameof(IsSpecialProductsScreenActive));
