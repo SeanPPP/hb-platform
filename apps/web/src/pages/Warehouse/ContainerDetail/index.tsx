@@ -911,8 +911,10 @@ export default function ContainerDetailPage() {
   }, [rows])
 
   const tagFilteredRows = useMemo(() => {
+    // 后端已通过 scopedDetailQuery 返回过滤后数据时，跳过前端过滤避免冗余扫描
+    if (!canUseLocalTagFilters) return baseFilteredRows
     return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-  }, [baseFilteredRows, selectedTagFilters])
+  }, [baseFilteredRows, selectedTagFilters, canUseLocalTagFilters])
 
   const textFilteredRows = useMemo(() => {
     return applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)

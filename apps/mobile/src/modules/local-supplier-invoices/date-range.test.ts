@@ -27,8 +27,8 @@ assertDeepEqual(
 
 assertDeepEqual(
   formatInvoiceDateRangeDisplay({ from: "2026-05-01" }),
-  { kind: "from-only", text: "2026-05-01 起" },
-  "from-only range formats lower bound text"
+  { kind: "from-only", text: "2026-05-01" },
+  "from-only range defaults to raw date when no formatFrom provided"
 );
 
 assertDeepEqual(
@@ -42,8 +42,8 @@ assertDeepEqual(
 
 assertDeepEqual(
   formatInvoiceDateRangeDisplay({ to: "2026-05-31" }),
-  { kind: "to-only", text: "截至 2026-05-31" },
-  "to-only range formats upper bound text"
+  { kind: "to-only", text: "2026-05-31" },
+  "to-only range defaults to raw date when no formatTo provided"
 );
 
 assertDeepEqual(
