@@ -5,6 +5,7 @@ import {
   getComingSoonContainerSummaries,
   getContainerDomesticSetCodes,
   queryContainerProducts,
+  recalculateContainerCostsByScope,
   syncContainersFromHq,
   translateHqProductNamesByContainerNumber,
   updateContainerDomesticSetCodePrices,
@@ -209,6 +210,52 @@ try {
       tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 },
     },
     'queryContainerProducts 应返回 data 内的分页明细结果',
+  )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: { totalUpdated: 87, totalRequested: 87 },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const recalculateResult = await recalculateContainerCostsByScope('WHOLE-CONTAINER-GUID', {
+    query: {
+      containerGuid: 'WHOLE-CONTAINER-GUID',
+      pageNumber: 1,
+      pageSize: 50,
+      selectedTags: [],
+    },
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/WHOLE-CONTAINER-GUID/actions/recalculate-costs',
+    'recalculateContainerCostsByScope 应调用货柜成本重算接口',
+  )
+  assertEqual(capturedInit?.method, 'POST', 'recalculateContainerCostsByScope 应使用 POST')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      query: {
+        containerGuid: 'WHOLE-CONTAINER-GUID',
+        pageNumber: 1,
+        pageSize: 50,
+        selectedTags: [],
+      },
+    },
+    'recalculateContainerCostsByScope 应原样发送整柜 query scope',
+  )
+  assertDeepEqual(
+    recalculateResult,
+    { totalUpdated: 87, totalRequested: 87 },
+    'recalculateContainerCostsByScope 应返回后端更新统计',
   )
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

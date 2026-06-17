@@ -729,6 +729,49 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task RecalculateCostsByScopeAsync_缺少汇率或运费_应阻止成本重算()
+    {
+        await _localDb.Insertable(
+            new List<Container>
+            {
+                new()
+                {
+                    ContainerCode = "C-RECALC-NO-RATE",
+                    ContainerNumber = "C-RECALC-NO-RATE",
+                    ExchangeRate = null,
+                    ShippingFee = 100m,
+                    TotalVolume = 10m,
+                },
+                new()
+                {
+                    ContainerCode = "C-RECALC-NO-FREIGHT",
+                    ContainerNumber = "C-RECALC-NO-FREIGHT",
+                    ExchangeRate = 5m,
+                    ShippingFee = null,
+                    TotalVolume = 10m,
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var missingRateError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.RecalculateCostsByScopeAsync(
+                "C-RECALC-NO-RATE",
+                new ContainerDetailBatchScopeDto()
+            )
+        );
+        var missingFreightError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ApplyFloatRateByScopeAsync(
+                "C-RECALC-NO-FREIGHT",
+                new ContainerDetailApplyFloatRateRequestDto { FloatRate = 1.3m }
+            )
+        );
+
+        Assert.Equal("缺少汇率，无法重算成本", missingRateError.Message);
+        Assert.Equal("缺少运费，无法重算成本", missingFreightError.Message);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_明细或商品不存在_不抛异常()
     {
         await SeedDetailAsync("D-NO-PRODUCT", productCode: "P-MISSING");

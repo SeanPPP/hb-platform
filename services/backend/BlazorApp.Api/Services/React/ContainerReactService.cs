@@ -2110,6 +2110,18 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
         }
 
+        private static void EnsureContainerCostInputs(Container container)
+        {
+            if (!container.ExchangeRate.HasValue || container.ExchangeRate.Value <= 0)
+            {
+                throw new InvalidOperationException("缺少汇率，无法重算成本");
+            }
+            if (!container.ShippingFee.HasValue)
+            {
+                throw new InvalidOperationException("缺少运费，无法重算成本");
+            }
+        }
+
         public async Task<int> ApplyFloatRateByScopeAsync(
             string containerGuid,
             ContainerDetailApplyFloatRateRequestDto request
@@ -2127,6 +2139,8 @@ namespace BlazorApp.Api.Services.React
             {
                 return 0;
             }
+            // 批量调浮率会同步重算运输成本和进口价格，必须先确保主表成本字段可用。
+            EnsureContainerCostInputs(container);
 
             var details = await GetScopedDetailsAsync(containerGuid, request);
             var updates = details
@@ -2188,6 +2202,8 @@ namespace BlazorApp.Api.Services.React
             {
                 return 0;
             }
+            // 重算成本由服务端兜底执行，避免前端绕过校验时写入旧成本。
+            EnsureContainerCostInputs(container);
 
             var details = await GetScopedDetailsAsync(containerGuid, request);
             var updates = details

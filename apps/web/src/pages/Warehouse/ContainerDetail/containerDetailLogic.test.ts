@@ -66,7 +66,9 @@ import {
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
   resolveContainerDetailOemPrice,
+  DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  getContainerDetailCostMissingFields,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
   type ContainerDetailExportColumnKey,
@@ -140,6 +142,11 @@ assertDeepEqual(
     .map((column) => column.key),
   ['lastImportPrice', 'lastOEMPrice'],
   '货柜明细可选导出列应包含上次进货价格和上次贴牌价格',
+)
+assertEqual(
+  CONTAINER_DETAIL_EXPORT_COLUMNS.find((column) => column.key === 'lastImportPrice')?.labelKey,
+  'containers.fields.warehouseImportPrice',
+  '上次进货价格导出列应复用表格里的 Last Purchase Price 翻译 key',
 )
 
 const exportRow = buildContainerDetailExportRow({
@@ -1169,6 +1176,102 @@ const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.
 const mobileLayoutSource = readFileSync('src/layout/MobileLayout.tsx', 'utf8')
 const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts', 'utf8')
 const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
+const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
+const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
+
+function getLocaleValue(source: Record<string, unknown>, key: string) {
+  return key.split('.').reduce<unknown>((current, part) => (
+    current && typeof current === 'object' ? (current as Record<string, unknown>)[part] : undefined
+  ), source)
+}
+
+const containerDetailExportLabelKeys = CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.labelKey)
+
+const requiredContainerI18nKeys = [
+  'containers.actions.showReadonlyOemPrice',
+  'containers.actions.pushToHq',
+  'containers.actions.saveDetails',
+  'containers.actions.recalculateCosts',
+  'containers.actions.matchDomesticData',
+  'containers.actions.previewImage',
+  'containers.text.loadedRows',
+  'containers.text.warehouseInventoriesCreated',
+  'containers.text.warehouseInventoriesUpdated',
+  'containers.text.skippedNewProducts',
+  'containers.text.missingProductCodeRows',
+  'containers.text.pushToHqSelectedLocalProducts',
+  'containers.text.moreCreateProductResultItems',
+  'containers.text.createProductsJobSummary',
+  'containers.text.skippedRows',
+  'containers.text.failedRows',
+  'containers.messages.selectedRowsHidden',
+  'containers.messages.savePendingPriceDetailsFirst',
+  'containers.messages.detailSaveFailed',
+  'containers.messages.noPendingPriceDetails',
+  'containers.messages.detailPricesSaved',
+  'containers.messages.noMatchableDetails',
+  'containers.messages.missingMatchableProductIdentity',
+  'containers.messages.noDomesticDataToUpdate',
+  'containers.messages.domesticDataMatched',
+  'containers.messages.matchDomesticDataFailed',
+  'containers.messages.rowCategoryUpdated',
+  'containers.messages.noExistingLocalProductsToPushHq',
+  'containers.messages.createProductsJobSubmitted',
+  'containers.messages.createProductsJobFailed',
+  'containers.messages.createProductsJobPartialSucceeded',
+  'containers.messages.createProductsJobSucceeded',
+  'containers.messages.createProductFailed',
+  'containers.messages.purchasePricesUpdateFailed',
+  'containers.modals.rowCategoryTitle',
+  'containers.export.summaryTitle',
+  ...containerDetailExportLabelKeys,
+  'containers.setCode.pricesTitle',
+  'containers.setCode.missingProductCode',
+  'containers.setCode.loadFailed',
+  'containers.setCode.saveSuccess',
+  'containers.setCode.saveFailed',
+  'containers.setCode.itemNumber',
+  'containers.setCode.barcode',
+  'containers.setCode.retailPrice',
+  'containers.setCode.purchasePrice',
+  'warehouse.categories.selectTargetCategory',
+  'warehouse.categories.batchAssignFailed',
+  'posAdmin.products.noManagePermission',
+  'posAdmin.products.pushToHqAffectedRows',
+  'posAdmin.products.productsAdded',
+  'posAdmin.products.productsUpdated',
+  'posAdmin.products.storeRetailPricesUpdated',
+  'posAdmin.products.storeMultiCodesUpdated',
+  'posAdmin.products.pushToHqResult',
+  'posAdmin.products.pushToHqFailed',
+  'posAdmin.products.pushToHqPartialSucceeded',
+  'posAdmin.products.pushToHqSucceeded',
+]
+
+assertDeepEqual(
+  requiredContainerI18nKeys.filter((key) => !getLocaleValue(zhLocale, key) || !getLocaleValue(enLocale, key)),
+  [],
+  '货柜明细新增可见文案应同时补齐中英文 locale，避免英文模式回退中文兜底',
+)
+assertDeepEqual(
+  CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => getLocaleValue(enLocale, column.labelKey)),
+  [
+    'No.',
+    'Item No.',
+    'Chinese Name',
+    'English Name',
+    'Pieces',
+    'Total Qty',
+    'Unit Volume',
+    'Total Volume',
+    'INNER',
+    'Domestic Price',
+    'Last Purchase Price',
+    'Last OEM Price',
+    'OEM Price',
+  ],
+  '英文模式导出列选择弹窗和 Excel 表头应全部使用英文 locale，不能回退到中文 fallback',
+)
 
 assertEqual(
   pageSource.includes("const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }"),
@@ -1539,9 +1642,9 @@ assertDeepEqual(
       装柜数量: 30,
       单件体积: 0.25,
       合计装柜体积: 0.75,
-      合计装柜金额: 165,
+      合计装柜金额: 214.5,
       运输成本: 0.25,
-      进口价格: 1.34,
+      进口价格: 1.74,
     },
     {
       hguid: 'match-price-705',
@@ -1566,14 +1669,14 @@ assertDeepEqual(
       matchType: 'productCode',
       是否新商品: false,
       合计装柜体积: 1,
-      合计装柜金额: 50,
+      合计装柜金额: 65,
       运输成本: 1,
-      进口价格: 1.92,
+      进口价格: 2.49,
     },
   ],
   '匹配国内数据应只补缺失价格、覆盖名称规格，并同步重算装柜数量、体积、运输成本和进口价格',
 )
-assertEqual(pageSource.includes('匹配国内数据'), true, '页面按钮文案应改为匹配国内数据')
+assertEqual(pageSource.includes("t('containers.actions.matchDomesticData')"), true, '页面按钮文案应使用匹配国内数据 i18n key')
 assertEqual(
   pageSource.includes("renderColumnTitle('warehouseImportPrice'") &&
     pageSource.includes("t('containers.fields.warehouseImportPrice'"),
@@ -1697,9 +1800,9 @@ assertEqual(
   '批量操作应在已选行被当前筛选隐藏时统一拦截',
 )
 assertEqual(
-  pageSource.includes('已选明细不在当前筛选结果中，请重新选择后再操作'),
+  pageSource.includes("t('containers.messages.selectedRowsHidden'"),
   true,
-  '隐藏选中行触发批量操作时应提示用户重新选择',
+  '隐藏选中行触发批量操作时应使用 i18n 提示用户重新选择',
 )
 assertEqual(tagFiltersSource.includes('role="button"'), true, '统计 tag 应提供按钮语义')
 assertEqual(tagFiltersSource.includes('tabIndex={0}'), true, '统计 tag 应可通过键盘聚焦')
@@ -2238,6 +2341,17 @@ assertEqual(
   2.04,
   '进口价格应沿用当前公式并保留 2 位',
 )
+assertEqual(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE, 1.3, '货柜明细空浮率默认值应为 1.30')
+assertDeepEqual(
+  getContainerDetailCostMissingFields({ 汇率: undefined, 运费: 0, 总体积: 10 }),
+  ['exchangeRate'],
+  '缺少汇率时应阻止成本重算，但运费 0 是合法输入',
+)
+assertDeepEqual(
+  getContainerDetailCostMissingFields({ 汇率: 4.5, 运费: undefined, 总体积: 0 }),
+  ['freight', 'totalVolume'],
+  '缺少运费或总体积时应阻止成本重算',
+)
 assertEqual(
   calculateContainerDetailTransportCost(
     { id: 105, hguid: 'price-105', 装柜件数: 2, 装柜数量: 5, 商品信息: { 单件体积: 0.5 } },
@@ -2292,6 +2406,11 @@ assertDeepEqual(
     { hguid: 'price-102', 调整浮率: 1.1, 运输成本: 0.75, 进口价格: 1.79 },
   ],
   '汇率或运费变化后应按每行现有调整浮率重算价格',
+)
+assertDeepEqual(
+  buildContainerDetailFloatRateUpdates([{ ...priceRows[0], 调整浮率: undefined }], priceContainer, undefined),
+  [{ hguid: 'price-101', 调整浮率: 1.3, 运输成本: 1, 进口价格: 2.21 }],
+  '行内浮率为空时应按默认 1.30 重算运输成本和进口价格并写回浮率',
 )
 assertDeepEqual(
   buildContainerDetailFloatRateUpdates(
@@ -2372,8 +2491,40 @@ assertEqual(pageSource.includes('value={row.进口价格}'), true, '进口价格
 assertEqual(pageSource.includes('defaultValue={row.进口价格}'), false, '进口价格输入框不能使用 defaultValue')
 assertEqual(pageSource.includes('const updatePayload: UpdateContainerRequest'), true, '保存货柜头部应使用窄更新 payload')
 assertEqual(pageSource.includes('await updateContainer(containerGuid, nextContainer)'), false, '保存货柜头部不能把完整货柜对象发送到后端')
-assertEqual(pageSource.includes('buildContainerDetailFloatRateUpdates(rows,'), false, '保存货柜头部不能隐式批量重算全部明细成本')
-assertEqual(pageSource.includes('shouldRecalculatePrices'), false, '成本重算必须通过手动入口触发，不能挂在保存头部流程')
+assertEqual(
+  pageSource.includes('const shouldRecalculateCosts =') &&
+    pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildWholeContainerDetailBatchScope())'),
+  true,
+  '保存货柜头部汇率或运费变化后应自动按整柜范围重算成本',
+)
+assertEqual(
+  pageSource.includes('const buildWholeContainerDetailBatchScope = (): ContainerDetailBatchScope => ({') &&
+    pageSource.includes('filters: {},') &&
+    pageSource.includes('selectedTags: [],'),
+  true,
+  '货柜头部自动重算应使用不带筛选条件的整柜 scope',
+)
+assertEqual(
+  pageSource.includes('Modal.warning') &&
+    pageSource.includes('<Space direction="vertical"') &&
+    pageSource.includes('showCostRecalculateWarning') &&
+    pageSource.includes('missingExchangeRateForCost') &&
+    pageSource.includes('missingFreightForCost') &&
+    pageSource.includes('missingTotalVolumeForCost'),
+  true,
+  '成本重算缺少汇率、运费或总体积时应通过弹窗提示并停止写库',
+)
+assertEqual(
+  pageSource.includes('headerSavedCostsRecalculateFailed') &&
+    pageSource.includes("message.warning(t('containers.messages.headerSavedCostsRecalculateFailed'"),
+  true,
+  '保存货柜头部成功但成本重算失败时应独立提示，不能伪装成保存失败',
+)
+assertEqual(
+  pageSource.includes('batchFloatRate ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE'),
+  true,
+  '批量浮率为空时应使用默认 1.30 参与成本重算',
+)
 assertEqual(pageSource.includes("t('containers.formulas.transportCost'"), true, '表格页脚运输成本公式应使用 i18n key')
 assertEqual(pageSource.includes("t('containers.formulas.importPrice'"), true, '表格页脚进口价格公式应使用 i18n key')
 assertEqual(pageSource.includes('运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积'), true, '表格页脚应展示运输成本公式')
@@ -2518,6 +2669,8 @@ assertEqual(
 assertEqual(
   pageSource.includes("patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })") &&
     pageSource.includes("patchRow(rowKey(row), { 单件体积: row.单件体积 })") &&
+    pageSource.includes('const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {') &&
+    pageSource.includes('showCostRecalculateWarning(getContainerDetailCostMissingFields(container))') &&
     pageSource.includes("savePackageMetricPatch(row, { 单件装箱数: Number(event.target.value) })") &&
     pageSource.includes("savePackageMetricPatch(row, { 单件体积: Number(event.target.value) })"),
   true,
@@ -2665,8 +2818,8 @@ assertEqual(
   true,
   '重算成本写回成功后应重载当前查询首块',
 )
-assertEqual(pageSource.includes('缺少运费，无法重算成本'), true, '缺少运费时应提示 warning 且不写库')
-assertEqual(pageSource.includes('缺少总体积，无法重算成本'), true, '缺少总体积时应提示 warning 且不写库')
+assertEqual(pageSource.includes("t('containers.messages.missingFreightForCost'"), true, '缺少运费时应通过 i18n 提示且不写库')
+assertEqual(pageSource.includes("t('containers.messages.missingTotalVolumeForCost'"), true, '缺少总体积时应通过 i18n 提示且不写库')
 assertEqual(
   pageSource.includes("message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))"),
   true,
@@ -2674,7 +2827,7 @@ assertEqual(
 )
 assertEqual(pageSource.includes('loading={recalculateCostsLoading}'), true, '重算成本按钮应绑定独立 loading 状态')
 assertEqual(pageSource.includes('onClick={() => void handleRecalculateCosts()}'), true, '重算成本按钮应调用手动重算入口')
-assertEqual(pageSource.includes('>重算成本</Button>'), true, '货柜明细应显示重算成本按钮文案')
+assertEqual(pageSource.includes("t('containers.actions.recalculateCosts')"), true, '货柜明细重算成本按钮应使用 i18n key')
 assertEqual(
   pageSource.includes("renderColumnTitle('itemNumber', t('containers.fields.itemNumber'))") &&
     pageSource.includes("fixed: 'left'"),
@@ -2865,6 +3018,15 @@ assertEqual(
   true,
   '单行目标分类修改弹窗应只提交当前行 ProductCategoryGUID，并在保存后只更新当前已加载行',
 )
+assertEqual(
+  pageSource.includes("t('common.copyValue'") &&
+    pageSource.includes("t('containers.setCode.pricesTitle'") &&
+    pageSource.includes("okText={t('common.save')}") &&
+    !pageSource.includes('>重算成本</Button>') &&
+    !pageSource.includes('>匹配国内数据</Button>'),
+  true,
+  '货柜明细复制、重算、匹配和套装多码弹窗应使用 i18n 文案',
+)
 assertEqual(pageSource.includes('className="container-detail-table"'), true, '货柜明细表格应挂载专属 class 以隔离垂直对齐样式')
 assertEqual(
   pageSource.includes("rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}"),
@@ -2878,6 +3040,17 @@ assertEqual(
     pageSource.includes('onScroll={handleDetailTableScroll}'),
   true,
   '货柜明细应关闭可见分页器，使用 50 条内部懒加载块和虚拟滚动',
+)
+const stickyControlsStart = pageSource.indexOf('className="container-detail-sticky-controls"')
+const detailTableStart = pageSource.indexOf('className="container-detail-table"', stickyControlsStart)
+const stickyControlsSource = pageSource.slice(stickyControlsStart, detailTableStart)
+assertEqual(
+  stickyControlsStart >= 0 &&
+    detailTableStart > stickyControlsStart &&
+    stickyControlsSource.includes('<ContainerTagFilters') &&
+    stickyControlsSource.includes('{exporting ? <Progress percent={exportProgress} size="small" /> : null}'),
+  true,
+  '货柜明细筛选、操作按钮、统计标签和导出进度应在表格前的 sticky 控制区内',
 )
 assertEqual(
   pageSource.includes('const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)') &&
@@ -2902,6 +3075,15 @@ assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
   true,
   '货柜明细表头应通过专属样式保持垂直居中',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-sticky-controls') &&
+    pageStyleSource.includes('position: sticky') &&
+    pageStyleSource.includes('top: 138px') &&
+    pageStyleSource.includes('z-index: 8') &&
+    pageStyleSource.includes('.container-detail-page-small-landscape .container-detail-sticky-controls'),
+  true,
+  '货柜明细控制区应通过专属 sticky 样式吸附在全局标签栏下方，并适配小屏横屏偏移',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-tbody > tr > td'),
@@ -2947,6 +3129,16 @@ assertEqual(
     pageSource.includes('preview={{ mask: t(\'containers.actions.previewImage\', \'查看大图\') }}'),
   true,
   '货柜明细商品图片应使用统一图片兜底并可点击放大预览',
+)
+assertEqual(
+  setCodeHookSource.includes('useTranslation()') &&
+    setCodeHookSource.includes("t('containers.setCode.missingProductCode')") &&
+    setCodeHookSource.includes("t('containers.setCode.itemNumber')") &&
+    setCodeHookSource.includes("t('containers.setCode.purchasePrice')") &&
+    !setCodeHookSource.includes("title: '套装货号'") &&
+    !setCodeHookSource.includes("message.success('保存成功')"),
+  true,
+  '套装多码弹窗消息和列标题应走 i18n，不能在英文模式显示中文',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-barcode-cell .ant-typography'),

@@ -14,6 +14,7 @@ import { useMemo, useRef, useState } from 'react'
 import { message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { InputNumber } from 'antd'
+import { useTranslation } from 'react-i18next'
 import type { ContainerDetail } from '../../../types/container'
 import type { ContainerDomesticSetCodeItem } from '../../../types/container'
 import { getContainerDomesticSetCodes, updateContainerDomesticSetCodePrices } from '../../../services/containerService'
@@ -119,6 +120,7 @@ function buildSetCodeAutoPurchasePriceEdits(
 export default function useContainerSetCode({
   canEditContainer,
 }: UseContainerSetCodeOptions): UseContainerSetCodeReturn {
+  const { t } = useTranslation()
   const [setCodeModalOpen, setSetCodeModalOpen] = useState(false)
   const [setCodeModalRow, setSetCodeModalRow] = useState<ContainerDetail | null>(null)
   const [setCodeItems, setSetCodeItems] = useState<ContainerDomesticSetCodeItem[]>([])
@@ -133,7 +135,7 @@ export default function useContainerSetCode({
   const loadSetCodeItems = async (row: ContainerDetail, manualPurchasePriceKeys: Set<string> = new Set()) => {
     const productCode = getContainerDetailProductCode(row)
     if (!productCode) {
-      message.warning('缺少商品编码，无法加载套装多码数据')
+      message.warning(t('containers.setCode.missingProductCode'))
       return
     }
 
@@ -149,7 +151,7 @@ export default function useContainerSetCode({
       setSetCodePriceEdits(buildSetCodeAutoPurchasePriceEdits(items, row.进口价格, {}, manualPurchasePriceKeys))
     } catch (error) {
       if ((error as DOMException)?.name !== 'AbortError') {
-        message.error(error instanceof Error ? error.message : '获取套装多码数据失败')
+        message.error(error instanceof Error ? error.message : t('containers.setCode.loadFailed'))
       }
     } finally {
       if (setCodeAbortControllerRef.current === abortController) {
@@ -224,12 +226,12 @@ export default function useContainerSetCode({
     setSetCodeSaving(true)
     try {
       await updateContainerDomesticSetCodePrices(productCode, changedSetCodePriceItems)
-      message.success('保存成功')
+      message.success(t('containers.setCode.saveSuccess'))
       if (setCodeModalRow) {
         await loadSetCodeItems(setCodeModalRow, setCodeManualPurchasePriceKeys)
       }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存套装价格失败')
+      message.error(error instanceof Error ? error.message : t('containers.setCode.saveFailed'))
     } finally {
       setSetCodeSaving(false)
     }
@@ -255,19 +257,19 @@ export default function useContainerSetCode({
 
   const setCodeColumns: ColumnsType<ContainerDomesticSetCodeItem> = useMemo(() => [
     {
-      title: '套装货号',
+      title: t('containers.setCode.itemNumber'),
       dataIndex: 'setItemNumber',
       width: 140,
       render: (value) => value || '--',
     },
     {
-      title: '条码',
+      title: t('containers.setCode.barcode'),
       dataIndex: 'barcode',
       width: 170,
       render: (value) => value || '--',
     },
     {
-      title: '价格',
+      title: t('containers.setCode.retailPrice'),
       dataIndex: 'retailPrice',
       width: 120,
       align: 'right',
@@ -288,7 +290,7 @@ export default function useContainerSetCode({
       },
     },
     {
-      title: '进货价',
+      title: t('containers.setCode.purchasePrice'),
       dataIndex: 'purchasePrice',
       width: 120,
       align: 'right',
@@ -308,7 +310,7 @@ export default function useContainerSetCode({
         )
       },
     },
-  ], [canEditContainer, setCodePriceEdits])
+  ], [canEditContainer, setCodePriceEdits, t])
 
   return {
     setCodeModalOpen,

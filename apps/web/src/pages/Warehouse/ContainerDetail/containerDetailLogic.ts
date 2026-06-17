@@ -12,6 +12,7 @@ export type ContainerDetailWarehouseStatusFilter = 'active' | 'inactive'
 export type ContainerDetailSortOrder = 'ascend' | 'descend'
 export const CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = '__ALL_CONTAINER_DETAIL_CATEGORIES__'
 export const CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = '__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__'
+export const DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3
 export type ContainerDetailSortField =
   | 'itemNumber'
   | 'barcode'
@@ -103,7 +104,7 @@ export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinit
   { key: 'totalVolume', labelKey: 'containers.export.totalVolumeColumn', fallbackLabel: '总体积', width: 12, valueType: 'volume' },
   { key: 'middlePackQuantity', labelKey: 'containers.fields.middlePackQuantity', fallbackLabel: '中包数', width: 12, valueType: 'integer' },
   { key: 'domesticPrice', labelKey: 'containers.fields.domesticPrice', fallbackLabel: '国内价格', width: 12, valueType: 'money' },
-  { key: 'lastImportPrice', labelKey: 'containers.fields.lastImportPrice', fallbackLabel: '上次进货价格', width: 14, valueType: 'money' },
+  { key: 'lastImportPrice', labelKey: 'containers.fields.warehouseImportPrice', fallbackLabel: '上次进货价格', width: 14, valueType: 'money' },
   { key: 'lastOEMPrice', labelKey: 'containers.fields.lastOEMPrice', fallbackLabel: '上次贴牌价格', width: 14, valueType: 'money' },
   { key: 'oemPrice', labelKey: 'containers.fields.oemPrice', fallbackLabel: '贴牌价格', width: 12, valueType: 'money' },
 ]
@@ -1250,6 +1251,22 @@ export function calculateContainerDetailImportPrice(
   return roundToDigits(((row.国内价格 / exchangeRate + (transportCost ?? 0)) * floatRate * 10) / 11, 2)
 }
 
+export type ContainerDetailCostMissingField = 'exchangeRate' | 'freight' | 'totalVolume'
+
+export function getContainerDetailCostMissingFields(container?: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null): ContainerDetailCostMissingField[] {
+  const fields: ContainerDetailCostMissingField[] = []
+  if (!container?.汇率 || container.汇率 <= 0) {
+    fields.push('exchangeRate')
+  }
+  if (container?.运费 == null) {
+    fields.push('freight')
+  }
+  if (!container?.总体积 || container.总体积 <= 0) {
+    fields.push('totalVolume')
+  }
+  return fields
+}
+
 export function calculateContainerSetCodePurchasePrice(
   mainPurchasePrice: number | null | undefined,
   itemRetailPrice: number | null | undefined,
@@ -1278,7 +1295,7 @@ export function buildContainerDetailFloatRateUpdates(
   return rows
     .filter((row) => row.hguid)
     .map((row): UpdateContainerDetailRequest | null => {
-      const nextFloatRate = floatRate ?? row.调整浮率 ?? 1
+      const nextFloatRate = floatRate ?? row.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE
       const transportCost = calculateContainerDetailTransportCost(row, container)
       const importPrice = calculateContainerDetailImportPrice(row, container, nextFloatRate, transportCost)
       const hasChange =
@@ -1405,7 +1422,7 @@ function getDetectedUnitVolume(item: ContainerDetailDetectedPrice) {
 
 export function calculateContainerDetailTotalAmount(row: ContainerDetail) {
   if (row.装柜数量 == null || row.国内价格 == null) return row.合计装柜金额
-  return roundToDigits(row.装柜数量 * row.国内价格 * (row.调整浮率 ?? 1), 2)
+  return roundToDigits(row.装柜数量 * row.国内价格 * (row.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE), 2)
 }
 
 export function calculateContainerDetailTotalVolume(row: ContainerDetail) {
@@ -1562,7 +1579,7 @@ export function buildContainerDetailMatchedDomesticDataUpdates(
       const importPrice = calculateContainerDetailImportPrice(
         { ...pricedRow, 运输成本: transportCost },
         container,
-        pricedRow.调整浮率 ?? 1,
+        pricedRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
         transportCost,
       )
       if (transportCost !== row.运输成本) update.运输成本 = transportCost

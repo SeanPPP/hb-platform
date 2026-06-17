@@ -597,6 +597,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围批量调浮率失败");
@@ -666,6 +670,10 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { totalUpdated },
                     }
                 );
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
             }
             catch (Exception ex)
             {
