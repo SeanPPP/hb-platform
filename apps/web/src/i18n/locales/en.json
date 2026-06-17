@@ -95,7 +95,7 @@
       "batchSetCategory": "Batch Set Category",
       "translateHqData": "Translate HQ Data",
       "createNewProducts": "Create New Products",
-      "updateExistingPurchase": "Update Existing Product Prices",
+      "updateExistingPurchase": "Update Existing Products",
       "batchActivate": "Batch Activate",
       "batchDeactivate": "Batch Deactivate",
       "batchActions": "Batch Actions",
@@ -112,7 +112,8 @@
       "selectExportColumns": "Select Export Columns",
       "exportSelectedColumns": "Export Selected Columns",
       "selectAllExportColumns": "Select All",
-      "resetDefaultExportColumns": "Reset Default"
+      "resetDefaultExportColumns": "Reset Default",
+      "backfillLastPrices": "Backfill Last Prices"
     },
     "fields": {
       "containerNumber": "Container No.",
@@ -141,10 +142,14 @@
       "containerPieces": "Container Pieces",
       "middlePackQuantity": "Middle Pack Qty",
       "containerQuantity": "Container Qty",
+      "packingQuantity": "Packing Qty",
+      "unitVolume": "Unit Volume",
       "domesticPrice": "Domestic Price",
       "floatRate": "Float Rate",
       "transportCost": "Transport Cost",
-      "warehouseImportPrice": "Warehouse Purchase Price",
+      "unitTransportCost": "Unit Transport Cost",
+      "warehouseImportPrice": "Last Purchase Price",
+      "lastOEMPrice": "Last OEM Price",
       "importPrice": "Import Price",
       "oemPrice": "OEM Price",
       "warehouseStatus": "Warehouse Status"

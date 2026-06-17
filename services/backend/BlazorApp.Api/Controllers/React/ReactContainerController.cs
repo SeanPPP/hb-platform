@@ -675,6 +675,39 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 按当前筛选范围回填上次价格快照（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/actions/backfill-last-prices")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> BackfillLastPricesByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailBatchScopeDto request
+        )
+        {
+            try
+            {
+                request ??= new ContainerDetailBatchScopeDto();
+                var totalUpdated = await _containerReactService.BackfillLastPricesByScopeAsync(
+                    containerGuid,
+                    request
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {totalUpdated} 条明细",
+                        data = new { totalUpdated },
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围回填上次价格失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 批量删除货柜明细（React专用）
         /// </summary>
         /// <param name="request">包含待删除的 HGUID 列表</param>

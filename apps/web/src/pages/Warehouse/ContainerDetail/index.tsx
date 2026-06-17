@@ -64,6 +64,7 @@ import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import {
   applyContainerFloatRateByScope,
   applyContainerPricesByScope,
+  backfillContainerLastPricesByScope,
   batchDeleteDetails,
   batchUpdateDetails,
   getContainerDetail,
@@ -121,6 +122,11 @@ import {
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
+  calculateContainerDetailImportPrice,
+  calculateContainerDetailTotalAmount,
+  calculateContainerDetailTotalVolume,
+  calculateContainerDetailTransportCost,
+  calculateContainerDetailUnitTransportCost,
   canUseContainerDetailLocalTagFilters,
   getContainerDetailBatchCategoryProductCodes,
   buildContainerDetailTranslationUpdates,
@@ -134,6 +140,8 @@ import {
   getContainerDetailEnglishName,
   getContainerDetailImageUrl,
   getContainerDetailItemNumber,
+  getContainerDetailLastImportPrice,
+  getContainerDetailLastOemPrice,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
   getContainerDetailProductName,
@@ -178,7 +186,6 @@ import {
   buildContainerDetailCategoryOptions,
   collectCategoryExpandedKeys,
   findWarehouseCategory,
-  getOemPriceSourceClassName,
   renderColumnTitle,
   renderCompactHeader,
   renderContainerDetailCategoryCell,
@@ -189,8 +196,10 @@ import {
 import './index.css'
 
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
-type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'warehouseImportPrice' | 'importPrice' | 'oemPrice'
+type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'packingQuantity' | 'unitVolume' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'unitTransportCost' | 'warehouseImportPrice' | 'lastOEMPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
+type PendingContainerDetailPricePatch = Pick<UpdateContainerDetailRequest, 'hguid'> & Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格'>>
+type PendingContainerDetailPricePatchMap = Record<string, PendingContainerDetailPricePatch>
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -318,13 +327,13 @@ function TwoLineText({ value }: { value?: string }) {
 
 
 
-const CONTAINER_DETAIL_TABLE_SCROLL_X = 2040
+const CONTAINER_DETAIL_TABLE_SCROLL_X = 2440
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
 const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
 const CONTAINER_DETAIL_PAGE_SIZE = 50
-const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v2'
+const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v3'
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
-const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
+const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   all: 0,
   new: 0,
@@ -454,6 +463,7 @@ export default function ContainerDetailPage() {
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
   const [rows, setRows] = useState<ContainerDetail[]>([])
+  const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
@@ -488,6 +498,8 @@ export default function ContainerDetailPage() {
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
+  const [backfillLastPricesLoading, setBackfillLastPricesLoading] = useState(false)
+  const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
@@ -580,6 +592,13 @@ export default function ContainerDetailPage() {
     pageNumber: 1,
     pageSize: CONTAINER_DETAIL_PAGE_SIZE,
   }), [containerGuid, remoteColumnFilters, selectedTagFilters])
+  const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+  }), [containerGuid, columnFilters, selectedTagFilters])
 
   const baseDetailQueryKey = useMemo(() => JSON.stringify(baseDetailQuery), [baseDetailQuery])
   const scopedDetailQueryKey = useMemo(() => JSON.stringify(scopedDetailQuery), [scopedDetailQuery])
@@ -684,6 +703,7 @@ export default function ContainerDetailPage() {
       lastDetailTableScrollTopRef.current = 0
       setDetailLoading(true)
       setRows([])
+      setPendingPricePatches({})
       setSelectedRowKeys([])
     } else {
       setDetailLoadingMore(true)
@@ -894,7 +914,7 @@ export default function ContainerDetailPage() {
     pendingEditableCellFocusKeyRef.current = nextCellKey
     detailTableRef.current?.scrollTo?.({ key: nextCell.rowKey })
     window.requestAnimationFrame(() => {
-      // 方向键只切换焦点；当前输入值继续复用 blur 保存链路落库。
+      // 方向键只切换焦点；自动保存列仍走 blur，价格列统一由“保存明细”落库。
       const targetCell = editableCellRefs.current.get(nextCellKey)
       if (!targetCell) {
         return
@@ -975,7 +995,7 @@ export default function ContainerDetailPage() {
   const buildDetailBatchScope = (): ContainerDetailBatchScope => (
     selectedRowKeys.length
       ? { selectedHguids: selectedRowKeys.map(String) }
-      : { query: scopedDetailQuery }
+      : { query: scopedFullDetailQuery }
   )
 
   const fetchAllRowsForCurrentQuery = async () => {
@@ -984,9 +1004,9 @@ export default function ContainerDetailPage() {
     let hasMore = true
 
     while (hasMore) {
-      // 导出和上下架必须作用于当前筛选结果全量，不能只拿虚拟表格已加载块。
+      // 导出和批量写操作必须作用于当前完整筛选结果，不能丢掉前端文本筛选。
       const result = await queryContainerProducts(containerGuid, {
-        ...scopedDetailQuery,
+        ...scopedFullDetailQuery,
         pageNumber,
         pageSize: 500,
       })
@@ -1005,9 +1025,45 @@ export default function ContainerDetailPage() {
   }
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
+  const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager
+  const pendingPricePatchList = useMemo(() => Object.values(pendingPricePatches), [pendingPricePatches])
+  const pendingPricePatchCount = pendingPricePatchList.length
 
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
     setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
+  }
+
+  const markPendingPricePatch = (row: ContainerDetail, patch: Pick<Partial<ContainerDetail>, '进口价格' | '贴牌价格'>) => {
+    const key = rowKey(row)
+    patchRow(key, patch)
+    if (!row.hguid) return
+
+    setPendingPricePatches((current) => {
+      const nextPatch: PendingContainerDetailPricePatch = { ...(current[key] ?? { hguid: row.hguid }) }
+      if ('进口价格' in patch) {
+        if (patch.进口价格 == null) {
+          delete nextPatch.进口价格
+        } else {
+          nextPatch.进口价格 = patch.进口价格
+        }
+      }
+      if ('贴牌价格' in patch) {
+        if (patch.贴牌价格 == null) {
+          delete nextPatch.贴牌价格
+        } else {
+          nextPatch.贴牌价格 = patch.贴牌价格
+        }
+      }
+
+      const next = { ...current }
+      // 价格列改为手动保存：清空输入只影响本地展示，不新增后端清空价格语义。
+      if (nextPatch.进口价格 == null && nextPatch.贴牌价格 == null) {
+        delete next[key]
+      } else {
+        next[key] = nextPatch
+      }
+      return next
+    })
   }
 
   const getDetailSaveFailedMessage = () => t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试')
@@ -1051,6 +1107,44 @@ export default function ContainerDetailPage() {
       buildContainerDetailSaveFailureKeys(saveKey, patch),
       batchUpdateDetails([{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest]),
     )
+  }
+
+  const savePendingPriceDetails = async () => {
+    if (!access.canEditContainer) return
+    const updates = pendingPricePatchList
+      .map((patch) => {
+        const update: UpdateContainerDetailRequest = { hguid: patch.hguid }
+        if (patch.进口价格 != null) update.进口价格 = patch.进口价格
+        if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格
+        return update
+      })
+      .filter((update) => update.进口价格 != null || update.贴牌价格 != null)
+
+    if (!updates.length) {
+      message.warning(t('containers.messages.noPendingPriceDetails', '没有待保存的明细价格'))
+      return
+    }
+
+    const rowKeyByHguid = new Map(rows.map((row) => [row.hguid, rowKey(row)]))
+    const saveKeys = updates.flatMap((update) => buildContainerDetailSaveFailureKeys(rowKeyByHguid.get(update.hguid) ?? update.hguid, update))
+
+    setPriceDetailsSaving(true)
+    try {
+      // 保存明细只提交逐行改过的价格字段，不复用批量统一改价入口，避免覆盖未编辑行。
+      await trackDetailSavePromise(saveKeys, batchUpdateDetails(updates))
+      setPendingPricePatches((current) => {
+        const next = { ...current }
+        updates.forEach((update) => {
+          delete next[rowKeyByHguid.get(update.hguid) ?? update.hguid]
+        })
+        return next
+      })
+      message.success(t('containers.messages.detailPricesSaved', { count: updates.length, defaultValue: '已保存 {{count}} 条明细价格' }))
+    } catch (error) {
+      handleDetailSaveError(error)
+    } finally {
+      setPriceDetailsSaving(false)
+    }
   }
 
   const startEditingProductName = (row: ContainerDetail) => {
@@ -1126,6 +1220,33 @@ export default function ContainerDetailPage() {
     await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails(updates))
   }
 
+  const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
+    if (!access.canEditContainer || !row.hguid) return
+    const nextRow = mergeContainerDetailPatch(row, patch)
+    const update: UpdateContainerDetailRequest = { hguid: row.hguid, ...patch }
+
+    if (nextRow.装柜件数 != null && nextRow.单件装箱数 != null) {
+      update.装柜数量 = Number((nextRow.装柜件数 * nextRow.单件装箱数).toFixed(2))
+    }
+
+    const volumeRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+    update.合计装柜体积 = calculateContainerDetailTotalVolume(volumeRow)
+    update.合计装柜金额 = calculateContainerDetailTotalAmount(volumeRow)
+
+    const pricedRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
+    const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
+    update.运输成本 = transportCost
+    update.进口价格 = calculateContainerDetailImportPrice(
+      { ...pricedRow, 运输成本: transportCost },
+      container,
+      pricedRow.调整浮率 ?? 1,
+      transportCost,
+    )
+
+    applyDetailUpdatesToRows([update])
+    await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails([update]))
+  }
+
   const applyFloatRate = async () => {
     if (batchFloatRate == null) {
       message.warning(t('containers.messages.enterFloatRate'))
@@ -1156,6 +1277,19 @@ export default function ContainerDetailPage() {
       message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
     } finally {
       setRecalculateCostsLoading(false)
+    }
+  }
+
+  const handleBackfillLastPrices = async () => {
+    if (!canBackfillLastPrices) return
+    setBackfillLastPricesLoading(true)
+    try {
+      const result = await backfillContainerLastPricesByScope(containerGuid, buildDetailBatchScope())
+      await loadDetailChunk(1, 'reset')
+      setSelectedRowKeys([])
+      message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
+    } finally {
+      setBackfillLastPricesLoading(false)
     }
   }
 
@@ -1902,7 +2036,7 @@ export default function ContainerDetailPage() {
     const updates = candidates.filter((row) => {
       const code = row.商品编码 || row.商品信息?.商品编码 || ''
       const oemPrice = resolveContainerDetailOemPrice(row)
-      // 更新已有商品时贴牌价使用仓库商品优先、明细兜底；编辑保存仍只写回明细贴牌价。
+      // 更新已有商品时贴牌价只使用货柜明细业务价，上次贴牌价格仅作只读快照展示。
       return Boolean(code) && ((row.进口价格 ?? 0) > 0 || (oemPrice ?? 0) > 0)
     })
     if (!updates.length) {
@@ -2322,6 +2456,35 @@ export default function ContainerDetailPage() {
       render: (v) => renderNumericCell(v ?? '--'),
     },
     {
+      title: renderColumnTitle('packingQuantity', t('containers.fields.packingQuantity', '单件装箱数')),
+      dataIndex: '单件装箱数',
+      width: 88,
+      align: 'right',
+      ...makeSortProps('packingQuantity'),
+      ...numberFilterProps('packingQuantity'),
+      render: (_value, row) =>
+        access.canEditContainer ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'packingQuantity', cell)}
+            value={row.单件装箱数}
+            keyboard={false}
+            min={0}
+            precision={0}
+            step={1}
+            style={{ width: 72 }}
+            onChange={(value) => patchRow(rowKey(row), { 单件装箱数: value == null ? undefined : Number(value) })}
+            onBlur={(event) => {
+              if (!event.target.value.trim()) {
+                patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })
+                return
+              }
+              void savePackageMetricPatch(row, { 单件装箱数: Number(event.target.value) }).catch(handleDetailSaveError)
+            }}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'packingQuantity', event)}
+          />
+        ) : renderNumericCell(formatNumber(row.单件装箱数, 0)),
+    },
+    {
       title: renderColumnTitle('containerQuantity', t('containers.fields.containerQuantity')),
       dataIndex: '装柜数量',
       width: 76,
@@ -2329,6 +2492,34 @@ export default function ContainerDetailPage() {
       ...makeSortProps('containerQuantity'),
       ...numberFilterProps('containerQuantity'),
       render: (v) => renderNumericCell(v ?? '--'),
+    },
+    {
+      title: renderColumnTitle('unitVolume', t('containers.fields.unitVolume', '单件体积')),
+      dataIndex: '单件体积',
+      width: 86,
+      align: 'right',
+      ...makeSortProps('unitVolume'),
+      ...numberFilterProps('unitVolume'),
+      render: (_value, row) =>
+        access.canEditContainer ? (
+          <InputNumber
+            ref={(cell) => setEditableCellRef(rowKey(row), 'unitVolume', cell)}
+            value={row.单件体积}
+            keyboard={false}
+            min={0}
+            precision={3}
+            style={{ width: 72 }}
+            onChange={(value) => patchRow(rowKey(row), { 单件体积: value == null ? undefined : Number(value) })}
+            onBlur={(event) => {
+              if (!event.target.value.trim()) {
+                patchRow(rowKey(row), { 单件体积: row.单件体积 })
+                return
+              }
+              void savePackageMetricPatch(row, { 单件体积: Number(event.target.value) }).catch(handleDetailSaveError)
+            }}
+            onKeyDown={(event) => handleEditableCellKeyDown(row, 'unitVolume', event)}
+          />
+        ) : renderNumericCell(formatNumber(row.单件体积, 3)),
     },
     {
       title: renderColumnTitle('domesticPrice', t('containers.fields.domesticPrice')),
@@ -2347,6 +2538,14 @@ export default function ContainerDetailPage() {
       ...makeSortProps('transportCost'),
       ...numberFilterProps('transportCost'),
       render: (v) => renderNumericCell(formatCurrency(v, '$')),
+    },
+    {
+      title: renderColumnTitle('unitTransportCost', t('containers.fields.unitTransportCost', '单件运输成本')),
+      width: 104,
+      align: 'right',
+      ...makeSortProps('unitTransportCost'),
+      ...numberFilterProps('unitTransportCost'),
+      render: (_, row) => renderNumericCell(formatCurrency(calculateContainerDetailUnitTransportCost(row), '$')),
     },
     {
       title: renderColumnTitle('floatRate', t('containers.fields.floatRate')),
@@ -2395,13 +2594,13 @@ export default function ContainerDetailPage() {
         ) : renderNumericCell(row.中包数 ?? '--'),
     },
     {
-      title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '仓库当前进货价格')),
+      title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '上次进货价格')),
       dataIndex: 'warehouseImportPrice',
       width: 112,
       align: 'right',
       ...makeSortProps('warehouseImportPrice'),
       ...numberFilterProps('warehouseImportPrice'),
-      render: (v) => renderNumericCell(formatCurrency(v, '$')),
+      render: (_value, row) => renderNumericCell(formatCurrency(getContainerDetailLastImportPrice(row), '$')),
     },
     {
       title: renderColumnTitle('importPrice', t('containers.fields.importPrice')),
@@ -2421,8 +2620,7 @@ export default function ContainerDetailPage() {
               prefix="$"
               precision={2}
               style={{ width: 78 }}
-              onChange={(value) => patchRow(rowKey(row), { 进口价格: value == null ? undefined : Number(value) })}
-              onBlur={(event) => void saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+              onChange={(value) => markPendingPricePatch(row, { 进口价格: value == null ? undefined : Number(value) })}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
             />
           ))
@@ -2439,18 +2637,24 @@ export default function ContainerDetailPage() {
         access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'oemPrice', cell)}
-            className={getOemPriceSourceClassName(row)}
             value={row.贴牌价格}
             keyboard={false}
             min={0}
             prefix="$"
             precision={2}
             style={{ width: 78 }}
-            onChange={(value) => patchRow(rowKey(row), { 贴牌价格: value == null ? undefined : Number(value) })}
-            onBlur={(event) => void saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            onChange={(value) => markPendingPricePatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
           />
         ) : renderOemPriceCell(row),
+    },
+    {
+      title: renderColumnTitle('lastOEMPrice', t('containers.fields.lastOEMPrice', '上次贴牌价格')),
+      width: 104,
+      align: 'right',
+      ...makeSortProps('lastOEMPrice'),
+      ...numberFilterProps('lastOEMPrice'),
+      render: (_, row) => renderNumericCell(formatCurrency(getContainerDetailLastOemPrice(row), '$')),
     },
     {
       title: renderColumnTitle('newProduct', t('containers.fields.newProduct')),
@@ -2952,9 +3156,20 @@ export default function ContainerDetailPage() {
                   <InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} onChange={setBatchFloatRate} />
                   <Button onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
                   <Button loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>重算成本</Button>
+                  {canBackfillLastPrices ? (
+                    <Button loading={backfillLastPricesLoading} onClick={() => void handleBackfillLastPrices()}>{t('containers.actions.backfillLastPrices', '回填上次价格')}</Button>
+                  ) : null}
                   <Button loading={matchDomesticDataLoading} onClick={() => void handleMatchDomesticData()}>匹配国内数据</Button>
                   <InputNumber value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} prefix="$" precision={2} onChange={setBatchImportPrice} />
                   <InputNumber value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} prefix="$" precision={2} onChange={setBatchOemPrice} />
+                  <Button
+                    icon={<SaveOutlined />}
+                    loading={priceDetailsSaving}
+                    disabled={!pendingPricePatchCount || priceDetailsSaving}
+                    onClick={() => void savePendingPriceDetails()}
+                  >
+                    {t('containers.actions.saveDetails', '保存明细')}{pendingPricePatchCount ? ` (${pendingPricePatchCount})` : ''}
+                  </Button>
                   <Button onClick={() => void applyPrices()}>{t('containers.actions.applyPrices')}</Button>
                   <Switch checkedChildren={t('containers.text.selectedFirst')} unCheckedChildren={t('containers.text.allDisplayed')} checked={selectedRowKeys.length > 0} disabled />
                 </Space>

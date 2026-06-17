@@ -8,6 +8,7 @@ import {
 } from '../Products/categoryPath'
 import {
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
+  CONTAINER_DETAIL_EXPORT_COLUMNS,
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailWarehouseStatusByProductCodes,
@@ -37,6 +38,7 @@ import {
   calculateContainerDetailImportPrice,
   calculateContainerSetCodePurchasePrice,
   calculateContainerDetailTransportCost,
+  calculateContainerDetailUnitTransportCost,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   mergeContainerDetailLoadedItems,
@@ -52,6 +54,8 @@ import {
   getContainerDetailProductType,
   getContainerDetailProductTypeFilterKey,
   getContainerDetailImageUrl,
+  getContainerDetailLastImportPrice,
+  getContainerDetailLastOemPrice,
   getContainerDetailOemPriceSource,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
@@ -130,6 +134,13 @@ assertDeepEqual(
   ['oemPrice', 'itemNumber', 'containerQuantity'],
   '货柜明细自定义导出列应按用户选择顺序输出',
 )
+assertDeepEqual(
+  CONTAINER_DETAIL_EXPORT_COLUMNS
+    .filter((column) => column.key === 'lastImportPrice' || column.key === 'lastOEMPrice')
+    .map((column) => column.key),
+  ['lastImportPrice', 'lastOEMPrice'],
+  '货柜明细可选导出列应包含上次进货价格和上次贴牌价格',
+)
 
 const exportRow = buildContainerDetailExportRow({
   id: 101,
@@ -148,6 +159,8 @@ const exportRow = buildContainerDetailExportRow({
   进口价格: 0.67,
   贴牌价格: 3.5,
   warehouseOEMPrice: 4.8,
+  lastImportPrice: 0.52,
+  lastOEMPrice: 4.8,
   单件体积: 0.1188,
   合计装柜体积: 0.3564,
   warehouseIsActive: true,
@@ -170,6 +183,8 @@ assertDeepEqual(
     containerQuantity: exportRow.containerQuantity,
     unitVolume: exportRow.unitVolume,
     totalVolume: exportRow.totalVolume,
+    lastImportPrice: exportRow.lastImportPrice,
+    lastOEMPrice: exportRow.lastOEMPrice,
     oemPrice: exportRow.oemPrice,
   },
   {
@@ -180,35 +195,37 @@ assertDeepEqual(
     containerQuantity: 720,
     unitVolume: 0.1188,
     totalVolume: 0.3564,
-    oemPrice: 4.8,
+    lastImportPrice: 0.52,
+    lastOEMPrice: 4.8,
+    oemPrice: 3.5,
   },
-  '货柜明细导出行应按 Excel 模板读取页面展示字段和体积字段，且贴牌价格应优先映射仓库商品贴牌价',
+  '货柜明细导出行应按 Excel 模板读取页面展示字段、体积字段和上次价格快照，且贴牌价格应使用明细业务价',
 )
 
 assertEqual(
   resolveContainerDetailOemPrice({ id: 103, hguid: 'oem-warehouse', 贴牌价格: 2.2, warehouseOEMPrice: 6.6 }),
-  6.6,
-  '有效贴牌价应优先使用小写 warehouseOEMPrice',
-)
-assertEqual(
-  resolveContainerDetailOemPrice({ id: 104, hguid: 'oem-warehouse-big', 贴牌价格: 2.2, WarehouseOEMPrice: 7.7 }),
-  7.7,
-  '有效贴牌价应兼容后端大写 WarehouseOEMPrice',
-)
-assertEqual(
-  resolveContainerDetailOemPrice({ id: 105, hguid: 'oem-fallback', 贴牌价格: 2.2, warehouseOEMPrice: 0 }),
   2.2,
-  '仓库商品贴牌价为空或不大于 0 时应兜底明细贴牌价',
+  '有效贴牌价应使用明细贴牌价格，不再优先使用仓库快照价',
+)
+assertEqual(
+  getContainerDetailLastOemPrice({ id: 104, hguid: 'oem-warehouse-big', 贴牌价格: 2.2, LastOEMPrice: 7.7 }),
+  7.7,
+  '上次贴牌价应兼容后端大写 LastOEMPrice',
+)
+assertEqual(
+  getContainerDetailLastImportPrice({ id: 105, hguid: 'import-fallback', warehouseImportPrice: 5.5 }),
+  5.5,
+  '上次进货价应兼容旧字段名 warehouseImportPrice',
 )
 assertEqual(
   getContainerDetailOemPriceSource({ id: 106, hguid: 'oem-source-warehouse', 贴牌价格: 2.2, warehouseOEMPrice: 6.6 }),
-  'warehouse',
-  '贴牌价来源应识别有效仓库商品贴牌价',
+  'detail',
+  '贴牌价来源应识别明细贴牌价',
 )
 assertEqual(
   getContainerDetailOemPriceSource({ id: 107, hguid: 'oem-source-detail', 贴牌价格: 2.2, warehouseOEMPrice: 0 }),
   'detail',
-  '贴牌价来源应识别明细兜底贴牌价',
+  '贴牌价来源应识别明细业务价',
 )
 assertEqual(
   getContainerDetailOemPriceSource({ id: 108, hguid: 'oem-source-none' }),
@@ -236,6 +253,8 @@ assertDeepEqual(
       totalVolume: 0,
       middlePackQuantity: 0,
       domesticPrice: 0,
+      lastImportPrice: 0,
+      lastOEMPrice: 0,
       oemPrice: 0,
     },
   ],
@@ -642,7 +661,7 @@ assertDeepEqual(
     all: 4,
     new: 2,
     existing: 2,
-    noOemPrice: 1,
+    noOemPrice: 2,
     abnormalImport: 2,
     active: 2,
     inactive: 2,
@@ -656,7 +675,7 @@ assertDeepEqual(
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], 'new'), true, '新商品 tag 应匹配是否新商品行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'new'), false, '新商品 tag 不应匹配已有商品行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], 'noOemPrice'), true, '缺贴牌价只统计新商品且有效贴牌价为空或不大于 0 的行')
-assertEqual(matchesContainerDetailTagFilter(tagRows[1], 'noOemPrice'), false, '仓库商品贴牌价有效时不应进入缺贴牌价 tag')
+assertEqual(matchesContainerDetailTagFilter(tagRows[1], 'noOemPrice'), true, '明细贴牌价为空时应进入缺贴牌价 tag，仓库快照不再兜底')
 assertEqual(matchesContainerDetailTagFilter(tagRows[3], 'noOemPrice'), false, '已有商品缺贴牌价不进入缺贴牌价 tag')
 assertEqual(matchesContainerDetailTagFilter(tagRows[1], 'abnormalImport'), true, '进口价为 0 应进入进口价异常 tag')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'all'), true, '全部 tag 应匹配所有行')
@@ -754,7 +773,7 @@ assertDeepEqual(columnState({ middlePackQuantity: { min: 1, max: 20 } }), ['colu
 assertDeepEqual(columnState({ containerQuantity: { min: 500, max: 2000 } }), ['column-201'], '装柜数量列头范围过滤应同时支持最小值和最大值')
 assertDeepEqual(columnState({ domesticPrice: { min: 0, max: 0 } }), ['column-202'], '数字列头范围过滤应正确匹配 0 值')
 assertDeepEqual(columnState({ transportCost: { min: 0 } }), ['column-201', 'column-203'], '数字列头范围过滤应排除空值')
-assertDeepEqual(columnState({ oemPrice: { min: 4, max: 5 } }), ['column-201'], '贴牌价列头范围过滤应优先读取仓库商品贴牌价')
+assertDeepEqual(columnState({ oemPrice: { min: 3, max: 4 } }), ['column-201'], '贴牌价列头范围过滤应读取明细贴牌价')
 assertDeepEqual(columnState({ oemPrice: { min: 2 } }, { field: 'containerPieces', order: 'ascend' }), ['column-203', 'column-201'], '列头过滤后排序应只作用于过滤后的可见行')
 assertDeepEqual(columnState({}, { field: 'itemNumber', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '货号排序应按文本升序且保持稳定输出')
 assertDeepEqual(
@@ -1059,8 +1078,9 @@ assertDeepEqual(
   [
     { hguid: 'price-320', label: 'HB137-481', retailPrice: 0 },
     { hguid: 'price-321', label: 'HB137-482', retailPrice: undefined },
+    { hguid: 'price-322', label: 'HB137-483', retailPrice: 0 },
   ],
-  '创建新商品前应只拦截新商品中零售价不大于 0 的明细，页面有效零售价和仓库零售价都应通过',
+  '创建新商品前应只拦截新商品中明细贴牌价格不大于 0 的明细，上次贴牌价格不再兜底',
 )
 assertEqual(getContainerDetailMatchType({ id: 306, hguid: 'match-306', matchType: 'productCode' }), 'productCode', '匹配方式应优先读取前端归一化字段')
 assertEqual(getContainerDetailMatchType({ id: 307, hguid: 'match-307', MatchType: 'SupplierItem' }), 'supplierItem', '匹配方式应兼容后端 PascalCase 字段')
@@ -1558,7 +1578,7 @@ assertEqual(
   pageSource.includes("renderColumnTitle('warehouseImportPrice'") &&
     pageSource.includes("t('containers.fields.warehouseImportPrice'"),
   true,
-  '货柜明细应独立显示仓库当前进货价格列',
+  '货柜明细应独立显示上次进货价格列',
 )
 assertEqual(
   pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)') &&
@@ -1804,7 +1824,7 @@ assertDeepEqual(
         imageUrl: 'local-product-image.jpg',
         domesticPrice: 5.1,
         importPrice: 1.88,
-        oemPrice: 3.21,
+        oemPrice: 2.01,
         isNewProduct: false,
       },
       {
@@ -1869,7 +1889,7 @@ assertDeepEqual(
         imageUrl: undefined,
         domesticPrice: 6.2,
         importPrice: 2.11,
-        oemPrice: 4.56,
+        oemPrice: 2.34,
         isNewProduct: false,
       },
     ],
@@ -1916,7 +1936,7 @@ assertDeepEqual(
       imageUrl: 'container-hb022.jpg',
       domesticPrice: 3.2,
       importPrice: 1.08,
-      oemPrice: 2.4,
+      oemPrice: 1.2,
       isNewProduct: false,
     },
     {
@@ -2179,6 +2199,11 @@ assertEqual(
   '运输成本应按运费、明细体积、装柜数量、总体积分摊为单位成本并保留 2 位',
 )
 assertEqual(
+  calculateContainerDetailUnitTransportCost({ id: 109, hguid: 'price-109', 运输成本: 0.05, 单件装箱数: 12 }),
+  0.6,
+  '单件运输成本应等于单品运输成本乘单件装箱数并保留 2 位',
+)
+assertEqual(
   calculateContainerDetailImportPrice(priceRows[0], priceContainer, 1.2, 1),
   2.04,
   '进口价格应沿用当前公式并保留 2 位',
@@ -2384,13 +2409,20 @@ assertEqual(
   (() => {
     const baseQueryStart = pageSource.indexOf('const baseDetailQuery = useMemo(() => buildContainerDetailQuery({')
     const scopedQueryStart = pageSource.indexOf('const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({')
-    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', scopedQueryStart)
+    const fullQueryStart = pageSource.indexOf('const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', fullQueryStart)
     const baseQuerySource = pageSource.slice(baseQueryStart, scopedQueryStart)
-    const scopedQuerySource = pageSource.slice(scopedQueryStart, queryEnd)
+    const scopedQuerySource = pageSource.slice(scopedQueryStart, fullQueryStart)
+    const fullQuerySource = pageSource.slice(fullQueryStart, queryEnd)
     return baseQueryStart >= 0 &&
       scopedQueryStart > baseQueryStart &&
+      fullQueryStart > scopedQueryStart &&
       baseQuerySource.includes('selectedTags: []') &&
+      baseQuerySource.includes('filters: remoteColumnFilters') &&
       scopedQuerySource.includes('selectedTags: selectedTagFilters') &&
+      scopedQuerySource.includes('filters: remoteColumnFilters') &&
+      fullQuerySource.includes('selectedTags: selectedTagFilters') &&
+      fullQuerySource.includes('filters: columnFilters') &&
       pageSource.includes('const activeLoadQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery') &&
       pageSource.includes('const activeLoadQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey') &&
       !scopedQuerySource.includes('sortState')
@@ -2408,10 +2440,10 @@ assertEqual(
   pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
     pageSource.includes('applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)') &&
     pageSource.includes('canUseLocalTagFilters ? localTagStats : remoteTagStats') &&
-    pageSource.includes(': { query: scopedDetailQuery }') &&
-    pageSource.includes('...scopedDetailQuery,'),
+    pageSource.includes(': { query: scopedFullDetailQuery }') &&
+    pageSource.includes('...scopedFullDetailQuery,'),
   true,
-  '标签全量加载时应进入前端过滤链路，批量作用域和全量拉取仍必须使用带标签 scoped 查询',
+  '标签全量加载时应进入前端过滤链路，批量作用域和全量拉取仍必须使用包含文本筛选的完整 scoped 查询',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -2435,11 +2467,59 @@ assertEqual(
   '关键业务列应挂载列头排序或过滤配置',
 )
 assertEqual(
-  pageSource.includes("const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const") &&
+  pageSource.includes("const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const") &&
     pageSource.includes("patchRow(rowKey(row), { 中包数: value == null ? undefined : Number(value) })") &&
     pageSource.includes("saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined })"),
   true,
   '中包数列应作为可编辑数字列保存到货柜明细更新接口',
+)
+assertEqual(
+  pageSource.includes('value={row.单件装箱数}\n            keyboard={false}\n            min={0}\n            precision={0}\n            step={1}') &&
+    pageSource.includes('renderNumericCell(formatNumber(row.单件装箱数, 0))'),
+  true,
+  '单件装箱数行内输入和只读显示应按整数处理',
+)
+assertEqual(
+  pageSource.includes('value={row.单件体积}\n            keyboard={false}\n            min={0}\n            precision={3}') &&
+    pageSource.includes('renderNumericCell(formatNumber(row.单件体积, 3))'),
+  true,
+  '单件体积行内输入和只读显示应保留 3 位小数',
+)
+assertEqual(
+  pageSource.includes("patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })") &&
+    pageSource.includes("patchRow(rowKey(row), { 单件体积: row.单件体积 })") &&
+    pageSource.includes("savePackageMetricPatch(row, { 单件装箱数: Number(event.target.value) })") &&
+    pageSource.includes("savePackageMetricPatch(row, { 单件体积: Number(event.target.value) })"),
+  true,
+  '单件装箱数和单件体积清空时应回滚当前值，避免发送 undefined 造成假保存',
+)
+assertEqual(
+  pageSource.includes('type PendingContainerDetailPricePatch =') &&
+    pageSource.includes('const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})') &&
+    pageSource.includes('const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)') &&
+    pageSource.includes('const markPendingPricePatch = (row: ContainerDetail') &&
+    pageSource.includes('const savePendingPriceDetails = async () => {'),
+  true,
+  '货柜明细页应维护进口价格和贴牌价格的手动待保存状态',
+)
+assertEqual(
+  pageSource.includes("const update: UpdateContainerDetailRequest = { hguid: patch.hguid }") &&
+    pageSource.includes('if (patch.进口价格 != null) update.进口价格 = patch.进口价格') &&
+    pageSource.includes('if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格') &&
+    pageSource.includes('await trackDetailSavePromise(saveKeys, batchUpdateDetails(updates))') &&
+    pageSource.includes('setPendingPricePatches((current) => {') &&
+    pageSource.includes("t('containers.messages.detailPricesSaved'"),
+  true,
+  '保存明细应只提交已修改行的进口价格和贴牌价格，并在成功后清空待保存状态',
+)
+assertEqual(
+  pageSource.includes("icon={<SaveOutlined />}") &&
+    pageSource.includes('loading={priceDetailsSaving}') &&
+    pageSource.includes('disabled={!pendingPricePatchCount || priceDetailsSaving}') &&
+    pageSource.includes('onClick={() => void savePendingPriceDetails()}') &&
+    pageSource.includes("t('containers.actions.saveDetails', '保存明细')"),
+  true,
+  '批量价格操作区应提供保存明细按钮，且无待保存价格时禁用',
 )
 assertEqual(
   columnsSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
@@ -2456,26 +2536,25 @@ assertEqual(
   columnsSource.includes("warehouseImportPrice > importPrice ? 'up' : 'down'") &&
     columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") &&
     columnsSource.includes("return <Icon className={className} />") &&
-    pageSource.includes("saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })") &&
+    pageSource.includes("onChange={(value) => markPendingPricePatch(row, { 进口价格: value == null ? undefined : Number(value) })") &&
+    pageSource.includes("onChange={(value) => markPendingPricePatch(row, { 贴牌价格: value == null ? undefined : Number(value) })") &&
+    !pageSource.includes("saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })") &&
+    !pageSource.includes("saveRowPatch(row, { 贴牌价格: event.target.value ? Number(event.target.value) : undefined })") &&
     pageStyleSource.includes('.container-detail-import-price-trend-up') &&
     pageStyleSource.includes('color: #52c41a') &&
     pageStyleSource.includes('.container-detail-import-price-trend-down') &&
     pageStyleSource.includes('color: #ff4d4f'),
   true,
-  '进口价格应对比仓库当前进货价格显示绿色向上或红色向下箭头，且保存字段仍为进口价格',
+  '进口价格和贴牌价格应改为手动保存明细，不能再失焦自动落库',
 )
 assertEqual(
-  columnsSource.includes("source === 'warehouse' ? 'container-detail-oem-price-cell-warehouse' : ''") &&
-    columnsSource.includes("source === 'detail' ? 'container-detail-oem-price-cell-fallback' : ''") &&
-    pageSource.includes('className={getOemPriceSourceClassName(row)}') &&
-    pageStyleSource.includes('.container-detail-oem-price-cell-warehouse') &&
-    pageStyleSource.includes('background: #f6ffed') &&
-    pageStyleSource.includes('.container-detail-oem-price-cell-fallback') &&
-    pageStyleSource.includes('background: #fffbe6') &&
-    pageStyleSource.includes('.container-detail-table .ant-input-number.container-detail-oem-price-cell-warehouse') &&
-    pageStyleSource.includes('.container-detail-table .ant-input-number.container-detail-oem-price-cell-fallback'),
+  columnsSource.includes('贴牌价格只读单元格：显示货柜明细自身业务价') &&
+    !columnsSource.includes("source === 'warehouse'") &&
+    !pageSource.includes('className={getOemPriceSourceClassName(row)}') &&
+    !pageStyleSource.includes('.container-detail-oem-price-cell-warehouse') &&
+    !pageStyleSource.includes('.container-detail-oem-price-cell-fallback'),
   true,
-  '贴牌价格应按来源显示绿色仓库价和黄色明细兜底价，编辑输入框也应沿用同一来源底色',
+  '贴牌价格应仅显示和编辑明细业务价，不再沿用仓库快照来源底色',
 )
 assertEqual(
   pageSource.includes('handleWarehouseStatusChange'),
@@ -2568,14 +2647,18 @@ const defaultColumnOrderMarkers = [
   "renderColumnTitle('englishName'",
   "key: 'categoryName'",
   "renderColumnTitle('containerPieces'",
+  "renderColumnTitle('packingQuantity'",
   "renderColumnTitle('containerQuantity'",
+  "renderColumnTitle('unitVolume'",
   "renderColumnTitle('domesticPrice'",
   "renderColumnTitle('transportCost'",
+  "renderColumnTitle('unitTransportCost'",
   "renderColumnTitle('floatRate'",
   "renderColumnTitle('middlePackQuantity'",
   "renderColumnTitle('warehouseImportPrice'",
   "renderColumnTitle('importPrice'",
   "renderColumnTitle('oemPrice'",
+  "renderColumnTitle('lastOEMPrice'",
   "renderColumnTitle('newProduct'",
   "renderColumnTitle('productType'",
   "renderColumnTitle('matchType'",
@@ -2658,11 +2741,11 @@ assertEqual(
   '货柜明细表格应接入可拖拽表头 cell 与横向 SortableContext',
 )
 assertEqual(
-  pageSource.includes("const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v2'") &&
+  pageSource.includes("const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v3'") &&
     pageSource.includes('localStorage.setItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY') &&
     pageSource.includes('mergeContainerDetailColumnOrder('),
   true,
-  '货柜明细列顺序应保存到 v2 localStorage key，覆盖旧默认顺序并兼容列增删',
+  '货柜明细列顺序应保存到 v3 localStorage key，覆盖旧默认顺序并兼容新增列',
 )
 assertEqual(
   pageSource.includes("containers.actions.resetColumns") &&
@@ -2689,6 +2772,14 @@ assertEqual(
     pageSource.includes('batchAssignProducts(targetCategoryGuid, productCodes)'),
   true,
   '批量操作菜单应包含批量分类，并提交当前目标行的去重商品编码',
+)
+assertEqual(
+  pageSource.includes('const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager') &&
+    pageSource.includes('if (!canBackfillLastPrices) return') &&
+    pageSource.includes('{canBackfillLastPrices ? (') &&
+    pageSource.includes('backfillContainerLastPricesByScope(containerGuid, buildDetailBatchScope())'),
+  true,
+  '回填上次价格按钮应与后端角色授权保持一致，仅 Admin 或 WarehouseManager 可见并可触发',
 )
 const batchCategorySaveSource = pageSource.slice(
   pageSource.indexOf('const handleBatchCategorySave = async () => {'),

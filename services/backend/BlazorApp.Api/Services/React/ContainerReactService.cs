@@ -303,14 +303,22 @@ namespace BlazorApp.Api.Services.React
                 : null;
             var containerQuantityMin = request.ContainerQuantityMin ?? request.ContainerQuantity?.Min;
             var containerQuantityMax = request.ContainerQuantityMax ?? request.ContainerQuantity?.Max;
+            var packingQuantityMin = request.PackingQuantityMin ?? request.PackingQuantity?.Min;
+            var packingQuantityMax = request.PackingQuantityMax ?? request.PackingQuantity?.Max;
+            var unitVolumeMin = request.UnitVolumeMin ?? request.UnitVolume?.Min;
+            var unitVolumeMax = request.UnitVolumeMax ?? request.UnitVolume?.Max;
             var domesticPriceMin = request.DomesticPriceMin ?? request.DomesticPrice?.Min;
             var domesticPriceMax = request.DomesticPriceMax ?? request.DomesticPrice?.Max;
             var floatRateMin = request.FloatRateMin ?? request.FloatRate?.Min;
             var floatRateMax = request.FloatRateMax ?? request.FloatRate?.Max;
             var transportCostMin = request.TransportCostMin ?? request.TransportCost?.Min;
             var transportCostMax = request.TransportCostMax ?? request.TransportCost?.Max;
+            var unitTransportCostMin = request.UnitTransportCostMin ?? request.UnitTransportCost?.Min;
+            var unitTransportCostMax = request.UnitTransportCostMax ?? request.UnitTransportCost?.Max;
             var warehouseImportPriceMin = request.WarehouseImportPriceMin ?? request.WarehouseImportPrice?.Min;
             var warehouseImportPriceMax = request.WarehouseImportPriceMax ?? request.WarehouseImportPrice?.Max;
+            var lastOEMPriceMin = request.LastOEMPriceMin ?? request.LastOEMPrice?.Min;
+            var lastOEMPriceMax = request.LastOEMPriceMax ?? request.LastOEMPrice?.Max;
             var importPriceMin = request.ImportPriceMin ?? request.ImportPrice?.Min;
             var importPriceMax = request.ImportPriceMax ?? request.ImportPrice?.Max;
             var oemPriceMin = request.OemPriceMin ?? request.OemPrice?.Min;
@@ -328,6 +336,14 @@ namespace BlazorApp.Api.Services.React
                 query = query.Where((cd, wp, dp, lp) => cd.LoadingQuantity >= containerQuantityMin);
             if (containerQuantityMax != null)
                 query = query.Where((cd, wp, dp, lp) => cd.LoadingQuantity <= containerQuantityMax);
+            if (packingQuantityMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.PackingQuantity >= packingQuantityMin);
+            if (packingQuantityMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.PackingQuantity <= packingQuantityMax);
+            if (unitVolumeMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.UnitVolume >= unitVolumeMin);
+            if (unitVolumeMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.UnitVolume <= unitVolumeMax);
             if (domesticPriceMin != null)
                 query = query.Where((cd, wp, dp, lp) => cd.DomesticPrice >= domesticPriceMin);
             if (domesticPriceMax != null)
@@ -340,10 +356,26 @@ namespace BlazorApp.Api.Services.React
                 query = query.Where((cd, wp, dp, lp) => cd.TransportCost >= transportCostMin);
             if (transportCostMax != null)
                 query = query.Where((cd, wp, dp, lp) => cd.TransportCost <= transportCostMax);
+            if (unitTransportCostMin != null)
+            {
+                // 单件运输成本按前端展示保留两位小数，服务端用原始区间匹配，避免不同数据库 ROUND 翻译差异。
+                var minRawValue = Convert.ToDouble(unitTransportCostMin.Value - 0.0050001m);
+                query = query.Where((cd, wp, dp, lp) => SqlFunc.ToDouble(cd.TransportCost) * SqlFunc.ToDouble(cd.PackingQuantity) >= minRawValue);
+            }
+            if (unitTransportCostMax != null)
+            {
+                // max 使用开区间上界，避免 0.505 这类会显示为 0.51 的值被 0.50 筛选命中。
+                var maxRawValue = Convert.ToDouble(unitTransportCostMax.Value + 0.0050001m);
+                query = query.Where((cd, wp, dp, lp) => SqlFunc.ToDouble(cd.TransportCost) * SqlFunc.ToDouble(cd.PackingQuantity) < maxRawValue);
+            }
             if (warehouseImportPriceMin != null)
-                query = query.Where((cd, wp, dp, lp) => wp.ImportPrice >= warehouseImportPriceMin);
+                query = query.Where((cd, wp, dp, lp) => cd.LastImportPrice >= warehouseImportPriceMin);
             if (warehouseImportPriceMax != null)
-                query = query.Where((cd, wp, dp, lp) => wp.ImportPrice <= warehouseImportPriceMax);
+                query = query.Where((cd, wp, dp, lp) => cd.LastImportPrice <= warehouseImportPriceMax);
+            if (lastOEMPriceMin != null)
+                query = query.Where((cd, wp, dp, lp) => cd.LastOEMPrice >= lastOEMPriceMin);
+            if (lastOEMPriceMax != null)
+                query = query.Where((cd, wp, dp, lp) => cd.LastOEMPrice <= lastOEMPriceMax);
             if (importPriceMin != null)
                 query = query.Where((cd, wp, dp, lp) => cd.ImportPrice >= importPriceMin);
             if (importPriceMax != null)
@@ -374,10 +406,14 @@ namespace BlazorApp.Api.Services.React
                 "containerPieces" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingPieces, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "middlePackQuantity" => query.OrderBy((cd, wp, dp, lp) => wp.MinOrderQuantity ?? dp.MiddlePackQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerQuantity" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "packingQuantity" => query.OrderBy((cd, wp, dp, lp) => cd.PackingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "unitVolume" => query.OrderBy((cd, wp, dp, lp) => cd.UnitVolume, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "domesticPrice" => query.OrderBy((cd, wp, dp, lp) => cd.DomesticPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "floatRate" => query.OrderBy((cd, wp, dp, lp) => cd.AdjustmentRate, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "transportCost" => query.OrderBy((cd, wp, dp, lp) => cd.TransportCost, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "warehouseImportPrice" => query.OrderBy((cd, wp, dp, lp) => wp.ImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "unitTransportCost" => query.OrderBy((cd, wp, dp, lp) => cd.TransportCost * cd.PackingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "warehouseImportPrice" => query.OrderBy((cd, wp, dp, lp) => cd.LastImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "lastOEMPrice" => query.OrderBy((cd, wp, dp, lp) => cd.LastOEMPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "importPrice" => query.OrderBy((cd, wp, dp, lp) => cd.ImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "oemPrice" => query.OrderBy((cd, wp, dp, lp) => cd.OEMPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "warehouseStatus" => query.OrderBy((cd, wp, dp, lp) => wp.IsActive, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
@@ -658,9 +694,11 @@ namespace BlazorApp.Api.Services.React
                                     // SqlSugar 投影内不能调用 C# helper，这里映射需与 MapDomesticProductTypeLabel 保持一致。
                                     商品类型 = dp.ProductType == 1 ? "套装商品" : dp.ProductType == 2 ? "多码商品" : "普通商品",
                                 },
-                                // 仓库商品的价格和上下架状态
-                                WarehouseImportPrice = wp.ImportPrice,
-                                WarehouseOEMPrice = wp.OEMPrice,
+                                // 上次价格必须来自货柜明细快照，避免仓库商品调价后覆盖历史货柜。
+                                LastImportPrice = cd.LastImportPrice,
+                                LastOEMPrice = cd.LastOEMPrice,
+                                WarehouseImportPrice = cd.LastImportPrice,
+                                WarehouseOEMPrice = cd.LastOEMPrice,
                                 WarehouseIsActive = wp.IsActive,
                             }
                     )
@@ -743,8 +781,10 @@ namespace BlazorApp.Api.Services.React
                                 运输成本 = cd.TransportCost,
                                 备注 = cd.Remarks,
                                 是否新商品 = lp.ProductCode == null,
-                                WarehouseImportPrice = wp.ImportPrice,
-                                WarehouseOEMPrice = wp.OEMPrice,
+                                LastImportPrice = cd.LastImportPrice,
+                                LastOEMPrice = cd.LastOEMPrice,
+                                WarehouseImportPrice = cd.LastImportPrice,
+                                WarehouseOEMPrice = cd.LastOEMPrice,
                                 WarehouseIsActive = wp.IsActive,
                                 商品信息 = new ContainerProductInfoDto
                                 {
@@ -1981,7 +2021,15 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
             if (selectedHguids.Count > 0)
             {
-                return selectedHguids;
+                // 选中项也必须回库按当前货柜收敛，避免请求体夹带其他货柜明细。
+                return await _context
+                    .Db.Queryable<ContainerDetail>()
+                    .Where(detail =>
+                        detail.ContainerCode == containerGuid
+                        && selectedHguids.Contains(detail.DetailCode)
+                    )
+                    .Select(detail => detail.DetailCode)
+                    .ToListAsync();
             }
 
             if (request.Query == null)
@@ -2166,6 +2214,88 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
 
             return await BatchUpdateDetailsAsync(updates);
+        }
+
+        public async Task<int> BackfillLastPricesByScopeAsync(
+            string containerGuid,
+            ContainerDetailBatchScopeDto request
+        )
+        {
+            var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request);
+            if (hguids.Count == 0)
+            {
+                return 0;
+            }
+
+            var details = await _context
+                .Db.Queryable<ContainerDetail>()
+                .Where(detail => hguids.Contains(detail.DetailCode))
+                .ToListAsync();
+            var productCodes = details
+                .Select(detail => detail.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct()
+                .ToList();
+            if (productCodes.Count == 0)
+            {
+                return 0;
+            }
+
+            var warehouseProducts = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .Where(product => productCodes.Contains(product.ProductCode))
+                .ToListAsync();
+            var warehouseMap = warehouseProducts
+                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                .ToDictionary(product => product.ProductCode!);
+
+            var changedDetails = new List<ContainerDetail>();
+            foreach (var detail in details)
+            {
+                if (
+                    string.IsNullOrWhiteSpace(detail.ProductCode)
+                    || !warehouseMap.TryGetValue(detail.ProductCode, out var warehouseProduct)
+                )
+                {
+                    continue;
+                }
+
+                var changed = false;
+                if (!detail.LastImportPrice.HasValue && warehouseProduct.ImportPrice.HasValue)
+                {
+                    // 回填只补空快照，绝不覆盖历史货柜已经保存的上次价格。
+                    detail.LastImportPrice = warehouseProduct.ImportPrice;
+                    changed = true;
+                }
+                if (!detail.LastOEMPrice.HasValue && warehouseProduct.OEMPrice.HasValue)
+                {
+                    detail.LastOEMPrice = warehouseProduct.OEMPrice;
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    changedDetails.Add(detail);
+                }
+            }
+
+            if (changedDetails.Count == 0)
+            {
+                return 0;
+            }
+
+            await _context
+                .Db.Updateable(changedDetails)
+                .UpdateColumns(detail => new
+                {
+                    detail.LastImportPrice,
+                    detail.LastOEMPrice,
+                })
+                .WhereColumns(detail => new { detail.DetailCode })
+                .ExecuteCommandAsync();
+
+            return changedDetails.Count;
         }
 
         /// <summary>
@@ -2381,6 +2511,18 @@ namespace BlazorApp.Api.Services.React
                     detailDict = new Dictionary<string, ContainerDetail>();
                 }
 
+                var warehouseProductMap = new Dictionary<string, WarehouseProduct>();
+                if (productCodes.Count > 0)
+                {
+                    var warehouseProducts = await _context
+                        .Db.Queryable<WarehouseProduct>()
+                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .ToListAsync();
+                    warehouseProductMap = warehouseProducts
+                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                        .ToDictionary(product => product.ProductCode!);
+                }
+
                 // 逐个处理商品
                 foreach (var item in items)
                 {
@@ -2404,6 +2546,8 @@ namespace BlazorApp.Api.Services.React
 
                         if (detail == null)
                         {
+                            warehouseProductMap.TryGetValue(item.ProductCode, out var warehouseProduct);
+
                             // 场景1：新建明细
                             detail = new ContainerDetail
                             {
@@ -2414,6 +2558,9 @@ namespace BlazorApp.Api.Services.React
                                 UnitVolume = item.UnitVolume,
                                 DomesticPrice = item.DomesticPrice,
                                 OEMPrice = item.OEMPrice,
+                                // 上次价格仅在新建明细时快照；后续仓库商品调价不自动覆盖历史货柜。
+                                LastImportPrice = warehouseProduct?.ImportPrice,
+                                LastOEMPrice = warehouseProduct?.OEMPrice,
                                 Remarks = string.IsNullOrWhiteSpace(item.Notes)
                                     ? notes
                                     : item.Notes,

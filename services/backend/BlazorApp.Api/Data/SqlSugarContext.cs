@@ -371,7 +371,7 @@ namespace BlazorApp.Api.Data
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
-                EnsureContainerDetailTargetWarehouseCategoryColumn();
+                EnsureContainerDetailSchemaColumns();
                 CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
@@ -388,6 +388,7 @@ namespace BlazorApp.Api.Data
         {
             EnsureUserLastLoginIpColumn();
             EnsureRefreshTokenUserIpAddressIndex();
+            EnsureContainerDetailSchemaColumns();
         }
 
         public void ForceRecreateAllTables()
@@ -735,7 +736,7 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
         }
 
-        private void EnsureContainerDetailTargetWarehouseCategoryColumn()
+        private void EnsureContainerDetailSchemaColumns()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(ContainerDetail));
             if (!_db.DbMaintenance.IsAnyTable(tableName))
@@ -745,6 +746,9 @@ namespace BlazorApp.Api.Data
 
             // 老库无损补列：货柜明细阶段先保存目标分类，新商品创建时再继承到 Product。
             EnsureColumn(tableName, "TargetWarehouseCategoryGUID", "nvarchar(50)", "varchar(50)", "varchar(50)");
+            // 老库无损补列：上次价格是货柜明细快照，只在新建明细或显式回填时写入。
+            EnsureColumn(tableName, "LastImportPrice", "decimal(18,2)", "numeric(18,2)", "decimal(18,2)");
+            EnsureColumn(tableName, "LastOEMPrice", "decimal(18,2)", "numeric(18,2)", "decimal(18,2)");
         }
 
         private void EnsureColumn(

@@ -81,6 +81,11 @@ namespace BlazorApp.Api.Interfaces.React
         Task<int> RecalculateCostsByScopeAsync(string containerGuid, ContainerDetailBatchScopeDto request);
 
         /// <summary>
+        /// 按当前筛选范围回填货柜明细上次价格快照。
+        /// </summary>
+        Task<int> BackfillLastPricesByScopeAsync(string containerGuid, ContainerDetailBatchScopeDto request);
+
+        /// <summary>
         /// 创建新货柜（React）
         /// </summary>
         /// <param name="dto">创建货柜DTO</param>

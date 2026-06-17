@@ -100,6 +100,159 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryContainerDetailsAsync_应返回货柜明细上次价格快照而不是仓库实时价格()
+    {
+        await SeedContainerAsync("C-LAST-PRICE", "CSLU6099501");
+        await SeedDetailAsync(
+            "D-LAST-PRICE",
+            "C-LAST-PRICE",
+            "P-LAST-PRICE",
+            "HB-LAST",
+            oemPrice: 3m,
+            importPrice: 2m,
+            lastImportPrice: 1.25m,
+            lastOemPrice: 2.75m
+        );
+        await _localDb.Updateable<WarehouseProduct>()
+            .SetColumns(x => x.ImportPrice == 9.99m)
+            .SetColumns(x => x.OEMPrice == 19.99m)
+            .Where(x => x.ProductCode == "P-LAST-PRICE")
+            .ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-LAST-PRICE",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(1.25m, item.LastImportPrice);
+        Assert.Equal(2.75m, item.LastOEMPrice);
+        Assert.Equal(1.25m, item.WarehouseImportPrice);
+        Assert.Equal(2.75m, item.WarehouseOEMPrice);
+    }
+
+    [Fact]
+    public async Task BackfillLastPricesByScopeAsync_只填空快照且不覆盖已有值()
+    {
+        await SeedContainerAsync("C-BACKFILL", "CSLU6099502");
+        await SeedContainerAsync("C-BACKFILL-OTHER", "CSLU6099504");
+        await SeedDetailAsync("D-BACKFILL-EMPTY", "C-BACKFILL", "P-BACKFILL-EMPTY", "HB-BE", oemPrice: 4m, importPrice: 3m);
+        await SeedDetailAsync(
+            "D-BACKFILL-EXISTING",
+            "C-BACKFILL",
+            "P-BACKFILL-EXISTING",
+            "HB-BX",
+            oemPrice: 8m,
+            importPrice: 7m,
+            lastImportPrice: 1.11m,
+            lastOemPrice: 2.22m
+        );
+        await SeedDetailAsync("D-BACKFILL-OTHER", "C-BACKFILL-OTHER", "P-BACKFILL-OTHER", "HB-BO", oemPrice: 6m, importPrice: 5m);
+        var service = CreateService();
+
+        var updated = await service.BackfillLastPricesByScopeAsync(
+            "C-BACKFILL",
+            new ContainerDetailBatchScopeDto
+            {
+                SelectedHguids = new List<string> { "D-BACKFILL-EMPTY", "D-BACKFILL-EXISTING", "D-BACKFILL-OTHER" },
+            }
+        );
+
+        var empty = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-BACKFILL-EMPTY");
+        var existing = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-BACKFILL-EXISTING");
+        var otherContainerDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-BACKFILL-OTHER");
+        Assert.Equal(1, updated);
+        Assert.Equal(3m, empty.LastImportPrice);
+        Assert.Equal(4m, empty.LastOEMPrice);
+        Assert.Equal(1.11m, existing.LastImportPrice);
+        Assert.Equal(2.22m, existing.LastOEMPrice);
+        Assert.Null(otherContainerDetail.LastImportPrice);
+        Assert.Null(otherContainerDetail.LastOEMPrice);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_单件运输成本筛选应按展示值两位小数比较()
+    {
+        await SeedContainerAsync("C-UNIT-TRANSPORT", "CSLU6099505");
+        await SeedDetailAsync("D-UNIT-ROUND-UP", "C-UNIT-TRANSPORT", "P-UNIT-ROUND-UP", "HB-UR", oemPrice: 4m, importPrice: 3m);
+        await SeedDetailAsync("D-UNIT-ROUND-DOWN", "C-UNIT-TRANSPORT", "P-UNIT-ROUND-DOWN", "HB-UD", oemPrice: 4m, importPrice: 3m);
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(x => x.TransportCost == 0.08m)
+            .SetColumns(x => x.PackingQuantity == 6.20m)
+            .Where(x => x.DetailCode == "D-UNIT-ROUND-UP")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(x => x.TransportCost == 0.08m)
+            .SetColumns(x => x.PackingQuantity == 6.18m)
+            .Where(x => x.DetailCode == "D-UNIT-ROUND-DOWN")
+            .ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-UNIT-TRANSPORT",
+                UnitTransportCostMin = 0.50m,
+                UnitTransportCostMax = 0.50m,
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("D-UNIT-ROUND-UP", item.HGUID);
+    }
+
+    [Fact]
+    public async Task AssignProductsAsync_新建明细应写入上次价格快照且更新已有明细不覆盖()
+    {
+        await SeedContainerAsync("C-ASSIGN-LAST", "CSLU6099503");
+        await _localDb.Insertable(new WarehouseProduct { ProductCode = "P-ASSIGN-NEW", ImportPrice = 6.6m, OEMPrice = 9.9m, IsActive = true }).ExecuteCommandAsync();
+        await _localDb.Insertable(new DomesticProduct { ProductCode = "P-ASSIGN-NEW", HBProductNo = "HB-AN", IsDeleted = false }).ExecuteCommandAsync();
+        await SeedDetailAsync(
+            "D-ASSIGN-EXISTING",
+            "C-ASSIGN-LAST",
+            "P-ASSIGN-EXISTING",
+            "HB-AE",
+            oemPrice: 4m,
+            importPrice: 3m,
+            lastImportPrice: 1.23m,
+            lastOemPrice: 4.56m
+        );
+        var service = CreateService();
+
+        var result = await service.AssignProductsAsync(
+            "C-ASSIGN-LAST",
+            new List<AssignProductItemDto>
+            {
+                new() { ProductCode = "P-ASSIGN-NEW", Quantity = 1m, PackingQuantity = 12m, UnitVolume = 0.1m },
+                new() { ProductCode = "P-ASSIGN-EXISTING", Quantity = 1m, PackingQuantity = 24m, UnitVolume = 0.2m },
+            },
+            "increase",
+            null
+        );
+
+        var created = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.ContainerCode == "C-ASSIGN-LAST" && x.ProductCode == "P-ASSIGN-NEW");
+        var existing = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-ASSIGN-EXISTING");
+        Assert.Equal(1, result.Created);
+        Assert.Equal(1, result.Updated);
+        Assert.Equal(6.6m, created.LastImportPrice);
+        Assert.Equal(9.9m, created.LastOEMPrice);
+        Assert.Equal(1.23m, existing.LastImportPrice);
+        Assert.Equal(4.56m, existing.LastOEMPrice);
+    }
+
+    [Fact]
     public async Task QueryContainerDetailsAsync_应返回仓库分类到明细和商品信息()
     {
         await SeedContainerAsync("C-CATEGORY", "CSLU6099490");
@@ -480,7 +633,9 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         string detailProductType = "普通商品",
         string? warehouseCategoryGuid = null,
         string? targetWarehouseCategoryGuid = null,
-        string? productImage = "__DEFAULT__"
+        string? productImage = "__DEFAULT__",
+        decimal? lastImportPrice = null,
+        decimal? lastOemPrice = null
     )
     {
         await _localDb.Insertable(
@@ -496,6 +651,8 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 AdjustmentRate = 1.1m,
                 ImportPrice = importPrice,
                 OEMPrice = oemPrice,
+                LastImportPrice = lastImportPrice,
+                LastOEMPrice = lastOemPrice,
                 TransportCost = 0.5m,
                 Remarks = $"备注 {itemNumber}",
                 TargetWarehouseCategoryGUID = targetWarehouseCategoryGuid,
@@ -617,6 +774,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             DbType = DbType.Sqlite,
             IsAutoCloseConnection = false,
             InitKeyType = InitKeyType.Attribute,
+            MoreSettings = new ConnMoreSettings { IsNoReadXmlDescription = true },
         };
 
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)

@@ -217,12 +217,22 @@ namespace BlazorApp.Shared.DTOs
         public bool 是否新商品 { get; set; }
 
         /// <summary>
-        /// 仓库当前进货价
+        /// 上次进货价格（货柜明细快照）
+        /// </summary>
+        public decimal? LastImportPrice { get; set; }
+
+        /// <summary>
+        /// 上次贴牌价格（货柜明细快照）
+        /// </summary>
+        public decimal? LastOEMPrice { get; set; }
+
+        /// <summary>
+        /// 上次进货价格（兼容旧前端字段名）
         /// </summary>
         public decimal? WarehouseImportPrice { get; set; }
 
         /// <summary>
-        /// 仓库当前贴牌价格
+        /// 上次贴牌价格（兼容旧前端字段名）
         /// </summary>
         public decimal? WarehouseOEMPrice { get; set; }
 
@@ -380,6 +390,12 @@ namespace BlazorApp.Shared.DTOs
         public ContainerDetailNumberRangeDto? ContainerQuantity { get; set; }
         public decimal? ContainerQuantityMin { get; set; }
         public decimal? ContainerQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? PackingQuantity { get; set; }
+        public decimal? PackingQuantityMin { get; set; }
+        public decimal? PackingQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? UnitVolume { get; set; }
+        public decimal? UnitVolumeMin { get; set; }
+        public decimal? UnitVolumeMax { get; set; }
         public ContainerDetailNumberRangeDto? DomesticPrice { get; set; }
         public decimal? DomesticPriceMin { get; set; }
         public decimal? DomesticPriceMax { get; set; }
@@ -389,9 +405,15 @@ namespace BlazorApp.Shared.DTOs
         public ContainerDetailNumberRangeDto? TransportCost { get; set; }
         public decimal? TransportCostMin { get; set; }
         public decimal? TransportCostMax { get; set; }
+        public ContainerDetailNumberRangeDto? UnitTransportCost { get; set; }
+        public decimal? UnitTransportCostMin { get; set; }
+        public decimal? UnitTransportCostMax { get; set; }
         public ContainerDetailNumberRangeDto? WarehouseImportPrice { get; set; }
         public decimal? WarehouseImportPriceMin { get; set; }
         public decimal? WarehouseImportPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? LastOEMPrice { get; set; }
+        public decimal? LastOEMPriceMin { get; set; }
+        public decimal? LastOEMPriceMax { get; set; }
         public ContainerDetailNumberRangeDto? ImportPrice { get; set; }
         public decimal? ImportPriceMin { get; set; }
         public decimal? ImportPriceMax { get; set; }

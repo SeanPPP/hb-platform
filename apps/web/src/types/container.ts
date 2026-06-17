@@ -74,7 +74,12 @@ export interface ContainerDetail {
   商品信息?: ContainerProductInfo
   是否新商品?: boolean
   IsActive?: boolean
+  lastImportPrice?: number
+  LastImportPrice?: number
+  lastOEMPrice?: number
+  LastOEMPrice?: number
   warehouseImportPrice?: number
+  WarehouseImportPrice?: number
   warehouseOEMPrice?: number
   WarehouseOEMPrice?: number
   warehouseIsActive?: boolean
@@ -120,14 +125,22 @@ export interface ContainerDetailQuery {
   middlePackQuantityMax?: number
   containerQuantityMin?: number
   containerQuantityMax?: number
+  packingQuantityMin?: number
+  packingQuantityMax?: number
+  unitVolumeMin?: number
+  unitVolumeMax?: number
   domesticPriceMin?: number
   domesticPriceMax?: number
   floatRateMin?: number
   floatRateMax?: number
   transportCostMin?: number
   transportCostMax?: number
+  unitTransportCostMin?: number
+  unitTransportCostMax?: number
   warehouseImportPriceMin?: number
   warehouseImportPriceMax?: number
+  lastOEMPriceMin?: number
+  lastOEMPriceMax?: number
   importPriceMin?: number
   importPriceMax?: number
   oemPriceMin?: number

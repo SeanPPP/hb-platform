@@ -21,7 +21,7 @@ import {
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   getContainerDetailCategoryName,
   getContainerDetailCategoryTooltipRecord,
-  getContainerDetailOemPriceSource,
+  getContainerDetailLastImportPrice,
   resolveContainerDetailOemPrice,
   type ContainerDetailSortField,
 } from './containerDetailLogic'
@@ -44,30 +44,20 @@ export function renderNumericCell(value: ReactNode) {
   return <span className="container-detail-nowrap container-detail-numeric-cell">{value}</span>
 }
 
-/** 贴牌价格来源 CSS 类名（仓库价/明细兜底价）。 */
-export function getOemPriceSourceClassName(row: ContainerDetail) {
-  const source = getContainerDetailOemPriceSource(row)
-  return [
-    source === 'warehouse' ? 'container-detail-oem-price-cell-warehouse' : '',
-    source === 'detail' ? 'container-detail-oem-price-cell-fallback' : '',
-  ].filter(Boolean).join(' ')
-}
-
-/** 贴牌价格只读单元格：根据来源显示不同颜色（绿/黄）。 */
+/** 贴牌价格只读单元格：显示货柜明细自身业务价。 */
 export function renderOemPriceCell(row: ContainerDetail) {
   const className = [
     'container-detail-nowrap',
     'container-detail-numeric-cell',
     'container-detail-oem-price-cell',
-    getOemPriceSourceClassName(row),
   ].filter(Boolean).join(' ')
 
   return <span className={className}>{formatCurrency(resolveContainerDetailOemPrice(row), '$')}</span>
 }
 
-/** 进口价格与仓库当前进货价格趋势方向。 */
+/** 进口价格与上次进货价格趋势方向。 */
 function getImportPriceTrend(row: ContainerDetail): 'up' | 'down' | undefined {
-  const warehouseImportPrice = row.warehouseImportPrice
+  const warehouseImportPrice = getContainerDetailLastImportPrice(row)
   const importPrice = row.进口价格
   if (
     typeof warehouseImportPrice !== 'number' ||

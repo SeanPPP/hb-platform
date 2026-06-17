@@ -268,6 +268,13 @@ export async function recalculateContainerCostsByScope(
   return postContainerDetailAction(containerGuid, 'recalculate-costs', scope, '重算成本失败')
 }
 
+export async function backfillContainerLastPricesByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'backfill-last-prices', scope, '回填上次价格失败')
+}
+
 export async function getContainerDetail(containerGuid: string): Promise<ContainerMain> {
   const response = await request<ApiResponse<ContainerMain> | { success?: boolean; isSuccess?: boolean; message?: string; data?: ContainerMain }>(
     `${API_BASE}/${encodeURIComponent(containerGuid)}`,

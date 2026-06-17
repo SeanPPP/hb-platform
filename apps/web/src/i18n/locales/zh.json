@@ -95,7 +95,7 @@
       "batchSetCategory": "批量分类",
       "translateHqData": "翻译 HQ数据",
       "createNewProducts": "创建新商品",
-      "updateExistingPurchase": "更新已有商品价格",
+      "updateExistingPurchase": "更新已有商品",
       "batchActivate": "批量上架",
       "batchDeactivate": "批量下架",
       "batchActions": "批量操作",
@@ -112,7 +112,8 @@
       "selectExportColumns": "选择导出列",
       "exportSelectedColumns": "按所选列导出",
       "selectAllExportColumns": "全选",
-      "resetDefaultExportColumns": "恢复默认"
+      "resetDefaultExportColumns": "恢复默认",
+      "backfillLastPrices": "回填上次价格"
     },
     "fields": {
       "containerNumber": "货柜编号",
@@ -141,10 +142,14 @@
       "containerPieces": "装柜件数",
       "middlePackQuantity": "中包数",
       "containerQuantity": "装柜数量",
+      "packingQuantity": "单件装箱数",
+      "unitVolume": "单件体积",
       "domesticPrice": "国内价格",
       "floatRate": "调整浮率",
       "transportCost": "运输成本",
-      "warehouseImportPrice": "仓库当前进货价格",
+      "unitTransportCost": "单件运输成本",
+      "warehouseImportPrice": "上次进货价格",
+      "lastOEMPrice": "上次贴牌价格",
       "importPrice": "进口价格",
       "oemPrice": "贴牌价格",
       "warehouseStatus": "仓库状态"

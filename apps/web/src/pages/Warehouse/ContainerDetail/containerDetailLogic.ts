@@ -23,10 +23,14 @@ export type ContainerDetailSortField =
   | 'containerPieces'
   | 'middlePackQuantity'
   | 'containerQuantity'
+  | 'packingQuantity'
+  | 'unitVolume'
   | 'domesticPrice'
   | 'floatRate'
   | 'transportCost'
+  | 'unitTransportCost'
   | 'warehouseImportPrice'
+  | 'lastOEMPrice'
   | 'importPrice'
   | 'oemPrice'
   | 'warehouseStatus'
@@ -57,6 +61,8 @@ export type ContainerDetailExportColumnKey =
   | 'totalVolume'
   | 'middlePackQuantity'
   | 'domesticPrice'
+  | 'lastImportPrice'
+  | 'lastOEMPrice'
   | 'oemPrice'
 
 export type ContainerDetailExportValueType = 'text' | 'integer' | 'money' | 'volume'
@@ -97,6 +103,8 @@ export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinit
   { key: 'totalVolume', labelKey: 'containers.export.totalVolumeColumn', fallbackLabel: '总体积', width: 12, valueType: 'volume' },
   { key: 'middlePackQuantity', labelKey: 'containers.fields.middlePackQuantity', fallbackLabel: '中包数', width: 12, valueType: 'integer' },
   { key: 'domesticPrice', labelKey: 'containers.fields.domesticPrice', fallbackLabel: '国内价格', width: 12, valueType: 'money' },
+  { key: 'lastImportPrice', labelKey: 'containers.fields.lastImportPrice', fallbackLabel: '上次进货价格', width: 14, valueType: 'money' },
+  { key: 'lastOEMPrice', labelKey: 'containers.fields.lastOEMPrice', fallbackLabel: '上次贴牌价格', width: 14, valueType: 'money' },
   { key: 'oemPrice', labelKey: 'containers.fields.oemPrice', fallbackLabel: '贴牌价格', width: 12, valueType: 'money' },
 ]
 
@@ -111,10 +119,14 @@ const containerDetailSortFields = new Set<string>([
   'containerPieces',
   'middlePackQuantity',
   'containerQuantity',
+  'packingQuantity',
+  'unitVolume',
   'domesticPrice',
   'floatRate',
   'transportCost',
+  'unitTransportCost',
   'warehouseImportPrice',
+  'lastOEMPrice',
   'importPrice',
   'oemPrice',
   'warehouseStatus',
@@ -249,10 +261,14 @@ export interface ContainerDetailColumnFilters {
   containerPieces?: ContainerDetailNumberRangeFilter
   middlePackQuantity?: ContainerDetailNumberRangeFilter
   containerQuantity?: ContainerDetailNumberRangeFilter
+  packingQuantity?: ContainerDetailNumberRangeFilter
+  unitVolume?: ContainerDetailNumberRangeFilter
   domesticPrice?: ContainerDetailNumberRangeFilter
   floatRate?: ContainerDetailNumberRangeFilter
   transportCost?: ContainerDetailNumberRangeFilter
+  unitTransportCost?: ContainerDetailNumberRangeFilter
   warehouseImportPrice?: ContainerDetailNumberRangeFilter
+  lastOEMPrice?: ContainerDetailNumberRangeFilter
   importPrice?: ContainerDetailNumberRangeFilter
   oemPrice?: ContainerDetailNumberRangeFilter
   warehouseStatus?: ContainerDetailWarehouseStatusFilter[]
@@ -489,20 +505,25 @@ export function getContainerDetailWarehouseStatusFilterKey(row: ContainerDetail)
 }
 
 export function resolveContainerDetailOemPrice(row: ContainerDetail): number | undefined {
-  const warehouseOemPrice = row.warehouseOEMPrice ?? row.WarehouseOEMPrice
-  // 展示、导出和 HQ 发送优先使用仓库商品贴牌价；明细贴牌价仅作兜底和本页编辑保存值。
-  if (typeof warehouseOemPrice === 'number' && Number.isFinite(warehouseOemPrice) && warehouseOemPrice > 0) {
-    return warehouseOemPrice
-  }
+  // 贴牌价格是货柜明细业务价，导出和发送 HQ 都必须使用它。
   return row.贴牌价格
 }
 
-export function getContainerDetailOemPriceSource(row: ContainerDetail): 'warehouse' | 'detail' | 'none' {
-  const warehouseOemPrice = row.warehouseOEMPrice ?? row.WarehouseOEMPrice
-  if (typeof warehouseOemPrice === 'number' && Number.isFinite(warehouseOemPrice) && warehouseOemPrice > 0) {
-    return 'warehouse'
-  }
+export function getContainerDetailOemPriceSource(row: ContainerDetail): 'detail' | 'none' {
   return row.贴牌价格 == null ? 'none' : 'detail'
+}
+
+export function getContainerDetailLastImportPrice(row: ContainerDetail): number | undefined {
+  return row.lastImportPrice ?? row.LastImportPrice ?? row.warehouseImportPrice ?? row.WarehouseImportPrice
+}
+
+export function getContainerDetailLastOemPrice(row: ContainerDetail): number | undefined {
+  return row.lastOEMPrice ?? row.LastOEMPrice ?? row.warehouseOEMPrice ?? row.WarehouseOEMPrice
+}
+
+export function calculateContainerDetailUnitTransportCost(row: ContainerDetail): number | undefined {
+  if (row.运输成本 == null || row.单件装箱数 == null) return undefined
+  return roundToDigits(row.运输成本 * row.单件装箱数, 2)
 }
 
 export function getContainerDetailExportColumns(
@@ -545,6 +566,8 @@ export function buildContainerDetailExportRow(row: ContainerDetail, index = 0): 
     totalVolume: getContainerDetailTotalVolume(row),
     middlePackQuantity: row.中包数 ?? 0,
     domesticPrice: row.国内价格 ?? 0,
+    lastImportPrice: getContainerDetailLastImportPrice(row) ?? 0,
+    lastOEMPrice: getContainerDetailLastOemPrice(row) ?? 0,
     oemPrice: resolveContainerDetailOemPrice(row) ?? 0,
   }
 }
@@ -779,14 +802,22 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return row.中包数
     case 'containerQuantity':
       return row.装柜数量
+    case 'packingQuantity':
+      return row.单件装箱数
+    case 'unitVolume':
+      return row.单件体积
     case 'domesticPrice':
       return row.国内价格
     case 'floatRate':
       return row.调整浮率
     case 'transportCost':
       return row.运输成本
+    case 'unitTransportCost':
+      return calculateContainerDetailUnitTransportCost(row)
     case 'warehouseImportPrice':
-      return row.warehouseImportPrice
+      return getContainerDetailLastImportPrice(row)
+    case 'lastOEMPrice':
+      return getContainerDetailLastOemPrice(row)
     case 'importPrice':
       return row.进口价格
     case 'oemPrice':
@@ -828,10 +859,14 @@ export function applyContainerDetailColumnState(
     matchesNumberRange(row.装柜件数, filters.containerPieces) &&
     matchesNumberRange(row.中包数, filters.middlePackQuantity) &&
     matchesNumberRange(row.装柜数量, filters.containerQuantity) &&
+    matchesNumberRange(row.单件装箱数, filters.packingQuantity) &&
+    matchesNumberRange(row.单件体积, filters.unitVolume) &&
     matchesNumberRange(row.国内价格, filters.domesticPrice) &&
     matchesNumberRange(row.调整浮率, filters.floatRate) &&
     matchesNumberRange(row.运输成本, filters.transportCost) &&
-    matchesNumberRange(row.warehouseImportPrice, filters.warehouseImportPrice) &&
+    matchesNumberRange(calculateContainerDetailUnitTransportCost(row), filters.unitTransportCost) &&
+    matchesNumberRange(getContainerDetailLastImportPrice(row), filters.warehouseImportPrice) &&
+    matchesNumberRange(getContainerDetailLastOemPrice(row), filters.lastOEMPrice) &&
     matchesNumberRange(row.进口价格, filters.importPrice) &&
     matchesNumberRange(resolveContainerDetailOemPrice(row), filters.oemPrice)
   ))
@@ -931,10 +966,14 @@ export function buildContainerDetailQuery({
   assignNumberRange(query, 'containerPiecesMin', 'containerPiecesMax', filters.containerPieces)
   assignNumberRange(query, 'middlePackQuantityMin', 'middlePackQuantityMax', filters.middlePackQuantity)
   assignNumberRange(query, 'containerQuantityMin', 'containerQuantityMax', filters.containerQuantity)
+  assignNumberRange(query, 'packingQuantityMin', 'packingQuantityMax', filters.packingQuantity)
+  assignNumberRange(query, 'unitVolumeMin', 'unitVolumeMax', filters.unitVolume)
   assignNumberRange(query, 'domesticPriceMin', 'domesticPriceMax', filters.domesticPrice)
   assignNumberRange(query, 'floatRateMin', 'floatRateMax', filters.floatRate)
   assignNumberRange(query, 'transportCostMin', 'transportCostMax', filters.transportCost)
+  assignNumberRange(query, 'unitTransportCostMin', 'unitTransportCostMax', filters.unitTransportCost)
   assignNumberRange(query, 'warehouseImportPriceMin', 'warehouseImportPriceMax', filters.warehouseImportPrice)
+  assignNumberRange(query, 'lastOEMPriceMin', 'lastOEMPriceMax', filters.lastOEMPrice)
   assignNumberRange(query, 'importPriceMin', 'importPriceMax', filters.importPrice)
   assignNumberRange(query, 'oemPriceMin', 'oemPriceMax', filters.oemPrice)
 
@@ -1364,12 +1403,12 @@ function getDetectedUnitVolume(item: ContainerDetailDetectedPrice) {
   return item.WarehouseVolume ?? item.warehouseVolume ?? item.volume ?? item.Volume ?? item.unitVolume ?? item.UnitVolume
 }
 
-function calculateContainerDetailTotalAmount(row: ContainerDetail) {
+export function calculateContainerDetailTotalAmount(row: ContainerDetail) {
   if (row.装柜数量 == null || row.国内价格 == null) return row.合计装柜金额
   return roundToDigits(row.装柜数量 * row.国内价格 * (row.调整浮率 ?? 1), 2)
 }
 
-function calculateContainerDetailTotalVolume(row: ContainerDetail) {
+export function calculateContainerDetailTotalVolume(row: ContainerDetail) {
   const unitVolume = row.单件体积 ?? row.商品信息?.单件体积
   if (row.装柜件数 == null || unitVolume == null) return row.合计装柜体积
   return roundToDigits(row.装柜件数 * unitVolume, 3)

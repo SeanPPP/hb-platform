@@ -128,34 +128,6 @@
   text-align: right;
 }
 
-.container-detail-oem-price-cell-warehouse {
-  background: #f6ffed;
-  border-color: #b7eb8f;
-}
-
-.container-detail-oem-price-cell-fallback {
-  background: #fffbe6;
-  border-color: #ffe58f;
-}
-
-.container-detail-table .ant-input-number.container-detail-oem-price-cell-warehouse,
-.container-detail-table .ant-input-number.container-detail-oem-price-cell-warehouse .ant-input-number-input {
-  background: #f6ffed;
-}
-
-.container-detail-table .ant-input-number.container-detail-oem-price-cell-warehouse {
-  border-color: #b7eb8f;
-}
-
-.container-detail-table .ant-input-number.container-detail-oem-price-cell-fallback,
-.container-detail-table .ant-input-number.container-detail-oem-price-cell-fallback .ant-input-number-input {
-  background: #fffbe6;
-}
-
-.container-detail-table .ant-input-number.container-detail-oem-price-cell-fallback {
-  border-color: #ffe58f;
-}
-
 .container-detail-import-price-cell {
   display: inline-flex;
   align-items: center;

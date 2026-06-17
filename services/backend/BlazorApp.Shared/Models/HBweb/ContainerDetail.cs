@@ -165,6 +165,24 @@ namespace BlazorApp.Shared.Models
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
+        /// 上次进货价格
+        /// 说明：商品加入货柜或手动回填时，从仓库商品表快照下来的进货价。
+        /// 注意：已有快照不随仓库商品价格变化自动覆盖。
+        /// </summary>
+        [SugarColumn(IsNullable = true, DecimalDigits = 2)]
+        [Display(Name = "上次进货价格")]
+        public decimal? LastImportPrice { get; set; }
+
+        /// <summary>
+        /// 上次贴牌价格
+        /// 说明：商品加入货柜或手动回填时，从仓库商品表快照下来的贴牌价。
+        /// 注意：已有快照不随仓库商品价格变化自动覆盖。
+        /// </summary>
+        [SugarColumn(IsNullable = true, DecimalDigits = 2)]
+        [Display(Name = "上次贴牌价格")]
+        public decimal? LastOEMPrice { get; set; }
+
+        /// <summary>
         /// 单件装箱数
         /// 说明：单个包装中包含的商品数量
         /// 精度：2位小数，支持分数包装
