@@ -232,6 +232,7 @@ export interface UpdateContainerDetailRequest {
   商品名称?: string
   英文名称?: string
   ClearEnglishName?: boolean
+  ProductCategoryGUID?: string
   贴牌价格?: number
   单件装箱数?: number
   中包数?: number

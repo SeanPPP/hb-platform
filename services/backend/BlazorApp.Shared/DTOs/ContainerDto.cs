@@ -502,6 +502,11 @@ namespace BlazorApp.Shared.DTOs
         public bool? ClearEnglishName { get; set; }
 
         /// <summary>
+        /// 目标仓库分类GUID
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
         /// 贴牌价格
         /// </summary>
         public decimal? 贴牌价格 { get; set; }

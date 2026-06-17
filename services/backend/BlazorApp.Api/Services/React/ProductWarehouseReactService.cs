@@ -1081,6 +1081,9 @@ namespace BlazorApp.Api.Services.React
                                 item.ImageUrl,
                                 item.ItemNumber ?? code
                             ),
+                            WarehouseCategoryGUID = string.IsNullOrWhiteSpace(item.WarehouseCategoryGUID)
+                                ? null
+                                : item.WarehouseCategoryGUID.Trim(),
                             // 货柜创建套装时必须同步写 POS 商品类型，否则 POS 商品管理会把空值显示为单品。
                             ProductType = item.ProductType ?? (item.IsSetProduct ? 1 : 0),
                             IsAutoPricing = false,

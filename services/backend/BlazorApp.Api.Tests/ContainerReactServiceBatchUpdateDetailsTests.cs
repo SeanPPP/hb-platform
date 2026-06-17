@@ -42,7 +42,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             typeof(DomesticProduct),
             typeof(WarehouseProduct),
             typeof(Product),
-            typeof(StoreRetailPrice)
+            typeof(StoreRetailPrice),
+            typeof(WarehouseCategory)
         );
     }
 
@@ -86,9 +87,100 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsAsync_未匹配明细目标分类_应保存到货柜明细()
+    {
+        await SeedDetailAsync("D-TARGET-CATEGORY-NEW", "P-TARGET-CATEGORY-NEW");
+        await SeedWarehouseCategoryAsync("CAT-TARGET-NEW");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-TARGET-CATEGORY-NEW", ProductCategoryGUID = "CAT-TARGET-NEW" },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-TARGET-CATEGORY-NEW");
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal("CAT-TARGET-NEW", detail.TargetWarehouseCategoryGUID);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_已有商品目标分类_应同步本地商品仓库分类()
+    {
+        await SeedDetailAsync("D-TARGET-CATEGORY-EXISTING", "P-TARGET-CATEGORY-EXISTING");
+        await SeedRelatedPriceRowsAsync("P-TARGET-CATEGORY-EXISTING");
+        await SeedWarehouseCategoryAsync("CAT-TARGET-EXISTING");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-TARGET-CATEGORY-EXISTING", ProductCategoryGUID = "CAT-TARGET-EXISTING" },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-TARGET-CATEGORY-EXISTING");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-TARGET-CATEGORY-EXISTING");
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal("CAT-TARGET-EXISTING", detail.TargetWarehouseCategoryGUID);
+        Assert.Equal("CAT-TARGET-EXISTING", product.WarehouseCategoryGUID);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_空白目标分类_应拒绝并不清空明细分类()
+    {
+        await SeedDetailAsync("D-TARGET-CATEGORY-BLANK", "P-TARGET-CATEGORY-BLANK");
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(x => x.TargetWarehouseCategoryGUID == "CAT-EXISTING")
+            .Where(x => x.DetailCode == "D-TARGET-CATEGORY-BLANK")
+            .ExecuteCommandAsync();
+        var service = CreateService();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.BatchUpdateDetailsAsync(
+                new List<UpdateContainerDetailDto>
+                {
+                    new() { HGUID = "D-TARGET-CATEGORY-BLANK", ProductCategoryGUID = "   " },
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-TARGET-CATEGORY-BLANK");
+        Assert.Equal("CAT-EXISTING", detail.TargetWarehouseCategoryGUID);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_不存在或已删除目标分类_应拒绝并不写入分类()
+    {
+        await SeedDetailAsync("D-TARGET-CATEGORY-MISSING", "P-TARGET-CATEGORY-MISSING");
+        await SeedWarehouseCategoryAsync("CAT-DELETED", isDeleted: true);
+        var service = CreateService();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.BatchUpdateDetailsAsync(
+                new List<UpdateContainerDetailDto>
+                {
+                    new() { HGUID = "D-TARGET-CATEGORY-MISSING", ProductCategoryGUID = "CAT-MISSING" },
+                    new() { HGUID = "D-TARGET-CATEGORY-MISSING", ProductCategoryGUID = "CAT-DELETED" },
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-TARGET-CATEGORY-MISSING");
+        Assert.Null(detail.TargetWarehouseCategoryGUID);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_仅英文名称变化_应回写DomesticProduct()
     {
         await SeedDetailAndProductAsync("D-EN-ONLY", "P-EN-ONLY", englishName: null);
+        await SeedLocalProductAsync("P-EN-ONLY", productName: "旧本地商品名", englishName: "Old Local English");
         var service = CreateService();
 
         var totalUpdated = await service.BatchUpdateDetailsAsync(
@@ -100,8 +192,12 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
 
         var product = await _localDb.Queryable<DomesticProduct>()
             .SingleAsync(x => x.ProductCode == "P-EN-ONLY");
+        var localProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-EN-ONLY");
         Assert.Equal(1, totalUpdated);
         Assert.Equal("Large Strawberry", product.EnglishProductName);
+        Assert.Equal("Large Strawberry", localProduct.ProductName);
+        Assert.Equal("Large Strawberry", localProduct.EnglishName);
     }
 
     [Fact]
@@ -127,6 +223,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     public async Task BatchUpdateDetailsAsync_清空英文名称_应清空DomesticProduct()
     {
         await SeedDetailAndProductAsync("D-CLEAR-EN", "P-CLEAR-EN", englishName: "Existing English");
+        await SeedLocalProductAsync("P-CLEAR-EN", productName: "保留本地商品名", englishName: "Existing Local English");
         var service = CreateService();
 
         var totalUpdated = await service.BatchUpdateDetailsAsync(
@@ -138,8 +235,12 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
 
         var product = await _localDb.Queryable<DomesticProduct>()
             .SingleAsync(x => x.ProductCode == "P-CLEAR-EN");
+        var localProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-CLEAR-EN");
         Assert.Equal(1, totalUpdated);
         Assert.Null(product.EnglishProductName);
+        Assert.Equal("保留本地商品名", localProduct.ProductName);
+        Assert.Null(localProduct.EnglishName);
     }
 
     [Fact]
@@ -237,6 +338,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     public async Task BatchUpdateDetailsAsync_英文名称为中文_应翻译后回写DomesticProduct()
     {
         await SeedDetailAndProductAsync("D-ZH-EN", "P-ZH-EN", englishName: "Old English");
+        await SeedLocalProductAsync("P-ZH-EN", productName: "旧中文名", englishName: "Old Local English");
         var service = CreateService();
 
         var totalUpdated = await service.BatchUpdateDetailsAsync(
@@ -248,8 +350,12 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
 
         var product = await _localDb.Queryable<DomesticProduct>()
             .SingleAsync(x => x.ProductCode == "P-ZH-EN");
+        var localProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-ZH-EN");
         Assert.Equal(1, totalUpdated);
         Assert.Equal("Strawberry Toy", product.EnglishProductName);
+        Assert.Equal("Strawberry Toy", localProduct.ProductName);
+        Assert.Equal("Strawberry Toy", localProduct.EnglishName);
     }
 
     [Fact]
@@ -534,6 +640,95 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task RecalculateCostsByScopeAsync_空或低浮率_应托底到1点30并写回()
+    {
+        await _localDb.Insertable(
+            new Container
+            {
+                ContainerCode = "C-RECALC-FLOAT",
+                ContainerNumber = "C-RECALC-FLOAT",
+                ExchangeRate = 5m,
+                ShippingFee = 100m,
+                TotalVolume = 10m,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<ContainerDetail>
+            {
+                new()
+                {
+                    DetailCode = "D-RECALC-NULL",
+                    ContainerCode = "C-RECALC-FLOAT",
+                    ProductCode = "P-RECALC-NULL",
+                    DomesticPrice = 10m,
+                    TotalVolume = 2m,
+                    LoadingQuantity = 5m,
+                    AdjustmentRate = null,
+                    TransportCost = 0m,
+                    ImportPrice = 0m,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailCode = "D-RECALC-LOW",
+                    ContainerCode = "C-RECALC-FLOAT",
+                    ProductCode = "P-RECALC-LOW",
+                    DomesticPrice = 10m,
+                    TotalVolume = 2m,
+                    LoadingQuantity = 5m,
+                    AdjustmentRate = 1.29m,
+                    TransportCost = 0m,
+                    ImportPrice = 0m,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailCode = "D-RECALC-VALID",
+                    ContainerCode = "C-RECALC-FLOAT",
+                    ProductCode = "P-RECALC-VALID",
+                    DomesticPrice = 10m,
+                    TotalVolume = 2m,
+                    LoadingQuantity = 5m,
+                    AdjustmentRate = 1.50m,
+                    TransportCost = 0m,
+                    ImportPrice = 0m,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var totalUpdated = await service.RecalculateCostsByScopeAsync(
+            "C-RECALC-FLOAT",
+            new ContainerDetailBatchScopeDto
+            {
+                SelectedHguids = new List<string>
+                {
+                    "D-RECALC-NULL",
+                    "D-RECALC-LOW",
+                    "D-RECALC-VALID",
+                },
+            }
+        );
+
+        var details = await _localDb.Queryable<ContainerDetail>()
+            .Where(x => x.ContainerCode == "C-RECALC-FLOAT")
+            .OrderBy(x => x.DetailCode)
+            .ToListAsync();
+        var nullRateDetail = details.Single(x => x.DetailCode == "D-RECALC-NULL");
+        var lowRateDetail = details.Single(x => x.DetailCode == "D-RECALC-LOW");
+        var validRateDetail = details.Single(x => x.DetailCode == "D-RECALC-VALID");
+        Assert.Equal(3, totalUpdated);
+        Assert.Equal(1.30m, nullRateDetail.AdjustmentRate);
+        Assert.Equal(1.30m, lowRateDetail.AdjustmentRate);
+        Assert.Equal(1.50m, validRateDetail.AdjustmentRate);
+        Assert.All(details, detail => Assert.Equal(4m, detail.TransportCost));
+        Assert.Equal(7.09m, nullRateDetail.ImportPrice);
+        Assert.Equal(7.09m, lowRateDetail.ImportPrice);
+        Assert.Equal(8.18m, validRateDetail.ImportPrice);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_明细或商品不存在_不抛异常()
     {
         await SeedDetailAsync("D-NO-PRODUCT", productCode: "P-MISSING");
@@ -612,6 +807,24 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         ).ExecuteCommandAsync();
     }
 
+    private async Task SeedLocalProductAsync(
+        string productCode,
+        string productName,
+        string? englishName
+    )
+    {
+        await _localDb.Insertable(
+            new Product
+            {
+                ProductCode = productCode,
+                ProductName = productName,
+                EnglishName = englishName,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
     private async Task SeedRelatedPriceRowsAsync(
         string productCode,
         int? minOrderQuantity = null,
@@ -674,6 +887,19 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 ProductCode = productCode,
                 ImportPrice = 1.23m,
                 IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedWarehouseCategoryAsync(string categoryGuid, bool isDeleted = false)
+    {
+        await _localDb.Insertable(
+            new WarehouseCategory
+            {
+                CategoryGUID = categoryGuid,
+                CategoryName = $"分类 {categoryGuid}",
+                IsActive = true,
+                IsDeleted = isDeleted,
             }
         ).ExecuteCommandAsync();
     }

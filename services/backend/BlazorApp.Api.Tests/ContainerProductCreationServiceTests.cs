@@ -56,7 +56,8 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             typeof(ChinaSupplier),
             typeof(ProductLocation),
             typeof(Location),
-            typeof(ProductGrade)
+            typeof(ProductGrade),
+            typeof(WarehouseCategory)
         );
 
         _hbSalesDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
@@ -704,6 +705,36 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_UsesTargetCategoryWrittenByBatchUpdateDetails()
+    {
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-CATEGORY-SAVED", "C001", "P-CATEGORY-SAVED", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-CATEGORY-SAVED", "HB-CATEGORY-SAVED", "分类商品", "Category Product", 0);
+        await InsertWarehouseCategoryAsync("CAT-CREATED");
+        var containerReactService = CreateContainerReactService();
+        await containerReactService.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-CATEGORY-SAVED", ProductCategoryGUID = "CAT-CREATED" },
+            }
+        );
+        var service = CreateService();
+
+        var result = await service.ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-category-saved",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-CATEGORY-SAVED" },
+            }
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        var product = await _db.Queryable<Product>().SingleAsync(p => p.ProductCode == "P-CATEGORY-SAVED");
+        Assert.Equal("CAT-CREATED", product.WarehouseCategoryGUID);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SkipsRowsWithInvalidRetailPrice()
     {
         await InsertActiveStoreAsync("S001");
@@ -1141,6 +1172,17 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             warehouseService,
             NullLogger<ContainerProductCreationExecutorService>.Instance
         );
+    }
+
+    private async Task InsertWarehouseCategoryAsync(string categoryGuid)
+    {
+        await _db.Insertable(new WarehouseCategory
+        {
+            CategoryGUID = categoryGuid,
+            CategoryName = $"分类 {categoryGuid}",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
     }
 
     private ContainerReactService CreateContainerReactService()

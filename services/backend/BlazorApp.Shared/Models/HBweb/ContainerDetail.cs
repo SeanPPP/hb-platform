@@ -46,6 +46,13 @@ namespace BlazorApp.Shared.Models
         public string? ProductCode { get; set; }
 
         /// <summary>
+        /// 目标仓库分类GUID
+        /// 说明：货柜明细可先保存目标分类，后续创建新商品时写入本地商品仓库分类。
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? TargetWarehouseCategoryGUID { get; set; }
+
+        /// <summary>
         /// 装柜类型
         /// 说明：商品在货柜中的装载方式
         /// 枚举值：

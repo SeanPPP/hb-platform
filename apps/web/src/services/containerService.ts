@@ -337,6 +337,7 @@ export async function batchUpdateDetails(
       商品名称: item.商品名称,
       英文名称: item.英文名称,
       ClearEnglishName: item.ClearEnglishName,
+      ProductCategoryGUID: item.ProductCategoryGUID,
       贴牌价格: item.贴牌价格,
       单件装箱数: item.单件装箱数,
       中包数: item.中包数,

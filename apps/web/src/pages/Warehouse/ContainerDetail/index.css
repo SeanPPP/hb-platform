@@ -260,6 +260,21 @@
   filter: brightness(0.96);
 }
 
+.container-detail-category-button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.container-detail-category-button:hover {
+  color: #1677ff;
+}
+
 .container-detail-page-small .ant-card-body {
   padding: 12px;
 }

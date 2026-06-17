@@ -371,6 +371,7 @@ namespace BlazorApp.Api.Data
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
+                EnsureContainerDetailTargetWarehouseCategoryColumn();
                 CreateNormalIndexes();
 
                 Console.WriteLine("数据库表检查完成！");
@@ -732,6 +733,18 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "RequestedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "StartedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
+        }
+
+        private void EnsureContainerDetailTargetWarehouseCategoryColumn()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(ContainerDetail));
+            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return;
+            }
+
+            // 老库无损补列：货柜明细阶段先保存目标分类，新商品创建时再继承到 Product。
+            EnsureColumn(tableName, "TargetWarehouseCategoryGUID", "nvarchar(50)", "varchar(50)", "varchar(50)");
         }
 
         private void EnsureColumn(

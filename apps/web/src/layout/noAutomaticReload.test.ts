@@ -68,8 +68,8 @@ assert(
   '货柜明细表头首次加载 effect 应只依赖 active 和 containerGuid，避免横竖屏切换重新加载',
 )
 assert(
-  /void loadDetailChunk\(1, 'reset'\)[\s\S]{0,520}\}, \[active, detailQueryKey\]\)/.test(containerDetailSource),
-  '货柜明细远程分页加载 effect 应只依赖 active 和 detailQueryKey，避免横竖屏切换重新加载',
+  /void loadDetailChunk\(1, 'reset'\)[\s\S]{0,520}\}, \[active, activeLoadQueryKey\]\)/.test(containerDetailSource),
+  '货柜明细远程分页加载 effect 应只依赖 active 和 activeLoadQueryKey，避免横竖屏切换重新加载',
 )
 
 console.log('noAutomaticReload.test: ok')

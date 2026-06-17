@@ -249,12 +249,13 @@ namespace BlazorApp.Api.Services.React
         {
             return await _context.Db.Queryable<ContainerDetail>()
                 .LeftJoin<DomesticProduct>((detail, domestic) => detail.ProductCode == domestic.ProductCode)
-                .Where((detail, domestic) =>
+                .LeftJoin<Product>((detail, domestic, localProduct) => detail.ProductCode == localProduct.ProductCode)
+                .Where((detail, domestic, localProduct) =>
                     detail.ContainerCode == containerGuid
                     && detailHguids.Contains(detail.DetailCode)
                     && !detail.IsDeleted
                 )
-                .Select((detail, domestic) => new ContainerProductCreationSourceRow
+                .Select((detail, domestic, localProduct) => new ContainerProductCreationSourceRow
                 {
                     DetailHguid = detail.DetailCode,
                     ProductCode = detail.ProductCode,
@@ -271,6 +272,7 @@ namespace BlazorApp.Api.Services.React
                     Barcode = domestic.Barcode,
                     ImageUrl = domestic.ProductImage,
                     DomesticProductType = domestic.ProductType,
+                    WarehouseCategoryGUID = detail.TargetWarehouseCategoryGUID ?? localProduct.WarehouseCategoryGUID,
                 })
                 .ToListAsync();
         }
@@ -1015,6 +1017,7 @@ namespace BlazorApp.Api.Services.React
                 ImportPrice = row.ImportPrice.Value,
                 Volume = row.Volume,
                 ImageUrl = row.ImageUrl,
+                WarehouseCategoryGUID = row.WarehouseCategoryGUID,
                 ProductType = productType == ContainerProductCreationProductType.Set ? 1 : 0,
                 IsSetProduct = productType == ContainerProductCreationProductType.Set,
             };
@@ -1124,6 +1127,7 @@ namespace BlazorApp.Api.Services.React
             public string? Barcode { get; set; }
             public string? ImageUrl { get; set; }
             public int? DomesticProductType { get; set; }
+            public string? WarehouseCategoryGUID { get; set; }
         }
     }
 }

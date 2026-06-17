@@ -132,7 +132,7 @@ try {
   }) as typeof fetch
 
   const detailUpdates: UpdateContainerDetailRequest[] = [
-    { hguid: 'D-CLEAR-EN', ClearEnglishName: true, 中包数: 12 },
+    { hguid: 'D-CLEAR-EN', ClearEnglishName: true, 中包数: 12, ProductCategoryGUID: 'CAT-TARGET' },
   ]
   await batchUpdateDetails(detailUpdates)
 
@@ -144,8 +144,8 @@ try {
   assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, 中包数: 12 }],
-    'batchUpdateDetails should send the explicit English-name clear marker and middle pack quantity',
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12 }],
+    'batchUpdateDetails should send the explicit English-name clear marker, middle pack quantity, and target category',
   )
 
   const abortController = new AbortController()

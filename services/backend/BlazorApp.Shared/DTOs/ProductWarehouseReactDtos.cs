@@ -73,6 +73,10 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Volume { get; set; }
         public string? ImageUrl { get; set; }
         /// <summary>
+        /// 仓库分类GUID；货柜新商品创建时用于继承明细里预选的目标分类。
+        /// </summary>
+        public string? WarehouseCategoryGUID { get; set; }
+        /// <summary>
         /// 商品类型：0=普通商品，1=套装商品，2=多码商品
         /// </summary>
         public int? ProductType { get; set; }

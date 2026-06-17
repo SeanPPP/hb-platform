@@ -626,7 +626,7 @@ namespace BlazorApp.Api.Services.React
                                 主表GUID = cd.ContainerCode,
                                 商品编码 = cd.ProductCode,
                                 LocalSupplierCode = lp.LocalSupplierCode,
-                                ProductCategoryGUID = lp.WarehouseCategoryGUID,
+                                ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
                                 装柜类型 = cd.LoadingType,
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
@@ -649,7 +649,7 @@ namespace BlazorApp.Api.Services.React
                                 {
                                     商品编码 = dp.ProductCode,
                                     LocalSupplierCode = lp.LocalSupplierCode,
-                                    ProductCategoryGUID = lp.WarehouseCategoryGUID,
+                                    ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
                                     英文名称 = dp.EnglishProductName,
@@ -725,7 +725,7 @@ namespace BlazorApp.Api.Services.React
                                 主表GUID = cd.ContainerCode,
                                 商品编码 = cd.ProductCode,
                                 LocalSupplierCode = lp.LocalSupplierCode,
-                                ProductCategoryGUID = lp.WarehouseCategoryGUID,
+                                ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
                                 装柜类型 = cd.LoadingType,
                                 商品类型 = cd.ProductType,
                                 套装数量 = cd.SetQuantity,
@@ -750,7 +750,7 @@ namespace BlazorApp.Api.Services.React
                                 {
                                     商品编码 = dp.ProductCode,
                                     LocalSupplierCode = lp.LocalSupplierCode,
-                                    ProductCategoryGUID = lp.WarehouseCategoryGUID,
+                                    ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
                                     英文名称 = dp.EnglishProductName,
@@ -867,6 +867,78 @@ namespace BlazorApp.Api.Services.React
         {
             var normalized = categoryGuid?.Trim();
             return string.IsNullOrEmpty(normalized) ? null : normalized.ToLowerInvariant();
+        }
+
+        private async Task<Dictionary<string, string>> ValidateTargetCategoryUpdatesAsync(
+            List<UpdateContainerDetailDto> updates
+        )
+        {
+            var requestedCategoryGuids = updates
+                .Where(update => update.ProductCategoryGUID != null)
+                .Select(update => NormalizeCategoryGuid(update.ProductCategoryGUID))
+                .ToList();
+
+            if (requestedCategoryGuids.Count == 0)
+            {
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            if (requestedCategoryGuids.Any(guid => guid == null))
+            {
+                throw new InvalidOperationException("请选择目标分类");
+            }
+
+            var normalizedCategoryGuids = requestedCategoryGuids
+                .Select(guid => guid!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // 目标分类会同步写入货柜明细和 Product 主档，写入前必须确认分类真实存在且未删除。
+            var categories = await _context.Db.Queryable<WarehouseCategory>()
+                .Where(category =>
+                    normalizedCategoryGuids.Contains(category.CategoryGUID.Trim().ToLower())
+                    && !category.IsDeleted
+                )
+                .Select(category => new
+                {
+                    category.CategoryGUID,
+                })
+                .ToListAsync();
+
+            var canonicalCategoryGuidByNormalizedGuid = categories
+                .GroupBy(category => NormalizeCategoryGuid(category.CategoryGUID), StringComparer.OrdinalIgnoreCase)
+                .Where(group => group.Key != null)
+                .ToDictionary(
+                    group => group.Key!,
+                    group => group.First().CategoryGUID.Trim(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            if (normalizedCategoryGuids.Any(guid => !canonicalCategoryGuidByNormalizedGuid.ContainsKey(guid)))
+            {
+                throw new InvalidOperationException("目标分类不存在或已删除");
+            }
+
+            return canonicalCategoryGuidByNormalizedGuid;
+        }
+
+        private static string? GetValidatedCategoryGuidForWrite(
+            string? categoryGuid,
+            IReadOnlyDictionary<string, string> canonicalCategoryGuids
+        )
+        {
+            if (categoryGuid == null)
+            {
+                return null;
+            }
+
+            var normalizedGuid = NormalizeCategoryGuid(categoryGuid);
+            if (normalizedGuid == null)
+            {
+                throw new InvalidOperationException("请选择目标分类");
+            }
+
+            return canonicalCategoryGuids[normalizedGuid];
         }
 
         public async Task<List<ContainerDomesticSetCodeDto>> GetDomesticSetCodesAsync(
@@ -1206,6 +1278,7 @@ namespace BlazorApp.Api.Services.React
                 var detailMap = details.ToDictionary(d => d.DetailCode, d => d);
                 var changedDetails = new List<ContainerDetail>();
                 var updatedRequestGuids = new HashSet<string>();
+                var validatedTargetCategoryGuids = await ValidateTargetCategoryUpdatesAsync(updates);
 
                 // 遍历更新请求，逐个应用变更
                 foreach (var update in updates)
@@ -1273,6 +1346,19 @@ namespace BlazorApp.Api.Services.React
                         detail.IsActive = update.IsActive.Value;
                         changed = true;
                     }
+                    if (update.ProductCategoryGUID != null)
+                    {
+                        var nextCategoryGuid = GetValidatedCategoryGuidForWrite(
+                            update.ProductCategoryGUID,
+                            validatedTargetCategoryGuids
+                        );
+                        if (detail.TargetWarehouseCategoryGUID != nextCategoryGuid)
+                        {
+                            // 目标分类先落在货柜明细上；未匹配新商品创建时会继承它。
+                            detail.TargetWarehouseCategoryGUID = nextCategoryGuid;
+                            changed = true;
+                        }
+                    }
                     if (changed)
                     {
                         changedDetails.Add(detail);
@@ -1326,14 +1412,18 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var matchedLocalProductCodes = new HashSet<string>();
+                var localProductMap = new Dictionary<string, Product>();
                 if (productCodes.Count > 0)
                 {
                     var matchedProducts = await _context
                         .Db.Queryable<Product>()
                         .Where(p => productCodes.Contains(p.ProductCode))
-                        .Select(p => p.ProductCode)
                         .ToListAsync();
+                    localProductMap = matchedProducts
+                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                        .ToDictionary(product => product.ProductCode!, product => product);
                     matchedLocalProductCodes = matchedProducts
+                        .Select(product => product.ProductCode)
                         .Where(code => !string.IsNullOrWhiteSpace(code))
                         .Select(code => code!)
                         .ToHashSet();
@@ -1382,7 +1472,33 @@ namespace BlazorApp.Api.Services.React
 
                 var changedProducts = new List<DomesticProduct>();
                 var changedProductCodes = new HashSet<string>();
+                var changedLocalNameProducts = new Dictionary<string, Product>();
                 var changedMiddlePackWarehouseProducts = new Dictionary<string, WarehouseProduct>();
+                var changedLocalCategoryProducts = new Dictionary<string, Product>();
+
+                foreach (var item in validDetailUpdates)
+                {
+                    if (item.Update.ProductCategoryGUID == null)
+                    {
+                        continue;
+                    }
+
+                    var nextCategoryGuid = GetValidatedCategoryGuidForWrite(
+                        item.Update.ProductCategoryGUID,
+                        validatedTargetCategoryGuids
+                    );
+                    if (
+                        nextCategoryGuid != null
+                        && localProductMap.TryGetValue(item.ProductCode!, out var localProduct)
+                        && localProduct.WarehouseCategoryGUID != nextCategoryGuid
+                    )
+                    {
+                        // 已有商品立即同步仓库分类；未匹配商品只保留明细目标分类等待创建。
+                        localProduct.WarehouseCategoryGUID = nextCategoryGuid;
+                        changedLocalCategoryProducts[item.ProductCode!] = localProduct;
+                        updatedRequestGuids.Add(item.Update.HGUID);
+                    }
+                }
 
                 foreach (var item in validDetailUpdates)
                 {
@@ -1428,13 +1544,13 @@ namespace BlazorApp.Api.Services.React
 
                 foreach (var productUpdate in productNameUpdates)
                 {
-                    if (!productMap.TryGetValue(productUpdate.ProductCode, out var product))
-                    {
-                        continue;
-                    }
+                    productMap.TryGetValue(productUpdate.ProductCode, out var product);
+                    localProductMap.TryGetValue(productUpdate.ProductCode, out var localProduct);
 
                     var productChanged = false;
+                    var localProductChanged = false;
                     if (
+                        product != null
                         !string.IsNullOrWhiteSpace(productUpdate.商品名称)
                         && product.ProductName != productUpdate.商品名称
                     )
@@ -1445,11 +1561,19 @@ namespace BlazorApp.Api.Services.React
                     if (
                         productUpdate.HasEnglishNameIntent
                         && string.IsNullOrWhiteSpace(productUpdate.英文名称)
-                        && product.EnglishProductName != null
                     )
                     {
-                        product.EnglishProductName = null;
-                        productChanged = true;
+                        if (product != null && product.EnglishProductName != null)
+                        {
+                            product.EnglishProductName = null;
+                            productChanged = true;
+                        }
+                        if (localProduct != null && localProduct.EnglishName != null)
+                        {
+                            // 清空英文名称只清本地英文名，保留 ProductName，避免 POS 显示名被清空。
+                            localProduct.EnglishName = null;
+                            localProductChanged = true;
+                        }
                     }
                     else if (
                         productUpdate.HasEnglishNameIntent
@@ -1461,11 +1585,27 @@ namespace BlazorApp.Api.Services.React
                         );
                         if (
                             normalizedEnglishName != null
-                            && product.EnglishProductName != normalizedEnglishName
                         )
                         {
-                            product.EnglishProductName = normalizedEnglishName;
-                            productChanged = true;
+                            if (product != null && product.EnglishProductName != normalizedEnglishName)
+                            {
+                                product.EnglishProductName = normalizedEnglishName;
+                                productChanged = true;
+                            }
+                            if (localProduct != null)
+                            {
+                                // 货柜英文名是前台展示名来源；已有 POS 商品需同步显示名和英文名。
+                                if (localProduct.ProductName != normalizedEnglishName)
+                                {
+                                    localProduct.ProductName = normalizedEnglishName;
+                                    localProductChanged = true;
+                                }
+                                if (localProduct.EnglishName != normalizedEnglishName)
+                                {
+                                    localProduct.EnglishName = normalizedEnglishName;
+                                    localProductChanged = true;
+                                }
+                            }
                         }
                         else if (normalizedEnglishName == null)
                         {
@@ -1478,12 +1618,16 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
-                    if (productChanged)
+                    if (product != null && productChanged)
                     {
                         if (changedProductCodes.Add(productUpdate.ProductCode))
                         {
                             changedProducts.Add(product);
                         }
+                    }
+                    if (localProduct != null && localProductChanged)
+                    {
+                        changedLocalNameProducts[productUpdate.ProductCode] = localProduct;
                     }
                 }
 
@@ -1497,13 +1641,19 @@ namespace BlazorApp.Api.Services.React
                     {
                         updatedRequestGuids.Add(item.Update.HGUID);
                     }
+                    if (hasNameUpdate && changedLocalNameProducts.ContainsKey(item.ProductCode!))
+                    {
+                        updatedRequestGuids.Add(item.Update.HGUID);
+                    }
                 }
 
                 // 开启事务，确保多表更新的原子性
                 if (
                     changedDetails.Count > 0
                     || changedProducts.Count > 0
+                    || changedLocalNameProducts.Count > 0
                     || changedMiddlePackWarehouseProducts.Count > 0
+                    || changedLocalCategoryProducts.Count > 0
                 )
                 {
                     await _context.Db.Ado.BeginTranAsync();
@@ -1527,6 +1677,7 @@ namespace BlazorApp.Api.Services.React
                                     x.TotalVolume,
                                     x.TotalAmount,
                                     x.IsActive,
+                                    x.TargetWarehouseCategoryGUID,
                                 })
                                 .WhereColumns(x => new { x.DetailCode })
                                 .ExecuteCommandAsync();
@@ -1552,12 +1703,36 @@ namespace BlazorApp.Api.Services.React
                                 .ExecuteCommandAsync();
                         }
 
+                        // 英文名称保存同时同步已存在的 POS 商品主档，供前台和仓库商品页直接展示。
+                        if (changedLocalNameProducts.Count > 0)
+                        {
+                            await _context
+                                .Db.Updateable(changedLocalNameProducts.Values.ToList())
+                                .UpdateColumns(x => new
+                                {
+                                    x.ProductName,
+                                    x.EnglishName,
+                                })
+                                .WhereColumns(x => new { x.ProductCode })
+                                .ExecuteCommandAsync();
+                        }
+
                         // 第四步：已匹配本地商品时，同步中包数到仓库商品表；未匹配商品不创建仓库商品。
                         if (changedMiddlePackWarehouseProducts.Count > 0)
                         {
                             await _context
                                 .Db.Updateable(changedMiddlePackWarehouseProducts.Values.ToList())
                                 .UpdateColumns(x => new { x.MinOrderQuantity })
+                                .WhereColumns(x => new { x.ProductCode })
+                                .ExecuteCommandAsync();
+                        }
+
+                        // 已匹配本地商品的目标分类需要同步到 Product.WarehouseCategoryGUID，供仓库分类页和前台分类筛选使用。
+                        if (changedLocalCategoryProducts.Count > 0)
+                        {
+                            await _context
+                                .Db.Updateable(changedLocalCategoryProducts.Values.ToList())
+                                .UpdateColumns(x => new { x.WarehouseCategoryGUID })
                                 .WhereColumns(x => new { x.ProductCode })
                                 .ExecuteCommandAsync();
                         }
@@ -1955,6 +2130,8 @@ namespace BlazorApp.Api.Services.React
             ContainerDetailBatchScopeDto request
         )
         {
+            const decimal minimumRecalculateFloatRate = 1.30m;
+
             var container = await _context
                 .Db.Queryable<Container>()
                 .FirstAsync(c => c.ContainerCode == containerGuid);
@@ -1967,7 +2144,10 @@ namespace BlazorApp.Api.Services.React
             var updates = details
                 .Select(detail =>
                 {
-                    var floatRate = detail.AdjustmentRate ?? 1m;
+                    // 重算成本时不能再把空浮率按 1 处理；统一托底到 1.30 并写回明细。
+                    var floatRate = detail.AdjustmentRate.HasValue && detail.AdjustmentRate.Value >= minimumRecalculateFloatRate
+                        ? detail.AdjustmentRate.Value
+                        : minimumRecalculateFloatRate;
                     var transportCost = CalculateScopedTransportCost(detail, container);
                     return new UpdateContainerDetailDto
                     {

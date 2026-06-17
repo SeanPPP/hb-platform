@@ -131,6 +131,39 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryContainerDetailsAsync_目标分类应优先于本地商品分类展示()
+    {
+        await SeedContainerAsync("C-TARGET-CATEGORY", "CSLU6099491");
+        await SeedWarehouseCategoryAsync("CAT-OLD", "Old Category");
+        await SeedWarehouseCategoryAsync("CAT-TARGET", "Target Category");
+        await SeedDetailAsync(
+            "D-TARGET-CATEGORY",
+            "C-TARGET-CATEGORY",
+            "P-TARGET-CATEGORY",
+            "HB-TARGET-CATEGORY",
+            warehouseCategoryGuid: "CAT-OLD",
+            targetWarehouseCategoryGuid: " cat-target "
+        );
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-TARGET-CATEGORY",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        var detail = Assert.Single(result.Items);
+        Assert.Equal("CAT-TARGET", detail.ProductCategoryGUID);
+        Assert.Equal("Target Category", detail.ProductCategoryName);
+        Assert.NotNull(detail.商品信息);
+        Assert.Equal("CAT-TARGET", detail.商品信息!.ProductCategoryGUID);
+        Assert.Equal("Target Category", detail.商品信息.ProductCategoryName);
+    }
+
+    [Fact]
     public async Task QueryContainerDetailsAsync_应按国内商品页规则补齐商品图片()
     {
         await SeedContainerAsync("C-IMAGE", "OOLU9955404");
@@ -446,6 +479,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         int domesticProductType = 0,
         string detailProductType = "普通商品",
         string? warehouseCategoryGuid = null,
+        string? targetWarehouseCategoryGuid = null,
         string? productImage = "__DEFAULT__"
     )
     {
@@ -464,6 +498,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 OEMPrice = oemPrice,
                 TransportCost = 0.5m,
                 Remarks = $"备注 {itemNumber}",
+                TargetWarehouseCategoryGUID = targetWarehouseCategoryGuid,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();

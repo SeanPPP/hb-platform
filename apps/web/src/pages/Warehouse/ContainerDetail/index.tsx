@@ -1,7 +1,5 @@
 import {
   ArrowLeftOutlined,
-  ArrowDownOutlined,
-  ArrowUpOutlined,
   AppstoreOutlined,
   CloudUploadOutlined,
   CopyOutlined,
@@ -56,7 +54,7 @@ import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type ReactNode, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -68,12 +66,10 @@ import {
   applyContainerPricesByScope,
   batchDeleteDetails,
   batchUpdateDetails,
-  getContainerDomesticSetCodes,
   getContainerDetail,
   queryContainerProducts,
   recalculateContainerCostsByScope,
   translateHqProductNamesByContainerNumber,
-  updateContainerDomesticSetCodePrices,
   updateContainer,
 } from '../../../services/containerService'
 import {
@@ -128,15 +124,13 @@ import {
   canUseContainerDetailLocalTagFilters,
   getContainerDetailBatchCategoryProductCodes,
   buildContainerDetailTranslationUpdates,
-  calculateContainerSetCodePurchasePrice,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
   getContainerDetailExportColumns,
   getContainerDetailBarcode,
-  getContainerDetailCategoryName,
-  getContainerDetailCategoryTooltipRecord,
+  getContainerDetailCategoryGuid,
   getContainerDetailEnglishName,
   getContainerDetailImageUrl,
   getContainerDetailItemNumber,
@@ -145,7 +139,6 @@ import {
   getContainerDetailProductName,
   getContainerDetailProductType,
   getContainerDetailTranslationSource,
-  getContainerDetailOemPriceSource,
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
   getNextContainerDetailEditableCell,
@@ -161,7 +154,6 @@ import {
   rollbackContainerDetailWarehouseStatuses,
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
-  CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
@@ -177,15 +169,28 @@ import {
   type ContainerDetailTagStats,
   type ContainerDetailWarehouseStatusFilter,
 } from './containerDetailLogic'
-import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup } from '../Products/categoryPath'
+import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip } from '../Products/categoryPath'
 import CategoryTreePicker from '../Products/CategoryTreePicker'
 import type { PushProductsToHqResult } from '../../../types/posProduct'
+import ContainerTagFilters from './ContainerTagFilters'
+import useContainerSetCode from './useContainerSetCode'
+import {
+  buildContainerDetailCategoryOptions,
+  collectCategoryExpandedKeys,
+  findWarehouseCategory,
+  getOemPriceSourceClassName,
+  renderColumnTitle,
+  renderCompactHeader,
+  renderContainerDetailCategoryCell,
+  renderImportPriceCell,
+  renderNumericCell,
+  renderOemPriceCell,
+} from './ContainerDetailColumns'
 import './index.css'
 
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'warehouseImportPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
-type ContainerSetCodePriceEdits = Record<string, { retailPrice?: number | null; purchasePrice?: number | null }>
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -298,7 +303,7 @@ function CopyableText({ value, maxWidth }: { value?: string; maxWidth?: number }
   )
 }
 
-// 表格密集显示专用：关键文本限制两行，数字列保持单行便于快速扫读。
+// TwoLineText — 表格密集显示专用：关键文本限制两行，数字列保持单行便于快速扫读。
 function TwoLineText({ value }: { value?: string }) {
   if (!value) {
     return <>--</>
@@ -311,121 +316,7 @@ function TwoLineText({ value }: { value?: string }) {
   )
 }
 
-function renderNumericCell(value: ReactNode) {
-  return <span className="container-detail-nowrap container-detail-numeric-cell">{value}</span>
-}
 
-function getOemPriceSourceClassName(row: ContainerDetail) {
-  const source = getContainerDetailOemPriceSource(row)
-  return [
-    source === 'warehouse' ? 'container-detail-oem-price-cell-warehouse' : '',
-    source === 'detail' ? 'container-detail-oem-price-cell-fallback' : '',
-  ].filter(Boolean).join(' ')
-}
-
-function renderOemPriceCell(row: ContainerDetail) {
-  const className = [
-    'container-detail-nowrap',
-    'container-detail-numeric-cell',
-    'container-detail-oem-price-cell',
-    getOemPriceSourceClassName(row),
-  ].filter(Boolean).join(' ')
-
-  // 颜色用于区分贴牌价来源：绿色为仓库商品贴牌价，黄色为货柜明细兜底价。
-  return <span className={className}>{formatCurrency(resolveContainerDetailOemPrice(row), '$')}</span>
-}
-
-function getImportPriceTrend(row: ContainerDetail): 'up' | 'down' | undefined {
-  const warehouseImportPrice = row.warehouseImportPrice
-  const importPrice = row.进口价格
-  if (
-    typeof warehouseImportPrice !== 'number' ||
-    typeof importPrice !== 'number' ||
-    !Number.isFinite(warehouseImportPrice) ||
-    !Number.isFinite(importPrice) ||
-    warehouseImportPrice === importPrice
-  ) {
-    return undefined
-  }
-  return warehouseImportPrice > importPrice ? 'up' : 'down'
-}
-
-function renderImportPriceTrend(row: ContainerDetail) {
-  const trend = getImportPriceTrend(row)
-  if (!trend) return null
-  const className = trend === 'up' ? 'container-detail-import-price-trend-up' : 'container-detail-import-price-trend-down'
-  const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined
-  // 趋势箭头只对比仓库当前进货价和本行进口价，不参与筛选、排序或保存。
-  return <Icon className={className} />
-}
-
-function renderImportPriceCell(row: ContainerDetail, input?: ReactNode) {
-  return (
-    <Space size={4} wrap={false} className="container-detail-import-price-cell">
-      {input ?? renderNumericCell(formatCurrency(row.进口价格, '$'))}
-      {renderImportPriceTrend(row)}
-    </Space>
-  )
-}
-
-function collectCategoryExpandedKeys(nodes: WarehouseCategoryNode[], maxLevel: number, level = 1): string[] {
-  return nodes.flatMap((node) => [
-    level <= maxLevel ? node.categoryGUID : '',
-    ...collectCategoryExpandedKeys(node.children || [], maxLevel, level + 1),
-  ]).filter(Boolean)
-}
-
-function findWarehouseCategory(nodes: WarehouseCategoryNode[], targetGuid?: string): WarehouseCategoryNode | undefined {
-  if (!targetGuid) return undefined
-  for (const node of nodes) {
-    if (node.categoryGUID === targetGuid) return node
-    const matched = findWarehouseCategory(node.children || [], targetGuid)
-    if (matched) return matched
-  }
-  return undefined
-}
-
-function buildContainerDetailCategoryOptions(
-  nodes: WarehouseCategoryNode[],
-  t: ReturnType<typeof useTranslation>['t'],
-  language?: string,
-  level = 0,
-): Array<{ value: string; label: string }> {
-  if (level === 0) {
-    return [
-      { value: CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY, label: t('containers.filters.allCategories', '全部分类') },
-      { value: CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY, label: t('containers.filters.uncategorized', '未分类') },
-      ...buildContainerDetailCategoryOptions(nodes, t, language, level + 1),
-    ]
-  }
-
-  return nodes.flatMap((node) => [
-    {
-      value: node.categoryGUID,
-      label: `${level > 1 ? `${'--'.repeat(level - 1)} ` : ''}${formatWarehouseCategoryNodeName(node, language)}`,
-    },
-    ...buildContainerDetailCategoryOptions(node.children || [], t, language, level + 1),
-  ])
-}
-
-function renderContainerDetailCategoryCell(record: ContainerDetail, categoryLookup: WarehouseCategoryLookup, language?: string) {
-  const displayName = getContainerDetailCategoryName(record) || '--'
-  const tooltipTitle = getWarehouseProductCategoryTooltip(getContainerDetailCategoryTooltipRecord(record), categoryLookup, language)
-
-  return (
-    <Tooltip title={tooltipTitle || displayName}>
-      <span className="container-detail-two-line-text">{displayName}</span>
-    </Tooltip>
-  )
-}
-
-function renderCompactHeader(value: ReactNode) {
-  return <span className="container-detail-header-title">{value}</span>
-}
-
-function renderColumnTitle(key: ContainerDetailSortField, value: ReactNode) {
-  return <span data-column-key={key} className="container-detail-header-title">{value}</span>
-}
 
 const CONTAINER_DETAIL_TABLE_SCROLL_X = 2040
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
@@ -584,6 +475,10 @@ export default function ContainerDetailPage() {
   const [batchCategoryOpen, setBatchCategoryOpen] = useState(false)
   const [targetCategoryGuid, setTargetCategoryGuid] = useState<string>()
   const [batchCategorySaving, setBatchCategorySaving] = useState(false)
+  const [rowCategoryOpen, setRowCategoryOpen] = useState(false)
+  const [rowCategoryEditingRow, setRowCategoryEditingRow] = useState<ContainerDetail | null>(null)
+  const [rowTargetCategoryGuid, setRowTargetCategoryGuid] = useState<string>()
+  const [rowCategorySaving, setRowCategorySaving] = useState(false)
   const [editingProductNameRowKey, setEditingProductNameRowKey] = useState<string | null>(null)
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
@@ -597,18 +492,23 @@ export default function ContainerDetailPage() {
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
-  const [setCodeModalOpen, setSetCodeModalOpen] = useState(false)
-  const [setCodeModalRow, setSetCodeModalRow] = useState<ContainerDetail | null>(null)
-  const [setCodeItems, setSetCodeItems] = useState<ContainerDomesticSetCodeItem[]>([])
-  const [setCodeLoading, setSetCodeLoading] = useState(false)
-  const [setCodeSaving, setSetCodeSaving] = useState(false)
-  const [setCodePriceEdits, setSetCodePriceEdits] = useState<ContainerSetCodePriceEdits>({})
-  const [setCodeManualPurchasePriceKeys, setSetCodeManualPurchasePriceKeys] = useState<Set<string>>(() => new Set())
+  // 套装码弹窗状态 — 由 useContainerSetCode hook 管理
+  const {
+    setCodeModalOpen,
+    setCodeModalRow,
+    setCodeItems,
+    setCodeLoading,
+    setCodeSaving,
+    changedSetCodePriceItems,
+    setCodeColumns,
+    openSetCodeModal,
+    closeSetCodeModal,
+    saveSetCodePrices,
+  } = useContainerSetCode({ canEditContainer: access.canEditContainer })
   const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
-  const setCodeAbortControllerRef = useRef<AbortController | null>(null)
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
@@ -636,10 +536,6 @@ export default function ContainerDetailPage() {
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
 
-  useEffect(() => () => {
-    setCodeAbortControllerRef.current?.abort()
-  }, [])
-
   useEffect(() => {
     setCategoryLoading(true)
     getCategoryTree()
@@ -660,6 +556,11 @@ export default function ContainerDetailPage() {
   const selectedTargetCategoryPath = targetCategoryGuid ? getWarehouseProductCategoryTooltip({
     categoryName: selectedTargetCategory?.categoryName,
     warehouseCategoryGUID: targetCategoryGuid,
+  }, categoryLookup, i18n.language) : undefined
+  const selectedRowTargetCategory = useMemo(() => findWarehouseCategory(categories, rowTargetCategoryGuid), [categories, rowTargetCategoryGuid])
+  const selectedRowTargetCategoryPath = rowTargetCategoryGuid ? getWarehouseProductCategoryTooltip({
+    categoryName: selectedRowTargetCategory?.categoryName,
+    warehouseCategoryGUID: rowTargetCategoryGuid,
   }, categoryLookup, i18n.language) : undefined
 
   const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
@@ -1068,61 +969,6 @@ export default function ContainerDetailPage() {
     [displayRows, selectedRowKeys],
   )
 
-  const buildSetCodeAutoPurchasePriceEdits = (
-    items: ContainerDomesticSetCodeItem[],
-    mainPurchasePrice: number | null | undefined,
-    baseEdits: ContainerSetCodePriceEdits = {},
-    manualPurchasePriceKeys: Set<string> = setCodeManualPurchasePriceKeys,
-  ) => {
-    const totalRetailPrice = items.reduce((sum, item) => {
-      const key = getSetCodeRowKey(item)
-      const edit = key ? baseEdits[key] : undefined
-      const retailPrice = edit?.retailPrice !== undefined ? edit.retailPrice : item.retailPrice
-      return typeof retailPrice === 'number' && Number.isFinite(retailPrice) && retailPrice > 0 ? sum + retailPrice : sum
-    }, 0)
-
-    return items.reduce<ContainerSetCodePriceEdits>((nextEdits, item) => {
-      const key = getSetCodeRowKey(item)
-      if (!key || manualPurchasePriceKeys.has(key)) return nextEdits
-
-      const edit = nextEdits[key]
-      const nextRetailPrice = edit?.retailPrice !== undefined ? edit.retailPrice : item.retailPrice
-      const nextPurchasePrice = calculateContainerSetCodePurchasePrice(mainPurchasePrice, nextRetailPrice, totalRetailPrice)
-      if (nextPurchasePrice === undefined) {
-        if (edit && 'purchasePrice' in edit) {
-          const rest = { ...edit }
-          delete rest.purchasePrice
-          if (Object.keys(rest).length > 0) {
-            nextEdits[key] = rest
-          } else {
-            delete nextEdits[key]
-          }
-        }
-        return nextEdits
-      }
-
-      nextEdits[key] = {
-        ...edit,
-        purchasePrice: nextPurchasePrice,
-      }
-      return nextEdits
-    }, { ...baseEdits })
-  }
-
-  const changedSetCodePriceItems = useMemo(() => setCodeItems.flatMap((item) => {
-    const key = getSetCodeRowKey(item)
-    const edit = setCodePriceEdits[key]
-    if (!item.setProductCode || !edit) return []
-    const nextRetailPrice = edit.retailPrice !== undefined ? edit.retailPrice : item.retailPrice
-    const nextPurchasePrice = edit.purchasePrice !== undefined ? edit.purchasePrice : item.purchasePrice
-    if (nextRetailPrice === item.retailPrice && nextPurchasePrice === item.purchasePrice) return []
-    return [{
-      setProductCode: item.setProductCode,
-      retailPrice: nextRetailPrice,
-      purchasePrice: nextPurchasePrice,
-    }]
-  }), [setCodeItems, setCodePriceEdits])
-
   const hasHiddenSelectedRows = selectedRowKeys.length > 0 && selectedRows.length < selectedRowKeys.length
   const targetRows = selectedRowKeys.length ? selectedRows : displayRows
 
@@ -1168,106 +1014,6 @@ export default function ContainerDetailPage() {
 
   const handleDetailSaveError = (error: unknown) => {
     message.error(error instanceof Error ? error.message : getDetailSaveFailedMessage())
-  }
-
-  const loadSetCodeItems = async (row: ContainerDetail, manualPurchasePriceKeys: Set<string> = new Set()) => {
-    const productCode = getContainerDetailProductCode(row)
-    if (!productCode) {
-      message.warning('缺少商品编码，无法加载套装多码数据')
-      return
-    }
-
-    setCodeAbortControllerRef.current?.abort()
-    const abortController = new AbortController()
-    setCodeAbortControllerRef.current = abortController
-    setSetCodeLoading(true)
-    setSetCodePriceEdits({})
-    setSetCodeManualPurchasePriceKeys(manualPurchasePriceKeys)
-    try {
-      const items = await getContainerDomesticSetCodes(productCode, abortController.signal)
-      setSetCodeItems(items)
-      setSetCodePriceEdits(buildSetCodeAutoPurchasePriceEdits(items, row.进口价格, {}, manualPurchasePriceKeys))
-    } catch (error) {
-      if ((error as DOMException)?.name !== 'AbortError') {
-        message.error(error instanceof Error ? error.message : '获取套装多码数据失败')
-      }
-    } finally {
-      if (setCodeAbortControllerRef.current === abortController) {
-        setSetCodeLoading(false)
-        setCodeAbortControllerRef.current = null
-      }
-    }
-  }
-
-  const openSetCodeModal = (row: ContainerDetail) => {
-    setSetCodeModalRow(row)
-    setSetCodeModalOpen(true)
-    setSetCodeItems([])
-    void loadSetCodeItems(row)
-  }
-
-  const closeSetCodeModal = () => {
-    setCodeAbortControllerRef.current?.abort()
-    setCodeAbortControllerRef.current = null
-    setSetCodeModalOpen(false)
-    setSetCodeModalRow(null)
-    setSetCodeItems([])
-    setSetCodePriceEdits({})
-    setSetCodeManualPurchasePriceKeys(new Set())
-    setSetCodeLoading(false)
-  }
-
-  const patchSetCodeRetailPriceEdit = (item: ContainerDomesticSetCodeItem, retailPrice: number | null) => {
-    const key = getSetCodeRowKey(item)
-    if (!key) return
-    setSetCodePriceEdits((current) => {
-      const nextEdits: ContainerSetCodePriceEdits = {
-        ...current,
-        [key]: {
-          ...current[key],
-          retailPrice,
-        },
-      }
-      const mainPurchasePrice = setCodeModalRow?.进口价格
-      // 套装子项进货价只按货柜明细当前行进口价分摊，不读取仓库当前进货价。
-      return buildSetCodeAutoPurchasePriceEdits(setCodeItems, mainPurchasePrice, nextEdits, setCodeManualPurchasePriceKeys)
-    })
-  }
-
-  const patchSetCodePriceEdit = (
-    item: ContainerDomesticSetCodeItem,
-    patch: { retailPrice?: number | null; purchasePrice?: number | null },
-  ) => {
-    const key = getSetCodeRowKey(item)
-    if (!key) return
-    if ('purchasePrice' in patch) {
-      setSetCodeManualPurchasePriceKeys((current) => new Set(current).add(key))
-    }
-    setSetCodePriceEdits((current) => ({
-      ...current,
-      [key]: {
-        ...current[key],
-        ...patch,
-      },
-    }))
-  }
-
-  const saveSetCodePrices = async () => {
-    const productCode = setCodeModalRow ? getContainerDetailProductCode(setCodeModalRow) : undefined
-    if (!productCode || changedSetCodePriceItems.length === 0) return
-
-    setSetCodeSaving(true)
-    try {
-      await updateContainerDomesticSetCodePrices(productCode, changedSetCodePriceItems)
-      message.success('保存成功')
-      if (setCodeModalRow) {
-        await loadSetCodeItems(setCodeModalRow, setCodeManualPurchasePriceKeys)
-      }
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存套装多码价格失败')
-    } finally {
-      setSetCodeSaving(false)
-    }
   }
 
   const trackDetailSavePromise = <T,>(saveKeys: string[], promise: Promise<T>) => {
@@ -1564,6 +1310,109 @@ export default function ContainerDetailPage() {
     setBatchCategoryOpen(true)
   }
 
+  const buildContainerDetailCategoryPatch = (
+    item: ContainerDetail,
+    categoryGuid: string,
+    category?: WarehouseCategoryNode,
+    categoryPath?: string,
+  ): Partial<ContainerDetail> => {
+    const categoryName = category ? formatWarehouseCategoryNodeName(category, i18n.language) : undefined
+    const nextCategoryPath = categoryPath || categoryName
+
+    return {
+      categoryName,
+      CategoryName: categoryName,
+      productCategoryName: categoryName,
+      ProductCategoryName: categoryName,
+      categoryPath: nextCategoryPath,
+      CategoryPath: nextCategoryPath,
+      categoryFullPath: nextCategoryPath,
+      CategoryFullPath: nextCategoryPath,
+      warehouseCategoryGUID: categoryGuid,
+      WarehouseCategoryGUID: categoryGuid,
+      productCategoryGUID: categoryGuid,
+      ProductCategoryGUID: categoryGuid,
+      商品信息: item.商品信息
+        ? {
+            ...item.商品信息,
+            categoryName,
+            CategoryName: categoryName,
+            productCategoryName: categoryName,
+            ProductCategoryName: categoryName,
+            categoryPath: nextCategoryPath,
+            CategoryPath: nextCategoryPath,
+            categoryFullPath: nextCategoryPath,
+            CategoryFullPath: nextCategoryPath,
+            warehouseCategoryGUID: categoryGuid,
+            WarehouseCategoryGUID: categoryGuid,
+            productCategoryGUID: categoryGuid,
+            ProductCategoryGUID: categoryGuid,
+          }
+        : item.商品信息,
+    }
+  }
+
+  const openRowCategoryModal = (row: ContainerDetail) => {
+    if (!canBatchSetCategory) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+
+    setRowCategoryEditingRow(row)
+    setRowTargetCategoryGuid(getContainerDetailCategoryGuid(row))
+    // 单行修改也沿用分类树，只默认展开一级，避免打开时树过深难扫。
+    setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
+    setRowCategoryOpen(true)
+  }
+
+  const closeRowCategoryModal = () => {
+    setRowCategoryOpen(false)
+    setRowCategoryEditingRow(null)
+    setRowTargetCategoryGuid(undefined)
+  }
+
+  const handleRowCategorySave = async () => {
+    if (!canBatchSetCategory) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+    if (!rowCategoryEditingRow?.hguid) {
+      message.warning(t('containers.messages.selectProducts'))
+      return
+    }
+    if (!rowTargetCategoryGuid) {
+      message.warning(t('warehouse.categories.selectTargetCategory', '请选择目标分类'))
+      return
+    }
+
+    setRowCategorySaving(true)
+    try {
+      // 单行目标分类只提交当前明细 GUID，不影响批量分类入口和其他已加载行。
+      await batchUpdateDetails([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])
+      const categoryPatch = buildContainerDetailCategoryPatch(
+        rowCategoryEditingRow,
+        rowTargetCategoryGuid,
+        selectedRowTargetCategory,
+        selectedRowTargetCategoryPath,
+      )
+      setRows((items) =>
+        items.map((item) => (
+          rowKey(item) !== rowKey(rowCategoryEditingRow)
+            ? item
+            : mergeContainerDetailPatch(item, categoryPatch)
+        )),
+      )
+      setRowCategoryOpen(false)
+      setRowCategoryEditingRow(null)
+      setRowTargetCategoryGuid(undefined)
+      message.success(t('containers.messages.rowCategoryUpdated', '目标分类已更新'))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('warehouse.categories.batchAssignFailed', '分类保存失败'))
+    } finally {
+      setRowCategorySaving(false)
+    }
+  }
+
   const handleBatchCategorySave = async () => {
     if (!canBatchSetCategory) {
       message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
@@ -1587,47 +1436,12 @@ export default function ContainerDetailPage() {
       // 批量分类只写仓库商品分类，不修改货柜明细价格、数量等业务字段。
       await batchAssignProducts(targetCategoryGuid, productCodes)
       const productCodeSet = new Set(productCodes)
-      const selectedTargetCategoryName = selectedTargetCategory
-        ? formatWarehouseCategoryNodeName(selectedTargetCategory, i18n.language)
-        : undefined
-      const nextCategoryPath = selectedTargetCategoryPath || selectedTargetCategoryName
       // 保存成功后只更新当前已加载行，避免重新查询整张明细表造成等待和 loading。
       setRows((items) =>
         items.map((item) => {
           const productCode = getContainerDetailProductCode(item)
           if (!productCode || !productCodeSet.has(productCode)) return item
-          return {
-            ...item,
-            categoryName: selectedTargetCategoryName,
-            CategoryName: selectedTargetCategoryName,
-            productCategoryName: selectedTargetCategoryName,
-            ProductCategoryName: selectedTargetCategoryName,
-            categoryPath: nextCategoryPath,
-            CategoryPath: nextCategoryPath,
-            categoryFullPath: nextCategoryPath,
-            CategoryFullPath: nextCategoryPath,
-            warehouseCategoryGUID: targetCategoryGuid,
-            WarehouseCategoryGUID: targetCategoryGuid,
-            productCategoryGUID: targetCategoryGuid,
-            ProductCategoryGUID: targetCategoryGuid,
-            商品信息: item.商品信息
-              ? {
-                  ...item.商品信息,
-                  categoryName: selectedTargetCategoryName,
-                  CategoryName: selectedTargetCategoryName,
-                  productCategoryName: selectedTargetCategoryName,
-                  ProductCategoryName: selectedTargetCategoryName,
-                  categoryPath: nextCategoryPath,
-                  CategoryPath: nextCategoryPath,
-                  categoryFullPath: nextCategoryPath,
-                  CategoryFullPath: nextCategoryPath,
-                  warehouseCategoryGUID: targetCategoryGuid,
-                  WarehouseCategoryGUID: targetCategoryGuid,
-                  productCategoryGUID: targetCategoryGuid,
-                  ProductCategoryGUID: targetCategoryGuid,
-                }
-              : item.商品信息,
-          }
+          return mergeContainerDetailPatch(item, buildContainerDetailCategoryPatch(item, targetCategoryGuid, selectedTargetCategory, selectedTargetCategoryPath))
         }),
       )
       setSelectedRowKeys([])
@@ -2417,63 +2231,6 @@ export default function ContainerDetailPage() {
     )
   }
 
-  const setCodeColumns: ColumnsType<ContainerDomesticSetCodeItem> = [
-    {
-      title: '套装货号',
-      dataIndex: 'setItemNumber',
-      width: 140,
-      render: (value) => value || '--',
-    },
-    {
-      title: '条码',
-      dataIndex: 'barcode',
-      width: 170,
-      render: (value) => value || '--',
-    },
-    {
-      title: '价格',
-      dataIndex: 'retailPrice',
-      width: 120,
-      align: 'right',
-      render: (_, item) => {
-        const key = getSetCodeRowKey(item)
-        const edit = setCodePriceEdits[key]
-        return (
-          <InputNumber
-            min={0}
-            prefix="$"
-            precision={2}
-            disabled={!access.canEditContainer}
-            style={{ width: 104 }}
-            value={edit?.retailPrice !== undefined ? edit.retailPrice : item.retailPrice}
-            onChange={(value) => patchSetCodeRetailPriceEdit(item, value == null ? null : Number(value))}
-          />
-        )
-      },
-    },
-    {
-      title: '进货价',
-      dataIndex: 'purchasePrice',
-      width: 120,
-      align: 'right',
-      render: (_, item) => {
-        const key = getSetCodeRowKey(item)
-        const edit = setCodePriceEdits[key]
-        return (
-          <InputNumber
-            min={0}
-            prefix="$"
-            precision={2}
-            disabled={!access.canEditContainer}
-            style={{ width: 104 }}
-            value={edit?.purchasePrice !== undefined ? edit.purchasePrice : item.purchasePrice}
-            onChange={(value) => patchSetCodePriceEdit(item, { purchasePrice: value == null ? null : Number(value) })}
-          />
-        )
-      },
-    },
-  ]
-
   const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number] = {
     // 只读快览列使用有效贴牌价：仓库商品优先，明细贴牌价兜底。
     key: 'readonlyOemPrice',
@@ -2537,7 +2294,23 @@ export default function ContainerDetailPage() {
       key: 'categoryName',
       title: renderCompactHeader(t('containers.fields.category', '分类')),
       width: 120,
-      render: (_, row) => renderContainerDetailCategoryCell(row, categoryLookup, i18n.language),
+      render: (_, row) => {
+        const categoryCell = renderContainerDetailCategoryCell(row, categoryLookup, i18n.language)
+        if (!canBatchSetCategory) return categoryCell
+
+        return (
+          <button
+            type="button"
+            className="container-detail-category-button"
+            onClick={(event) => {
+              event.stopPropagation()
+              openRowCategoryModal(row)
+            }}
+          >
+            {categoryCell}
+          </button>
+        )
+      },
     },
     {
       title: renderColumnTitle('containerPieces', t('containers.fields.containerPieces')),
@@ -2963,6 +2736,41 @@ export default function ContainerDetailPage() {
           />
         </Space>
       </Modal>
+      <Modal
+        title={t('containers.modals.rowCategoryTitle', '目标分类修改')}
+        open={rowCategoryOpen}
+        width={640}
+        destroyOnClose
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+        confirmLoading={rowCategorySaving}
+        okButtonProps={{ disabled: !rowTargetCategoryGuid || categoryLoading || !categories.length }}
+        onCancel={closeRowCategoryModal}
+        onOk={() => void handleRowCategorySave()}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {rowCategoryEditingRow ? (
+            <Typography.Text type="secondary">
+              {getContainerDetailItemNumber(rowCategoryEditingRow) ?? getContainerDetailProductName(rowCategoryEditingRow) ?? '--'}
+            </Typography.Text>
+          ) : null}
+          {selectedRowTargetCategory ? (
+            <Tag color="blue">
+              {t('warehouse.categories.targetCategory', '目标分类')}: {selectedRowTargetCategoryPath || formatWarehouseCategoryNodeName(selectedRowTargetCategory, i18n.language)}
+            </Tag>
+          ) : null}
+          <CategoryTreePicker
+            categories={categories}
+            selectedKey={rowTargetCategoryGuid}
+            expandedKeys={categoryExpandedKeys}
+            onExpand={setCategoryExpandedKeys}
+            onSelect={setRowTargetCategoryGuid}
+            language={i18n.language}
+            t={t}
+            maxHeight={360}
+          />
+        </Space>
+      </Modal>
       <div className={pageClassName}>
       <Spin spinning={loading}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -3152,55 +2960,14 @@ export default function ContainerDetailPage() {
                 </Space>
               ) : null}
 
-              <Space className="container-detail-stats" wrap size={[8, 8]}>
-                {tagStatOptions.map((option) => {
-                  const active = option.value === 'all' ? !selectedTagFilters.length : selectedTagFilters.includes(option.value)
-                  return (
-                    <Tag
-                      key={option.value}
-                      className={`container-detail-stat-tag ${active ? 'container-detail-stat-tag-active' : 'container-detail-stat-tag-muted'}`}
-                      color={option.color}
-                      role="button"
-                      tabIndex={0}
-                      aria-pressed={active}
-                      onClick={() => toggleTagFilter(option.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          toggleTagFilter(option.value)
-                        }
-                      }}
-                    >
-                      <span>{option.label}</span>
-                      <Typography.Text strong className="container-detail-stat-count">
-                        {tagStats[option.value]}
-                      </Typography.Text>
-                    </Tag>
-                  )
-                })}
-              </Space>
-
-              {selectedTagOptions.length ? (
-                <Space className="container-detail-selected-filters" wrap size={[6, 6]}>
-                  <Typography.Text type="secondary">{t('containers.text.selectedFilters')}</Typography.Text>
-                  {selectedTagOptions.map((option) => (
-                    <Tag
-                      key={option.value}
-                      color={option.color}
-                      closable
-                      onClose={(event) => {
-                        event.preventDefault()
-                        toggleTagFilter(option.value)
-                      }}
-                    >
-                      {option.label}
-                    </Tag>
-                  ))}
-                  <Button type="link" size="small" onClick={() => setSelectedTagFilters([])}>
-                    {t('containers.actions.clearFilters')}
-                  </Button>
-                </Space>
-              ) : null}
+              <ContainerTagFilters
+                tagStatOptions={tagStatOptions}
+                tagStats={tagStats}
+                selectedTagFilters={selectedTagFilters}
+                selectedTagOptions={selectedTagOptions}
+                onToggleTagFilter={toggleTagFilter}
+                onSetTagFilters={setTagFiltersFromSelect}
+              />
 
               {exporting ? <Progress percent={exportProgress} size="small" /> : null}
 

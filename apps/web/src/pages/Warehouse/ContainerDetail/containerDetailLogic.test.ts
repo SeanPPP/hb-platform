@@ -1142,6 +1142,9 @@ assertEqual(
 )
 
 const pageSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.tsx', 'utf8')
+const tagFiltersSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerTagFilters.tsx', 'utf8')
+const columnsSource = readFileSync('src/pages/Warehouse/ContainerDetail/ContainerDetailColumns.tsx', 'utf8')
+const setCodeHookSource = readFileSync('src/pages/Warehouse/ContainerDetail/useContainerSetCode.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.css', 'utf8')
 const mobileLayoutSource = readFileSync('src/layout/MobileLayout.tsx', 'utf8')
 const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts', 'utf8')
@@ -1659,7 +1662,7 @@ assertEqual(
   '顶部独立商品类型下拉已取消，商品类型过滤应通过统计 tag 和列头筛选完成',
 )
 assertEqual(
-  pageSource.includes('color={option.color}'),
+  tagFiltersSource.includes('color={option.color}'),
   true,
   '统计标签应始终按各自语义色显示，不只在选中时显示蓝色',
 )
@@ -1678,11 +1681,11 @@ assertEqual(
   true,
   '隐藏选中行触发批量操作时应提示用户重新选择',
 )
-assertEqual(pageSource.includes('role="button"'), true, '统计 tag 应提供按钮语义')
-assertEqual(pageSource.includes('tabIndex={0}'), true, '统计 tag 应可通过键盘聚焦')
-assertEqual(pageSource.includes('aria-pressed={active}'), true, '统计 tag 应暴露当前选中状态')
+assertEqual(tagFiltersSource.includes('role="button"'), true, '统计 tag 应提供按钮语义')
+assertEqual(tagFiltersSource.includes('tabIndex={0}'), true, '统计 tag 应可通过键盘聚焦')
+assertEqual(tagFiltersSource.includes('aria-pressed={active}'), true, '统计 tag 应暴露当前选中状态')
 assertEqual(
-  pageSource.includes("event.key === 'Enter' || event.key === ' '"),
+  tagFiltersSource.includes("event.key === 'Enter' || event.key === ' '"),
   true,
   '统计 tag 应支持 Enter 和空格键触发过滤',
 )
@@ -2439,9 +2442,9 @@ assertEqual(
   '中包数列应作为可编辑数字列保存到货柜明细更新接口',
 )
 assertEqual(
-  pageSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
-    pageSource.includes("formatCurrency(resolveContainerDetailOemPrice(row), '$')") &&
-    pageSource.includes('function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)') &&
+  columnsSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
+    columnsSource.includes("formatCurrency(resolveContainerDetailOemPrice(row), '$')") &&
+    columnsSource.includes('function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)') &&
     pageSource.includes('renderImportPriceCell(row, (') &&
     pageSource.includes(': renderImportPriceCell(row)') &&
     pageSource.includes("formatCurrency(v, '¥')") &&
@@ -2450,9 +2453,9 @@ assertEqual(
   '价格列应按国内价格人民币、其它价格美元显示货币符号',
 )
 assertEqual(
-  pageSource.includes("warehouseImportPrice > importPrice ? 'up' : 'down'") &&
-    pageSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") &&
-    pageSource.includes("return <Icon className={className} />") &&
+  columnsSource.includes("warehouseImportPrice > importPrice ? 'up' : 'down'") &&
+    columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") &&
+    columnsSource.includes("return <Icon className={className} />") &&
     pageSource.includes("saveRowPatch(row, { 进口价格: event.target.value ? Number(event.target.value) : undefined })") &&
     pageStyleSource.includes('.container-detail-import-price-trend-up') &&
     pageStyleSource.includes('color: #52c41a') &&
@@ -2462,8 +2465,8 @@ assertEqual(
   '进口价格应对比仓库当前进货价格显示绿色向上或红色向下箭头，且保存字段仍为进口价格',
 )
 assertEqual(
-  pageSource.includes("source === 'warehouse' ? 'container-detail-oem-price-cell-warehouse' : ''") &&
-    pageSource.includes("source === 'detail' ? 'container-detail-oem-price-cell-fallback' : ''") &&
+  columnsSource.includes("source === 'warehouse' ? 'container-detail-oem-price-cell-warehouse' : ''") &&
+    columnsSource.includes("source === 'detail' ? 'container-detail-oem-price-cell-fallback' : ''") &&
     pageSource.includes('className={getOemPriceSourceClassName(row)}') &&
     pageStyleSource.includes('.container-detail-oem-price-cell-warehouse') &&
     pageStyleSource.includes('background: #f6ffed') &&
@@ -2594,10 +2597,11 @@ const categoryColumnSource = pageSource.slice(
 )
 assertEqual(
   categoryColumnSource.includes("title: renderCompactHeader(t('containers.fields.category'") &&
-    categoryColumnSource.includes('renderContainerDetailCategoryCell(row, categoryLookup, i18n.language)') &&
-    pageSource.includes("const displayName = getContainerDetailCategoryName(record) || '--'"),
+    categoryColumnSource.includes('openRowCategoryModal(row)') &&
+    categoryColumnSource.includes('renderContainerDetailCategoryCell(row, categoryLookup, i18n.language') &&
+    columnsSource.includes("const displayName = getContainerDetailCategoryName(record) || '--'"),
   true,
-  '分类列应显示分类名称，Tooltip 使用完整路径 helper，缺失时显示 --',
+  '分类列应显示分类名称，Tooltip 使用完整路径 helper，缺失时显示 --，且有权限时可打开单行目标分类修改弹窗',
 )
 const barcodeColumnSource = pageSource.slice(
   pageSource.indexOf("renderColumnTitle('barcode', t('containers.fields.barcode'))"),
@@ -2696,8 +2700,9 @@ assertEqual(
     batchCategorySaveSource.includes('setRows((items) =>') &&
     batchCategorySaveSource.includes('const productCode = getContainerDetailProductCode(item)') &&
     batchCategorySaveSource.includes('productCodeSet.has(productCode)') &&
-    batchCategorySaveSource.includes('WarehouseCategoryGUID: targetCategoryGuid') &&
-    batchCategorySaveSource.includes('ProductCategoryGUID: targetCategoryGuid'),
+    batchCategorySaveSource.includes('buildContainerDetailCategoryPatch(item, targetCategoryGuid, selectedTargetCategory, selectedTargetCategoryPath)') &&
+    pageSource.includes('WarehouseCategoryGUID: categoryGuid') &&
+    pageSource.includes('ProductCategoryGUID: categoryGuid'),
   true,
   '货柜明细批量分类保存成功后应本地更新当前行分类，不应重新查询明细表格',
 )
@@ -2712,6 +2717,21 @@ assertEqual(
     pageSource.includes('maxHeight={360}'),
   true,
   '批量分类弹窗应使用带查询的当前语言分类树，并在每次打开时默认展开到一级分类',
+)
+const rowCategoryModalSource = pageSource.slice(
+  pageSource.indexOf("title={t('containers.modals.rowCategoryTitle'"),
+  pageSource.indexOf('<div className={pageClassName}>'),
+)
+assertEqual(
+  rowCategoryModalSource.includes("'目标分类修改'") &&
+    rowCategoryModalSource.includes('open={rowCategoryOpen}') &&
+    rowCategoryModalSource.includes('selectedKey={rowTargetCategoryGuid}') &&
+    rowCategoryModalSource.includes('onOk={() => void handleRowCategorySave()}') &&
+    pageSource.includes('await batchUpdateDetails([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
+    pageSource.includes('rowKey(item) !== rowKey(rowCategoryEditingRow)') &&
+    pageSource.includes('setRowCategoryOpen(false)'),
+  true,
+  '单行目标分类修改弹窗应只提交当前行 ProductCategoryGUID，并在保存后只更新当前已加载行',
 )
 assertEqual(pageSource.includes('className="container-detail-table"'), true, '货柜明细表格应挂载专属 class 以隔离垂直对齐样式')
 assertEqual(
@@ -2897,16 +2917,16 @@ assertEqual(
   '货柜明细商品类型列应使用彩色 Tag，套装商品 Tag 应可点击打开套装多码弹窗',
 )
 assertEqual(
-  pageSource.includes('getContainerDomesticSetCodes(productCode, abortController.signal)') &&
-    pageSource.includes('setCodeAbortControllerRef.current?.abort()') &&
-    pageSource.includes('updateContainerDomesticSetCodePrices(productCode, changedSetCodePriceItems)'),
+  setCodeHookSource.includes('getContainerDomesticSetCodes(productCode, abortController.signal)') &&
+    setCodeHookSource.includes('setCodeAbortControllerRef.current?.abort()') &&
+    setCodeHookSource.includes('updateContainerDomesticSetCodePrices(productCode, changedSetCodePriceItems)'),
   true,
   '套装多码弹窗应支持中止旧请求，并通过国内套装价格接口保存变更',
 )
 assertEqual(
-  pageSource.includes('const mainPurchasePrice = setCodeModalRow?.进口价格') &&
-    pageSource.includes('calculateContainerSetCodePurchasePrice(mainPurchasePrice, nextRetailPrice, totalRetailPrice)') &&
-    !pageSource.includes('setCodeModalRow?.warehouseImportPrice'),
+  setCodeHookSource.includes('const mainPurchasePrice = setCodeModalRow?.进口价格') &&
+    setCodeHookSource.includes('calculateContainerSetCodePurchasePrice(mainPurchasePrice, nextRetailPrice, totalRetailPrice)') &&
+    !setCodeHookSource.includes('setCodeModalRow?.warehouseImportPrice'),
   true,
   '套装子项进货价应按货柜明细当前行进口价格分摊，不能使用仓库当前进货价',
 )
