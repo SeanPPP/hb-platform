@@ -1551,6 +1551,7 @@ namespace BlazorApp.Api.Services.React
                     var localProductChanged = false;
                     if (
                         product != null
+                        &&
                         !string.IsNullOrWhiteSpace(productUpdate.商品名称)
                         && product.ProductName != productUpdate.商品名称
                     )
