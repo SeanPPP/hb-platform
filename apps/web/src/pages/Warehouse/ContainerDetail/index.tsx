@@ -1029,6 +1029,13 @@ export default function ContainerDetailPage() {
   const pendingPricePatchList = useMemo(() => Object.values(pendingPricePatches), [pendingPricePatches])
   const pendingPricePatchCount = pendingPricePatchList.length
 
+  const ensureNoPendingPriceDetails = () => {
+    if (!pendingPricePatchCount) return true
+    // 价格列改为手动保存后，跨库/后台动作必须先阻止未落库价格继续流转。
+    message.warning(t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/贴牌价格'))
+    return false
+  }
+
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
     setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
   }
@@ -1846,6 +1853,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
+    if (!ensureNoPendingPriceDetails()) return
 
     const selection = buildContainerDetailHqPushSelection(selectedRows)
     if (!selection.items.length) {
@@ -1971,6 +1979,7 @@ export default function ContainerDetailPage() {
       message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
       return
     }
+    if (!ensureNoPendingPriceDetails()) return
     const detailHguids = targetRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
     if (!detailHguids.length) {
       message.warning(t('containers.messages.noEligibleNewProducts'))
@@ -2028,6 +2037,7 @@ export default function ContainerDetailPage() {
 
   const updateExistingPurchase = async () => {
     if (!ensureTargetRowsVisible()) return
+    if (!ensureNoPendingPriceDetails()) return
     const candidates = targetRows.filter((row) => !row.是否新商品)
     if (!candidates.length) {
       message.info(t('containers.messages.noExistingProductsToUpdate'))

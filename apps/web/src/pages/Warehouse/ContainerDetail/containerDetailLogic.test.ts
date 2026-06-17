@@ -2031,6 +2031,16 @@ assertEqual(pageSource.includes('result.storeRetailPricesCreated'), true, '结�
 assertEqual(pageSource.includes('result.productSetCodesCreated'), true, '结果弹窗应展示套装多码新增统计')
 assertEqual(pageSource.includes('result.storeMultiCodesCreated'), true, '结果弹窗应展示分店多码新增统计')
 assertEqual(pageSource.includes('disabled={!selectedRowKeys.length || pushToHqLoading}'), true, '发送到 HQ 按钮必须要求手动选中明细')
+const pushToHqHandlerSource = pageSource.slice(
+  pageSource.indexOf('const handlePushSelectedProductsToHq = async () => {'),
+  pageSource.indexOf('const renderCreateProductResultItems = (items: ContainerProductCreationResultItem[]) => {'),
+)
+assertEqual(
+  pushToHqHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
+    pushToHqHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < pushToHqHandlerSource.indexOf('const selection = buildContainerDetailHqPushSelection(selectedRows)'),
+  true,
+  '发送到 HQ 前应阻止未保存的进口价格和贴牌价格继续流转',
+)
 assertEqual(
   pageSource.includes('createContainerProductCreationJob({'),
   true,
@@ -2045,6 +2055,16 @@ assertEqual(
   pageSource.includes('waitForContainerProductCreationJob(job.jobId)'),
   true,
   '创建新商品应轮询后台 job 直到终态',
+)
+const createNewProductsHandlerSource = pageSource.slice(
+  pageSource.indexOf('const createNewProducts = async () => {'),
+  pageSource.indexOf('const updateExistingPurchase = async () => {'),
+)
+assertEqual(
+  createNewProductsHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
+    createNewProductsHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < createNewProductsHandlerSource.indexOf('const detailHguids = targetRows.map'),
+  true,
+  '创建新商品前应提示先保存明细价格，避免后台 job 读取旧价格',
 )
 const createProductsJobSource = pageSource.slice(
   pageSource.indexOf('const showCreateProductsJobResult = (job: ContainerProductCreationJob) => {'),
@@ -2085,6 +2105,16 @@ assertEqual(
   pageSource.includes("message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品价格失败'))"),
   true,
   '更新已有商品价格失败时应给用户可见错误提示',
+)
+const updateExistingPurchaseHandlerSource = pageSource.slice(
+  pageSource.indexOf('const updateExistingPurchase = async () => {'),
+  pageSource.indexOf('const deleteSelected = () => {'),
+)
+assertEqual(
+  updateExistingPurchaseHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
+    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const candidates = targetRows.filter'),
+  true,
+  '更新已有商品价格前应阻止未保存的手动价格直接写入商品和分店价格',
 )
 assertEqual(
   pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertMultiCodeForActiveStores(updates.map'),
@@ -2520,6 +2550,17 @@ assertEqual(
     pageSource.includes("t('containers.actions.saveDetails', '保存明细')"),
   true,
   '批量价格操作区应提供保存明细按钮，且无待保存价格时禁用',
+)
+const pendingPriceGuardSource = pageSource.slice(
+  pageSource.indexOf('const ensureNoPendingPriceDetails = () => {'),
+  pageSource.indexOf('const patchRow = (key: string, patch: Partial<ContainerDetail>) => {'),
+)
+assertEqual(
+  pendingPriceGuardSource.includes('if (!pendingPricePatchCount) return true') &&
+    pendingPriceGuardSource.includes("t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/贴牌价格')") &&
+    pendingPriceGuardSource.includes('return false'),
+  true,
+  '货柜明细页应提供未保存价格拦截提示，要求用户先点保存明细',
 )
 assertEqual(
   columnsSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
