@@ -39,7 +39,7 @@ import {
 import type { ColumnType, ColumnsType, TableProps } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import type { CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -138,6 +138,11 @@ import {
   constrainSelectedRowKeysToVisibleDetails,
   getBatchExecuteErrorFeedback,
 } from './batchExecuteConfirm'
+import {
+  EditableBooleanCell,
+  EditableNumberCell,
+  EditableTextCell,
+} from './EditableCells'
 import {
   canApplyCheckProductsJobResult,
   canApplyInvoiceJobResult,
@@ -477,185 +482,6 @@ const ACTION_MENU_ITEMS = (t: ReturnType<typeof useTranslation>['t']) => [
   { key: '4', label: <Tag color="purple">{t('posAdmin.invoiceDetail.updateItemNumber', '更新货号')}</Tag> },
   { key: '5', label: <Tag color="cyan">{t('posAdmin.invoiceDetail.addMultiCode', '添加多码')}</Tag> },
 ]
-
-type InlineCellSaveHandler = (
-  detailGuid: string,
-  field: InvoiceDetailInlineEditableField,
-  value: unknown,
-) => void
-
-/* ------------------------------------------------------------------ */
-/*  双击行内编辑单元格                                                  */
-/* ------------------------------------------------------------------ */
-
-function EditableTextCell({
-  value,
-  detailGuid,
-  field,
-  onSave,
-  display,
-  style,
-}: {
-  value?: string
-  detailGuid: string
-  field: InvoiceDetailInlineEditableField
-  onSave: InlineCellSaveHandler
-  display?: ReactNode
-  style?: CSSProperties
-}) {
-  const [editing, setEditing] = useState(false)
-  const [inputValue, setInputValue] = useState(value ?? '')
-
-  useEffect(() => {
-    setInputValue(value ?? '')
-  }, [value])
-
-  const commit = () => {
-    onSave(detailGuid, field, inputValue)
-    setEditing(false)
-  }
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      commit()
-    }
-    if (event.key === 'Escape') {
-      setInputValue(value ?? '')
-      setEditing(false)
-    }
-  }
-
-  if (editing) {
-    return (
-      <Input
-        autoFocus
-        size="small"
-        value={inputValue}
-        onChange={(event) => setInputValue(event.target.value)}
-        onBlur={commit}
-        onKeyDown={handleKeyDown}
-      />
-    )
-  }
-
-  return (
-    <span style={{ ...style, cursor: 'pointer' }} onDoubleClick={() => setEditing(true)}>
-      {display ?? value ?? '--'}
-    </span>
-  )
-}
-
-function EditableNumberCell({
-  value,
-  detailGuid,
-  field,
-  onSave,
-  displayValue,
-  style,
-  min = 0,
-  max,
-  precision = 2,
-  addonAfter,
-}: {
-  value?: number | null
-  detailGuid: string
-  field: InvoiceDetailInlineEditableField
-  onSave: InlineCellSaveHandler
-  displayValue?: ReactNode
-  style?: CSSProperties
-  min?: number
-  max?: number
-  precision?: number
-  addonAfter?: ReactNode
-}) {
-  const [editing, setEditing] = useState(false)
-  const [inputValue, setInputValue] = useState<number | null>(value ?? null)
-
-  useEffect(() => {
-    setInputValue(value ?? null)
-  }, [value])
-
-  const commit = () => {
-    if (inputValue == null) {
-      setEditing(false)
-      return
-    }
-    onSave(detailGuid, field, inputValue)
-    setEditing(false)
-  }
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      commit()
-    }
-    if (event.key === 'Escape') {
-      setInputValue(value ?? null)
-      setEditing(false)
-    }
-  }
-
-  if (editing) {
-    return (
-      <InputNumber
-        autoFocus
-        size="small"
-        min={min}
-        max={max}
-        precision={precision}
-        addonAfter={addonAfter}
-        value={inputValue}
-        onChange={(nextValue) => setInputValue(nextValue)}
-        onBlur={commit}
-        onKeyDown={handleKeyDown}
-        style={{ width: addonAfter ? 110 : 90 }}
-      />
-    )
-  }
-
-  return (
-    <span style={{ ...style, cursor: 'pointer' }} onDoubleClick={() => setEditing(true)}>
-      {displayValue ?? formatAmount(value ?? undefined)}
-    </span>
-  )
-}
-
-function EditableBooleanCell({
-  value,
-  detailGuid,
-  field,
-  onSave,
-  trueLabel,
-  falseLabel,
-  trueColor,
-}: {
-  value?: boolean | null
-  detailGuid: string
-  field: InvoiceDetailInlineEditableField
-  onSave: InlineCellSaveHandler
-  trueLabel: string
-  falseLabel: string
-  trueColor: string
-}) {
-  const actualValue = Boolean(value)
-
-  return (
-    <Tooltip title="双击切换">
-      <Tag
-        color={actualValue ? trueColor : 'default'}
-        style={{ cursor: 'pointer' }}
-        onDoubleClick={() => onSave(detailGuid, field, !actualValue)}
-      >
-        {actualValue ? trueLabel : falseLabel}
-      </Tag>
-    </Tooltip>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/*  主页面组件                                                          */
-/* ------------------------------------------------------------------ */
 
 export default function InvoiceEditPage() {
   const { t } = useTranslation()

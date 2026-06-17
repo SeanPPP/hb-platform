@@ -55,7 +55,6 @@ import {
   batchAddStoreOrderLines,
   batchUpdateStoreOrderLines,
   batchUpdateStoreOrderProductStatus,
-  completeStoreOrder,
   createStoreOrderPasteReplaceJob,
   getStoreOrderDetail,
   getStoreOrderDetailFull,
@@ -120,6 +119,13 @@ function formatDateTime(value?: string) {
   }
 
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatLocalDateForInput(value = new Date()) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function formatAmount(value?: number) {
@@ -1863,7 +1869,14 @@ export default function StoreOrderDetailPage() {
       onOk: async () => {
         try {
           setLineActionLoading(true)
-          await completeStoreOrder(detail.orderGUID)
+          const currentOutboundDate = headerForm.outboundDate?.slice(0, 10)
+          // 完成订单时只在出库日期为空时补当天，避免覆盖已录入或刚在表单中填写的日期。
+          const nextOutboundDate = currentOutboundDate || formatLocalDateForInput()
+          await updateStoreOrderOutboundDate({
+            orderGUID: detail.orderGUID,
+            outboundDate: nextOutboundDate,
+            completeOrder: true,
+          })
           message.success(t('storeOrders.detail.orderCompleted'))
           await loadDetail(false)
         } catch (error) {

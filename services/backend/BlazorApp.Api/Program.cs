@@ -729,7 +729,7 @@ try
         // 🔗 验证HQ总部数据库连接
         Console.WriteLine("🔍 检查HQ数据库连接...");
         // hqDbContext.CheckConnection();      // 测试连接是否正常
-        // hqDbContext.CheckTables();          // 检查必要的表是否存在
+        hqDbContext.CheckTables();          // 检查必要的表是否存在
         Console.WriteLine("✅ HQ数据库连接检查完成");
 
         // 🌱 初始化种子数据

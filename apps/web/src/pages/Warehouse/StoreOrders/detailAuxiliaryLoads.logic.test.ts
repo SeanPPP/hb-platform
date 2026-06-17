@@ -148,6 +148,26 @@ async function main() {
   })
   if (flowGuardFailure) failures.push(flowGuardFailure)
 
+  const completeOrderOutboundDateFailure = await runTest('详情页完成订单应只在出库日期为空时补当天', () => {
+    const completeOrderSource = detailSource.slice(
+      detailSource.indexOf('const handleCompleteOrder'),
+      detailSource.indexOf('const handleChangeOrderStatus'),
+    )
+
+    assert(detailSource.includes('function formatLocalDateForInput'), '详情页应提供本地日期格式化 helper，避免 UTC 日期偏移')
+    assert(!detailSource.includes('completeStoreOrder,'), '详情页完成订单不应再导入直接完成接口')
+    assert(!completeOrderSource.includes('completeStoreOrder(detail.orderGUID)'), '详情页完成订单不应直接调用完成接口')
+    assert(
+      completeOrderSource.includes('const currentOutboundDate = headerForm.outboundDate?.slice(0, 10)') &&
+        completeOrderSource.includes('const nextOutboundDate = currentOutboundDate || formatLocalDateForInput()') &&
+        completeOrderSource.includes('updateStoreOrderOutboundDate({') &&
+        completeOrderSource.includes('outboundDate: nextOutboundDate') &&
+        completeOrderSource.includes('completeOrder: true'),
+      '完成订单应复用出库日期接口：已有出库日期则保留，空出库日期才补当天并同步完成订单',
+    )
+  })
+  if (completeOrderOutboundDateFailure) failures.push(completeOrderOutboundDateFailure)
+
   const disabledUiFailure = await runTest('非仓库管理员应禁用表头和明细写控件并隐藏明细功能按钮', () => {
     assert(
       detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder}') &&
