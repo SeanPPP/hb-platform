@@ -312,7 +312,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             result.Data.Attachments,
             pdf =>
             {
-                Assert.EndsWith(".pdf", pdf.FileName);
+                Assert.EndsWith("_2026-06-05.pdf", pdf.FileName);
                 Assert.Equal("application/pdf", pdf.ContentType);
                 Assert.NotEmpty(pdf.Bytes);
                 Assert.Equal("%PDF", System.Text.Encoding.ASCII.GetString(pdf.Bytes.Take(4).ToArray()));
@@ -322,6 +322,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Contains("A.B.N. 35 160 589 793", pdfText);
                 Assert.Contains("WAREHOUSE EMAIL", pdfText);
                 Assert.Contains("INVOICE NO. SO001", pdfText);
+                Assert.Contains("INVOICE DATE: 2026/6/5", pdfText);
                 Assert.Contains("PAYMENT DETAIL: DIRECT DEBIT", pdfText);
                 Assert.Contains("NAME:", pdfText);
                 Assert.Contains("HOT BARGAIN INTERNATIONAL", pdfText);
@@ -334,20 +335,57 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             },
             excel =>
             {
-                Assert.EndsWith(".xlsx", excel.FileName);
+                Assert.EndsWith("_2026-06-05.xlsx", excel.FileName);
                 Assert.Equal(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     excel.ContentType
                 );
                 using var workbook = new XLWorkbook(new MemoryStream(excel.Bytes));
                 var sheet = workbook.Worksheet("Invoice");
-                Assert.Equal("Item No", sheet.Cell(1, 2).GetString());
-                Assert.Equal("HB001", sheet.Cell(2, 2).GetString());
-                Assert.Equal(2m, sheet.Cell(2, 6).GetValue<decimal>());
-                Assert.Equal(1m, sheet.Cell(2, 7).GetValue<decimal>());
-                Assert.Equal(8.5m, sheet.Cell(2, 8).GetValue<decimal>());
+                Assert.Equal("INVOICE", sheet.Cell(1, 1).GetString());
+                Assert.Equal("INVOICE NO. SO001", sheet.Cell(2, 1).GetString());
+                Assert.Equal("INVOICE DATE: 2026/6/5", sheet.Cell(2, 5).GetString());
+                Assert.Equal("CUSTOMER:", sheet.Cell(3, 1).GetString());
+                Assert.Equal("Test Store", sheet.Cell(3, 2).GetString());
+                Assert.Equal("CUSTOMER CONTACT:", sheet.Cell(4, 1).GetString());
+                Assert.Equal("customer@example.com", sheet.Cell(4, 2).GetString());
+                Assert.Equal("ADDRESS:", sheet.Cell(5, 1).GetString());
+                Assert.Equal("1 Test Street", sheet.Cell(5, 2).GetString());
+                Assert.Equal("Item No", sheet.Cell(7, 2).GetString());
+                Assert.Equal("HB001", sheet.Cell(8, 2).GetString());
+                Assert.Equal(2m, sheet.Cell(8, 6).GetValue<decimal>());
+                Assert.Equal(1m, sheet.Cell(8, 7).GetValue<decimal>());
+                Assert.Equal(8.5m, sheet.Cell(8, 8).GetValue<decimal>());
             }
         );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceAttachmentService_WhenOutboundDateMissing_UsesOrderDate()
+    {
+        var orderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        orderService
+            .Setup(item => item.GetOrderDetailFullAsync("order-1"))
+            .ReturnsAsync(ApiResponse<StoreOrderCartDto?>.OK(CreateInvoiceOrder(includeOutboundDate: false)));
+        var service = new StoreOrderInvoiceAttachmentService(
+            orderService.Object,
+            NullLogger<StoreOrderInvoiceAttachmentService>.Instance
+        );
+
+        var result = await service.GenerateAttachmentsAsync("order-1");
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var pdf = result.Data!.Attachments.Single(item => item.ContentType == "application/pdf");
+        Assert.EndsWith("_2026-06-04.pdf", pdf.FileName);
+        Assert.Contains("INVOICE DATE: 2026/6/4", ExtractPdfText(pdf.Bytes));
+
+        var excel = result.Data.Attachments.Single(
+            item => item.ContentType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        Assert.EndsWith("_2026-06-04.xlsx", excel.FileName);
+        using var workbook = new XLWorkbook(new MemoryStream(excel.Bytes));
+        Assert.Equal("INVOICE DATE: 2026/6/4", workbook.Worksheet("Invoice").Cell(2, 5).GetString());
     }
 
     [Fact]
@@ -667,15 +705,18 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         );
     }
 
-    private static StoreOrderCartDto CreateInvoiceOrder()
+    private static StoreOrderCartDto CreateInvoiceOrder(bool includeOutboundDate = true)
     {
         return new StoreOrderCartDto
         {
             OrderGUID = "order-1",
             OrderNo = "SO001",
             StoreCode = "S001",
+            StoreName = "Test Store",
             StoreAddress = "1 Test Street",
             StoreContactEmail = "customer@example.com",
+            OrderDate = new DateTime(2026, 6, 4),
+            OutboundDate = includeOutboundDate ? new DateTime(2026, 6, 5) : null,
             TotalImportAmount = 8.5m,
             ShippingFee = 1.5m,
             Items = new List<StoreOrderCartItemDto>

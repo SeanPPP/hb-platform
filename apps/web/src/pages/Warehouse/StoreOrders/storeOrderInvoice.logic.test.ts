@@ -84,8 +84,25 @@ async function main() {
       invoiceSource.includes("link.download = buildDocumentFileName(\n    'INVOICE',"),
       '发票 Excel 导出文件名应使用 INVOICE 前缀',
     )
+    assert(invoiceSource.includes('const invoiceDateSource = order?.outboundDate || order?.orderDate'), '发票日期应优先使用出库日期，订单日期只做兜底')
+    assert(invoiceSource.includes('const invoiceFileDate = formatDocumentFileDate(invoiceDateSource)'), '发票文件名日期应由统一工具格式化')
+    assert(invoiceSource.includes('headerInfo.invoiceFileDate'), '发票 Excel 文件名应传入 invoice 日期')
   })
   if (excelFileNameFailure) failures.push(excelFileNameFailure)
+
+  const excelHeaderFailure = await runTest('发票 Excel 导出应在明细前添加订单基础信息页头', () => {
+    assert(invoiceSource.includes("const titleRow = worksheet.addRow(['INVOICE'])"), 'Excel 应添加 INVOICE 标题行')
+    assert(invoiceSource.includes("t('warehouse.invoice.invoiceNo'"), 'Excel 页头应包含发票号')
+    assert(invoiceSource.includes("t('warehouse.invoice.invoiceDate'"), 'Excel 页头应包含发票日期')
+    assert(invoiceSource.includes("t('warehouse.invoice.customer')"), 'Excel 页头应包含客户')
+    assert(invoiceSource.includes("t('warehouse.invoice.customerContact')"), 'Excel 页头应包含客户联系方式')
+    assert(invoiceSource.includes("t('warehouse.invoice.address')"), 'Excel 页头应包含地址')
+    assert(
+      invoiceSource.includes("storeContact: order.storeContactEmail || store?.contactEmail || '-'"),
+      '前端 Excel 客户联系方式应与邮件附件统一使用联系邮箱口径',
+    )
+  })
+  if (excelHeaderFailure) failures.push(excelHeaderFailure)
 
   const invoicePdfBreakFailure = await runTest('发票 PDF 导出应按明细行和页脚边界切页', () => {
     assert(invoiceSource.includes('collectElementBreakOffsets'), '发票页应引入 PDF 行边界收集工具')
