@@ -41,6 +41,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         _localDb.CodeFirst.InitTables(
             typeof(Store),
             typeof(Product),
+            typeof(DomesticProduct),
             typeof(StoreRetailPrice),
             typeof(StoreLocalSupplierInvoice),
             typeof(StoreLocalSupplierInvoiceDetails)
@@ -538,6 +539,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         await SeedStoreAsync("S03", false);
         await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
         await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedDomesticProductAsync("P-001", "CN-SUP01");
         await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
         {
             DetailGUID = "detail-new-hq",
@@ -575,6 +577,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         var hqProduct = await _hqDb.Queryable<DIC_商品信息字典表>()
             .FirstAsync(x => x.H商品编码 == "P-001");
         Assert.Equal("P-001", hqProduct.H商品编码);
+        Assert.Equal("CN-SUP01", hqProduct.CBP供应商编码);
 
         var hqPrices = await _hqDb.Queryable<DIC_商品零售价表>()
             .Where(x => x.H商品编码 == "P-001")
@@ -768,6 +771,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.Equal("ITEM-1", hqProduct.H货号);
         Assert.Equal("930000000001", hqProduct.H主条形码);
         Assert.Equal("detail-1", hqProduct.H进货单详情GUID);
+        Assert.Equal(string.Empty, hqProduct.CBP供应商编码);
 
         var hqPrices = await _hqDb.Queryable<DIC_商品零售价表>()
             .Where(x => x.H商品编码 == detail.ProductCode)
@@ -784,9 +788,14 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         await SeedStoreAsync("S02", true);
         await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
         await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedDomesticProductAsync("P-001", "CN-SUP01");
         await SeedLocalPriceAsync("S01", "P-001", 5m, 10m);
         await SeedLocalPriceAsync("S02", "P-001", 6m, 12m);
         await SeedHqProductAsync("P-001", 5m, 10m);
+        await _hqDb.Updateable<DIC_商品信息字典表>()
+            .SetColumns(row => new DIC_商品信息字典表 { CBP供应商编码 = "200" })
+            .Where(row => row.H商品编码 == "P-001")
+            .ExecuteCommandAsync();
         await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
         await SeedHqPriceAsync("S02", "P-001", 6m, 12m);
         await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
@@ -852,6 +861,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.Equal(18m, hqS01.H分店零售价);
         Assert.Equal(6m, hqS02.H进货价);
         Assert.Equal(12m, hqS02.H分店零售价);
+        Assert.Equal("CN-SUP01", hqProduct.CBP供应商编码);
     }
 
     [Fact]
@@ -1063,6 +1073,17 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             PurchasePrice = 5m,
             RetailPrice = 10m,
             IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedDomesticProductAsync(string productCode, string supplierCode)
+    {
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = productCode,
+            SupplierCode = supplierCode,
+            ProductName = $"国内商品-{productCode}",
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
