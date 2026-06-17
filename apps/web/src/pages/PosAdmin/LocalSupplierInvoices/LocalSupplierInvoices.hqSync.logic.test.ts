@@ -109,12 +109,14 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/index.tsx')
 const editPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
+const editCellsFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/EditableCells.tsx')
 const detailPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx')
 const serviceFile = path.resolve(process.cwd(), 'src/services/localSupplierInvoiceService.ts')
 const typeFile = path.resolve(process.cwd(), 'src/types/localSupplierInvoice.ts')
 const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
 const pageSource = readFileSync(pageFile, 'utf8')
 const editPageSource = readFileSync(editPageFile, 'utf8')
+const editCellsSource = readFileSync(editCellsFile, 'utf8')
 const detailPageSource = readFileSync(detailPageFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
@@ -833,8 +835,9 @@ async function main() {
   if (compactTableDisplayFailure) failures.push(compactTableDisplayFailure)
 
   const inlineBooleanToggleFailure = await runTest('编辑页自动定价和特殊商品应双击本地编辑并随保存明细统一落库', () => {
-    assert(editPageSource.includes('function EditableBooleanCell'), '编辑页应使用行内布尔编辑单元格')
-    assert(editPageSource.includes('onDoubleClick={() => onSave(detailGuid, field, !actualValue)}'), '布尔字段应双击切换本地值')
+    assert(editPageSource.includes('EditableBooleanCell,'), '编辑页应导入行内布尔编辑单元格')
+    assert(editCellsSource.includes('function EditableBooleanCell'), '行内编辑组件文件应定义布尔编辑单元格')
+    assert(editCellsSource.includes('onDoubleClick={() => onSave(detailGuid, field, !actualValue)}'), '布尔字段应双击切换本地值')
     assert(editPageSource.includes('field="autoPricing"'), '自动定价应纳入可编辑字段')
     assert(editPageSource.includes('field="isSpecialProduct"'), '特殊商品应纳入可编辑字段')
     assert(editPageSource.includes('const handleInlineDetailSave = useCallback'), '行内编辑应先写入本地明细')

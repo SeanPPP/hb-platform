@@ -4640,6 +4640,16 @@ namespace BlazorApp.Api.Services.React
                 order.OutboundDate = request.OutboundDate;
                 if (request.CompleteOrder)
                 {
+                    // 出库日期接口可同步完成订单，但仍必须遵守订单状态机，避免绕过完成订单专用接口校验。
+                    if (order.FlowStatus != 1 && order.FlowStatus != 3)
+                    {
+                        return new ApiResponse<bool>
+                        {
+                            Success = false,
+                            Message = "只有已提交或配货中状态的订单才能标记为完成",
+                        };
+                    }
+
                     order.FlowStatus = 2;
                 }
                 order.UpdatedAt = DateTime.Now;

@@ -1435,6 +1435,32 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateOrderOutboundDateAsync_RejectsCompleteOrderWhenStatusIsNotSubmittedOrPicking()
+    {
+        var originalOutboundDate = new DateTime(2026, 6, 2);
+        await SeedStoreOrderAsync(
+            "ORDER-OUT-INVALID-COMPLETE",
+            flowStatus: 0,
+            outboundDate: originalOutboundDate
+        );
+
+        var result = await CreateService().UpdateOrderOutboundDateAsync(new UpdateOrderOutboundDateDto
+        {
+            OrderGuid = "ORDER-OUT-INVALID-COMPLETE",
+            OutboundDate = new DateTime(2026, 6, 10),
+            CompleteOrder = true,
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("只有已提交或配货中状态的订单才能标记为完成", result.Message);
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-OUT-INVALID-COMPLETE")
+            .FirstAsync();
+        Assert.Equal(originalOutboundDate, order.OutboundDate);
+        Assert.Equal(0, order.FlowStatus);
+    }
+
+    [Fact]
     public async Task UpdateOrderOutboundDateAsync_ReturnsFailureWhenOrderDoesNotExist()
     {
         var result = await CreateService().UpdateOrderOutboundDateAsync(new UpdateOrderOutboundDateDto
