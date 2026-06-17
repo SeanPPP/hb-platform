@@ -1448,6 +1448,92 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal("Order not found", result.Message);
     }
 
+    [Fact]
+    public async Task RefreshOrderLineImportPricesAsync_已完成订单按仓库表刷新整单并重算汇总()
+    {
+        await SeedStoreOrderAsync("ORDER-REFRESH-ALL", flowStatus: 2);
+        await SeedOrderLineAsync("ORDER-REFRESH-ALL", "P-REFRESH-1", "ITEM-REFRESH-1", quantity: 3m, allocQuantity: 4m);
+        await SeedOrderLineAsync("ORDER-REFRESH-ALL", "P-REFRESH-2", "ITEM-REFRESH-2", quantity: 5m, allocQuantity: 6m);
+        await SeedOrderLineAsync("ORDER-REFRESH-ALL", "P-REFRESH-3", "ITEM-REFRESH-3", quantity: 7m, allocQuantity: 8m);
+        await _db.Updateable<WareHouseOrderDetails>()
+            .SetColumns(item => new WareHouseOrderDetails { ImportAmount = 1m })
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-2")
+            .ExecuteCommandAsync();
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct { ImportPrice = 5m })
+            .Where(item => item.ProductCode == "P-REFRESH-1")
+            .ExecuteCommandAsync();
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct { ImportPrice = 0m })
+            .Where(item => item.ProductCode == "P-REFRESH-3")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().RefreshOrderLineImportPricesAsync(
+            new RefreshStoreOrderImportPricesDto { OrderGUID = "ORDER-REFRESH-ALL" }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data!.UpdatedCount);
+        Assert.Equal(0, result.Data.UnchangedCount);
+        Assert.Equal(1, result.Data.SkippedCount);
+        Assert.Equal(1, result.Data.MissingWarehousePriceCount);
+
+        var refreshed = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-1")
+            .FirstAsync();
+        var skipped = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-3")
+            .FirstAsync();
+        var correctedAmount = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-2")
+            .FirstAsync();
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-REFRESH-ALL")
+            .FirstAsync();
+
+        Assert.Equal(5m, refreshed.ImportPrice);
+        Assert.Equal(20m, refreshed.ImportAmount);
+        Assert.Equal(2m, correctedAmount.ImportPrice);
+        Assert.Equal(12m, correctedAmount.ImportAmount);
+        Assert.Equal(2m, skipped.ImportPrice);
+        Assert.Equal(48m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task RefreshOrderLineImportPricesAsync_传入明细时只刷新选中行()
+    {
+        await SeedStoreOrderAsync("ORDER-REFRESH-SELECTED");
+        await SeedOrderLineAsync("ORDER-REFRESH-SELECTED", "P-REFRESH-A", "ITEM-REFRESH-A", quantity: 1m, allocQuantity: 2m);
+        await SeedOrderLineAsync("ORDER-REFRESH-SELECTED", "P-REFRESH-B", "ITEM-REFRESH-B", quantity: 3m, allocQuantity: 4m);
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct { ImportPrice = 5m })
+            .Where(item => item.ProductCode == "P-REFRESH-A" || item.ProductCode == "P-REFRESH-B")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().RefreshOrderLineImportPricesAsync(
+            new RefreshStoreOrderImportPricesDto
+            {
+                OrderGUID = "ORDER-REFRESH-SELECTED",
+                DetailGUIDs = new List<string> { "ORDER-REFRESH-SELECTED-P-REFRESH-B" },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.Data?.UpdatedCount);
+
+        var untouched = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-SELECTED-P-REFRESH-A")
+            .FirstAsync();
+        var refreshed = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-SELECTED-P-REFRESH-B")
+            .FirstAsync();
+
+        Assert.Equal(2m, untouched.ImportPrice);
+        Assert.Equal(5m, refreshed.ImportPrice);
+        Assert.Equal(20m, refreshed.ImportAmount);
+    }
+
     public void Dispose()
     {
         _db.Dispose();

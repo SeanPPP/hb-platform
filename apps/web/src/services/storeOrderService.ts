@@ -3,6 +3,8 @@ import type {
   AddStoreOrderLinePayload,
   BatchAddStoreOrderLinePayload,
   PasteReplaceStoreOrderLinesPayload,
+  RefreshStoreOrderImportPricesPayload,
+  RefreshStoreOrderImportPricesResult,
   BatchUpdateStoreOrderLinePayload,
   BatchUpdateStoreOrderProductStatusPayload,
   CopyStoreOrderPayload,
@@ -638,6 +640,21 @@ export async function batchUpdateStoreOrderLines(payload: BatchUpdateStoreOrderL
     method: 'POST',
     data: payload,
   })
+}
+
+export async function refreshStoreOrderImportPrices(payload: RefreshStoreOrderImportPricesPayload) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/line/refresh-import-prices`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  const result = normalizeResult<Partial<RefreshStoreOrderImportPricesResult> | null>(response)
+  return {
+    updatedCount: result?.updatedCount ?? 0,
+    unchangedCount: result?.unchangedCount ?? 0,
+    skippedCount: result?.skippedCount ?? 0,
+    missingWarehousePriceCount: result?.missingWarehousePriceCount ?? 0,
+  } satisfies RefreshStoreOrderImportPricesResult
 }
 
 export async function updateStoreOrderProductStatus(payload: UpdateStoreOrderProductStatusPayload) {

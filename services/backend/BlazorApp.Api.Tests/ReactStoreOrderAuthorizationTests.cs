@@ -1435,6 +1435,58 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task RefreshOrderLineImportPrices_AllowsWarehouseManagerAndChecksOrderScope()
+    {
+        var request = new RefreshStoreOrderImportPricesDto
+        {
+            OrderGUID = "order-refresh",
+            DetailGUIDs = new List<string> { "detail-1" },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.RefreshOrderLineImportPricesAsync(request))
+            .ReturnsAsync(
+                ApiResponse<RefreshStoreOrderImportPricesResultDto>.OK(
+                    new RefreshStoreOrderImportPricesResultDto { UpdatedCount = 1 }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-refresh")).ReturnsAsync(true);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(),
+            scopeService,
+            new[] { "WarehouseManager" }
+        );
+
+        var result = await controller.RefreshOrderLineImportPrices(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        scopeService.Verify(item => item.CanAccessOrderAsync("order-refresh"), Times.Once);
+        service.Verify(item => item.RefreshOrderLineImportPricesAsync(request), Times.Once);
+    }
+
+    [Fact]
+    public async Task RefreshOrderLineImportPrices_ForbidsWarehouseStaffBeforeCallingService()
+    {
+        var request = new RefreshStoreOrderImportPricesDto { OrderGUID = "order-refresh" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.RefreshOrderLineImportPrices(request);
+
+        Assert.IsType<ForbidResult>(result);
+        scopeService.Verify(item => item.CanAccessOrderAsync(It.IsAny<string>()), Times.Never);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task UpdateStoreContact_RequiresEditPermissionAndScopesBeforeCallingService()
     {
         var request = new UpdateStoreOrderStoreContactDto

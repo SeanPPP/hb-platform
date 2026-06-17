@@ -73,6 +73,13 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.Warehouse.ManageOrders,
             Permissions.Warehouse.Manage,
         };
+        private static readonly string[] ImportPriceRefreshRoles =
+        {
+            "Admin",
+            "管理员",
+            "WarehouseManager",
+            "仓库经理",
+        };
         private static readonly string[] GlobalStoreScopeRoles =
         {
             "Admin",
@@ -1617,6 +1624,41 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BatchUpdateOrderLine failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 从仓库商品表刷新订单明细进口价，允许管理员/仓库管理员修正已完成订单成本。
+        /// </summary>
+        [HttpPost("line/refresh-import-prices")]
+        public async Task<IActionResult> RefreshOrderLineImportPrices(
+            [FromBody] RefreshStoreOrderImportPricesDto request
+        )
+        {
+            try
+            {
+                if (!HasAnyRole(ImportPriceRefreshRoles))
+                {
+                    return Forbid();
+                }
+
+                var forbidden = await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.RefreshOrderLineImportPricesAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RefreshOrderLineImportPrices failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

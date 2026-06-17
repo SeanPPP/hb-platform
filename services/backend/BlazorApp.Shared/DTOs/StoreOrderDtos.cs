@@ -632,6 +632,31 @@ namespace BlazorApp.Shared.DTOs
     public decimal? ImportPrice { get; set; }
   }
 
+  /// <summary>
+  /// 从仓库商品表刷新订单明细进口价请求。
+  /// </summary>
+  public class RefreshStoreOrderImportPricesDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 为空表示刷新整单全部未删除明细。
+    /// </summary>
+    public List<string>? DetailGUIDs { get; set; }
+  }
+
+  /// <summary>
+  /// 从仓库商品表刷新订单明细进口价结果。
+  /// </summary>
+  public class RefreshStoreOrderImportPricesResultDto
+  {
+    public int UpdatedCount { get; set; }
+    public int UnchangedCount { get; set; }
+    public int SkippedCount { get; set; }
+    public int MissingWarehousePriceCount { get; set; }
+  }
+
   public static class StoreOrderPasteTargetFields
   {
     public const string Quantity = "quantity";

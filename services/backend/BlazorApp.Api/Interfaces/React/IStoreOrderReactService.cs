@@ -143,6 +143,13 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<bool>> BatchUpdateOrderLineAsync(BatchUpdateOrderLineDto request);
 
         /// <summary>
+        /// 从仓库商品表刷新订单明细进口价。
+        /// </summary>
+        Task<ApiResponse<RefreshStoreOrderImportPricesResultDto>> RefreshOrderLineImportPricesAsync(
+            RefreshStoreOrderImportPricesDto request
+        );
+
+        /// <summary>
         /// 更新订单头信息
         /// </summary>
         Task<ApiResponse<bool>> UpdateOrderHeaderAsync(UpdateOrderHeaderDto request);

@@ -4429,6 +4429,136 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<RefreshStoreOrderImportPricesResultDto>> RefreshOrderLineImportPricesAsync(
+            RefreshStoreOrderImportPricesDto request
+        )
+        {
+            try
+            {
+                var orderGuid = request.OrderGUID?.Trim();
+                if (string.IsNullOrWhiteSpace(orderGuid))
+                {
+                    return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                    {
+                        Success = false,
+                        Message = "OrderGUID is required",
+                    };
+                }
+
+                var orderExists = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
+                    .AnyAsync();
+                if (!orderExists)
+                {
+                    return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                    {
+                        Success = false,
+                        Message = "Order not found",
+                    };
+                }
+
+                var detailGuids = (request.DetailGUIDs ?? new List<string>())
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Select(item => item.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var detailQuery = _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted);
+                if (detailGuids.Count > 0)
+                {
+                    detailQuery = detailQuery.Where(d => detailGuids.Contains(d.DetailGUID));
+                }
+
+                var details = await detailQuery.ToListAsync();
+                if (details.Count == 0)
+                {
+                    return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                    {
+                        Success = true,
+                        Data = new RefreshStoreOrderImportPricesResultDto(),
+                    };
+                }
+
+                var productCodes = details
+                    .Select(item => item.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var warehousePrices = productCodes.Count == 0
+                    ? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                    : (await _db.Queryable<WarehouseProduct>()
+                        .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
+                        .Select(wp => new { wp.ProductCode, wp.ImportPrice })
+                        .ToListAsync())
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .ToDictionary(
+                        item => item.ProductCode,
+                        item => item.ImportPrice ?? 0,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                var now = DateTime.Now;
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var result = new RefreshStoreOrderImportPricesResultDto();
+                var changedDetails = new List<WareHouseOrderDetails>();
+
+                foreach (var detail in details)
+                {
+                    if (
+                        string.IsNullOrWhiteSpace(detail.ProductCode)
+                        || !warehousePrices.TryGetValue(detail.ProductCode, out var warehouseImportPrice)
+                        || warehouseImportPrice <= 0
+                    )
+                    {
+                        result.SkippedCount += 1;
+                        result.MissingWarehousePriceCount += 1;
+                        continue;
+                    }
+
+                    var expectedImportAmount = (detail.AllocQuantity ?? 0) * warehouseImportPrice;
+                    var importPriceMatches = detail.ImportPrice.HasValue && detail.ImportPrice.Value == warehouseImportPrice;
+                    var importAmountMatches = detail.ImportAmount.HasValue && detail.ImportAmount.Value == expectedImportAmount;
+                    if (importPriceMatches && importAmountMatches)
+                    {
+                        result.UnchangedCount += 1;
+                        continue;
+                    }
+
+                    // 受控地从仓库商品表回填订单明细进口价；即使价格相同，也要校正历史不准的进口金额。
+                    detail.ImportPrice = warehouseImportPrice;
+                    detail.ImportAmount = expectedImportAmount;
+                    detail.UpdatedAt = now;
+                    detail.UpdatedBy = currentUser;
+                    changedDetails.Add(detail);
+                }
+
+                if (changedDetails.Count > 0)
+                {
+                    await _db.Updateable(changedDetails).ExecuteCommandAsync();
+                    await UpdateOrderTotalAsync(orderGuid);
+                }
+
+                result.UpdatedCount = changedDetails.Count;
+                return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RefreshOrderLineImportPricesAsync failed");
+                return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
         public async Task<ApiResponse<bool>> UpdateOrderHeaderAsync(UpdateOrderHeaderDto request)
         {
             try

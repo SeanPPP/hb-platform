@@ -8,6 +8,7 @@ import {
   getStoreOrderProducts,
   getStoreOrderInvoiceEmailJob,
   getStoreOrderPasteReplaceJob,
+  refreshStoreOrderImportPrices,
   sendStoreOrderInvoiceEmail,
   translateStoreOrderInvoiceEmailText,
   updateStoreOrderStatus,
@@ -75,6 +76,95 @@ try {
       },
     ],
     '未匹配分店聚合接口应保留后端分组数据',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          updatedCount: 2,
+          unchangedCount: 1,
+          skippedCount: 1,
+          missingWarehousePriceCount: 1,
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await refreshStoreOrderImportPrices({
+    orderGUID: 'order-1',
+    detailGUIDs: ['detail-1', 'detail-2'],
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/line/refresh-import-prices', '更新进货价接口路径应保持一致')
+  assertEqual(capturedMethod, 'POST', '更新进货价接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      detailGUIDs: ['detail-1', 'detail-2'],
+    },
+    '有选中行时应把明细 GUID 列表传给后端',
+  )
+  assertDeepEqual(
+    result,
+    {
+      updatedCount: 2,
+      unchangedCount: 1,
+      skippedCount: 1,
+      missingWarehousePriceCount: 1,
+    },
+    '更新进货价结果应归一化统计字段',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {},
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await refreshStoreOrderImportPrices({
+    orderGUID: 'order-1',
+  })
+
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+    },
+    '没有选中行时应只发送订单 GUID，让后端按整单刷新',
   )
 } finally {
   globalThis.fetch = originalFetch

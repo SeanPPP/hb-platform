@@ -309,6 +309,26 @@ async function main() {
   })
   if (detailBulkSaveFailure) failures.push(detailBulkSaveFailure)
 
+  const detailRefreshImportPriceFailure = await runTest('详情页应允许仓库管理员二次确认后从仓库表更新进货价', () => {
+    assert(detailSource.includes('refreshStoreOrderImportPrices'), '详情页应调用更新进货价专用服务')
+    assert(detailSource.includes('handleRefreshImportPricesFromWarehouse'), '详情页缺少更新进货价处理函数')
+    assert(detailSource.includes("t('storeOrders.detail.refreshImportPrices'"), '详情页缺少更新进货价按钮文案')
+    assert(
+      detailSource.includes('detailGUIDs: isSelectedScope ? targetDetailGUIDs : undefined'),
+      '有选中行时应传明细 GUID，未选中时应交给后端整单刷新',
+    )
+    assert(
+      detailSource.includes("t('storeOrders.detail.refreshImportPricesSelectedContent'") &&
+        detailSource.includes("t('storeOrders.detail.refreshImportPricesWholeOrderContent'"),
+      '更新进货价二次确认应区分选中行和整单范围',
+    )
+    assert(
+      detailSource.includes('disabled={!detail || refreshImportPriceLoading}'),
+      '更新进货价按钮不应因为 isReadonlyOrder 禁用，已完成订单也应允许管理员/仓库管理员修正',
+    )
+  })
+  if (detailRefreshImportPriceFailure) failures.push(detailRefreshImportPriceFailure)
+
   const warehouseManagerActionFailure = await runTest('仓库员工不应看到订货管理和明细功能按钮', () => {
     assert(
       storeOrdersSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),

@@ -9,6 +9,7 @@ import {
   PrinterOutlined,
   SaveOutlined,
   SearchOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import {
   Alert,
@@ -62,6 +63,7 @@ import {
   getStoreOrderPasteReplaceJob,
   getStoreOrderProducts,
   removeStoreOrderLine,
+  refreshStoreOrderImportPrices,
   startPickingStoreOrder,
   updateStoreOrderHeader,
   updateStoreOrderLine,
@@ -768,6 +770,7 @@ export default function StoreOrderDetailPage() {
   const [pastePreviewFilter, setPastePreviewFilter] = useState<StoreOrderPastePreviewFilter>('all')
   const [parsingPaste, setParsingPaste] = useState(false)
   const [submittingPaste, setSubmittingPaste] = useState(false)
+  const [refreshImportPriceLoading, setRefreshImportPriceLoading] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
   const [detailPageSize, setDetailPageSize] = useState(50)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
@@ -1568,6 +1571,59 @@ export default function StoreOrderDetailPage() {
     } finally {
       setBatchLoading(false)
     }
+  }
+
+  const handleRefreshImportPricesFromWarehouse = () => {
+    if (!detail || !canUseWarehouseManagerActions) {
+      return
+    }
+
+    const targetDetailGUIDs = selectedLineKeys.map(String).filter(Boolean)
+    const isSelectedScope = targetDetailGUIDs.length > 0
+    const selectedCount = targetDetailGUIDs.length
+
+    Modal.confirm({
+      title: t('storeOrders.detail.refreshImportPricesTitle'),
+      content: (
+        <Space direction="vertical" size={8}>
+          <Typography.Text>
+            {isSelectedScope
+              ? t('storeOrders.detail.refreshImportPricesSelectedContent', { count: selectedCount })
+              : t('storeOrders.detail.refreshImportPricesWholeOrderContent')}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {t('storeOrders.detail.refreshImportPricesWarning')}
+          </Typography.Text>
+        </Space>
+      ),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setRefreshImportPriceLoading(true)
+        try {
+          const result = await refreshStoreOrderImportPrices({
+            orderGUID: detail.orderGUID,
+            detailGUIDs: isSelectedScope ? targetDetailGUIDs : undefined,
+          })
+          message.success(
+            t('storeOrders.detail.refreshImportPricesSuccess', {
+              updated: result.updatedCount,
+              unchanged: result.unchangedCount,
+              skipped: result.skippedCount,
+              missing: result.missingWarehousePriceCount,
+            }),
+          )
+          setSelectedLineKeys([])
+          setEditingRows({})
+          await loadDetail(false)
+        } catch (error) {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('storeOrders.detail.refreshImportPricesFailed'))
+        } finally {
+          setRefreshImportPriceLoading(false)
+        }
+      },
+    })
   }
 
   const resetPasteState = (targetField: StoreOrderPasteTargetField = 'allocQuantity') => {
@@ -2461,6 +2517,14 @@ export default function StoreOrderDetailPage() {
                       onClick={() => void handleSaveEditedLines()}
                     >
                       {t('storeOrders.detail.saveEditedLines')}
+                    </Button>
+                    <Button
+                      icon={<SyncOutlined />}
+                      loading={refreshImportPriceLoading}
+                      disabled={!detail || refreshImportPriceLoading}
+                      onClick={handleRefreshImportPricesFromWarehouse}
+                    >
+                      {t('storeOrders.detail.refreshImportPrices')}
                     </Button>
                     <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                       {t('storeOrders.batchModify')}

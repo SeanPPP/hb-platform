@@ -426,6 +426,18 @@ export interface BatchUpdateStoreOrderLinePayload {
   }>
 }
 
+export interface RefreshStoreOrderImportPricesPayload {
+  orderGUID: string
+  detailGUIDs?: string[]
+}
+
+export interface RefreshStoreOrderImportPricesResult {
+  updatedCount: number
+  unchangedCount: number
+  skippedCount: number
+  missingWarehousePriceCount: number
+}
+
 export interface UpdateStoreOrderProductStatusPayload {
   productCode: string
   isActive: boolean
