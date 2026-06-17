@@ -237,7 +237,7 @@
       "headerSaveAndCostsRecalculated": "货柜信息已保存，已重算 {{count}} 条明细成本",
       "headerSavedCostsRecalculateFailed": "货柜信息已保存，但成本重算失败：{{message}}",
       "headerSaveFailed": "保存货柜信息失败",
-      "columnOrderReset": "列顺序已恢复默认",
+      "columnOrderReset": "列设置已恢复默认",
       "enterFloatRate": "请输入调整浮率",
       "costRecalculateMissingTitle": "无法重算成本",
       "missingExchangeRateForCost": "缺少汇率，无法重算成本",

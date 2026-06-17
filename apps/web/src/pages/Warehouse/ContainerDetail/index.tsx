@@ -54,7 +54,7 @@ import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -337,6 +337,9 @@ const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
 const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
 const CONTAINER_DETAIL_PAGE_SIZE = 50
 const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v3'
+const CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.containerDetail.columnWidths.v1'
+const CONTAINER_DETAIL_MIN_COLUMN_WIDTH = 48
+const CONTAINER_DETAIL_MAX_COLUMN_WIDTH = 420
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
 const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
@@ -354,6 +357,7 @@ const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
 }
 
 type ContainerDetailEditableColumnKey = typeof CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS[number]
+type ContainerDetailColumnWidthMap = Partial<Record<ContainerDetailTableColumnKey, number>>
 type ContainerDetailFocusableCell = {
   focus: (options?: FocusOptions) => void
   select?: () => void
@@ -368,6 +372,32 @@ const containerDetailEditableDirectionByKey: Partial<Record<string, ContainerDet
 
 function buildContainerDetailEditableCellKey(rowKeyValue: string, columnKey: ContainerDetailEditableColumnKey) {
   return `${rowKeyValue}:${columnKey}`
+}
+
+function clampContainerDetailColumnWidth(width: number) {
+  return Math.max(CONTAINER_DETAIL_MIN_COLUMN_WIDTH, Math.min(CONTAINER_DETAIL_MAX_COLUMN_WIDTH, Math.round(width)))
+}
+
+function normalizeContainerDetailColumnWidths(value: unknown, allowedKeys: readonly ContainerDetailTableColumnKey[]): ContainerDetailColumnWidthMap {
+  if (!value || typeof value !== 'object') {
+    return {}
+  }
+
+  const allowedSet = new Set(allowedKeys)
+  const nextWidths: ContainerDetailColumnWidthMap = {}
+  Object.entries(value as Record<string, unknown>).forEach(([key, width]) => {
+    if (!allowedSet.has(key as ContainerDetailTableColumnKey) || typeof width !== 'number' || !Number.isFinite(width)) {
+      return
+    }
+    nextWidths[key as ContainerDetailTableColumnKey] = clampContainerDetailColumnWidth(width)
+  })
+  return nextWidths
+}
+
+function areContainerDetailColumnWidthsEqual(a: ContainerDetailColumnWidthMap, b: ContainerDetailColumnWidthMap) {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  return aKeys.length === bKeys.length && aKeys.every((key) => a[key as ContainerDetailTableColumnKey] === b[key as ContainerDetailTableColumnKey])
 }
 
 function getContainerDetailViewport() {
@@ -405,10 +435,13 @@ function useContainerDetailViewport() {
 
 interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
   'data-column-key'?: string
+  'data-column-width'?: number
+  onColumnResizeStart?: (columnKey: ContainerDetailTableColumnKey, width: number, event: ReactPointerEvent<HTMLSpanElement>) => void
 }
 
-function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+function DraggableHeaderCell({ children, style, onColumnResizeStart, ...props }: DraggableHeaderCellProps) {
   const columnKey = props['data-column-key']
+  const columnWidth = props['data-column-width']
   const {
     attributes,
     listeners,
@@ -429,16 +462,26 @@ function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellP
     ...style,
     transform: CSS.Translate.toString(transform),
     transition,
-    cursor: 'move',
+    position: 'relative',
     zIndex: isDragging ? 3 : style?.zIndex,
     opacity: isDragging ? 0.85 : style?.opacity,
   }
 
   return (
-    <th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>
-      <div className="container-detail-draggable-header">
+    <th ref={setNodeRef} style={headerStyle} {...props}>
+      <div className="container-detail-draggable-header" {...attributes} {...listeners}>
         {children}
       </div>
+      <span
+        className="container-detail-column-resize-handle"
+        aria-hidden="true"
+        onPointerDown={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (!columnKey || typeof columnWidth !== 'number') return
+          onColumnResizeStart?.(columnKey as ContainerDetailTableColumnKey, columnWidth, event)
+        }}
+      />
     </th>
   )
 }
@@ -480,6 +523,7 @@ export default function ContainerDetailPage() {
   // 默认按货号升序展示，保证每次打开货柜明细时列表顺序稳定。
   const [sortState, setSortState] = useState<ContainerDetailSortState>(DEFAULT_CONTAINER_DETAIL_SORT)
   const [columnOrder, setColumnOrder] = useState<ContainerDetailTableColumnKey[]>([])
+  const [columnWidths, setColumnWidths] = useState<ContainerDetailColumnWidthMap>({})
   const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false)
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
@@ -2889,6 +2933,8 @@ export default function ContainerDetailPage() {
 
   const draggableColumnKeys = baseColumns.map((column) => String(column.key) as ContainerDetailTableColumnKey)
   const isColumnOrderCustomized = isContainerDetailColumnOrderCustomized(columnOrder, draggableColumnKeys)
+  const isColumnWidthCustomized = Object.keys(columnWidths).length > 0
+  const isColumnSettingsCustomized = isColumnOrderCustomized || isColumnWidthCustomized
 
   useEffect(() => {
     setColumnOrder((current) => {
@@ -2911,6 +2957,27 @@ export default function ContainerDetailPage() {
     })
   }, [draggableColumnKeys.join('|')])
 
+  useEffect(() => {
+    setColumnWidths((current) => {
+      let savedWidths: unknown = null
+      if (!Object.keys(current).length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY)
+          savedWidths = raw ? JSON.parse(raw) : null
+        } catch {
+          savedWidths = null
+        }
+      }
+
+      // 列宽持久化只保留当前业务列，避免旧列或临时列污染新表头布局。
+      const nextWidths = normalizeContainerDetailColumnWidths(Object.keys(current).length ? current : savedWidths, draggableColumnKeys)
+      if (areContainerDetailColumnWidthsEqual(current, nextWidths)) {
+        return current
+      }
+      return nextWidths
+    })
+  }, [draggableColumnKeys.join('|')])
+
   const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) return
     setColumnOrder((current) => {
@@ -2924,14 +2991,55 @@ export default function ContainerDetailPage() {
     })
   }
 
+  const persistColumnWidths = (nextWidths: ContainerDetailColumnWidthMap) => {
+    try {
+      localStorage.setItem(CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(nextWidths))
+    } catch {
+      // localStorage 不可用时不影响当前页面内拖拽列宽。
+    }
+  }
+
+  const handleColumnResizeStart = (columnKey: ContainerDetailTableColumnKey, startWidth: number, event: ReactPointerEvent<HTMLSpanElement>) => {
+    const startX = event.clientX
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      const nextWidth = clampContainerDetailColumnWidth(startWidth + pointerEvent.clientX - startX)
+      setColumnWidths((current) => {
+        const nextWidths = { ...current, [columnKey]: nextWidth }
+        persistColumnWidths(nextWidths)
+        return nextWidths
+      })
+    }
+
+    const stopResize = () => {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', stopResize)
+      document.removeEventListener('pointercancel', stopResize)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+
+    // 使用 document 级监听，指针拖出表头区域时仍能连续调整列宽。
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', stopResize, { once: true })
+    document.addEventListener('pointercancel', stopResize, { once: true })
+  }
+
   const resetColumnOrder = () => {
     setColumnOrder(draggableColumnKeys)
+    setColumnWidths({})
     try {
       localStorage.removeItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY)
+      localStorage.removeItem(CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY)
     } catch {
-      // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+      // localStorage 不可用时仍恢复当前页面内的默认列设置。
     }
-    message.success(t('containers.messages.columnOrderReset', '列顺序已恢复默认'))
+    message.success(t('containers.messages.columnOrderReset', '列设置已恢复默认'))
   }
 
   const orderedBaseColumns = useMemo(() => {
@@ -2948,10 +3056,24 @@ export default function ContainerDetailPage() {
     : orderedBaseColumns
   ).map((column) => ({
     ...column,
-    onHeaderCell: () => ({
-      'data-column-key': String(column.key),
-    }),
+    width: columnWidths[String(column.key) as ContainerDetailTableColumnKey] ?? column.width,
+    onHeaderCell: () => {
+      const columnKey = String(column.key) as ContainerDetailTableColumnKey
+      const width = columnWidths[columnKey] ?? column.width
+      return {
+        'data-column-key': columnKey,
+        'data-column-width': typeof width === 'number' ? width : CONTAINER_DETAIL_MIN_COLUMN_WIDTH,
+        onColumnResizeStart: handleColumnResizeStart,
+      } as DraggableHeaderCellProps
+    },
   })) as ColumnsType<ContainerDetail>
+  const tableScrollX = Math.max(
+    CONTAINER_DETAIL_TABLE_SCROLL_X,
+    CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH + columns.reduce((total, column) => {
+      const width = typeof column.width === 'number' ? column.width : Number(column.width)
+      return total + (Number.isFinite(width) ? width : 0)
+    }, 0),
+  )
   const isSmallScreen = viewport.isSmallPortrait || viewport.isSmallLandscape
   const tableScrollY = viewport.isSmallLandscape
     ? Math.max(180, Math.min(CONTAINER_DETAIL_TABLE_SCROLL_Y, viewport.height - 208))
@@ -3177,7 +3299,7 @@ export default function ContainerDetailPage() {
                       >
                         <Button>{t('containers.actions.exportOptions', '导出选项')}</Button>
                       </Dropdown>
-                      {isColumnOrderCustomized ? (
+                      {isColumnSettingsCustomized ? (
                         <Button icon={<ReloadOutlined />} onClick={resetColumnOrder}>
                           {t('containers.actions.resetColumns', '重置列')}
                         </Button>
@@ -3294,7 +3416,7 @@ export default function ContainerDetailPage() {
                     }}
                     pagination={false}
                     virtual
-                    scroll={{ x: CONTAINER_DETAIL_TABLE_SCROLL_X, y: tableScrollY }}
+                    scroll={{ x: tableScrollX, y: tableScrollY }}
                     onChange={handleTableChange}
                     onScroll={handleDetailTableScroll}
                     footer={() => (

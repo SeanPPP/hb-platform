@@ -1213,6 +1213,7 @@ const requiredContainerI18nKeys = [
   'containers.messages.missingMatchableProductIdentity',
   'containers.messages.noDomesticDataToUpdate',
   'containers.messages.domesticDataMatched',
+  'containers.messages.columnOrderReset',
   'containers.messages.matchDomesticDataFailed',
   'containers.messages.rowCategoryUpdated',
   'containers.messages.noExistingLocalProductsToPushHq',
@@ -1265,8 +1266,8 @@ assertDeepEqual(
     'Unit Volume',
     'Total Volume',
     'INNER',
-    'Domestic Price',
-    'Last Purchase Price',
+    'RMB Cost',
+    'Last Cost',
     'Last OEM Price',
     'OEM Price',
   ],
@@ -2942,12 +2943,46 @@ assertEqual(
   '货柜明细列顺序应保存到 v3 localStorage key，覆盖旧默认顺序并兼容新增列',
 )
 assertEqual(
-  pageSource.includes("containers.actions.resetColumns") &&
-    pageSource.includes('isContainerDetailColumnOrderCustomized(columnOrder, draggableColumnKeys)') &&
-    pageSource.includes('setColumnOrder(draggableColumnKeys)') &&
-    pageSource.includes('localStorage.removeItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY)'),
+  pageSource.includes("const CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.containerDetail.columnWidths.v1'") &&
+    pageSource.includes('const [columnWidths, setColumnWidths]') &&
+    pageSource.includes('normalizeContainerDetailColumnWidths(') &&
+    pageSource.includes('localStorage.setItem(CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY'),
   true,
-  '货柜明细手动拖拽列后应提供重置列按钮并清除本地列顺序',
+  '货柜明细列宽应独立保存到 v1 localStorage key，并按当前业务列过滤旧宽度',
+)
+assertEqual(
+  pageSource.includes('data-column-width') &&
+    pageSource.includes('onColumnResizeStart: handleColumnResizeStart') &&
+    pageSource.includes('className="container-detail-column-resize-handle"') &&
+    pageSource.includes('event.stopPropagation()') &&
+    pageSource.includes('<div className="container-detail-draggable-header" {...attributes} {...listeners}>') &&
+    !pageSource.includes('<th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>'),
+  true,
+  '货柜明细列宽拖拽应使用独立表头手柄，并避免触发表头排序拖拽',
+)
+assertEqual(
+  pageSource.includes('const tableScrollX = Math.max(') &&
+    pageSource.includes('CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH + columns.reduce') &&
+    pageSource.includes('scroll={{ x: tableScrollX, y: tableScrollY }}'),
+  true,
+  '货柜明细横向滚动宽度应跟随当前业务列宽总和更新',
+)
+assertEqual(
+  pageStyleSource.includes('.container-detail-column-resize-handle') &&
+    pageStyleSource.includes('cursor: col-resize') &&
+    pageStyleSource.includes('touch-action: none'),
+  true,
+  '货柜明细列宽拖拽手柄应有独立命中区域和 col-resize 光标',
+)
+assertEqual(
+  pageSource.includes("containers.actions.resetColumns") &&
+    pageSource.includes('const isColumnSettingsCustomized = isColumnOrderCustomized || isColumnWidthCustomized') &&
+    pageSource.includes('setColumnOrder(draggableColumnKeys)') &&
+    pageSource.includes('setColumnWidths({})') &&
+    pageSource.includes('localStorage.removeItem(CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY)') &&
+    pageSource.includes('localStorage.removeItem(CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY)'),
+  true,
+  '货柜明细手动拖拽列或列宽后应提供重置列按钮并清除本地列设置',
 )
 assertEqual(
   pageSource.includes('const draggableColumnKeys = baseColumns.map((column) => String(column.key) as ContainerDetailTableColumnKey)') &&
