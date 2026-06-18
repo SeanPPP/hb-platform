@@ -136,6 +136,7 @@ import {
   getContainerDetailCostMissingFields,
   getContainerDetailBatchCategoryProductCodes,
   buildContainerDetailTranslationUpdates,
+  calculateContainerDetailTableScrollY,
   countContainerDetailInvalidTranslationResults,
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingCreateProductRetailPrice,
@@ -573,6 +574,13 @@ export default function ContainerDetailPage() {
     saveSetCodePrices,
   } = useContainerSetCode({ canEditContainer: access.canEditContainer })
   const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)
+  const [gridContentElement, setGridContentElement] = useState<HTMLDivElement | null>(null)
+  const [toolbarElement, setToolbarElement] = useState<HTMLDivElement | null>(null)
+  const [tableRegionElement, setTableRegionElement] = useState<HTMLDivElement | null>(null)
+  const [detailLayoutMetrics, setDetailLayoutMetrics] = useState({
+    toolbarHeight: 0,
+    tableChromeHeight: 0,
+  })
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
   const submitContainerLoadingRef = useRef(false)
@@ -603,6 +611,59 @@ export default function ContainerDetailPage() {
   )
 
   useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
+
+  useEffect(() => {
+    let frameId: number | null = null
+
+    const measureDetailLayout = () => {
+      const toolbarHeight = Math.ceil(toolbarElement?.getBoundingClientRect().height ?? 0)
+      const tableHeaderHeight = Math.ceil(tableRegionElement?.querySelector('.ant-table-thead')?.getBoundingClientRect().height ?? 0)
+      const tableFooterHeight = Math.ceil(tableRegionElement?.querySelector('.ant-table-footer')?.getBoundingClientRect().height ?? 0)
+      const tableBodyElement = tableRegionElement?.querySelector('.ant-table-body') as HTMLElement | null
+      const horizontalScrollbarHeight = tableBodyElement ? Math.max(0, tableBodyElement.offsetHeight - tableBodyElement.clientHeight) : 0
+      const tableChromeHeight = tableHeaderHeight + tableFooterHeight + horizontalScrollbarHeight
+
+      setDetailLayoutMetrics((current) => {
+        if (
+          current.toolbarHeight === toolbarHeight &&
+          current.tableChromeHeight === tableChromeHeight
+        ) {
+          return current
+        }
+
+        return { toolbarHeight, tableChromeHeight }
+      })
+    }
+
+    const scheduleMeasure = () => {
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      frameId = window.requestAnimationFrame(measureDetailLayout)
+    }
+
+    measureDetailLayout()
+    scheduleMeasure()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', scheduleMeasure)
+      return () => {
+        if (frameId != null) window.cancelAnimationFrame(frameId)
+        window.removeEventListener('resize', scheduleMeasure)
+      }
+    }
+
+    const observer = new ResizeObserver(scheduleMeasure)
+    if (gridContentElement) observer.observe(gridContentElement)
+    if (toolbarElement) observer.observe(toolbarElement)
+    if (tableRegionElement) observer.observe(tableRegionElement)
+    window.addEventListener('resize', scheduleMeasure)
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId)
+      observer.disconnect()
+      window.removeEventListener('resize', scheduleMeasure)
+    }
+  }, [gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress])
 
   useEffect(() => {
     setCategoryLoading(true)
@@ -3279,11 +3340,14 @@ export default function ContainerDetailPage() {
     }, 0),
   )
   const isSmallScreen = viewport.isSmallPortrait || viewport.isSmallLandscape
-  const tableScrollY = viewport.isSmallLandscape
-    ? Math.max(180, Math.min(CONTAINER_DETAIL_TABLE_SCROLL_Y, viewport.height - 208))
-    : viewport.isSmallPortrait
-      ? Math.max(320, Math.min(CONTAINER_DETAIL_TABLE_SCROLL_Y, viewport.height - 260))
-      : CONTAINER_DETAIL_TABLE_SCROLL_Y
+  const tableScrollY = calculateContainerDetailTableScrollY({
+    viewportHeight: viewport.height,
+    toolbarHeight: detailLayoutMetrics.toolbarHeight,
+    tableChromeHeight: detailLayoutMetrics.tableChromeHeight,
+    isSmallLandscape: viewport.isSmallLandscape,
+    isSmallPortrait: viewport.isSmallPortrait,
+    maxScrollY: CONTAINER_DETAIL_TABLE_SCROLL_Y,
+  })
   const pageClassName = [
     'container-detail-page',
     isSmallScreen ? 'container-detail-page-small' : '',
@@ -3434,35 +3498,37 @@ export default function ContainerDetailPage() {
             </Descriptions>
           </Card>
 
-          <Card>
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <div className="container-detail-sticky-controls">
-                <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                  <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
-                    <Space wrap>
-                      <Input value={itemNumberFilter} allowClear prefix={<SearchOutlined />} placeholder={t('containers.placeholders.filterItemNumber')} style={{ width: 180 }} onChange={(event) => setItemNumberFilter(event.target.value)} />
+          <Card className="container-detail-grid-card">
+            <div ref={setGridContentElement} className="container-detail-grid-content">
+              <div ref={setToolbarElement} className="container-detail-sticky-controls">
+                <div className="container-detail-toolbar">
+                  <div className="container-detail-filter-row">
+                    <Space wrap size={[8, 6]} className="container-detail-filter-group">
+                      <Input size="small" value={itemNumberFilter} allowClear prefix={<SearchOutlined />} placeholder={t('containers.placeholders.filterItemNumber')} className="container-detail-filter-input" onChange={(event) => setItemNumberFilter(event.target.value)} />
                       <Select
+                        size="small"
                         mode="multiple"
                         value={selectedTagFilters}
                         allowClear
                         maxTagCount="responsive"
                         placeholder={t('containers.filters.allTags')}
-                        style={{ width: 220 }}
+                        className="container-detail-filter-select"
                         onChange={setTagFiltersFromSelect}
                         options={tagSelectOptions}
                       />
                       <Select
+                        size="small"
                         value={categoryFilterValue}
                         allowClear
                         showSearch
                         optionFilterProp="label"
                         loading={categoryLoading}
                         placeholder={t('containers.filters.allCategories', '全部分类')}
-                        style={{ width: 220 }}
+                        className="container-detail-filter-select"
                         options={categoryFilterOptions}
                         onChange={(value) => setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)}
                       />
-                      <Typography.Text type="secondary">
+                      <Typography.Text type="secondary" className="container-detail-loaded-count">
                         {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
                           loaded: rows.length,
                           total: detailItemsTotal,
@@ -3471,14 +3537,14 @@ export default function ContainerDetailPage() {
                         {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
                       </Typography.Text>
                       {hasActiveColumnState ? (
-                        <Button size="small" onClick={() => {
+                        <Button size="small" className="container-detail-compact-button" onClick={() => {
                           setColumnFilters({})
                           setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
                         }}>
                           {t('containers.actions.clearColumnFilters', '清空列过滤')}
                         </Button>
                       ) : null}
-                      <Space size={6}>
+                      <Space size={6} className="container-detail-readonly-toggle">
                         <Typography.Text type="secondary">{t('containers.actions.showReadonlyOemPrice', '只读贴牌价格')}</Typography.Text>
                         <Switch
                           size="small"
@@ -3487,8 +3553,11 @@ export default function ContainerDetailPage() {
                         />
                       </Space>
                     </Space>
-                    <Space wrap>
-                      <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>
+                  </div>
+
+                  <div className="container-detail-action-row">
+                    <Space wrap size={[6, 6]} className="container-detail-action-group">
+                      <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>
                         {t('common.export')}
                       </Button>
                       <Dropdown
@@ -3501,21 +3570,22 @@ export default function ContainerDetailPage() {
                           },
                         }}
                       >
-                        <Button>{t('containers.actions.exportOptions', '导出选项')}</Button>
+                        <Button size="small">{t('containers.actions.exportOptions', '导出选项')}</Button>
                       </Dropdown>
                       {isColumnSettingsCustomized ? (
-                        <Button icon={<ReloadOutlined />} onClick={resetColumnOrder}>
+                        <Button size="small" icon={<ReloadOutlined />} onClick={resetColumnOrder}>
                           {t('containers.actions.resetColumns', '重置列')}
                         </Button>
                       ) : null}
                       {access.canEditContainer ? (
-                        <Button loading={hqTranslating} onClick={() => void translateHqData()}>
+                        <Button size="small" loading={hqTranslating} onClick={() => void translateHqData()}>
                           {t('containers.actions.translateHqData')}
                         </Button>
                       ) : null}
                       {canSubmitContainer ? (
                         <Tooltip title={pendingDetailSaveCount > 0 || pendingPricePatchCount > 0 ? t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/贴牌价格') : ''}>
                           <Button
+                            size="small"
                             type="primary"
                             icon={<CheckCircleOutlined />}
                             loading={submitContainerLoading}
@@ -3529,6 +3599,7 @@ export default function ContainerDetailPage() {
                       {access.canManagePosProducts ? (
                         <Tooltip title={!selectedRowKeys.length ? t('containers.messages.selectProducts') : ''}>
                           <Button
+                            size="small"
                             icon={<CloudUploadOutlined />}
                             loading={pushToHqLoading}
                             disabled={!selectedRowKeys.length || pushToHqLoading}
@@ -3567,25 +3638,26 @@ export default function ContainerDetailPage() {
                             },
                           }}
                         >
-                          <Button>{t('containers.actions.batchActions')}</Button>
+                          <Button size="small">{t('containers.actions.batchActions')}</Button>
                         </Dropdown>
                       ) : null}
-                      {access.canDeleteContainer ? <Button danger icon={<DeleteOutlined />} onClick={deleteSelected}>{t('containers.actions.deleteDetails')}</Button> : null}
+                      {access.canDeleteContainer ? <Button size="small" danger icon={<DeleteOutlined />} onClick={deleteSelected}>{t('containers.actions.deleteDetails')}</Button> : null}
                     </Space>
-                  </Space>
+                  </div>
 
                   {access.canEditContainer ? (
-                    <Space wrap>
-                      <InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} controls={false} onChange={setBatchFloatRate} />
-                      <Button onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
-                      <Button loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>{t('containers.actions.recalculateCosts')}</Button>
+                    <Space wrap size={[6, 6]} className="container-detail-bulk-row">
+                      <InputNumber size="small" className="container-detail-bulk-input" value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} controls={false} onChange={setBatchFloatRate} />
+                      <Button size="small" onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
+                      <Button size="small" loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>{t('containers.actions.recalculateCosts')}</Button>
                       {canBackfillLastPrices ? (
-                        <Button loading={backfillLastPricesLoading} onClick={() => void handleBackfillLastPrices()}>{t('containers.actions.backfillLastPrices', '回填上次价格')}</Button>
+                        <Button size="small" loading={backfillLastPricesLoading} onClick={() => void handleBackfillLastPrices()}>{t('containers.actions.backfillLastPrices', '回填上次价格')}</Button>
                       ) : null}
-                      <Button loading={matchDomesticDataLoading} onClick={() => void handleMatchDomesticData()}>{t('containers.actions.matchDomesticData')}</Button>
-                      <InputNumber value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchImportPrice} />
-                      <InputNumber value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchOemPrice} />
+                      <Button size="small" loading={matchDomesticDataLoading} onClick={() => void handleMatchDomesticData()}>{t('containers.actions.matchDomesticData')}</Button>
+                      <InputNumber size="small" className="container-detail-bulk-input" value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchImportPrice} />
+                      <InputNumber size="small" className="container-detail-bulk-input" value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchOemPrice} />
                       <Button
+                        size="small"
                         icon={<SaveOutlined />}
                         loading={priceDetailsSaving}
                         disabled={!pendingPricePatchCount || priceDetailsSaving}
@@ -3593,8 +3665,8 @@ export default function ContainerDetailPage() {
                       >
                         {t('containers.actions.saveDetails', '保存明细')}{pendingPricePatchCount ? ` (${pendingPricePatchCount})` : ''}
                       </Button>
-                      <Button onClick={() => void applyPrices()}>{t('containers.actions.applyPrices')}</Button>
-                      <Switch checkedChildren={t('containers.text.selectedFirst')} unCheckedChildren={t('containers.text.allDisplayed')} checked={selectedRowKeys.length > 0} disabled />
+                      <Button size="small" onClick={() => void applyPrices()}>{t('containers.actions.applyPrices')}</Button>
+                      <Switch size="small" checkedChildren={t('containers.text.selectedFirst')} unCheckedChildren={t('containers.text.allDisplayed')} checked={selectedRowKeys.length > 0} disabled />
                     </Space>
                   ) : null}
 
@@ -3608,44 +3680,46 @@ export default function ContainerDetailPage() {
                   />
 
                   {exporting ? <Progress percent={exportProgress} size="small" /> : null}
-                </Space>
+                </div>
               </div>
 
-              <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
-                <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-                  <Table
-                    key={`${containerGuid}-${detailTableRenderKey}`}
-                    ref={detailTableRef}
-                    className="container-detail-table"
-                    rowKey={rowKey}
-                    rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}
-                    size="small"
-                    components={{ header: { cell: DraggableHeaderCell } }}
-                    columns={columns}
-                    dataSource={displayRows}
-                    loading={detailLoading && rows.length === 0}
-                    rowSelection={{
-                      selectedRowKeys,
-                      onChange: setSelectedRowKeys,
-                      fixed: !viewport.isSmallPortrait,
-                      // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
-                      columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
-                    }}
-                    pagination={false}
-                    virtual
-                    scroll={{ x: tableScrollX, y: tableScrollY }}
-                    onChange={handleTableChange}
-                    onScroll={handleDetailTableScroll}
-                    footer={() => (
-                      <Space direction="vertical" size={2}>
-                        <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>
-                        <Typography.Text type="secondary">{t('containers.formulas.importPrice', '进口价格 = ((国内价格 ÷ 汇率 + 运输成本) × 调整浮率 × 10) ÷ 11')}</Typography.Text>
-                      </Space>
-                    )}
-                  />
-                </SortableContext>
-              </DndContext>
-            </Space>
+              <div ref={setTableRegionElement} className="container-detail-table-region">
+                <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+                  <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
+                    <Table
+                      key={`${containerGuid}-${detailTableRenderKey}`}
+                      ref={detailTableRef}
+                      className="container-detail-table"
+                      rowKey={rowKey}
+                      rowClassName={(_, index) => index % 2 === 1 ? 'container-detail-row-striped' : ''}
+                      size="small"
+                      components={{ header: { cell: DraggableHeaderCell } }}
+                      columns={columns}
+                      dataSource={displayRows}
+                      loading={detailLoading && rows.length === 0}
+                      rowSelection={{
+                        selectedRowKeys,
+                        onChange: setSelectedRowKeys,
+                        fixed: !viewport.isSmallPortrait,
+                        // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
+                        columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
+                      }}
+                      pagination={false}
+                      virtual
+                      scroll={{ x: tableScrollX, y: tableScrollY }}
+                      onChange={handleTableChange}
+                      onScroll={handleDetailTableScroll}
+                      footer={() => (
+                        <Space direction="vertical" size={2}>
+                          <Typography.Text type="secondary">{t('containers.formulas.transportCost', '运输成本 = 运费 × 明细体积 ÷ 装柜数量 ÷ 总体积')}</Typography.Text>
+                          <Typography.Text type="secondary">{t('containers.formulas.importPrice', '进口价格 = ((国内价格 ÷ 汇率 + 运输成本) × 调整浮率 × 10) ÷ 11')}</Typography.Text>
+                        </Space>
+                      )}
+                    />
+                  </SortableContext>
+                </DndContext>
+              </div>
+            </div>
           </Card>
         </Space>
       </Spin>

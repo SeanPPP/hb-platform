@@ -13,6 +13,37 @@ export type ContainerDetailSortOrder = 'ascend' | 'descend'
 export const CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = '__ALL_CONTAINER_DETAIL_CATEGORIES__'
 export const CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = '__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__'
 export const DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3
+
+export interface ContainerDetailTableScrollYOptions {
+  viewportHeight: number
+  toolbarHeight: number
+  tableChromeHeight: number
+  isSmallLandscape: boolean
+  isSmallPortrait: boolean
+  maxScrollY: number
+}
+
+export function calculateContainerDetailTableScrollY({
+  viewportHeight,
+  toolbarHeight,
+  tableChromeHeight,
+  isSmallLandscape,
+  isSmallPortrait,
+  maxScrollY,
+}: ContainerDetailTableScrollYOptions) {
+  const safeViewportHeight = Number.isFinite(viewportHeight) ? viewportHeight : maxScrollY
+  const stableContentTop = isSmallLandscape ? 88 : isSmallPortrait ? 72 : 150
+  const safeToolbarHeight = Math.max(0, Number.isFinite(toolbarHeight) ? toolbarHeight : 0)
+  const safeTableChromeHeight = Math.max(0, Number.isFinite(tableChromeHeight) ? tableChromeHeight : 0)
+  const bottomInset = isSmallLandscape ? 12 : isSmallPortrait ? 88 : 24
+  const contentGap = isSmallLandscape ? 8 : isSmallPortrait ? 10 : 12
+  const hardMinScrollY = isSmallLandscape ? 96 : isSmallPortrait ? 112 : 220
+
+  // 表格高度只按稳定工作区位置计算，避免滚动时实时测量 top 导致虚拟表格反复重排。
+  const availableHeight = safeViewportHeight - stableContentTop - bottomInset - safeToolbarHeight - contentGap - safeTableChromeHeight
+  return Math.max(hardMinScrollY, Math.min(maxScrollY, availableHeight))
+}
+
 export type ContainerDetailSortField =
   | 'itemNumber'
   | 'barcode'

@@ -16,6 +16,7 @@ import {
   applyContainerDetailLoadedTextFilters,
   applyContainerDetailColumnState,
   buildContainerDetailQuery,
+  calculateContainerDetailTableScrollY,
   buildContainerDetailClearEnglishNameUpdates,
   buildContainerDetailDetectionItems,
   buildContainerDetailEnglishNameUpdates,
@@ -148,6 +149,90 @@ assertEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.find((column) => column.key === 'lastImportPrice')?.labelKey,
   'containers.fields.warehouseImportPrice',
   '上次进货价格导出列应复用表格里的 Last Purchase Price 翻译 key',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 768,
+    toolbarHeight: 128,
+    tableChromeHeight: 88,
+    isSmallLandscape: false,
+    isSmallPortrait: false,
+    maxScrollY: 620,
+  }),
+  366,
+  '桌面表格高度应扣除工具栏和表格头尾，并在顶部低于工作区时使用下限',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 1200,
+    toolbarHeight: 120,
+    tableChromeHeight: 92,
+    isSmallLandscape: false,
+    isSmallPortrait: false,
+    maxScrollY: 620,
+  }),
+  620,
+  '桌面空间充足时表格高度应保持最大上限',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 994,
+    toolbarHeight: 165,
+    tableChromeHeight: 130,
+    isSmallLandscape: false,
+    isSmallPortrait: false,
+    maxScrollY: 620,
+  }),
+  513,
+  '桌面滚动后仍应使用稳定工作区顶部计算，避免滚动中改变表格高度',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 994,
+    toolbarHeight: 226,
+    tableChromeHeight: 130,
+    isSmallLandscape: false,
+    isSmallPortrait: true,
+    maxScrollY: 620,
+  }),
+  468,
+  '窄屏滚动后仍应使用稳定工作区顶部计算，避免滚动中改变表格高度',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 994,
+    toolbarHeight: 274,
+    tableChromeHeight: 120,
+    isSmallLandscape: false,
+    isSmallPortrait: true,
+    maxScrollY: 620,
+  }),
+  430,
+  '678 宽窄屏 web 视口应按稳定工作区 top 计算表格 body，避免滚动中重算高度',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 820,
+    toolbarHeight: 220,
+    tableChromeHeight: 124,
+    isSmallLandscape: false,
+    isSmallPortrait: true,
+    maxScrollY: 620,
+  }),
+  306,
+  '窄屏空数据场景应按稳定工作区 top 计算表格 body，保留顺滑滚动',
+)
+assertEqual(
+  calculateContainerDetailTableScrollY({
+    viewportHeight: 430,
+    toolbarHeight: 168,
+    tableChromeHeight: 84,
+    isSmallLandscape: true,
+    isSmallPortrait: false,
+    maxScrollY: 620,
+  }),
+  96,
+  '小屏横屏表格高度不足时应只保留可操作硬下限',
 )
 
 const exportRow = buildContainerDetailExportRow({
@@ -2558,7 +2643,9 @@ assertEqual(
 )
 assertEqual(pageSource.includes('renderNumericCell(formatNumber(row.调整浮率, 2))'), true, '调整浮率只读显示应保持 2 位小数')
 assertEqual(
-  pageSource.includes("<InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2}"),
+  pageSource.includes('value={batchFloatRate}') &&
+    pageSource.includes("placeholder={t('containers.fields.floatRate')}") &&
+    pageSource.includes('precision={2} controls={false} onChange={setBatchFloatRate}'),
   true,
   '批量调整浮率输入应保持 2 位小数',
 )
@@ -2570,9 +2657,9 @@ assertDeepEqual(
     'value={row.中包数}\n            keyboard={false}\n            min={0}\n            precision={0}\n            controls={false}',
     'value={row.进口价格}\n              keyboard={false}\n              min={0}\n              prefix="$"\n              precision={2}\n              controls={false}',
     'value={row.贴牌价格}\n            keyboard={false}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
-    "<InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} controls={false}",
-    '<InputNumber value={batchImportPrice} placeholder={t(\'containers.fields.importPrice\')} min={0} prefix="$" precision={2} controls={false}',
-    '<InputNumber value={batchOemPrice} placeholder={t(\'containers.fields.oemPrice\')} min={0} prefix="$" precision={2} controls={false}',
+    '<InputNumber size="small" className="container-detail-bulk-input" value={batchFloatRate} placeholder={t(\'containers.fields.floatRate\')} precision={2} controls={false}',
+    '<InputNumber size="small" className="container-detail-bulk-input" value={batchImportPrice} placeholder={t(\'containers.fields.importPrice\')} min={0} prefix="$" precision={2} controls={false}',
+    '<InputNumber size="small" className="container-detail-bulk-input" value={batchOemPrice} placeholder={t(\'containers.fields.oemPrice\')} min={0} prefix="$" precision={2} controls={false}',
     '<InputNumber value={headerForm.汇率} precision={4} controls={false}',
     '<InputNumber value={headerForm.运费} precision={2} controls={false}',
   ].filter((snippet) => !pageSource.includes(snippet)),
@@ -3181,10 +3268,36 @@ const stickyControlsSource = pageSource.slice(stickyControlsStart, detailTableSt
 assertEqual(
   stickyControlsStart >= 0 &&
     detailTableStart > stickyControlsStart &&
+    pageSource.includes('<Card className="container-detail-grid-card">') &&
+    pageSource.includes('className="container-detail-table-region"') &&
+    !pageSource.includes('className="container-detail-scroll-spacer"') &&
+    stickyControlsSource.includes('className="container-detail-toolbar"') &&
+    stickyControlsSource.includes('className="container-detail-filter-row"') &&
+    stickyControlsSource.includes('className="container-detail-action-row"') &&
+    stickyControlsSource.includes('className="container-detail-bulk-row"') &&
     stickyControlsSource.includes('<ContainerTagFilters') &&
     stickyControlsSource.includes('{exporting ? <Progress percent={exportProgress} size="small" /> : null}'),
   true,
-  '货柜明细筛选、操作按钮、统计标签和导出进度应在表格前的 sticky 控制区内',
+  '货柜明细筛选、操作按钮、批量操作、统计标签和导出进度应在表格前的紧凑 sticky 控制区内',
+)
+assertEqual(
+  pageSource.includes('ref={setGridContentElement}') &&
+    pageSource.includes('ref={setToolbarElement}') &&
+    pageSource.includes('ref={setTableRegionElement}') &&
+    pageSource.includes('ResizeObserver') &&
+    pageSource.includes('const [detailLayoutMetrics, setDetailLayoutMetrics] = useState') &&
+    pageSource.includes("querySelector('.ant-table-thead')") &&
+    pageSource.includes("querySelector('.ant-table-footer')") &&
+    pageSource.includes('horizontalScrollbarHeight') &&
+    !pageSource.includes("window.addEventListener('scroll', scheduleMeasure") &&
+    !pageSource.includes("window.removeEventListener('scroll', scheduleMeasure") &&
+    !pageSource.includes("window.addEventListener('scroll', scheduleMeasure, true)") &&
+    pageSource.includes('calculateContainerDetailTableScrollY({') &&
+    !pageSource.includes('contentTop: detailLayoutMetrics.contentTop,') &&
+    pageSource.includes('toolbarHeight: detailLayoutMetrics.toolbarHeight,') &&
+    pageSource.includes('tableChromeHeight: detailLayoutMetrics.tableChromeHeight,'),
+  true,
+  '货柜明细表格高度应只根据工具栏和表格头尾实测高度动态计算，不监听滚动',
 )
 assertEqual(
   pageSource.includes('const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)') &&
@@ -3212,12 +3325,30 @@ assertEqual(
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-sticky-controls') &&
+    pageStyleSource.includes('position: relative') &&
+    !pageStyleSource.includes('top: 138px') &&
+    !pageStyleSource.includes('top: 104px') &&
+    pageStyleSource.includes('.container-detail-grid-card') &&
     pageStyleSource.includes('position: sticky') &&
-    pageStyleSource.includes('top: 138px') &&
-    pageStyleSource.includes('z-index: 8') &&
+    pageStyleSource.includes('top: 150px') &&
+    pageStyleSource.includes('.container-detail-grid-card > .ant-card-body') &&
+    pageStyleSource.includes('.container-detail-table-region') &&
+    pageStyleSource.includes('min-height: 0') &&
+    pageStyleSource.includes('overflow: hidden') &&
+    pageStyleSource.includes('flex: 1 1 auto') &&
+    !pageStyleSource.includes('.container-detail-scroll-spacer') &&
+    pageStyleSource.includes('.container-detail-page-small-portrait .container-detail-grid-card') &&
+    pageStyleSource.includes('.container-detail-page-small-landscape .container-detail-grid-card') &&
+    pageStyleSource.includes('.container-detail-toolbar') &&
+    pageStyleSource.includes('.container-detail-filter-row') &&
+    pageStyleSource.includes('.container-detail-action-row') &&
+    pageStyleSource.includes('.container-detail-bulk-row') &&
+    pageStyleSource.includes('overflow-x: auto') &&
+    pageStyleSource.includes('flex-wrap: nowrap !important') &&
+    pageStyleSource.includes('.container-detail-page-small .container-detail-table .ant-table-footer') &&
     pageStyleSource.includes('.container-detail-page-small-landscape .container-detail-sticky-controls'),
   true,
-  '货柜明细控制区应通过专属 sticky 样式吸附在全局标签栏下方，并适配小屏横屏偏移',
+  '货柜明细控制区应使用局部紧凑布局，不再依赖会被全局标签栏遮挡的固定 sticky top',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-tbody > tr > td'),
