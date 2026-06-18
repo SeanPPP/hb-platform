@@ -1559,13 +1559,24 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
-    const productCodes = scopedRows
+    // 新商品尚未写入仓库商品表，不能调用仓库商品上下架接口。
+    const newProductCount = scopedRows.filter((row) => row.是否新商品).length
+    const eligibleRows = scopedRows.filter((row) => !row.是否新商品)
+    if (!eligibleRows.length) {
+      message.warning(t('containers.messages.newProductCannotToggleWarehouseStatus', '新商品请先创建后再上下架'))
+      return
+    }
+    if (newProductCount > 0) {
+      message.warning(t('containers.messages.newProductsSkippedForWarehouseStatus', { count: newProductCount, defaultValue: '已跳过 {{count}} 条新商品，请先创建后再上下架' }))
+    }
+
+    const productCodes = eligibleRows
       .map(getContainerDetailProductCode)
       .filter((value): value is string => Boolean(value))
       .filter((value) => !pendingWarehouseStatusCodes.has(value))
     if (!productCodes.length) {
       message.warning(
-        scopedRows.some((row) => {
+        eligibleRows.some((row) => {
           const productCode = getContainerDetailProductCode(row)
           return productCode ? pendingWarehouseStatusCodes.has(productCode) : false
         })
@@ -2598,6 +2609,11 @@ export default function ContainerDetailPage() {
 
   const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {
     if (!access.canEditContainer) return
+    // 新商品尚未写入仓库商品表，不能调用仓库商品上下架接口。
+    if (row.是否新商品) {
+      message.warning(t('containers.messages.newProductCannotToggleWarehouseStatus', '新商品请先创建后再上下架'))
+      return
+    }
     const productCode = getContainerDetailProductCode(row)
     if (!productCode) {
       message.warning(t('containers.messages.selectedProductsMissingCode'))
@@ -3060,16 +3076,23 @@ export default function ContainerDetailPage() {
         const isActive = getContainerDetailWarehouseStatusFilterKey(row) === 'active'
         const productCode = getContainerDetailProductCode(row)
         const isWarehouseStatusPending = productCode ? pendingWarehouseStatusCodes.has(productCode) : false
+        const warehouseStatusDisabledMessage = isWarehouseStatusPending
+          ? ''
+          : row.是否新商品
+            ? t('containers.messages.newProductCannotToggleWarehouseStatus', '新商品请先创建后再上下架')
+            : !productCode
+              ? t('containers.messages.selectedProductsMissingCode')
+              : ''
 
         return access.canEditContainer ? (
-          <Tooltip title={!productCode ? t('containers.messages.selectedProductsMissingCode') : ''}>
+          <Tooltip title={warehouseStatusDisabledMessage}>
             <Switch
               size="small"
               checked={isActive}
               checkedChildren={t('common.activeUpper')}
               unCheckedChildren={t('common.inactiveUpper')}
               loading={isWarehouseStatusPending}
-              disabled={!productCode || isWarehouseStatusPending}
+              disabled={row.是否新商品 || !productCode || isWarehouseStatusPending}
               onChange={(checked) => void handleWarehouseStatusChange(row, checked)}
             />
           </Tooltip>

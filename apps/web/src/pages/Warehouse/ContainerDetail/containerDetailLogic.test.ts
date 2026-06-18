@@ -1223,6 +1223,8 @@ const requiredContainerI18nKeys = [
   'containers.messages.createProductsJobSucceeded',
   'containers.messages.createProductFailed',
   'containers.messages.purchasePricesUpdateFailed',
+  'containers.messages.newProductCannotToggleWarehouseStatus',
+  'containers.messages.newProductsSkippedForWarehouseStatus',
   'containers.modals.rowCategoryTitle',
   'containers.export.summaryTitle',
   ...containerDetailExportLabelKeys,
@@ -1253,6 +1255,35 @@ assertDeepEqual(
   requiredContainerI18nKeys.filter((key) => !getLocaleValue(zhLocale, key) || !getLocaleValue(enLocale, key)),
   [],
   '货柜明细新增可见文案应同时补齐中英文 locale，避免英文模式回退中文兜底',
+)
+assertEqual(
+  pageSource.includes('const newProductCount = scopedRows.filter((row) => row.是否新商品).length') &&
+    pageSource.includes('const eligibleRows = scopedRows.filter((row) => !row.是否新商品)') &&
+    pageSource.includes("message.warning(t('containers.messages.newProductsSkippedForWarehouseStatus'") &&
+    pageSource.includes('const productCodes = eligibleRows\n      .map(getContainerDetailProductCode)') &&
+    pageSource.includes('eligibleRows.some((row) => {'),
+  true,
+  '批量上下架应跳过新商品，只把已有商品编码提交到仓库商品上下架接口',
+)
+assertEqual(
+  pageSource.includes('if (!eligibleRows.length)') &&
+    pageSource.includes("message.warning(t('containers.messages.newProductCannotToggleWarehouseStatus', '新商品请先创建后再上下架'))"),
+  true,
+  '批量上下架目标全是新商品时应只提示，不请求后端接口',
+)
+assertEqual(
+  pageSource.includes('const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {') &&
+    pageSource.includes("if (row.是否新商品) {\n      message.warning(t('containers.messages.newProductCannotToggleWarehouseStatus', '新商品请先创建后再上下架'))\n      return\n    }\n    const productCode = getContainerDetailProductCode(row)"),
+  true,
+  '单行仓库状态切换应先拦截新商品，避免用不存在的仓库商品编码调用上下架接口',
+)
+assertEqual(
+  pageSource.includes('const warehouseStatusDisabledMessage = isWarehouseStatusPending') &&
+    pageSource.includes("? t('containers.messages.newProductCannotToggleWarehouseStatus', '新商品请先创建后再上下架')") &&
+    pageSource.includes('<Tooltip title={warehouseStatusDisabledMessage}>') &&
+    pageSource.includes('disabled={row.是否新商品 || !productCode || isWarehouseStatusPending}'),
+  true,
+  '新商品行的仓库状态开关应禁用，并显示先创建再上下架提示',
 )
 assertDeepEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => getLocaleValue(enLocale, column.labelKey)),
@@ -1761,7 +1792,7 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('[active, activeLoadQueryKey]') &&
-    pageSource.includes('activeLoadQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤'),
+    pageSource.includes('detailQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤'),
   true,
   '远程重载 effect 应监听 active 和当前加载查询 key，全量加载后标签切换不应触发远程重载',
 )
@@ -2605,8 +2636,8 @@ assertEqual(
       scopedQuerySource.includes('filters: remoteColumnFilters') &&
       fullQuerySource.includes('selectedTags: selectedTagFilters') &&
       fullQuerySource.includes('filters: columnFilters') &&
-      pageSource.includes('const activeLoadQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery') &&
-      pageSource.includes('const activeLoadQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey') &&
+      pageSource.includes('const detailQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery') &&
+      pageSource.includes('const detailQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey') &&
       !scopedQuerySource.includes('sortState')
   })(),
   true,
@@ -2769,9 +2800,9 @@ assertEqual(
 assertEqual(
   pageSource.includes('pendingWarehouseStatusCodes') &&
     pageSource.includes('loading={isWarehouseStatusPending}') &&
-    pageSource.includes('disabled={!productCode || isWarehouseStatusPending}'),
+    pageSource.includes('disabled={row.是否新商品 || !productCode || isWarehouseStatusPending}'),
   true,
-  '行内仓库状态更新应显示提交中状态并阻止重复点击',
+  '行内仓库状态更新应显示提交中状态，并阻止新商品或重复点击',
 )
 assertEqual(
   pageSource.includes('const previousStatuses = rows') &&
@@ -2795,9 +2826,9 @@ assertEqual(
 assertEqual(
   pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope()') &&
     pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
-    pageSource.includes('const productCodes = scopedRows'),
+    pageSource.includes('const productCodes = eligibleRows'),
   true,
-  '应用价格应使用服务端 scope，批量上下架未选择时应作用于当前筛选结果全量',
+  '应用价格应使用服务端 scope，批量上下架未选择时应作用于当前筛选结果全量中的已有商品',
 )
 assertEqual(
   pageSource.includes('data-column-key="image"') || pageSource.includes('data-column-key="index"'),
@@ -3255,9 +3286,9 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)') &&
-    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: activeLoadQueryKey }') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }') &&
     pageSource.includes('const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
-    pageSource.includes('loadedDetailQueryKey: loadedDetailQueryKey') &&
+    pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
     !pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current'),
   true,
   '明细自动跳过判断只能使用明细成功加载记录，不能沿用头部加载状态或旧查询 key',

@@ -253,6 +253,8 @@
       "selectProducts": "请先选择商品",
       "detailPricesUpdated": "已更新 {{count}} 条明细价格",
       "selectedProductsMissingCode": "选中商品缺少商品编码",
+      "newProductCannotToggleWarehouseStatus": "新商品请先创建后再上下架",
+      "newProductsSkippedForWarehouseStatus": "已跳过 {{count}} 条新商品，请先创建后再上下架",
       "warehouseStatusUpdating": "商品上下架正在提交，请稍后再试",
       "batchActiveFailed": "批量上下架失败",
       "productsActivated": "已上架 {{count}} 个商品",

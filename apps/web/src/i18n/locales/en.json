@@ -253,6 +253,8 @@
       "selectProducts": "Select products first",
       "detailPricesUpdated": "Updated prices for {{count}} details",
       "selectedProductsMissingCode": "Selected products are missing product codes",
+      "newProductCannotToggleWarehouseStatus": "Create new products before changing their warehouse status.",
+      "newProductsSkippedForWarehouseStatus": "Skipped {{count}} new products. Create them before changing warehouse status.",
       "warehouseStatusUpdating": "Product status is updating. Please try again later.",
       "batchActiveFailed": "Batch status update failed",
       "productsActivated": "Activated {{count}} products",
