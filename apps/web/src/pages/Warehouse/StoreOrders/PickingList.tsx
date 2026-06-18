@@ -257,7 +257,7 @@ export default function PickingListPage() {
             productName: t('column.productName'),
             importPrice: t('column.importPrice'),
             rrp: t('column.rrp'),
-            innerPackCount: t('column.innerPackCount'),
+            innerPackCount: t('warehouse.pickingList.innerPackShort'),
             orderQuantity: t('column.orderQuantity'),
             allocQuantity: t('column.allocQuantity'),
           },

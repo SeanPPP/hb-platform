@@ -1410,7 +1410,7 @@
       "printTime": "Print Time: ",
       "storeLabel": "Store: ",
       "orderDate": "Order Date: ",
-      "innerPackShort": "Packs",
+      "innerPackShort": "INNER QTY",
       "orderQtyShort": "Order Qty",
       "remarks": "Remarks: {{remarks}}",
       "totalSKU": "Total SKU: {{count}}",

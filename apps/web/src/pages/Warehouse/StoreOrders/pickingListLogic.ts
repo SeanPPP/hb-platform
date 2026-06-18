@@ -68,8 +68,8 @@ const DEFAULT_PDF_PAGINATION_OPTIONS: Required<PickingListPdfPaginationOptions> 
   headerHeightMm: 20,
   tableHeaderHeightMm: 10,
   footerHeightMm: 12,
-  // 默认行高按实际打印预览校准，让普通明细页容纳 29 行，减少页尾空白。
-  rowHeightMm: 8.17,
+  // 默认行高与打印 CSS 的 9mm 明细行保持一致，避免 PDF 预分页后在行中间切断。
+  rowHeightMm: 9,
   finalSummaryHeightMm: 22,
 }
 
