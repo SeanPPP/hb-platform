@@ -21,7 +21,6 @@ export interface PickingListExcelTexts {
     rrp: string
     innerPackCount: string
     orderQuantity: string
-    allocQuantity: string
   }
 }
 
@@ -124,6 +123,17 @@ export function formatInnerPackCount(orderQuantity: number, minOrderQuantity?: n
   return Number.isInteger(innerPackCount) ? String(innerPackCount) : innerPackCount.toFixed(1)
 }
 
+export function formatPickingOrderQuantity(quantity: unknown, allocQuantity?: unknown) {
+  const numericQuantity = Number(quantity)
+  if (Number.isFinite(numericQuantity) && numericQuantity > 0) {
+    return numericQuantity
+  }
+
+  // 订货数为空或为 0 时，用发货数兜底显示；兜底值也为空时保持空白。
+  const numericAllocQuantity = Number(allocQuantity)
+  return Number.isFinite(numericAllocQuantity) && numericAllocQuantity > 0 ? numericAllocQuantity : ''
+}
+
 export function buildPickingListExcelData(
   order: StoreOrderDetail,
   items: StoreOrderDetailLine[],
@@ -158,7 +168,6 @@ export function buildPickingListExcelData(
       texts.detailHeaders.rrp,
       texts.detailHeaders.innerPackCount,
       texts.detailHeaders.orderQuantity,
-      texts.detailHeaders.allocQuantity,
     ],
     detailRows: items.map((item, index) => [
       index + 1,
@@ -168,8 +177,7 @@ export function buildPickingListExcelData(
       formatExcelCurrency(item.importPrice),
       item.rrp === undefined || item.rrp === null ? '' : formatExcelCurrency(item.rrp),
       formatInnerPackCount(item.quantity, item.minOrderQuantity),
-      Number(item.quantity || 0),
-      Number(item.allocQuantity ?? 0),
+      formatPickingOrderQuantity(item.quantity, item.allocQuantity),
     ]),
     remarksRow: order.remarks ? [texts.remarksLabel, order.remarks] : undefined,
     totalRows: [

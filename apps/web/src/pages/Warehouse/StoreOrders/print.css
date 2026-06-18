@@ -189,20 +189,12 @@
 }
 
 .store-order-picking-table .col-qty {
-  width: 6.5%;
+  width: 13.5%;
   padding-left: 1px;
   padding-right: 1px;
   text-align: center;
   font-size: 13px;
   font-weight: 700;
-}
-
-.store-order-picking-table .col-send-qty {
-  width: 7%;
-  padding-left: 1px;
-  padding-right: 1px;
-  text-align: center;
-  font-size: 13px;
 }
 
 .store-order-picking-table .col-price {

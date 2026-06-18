@@ -14,7 +14,7 @@ import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { buildDocumentFileName, downloadElementPagesAsPdf, formatCurrency, formatPrintDate, printElementPagesAsPdf } from './printUtils'
-import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount } from './pickingListLogic'
+import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount, formatPickingOrderQuantity } from './pickingListLogic'
 import { formatStoreOrderVolume } from './volumeFormat'
 import './print.css'
 
@@ -259,7 +259,6 @@ export default function PickingListPage() {
             rrp: t('column.rrp'),
             innerPackCount: t('warehouse.pickingList.innerPackShort'),
             orderQuantity: t('column.orderQuantity'),
-            allocQuantity: t('column.allocQuantity'),
           },
         },
         {
@@ -412,11 +411,10 @@ export default function PickingListPage() {
             <col className="col-price" />
             <col className="col-inner-pack" />
             <col className="col-qty" />
-            <col className="col-send-qty" />
           </colgroup>
           <thead>
             <tr>
-              <td colSpan={9} className="store-order-picking-header-cell">
+              <td colSpan={8} className="store-order-picking-header-cell">
                 {renderPickingHeader()}
               </td>
             </tr>
@@ -429,7 +427,6 @@ export default function PickingListPage() {
               <th className="col-price">{t('column.rrp')}</th>
               <th className="col-inner-pack">{t('warehouse.pickingList.innerPackShort')}</th>
               <th className="col-qty">{t('warehouse.pickingList.orderQtyShort')}</th>
-              <th className="col-send-qty">{t('column.allocQuantity')}</th>
             </tr>
           </thead>
           <tbody>
@@ -447,8 +444,7 @@ export default function PickingListPage() {
                   {/* 内包装数量严格使用订货数量计算，不再回退发货数。 */}
                   {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
                 </td>
-                <td className="col-qty">{item.quantity}</td>
-                <td className="col-send-qty">{item.allocQuantity || ''}</td>
+                <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
               </tr>
             ))}
           </tbody>
@@ -483,11 +479,10 @@ export default function PickingListPage() {
                   <col className="col-price" />
                   <col className="col-inner-pack" />
                   <col className="col-qty" />
-                  <col className="col-send-qty" />
                 </colgroup>
                 <thead>
                   <tr>
-                    <td colSpan={9} className="store-order-picking-header-cell">
+                    <td colSpan={8} className="store-order-picking-header-cell">
                       {renderPickingHeader()}
                     </td>
                   </tr>
@@ -500,7 +495,6 @@ export default function PickingListPage() {
                     <th className="col-price">{t('column.rrp')}</th>
                     <th className="col-inner-pack">{t('warehouse.pickingList.innerPackShort')}</th>
                     <th className="col-qty">{t('warehouse.pickingList.orderQtyShort')}</th>
-                    <th className="col-send-qty">{t('column.allocQuantity')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -518,8 +512,7 @@ export default function PickingListPage() {
                         {/* PDF 分页复用同一套包数计算，避免屏幕和 PDF 内容不一致。 */}
                         {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
                       </td>
-                      <td className="col-qty">{item.quantity}</td>
-                      <td className="col-send-qty">{item.allocQuantity || ''}</td>
+                      <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
                     </tr>
                   ))}
                 </tbody>
