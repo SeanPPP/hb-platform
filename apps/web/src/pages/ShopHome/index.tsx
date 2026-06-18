@@ -14,6 +14,7 @@ import {
   getStoreOrderProductsDynamicData,
   lookupStoreOrderProductsByBarcode,
   removeStoreOrderCartItem,
+  updateStoreOrderCartItem,
 } from '../../services/storeOrderService'
 import { getCategoryTree, type WarehouseCategoryNode } from '../../services/warehouseCategoryService'
 import {
@@ -53,6 +54,9 @@ function logShopHomePerf(stage: string, payload: Record<string, unknown>) {
   console.info('[shop-home-perf]', stage, payload)
 }
 
+// 商城列表页大小必须与顶部筛选和底部分页保持一致。
+const SHOP_HOME_PAGE_SIZE_OPTIONS = [50, 100, 200, 500]
+
 export default function ShopHomePage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -65,7 +69,7 @@ export default function ShopHomePage() {
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(200)
   const [categoryName, setCategoryName] = useState('')
   const [categoryTree, setCategoryTree] = useState<WarehouseCategoryNode[]>([])
   const [parentChain, setParentChain] = useState<WarehouseCategoryNode[]>([])
@@ -85,6 +89,8 @@ export default function ShopHomePage() {
   const [pickerLoading, setPickerLoading] = useState(false)
   const [pickerDynamicDataMap, setPickerDynamicDataMap] = useState<Record<string, StoreOrderDynamicData>>({})
   const [gradeFilter, setGradeFilter] = useState<string[]>([])
+  const [quantityLoadingMap, setQuantityLoadingMap] = useState<Record<string, boolean>>({})
+  const [optimisticCartQuantityMap, setOptimisticCartQuantityMap] = useState<Record<string, number>>({})
   const selectedStore = useShopStore((state) => state.selectedStore)
   const setCart = useShopStore((state) => state.setCart)
   const shouldShowCategoryPath = Boolean(keyword)
@@ -515,26 +521,6 @@ export default function ShopHomePage() {
     },
   })
 
-  const handleAddToCart = async (product: StoreOrderProductItem, quantity: number) => {
-    if (!selectedStore?.storeCode) {
-      message.warning(t('shop.selectStoreFirst'))
-      return
-    }
-
-    try {
-      const nextCart = await addStoreOrderCartItem({
-        storeCode: selectedStore.storeCode,
-        productCode: product.productCode,
-        quantity,
-      })
-      setCart(nextCart)
-      message.success(t('shop.addedToCart', { quantity, name: product.productName }))
-      await refreshDynamicDataForProducts([product.productCode])
-    } catch (error) {
-      message.error(t('shop.addToCartFailed'))
-    }
-  }
-
   const handleCategoryPathClick = useCallback(
     (product: StoreOrderProductItem) => {
       if (!product.warehouseCategoryGUID) {
@@ -545,6 +531,98 @@ export default function ShopHomePage() {
       navigate(`/shop?category=${encodeURIComponent(product.warehouseCategoryGUID)}`)
     },
     [navigate],
+  )
+
+  const handleAddToCart = useCallback(
+    async (product: StoreOrderProductItem, quantity: number) => {
+      if (!selectedStore?.storeCode) {
+        message.warning(t('shop.selectStoreFirst'))
+        return
+      }
+
+      const addQuantity = Math.max(1, Math.floor(Number.isFinite(quantity) ? quantity : 0))
+      setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: addQuantity }))
+      setQuantityLoadingMap((prev) => ({ ...prev, [product.productCode]: true }))
+      try {
+        const nextCart = await addStoreOrderCartItem({
+          storeCode: selectedStore.storeCode,
+          productCode: product.productCode,
+          quantity: addQuantity,
+        })
+        setCart(nextCart)
+        await refreshDynamicDataForProducts([product.productCode]).catch(() => {})
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+      } catch (error) {
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+        message.error(t('shop.addToCartFailed'))
+      } finally {
+        setQuantityLoadingMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+      }
+    },
+    [dynamicDataMap, refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t],
+  )
+
+  const handleProductQuantityChange = useCallback(
+    async (product: StoreOrderProductItem, quantity: number) => {
+      if (!selectedStore?.storeCode) {
+        message.warning(t('shop.selectStoreFirst'))
+        return
+      }
+
+      const normalizedQuantity = Math.max(0, Math.floor(Number.isFinite(quantity) ? quantity : 0))
+      const currentCartQuantity = dynamicDataMap[product.productCode]?.cartQuantity ?? 0
+      if (normalizedQuantity === currentCartQuantity) {
+        return
+      }
+
+      if (normalizedQuantity <= 0 && currentCartQuantity <= 0) {
+        return
+      }
+
+      setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: normalizedQuantity }))
+      setQuantityLoadingMap((prev) => ({ ...prev, [product.productCode]: true }))
+      try {
+        // 商品卡数量就是购物车数量，使用 cart/update 的设置语义；0 由后端软删已有明细。
+        const nextCart = await updateStoreOrderCartItem({
+          storeCode: selectedStore.storeCode,
+          productCode: product.productCode,
+          quantity: normalizedQuantity,
+        })
+        setCart(nextCart)
+        await refreshDynamicDataForProducts([product.productCode]).catch(() => {})
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+      } catch (error) {
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+        message.error(t('shop.cartUpdateFailed', 'Failed to update quantity'))
+      } finally {
+        setQuantityLoadingMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+      }
+    },
+    [dynamicDataMap, refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t],
   )
 
   const handleRemoveFromCart = async (product: StoreOrderProductItem) => {
@@ -659,11 +737,7 @@ export default function ShopHomePage() {
                 setCurrentPage(1)
                 setPageSize(value)
               }}
-              options={[
-                { value: 50, label: '50' },
-                { value: 100, label: '100' },
-                { value: 200, label: '200' },
-              ]}
+              options={SHOP_HOME_PAGE_SIZE_OPTIONS.map((value) => ({ value, label: String(value) }))}
             />
           </div>
         </div>
@@ -676,21 +750,38 @@ export default function ShopHomePage() {
       ) : products.length ? (
         <>
           <div className="shop-home-grid">
-            {products.map((product) => (
-              <ProductCard
-                key={product.productCode}
-                product={product}
-                dynamicData={dynamicDataMap[product.productCode]}
-                categoryPath={categoryPathMap[product.productCode]}
-                onCategoryPathClick={
-                  shouldShowCategoryPath && product.warehouseCategoryGUID
-                    ? handleCategoryPathClick
-                    : undefined
-                }
-                onAddToCart={handleAddToCart}
-                onRemoveFromCart={handleRemoveFromCart}
-              />
-            ))}
+            {products.map((product) => {
+              const dynamicData = dynamicDataMap[product.productCode]
+              const optimisticCartQuantity = optimisticCartQuantityMap[product.productCode]
+              const cardDynamicData =
+                optimisticCartQuantity === undefined
+                  ? dynamicData
+                  : {
+                    ...(dynamicData ?? {
+                      productCode: product.productCode,
+                      cartQuantity: 0,
+                    }),
+                    cartQuantity: optimisticCartQuantity,
+                  }
+
+              return (
+                <ProductCard
+                  key={product.productCode}
+                  product={product}
+                  dynamicData={cardDynamicData}
+                  categoryPath={categoryPathMap[product.productCode]}
+                  onCategoryPathClick={
+                    shouldShowCategoryPath && product.warehouseCategoryGUID
+                      ? handleCategoryPathClick
+                      : undefined
+                  }
+                  onAddToCart={handleAddToCart}
+                  onQuantityChange={handleProductQuantityChange}
+                  onRemoveFromCart={handleRemoveFromCart}
+                  loading={Boolean(quantityLoadingMap[product.productCode])}
+                />
+              )
+            })}
           </div>
 
           <div className="shop-home-pagination">
@@ -704,7 +795,7 @@ export default function ShopHomePage() {
                   setPageSize(size)
                 }
               }}
-              pageSizeOptions={['50', '100', '200']}
+              pageSizeOptions={SHOP_HOME_PAGE_SIZE_OPTIONS.map(String)}
               showSizeChanger
             />
           </div>

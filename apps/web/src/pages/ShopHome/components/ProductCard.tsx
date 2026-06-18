@@ -4,7 +4,7 @@ import {
   ShoppingCartOutlined,
 } from '@ant-design/icons'
 import { Badge, Button, Card, Image, InputNumber, Space, Tooltip, Typography } from 'antd'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { StoreOrderDynamicData, StoreOrderProductItem } from '../../../types/storeOrder'
 import { PRODUCT_GRADE_CONFIG } from '../../../types/productGrade'
 
@@ -16,6 +16,7 @@ interface ProductCardProps {
   categoryPath?: string
   onCategoryPathClick?: (product: StoreOrderProductItem) => void
   onAddToCart: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void
+  onQuantityChange: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void
   onRemoveFromCart?: (product: StoreOrderProductItem) => Promise<void> | void
   loading?: boolean
 }
@@ -26,11 +27,13 @@ export default function ProductCard({
   categoryPath,
   onCategoryPathClick,
   onAddToCart,
+  onQuantityChange,
   onRemoveFromCart,
   loading,
 }: ProductCardProps) {
-  const minOrderQuantity = product.minOrderQuantity || 1
-  const [quantity, setQuantity] = useState<number>(minOrderQuantity)
+  const stepQuantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
+  const cartQuantity = dynamicData?.cartQuantity ?? 0
+  const [quantity, setQuantity] = useState<number>(0)
 
   const imageSrc = useMemo(() => {
     return product.productImage || 'https://via.placeholder.com/200x200?text=No+Image'
@@ -40,6 +43,39 @@ export default function ProductCard({
     ? (PRODUCT_GRADE_CONFIG[product.grade as keyof typeof PRODUCT_GRADE_CONFIG]?.color || '#999')
     : undefined
   const canClickCategoryPath = Boolean(categoryPath && onCategoryPathClick)
+
+  useEffect(() => {
+    setQuantity(cartQuantity)
+  }, [cartQuantity, product.productCode])
+
+  const normalizeQuantity = (value: number | null | undefined) => {
+    const numericValue = Number(value ?? 0)
+    if (!Number.isFinite(numericValue) || numericValue <= 0) {
+      return 0
+    }
+
+    return Math.floor(numericValue)
+  }
+
+  const applyQuantityChange = (nextQuantity: number) => {
+    const normalizedQuantity = normalizeQuantity(nextQuantity)
+    setQuantity(normalizedQuantity)
+
+    if (normalizedQuantity === cartQuantity) {
+      return
+    }
+
+    // 商品卡数量直接代表购物车数量；0 只在已有购物车数量时提交，用于触发后端删除明细。
+    if (normalizedQuantity > 0 || cartQuantity > 0) {
+      void onQuantityChange(product, normalizedQuantity)
+    }
+  }
+
+  const handleAddToCart = () => {
+    const addQuantity = quantity > 0 ? quantity : stepQuantity
+    setQuantity(addQuantity)
+    void onAddToCart(product, addQuantity)
+  }
 
   const handleCategoryPathActivate = () => {
     if (!canClickCategoryPath || !onCategoryPathClick) {
@@ -94,38 +130,76 @@ export default function ProductCard({
             </div>
           }
         actions={[
-          <div className="shop-product-card-actions" key="actions">
-            {onRemoveFromCart && dynamicData?.cartQuantity ? (
+          <div
+            className={[
+              'shop-product-card-actions',
+              cartQuantity > 0 ? 'shop-product-card-actions--in-cart' : '',
+            ].filter(Boolean).join(' ')}
+            key="actions"
+          >
+            <div className="shop-product-card-action-slot shop-product-card-action-slot--left">
+              {onRemoveFromCart && cartQuantity > 0 ? (
+                <Button
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => {
+                    void onRemoveFromCart(product)
+                  }}
+                  disabled={loading}
+                  size="small"
+                  title="Remove from cart"
+                />
+              ) : null}
+            </div>
+            <div className="shop-product-quantity-stepper">
               <Button
-                type="text"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => {
-                  void onRemoveFromCart(product)
-                }}
                 size="small"
-                title="Remove from cart"
+                onClick={() => applyQuantityChange(quantity - stepQuantity)}
+                disabled={loading || quantity <= 0}
+                aria-label="Decrease quantity"
+                className="shop-product-quantity-button"
+              >
+                -
+              </Button>
+              <InputNumber
+                size="small"
+                min={0}
+                precision={0}
+                step={stepQuantity}
+                controls={false}
+                value={quantity}
+                onChange={(value) => setQuantity(normalizeQuantity(value))}
+                onBlur={() => applyQuantityChange(quantity)}
+                onPressEnter={() => applyQuantityChange(quantity)}
+                disabled={loading}
+                className="shop-product-quantity-input"
               />
-            ) : (
-              <span />
-            )}
-            <InputNumber
-              min={minOrderQuantity}
-              step={minOrderQuantity}
-              value={quantity}
-              onChange={(value) => setQuantity(Number(value ?? minOrderQuantity))}
-              style={{ width: 72 }}
-            />
-            <Button
-              type="primary"
-              icon={<ShoppingCartOutlined />}
-              onClick={() => {
-                void onAddToCart(product, quantity)
-              }}
-              loading={loading}
-            >
-              Add
-            </Button>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => applyQuantityChange(quantity + stepQuantity)}
+                disabled={loading}
+                aria-label="Increase quantity"
+                className="shop-product-quantity-button"
+              >
+                +
+              </Button>
+            </div>
+            <div className="shop-product-card-action-slot shop-product-card-action-slot--right">
+              {cartQuantity <= 0 ? (
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<ShoppingCartOutlined />}
+                  onClick={handleAddToCart}
+                  loading={loading}
+                  className="shop-product-add-button"
+                >
+                  Add
+                </Button>
+              ) : null}
+            </div>
           </div>,
         ]}
       >

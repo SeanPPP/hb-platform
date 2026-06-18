@@ -39,21 +39,49 @@ const globalCssSource = readFileSync(globalCssFile, 'utf8')
 async function main() {
   const failures: string[] = []
 
-  const normalAddFailure = await runTest('普通 Add 应复用 cart/add 返回的购物车并避免二次拉整车', () => {
+  const productQuantityUpdateFailure = await runTest('商品卡数量按钮应直接设置购物车数量并复用返回购物车', () => {
     const body = extractFunctionBody(
       shopHomeSource,
-      'const handleAddToCart = async',
+      'const handleProductQuantityChange = useCallback',
       'const handleRemoveFromCart = async',
     )
 
     assert(
-      body.includes('const nextCart = await addStoreOrderCartItem({') &&
+      shopHomeSource.includes('updateStoreOrderCartItem,') &&
+        body.includes('const nextCart = await updateStoreOrderCartItem({') &&
+        body.includes('quantity: normalizedQuantity') &&
         body.includes('setCart(nextCart)') &&
+        body.includes('refreshDynamicDataForProducts([product.productCode])') &&
+        body.includes('setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: normalizedQuantity }))') &&
+        body.includes('delete next[product.productCode]') &&
+        body.includes('setQuantityLoadingMap') &&
+        body.includes('normalizedQuantity <= 0 && currentCartQuantity <= 0') &&
         !body.includes('refreshCart()'),
-      '普通 Add 仍然没有直接使用 addStoreOrderCartItem 返回的 cart，或仍在二次刷新购物车',
+      '商品卡数量更新未直接调用 cart/update、未复用返回购物车，或缺少乐观更新/回滚/单商品刷新',
     )
   })
-  if (normalAddFailure) failures.push(normalAddFailure)
+  if (productQuantityUpdateFailure) failures.push(productQuantityUpdateFailure)
+
+  const productCardAddFailure = await runTest('商品卡未入车商品应保留 Add 首次加购并乐观更新', () => {
+    const body = extractFunctionBody(
+      shopHomeSource,
+      'const handleAddToCart = useCallback',
+      'const handleProductQuantityChange = useCallback',
+    )
+
+    assert(
+      body.includes('const addQuantity = Math.max(1, Math.floor(Number.isFinite(quantity) ? quantity : 0))') &&
+        body.includes('setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: addQuantity }))') &&
+        body.includes('const nextCart = await addStoreOrderCartItem({') &&
+        body.includes('quantity: addQuantity') &&
+        body.includes('setCart(nextCart)') &&
+        body.includes('refreshDynamicDataForProducts([product.productCode])') &&
+        body.includes('delete next[product.productCode]') &&
+        shopHomeSource.includes('onAddToCart={handleAddToCart}'),
+      '商品卡 Add 没有走 cart/add，或缺少乐观数量、成功刷新、失败回滚',
+    )
+  })
+  if (productCardAddFailure) failures.push(productCardAddFailure)
 
   const scanAddFailure = await runTest('扫码 Add 应复用 cart/add 返回的购物车并避免二次拉整车', () => {
     const body = extractFunctionBody(
@@ -71,10 +99,15 @@ async function main() {
   })
   if (scanAddFailure) failures.push(scanAddFailure)
 
-  const dynamicDataFailure = await runTest('加购后应只刷新当前商品动态数据', () => {
-    const normalAddBody = extractFunctionBody(
+  const dynamicDataFailure = await runTest('商品卡 Add、数量更新和扫码加购后应只刷新当前商品动态数据', () => {
+    const productAddBody = extractFunctionBody(
       shopHomeSource,
-      'const handleAddToCart = async',
+      'const handleAddToCart = useCallback',
+      'const handleProductQuantityChange = useCallback',
+    )
+    const productQuantityBody = extractFunctionBody(
+      shopHomeSource,
+      'const handleProductQuantityChange = useCallback',
       'const handleRemoveFromCart = async',
     )
     const scanAddBody = extractFunctionBody(
@@ -85,9 +118,11 @@ async function main() {
 
     assert(
       shopHomeSource.includes('const refreshDynamicDataForProducts = useCallback') &&
-        normalAddBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
+        productAddBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
+        productQuantityBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
         scanAddBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
-        !normalAddBody.includes('refreshDynamicData()') &&
+        !productAddBody.includes('refreshDynamicData()') &&
+        !productQuantityBody.includes('refreshDynamicData()') &&
         !scanAddBody.includes('refreshDynamicData()'),
       '加购后仍在刷新整页 dynamic-data 或购物车，而不是只刷新当前商品',
     )
@@ -135,6 +170,17 @@ async function main() {
   })
   if (storeScopeDependencyFailure) failures.push(storeScopeDependencyFailure)
 
+  const pageSizeOptionsFailure = await runTest('商城首页默认每页 200 且支持 50/100/200/500', () => {
+    assert(
+      shopHomeSource.includes('const SHOP_HOME_PAGE_SIZE_OPTIONS = [50, 100, 200, 500]') &&
+        shopHomeSource.includes('const [pageSize, setPageSize] = useState(200)') &&
+        shopHomeSource.includes('options={SHOP_HOME_PAGE_SIZE_OPTIONS.map((value) => ({ value, label: String(value) }))}') &&
+        shopHomeSource.includes('pageSizeOptions={SHOP_HOME_PAGE_SIZE_OPTIONS.map(String)}'),
+      '商城首页默认每页数量或顶部/底部分页选项未统一为 50/100/200/500',
+    )
+  })
+  if (pageSizeOptionsFailure) failures.push(pageSizeOptionsFailure)
+
   const searchCategoryPathFailure = await runTest('搜索商品卡片应显示分类完整路径', () => {
     assert(
       shopHomeSource.includes('buildWarehouseCategoryLookup') &&
@@ -166,6 +212,74 @@ async function main() {
     )
   })
   if (productCardCategoryPathFailure) failures.push(productCardCategoryPathFailure)
+
+  const productCardQuantityStepperFailure = await runTest('商品卡数量应默认 0 并使用 INNER 步进直接更新购物车', () => {
+    assert(
+      productCardSource.includes('onQuantityChange: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void') &&
+        productCardSource.includes('onAddToCart: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void') &&
+        productCardSource.includes('ShoppingCartOutlined') &&
+        productCardSource.includes('const stepQuantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1') &&
+        productCardSource.includes('const cartQuantity = dynamicData?.cartQuantity ?? 0') &&
+        productCardSource.includes('const [quantity, setQuantity] = useState<number>(0)') &&
+        productCardSource.includes('setQuantity(cartQuantity)') &&
+        productCardSource.includes('applyQuantityChange(quantity - stepQuantity)') &&
+        productCardSource.includes('applyQuantityChange(quantity + stepQuantity)') &&
+        productCardSource.includes('min={0}') &&
+        productCardSource.includes('controls={false}') &&
+        productCardSource.includes('onBlur={() => applyQuantityChange(quantity)}') &&
+        productCardSource.includes('onPressEnter={() => applyQuantityChange(quantity)}'),
+      '商品卡数量控件没有默认 0、没有按 INNER 步进、没有保留 Add，或没有直接提交数量变化',
+    )
+  })
+  if (productCardQuantityStepperFailure) failures.push(productCardQuantityStepperFailure)
+
+  const productCardAddVisibilityFailure = await runTest('商品卡应未入车显示 Add、已入车显示删除且不挤压步进器', () => {
+    assert(
+      productCardSource.includes('cartQuantity > 0 ? (') &&
+        productCardSource.includes('cartQuantity <= 0 ? (') &&
+        productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--left"') &&
+        productCardSource.includes('className="shop-product-card-action-slot shop-product-card-action-slot--right"') &&
+        productCardSource.includes("cartQuantity > 0 ? 'shop-product-card-actions--in-cart' : ''") &&
+        productCardSource.includes('const addQuantity = quantity > 0 ? quantity : stepQuantity') &&
+        productCardSource.includes('void onAddToCart(product, addQuantity)') &&
+        productCardSource.includes('className="shop-product-add-button"'),
+      '商品卡没有按购物车状态切换删除/Add，或 Add 没有按当前数量/INNER 首次加购',
+    )
+  })
+  if (productCardAddVisibilityFailure) failures.push(productCardAddVisibilityFailure)
+
+  const optimisticDynamicDataFailure = await runTest('商城首页应把乐观购物车数量覆盖到商品卡 dynamicData', () => {
+    assert(
+      shopHomeSource.includes('const [optimisticCartQuantityMap, setOptimisticCartQuantityMap] = useState<Record<string, number>>({})') &&
+        shopHomeSource.includes('const optimisticCartQuantity = optimisticCartQuantityMap[product.productCode]') &&
+        shopHomeSource.includes('const cardDynamicData =') &&
+        shopHomeSource.includes('cartQuantity: optimisticCartQuantity') &&
+        shopHomeSource.includes('dynamicData={cardDynamicData}'),
+      '商城首页没有把 optimisticCartQuantityMap 覆盖到 ProductCard dynamicData',
+    )
+  })
+  if (optimisticDynamicDataFailure) failures.push(optimisticDynamicDataFailure)
+
+  const productCardQuantityStyleFailure = await runTest('商品卡数量步进器应固定居中且 Add 固定宽度', () => {
+    assert(
+      productCardSource.includes('shop-product-quantity-stepper') &&
+        productCardSource.includes('shop-product-quantity-button') &&
+        productCardSource.includes('shop-product-quantity-input') &&
+        globalCssSource.includes('grid-template-columns: 28px minmax(108px, 1fr) 58px') &&
+        globalCssSource.includes('.shop-product-card-actions--in-cart') &&
+        globalCssSource.includes('grid-template-columns: 28px minmax(108px, 1fr) 28px') &&
+        globalCssSource.includes('box-sizing: border-box') &&
+        globalCssSource.includes('justify-self: center') &&
+        globalCssSource.includes('max-width: 120px') &&
+        globalCssSource.includes('min-width: 108px') &&
+        globalCssSource.includes('.shop-product-quantity-stepper') &&
+        globalCssSource.includes('.shop-product-quantity-button') &&
+        globalCssSource.includes('.shop-product-quantity-input') &&
+        globalCssSource.includes('.shop-product-add-button'),
+      '商品卡数量步进器缺少固定居中/Add 固定宽度样式，卡片动作区可能抖动',
+    )
+  })
+  if (productCardQuantityStyleFailure) failures.push(productCardQuantityStyleFailure)
 
   const categoryPathClickFailure = await runTest('搜索商品分类路径点击后应进入对应分类并清除搜索词', () => {
     assert(
