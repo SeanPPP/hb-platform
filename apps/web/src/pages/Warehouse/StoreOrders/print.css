@@ -89,7 +89,8 @@
 
 .store-order-picking-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
   font-size: 15px;
   line-height: 1.35;
@@ -117,7 +118,8 @@
   vertical-align: middle;
   font-weight: 700;
   background: #f0f0f0;
-  border: 1px solid #000;
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
   line-height: 1.15;
 }
 
@@ -127,8 +129,18 @@
   box-sizing: border-box;
   text-align: center;
   vertical-align: middle;
-  border: 1px solid #000;
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
   line-height: 1.15;
+}
+
+.store-order-picking-table thead tr:last-child th {
+  border-top: 1px solid #000;
+}
+
+.store-order-picking-table th:first-child,
+.store-order-picking-table td:first-child {
+  border-left: 1px solid #000;
 }
 
 .store-order-picking-table .col-index {
