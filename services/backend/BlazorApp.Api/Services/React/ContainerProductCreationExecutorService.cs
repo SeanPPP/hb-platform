@@ -236,7 +236,10 @@ namespace BlazorApp.Api.Services.React
             {
                 try
                 {
-                    var batchResult = await _productWarehouseService.BatchCreateAsync(createItems);
+                    var batchResult = await _productWarehouseService.BatchCreateAsync(
+                        createItems,
+                        useTransaction: !isSubmitContainer
+                    );
                     if (!batchResult.Success)
                     {
                         foreach (var error in batchResult.Errors)

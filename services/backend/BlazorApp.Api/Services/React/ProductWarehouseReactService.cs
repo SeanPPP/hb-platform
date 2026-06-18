@@ -804,8 +804,12 @@ namespace BlazorApp.Api.Services.React
         /// 支持普通商品和套装商品，自动跳过已存在的商品
         /// </summary>
         /// <param name="items">待创建的商品列表</param>
+        /// <param name="useTransaction">是否由本方法自行开启事务；整柜提交会关闭它，交给外层事务统一控制</param>
         /// <returns>批量操作结果</returns>
-        public async Task<BatchOperationResultDto> BatchCreateAsync(List<CreateItemDto> items)
+        public async Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction = true
+        )
         {
             var result = new BatchOperationResultDto { Success = true, Message = "创建完成" };
             if (items == null || items.Count == 0)
@@ -813,8 +817,11 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
-                // 开启事务
-                _context.Db.Ado.BeginTran();
+                if (useTransaction)
+                {
+                    // 默认入口自行开事务；整柜提交会传 false，由外层统一提交/回滚，避免嵌套事务提前落库。
+                    _context.Db.Ado.BeginTran();
+                }
                 var now = DateTime.Now;
 
                 // 收集所有需要查询的 ProductCode 和 ItemNumber
@@ -1260,11 +1267,17 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                _context.Db.Ado.CommitTran();
+                if (useTransaction)
+                {
+                    _context.Db.Ado.CommitTran();
+                }
             }
             catch (Exception ex)
             {
-                _context.Db.Ado.RollbackTran();
+                if (useTransaction)
+                {
+                    _context.Db.Ado.RollbackTran();
+                }
                 _logger.LogError(ex, "批量创建失败");
                 return new BatchOperationResultDto
                 {

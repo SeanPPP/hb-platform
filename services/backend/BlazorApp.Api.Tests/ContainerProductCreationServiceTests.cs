@@ -948,6 +948,36 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_SubmitContainer_RollsBackCreatedProductsWhenLaterUpdateFails()
+    {
+        await InsertContainerAsync("C-ROLLBACK", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-ROLLBACK-NEW", "C-ROLLBACK", "P-ROLLBACK-NEW", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-ROLLBACK-NEW", "HB-ROLLBACK-NEW", "回滚新商品", "Rollback Product", 0);
+        await InsertContainerDetailAsync("D-ROLLBACK-EXISTING", "C-ROLLBACK", "P-ROLLBACK-EXISTING", "普通商品", 5.6m, 7.8m);
+        await InsertDomesticProductAsync("P-ROLLBACK-EXISTING", "HB-ROLLBACK-EXISTING", "已有商品来源", "Existing Source", 0);
+        await InsertExistingProductAsync("P-ROLLBACK-EXISTING", "HB-ROLLBACK-EXISTING", 1.1m, 2.2m);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-ROLLBACK",
+                ContainerGuid = "C-ROLLBACK",
+                SubmitContainer = true,
+            }
+        );
+
+        Assert.False(result.ContainerCompleted);
+        Assert.Contains(result.Errors, item => item.ReasonCode == "WAREHOUSE_PRODUCT_NOT_FOUND");
+        // 整柜提交是原子动作：已有商品更新失败时，前面创建的新商品和分店价格也必须回滚。
+        Assert.Null(await _db.Queryable<Product>().FirstAsync(item => item.ProductCode == "P-ROLLBACK-NEW"));
+        Assert.Null(await _db.Queryable<WarehouseProduct>().FirstAsync(item => item.ProductCode == "P-ROLLBACK-NEW"));
+        Assert.Equal(0, await _db.Queryable<StoreRetailPrice>().Where(item => item.ProductCode == "P-ROLLBACK-NEW").CountAsync());
+        var container = await _db.Queryable<Container>().SingleAsync(item => item.ContainerCode == "C-ROLLBACK");
+        Assert.Equal(1, container.Status);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SubmitContainer_LoadsOnlyCurrentContainerDetails()
     {
         await InsertContainerAsync("C-SCOPE", status: 1);
