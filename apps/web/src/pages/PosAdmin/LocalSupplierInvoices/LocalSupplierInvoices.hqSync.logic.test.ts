@@ -279,6 +279,30 @@ async function main() {
   })
   if (editPageImportFailure) failures.push(editPageImportFailure)
 
+  const editPageDynamicTabTitleFailure = await runTest('编辑页 Tab 标题应在发票加载后显示业务标题', () => {
+    assert(
+      editPageSource.includes("import { useDynamicTabTitle } from '../../../../hooks/useDynamicTabTitle'"),
+      '编辑页必须 import useDynamicTabTitle',
+    )
+    assert(editPageSource.includes('useDynamicTabTitle(invoiceTabTitle)'), '编辑页必须在组件顶层调用 useDynamicTabTitle')
+    assert(editPageSource.includes('function buildInvoiceTabTitle('), '编辑页应提供本页专用标题格式函数')
+    assert(editPageSource.includes('invoice.storeName?.trim()'), '标题函数必须优先读取 storeName')
+    assert(editPageSource.includes('invoice.storeCode?.trim()'), '分店名称缺失时必须回退 storeCode')
+    assert(editPageSource.includes('invoice.supplierName?.trim().slice(0, 4).toUpperCase()'), '供应商名称必须 trim 后取前 4 位并转大写')
+    assert(editPageSource.includes('invoice.supplierCode?.trim().slice(0, 4).toUpperCase()'), '供应商名称缺失时必须回退 supplierCode 前 4 位')
+    assert(editPageSource.includes('invoice.invoiceNo?.trim()'), '标题函数必须读取 invoiceNo')
+    assert(editPageSource.includes('[storeSegment, supplierSegment, invoiceNoSegment].filter(Boolean).join'), '标题函数应过滤缺失字段后用空格拼接')
+    assert(
+      editPageSource.includes("t('menu.editInvoice', '编辑进货单')"),
+      '未加载发票前必须保留编辑进货单 fallback，避免 Tab 空白',
+    )
+    assert(
+      editPageSource.includes('这里只更新当前编辑页的 KeepAlive Tab 标题，不改变路由标题或面包屑。'),
+      '应用中文注释说明动态标题只影响当前编辑页 Tab',
+    )
+  })
+  if (editPageDynamicTabTitleFailure) failures.push(editPageDynamicTabTitleFailure)
+
   const batchEditPersistFailure = await runTest('编辑页批量编辑应通过批量更新接口持久化 editFields', () => {
     assert(editPageSource.includes('batchUpdateDetails,'), '编辑页应静态导入批量更新明细接口')
     assert(

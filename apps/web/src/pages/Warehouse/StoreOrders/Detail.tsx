@@ -753,6 +753,9 @@ export default function StoreOrderDetailPage() {
   const screens = Grid.useBreakpoint()
   const { access, currentUser } = useAuthStore()
   const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  // 只用于配货单等只读文档入口，不开放订单编辑、状态流转或明细写入能力。
+  const canUseStoreOrderDocumentActions = access.isWarehouseStaff
+  const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const detailRequestControllerRef = useRef<AbortController | null>(null)
@@ -2516,88 +2519,112 @@ export default function StoreOrderDetailPage() {
             <Card
               title={t('storeOrders.orderDetailSection')}
               extra={
-                canUseWarehouseManagerActions ? (
+                canUseStoreOrderDetailExtraActions ? (
                   <Space wrap>
-                    <Input
-                      allowClear
-                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
-                      placeholder={t('storeOrders.quickAddPlaceholder')}
-                      style={{ width: 220 }}
-                      value={quickAddItemNumber}
-                      onChange={(event) => setQuickAddItemNumber(event.target.value)}
-                      onPressEnter={() => void handleQuickAdd()}
-                    />
-                    <InputNumber
-                      min={1}
-                      precision={0}
-                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
-                      placeholder={t('storeOrders.allocQtyPlaceholder')}
-                      value={quickAddQuantity}
-                      onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
-                    />
-                    <Button
-                      icon={<PlusOutlined />}
-                      loading={lineActionLoading}
-                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
-                      onClick={() => void handleQuickAdd()}
-                    >
-                      {t('storeOrders.quickAdd')}
-                    </Button>
-                    <Button icon={<SearchOutlined />} disabled={isReadonlyOrder || isPasteOptimisticPreviewActive} onClick={() => setPickerOpen(true)}>
-                      {t('storeOrders.selectProduct')}
-                    </Button>
-                    <Button
-                      icon={<ContainerOutlined />}
-                      loading={containerPickerLoading}
-                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
-                      onClick={() => void handleOpenContainerPicker()}
-                    >
-                      {t('storeOrders.containerPicker')}
-                    </Button>
-                    <Button
-                      icon={<PrinterOutlined />}
-                      onClick={() => detail && navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
-                    >
-                      {t('storeOrders.pickingList')}
-                    </Button>
-                    <Button
-                      icon={<FileTextOutlined />}
-                      onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
-                    >
-                      {t('storeOrders.invoice')}
-                    </Button>
-                    <Button
-                      icon={<CopyOutlined />}
-                      className="store-order-excel-paste-button"
-                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
-                      onClick={() => {
-                        resetPasteState('allocQuantity')
-                        setPasteModalOpen(true)
-                      }}
-                    >
-                      {t('storeOrders.excelPaste')}
-                    </Button>
-                    <Button
-                      icon={<SaveOutlined />}
-                      className="store-order-save-edited-lines-button"
-                      loading={lineActionLoading}
-                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || editedLineCount === 0}
-                      onClick={() => void handleSaveEditedLines()}
-                    >
-                      {t('storeOrders.detail.saveEditedLines')}
-                    </Button>
-                    <Button
-                      icon={<SyncOutlined />}
-                      loading={refreshImportPriceLoading}
-                      disabled={!detail || isPasteOptimisticPreviewActive || refreshImportPriceLoading}
-                      onClick={handleRefreshImportPricesFromWarehouse}
-                    >
-                      {t('storeOrders.detail.refreshImportPrices')}
-                    </Button>
-                    <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
-                      {t('storeOrders.batchModify')}
-                    </Button>
-                    <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
+                    {canUseWarehouseManagerActions ? (
+                      <Input
+                        allowClear
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        placeholder={t('storeOrders.quickAddPlaceholder')}
+                        style={{ width: 220 }}
+                        value={quickAddItemNumber}
+                        onChange={(event) => setQuickAddItemNumber(event.target.value)}
+                        onPressEnter={() => void handleQuickAdd()}
+                      />
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <InputNumber
+                        min={1}
+                        precision={0}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        placeholder={t('storeOrders.allocQtyPlaceholder')}
+                        value={quickAddQuantity}
+                        onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
+                      />
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<PlusOutlined />}
+                        loading={lineActionLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        onClick={() => void handleQuickAdd()}
+                      >
+                        {t('storeOrders.quickAdd')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button icon={<SearchOutlined />} disabled={isReadonlyOrder || isPasteOptimisticPreviewActive} onClick={() => setPickerOpen(true)}>
+                        {t('storeOrders.selectProduct')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<ContainerOutlined />}
+                        loading={containerPickerLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        onClick={() => void handleOpenContainerPicker()}
+                      >
+                        {t('storeOrders.containerPicker')}
+                      </Button>
+                    ) : null}
+                    {detail ? (
+                      <Button
+                        icon={<PrinterOutlined />}
+                        onClick={() => navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
+                      >
+                        {t('storeOrders.pickingList')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<FileTextOutlined />}
+                        onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
+                      >
+                        {t('storeOrders.invoice')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<CopyOutlined />}
+                        className="store-order-excel-paste-button"
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        onClick={() => {
+                          resetPasteState('allocQuantity')
+                          setPasteModalOpen(true)
+                        }}
+                      >
+                        {t('storeOrders.excelPaste')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<SaveOutlined />}
+                        className="store-order-save-edited-lines-button"
+                        loading={lineActionLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || editedLineCount === 0}
+                        onClick={() => void handleSaveEditedLines()}
+                      >
+                        {t('storeOrders.detail.saveEditedLines')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<SyncOutlined />}
+                        loading={refreshImportPriceLoading}
+                        disabled={!detail || isPasteOptimisticPreviewActive || refreshImportPriceLoading}
+                        onClick={handleRefreshImportPricesFromWarehouse}
+                      >
+                        {t('storeOrders.detail.refreshImportPrices')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
+                        {t('storeOrders.batchModify')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
+                    ) : null}
                   </Space>
                 ) : undefined
               }

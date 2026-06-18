@@ -332,7 +332,35 @@ async function main() {
   })
   if (detailRefreshImportPriceFailure) failures.push(detailRefreshImportPriceFailure)
 
-  const warehouseManagerActionFailure = await runTest('仓库员工不应看到订货管理和明细功能按钮', () => {
+  const warehouseManagerActionFailure = await runTest('仓库员工仅可看到详情页只读文档入口，不应看到订货管理功能按钮', () => {
+    const orderDetailSectionSource = detailSource.slice(
+      detailSource.indexOf("title={t('storeOrders.orderDetailSection')}"),
+      detailSource.indexOf('className="store-order-detail-filter-bar"'),
+    )
+    const pickingButtonSource = orderDetailSectionSource.slice(
+      orderDetailSectionSource.indexOf('icon={<PrinterOutlined />}'),
+      orderDetailSectionSource.indexOf("t('storeOrders.pickingList')"),
+    )
+    const managerGuardText = '{canUseWarehouseManagerActions ? ('
+    const detailExtraGuardText = 'canUseStoreOrderDetailExtraActions ? ('
+    const isInsideGuard = (guardText: string, targetPosition: number) => {
+      const guardPosition = orderDetailSectionSource.lastIndexOf(guardText, targetPosition)
+      const guardClosePosition = orderDetailSectionSource.lastIndexOf(') : null}', targetPosition)
+      return guardPosition >= 0 && guardPosition > guardClosePosition
+    }
+    const invoiceButtonPosition = orderDetailSectionSource.indexOf("t('storeOrders.invoice')")
+    const pickingButtonPosition = orderDetailSectionSource.indexOf("t('storeOrders.pickingList')")
+    const managerOnlyDetailActions = [
+      "t('storeOrders.quickAdd')",
+      "t('storeOrders.selectProduct')",
+      "t('storeOrders.containerPicker')",
+      "t('storeOrders.excelPaste')",
+      "t('storeOrders.detail.saveEditedLines')",
+      "t('storeOrders.detail.refreshImportPrices')",
+      "t('storeOrders.batchModify')",
+      "t('storeOrders.detail.selectedRows'",
+    ]
+
     assert(
       storeOrdersSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
       '列表页应使用仓库管理员操作权限开关',
@@ -360,13 +388,40 @@ async function main() {
       '详情页应使用仓库管理员操作权限开关',
     )
     assert(
+      detailSource.includes('const canUseStoreOrderDocumentActions = access.isWarehouseStaff'),
+      '详情页应为 WarehouseStaff 提供只读文档入口权限开关',
+    )
+    assert(
+      detailSource.includes('const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions'),
+      '详情页明细卡片 extra 应同时允许仓库管理员和 WarehouseStaff 文档入口，避免中文仓库经理被误隐藏',
+    )
+    assert(
       detailSource.includes('if (canUseWarehouseManagerActions && canEditOrder)'),
       '详情页编辑保护应同时检查仓库管理员权限',
     )
     assert(
-      detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? (') &&
-        detailSource.includes('extra={\n                canUseWarehouseManagerActions ? ('),
-      '详情页订单头和订单明细功能按钮应仅仓库管理员可见',
+      detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? ('),
+      '详情页订单头功能按钮应仅仓库管理员可见',
+    )
+    assert(
+      orderDetailSectionSource.includes('canUseStoreOrderDetailExtraActions ? (\n                  <Space wrap>') &&
+        orderDetailSectionSource.indexOf(detailExtraGuardText) >= 0 &&
+        orderDetailSectionSource.indexOf(detailExtraGuardText) < pickingButtonPosition &&
+        !isInsideGuard(managerGuardText, pickingButtonPosition) &&
+        pickingButtonSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
+        pickingButtonSource.includes('icon={<PrinterOutlined />}'),
+      '详情页配货单按钮应受只读文档入口权限控制，不能只由仓库管理员权限包住',
+    )
+    assert(
+      invoiceButtonPosition > 0 && isInsideGuard(managerGuardText, invoiceButtonPosition),
+      '详情页发票按钮仍应仅仓库管理员可见',
+    )
+    assert(
+      managerOnlyDetailActions.every((actionText) => {
+        const actionPosition = orderDetailSectionSource.indexOf(actionText)
+        return actionPosition > 0 && isInsideGuard(managerGuardText, actionPosition)
+      }),
+      '详情页明细管理功能按钮应继续受仓库管理员权限保护',
     )
     assert(
       detailSource.includes("column.key !== 'actions'") &&

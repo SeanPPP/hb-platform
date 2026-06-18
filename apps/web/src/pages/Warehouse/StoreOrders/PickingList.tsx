@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
+import { useAuthStore } from '../../../store/auth'
 import { getStores } from '../../../services/storeService'
 import { getStoreOrderDetail, startPickingStoreOrder } from '../../../services/storeOrderService'
 import { StoreOrderFlowStatus } from '../../../types/storeOrder'
@@ -23,6 +24,7 @@ export default function PickingListPage() {
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
+  const { access } = useAuthStore()
   const printRootRef = useRef<HTMLDivElement | null>(null)
   const pdfRootRef = useRef<HTMLDivElement | null>(null)
   // 记录当前配货单已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
@@ -34,12 +36,13 @@ export default function PickingListPage() {
   const [exportingExcel, setExportingExcel] = useState(false)
   const [order, setOrder] = useState<StoreOrderDetail | null>(null)
   const [store, setStore] = useState<StoreDto | null>(null)
+  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
   // 打印页日期格式跟随当前语言，但只限定本次需求中的中英文区域设置。
   const printLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
 
   useDynamicTabTitle(
     order?.orderNo
-      ? t('warehouse.pickingList.titleWithStore', { storeName: store?.storeName || order.storeCode || t('warehouse.pickingList.unknownStore'), orderNo: order.orderNo })
+      ? t('warehouse.pickingList.titleWithStore', { storeName: store?.storeName || order.storeName || order.storeCode || t('warehouse.pickingList.unknownStore'), orderNo: order.orderNo })
       : t('warehouse.pickingList.title'),
   )
 
@@ -69,7 +72,8 @@ export default function PickingListPage() {
         visibleOrderIdRef.current = detail.orderGUID || id
         setOrder(detail)
 
-        if (detail.storeCode) {
+        // WarehouseStaff 无需加载完整分店下拉；配货单只读展示直接使用订单详情里的分店名称。
+        if (detail.storeCode && canUseWarehouseManagerActions) {
           const storeResult = await getStores({
             search: detail.storeCode,
             page: 1,
@@ -162,7 +166,8 @@ export default function PickingListPage() {
       return true
     }
 
-    if (order.flowStatus === StoreOrderFlowStatus.Submitted) {
+    // WarehouseStaff 可打印/下载配货单，但不能借打印动作触发订单状态流转。
+    if (canUseWarehouseManagerActions && order.flowStatus === StoreOrderFlowStatus.Submitted) {
       await startPickingStoreOrder(order.orderGUID)
       setOrder((current) =>
         current
@@ -208,7 +213,7 @@ export default function PickingListPage() {
         pdfRootRef.current,
         buildDocumentFileName(
           t('warehouse.pickingList.fileName'),
-          store?.storeName || order.storeCode,
+          store?.storeName || order.storeName || order.storeCode,
           order.orderNo || order.orderGUID,
           'pdf',
           {
@@ -323,7 +328,7 @@ export default function PickingListPage() {
       link.href = url
       link.download = buildDocumentFileName(
         t('warehouse.pickingList.fileName'),
-        store?.storeName || order.storeCode,
+        store?.storeName || order.storeName || order.storeCode,
         order.orderNo || order.orderGUID,
         'xlsx',
         {
@@ -351,7 +356,7 @@ export default function PickingListPage() {
     return <Empty description={t('storeOrders.detail.orderDataNotFound')} style={{ marginTop: 120 }} />
   }
 
-  const displayStoreName = store?.storeName || order.storeCode || t('warehouse.pickingList.unknownStore')
+  const displayStoreName = store?.storeName || order.storeName || order.storeCode || t('warehouse.pickingList.unknownStore')
   const displayStoreText = store?.storeCode && store.storeCode !== displayStoreName
     ? `${displayStoreName} (${store.storeCode})`
     : displayStoreName

@@ -168,16 +168,32 @@ async function main() {
   })
   if (completeOrderOutboundDateFailure) failures.push(completeOrderOutboundDateFailure)
 
-  const disabledUiFailure = await runTest('非仓库管理员应禁用表头和明细写控件并隐藏明细功能按钮', () => {
+  const disabledUiFailure = await runTest('非仓库管理员应禁用表头和明细写控件，仅保留 WarehouseStaff 只读配货单入口', () => {
+    const orderDetailSectionSource = detailSource.slice(
+      detailSource.indexOf("title={t('storeOrders.orderDetailSection')}"),
+      detailSource.indexOf('className="store-order-detail-filter-bar"'),
+    )
+    const pickingButtonSource = orderDetailSectionSource.slice(
+      orderDetailSectionSource.indexOf('icon={<PrinterOutlined />}'),
+      orderDetailSectionSource.indexOf("t('storeOrders.pickingList')"),
+    )
+    const pickingButtonPosition = orderDetailSectionSource.indexOf("t('storeOrders.pickingList')")
+    const managerGuardPosition = orderDetailSectionSource.lastIndexOf('{canUseWarehouseManagerActions ? (', pickingButtonPosition)
+    const managerGuardClosePosition = orderDetailSectionSource.lastIndexOf(') : null}', pickingButtonPosition)
+
     assert(
       detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder}') &&
         detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder || validPastePreviewCount === 0}') &&
         detailSource.includes('disabled={isReadonlyOrder || !canStartPicking}') &&
         detailSource.includes('disabled={!canCompleteOrder}') &&
         detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? (') &&
-        detailSource.includes('extra={\n                canUseWarehouseManagerActions ? (') &&
+        detailSource.includes('const canUseStoreOrderDocumentActions = access.isWarehouseStaff') &&
+        detailSource.includes('const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions') &&
+        orderDetailSectionSource.includes('canUseStoreOrderDetailExtraActions ? (\n                  <Space wrap>') &&
+        pickingButtonSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
+        managerGuardPosition <= managerGuardClosePosition &&
         detailSource.includes('rowSelection={\n                  canUseWarehouseManagerActions'),
-      '详情页尚未按仓库管理员权限禁用写控件或隐藏明细功能按钮',
+      '详情页尚未按仓库管理员权限禁用写控件，或未为 WarehouseStaff 保留只读配货单入口',
     )
   })
   if (disabledUiFailure) failures.push(disabledUiFailure)
@@ -352,6 +368,37 @@ async function main() {
     }
   })
   if (storeOrderPrintPagesKeepAliveFailure) failures.push(storeOrderPrintPagesKeepAliveFailure)
+
+  const warehouseStaffPickingStoreLoadFailure = await runTest('配货单页 WarehouseStaff 不应请求完整分店下拉', () => {
+    assert(
+      pickingListSource.includes("import { useAuthStore } from '../../../store/auth'") &&
+        pickingListSource.includes('const { access } = useAuthStore()') &&
+        pickingListSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager') &&
+        pickingListSource.includes('if (detail.storeCode && canUseWarehouseManagerActions)') &&
+        pickingListSource.includes('WarehouseStaff 无需加载完整分店下拉') &&
+        pickingListSource.includes('store?.storeName || order.storeName || order.storeCode'),
+      '配货单页应跳过 WarehouseStaff 的完整分店接口请求，并使用订单详情中的 storeName/storeCode 展示',
+    )
+  })
+  if (warehouseStaffPickingStoreLoadFailure) failures.push(warehouseStaffPickingStoreLoadFailure)
+
+  const warehouseStaffPickingPrintFailure = await runTest('配货单页 WarehouseStaff 打印下载不应触发状态流转写接口', () => {
+    const beforePrintSource = pickingListSource.slice(
+      pickingListSource.indexOf('const handleBeforePrint = async () => {'),
+      pickingListSource.indexOf('const handlePrint = async () => {'),
+    )
+
+    assert(
+      beforePrintSource.includes('WarehouseStaff 可打印/下载配货单') &&
+        beforePrintSource.includes('if (canUseWarehouseManagerActions && order.flowStatus === StoreOrderFlowStatus.Submitted)') &&
+        beforePrintSource.includes('await startPickingStoreOrder(order.orderGUID)') &&
+        pickingListSource.includes('await handleBeforePrint()') &&
+        pickingListSource.includes('await printElementPagesAsPdf') &&
+        pickingListSource.includes('await downloadElementPagesAsPdf'),
+      '配货单打印/下载前只有仓库管理员可自动开始配货，WarehouseStaff 不能触发 start-picking 写接口',
+    )
+  })
+  if (warehouseStaffPickingPrintFailure) failures.push(warehouseStaffPickingPrintFailure)
 
   const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并跳过自动刷新', () => {
     assert(

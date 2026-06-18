@@ -43,6 +43,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from 're
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { useDynamicTabTitle } from '../../../../hooks/useDynamicTabTitle'
 import { useStableRouteContext } from '../../../../hooks/useStableRouteContext'
 import BarcodePreview from '../../../../components/BarcodePreview'
 import { getProductById, updateProduct } from '../../../../services/posProductService'
@@ -193,6 +194,19 @@ function buildInvoiceHeaderFormValues(data: LocalSupplierInvoiceDetailDto) {
     totalAmount: formatAmount(data.totalAmount),
     remarks: data.remarks,
   }
+}
+
+// 编辑页 Tab 使用“分店 + 供应商前 4 位 + 单号”快速识别订单，名称缺失时才回退编码。
+function buildInvoiceTabTitle(invoice: LocalSupplierInvoiceDetailDto | null, fallbackTitle: string) {
+  if (!invoice) return fallbackTitle
+
+  const storeSegment = invoice.storeName?.trim() || invoice.storeCode?.trim()
+  const supplierNameSegment = invoice.supplierName?.trim().slice(0, 4).toUpperCase()
+  const supplierCodeSegment = invoice.supplierCode?.trim().slice(0, 4).toUpperCase()
+  const supplierSegment = supplierNameSegment || supplierCodeSegment
+  const invoiceNoSegment = invoice.invoiceNo?.trim()
+
+  return [storeSegment, supplierSegment, invoiceNoSegment].filter(Boolean).join(' ') || fallbackTitle
 }
 
 function normalizeInvoiceSnapshot(data: LocalSupplierInvoiceDetailDto | null) {
@@ -507,6 +521,12 @@ export default function InvoiceEditPage() {
 
   /* ---- 主表数据 ---- */
   const [invoice, setInvoice] = useState<LocalSupplierInvoiceDetailDto | null>(null)
+  const invoiceTabTitle = useMemo(
+    () => buildInvoiceTabTitle(invoice, t('menu.editInvoice', '编辑进货单')),
+    [invoice, t],
+  )
+  // 这里只更新当前编辑页的 KeepAlive Tab 标题，不改变路由标题或面包屑。
+  useDynamicTabTitle(invoiceTabTitle)
   const [canAccessInvoice, setCanAccessInvoice] = useState(true)
   const [details, setDetails] = useState<LocalSupplierInvoiceItemDto[]>([])
   const [loading, setLoading] = useState(false)
