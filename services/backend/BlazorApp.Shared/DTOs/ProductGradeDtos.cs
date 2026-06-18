@@ -28,6 +28,13 @@ namespace BlazorApp.Shared.DTOs
         public string? Search { get; set; }
         public string? Grade { get; set; }
         public string? SupplierCode { get; set; }
+        public string? HbProductNo { get; set; }
+        public decimal? DomesticPriceMin { get; set; }
+        public decimal? DomesticPriceMax { get; set; }
+        public decimal? ImportPriceMin { get; set; }
+        public decimal? ImportPriceMax { get; set; }
+        public decimal? OemPriceMin { get; set; }
+        public decimal? OemPriceMax { get; set; }
         public string? SortField { get; set; }
         public string? SortDirection { get; set; }
     }

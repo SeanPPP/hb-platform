@@ -33,8 +33,16 @@ export interface ProductGradeListParams {
   search?: string
   grade?: string
   supplierCode?: string
+  hbProductNo?: string
+  domesticPriceMin?: number
+  domesticPriceMax?: number
+  importPriceMin?: number
+  importPriceMax?: number
+  oemPriceMin?: number
+  oemPriceMax?: number
   sortField?: string
   sortDirection?: 'asc' | 'desc'
+  signal?: AbortSignal
 }
 
 export interface ProductGradeListResult {

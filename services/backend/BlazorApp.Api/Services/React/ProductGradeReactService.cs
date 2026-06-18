@@ -50,10 +50,11 @@ namespace BlazorApp.Api.Services.React
                             (d.HBProductNo != null && d.HBProductNo.Contains(query.Search))
                             || (d.ProductName != null && d.ProductName.Contains(query.Search))
                             || (s.SupplierName != null && s.SupplierName.Contains(query.Search))
-                            || d.SupplierCode.Contains(query.Search)
+                            || (d.SupplierCode != null && d.SupplierCode.Contains(query.Search))
                     );
                 }
 
+                // 列头筛选必须在 Count/Skip/Take 之前进入数据库查询，避免只筛当前页导致总数和分页错误。
                 if (!string.IsNullOrWhiteSpace(query.Grade))
                 {
                     gradeQuery = gradeQuery.Where((g, d, s, w, p) => g.Grade == query.Grade);
@@ -66,14 +67,68 @@ namespace BlazorApp.Api.Services.React
                     );
                 }
 
+                if (!string.IsNullOrWhiteSpace(query.HbProductNo))
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) =>
+                            d.HBProductNo != null && d.HBProductNo.Contains(query.HbProductNo)
+                    );
+                }
+
+                if (query.DomesticPriceMin.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) => d.DomesticPrice >= query.DomesticPriceMin.Value
+                    );
+                }
+
+                if (query.DomesticPriceMax.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) => d.DomesticPrice <= query.DomesticPriceMax.Value
+                    );
+                }
+
+                if (query.ImportPriceMin.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) => w.ImportPrice >= query.ImportPriceMin.Value
+                    );
+                }
+
+                if (query.ImportPriceMax.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) => w.ImportPrice <= query.ImportPriceMax.Value
+                    );
+                }
+
+                if (query.OemPriceMin.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) => w.OEMPrice >= query.OemPriceMin.Value
+                    );
+                }
+
+                if (query.OemPriceMax.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p) => w.OEMPrice <= query.OemPriceMax.Value
+                    );
+                }
+
                 if (!string.IsNullOrEmpty(query.SortField))
                 {
                     var isDesc = query.SortDirection?.ToLower() == "desc";
+                    // 列头排序同样走服务端，确保排序后的结果再分页。
                     gradeQuery = query.SortField.ToLower() switch
                     {
                         "grade" => isDesc
                             ? gradeQuery.OrderByDescending((g, d, s, w, p) => g.Grade)
                             : gradeQuery.OrderBy((g, d, s, w, p) => g.Grade),
+                        "suppliercode" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => d.SupplierCode)
+                            : gradeQuery.OrderBy((g, d, s, w, p) => d.SupplierCode),
                         "hbproductno" => isDesc
                             ? gradeQuery.OrderByDescending((g, d, s, w, p) => d.HBProductNo)
                             : gradeQuery.OrderBy((g, d, s, w, p) => d.HBProductNo),
@@ -83,6 +138,12 @@ namespace BlazorApp.Api.Services.React
                         "domesticprice" => isDesc
                             ? gradeQuery.OrderByDescending((g, d, s, w, p) => d.DomesticPrice)
                             : gradeQuery.OrderBy((g, d, s, w, p) => d.DomesticPrice),
+                        "importprice" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => w.ImportPrice)
+                            : gradeQuery.OrderBy((g, d, s, w, p) => w.ImportPrice),
+                        "oemprice" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => w.OEMPrice)
+                            : gradeQuery.OrderBy((g, d, s, w, p) => w.OEMPrice),
                         "createdat" => isDesc
                             ? gradeQuery.OrderByDescending((g, d, s, w, p) => g.CreatedAt)
                             : gradeQuery.OrderBy((g, d, s, w, p) => g.CreatedAt),
@@ -423,7 +484,7 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<ApiResponse<List<ProductGradeBrief>>> GetProductGradesByProductCodesAsync(
+        public async Task<ApiResponse<List<ProductGradeDto>>> GetProductGradesByProductCodesAsync(
             List<string> productCodes
         )
         {
@@ -431,26 +492,60 @@ namespace BlazorApp.Api.Services.React
             {
                 if (productCodes == null || productCodes.Count == 0)
                 {
-                    return ApiResponse<List<ProductGradeBrief>>.OK(new List<ProductGradeBrief>());
+                    return ApiResponse<List<ProductGradeDto>>.OK(new List<ProductGradeDto>());
                 }
 
                 var db = _context.Db;
 
+                var normalizedProductCodes = productCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct()
+                    .ToList();
+
+                if (!normalizedProductCodes.Any())
+                {
+                    return ApiResponse<List<ProductGradeDto>>.OK(new List<ProductGradeDto>());
+                }
+
+                // 导出已选商品需要完整列表字段，保持 by-codes 端点一次性回齐图片、供应商和价格信息。
                 var grades = await db.Queryable<ProductGrade>()
-                    .Where(g => productCodes.Contains(g.ProductCode) && !g.IsDeleted)
-                    .Select(g => new ProductGradeBrief
-                    {
-                        ProductCode = g.ProductCode,
-                        Grade = g.Grade,
-                    })
+                    .LeftJoin<DomesticProduct>((g, d) => g.ProductCode == d.ProductCode)
+                    .LeftJoin<ChinaSupplier>((g, d, s) => d.SupplierCode == s.SupplierCode)
+                    .LeftJoin<WarehouseProduct>((g, d, s, w) => g.ProductCode == w.ProductCode)
+                    .LeftJoin<Product>((g, d, s, w, p) => g.ProductCode == p.UUID)
+                    .Where((g, d, s, w, p) => normalizedProductCodes.Contains(g.ProductCode) && !g.IsDeleted)
+                    .Select(
+                        (g, d, s, w, p) =>
+                            new ProductGradeDto
+                            {
+                                Id = g.Id,
+                                ProductCode = g.ProductCode,
+                                Grade = g.Grade,
+                                SupplierCode = d.SupplierCode,
+                                SupplierName = s.SupplierName,
+                                HbProductNo = d.HBProductNo,
+                                ProductName = d.ProductName,
+                                ProductImage = d.ProductImage,
+                                DomesticPrice = d.DomesticPrice,
+                                ImportPrice = w.ImportPrice,
+                                OemPrice = w.OEMPrice,
+                                RetailPrice = p.RetailPrice,
+                                Barcode = d.Barcode,
+                                CreatedAt = g.CreatedAt,
+                                UpdatedAt = g.UpdatedAt,
+                                CreatedBy = g.CreatedBy,
+                                UpdatedBy = g.UpdatedBy,
+                            }
+                    )
                     .ToListAsync();
 
-                return ApiResponse<List<ProductGradeBrief>>.OK(grades);
+                return ApiResponse<List<ProductGradeDto>>.OK(grades);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量查询商品等级失败");
-                return ApiResponse<List<ProductGradeBrief>>.Error(
+                return ApiResponse<List<ProductGradeDto>>.Error(
                     "批量查询商品等级失败",
                     "GET_GRADES_BY_CODES_ERROR"
                 );

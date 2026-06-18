@@ -9,7 +9,6 @@ import type {
   BatchUpdateGradePayload,
   PasteImportGradePayload,
   PasteImportResult,
-  ProductGradeBrief,
   BatchUpdateGradePricePayload,
   BatchUpdateGradePriceResult,
 } from '../types/productGrade'
@@ -48,9 +47,17 @@ export async function getProductGradeList(params: ProductGradeListParams): Promi
       search: params.search || undefined,
       grade: params.grade || undefined,
       supplierCode: params.supplierCode || undefined,
+      hbProductNo: params.hbProductNo || undefined,
+      domesticPriceMin: params.domesticPriceMin,
+      domesticPriceMax: params.domesticPriceMax,
+      importPriceMin: params.importPriceMin,
+      importPriceMax: params.importPriceMax,
+      oemPriceMin: params.oemPriceMin,
+      oemPriceMax: params.oemPriceMax,
       sortField: params.sortField || undefined,
       sortDirection: params.sortDirection || undefined,
     },
+    signal: params.signal,
   })
   const result = unwrapPagedResult(response)
   return {
@@ -81,9 +88,9 @@ export async function deleteProductGrade(id: string): Promise<boolean> {
   return unwrapApiData(response)
 }
 
-export async function getGradesByProductCodes(productCodes: string[]): Promise<ProductGradeBrief[]> {
-  const response = await request.post<ApiResponse<ProductGradeBrief[]>>(`${API_BASE}/by-codes`, productCodes)
-  return (unwrapApiData(response) as ProductGradeBrief[]) ?? []
+export async function getGradesByProductCodes(productCodes: string[]): Promise<ProductGradeListItem[]> {
+  const response = await request.post<ApiResponse<ApiItem[]>>(`${API_BASE}/by-codes`, productCodes)
+  return ((unwrapApiData(response) as ApiItem[]) ?? []).filter((item) => item != null).map(transformGradeItem)
 }
 
 export async function batchUpdateGradePrices(data: BatchUpdateGradePricePayload): Promise<BatchUpdateGradePriceResult> {

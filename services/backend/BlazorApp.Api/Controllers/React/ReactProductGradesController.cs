@@ -72,6 +72,13 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] string? search = null,
             [FromQuery] string? grade = null,
             [FromQuery] string? supplierCode = null,
+            [FromQuery] string? hbProductNo = null,
+            [FromQuery] decimal? domesticPriceMin = null,
+            [FromQuery] decimal? domesticPriceMax = null,
+            [FromQuery] decimal? importPriceMin = null,
+            [FromQuery] decimal? importPriceMax = null,
+            [FromQuery] decimal? oemPriceMin = null,
+            [FromQuery] decimal? oemPriceMax = null,
             [FromQuery] string? sortField = null,
             [FromQuery] string? sortDirection = null)
         {
@@ -84,6 +91,13 @@ namespace BlazorApp.Api.Controllers.React
                     Search = search,
                     Grade = grade,
                     SupplierCode = supplierCode,
+                    HbProductNo = hbProductNo,
+                    DomesticPriceMin = domesticPriceMin,
+                    DomesticPriceMax = domesticPriceMax,
+                    ImportPriceMin = importPriceMin,
+                    ImportPriceMax = importPriceMax,
+                    OemPriceMin = oemPriceMin,
+                    OemPriceMax = oemPriceMax,
                     SortField = sortField,
                     SortDirection = sortDirection,
                 };
