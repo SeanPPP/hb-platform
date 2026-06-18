@@ -156,7 +156,7 @@ export default function ProductCard({
               <Button
                 size="small"
                 onClick={() => applyQuantityChange(quantity - stepQuantity)}
-                disabled={loading || quantity <= 0}
+                disabled={quantity <= 0}
                 aria-label="Decrease quantity"
                 className="shop-product-quantity-button"
               >
@@ -172,14 +172,12 @@ export default function ProductCard({
                 onChange={(value) => setQuantity(normalizeQuantity(value))}
                 onBlur={() => applyQuantityChange(quantity)}
                 onPressEnter={() => applyQuantityChange(quantity)}
-                disabled={loading}
                 className="shop-product-quantity-input"
               />
               <Button
                 size="small"
                 type="primary"
                 onClick={() => applyQuantityChange(quantity + stepQuantity)}
-                disabled={loading}
                 aria-label="Increase quantity"
                 className="shop-product-quantity-button"
               >

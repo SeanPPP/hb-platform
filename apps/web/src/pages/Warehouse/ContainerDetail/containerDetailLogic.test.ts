@@ -59,6 +59,7 @@ import {
   getContainerDetailOemPriceSource,
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
+  getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
   getNextContainerDetailEditableCell,
   isContainerDetailSortField,
@@ -602,7 +603,49 @@ assertEqual(clearedRows[0].英文名称, undefined, '清除后本地行明细级
 assertEqual(clearedRows[0].商品信息?.英文名称, undefined, '清除后本地行商品信息英文名称应为空')
 
 const editableRowKeys = ['row-1', 'row-2', 'row-3']
-const editableColumnKeys = ['englishName', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark']
+const defaultPageColumnOrder: ContainerDetailTableColumnKey[] = [
+  'index',
+  'image',
+  'itemNumber',
+  'englishName',
+  'categoryName',
+  'containerPieces',
+  'packingQuantity',
+  'containerQuantity',
+  'unitVolume',
+  'domesticPrice',
+  'transportCost',
+  'unitTransportCost',
+  'floatRate',
+  'middlePackQuantity',
+  'warehouseImportPrice',
+  'importPrice',
+  'oemPrice',
+  'lastOEMPrice',
+  'newProduct',
+  'productType',
+  'matchType',
+  'barcode',
+  'productName',
+  'warehouseStatus',
+  'remark',
+]
+const editableColumnWhitelist = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
+const editableColumnKeys = getContainerDetailEditableColumnKeysInOrder(defaultPageColumnOrder, editableColumnWhitelist)
+
+assertDeepEqual(
+  editableColumnKeys,
+  ['englishName', 'packingQuantity', 'unitVolume', 'floatRate', 'middlePackQuantity', 'importPrice', 'oemPrice', 'remark'],
+  '默认页面列顺序应决定方向键可编辑列顺序',
+)
+assertDeepEqual(
+  getContainerDetailEditableColumnKeysInOrder(
+    ['remark', 'warehouseStatus', 'oemPrice', 'floatRate', 'englishName'],
+    editableColumnWhitelist,
+  ),
+  ['remark', 'oemPrice', 'floatRate', 'englishName'],
+  '自定义列顺序应决定方向键可编辑列顺序',
+)
 
 assertDeepEqual(
   getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'up'),
@@ -616,13 +659,13 @@ assertDeepEqual(
 )
 assertDeepEqual(
   getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'left'),
-  { rowKey: 'row-2', columnKey: 'middlePackQuantity' },
-  '方向键左应移动到同一行前一个编辑列',
+  { rowKey: 'row-2', columnKey: 'unitVolume' },
+  '方向键左应移动到同一行页面顺序的前一个编辑列',
 )
 assertDeepEqual(
   getNextContainerDetailEditableCell('row-2', 'floatRate', editableRowKeys, editableColumnKeys, 'right'),
-  { rowKey: 'row-2', columnKey: 'importPrice' },
-  '方向键右应移动到同一行后一个编辑列',
+  { rowKey: 'row-2', columnKey: 'middlePackQuantity' },
+  '方向键右应移动到同一行页面顺序的后一个编辑列',
 )
 assertEqual(
   getNextContainerDetailEditableCell('row-1', 'englishName', editableRowKeys, editableColumnKeys, 'up'),
@@ -2519,6 +2562,23 @@ assertEqual(
   true,
   '批量调整浮率输入应保持 2 位小数',
 )
+assertDeepEqual(
+  [
+    'value={row.单件装箱数}\n            keyboard={false}\n            min={0}\n            precision={0}\n            step={1}\n            controls={false}',
+    'value={row.单件体积}\n            keyboard={false}\n            min={0}\n            precision={3}\n            controls={false}',
+    'value={row.调整浮率}\n            keyboard={false}\n            precision={2}\n            controls={false}',
+    'value={row.中包数}\n            keyboard={false}\n            min={0}\n            precision={0}\n            controls={false}',
+    'value={row.进口价格}\n              keyboard={false}\n              min={0}\n              prefix="$"\n              precision={2}\n              controls={false}',
+    'value={row.贴牌价格}\n            keyboard={false}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
+    "<InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} controls={false}",
+    '<InputNumber value={batchImportPrice} placeholder={t(\'containers.fields.importPrice\')} min={0} prefix="$" precision={2} controls={false}',
+    '<InputNumber value={batchOemPrice} placeholder={t(\'containers.fields.oemPrice\')} min={0} prefix="$" precision={2} controls={false}',
+    '<InputNumber value={headerForm.汇率} precision={4} controls={false}',
+    '<InputNumber value={headerForm.运费} precision={2} controls={false}',
+  ].filter((snippet) => !pageSource.includes(snippet)),
+  [],
+  '货柜明细页所有可编辑数字输入都应关闭加减按钮',
+)
 assertEqual(pageSource.includes('value={row.进口价格}'), true, '进口价格输入框应受控，批量应用后立即刷新显示')
 assertEqual(pageSource.includes('defaultValue={row.进口价格}'), false, '进口价格输入框不能使用 defaultValue')
 assertEqual(pageSource.includes('const updatePayload: UpdateContainerRequest'), true, '保存货柜头部应使用窄更新 payload')
@@ -2685,6 +2745,14 @@ assertEqual(
     pageSource.includes("saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined })"),
   true,
   '中包数列应作为可编辑数字列保存到货柜明细更新接口',
+)
+assertEqual(
+  pageSource.includes('const orderedEditableColumnKeys = useMemo(') &&
+    pageSource.includes('getContainerDetailEditableColumnKeysInOrder(') &&
+    pageSource.includes('orderedBaseColumns.map((column) => String(column.key))') &&
+    pageSource.includes('orderedEditableColumnKeys,\n      direction,'),
+  true,
+  '方向键导航应按当前页面列顺序过滤可编辑列',
 )
 assertEqual(
   pageSource.includes('value={row.单件装箱数}\n            keyboard={false}\n            min={0}\n            precision={0}\n            step={1}') &&

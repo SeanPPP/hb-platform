@@ -211,6 +211,14 @@ export function isContainerDetailColumnOrderCustomized(
   return currentOrder.some((key, index) => key !== defaultOrder[index])
 }
 
+export function getContainerDetailEditableColumnKeysInOrder<ColumnKey extends string>(
+  currentColumnOrder: readonly string[],
+  editableColumnKeys: readonly ColumnKey[],
+): ColumnKey[] {
+  const editableColumnKeySet = new Set<string>(editableColumnKeys)
+  return currentColumnOrder.filter((key): key is ColumnKey => editableColumnKeySet.has(key))
+}
+
 export function getNextContainerDetailEditableCell(
   currentRowKey: string,
   currentColumnKey: string,

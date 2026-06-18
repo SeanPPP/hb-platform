@@ -35,6 +35,8 @@ const bestSellersFile = path.resolve(process.cwd(), 'src/pages/ShopHome/componen
 const bestSellersSource = readFileSync(bestSellersFile, 'utf8')
 const globalCssFile = path.resolve(process.cwd(), 'src/styles/global.css')
 const globalCssSource = readFileSync(globalCssFile, 'utf8')
+const zhLocaleSource = readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/zh.json'), 'utf8')
+const enLocaleSource = readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/en.json'), 'utf8')
 
 async function main() {
   const failures: string[] = []
@@ -48,12 +50,20 @@ async function main() {
 
     assert(
       shopHomeSource.includes('updateStoreOrderCartItem,') &&
+        shopHomeSource.includes('const SHOP_PRODUCT_QUANTITY_UPDATE_DEBOUNCE_MS = 300') &&
+        shopHomeSource.includes('const quantityUpdateTimersRef = useRef<Record<string, number>>({})') &&
+        shopHomeSource.includes('const quantityUpdateVersionRef = useRef<Record<string, number>>({})') &&
+        shopHomeSource.includes('Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))') &&
         body.includes('const nextCart = await updateStoreOrderCartItem({') &&
         body.includes('quantity: normalizedQuantity') &&
         body.includes('setCart(nextCart)') &&
-        body.includes('refreshDynamicDataForProducts([product.productCode])') &&
-        body.includes('setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: normalizedQuantity }))') &&
-        body.includes('delete next[product.productCode]') &&
+        body.includes('refreshDynamicDataForProducts([productCode])') &&
+        body.includes('setOptimisticCartQuantityMap((prev) => ({ ...prev, [productCode]: normalizedQuantity }))') &&
+        body.includes('delete next[productCode]') &&
+        body.includes('quantityUpdateTimersRef.current[productCode] = window.setTimeout') &&
+        body.includes('window.clearTimeout(quantityUpdateTimersRef.current[productCode])') &&
+        body.includes('quantityUpdateVersionRef.current[productCode] = updateVersion') &&
+        body.includes('quantityUpdateVersionRef.current[productCode] !== updateVersion') &&
         body.includes('setQuantityLoadingMap') &&
         body.includes('normalizedQuantity <= 0 && currentCartQuantity <= 0') &&
         !body.includes('refreshCart()'),
@@ -61,6 +71,29 @@ async function main() {
     )
   })
   if (productQuantityUpdateFailure) failures.push(productQuantityUpdateFailure)
+
+  const productQuantityUpdateSuccessMessageFailure = await runTest('商品卡数量保存成功后应只提示最新数量', () => {
+    const body = extractFunctionBody(
+      shopHomeSource,
+      'const handleProductQuantityChange = useCallback',
+      'const handleRemoveFromCart = async',
+    )
+    const refreshIndex = body.indexOf('await refreshDynamicDataForProducts([productCode])')
+    const latestVersionCheckIndex = body.indexOf('if (quantityUpdateVersionRef.current[productCode] !== updateVersion) return', refreshIndex)
+    const successMessageIndex = body.indexOf("message.success({", latestVersionCheckIndex)
+
+    assert(
+      refreshIndex >= 0 &&
+        latestVersionCheckIndex > refreshIndex &&
+        successMessageIndex > latestVersionCheckIndex &&
+        body.includes("content: t('shop.cartQuantityUpdated', { quantity: normalizedQuantity })") &&
+        body.includes('key: `shop-product-quantity-${productCode}`') &&
+        zhLocaleSource.includes('"cartQuantityUpdated": "数量已保存：{{quantity}}"') &&
+        enLocaleSource.includes('"cartQuantityUpdated": "Quantity saved: {{quantity}}"'),
+      '商品卡数量保存成功后缺少最新版本校验后的成功提示、message key，或 zh/en 文案不同步',
+    )
+  })
+  if (productQuantityUpdateSuccessMessageFailure) failures.push(productQuantityUpdateSuccessMessageFailure)
 
   const productCardAddFailure = await runTest('商品卡未入车商品应保留 Add 首次加购并乐观更新', () => {
     const body = extractFunctionBody(
@@ -119,7 +152,7 @@ async function main() {
     assert(
       shopHomeSource.includes('const refreshDynamicDataForProducts = useCallback') &&
         productAddBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
-        productQuantityBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
+        productQuantityBody.includes('refreshDynamicDataForProducts([productCode])') &&
         scanAddBody.includes('refreshDynamicDataForProducts([product.productCode])') &&
         !productAddBody.includes('refreshDynamicData()') &&
         !productQuantityBody.includes('refreshDynamicData()') &&
@@ -181,6 +214,58 @@ async function main() {
   })
   if (pageSizeOptionsFailure) failures.push(pageSizeOptionsFailure)
 
+  const cartOnlyFilterFailure = await runTest('商城首页购物车商品按钮应显示当前分店全部购物车商品', () => {
+    assert(
+      shopHomeSource.includes("import { ShoppingCartOutlined } from '@ant-design/icons'") &&
+        shopHomeSource.includes('const [cartOnlyFilter, setCartOnlyFilter] = useState(false)') &&
+        shopHomeSource.includes('const cart = useShopStore((state) => state.cart)') &&
+        shopHomeSource.includes('const cartProductItems = useMemo<StoreOrderProductItem[]>(() => {') &&
+        shopHomeSource.includes('return (cart?.items ?? []).map((item) => ({') &&
+        shopHomeSource.includes('const cartProductPageItems = useMemo(() => {') &&
+        shopHomeSource.includes('return cartProductItems.slice(startIndex, startIndex + pageSize)') &&
+        shopHomeSource.includes('const displayProducts = cartOnlyFilter ? cartProductPageItems : products') &&
+        shopHomeSource.includes('const displayTotal = cartOnlyFilter ? cartProductItems.length : total') &&
+        shopHomeSource.includes('const cartProductCount = cart?.items.length ?? 0') &&
+        shopHomeSource.includes('type={cartOnlyFilter ?') &&
+        shopHomeSource.includes('icon={<ShoppingCartOutlined />}') &&
+        shopHomeSource.includes('setCartOnlyFilter((current) => !current)') &&
+        shopHomeSource.includes("t('shop.cartProductsFilter', { count: cartProductCount })") &&
+        shopHomeSource.includes('cartOnlyFilter ? t(') &&
+        shopHomeSource.includes("t('shop.noCartProductsFound')"),
+      '商城首页购物车商品过滤没有读取 cart.items、没有本地分页，或没有独立按钮/空状态文案',
+    )
+  })
+  if (cartOnlyFilterFailure) failures.push(cartOnlyFilterFailure)
+
+  const cartOnlyDynamicDataFailure = await runTest('购物车商品过滤应使用购物车数量覆盖商品卡动态数据', () => {
+    assert(
+      shopHomeSource.includes('const cartProductDynamicDataMap = useMemo<Record<string, StoreOrderDynamicData>>(() => {') &&
+        shopHomeSource.includes('cartQuantity: item.quantity') &&
+        shopHomeSource.includes('cartOnlyFilter') &&
+        shopHomeSource.includes('? cartProductDynamicDataMap[productCode]?.cartQuantity') &&
+        shopHomeSource.includes(': dynamicDataMap[productCode]?.cartQuantity') &&
+        shopHomeSource.includes('const dynamicData = cartOnlyFilter') &&
+        shopHomeSource.includes('? cartProductDynamicDataMap[product.productCode]') &&
+        shopHomeSource.includes(': dynamicDataMap[product.productCode]') &&
+        shopHomeSource.includes('dynamicData={cardDynamicData}'),
+      '购物车过滤模式没有把购物车数量作为 ProductCard dynamicData 来源',
+    )
+  })
+  if (cartOnlyDynamicDataFailure) failures.push(cartOnlyDynamicDataFailure)
+
+  const cartOnlyI18nFailure = await runTest('购物车商品过滤文案应保持中英文同步', () => {
+    assert(
+      zhLocaleSource.includes('"cartProductsFilter": "购物车商品 ({{count}})"') &&
+        zhLocaleSource.includes('"cartProductsTitle": "购物车商品"') &&
+        zhLocaleSource.includes('"noCartProductsFound": "购物车暂无商品"') &&
+        enLocaleSource.includes('"cartProductsFilter": "Cart Products ({{count}})"') &&
+        enLocaleSource.includes('"cartProductsTitle": "Cart Products"') &&
+        enLocaleSource.includes('"noCartProductsFound": "No products in cart"'),
+      '购物车商品过滤缺少 zh/en 同步文案',
+    )
+  })
+  if (cartOnlyI18nFailure) failures.push(cartOnlyI18nFailure)
+
   const searchCategoryPathFailure = await runTest('搜索商品卡片应显示分类完整路径', () => {
     assert(
       shopHomeSource.includes('buildWarehouseCategoryLookup') &&
@@ -226,6 +311,9 @@ async function main() {
         productCardSource.includes('applyQuantityChange(quantity + stepQuantity)') &&
         productCardSource.includes('min={0}') &&
         productCardSource.includes('controls={false}') &&
+        productCardSource.includes('disabled={quantity <= 0}') &&
+        !productCardSource.includes('disabled={loading || quantity <= 0}') &&
+        !productCardSource.includes('disabled={loading}\n                className="shop-product-quantity-input"') &&
         productCardSource.includes('onBlur={() => applyQuantityChange(quantity)}') &&
         productCardSource.includes('onPressEnter={() => applyQuantityChange(quantity)}'),
       '商品卡数量控件没有默认 0、没有按 INNER 步进、没有保留 Add，或没有直接提交数量变化',

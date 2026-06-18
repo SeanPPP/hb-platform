@@ -140,6 +140,7 @@ import {
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
+  getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
   getContainerDetailBarcode,
   getContainerDetailCategoryGuid,
@@ -957,7 +958,7 @@ export default function ContainerDetailPage() {
       currentRowKey,
       columnKey,
       displayRows.map(rowKey),
-      CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS,
+      orderedEditableColumnKeys,
       direction,
     )
     if (!nextCell) {
@@ -2778,6 +2779,7 @@ export default function ContainerDetailPage() {
             min={0}
             precision={0}
             step={1}
+            controls={false}
             style={{ width: 72 }}
             onChange={(value) => patchRow(rowKey(row), { 单件装箱数: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -2815,6 +2817,7 @@ export default function ContainerDetailPage() {
             keyboard={false}
             min={0}
             precision={3}
+            controls={false}
             style={{ width: 72 }}
             onChange={(value) => patchRow(rowKey(row), { 单件体积: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -2868,6 +2871,7 @@ export default function ContainerDetailPage() {
             value={row.调整浮率}
             keyboard={false}
             precision={2}
+            controls={false}
             style={{ width: 78 }}
             onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -2893,6 +2897,7 @@ export default function ContainerDetailPage() {
             keyboard={false}
             min={0}
             precision={0}
+            controls={false}
             style={{ width: 68 }}
             onChange={(value) => patchRow(rowKey(row), { 中包数: value == null ? undefined : Number(value) })}
             onBlur={(event) => void saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
@@ -2926,6 +2931,7 @@ export default function ContainerDetailPage() {
               min={0}
               prefix="$"
               precision={2}
+              controls={false}
               style={{ width: 78 }}
               onChange={(value) => markPendingPricePatch(row, { 进口价格: value == null ? undefined : Number(value) })}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
@@ -2949,6 +2955,7 @@ export default function ContainerDetailPage() {
             min={0}
             prefix="$"
             precision={2}
+            controls={false}
             style={{ width: 78 }}
             onChange={(value) => markPendingPricePatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
@@ -3238,6 +3245,15 @@ export default function ContainerDetailPage() {
       .filter((column): column is ColumnsType<ContainerDetail>[number] => Boolean(column))
   }, [baseColumns, columnOrder, draggableColumnKeys])
 
+  const orderedEditableColumnKeys = useMemo(
+    () => getContainerDetailEditableColumnKeysInOrder(
+      // 方向键导航必须跟随当前页面列顺序，而不是固定的默认可编辑列顺序。
+      orderedBaseColumns.map((column) => String(column.key)),
+      CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS,
+    ),
+    [orderedBaseColumns],
+  )
+
   // 小屏竖屏时取消 AntD 固定列，避免固定选择列和左侧列占掉主要阅读空间。
   const columns = (viewport.isSmallPortrait
     ? orderedBaseColumns.map((column) => ({ ...column, fixed: undefined }))
@@ -3406,10 +3422,10 @@ export default function ContainerDetailPage() {
                 {headerEditing ? <DatePicker value={headerForm.实际到货日期} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 实际到货日期: value }))} /> : formatDate(container?.实际到货日期)}
               </Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.exchangeRate')}>
-                {headerEditing ? <InputNumber value={headerForm.汇率} precision={4} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 汇率: value ?? undefined }))} /> : formatNumber(container?.汇率, 4)}
+                {headerEditing ? <InputNumber value={headerForm.汇率} precision={4} controls={false} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 汇率: value ?? undefined }))} /> : formatNumber(container?.汇率, 4)}
               </Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.freight')}>
-                {headerEditing ? <InputNumber value={headerForm.运费} precision={2} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 运费: value ?? undefined }))} /> : formatNumber(container?.运费)}
+                {headerEditing ? <InputNumber value={headerForm.运费} precision={2} controls={false} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 运费: value ?? undefined }))} /> : formatNumber(container?.运费)}
               </Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.totalVolume')}>{formatNumber(container?.总体积, 4)}</Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.remark')} span={4}>
@@ -3560,15 +3576,15 @@ export default function ContainerDetailPage() {
 
                   {access.canEditContainer ? (
                     <Space wrap>
-                      <InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} onChange={setBatchFloatRate} />
+                      <InputNumber value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} controls={false} onChange={setBatchFloatRate} />
                       <Button onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
                       <Button loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>{t('containers.actions.recalculateCosts')}</Button>
                       {canBackfillLastPrices ? (
                         <Button loading={backfillLastPricesLoading} onClick={() => void handleBackfillLastPrices()}>{t('containers.actions.backfillLastPrices', '回填上次价格')}</Button>
                       ) : null}
                       <Button loading={matchDomesticDataLoading} onClick={() => void handleMatchDomesticData()}>{t('containers.actions.matchDomesticData')}</Button>
-                      <InputNumber value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} prefix="$" precision={2} onChange={setBatchImportPrice} />
-                      <InputNumber value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} prefix="$" precision={2} onChange={setBatchOemPrice} />
+                      <InputNumber value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchImportPrice} />
+                      <InputNumber value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchOemPrice} />
                       <Button
                         icon={<SaveOutlined />}
                         loading={priceDetailsSaving}
