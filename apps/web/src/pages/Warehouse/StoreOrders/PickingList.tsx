@@ -543,7 +543,7 @@ export default function PickingListPage() {
             </div>
 
             <div className="store-order-pdf-page-number">
-              {`第 ${pageIndex + 1} / ${pdfPages.length} 页`}
+              {t('warehouse.pickingList.pageNumber', { current: pageIndex + 1, total: pdfPages.length })}
             </div>
           </div>
         ))}

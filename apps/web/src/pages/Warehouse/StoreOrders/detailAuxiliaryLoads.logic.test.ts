@@ -364,7 +364,8 @@ async function main() {
         containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
-        containerDetailSource.includes('requestedDetailQueryKey: detailQueryKey') &&
+        containerDetailSource.includes('const activeLoadQueryKey = detailQueryKey') &&
+        containerDetailSource.includes('requestedDetailQueryKey: activeLoadQueryKey') &&
         containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
         containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
         containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&

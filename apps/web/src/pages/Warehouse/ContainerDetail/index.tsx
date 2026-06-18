@@ -1,6 +1,7 @@
 import {
   ArrowLeftOutlined,
   AppstoreOutlined,
+  CheckCircleOutlined,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
@@ -75,8 +76,11 @@ import {
 } from '../../../services/containerService'
 import {
   buildContainerCreateProductsOperationId,
+  buildContainerSubmitOperationId,
   createContainerProductCreationJob,
+  createContainerSubmitJob,
   waitForContainerProductCreationJob,
+  waitForContainerSubmitJob,
   type ContainerProductCreationJob,
   type ContainerProductCreationResultItem,
 } from '../../../services/containerProductCreationService'
@@ -551,6 +555,7 @@ export default function ContainerDetailPage() {
   const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
+  const [submitContainerLoading, setSubmitContainerLoading] = useState(false)
   const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   // 套装码弹窗状态 — 由 useContainerSetCode hook 管理
@@ -569,6 +574,7 @@ export default function ContainerDetailPage() {
   const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)
   const pushToHqLoadingRef = useRef(false)
   const createProductsLoadingRef = useRef(false)
+  const submitContainerLoadingRef = useRef(false)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
@@ -666,6 +672,8 @@ export default function ContainerDetailPage() {
   // 当前非标签查询已全量加载时，标签只在前端切换；未全量时仍用带标签查询交给后端兜底。
   const detailQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery
   const detailQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey
+  // 远程加载 effect 只依赖这个稳定 key，避免视口状态变化触发重复拉取。
+  const activeLoadQueryKey = detailQueryKey
 
   const reconcileLoadedMatchStatus = async (products: ContainerDetail[], requestId: number) => {
     const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
@@ -831,7 +839,7 @@ export default function ContainerDetailPage() {
       requestedDetailId: containerGuid,
       loadedDetailId: loadedContainerGuidRef.current,
       visibleDetailId: visibleContainerGuidRef.current,
-      requestedDetailQueryKey: detailQueryKey,
+      requestedDetailQueryKey: activeLoadQueryKey,
       loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
         ? lastLoadedContainerDetailSuccessRef.current?.queryKey
         : null,
@@ -845,7 +853,7 @@ export default function ContainerDetailPage() {
     }
     // detailQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, detailQueryKey])
+  }, [active, activeLoadQueryKey])
 
   useEffect(() => {
     // 标签可能只在前端过滤，不再触发远程重载；主动清空选择，保持批量操作范围清晰。
@@ -1100,12 +1108,65 @@ export default function ContainerDetailPage() {
     return allRows
   }
 
+  const fetchAllRowsForWholeContainer = async () => {
+    const allRows: ContainerDetail[] = []
+    let pageNumber = 1
+    let hasMore = true
+
+    while (hasMore) {
+      // 整柜提交确认必须按当前货柜完整明细统计，不能沿用页面筛选或勾选范围。
+      const result = await queryContainerProducts(containerGuid, buildContainerDetailQuery({
+        containerGuid,
+        filters: {},
+        selectedTags: [],
+        pageNumber,
+        pageSize: 500,
+      }))
+      allRows.push(...result.items)
+      hasMore = result.hasMore
+      pageNumber += 1
+    }
+
+    return allRows
+  }
+
+  const confirmSubmitContainer = (submitRows: ContainerDetail[]) => new Promise<boolean>((resolve) => {
+    const createCount = submitRows.filter((row) => row.是否新商品).length
+    const updateCount = submitRows.length - createCount
+
+    Modal.confirm({
+      title: t('containers.modals.submitContainerTitle', '提交货柜'),
+      content: (
+        <Space direction="vertical" size={8}>
+          <Typography.Text>
+            {t(
+              'containers.modals.submitContainerContent',
+              '确认提交当前货柜全部 {{total}} 条明细？本次将创建 {{created}} 个新商品，并更新 {{updated}} 个已有商品价格。',
+              { total: submitRows.length, created: createCount, updated: updateCount },
+            )}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {t(
+              'containers.modals.submitContainerScopeHint',
+              '提交范围为当前货柜全部未删除明细，不受当前筛选或勾选影响；成功后货柜状态会改为已完成。',
+            )}
+          </Typography.Text>
+        </Space>
+      ),
+      okText: t('containers.actions.submitContainer', '提交货柜'),
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
   const ensureTargetRowsVisible = () => {
     if (!hasHiddenSelectedRows) return true
     message.warning(t('containers.messages.selectedRowsHidden', '已选明细不在当前筛选结果中，请重新选择后再操作'))
     return false
   }
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
+  const canSubmitContainer = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
   const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager
   const pendingPricePatchList = useMemo(() => Object.values(pendingPricePatches), [pendingPricePatches])
@@ -2088,6 +2149,108 @@ export default function ContainerDetailPage() {
       description,
       duration: 0,
     })
+  }
+
+  const showSubmitContainerJobResult = (job: ContainerProductCreationJob) => {
+    const result = job.result
+    const description = (
+      <Space direction="vertical" size={8}>
+        <Typography.Text>
+          {t('containers.text.submitContainerJobSummary', '提交完成：创建 {{created}}，更新 {{updated}}，跳过 {{skipped}}，失败 {{failed}}', {
+            created: result.createdCount,
+            updated: result.updatedCount,
+            skipped: result.skippedCount,
+            failed: result.failedCount,
+          })}
+        </Typography.Text>
+        <Typography.Text type={result.containerCompleted ? 'success' : 'secondary'}>
+          {result.containerCompleted
+            ? t('containers.messages.containerMarkedCompleted', '货柜已标记为已完成')
+            : t('containers.messages.containerNotMarkedCompleted', '货柜状态未变更')}
+        </Typography.Text>
+        {job.message ? <Typography.Text type="secondary">{job.message}</Typography.Text> : null}
+        {result.updated.length ? (
+          <div>
+            <Typography.Text strong>{t('containers.text.updatedRows', '更新明细')}</Typography.Text>
+            {renderCreateProductResultItems(result.updated)}
+          </div>
+        ) : null}
+        {result.skipped.length ? (
+          <div>
+            <Typography.Text strong>{t('containers.text.skippedRows', '跳过明细')}</Typography.Text>
+            {renderCreateProductResultItems(result.skipped)}
+          </div>
+        ) : null}
+        {result.errors.length ? (
+          <div>
+            <Typography.Text strong>{t('containers.text.failedRows', '失败明细')}</Typography.Text>
+            {renderCreateProductResultItems(result.errors)}
+          </div>
+        ) : null}
+      </Space>
+    )
+
+    if (job.status === 'Failed' || result.failedCount > 0 || result.errors.length > 0) {
+      notification.error({
+        message: t('containers.messages.submitContainerJobFailed', '提交货柜失败'),
+        description,
+        duration: 0,
+      })
+      return
+    }
+
+    notification.success({
+      message: t('containers.messages.submitContainerJobSucceeded', '提交货柜完成'),
+      description,
+      duration: 0,
+    })
+  }
+
+  const submitContainer = async () => {
+    if (submitContainerLoadingRef.current) return
+    if (!canSubmitContainer) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+    if (!containerGuid) {
+      message.warning(t('containers.messages.missingContainerGuid', '缺少货柜 GUID'))
+      return
+    }
+    if (!ensureNoPendingPriceDetails()) return
+    blurActiveContainerDetailEditableCell()
+    try {
+      await flushPendingDetailSaves()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试'))
+      return
+    }
+
+    try {
+      submitContainerLoadingRef.current = true
+      setSubmitContainerLoading(true)
+      const submitRows = await fetchAllRowsForWholeContainer()
+      const confirmed = await confirmSubmitContainer(submitRows)
+      if (!confirmed) return
+      // 整柜提交由后端按当前货柜加载全部未删除明细，前端不传筛选或勾选范围。
+      const job = await createContainerSubmitJob({
+        operationId: buildContainerSubmitOperationId(containerGuid),
+        containerGuid,
+      })
+      message.info(t('containers.messages.submitContainerJobSubmitted', '提交货柜任务已提交，正在后台处理'))
+      const finalJob = job.status === 'Queued' || job.status === 'Running'
+        ? await waitForContainerSubmitJob(job.jobId)
+        : job
+      showSubmitContainerJobResult(finalJob)
+      if (finalJob.result.containerCompleted) {
+        setSelectedRowKeys([])
+        await loadData(false)
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.submitContainerFailed', '提交货柜失败'))
+    } finally {
+      submitContainerLoadingRef.current = false
+      setSubmitContainerLoading(false)
+    }
   }
 
   const createNewProducts = async () => {
@@ -3310,6 +3473,19 @@ export default function ContainerDetailPage() {
                         <Button loading={hqTranslating} onClick={() => void translateHqData()}>
                           {t('containers.actions.translateHqData')}
                         </Button>
+                      ) : null}
+                      {canSubmitContainer ? (
+                        <Tooltip title={pendingDetailSaveCount > 0 || pendingPricePatchCount > 0 ? t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/贴牌价格') : ''}>
+                          <Button
+                            type="primary"
+                            icon={<CheckCircleOutlined />}
+                            loading={submitContainerLoading}
+                            disabled={submitContainerLoading || pendingDetailSaveCount > 0 || pendingPricePatchCount > 0}
+                            onClick={() => void submitContainer()}
+                          >
+                            {t('containers.actions.submitContainer', '提交货柜')}
+                          </Button>
+                        </Tooltip>
                       ) : null}
                       {access.canManagePosProducts ? (
                         <Tooltip title={!selectedRowKeys.length ? t('containers.messages.selectProducts') : ''}>

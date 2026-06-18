@@ -2,6 +2,7 @@ import type { ApiResponse } from '../types/api'
 import request, { RequestError, unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/container-products/create-new-products'
+const SUBMIT_CONTAINER_API_BASE = '/api/react/v1/container-products/submit-container'
 
 export type ContainerProductCreationJobStatus = 'Queued' | 'Running' | 'Succeeded' | 'Failed'
 
@@ -9,6 +10,11 @@ export interface ContainerProductCreationJobRequest {
   operationId: string
   containerGuid: string
   detailHguids: string[]
+}
+
+export interface ContainerSubmitJobRequest {
+  operationId: string
+  containerGuid: string
 }
 
 export interface ContainerProductCreationResultItem {
@@ -21,9 +27,12 @@ export interface ContainerProductCreationResultItem {
 
 export interface ContainerProductCreationResult {
   createdCount: number
+  updatedCount: number
   skippedCount: number
   failedCount: number
+  containerCompleted: boolean
   created: ContainerProductCreationResultItem[]
+  updated: ContainerProductCreationResultItem[]
   skipped: ContainerProductCreationResultItem[]
   errors: ContainerProductCreationResultItem[]
 }
@@ -85,9 +94,12 @@ function normalizeResult(raw: Record<string, unknown>): ContainerProductCreation
 
   return {
     createdCount: readNumber(merged, ['createdCount', 'CreatedCount', 'created']),
+    updatedCount: readNumber(merged, ['updatedCount', 'UpdatedCount', 'updated']),
     skippedCount: readNumber(merged, ['skippedCount', 'SkippedCount', 'skipped']),
     failedCount: readNumber(merged, ['failedCount', 'FailedCount', 'failed', 'Failed', 'errorCount', 'ErrorCount']),
+    containerCompleted: Boolean(merged.containerCompleted ?? merged.ContainerCompleted ?? false),
     created: readArray<ContainerProductCreationResultItem>(merged, ['created', 'Created']),
+    updated: readArray<ContainerProductCreationResultItem>(merged, ['updated', 'Updated']),
     skipped: readArray<ContainerProductCreationResultItem>(merged, ['skipped', 'Skipped']),
     errors: readArray<ContainerProductCreationResultItem>(merged, ['errors', 'Errors']),
   }
@@ -121,11 +133,27 @@ export function buildContainerCreateProductsOperationId(containerGuid: string, d
   return `container-create-products:${containerGuid}:${detailPart}`
 }
 
+export function buildContainerSubmitOperationId(containerGuid: string) {
+  return `submit-container:${containerGuid.trim()}`
+}
+
 export async function createContainerProductCreationJob(
   data: ContainerProductCreationJobRequest,
 ): Promise<ContainerProductCreationJob> {
   const response = await request.post<ApiResponse<unknown>>(`${API_BASE}/jobs`, data)
   assertApiSuccess(response, '创建新商品 job 失败')
+  return normalizeJob(unwrapApiData(response))
+}
+
+export async function createContainerSubmitJob(
+  data: ContainerSubmitJobRequest,
+): Promise<ContainerProductCreationJob> {
+  const response = await request.post<ApiResponse<unknown>>(`${SUBMIT_CONTAINER_API_BASE}/jobs`, {
+    ...data,
+    detailHguids: [],
+    submitContainer: true,
+  })
+  assertApiSuccess(response, '提交货柜 job 失败')
   return normalizeJob(unwrapApiData(response))
 }
 
@@ -157,4 +185,14 @@ export async function waitForContainerProductCreationJob(
   }
 
   throw new RequestError('创建新商品 job 轮询超时', 200, { jobId })
+}
+
+export async function waitForContainerSubmitJob(
+  jobId: string,
+  options: {
+    pollIntervalMs?: number
+    timeoutMs?: number
+  } = {},
+): Promise<ContainerProductCreationJob> {
+  return waitForContainerProductCreationJob(jobId, options)
 }

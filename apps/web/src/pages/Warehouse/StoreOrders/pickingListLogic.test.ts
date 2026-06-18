@@ -366,8 +366,8 @@ runTest('配货单打印行高和字体应按 9mm 明细行稳定分页', () => 
   assertEqual(/text-align:\s*center/.test(headerCellRule), true, '表头单元格文本应水平居中')
   assertEqual(/vertical-align:\s*middle/.test(bodyCellRule), true, '明细单元格文本应垂直居中')
   assertEqual(/vertical-align:\s*middle/.test(headerCellRule), true, '表头单元格文本应垂直居中')
-  assertEqual(/border:\s*1px solid #d9d9d9/.test(bodyCellRule), true, '明细单元格应显示完整单元格线')
-  assertEqual(/border:\s*1px solid #d9d9d9/.test(headerCellRule), true, '表头单元格应显示完整单元格线')
+  assertEqual(/border:\s*1px solid #000/.test(bodyCellRule), true, '明细单元格应显示黑色实线单元格线')
+  assertEqual(/border:\s*1px solid #000/.test(headerCellRule), true, '表头单元格应显示黑色实线单元格线')
   assertEqual(readCssNumber(indexRule, 'font-size'), 14.5, '行号字体应为 14.5px')
   assertEqual(readCssNumber(itemRule, 'font-size'), 14.5, '货号字体应为 14.5px')
   assertEqual(readCssNumber(locationRule, 'font-size'), 14.5, '货位字体应为 14.5px')
@@ -511,6 +511,7 @@ runTest('配货单打印应绑定专用 A4 页面边距', () => {
 })
 
 runTest('配货单 PDF 页码区域应有独立底部留白', () => {
+  const pickingListSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx'), 'utf8')
   const printCssSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/print.css'), 'utf8')
   const pageRule = readCssRule(printCssSource, '.store-order-pdf-page.store-order-picking-paper')
   const bodyRule = readCssRule(printCssSource, '.store-order-pdf-page-body')
@@ -519,6 +520,20 @@ runTest('配货单 PDF 页码区域应有独立底部留白', () => {
   assertEqual(/padding:\s*6mm 5mm 12mm/.test(pageRule), true, 'PDF 页面底部应预留 12mm')
   assertEqual(/padding-bottom:\s*12mm/.test(bodyRule), true, 'PDF 内容区底部应避开页码')
   assertEqual(/bottom:\s*4mm/.test(pageNumberRule), true, '页码应固定在底部留白区域内')
+  assertEqual(
+    pickingListSource.includes("t('warehouse.pickingList.pageNumber', { current: pageIndex + 1, total: pdfPages.length })"),
+    true,
+    'PDF 页码应使用配货单专用国际化文案',
+  )
+  assertEqual(pickingListSource.includes('第 ${pageIndex + 1} / ${pdfPages.length} 页'), false, 'PDF 页码不应硬编码中文模板')
+})
+
+runTest('配货单 PDF 页码应包含中英文翻译', () => {
+  const zhLocale = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/zh.json'), 'utf8'))
+  const enLocale = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/en.json'), 'utf8'))
+
+  assertEqual(zhLocale.warehouse.pickingList.pageNumber, '第 {{current}} / {{total}} 页', '中文 PDF 页码应显示第 x / y 页')
+  assertEqual(enLocale.warehouse.pickingList.pageNumber, 'Page {{current}} / {{total}}', '英文 PDF 页码应显示 Page x / y')
 })
 
 console.log('pickingListLogic.test: ok')

@@ -57,6 +57,11 @@ function parseQuantity(rawQuantity: string | undefined, quantityColumnEnabled: b
   }
 
   const normalized = rawQuantity?.trim() ?? ''
+  if (!normalized) {
+    // 数量列存在但为空时按 1 处理，方便只粘贴货号或漏填数量的常见导入场景。
+    return { quantity: 1, quantityValid: true }
+  }
+
   const quantity = /^[1-9]\d*$/.test(normalized) ? Number.parseInt(normalized, 10) : 0
 
   return {

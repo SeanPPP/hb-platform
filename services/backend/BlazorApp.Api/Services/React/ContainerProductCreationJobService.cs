@@ -110,7 +110,15 @@ namespace BlazorApp.Api.Services.React
                 var status = result.FailedCount > 0
                     ? ContainerProductCreationJobStatusConstants.Failed
                     : ContainerProductCreationJobStatusConstants.Succeeded;
-                CompleteJob(jobState, status, result, status == ContainerProductCreationJobStatusConstants.Failed ? "创建新商品存在失败明细" : "创建新商品完成");
+                var actionName = jobState.Request.SubmitContainer ? "提交货柜" : "创建新商品";
+                CompleteJob(
+                    jobState,
+                    status,
+                    result,
+                    status == ContainerProductCreationJobStatusConstants.Failed
+                        ? $"{actionName}存在失败明细"
+                        : $"{actionName}完成"
+                );
             }
             catch (Exception ex)
             {
@@ -248,9 +256,12 @@ namespace BlazorApp.Api.Services.React
             return new ContainerProductCreationResultDto
             {
                 CreatedCount = result.CreatedCount,
+                UpdatedCount = result.UpdatedCount,
                 SkippedCount = result.SkippedCount,
                 FailedCount = result.FailedCount,
+                ContainerCompleted = result.ContainerCompleted,
                 Created = result.Created.Select(CloneItem).ToList(),
+                Updated = result.Updated.Select(CloneItem).ToList(),
                 Skipped = result.Skipped.Select(CloneItem).ToList(),
                 Errors = result.Errors.Select(CloneItem).ToList(),
             };
@@ -278,6 +289,7 @@ namespace BlazorApp.Api.Services.React
             {
                 OperationId = request?.OperationId?.Trim() ?? string.Empty,
                 ContainerGuid = request?.ContainerGuid?.Trim() ?? string.Empty,
+                SubmitContainer = request?.SubmitContainer ?? false,
                 DetailHguids = (request?.DetailHguids ?? new List<string>())
                     .Where(item => !string.IsNullOrWhiteSpace(item))
                     .Select(item => item.Trim())
@@ -289,11 +301,16 @@ namespace BlazorApp.Api.Services.React
 
         private static string BuildOperationKey(ContainerProductCreationJobRequestDto request)
         {
+            if (request.SubmitContainer)
+            {
+                return $"submit-container:{request.ContainerGuid}";
+            }
+
             var detailPart = request.DetailHguids.Count == 0
                 ? "empty"
                 : string.Join("|", request.DetailHguids);
             // 幂等键由后端根据业务范围生成，不信任前端 operationId 作为复用条件。
-            return $"{request.ContainerGuid}::{detailPart}";
+            return $"create-new-products::{request.ContainerGuid}::{detailPart}";
         }
 
         private static string NormalizeUserId(string? userId)
