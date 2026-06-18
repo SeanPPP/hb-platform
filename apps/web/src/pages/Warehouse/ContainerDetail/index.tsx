@@ -664,8 +664,8 @@ export default function ContainerDetailPage() {
     loadingMore: detailLoadingMore,
   })
   // 当前非标签查询已全量加载时，标签只在前端切换；未全量时仍用带标签查询交给后端兜底。
-  const activeLoadQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery
-  const activeLoadQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey
+  const detailQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery
+  const detailQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey
 
   const reconcileLoadedMatchStatus = async (products: ContainerDetail[], requestId: number) => {
     const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
@@ -761,7 +761,7 @@ export default function ContainerDetailPage() {
     try {
       const result = await queryContainerProducts(
         containerGuid,
-        { ...activeLoadQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
+        { ...detailQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
         controller.signal,
       )
       if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
@@ -774,7 +774,7 @@ export default function ContainerDetailPage() {
       setDetailHasMore(result.hasMore)
       setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
       if (mode === 'reset') {
-        lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: activeLoadQueryKey }
+        lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
       }
       void reconcileLoadedMatchStatus(result.items, currentRequestId)
     } catch (error) {
@@ -831,8 +831,10 @@ export default function ContainerDetailPage() {
       requestedDetailId: containerGuid,
       loadedDetailId: loadedContainerGuidRef.current,
       visibleDetailId: visibleContainerGuidRef.current,
-      requestedDetailQueryKey: activeLoadQueryKey,
-      loadedDetailQueryKey: loadedDetailQueryKey,
+      requestedDetailQueryKey: detailQueryKey,
+      loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+        ? lastLoadedContainerDetailSuccessRef.current?.queryKey
+        : null,
     })) {
       return
     }
@@ -841,9 +843,9 @@ export default function ContainerDetailPage() {
     return () => {
       detailAbortControllerRef.current?.abort()
     }
-    // activeLoadQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤。
+    // detailQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeLoadQueryKey])
+  }, [active, detailQueryKey])
 
   useEffect(() => {
     // 标签可能只在前端过滤，不再触发远程重载；主动清空选择，保持批量操作范围清晰。

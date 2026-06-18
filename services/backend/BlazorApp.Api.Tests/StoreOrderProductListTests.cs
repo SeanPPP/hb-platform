@@ -581,6 +581,108 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task PasteReplaceOrderLinesAsync_重新粘贴软删除明细_应复活并计入合计()
+    {
+        await SeedStoreOrderAsync("ORDER-PASTE-RESTORE");
+        await SeedOrderLineAsync(
+            "ORDER-PASTE-RESTORE",
+            "P-RESTORE",
+            "ITEM-RESTORE",
+            quantity: 4m,
+            allocQuantity: 6m,
+            isDeleted: true
+        );
+
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PASTE-RESTORE",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P-RESTORE", Quantity = 3m, Action = "replace" },
+            },
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var row = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PASTE-RESTORE" && item.ProductCode == "P-RESTORE")
+            .FirstAsync();
+        Assert.False(row.IsDeleted);
+        Assert.Equal(3m, row.AllocQuantity);
+        Assert.Equal(6m, row.ImportAmount);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-PASTE-RESTORE")
+            .FirstAsync();
+        Assert.Equal(6m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_批量粘贴两百行_应保持语义且避免逐行查询()
+    {
+        await SeedStoreOrderAsync("ORDER-PASTE-BULK");
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P001", "ITEM-001", quantity: 3m, allocQuantity: 4m);
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P002", "ITEM-002", quantity: 5m, allocQuantity: 6m);
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P003", "ITEM-003", quantity: 7m, allocQuantity: 8m);
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P004", "ITEM-004", quantity: 9m, allocQuantity: 10m);
+
+        for (var index = 5; index <= 210; index++)
+        {
+            var productCode = $"P{index:D3}";
+            await SeedProductAsync(productCode, $"ITEM-{index:D3}");
+            await SeedWarehouseProductAsync(productCode, oemPrice: 3m, importPrice: 2m);
+        }
+
+        var items = new List<ProductQuantityDto>
+        {
+            new() { ProductCode = "P001", Quantity = 5m, Action = "append" },
+            new() { ProductCode = "P002", Quantity = 12m, ImportPrice = 4m, Action = "replace" },
+            new() { ProductCode = "P003", Quantity = 99m, Action = "skip" },
+            new() { ProductCode = "P004", Quantity = 0m, Action = "replace" },
+        };
+        items.AddRange(
+            Enumerable.Range(5, 206)
+                .Select(index => new ProductQuantityDto
+                {
+                    ProductCode = $"P{index:D3}",
+                    Quantity = 2m,
+                    ImportPrice = index == 5 ? 9.5m : null,
+                    Action = "replace",
+                })
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PASTE-BULK",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = items,
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var rows = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(row => row.OrderGUID == "ORDER-PASTE-BULK")
+            .ToListAsync();
+
+        Assert.Equal(210, rows.Count);
+        Assert.Equal(9m, rows.Single(row => row.ProductCode == "P001").AllocQuantity);
+        Assert.Equal(12m, rows.Single(row => row.ProductCode == "P002").AllocQuantity);
+        Assert.Equal(4m, rows.Single(row => row.ProductCode == "P002").ImportPrice);
+        Assert.Equal(8m, rows.Single(row => row.ProductCode == "P003").AllocQuantity);
+        Assert.Equal(10m, rows.Single(row => row.ProductCode == "P004").AllocQuantity);
+        Assert.Equal(2m, rows.Single(row => row.ProductCode == "P005").AllocQuantity);
+        Assert.Equal(9.5m, rows.Single(row => row.ProductCode == "P005").ImportPrice);
+        Assert.Equal(19m, rows.Single(row => row.ProductCode == "P005").ImportAmount);
+
+        Assert.True(
+            _sqlLogs.Count <= 30,
+            $"Excel 粘贴应保持批量 SQL，实际执行 {_sqlLogs.Count} 条。"
+        );
+    }
+
+    [Fact]
     public async Task 首页预热轻量查询_不执行Count且只取首屏商品()
     {
         for (var index = 1; index <= 25; index++)

@@ -304,7 +304,10 @@ async function main() {
     assert(detailSource.includes('getEditedLinePayloads()'), '整单保存应从已修改行生成 payload')
     assert(detailSource.includes('batchUpdateStoreOrderLines({'), '整单保存应复用明细批量保存接口')
     assert(detailSource.includes("t('storeOrders.detail.saveEditedLines'"), '详情页缺少整单保存按钮文案')
-    assert(detailSource.includes('disabled={isReadonlyOrder || editedLineCount === 0}'), '整单保存应在只读或无修改时禁用')
+    assert(
+      detailSource.includes('disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || editedLineCount === 0}'),
+      '整单保存应在只读、临时预览或无修改时禁用',
+    )
     assert(detailSource.includes('setEditingRows((current) => {') && detailSource.includes('savedDetailGUIDs'), '整单保存成功后应清理已保存行编辑状态')
   })
   if (detailBulkSaveFailure) failures.push(detailBulkSaveFailure)
@@ -323,8 +326,8 @@ async function main() {
       '更新进货价二次确认应区分选中行和整单范围',
     )
     assert(
-      detailSource.includes('disabled={!detail || refreshImportPriceLoading}'),
-      '更新进货价按钮不应因为 isReadonlyOrder 禁用，已完成订单也应允许管理员/仓库管理员修正',
+      detailSource.includes('disabled={!detail || isPasteOptimisticPreviewActive || refreshImportPriceLoading}'),
+      '更新进货价按钮不应因为 isReadonlyOrder 禁用，但临时预览期间应等待后台刷新后再操作',
     )
   })
   if (detailRefreshImportPriceFailure) failures.push(detailRefreshImportPriceFailure)

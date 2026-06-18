@@ -97,6 +97,7 @@ import {
   parseStoreOrderPasteRows,
   setExistingPastePreviewAction,
   type StoreOrderPasteAction,
+  type StoreOrderPasteQuantityMode,
   type StoreOrderPastePreviewFilter,
   type StoreOrderPastePreviewItem,
 } from './pastePreview'
@@ -105,6 +106,12 @@ import {
   StoreOrderPasteReplacePollingTimeoutError,
   createStoreOrderPasteReplaceJobPoller,
 } from './pasteReplaceJobPolling'
+import {
+  applyPasteOptimisticRowsToDetail,
+  buildPasteOptimisticRows,
+  resolvePasteOptimisticPendingAfterJob,
+  type StoreOrderPasteOptimisticPending,
+} from './pasteOptimisticRows'
 import { formatStoreOrderVolume } from './volumeFormat'
 import './compact.css'
 
@@ -143,6 +150,15 @@ function formatCurrencyAmount(value?: number) {
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
+type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner'
+
+function resolvePasteTargetField(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteTargetField {
+  return writeTarget === 'allocQuantityByInner' ? 'allocQuantity' : writeTarget
+}
+
+function resolvePasteQuantityMode(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteQuantityMode {
+  return writeTarget === 'allocQuantityByInner' ? 'inner' : 'direct'
+}
 
 interface EditedLinePayload {
   detailGUID: string
@@ -765,7 +781,7 @@ export default function StoreOrderDetailPage() {
   const [quickAddItemNumber, setQuickAddItemNumber] = useState('')
   const [quickAddQuantity, setQuickAddQuantity] = useState<number>(1)
   const [pasteData, setPasteData] = useState('')
-  const [pasteTargetField, setPasteTargetField] = useState<StoreOrderPasteTargetField>('allocQuantity')
+  const [pasteTargetField, setPasteTargetField] = useState<StoreOrderPasteWriteTarget>('allocQuantity')
   const [detailItemFilter, setDetailItemFilter] = useState('')
   const [columnMapping, setColumnMapping] = useState({
     itemNumber: 0,
@@ -776,6 +792,7 @@ export default function StoreOrderDetailPage() {
   const [pastePreviewFilter, setPastePreviewFilter] = useState<StoreOrderPastePreviewFilter>('all')
   const [parsingPaste, setParsingPaste] = useState(false)
   const [submittingPaste, setSubmittingPaste] = useState(false)
+  const [pasteOptimisticPending, setPasteOptimisticPending] = useState<StoreOrderPasteOptimisticPending | null>(null)
   const [refreshImportPriceLoading, setRefreshImportPriceLoading] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
   const [detailPageSize, setDetailPageSize] = useState(50)
@@ -1003,6 +1020,7 @@ export default function StoreOrderDetailPage() {
     return () => {
       stopPasteReplacePollingRef.current?.()
       stopPasteReplacePollingRef.current = null
+      setPasteOptimisticPending(null)
     }
   }, [id])
 
@@ -1095,6 +1113,8 @@ export default function StoreOrderDetailPage() {
     () => buildPasteSubmitItems(pastePreviewItems).length,
     [pastePreviewItems],
   )
+  const pasteQuantityMode = resolvePasteQuantityMode(pasteTargetField)
+  const pasteApiTargetField = resolvePasteTargetField(pasteTargetField)
 
   const filteredPastePreviewItems = useMemo(
     () => filterPastePreviewItems(pastePreviewItems, pastePreviewFilter),
@@ -1186,6 +1206,7 @@ export default function StoreOrderDetailPage() {
     canCompleteOrder,
     isReadonlyOrder,
   } = deriveStoreOrderDetailPermissions(detail?.flowStatus)
+  const isPasteOptimisticPreviewActive = pasteOptimisticPending?.orderGUID === detail?.orderGUID
 
   function ensureOrderEditable() {
     if (canUseWarehouseManagerActions && canEditOrder) {
@@ -1632,7 +1653,7 @@ export default function StoreOrderDetailPage() {
     })
   }
 
-  const resetPasteState = (targetField: StoreOrderPasteTargetField = 'allocQuantity') => {
+  const resetPasteState = (targetField: StoreOrderPasteWriteTarget = 'allocQuantity') => {
     setPasteData('')
     setPasteTargetField(targetField)
     setColumnMapping({
@@ -1695,7 +1716,7 @@ export default function StoreOrderDetailPage() {
       return
     }
 
-    const validItems = buildPasteSubmitItems(pastePreviewItems)
+    const validItems = buildPasteSubmitItems(pastePreviewItems, { quantityMode: pasteQuantityMode })
 
     if (!validItems.length) {
       message.warning(t('storeOrders.detail.noValidImportProducts'))
@@ -1707,16 +1728,24 @@ export default function StoreOrderDetailPage() {
       const orderGUID = detail.orderGUID
       stopPasteReplacePollingRef.current?.()
       stopPasteReplacePollingRef.current = null
+      setPasteOptimisticPending(null)
 
       const createdJob = await createStoreOrderPasteReplaceJob({
         orderGUID,
-        targetField: pasteTargetField,
+        targetField: pasteApiTargetField,
         items: validItems,
       })
       if (!createdJob.jobId) {
         message.error(createdJob.message || t('storeOrders.detail.pasteImportFailed'))
         return
       }
+
+      const optimisticRows = buildPasteOptimisticRows({
+        currentItems: detail.items,
+        previewItems: pastePreviewItems,
+        targetField: pasteApiTargetField,
+        quantityMode: pasteQuantityMode,
+      })
 
       // 后端批量导入改为后台 job，前端只负责等待终态并刷新当前订单。
       const poller = createStoreOrderPasteReplaceJobPoller({
@@ -1725,21 +1754,38 @@ export default function StoreOrderDetailPage() {
       })
       stopPasteReplacePollingRef.current = poller.stop
 
+      // Job 创建成功后先展示 Excel 预览行，避免大批量写入期间表格长时间没有反馈。
+      setPasteOptimisticPending({
+        jobId: createdJob.jobId,
+        orderGUID,
+      })
+      setDetail((current) =>
+        current?.orderGUID === orderGUID
+          ? applyPasteOptimisticRowsToDetail(current, optimisticRows)
+          : current,
+      )
+      setDetailPage(1)
+      setSelectedLineKeys([])
+      setEditingRows({})
       setPasteModalOpen(false)
       resetPasteState(pasteTargetField)
-      message.success(t('storeOrders.detail.pasteJobSubmitted', '导入任务已提交，完成后会自动提示结果。'))
+      message.success(t('storeOrders.detail.pasteJobSubmitted', '已先显示本次 Excel 预览，后台正在写入；完成后会自动刷新确认。'))
 
       void poller.promise
         .then(async (result) => {
           if (stopPasteReplacePollingRef.current === poller.stop) {
             stopPasteReplacePollingRef.current = null
           }
+          setPasteOptimisticPending((current) => resolvePasteOptimisticPendingAfterJob(current, result))
 
           if (result.status === 'Failed') {
             notification.error({
               message: t('storeOrders.detail.pasteImportFailed'),
               description: result.message,
             })
+            if (visibleDetailIdRef.current === orderGUID) {
+              await loadDetail(false)
+            }
             return
           }
 
@@ -1753,24 +1799,33 @@ export default function StoreOrderDetailPage() {
             await loadDetail(false)
           }
         })
-        .catch((error) => {
+        .catch(async (error) => {
           if (error instanceof StoreOrderPasteReplacePollingCancelledError) {
             return
           }
           if (stopPasteReplacePollingRef.current === poller.stop) {
             stopPasteReplacePollingRef.current = null
           }
+          setPasteOptimisticPending((current) =>
+            current?.jobId === createdJob.jobId ? null : current,
+          )
           if (error instanceof StoreOrderPasteReplacePollingTimeoutError) {
             notification.warning({
               message: t('storeOrders.detail.pasteImportTimeout', 'Excel 粘贴导入仍在后台执行'),
               description: t('storeOrders.detail.pasteImportTimeoutDesc', '后台任务仍可能继续执行，请稍后刷新订单明细确认结果。'),
             })
+            if (visibleDetailIdRef.current === orderGUID) {
+              await loadDetail(false)
+            }
             return
           }
           notification.error({
             message: t('storeOrders.detail.pasteImportFailed'),
             description: error instanceof Error ? error.message : undefined,
           })
+          if (visibleDetailIdRef.current === orderGUID) {
+            await loadDetail(false)
+          }
         })
     } catch (error) {
       console.error(error)
@@ -2075,7 +2130,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'allocQuantity', node)}
           min={0}
           precision={0}
-          disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+          disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={getQuantityHighlight(record)}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.allocQuantity ?? value ?? 0}
@@ -2101,7 +2156,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
-          disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+          disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.importPrice ?? value}
@@ -2181,7 +2236,7 @@ export default function StoreOrderDetailPage() {
               icon={<SaveOutlined />}
               aria-label={t('common.save')}
               className="store-order-detail-action-button"
-              disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+              disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
               onClick={() => void handleSaveLine(record)}
             />
           </Tooltip>
@@ -2192,7 +2247,7 @@ export default function StoreOrderDetailPage() {
               icon={<EditOutlined />}
               aria-label={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}
               className="store-order-detail-action-button"
-              disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+              disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
               onClick={() => void handleToggleLineStatus(record)}
             />
           </Tooltip>
@@ -2210,7 +2265,7 @@ export default function StoreOrderDetailPage() {
                 icon={<DeleteOutlined />}
                 aria-label={t('common.delete')}
                 className="store-order-detail-action-button"
-                disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+                disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
               />
             </Tooltip>
           </Popconfirm>
@@ -2465,7 +2520,7 @@ export default function StoreOrderDetailPage() {
                   <Space wrap>
                     <Input
                       allowClear
-                      disabled={isReadonlyOrder}
+                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
                       placeholder={t('storeOrders.quickAddPlaceholder')}
                       style={{ width: 220 }}
                       value={quickAddItemNumber}
@@ -2475,7 +2530,7 @@ export default function StoreOrderDetailPage() {
                     <InputNumber
                       min={1}
                       precision={0}
-                      disabled={isReadonlyOrder}
+                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
                       placeholder={t('storeOrders.allocQtyPlaceholder')}
                       value={quickAddQuantity}
                       onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
@@ -2483,18 +2538,18 @@ export default function StoreOrderDetailPage() {
                     <Button
                       icon={<PlusOutlined />}
                       loading={lineActionLoading}
-                      disabled={isReadonlyOrder}
+                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
                       onClick={() => void handleQuickAdd()}
                     >
                       {t('storeOrders.quickAdd')}
                     </Button>
-                    <Button icon={<SearchOutlined />} disabled={isReadonlyOrder} onClick={() => setPickerOpen(true)}>
+                    <Button icon={<SearchOutlined />} disabled={isReadonlyOrder || isPasteOptimisticPreviewActive} onClick={() => setPickerOpen(true)}>
                       {t('storeOrders.selectProduct')}
                     </Button>
                     <Button
                       icon={<ContainerOutlined />}
                       loading={containerPickerLoading}
-                      disabled={isReadonlyOrder}
+                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
                       onClick={() => void handleOpenContainerPicker()}
                     >
                       {t('storeOrders.containerPicker')}
@@ -2514,7 +2569,7 @@ export default function StoreOrderDetailPage() {
                     <Button
                       icon={<CopyOutlined />}
                       className="store-order-excel-paste-button"
-                      disabled={isReadonlyOrder}
+                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
                       onClick={() => {
                         resetPasteState('allocQuantity')
                         setPasteModalOpen(true)
@@ -2526,7 +2581,7 @@ export default function StoreOrderDetailPage() {
                       icon={<SaveOutlined />}
                       className="store-order-save-edited-lines-button"
                       loading={lineActionLoading}
-                      disabled={isReadonlyOrder || editedLineCount === 0}
+                      disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || editedLineCount === 0}
                       onClick={() => void handleSaveEditedLines()}
                     >
                       {t('storeOrders.detail.saveEditedLines')}
@@ -2534,12 +2589,12 @@ export default function StoreOrderDetailPage() {
                     <Button
                       icon={<SyncOutlined />}
                       loading={refreshImportPriceLoading}
-                      disabled={!detail || refreshImportPriceLoading}
+                      disabled={!detail || isPasteOptimisticPreviewActive || refreshImportPriceLoading}
                       onClick={handleRefreshImportPricesFromWarehouse}
                     >
                       {t('storeOrders.detail.refreshImportPrices')}
                     </Button>
-                    <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
+                    <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                       {t('storeOrders.batchModify')}
                     </Button>
                     <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
@@ -2547,6 +2602,18 @@ export default function StoreOrderDetailPage() {
                 ) : undefined
               }
             >
+              {isPasteOptimisticPreviewActive ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={t('storeOrders.detail.pasteOptimisticPreviewTitle', '已先显示本次 Excel 预览')}
+                  description={t(
+                    'storeOrders.detail.pasteOptimisticPreviewDescription',
+                    '后台正在写入；完成后会自动刷新确认。失败时会刷新服务器数据并提示原因。',
+                  )}
+                  style={{ marginBottom: 12 }}
+                />
+              ) : null}
               <div className="store-order-detail-filter-bar">
                 <Space wrap size={[8, 8]}>
                   <Typography.Text strong>{t('storeOrders.statsFilter')}</Typography.Text>
@@ -2715,12 +2782,18 @@ export default function StoreOrderDetailPage() {
                   <div style={{ marginTop: 8 }}>
                     <Radio.Group
                       value={pasteTargetField}
-                      onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteTargetField)}
+                      onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteWriteTarget)}
                     >
                       <Radio value="allocQuantity">{t('storeOrders.detail.allocQuantityDefault')}</Radio>
+                      <Radio value="allocQuantityByInner">{t('storeOrders.detail.allocQuantityByInner')}</Radio>
                       <Radio value="quantity">{t('storeOrders.detail.orderQuantity')}</Radio>
                     </Radio.Group>
                   </div>
+                  <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
+                    {pasteTargetField === 'allocQuantityByInner'
+                      ? t('storeOrders.detail.allocQuantityByInnerHelp')
+                      : t('storeOrders.detail.writeTargetHelp')}
+                  </Typography.Text>
                 </div>
 
                 <div>
@@ -2878,15 +2951,15 @@ export default function StoreOrderDetailPage() {
                           key: 'existingQuantity',
                           width: 100,
                           render: (_, record) => {
-                            const value = pasteTargetField === 'allocQuantity' ? record.existingAllocQuantity : record.existingQuantity
+                            const value = pasteApiTargetField === 'allocQuantity' ? record.existingAllocQuantity : record.existingQuantity
                             return value === undefined ? '--' : value
                           },
                         },
                         {
-                          title: pasteTargetField === 'allocQuantity' ? t('column.shipQuantity') : t('column.orderQuantity'),
+                          title: pasteApiTargetField === 'allocQuantity' ? t('column.shipQuantity') : t('column.orderQuantity'),
                           dataIndex: 'quantity',
                           width: 110,
-                          render: (_, record) => formatPastePreviewQuantity(record),
+                          render: (_, record) => formatPastePreviewQuantity(record, pasteQuantityMode),
                         },
                         {
                           title: t('storeOrders.detail.pasteAction', '处理方式'),

@@ -4293,14 +4293,7 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                foreach (
-                    var item in request.Items.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
-                )
-                {
-                    await PasteReplaceDetailAsync(order, item, request.TargetField);
-                }
-
-                await UpdateOrderTotalAsync(order.OrderGUID);
+                await PasteReplaceDetailsBatchAsync(order, request.Items, request.TargetField);
                 return new ApiResponse<bool> { Success = true, Data = true };
             }
             catch (Exception ex)
@@ -5081,6 +5074,250 @@ namespace BlazorApp.Api.Services.React
             else
             {
                 await _db.Insertable(detail).ExecuteCommandAsync();
+            }
+        }
+
+        private async Task PasteReplaceDetailsBatchAsync(
+            WareHouseOrder order,
+            IReadOnlyCollection<ProductQuantityDto> items,
+            string targetField
+        )
+        {
+            var importableItems = items
+                .Where(item =>
+                    !string.IsNullOrWhiteSpace(item.ProductCode)
+                    && item.Quantity > 0
+                    && !string.Equals(
+                        NormalizePasteAction(item.Action),
+                        StoreOrderPasteActions.Skip,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                .Select(item => new ProductQuantityDto
+                {
+                    ProductCode = item.ProductCode.Trim(),
+                    Quantity = item.Quantity,
+                    ImportPrice = item.ImportPrice,
+                    Action = NormalizePasteAction(item.Action),
+                })
+                .ToList();
+
+            if (importableItems.Count == 0)
+            {
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                return;
+            }
+
+            var now = DateTime.Now;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            var productCodes = importableItems
+                .Select(item => item.ProductCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // Excel 粘贴常见 200+ 行，必须批量读取基础资料和现有明细，避免逐行查询拖慢后台任务。
+            var existingDetails = await _db.Queryable<WareHouseOrderDetails>()
+                .Where(detail =>
+                    detail.OrderGUID == order.OrderGUID
+                    && detail.ProductCode != null
+                    && productCodes.Contains(detail.ProductCode)
+                )
+                .ToListAsync();
+            var detailByProductCode = existingDetails
+                .Where(detail => !string.IsNullOrWhiteSpace(detail.ProductCode))
+                .GroupBy(detail => detail.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderBy(detail => detail.IsDeleted ? 1 : 0)
+                        .First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var warehouseProducts = await _db.Queryable<WarehouseProduct>()
+                .Where(product => productCodes.Contains(product.ProductCode))
+                .ToListAsync();
+            var warehouseProductByCode = warehouseProducts
+                .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var productCodesMissingWarehouse = productCodes
+                .Where(code => !warehouseProductByCode.ContainsKey(code))
+                .ToList();
+            var productMasterCodes = productCodesMissingWarehouse.Count == 0
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                : (await _db.Queryable<Product>()
+                    .Where(product =>
+                        product.ProductCode != null
+                        && productCodesMissingWarehouse.Contains(product.ProductCode)
+                    )
+                    .Select(product => product.ProductCode!)
+                    .ToListAsync())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var productCode in productCodesMissingWarehouse)
+            {
+                if (!productMasterCodes.Contains(productCode))
+                {
+                    throw new Exception($"Product {productCode} not found");
+                }
+            }
+
+            var insertedDetails = new List<WareHouseOrderDetails>();
+            var touchedDetails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var detailsToDelete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in importableItems)
+            {
+                var warehouseProduct = warehouseProductByCode.TryGetValue(
+                    item.ProductCode,
+                    out var existingWarehouseProduct
+                )
+                    ? existingWarehouseProduct
+                    : new WarehouseProduct
+                    {
+                        ProductCode = item.ProductCode,
+                        OEMPrice = 0,
+                        ImportPrice = 0,
+                        MinOrderQuantity = 1,
+                    };
+
+                var isNewDetail = false;
+                if (!detailByProductCode.TryGetValue(item.ProductCode, out var detail))
+                {
+                    isNewDetail = true;
+                    detail = new WareHouseOrderDetails
+                    {
+                        DetailGUID = UuidHelper.GenerateUuid7(),
+                        OrderGUID = order.OrderGUID,
+                        StoreCode = order.StoreCode,
+                        ProductCode = item.ProductCode,
+                        Quantity = 0,
+                        AllocQuantity = 0,
+                        OEMPrice = warehouseProduct.OEMPrice ?? 0,
+                        OEMAmount = 0,
+                        ImportPrice = item.ImportPrice ?? warehouseProduct.ImportPrice ?? 0,
+                        ImportAmount = 0,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = currentUser,
+                        UpdatedBy = currentUser,
+                    };
+                    detailByProductCode[item.ProductCode] = detail;
+                    insertedDetails.Add(detail);
+                }
+                else if (item.ImportPrice.HasValue)
+                {
+                    detail.ImportPrice = item.ImportPrice.Value;
+                }
+
+                // 删除明细是软删；再次粘贴同商品时应复活该行，否则任务成功但刷新后仍不可见。
+                detail.IsDeleted = false;
+
+                var nextQuantity = item.Quantity;
+                if (
+                    string.Equals(
+                        item.Action,
+                        StoreOrderPasteActions.Append,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    // 追加基于本轮已合并的明细值，兼容同一批 Excel 内重复货号的顺序叠加。
+                    nextQuantity =
+                        string.Equals(
+                            targetField,
+                            StoreOrderPasteTargetFields.Quantity,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                            ? (detail.Quantity ?? 0) + item.Quantity
+                            : (detail.AllocQuantity ?? 0) + item.Quantity;
+                }
+
+                if (
+                    string.Equals(
+                        targetField,
+                        StoreOrderPasteTargetFields.Quantity,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    detail.Quantity = nextQuantity;
+                }
+                else
+                {
+                    detail.AllocQuantity = nextQuantity;
+                }
+
+                var allocQuantity = detail.AllocQuantity ?? 0;
+                detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
+                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                detail.UpdatedAt = now;
+                detail.UpdatedBy = currentUser;
+
+                if ((detail.Quantity ?? 0) <= 0 && allocQuantity <= 0)
+                {
+                    if (!isNewDetail && !string.IsNullOrWhiteSpace(detail.DetailGUID))
+                    {
+                        detailsToDelete.Add(detail.DetailGUID);
+                    }
+                    continue;
+                }
+
+                if (!isNewDetail && !string.IsNullOrWhiteSpace(detail.DetailGUID))
+                {
+                    touchedDetails.Add(detail.DetailGUID);
+                }
+            }
+
+            var detailsToInsert = insertedDetails
+                .Where(detail =>
+                    (detail.Quantity ?? 0) > 0
+                    || (detail.AllocQuantity ?? 0) > 0
+                )
+                .ToList();
+            var detailsToUpdate = existingDetails
+                .Where(detail =>
+                    !string.IsNullOrWhiteSpace(detail.DetailGUID)
+                    && touchedDetails.Contains(detail.DetailGUID)
+                    && !detailsToDelete.Contains(detail.DetailGUID)
+                )
+                .ToList();
+
+            try
+            {
+                _db.Ado.BeginTran();
+
+                if (detailsToDelete.Count > 0)
+                {
+                    var detailGuids = detailsToDelete.ToList();
+                    await _db.Deleteable<WareHouseOrderDetails>()
+                        .Where(detail => detailGuids.Contains(detail.DetailGUID))
+                        .ExecuteCommandAsync();
+                }
+
+                if (detailsToUpdate.Count > 0)
+                {
+                    await _db.Updateable(detailsToUpdate).ExecuteCommandAsync();
+                }
+
+                if (detailsToInsert.Count > 0)
+                {
+                    await _db.Insertable(detailsToInsert).ExecuteCommandAsync();
+                }
+
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                _db.Ado.CommitTran();
+            }
+            catch
+            {
+                _db.Ado.RollbackTran();
+                throw;
             }
         }
 
