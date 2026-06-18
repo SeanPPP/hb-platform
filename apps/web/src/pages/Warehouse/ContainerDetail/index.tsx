@@ -111,7 +111,6 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   applyContainerDetailEnglishNameUpdates,
-  applyContainerDetailCategoryFilter,
   applyContainerDetailColumnState,
   applyContainerDetailLoadedTextFilters,
   applyContainerDetailWarehouseStatusByProductCodes,
@@ -168,7 +167,6 @@ import {
   omitContainerDetailTextFilters,
   resolveContainerDetailOemPrice,
   rollbackContainerDetailWarehouseStatuses,
-  CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
@@ -192,7 +190,6 @@ import type { PushProductsToHqResult } from '../../../types/posProduct'
 import ContainerTagFilters from './ContainerTagFilters'
 import useContainerSetCode from './useContainerSetCode'
 import {
-  buildContainerDetailCategoryOptions,
   collectCategoryExpandedKeys,
   findWarehouseCategory,
   renderColumnTitle,
@@ -519,11 +516,9 @@ export default function ContainerDetailPage() {
   const [rows, setRows] = useState<ContainerDetail[]>([])
   const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
-  const [itemNumberFilter, setItemNumberFilter] = useState('')
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
   const [categoryLoading, setCategoryLoading] = useState(false)
-  const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)
   const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([])
   const [columnFilters, setColumnFilters] = useState<ContainerDetailColumnFilters>({})
   // 默认按货号升序展示，保证每次打开货柜明细时列表顺序稳定。
@@ -679,7 +674,6 @@ export default function ContainerDetailPage() {
       .finally(() => setCategoryLoading(false))
   }, [t])
 
-  const categoryFilterOptions = useMemo(() => buildContainerDetailCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t])
   const categoryLookup = useMemo(() => buildWarehouseCategoryLookup(categories), [categories])
   const selectedTargetCategory = useMemo(() => findWarehouseCategory(categories, targetCategoryGuid), [categories, targetCategoryGuid])
   const selectedTargetCategoryPath = targetCategoryGuid ? getWarehouseProductCategoryTooltip({
@@ -959,14 +953,12 @@ export default function ContainerDetailPage() {
   }, [baseFilteredRows, selectedTagFilters, canUseLocalTagFilters])
 
   const textFilteredRows = useMemo(() => {
-    return applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)
-  }, [columnFilters, itemNumberFilter, tagFilteredRows])
+    // 顶部筛选条已移除，文字筛选统一走列头筛选，避免同一条件出现两个入口。
+    return applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)
+  }, [columnFilters, tagFilteredRows])
 
   const localTagStats = useMemo(() => buildContainerDetailTagStats(tagFilteredRows), [tagFilteredRows])
-
-  const filteredRows = useMemo(() => {
-    return applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)
-  }, [categoryFilterValue, categoryLookup, textFilteredRows])
+  const filteredRows = textFilteredRows
 
   const displayRows = useMemo(
     () => {
@@ -1073,11 +1065,6 @@ export default function ContainerDetailPage() {
   const selectedTagOptions = useMemo(
     () => tagStatOptions.filter((option) => option.value !== 'all' && selectedTagFilters.includes(option.value)),
     [selectedTagFilters, tagStatOptions],
-  )
-
-  const tagSelectOptions = useMemo(
-    () => tagStatOptions.filter((option) => option.value !== 'all').map(({ value, label }) => ({ value, label })),
-    [tagStatOptions],
   )
 
   const exportColumnOptions = useMemo(
@@ -3502,59 +3489,6 @@ export default function ContainerDetailPage() {
             <div ref={setGridContentElement} className="container-detail-grid-content">
               <div ref={setToolbarElement} className="container-detail-sticky-controls">
                 <div className="container-detail-toolbar">
-                  <div className="container-detail-filter-row">
-                    <Space wrap size={[8, 6]} className="container-detail-filter-group">
-                      <Input size="small" value={itemNumberFilter} allowClear prefix={<SearchOutlined />} placeholder={t('containers.placeholders.filterItemNumber')} className="container-detail-filter-input" onChange={(event) => setItemNumberFilter(event.target.value)} />
-                      <Select
-                        size="small"
-                        mode="multiple"
-                        value={selectedTagFilters}
-                        allowClear
-                        maxTagCount="responsive"
-                        placeholder={t('containers.filters.allTags')}
-                        className="container-detail-filter-select"
-                        onChange={setTagFiltersFromSelect}
-                        options={tagSelectOptions}
-                      />
-                      <Select
-                        size="small"
-                        value={categoryFilterValue}
-                        allowClear
-                        showSearch
-                        optionFilterProp="label"
-                        loading={categoryLoading}
-                        placeholder={t('containers.filters.allCategories', '全部分类')}
-                        className="container-detail-filter-select"
-                        options={categoryFilterOptions}
-                        onChange={(value) => setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)}
-                      />
-                      <Typography.Text type="secondary" className="container-detail-loaded-count">
-                        {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
-                          loaded: rows.length,
-                          total: detailItemsTotal,
-                        })}
-                        {filteredRows.length !== rows.length ? ` ${t('containers.text.visibleRows', '当前可见 {{count}} 条', { count: filteredRows.length })}` : ''}
-                        {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
-                      </Typography.Text>
-                      {hasActiveColumnState ? (
-                        <Button size="small" className="container-detail-compact-button" onClick={() => {
-                          setColumnFilters({})
-                          setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
-                        }}>
-                          {t('containers.actions.clearColumnFilters', '清空列过滤')}
-                        </Button>
-                      ) : null}
-                      <Space size={6} className="container-detail-readonly-toggle">
-                        <Typography.Text type="secondary">{t('containers.actions.showReadonlyOemPrice', '只读贴牌价格')}</Typography.Text>
-                        <Switch
-                          size="small"
-                          checked={showReadonlyOemPrice}
-                          onChange={setShowReadonlyOemPrice}
-                        />
-                      </Space>
-                    </Space>
-                  </div>
-
                   <div className="container-detail-action-row">
                     <Space wrap size={[6, 6]} className="container-detail-action-group">
                       <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>
@@ -3642,6 +3576,32 @@ export default function ContainerDetailPage() {
                         </Dropdown>
                       ) : null}
                       {access.canDeleteContainer ? <Button size="small" danger icon={<DeleteOutlined />} onClick={deleteSelected}>{t('containers.actions.deleteDetails')}</Button> : null}
+                    </Space>
+                    <Space wrap size={[8, 4]} className="container-detail-action-meta">
+                      <Typography.Text type="secondary" className="container-detail-loaded-count">
+                        {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
+                          loaded: rows.length,
+                          total: detailItemsTotal,
+                        })}
+                        {filteredRows.length !== rows.length ? ` ${t('containers.text.visibleRows', '当前可见 {{count}} 条', { count: filteredRows.length })}` : ''}
+                        {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
+                      </Typography.Text>
+                      {hasActiveColumnState ? (
+                        <Button size="small" className="container-detail-compact-button" onClick={() => {
+                          setColumnFilters({})
+                          setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
+                        }}>
+                          {t('containers.actions.clearColumnFilters', '清空列过滤')}
+                        </Button>
+                      ) : null}
+                      <Space size={6} className="container-detail-readonly-toggle">
+                        <Typography.Text type="secondary">{t('containers.actions.showReadonlyOemPrice', '只读贴牌价格')}</Typography.Text>
+                        <Switch
+                          size="small"
+                          checked={showReadonlyOemPrice}
+                          onChange={setShowReadonlyOemPrice}
+                        />
+                      </Space>
                     </Space>
                   </div>
 

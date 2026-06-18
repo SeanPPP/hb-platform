@@ -2743,21 +2743,23 @@ assertEqual(
   '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用批量分类服务',
 )
 assertEqual(
-  pageSource.includes("const [categoryFilterValue, setCategoryFilterValue] = useState(CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)") &&
+  !pageSource.includes('const [itemNumberFilter, setItemNumberFilter]') &&
+    !pageSource.includes('const [categoryFilterValue, setCategoryFilterValue]') &&
     pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
-    pageSource.includes('applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)') &&
-    pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
+    pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
+    !pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
     !pageSource.includes('categoryFilterValue, sortState'),
   true,
-  '标签、顶部货号、列头文字和分类过滤应在前端过滤已加载行，分类和排序不应进入远程加载查询依赖',
+  '顶部过滤条移除后，标签快览和列头文字过滤仍应在前端过滤已加载行，分类和排序不应进入远程加载查询依赖',
 )
 assertEqual(
-  pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
-    pageSource.includes('options={categoryFilterOptions}') &&
-    pageSource.includes('setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)') &&
-    pageSource.includes('buildContainerDetailCategoryOptions(categories, t, i18n.language)'),
+  !pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
+    !pageSource.includes('options={categoryFilterOptions}') &&
+    !pageSource.includes('setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)') &&
+    !pageSource.includes('buildContainerDetailCategoryOptions(categories, t, i18n.language)') &&
+    pageSource.includes("textFilterProps('itemNumber', t('containers.placeholders.filterItemNumber'))"),
   true,
-  '货柜明细顶部应提供当前语言分类 Select，并支持清空回到全部分类',
+  '货柜明细顶部分类 Select 已移除，货号过滤应只保留列头入口',
 )
 assertEqual(
   pageSource.includes('filteredRows.length !== rows.length') &&
@@ -2798,7 +2800,7 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
-    pageSource.includes('applyContainerDetailLoadedTextFilters(tagFilteredRows, itemNumberFilter, columnFilters)') &&
+    pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
     pageSource.includes('canUseLocalTagFilters ? localTagStats : remoteTagStats') &&
     pageSource.includes(': { query: scopedFullDetailQuery }') &&
     pageSource.includes('...scopedFullDetailQuery,'),
@@ -3272,13 +3274,13 @@ assertEqual(
     pageSource.includes('className="container-detail-table-region"') &&
     !pageSource.includes('className="container-detail-scroll-spacer"') &&
     stickyControlsSource.includes('className="container-detail-toolbar"') &&
-    stickyControlsSource.includes('className="container-detail-filter-row"') &&
     stickyControlsSource.includes('className="container-detail-action-row"') &&
+    stickyControlsSource.includes('className="container-detail-action-meta"') &&
     stickyControlsSource.includes('className="container-detail-bulk-row"') &&
     stickyControlsSource.includes('<ContainerTagFilters') &&
     stickyControlsSource.includes('{exporting ? <Progress percent={exportProgress} size="small" /> : null}'),
   true,
-  '货柜明细筛选、操作按钮、批量操作、统计标签和导出进度应在表格前的紧凑 sticky 控制区内',
+  '货柜明细操作按钮、状态信息、批量操作、统计标签和导出进度应在表格前的紧凑 sticky 控制区内',
 )
 assertEqual(
   pageSource.includes('ref={setGridContentElement}') &&
@@ -3340,8 +3342,8 @@ assertEqual(
     pageStyleSource.includes('.container-detail-page-small-portrait .container-detail-grid-card') &&
     pageStyleSource.includes('.container-detail-page-small-landscape .container-detail-grid-card') &&
     pageStyleSource.includes('.container-detail-toolbar') &&
-    pageStyleSource.includes('.container-detail-filter-row') &&
     pageStyleSource.includes('.container-detail-action-row') &&
+    pageStyleSource.includes('.container-detail-action-meta') &&
     pageStyleSource.includes('.container-detail-bulk-row') &&
     pageStyleSource.includes('overflow-x: auto') &&
     pageStyleSource.includes('flex-wrap: nowrap !important') &&
