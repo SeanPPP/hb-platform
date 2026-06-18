@@ -241,17 +241,35 @@ async function main() {
     assert(
       shopHomeSource.includes('const cartProductDynamicDataMap = useMemo<Record<string, StoreOrderDynamicData>>(() => {') &&
         shopHomeSource.includes('cartQuantity: item.quantity') &&
+        shopHomeSource.includes('const cartQuantityByProductCode = useMemo<Record<string, number>>(() => {') &&
+        shopHomeSource.includes('acc[item.productCode] = item.quantity') &&
         shopHomeSource.includes('cartOnlyFilter') &&
-        shopHomeSource.includes('? cartProductDynamicDataMap[productCode]?.cartQuantity') &&
-        shopHomeSource.includes(': dynamicDataMap[productCode]?.cartQuantity') &&
+        shopHomeSource.includes('const currentCartQuantity = cartQuantityByProductCode[productCode] ?? 0') &&
         shopHomeSource.includes('const dynamicData = cartOnlyFilter') &&
         shopHomeSource.includes('? cartProductDynamicDataMap[product.productCode]') &&
         shopHomeSource.includes(': dynamicDataMap[product.productCode]') &&
+        shopHomeSource.includes('const syncedDynamicData: StoreOrderDynamicData = {') &&
+        shopHomeSource.includes('cartQuantity: cartQuantityByProductCode[product.productCode] ?? 0') &&
         shopHomeSource.includes('dynamicData={cardDynamicData}'),
-      '购物车过滤模式没有把购物车数量作为 ProductCard dynamicData 来源',
+      '商品卡没有用全局 cart.items 覆盖 ProductCard dynamicData.cartQuantity',
     )
   })
   if (cartOnlyDynamicDataFailure) failures.push(cartOnlyDynamicDataFailure)
+
+  const cartClearSyncFailure = await runTest('清空购物车后应清理卡片乐观状态和未提交数量更新', () => {
+    assert(
+      shopHomeSource.includes('if (cart?.items.length) {\n      return\n    }') &&
+        shopHomeSource.includes('Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))') &&
+        shopHomeSource.includes('quantityUpdateTimersRef.current = {}') &&
+        shopHomeSource.includes('quantityUpdateVersionRef.current = {}') &&
+        shopHomeSource.includes('setOptimisticCartQuantityMap({})') &&
+        shopHomeSource.includes('setRemovingCartProductMap({})') &&
+        shopHomeSource.includes('setQuantityLoadingMap({})') &&
+        shopHomeSource.includes('[cart?.items.length]'),
+      '购物车清空后没有取消未提交数量更新，或没有清理商品卡乐观/删除中状态',
+    )
+  })
+  if (cartClearSyncFailure) failures.push(cartClearSyncFailure)
 
   const cartOnlyI18nFailure = await runTest('购物车商品过滤文案应保持中英文同步', () => {
     assert(
@@ -311,7 +329,8 @@ async function main() {
         productCardSource.includes('applyQuantityChange(quantity + stepQuantity)') &&
         productCardSource.includes('min={0}') &&
         productCardSource.includes('controls={false}') &&
-        productCardSource.includes('disabled={quantity <= 0}') &&
+        productCardSource.includes('disabled={removing || quantity <= 0}') &&
+        productCardSource.includes('disabled={removing}') &&
         !productCardSource.includes('disabled={loading || quantity <= 0}') &&
         !productCardSource.includes('disabled={loading}\n                className="shop-product-quantity-input"') &&
         productCardSource.includes('onBlur={() => applyQuantityChange(quantity)}') &&
@@ -336,11 +355,40 @@ async function main() {
   })
   if (productCardAddVisibilityFailure) failures.push(productCardAddVisibilityFailure)
 
+  const productCardRemoveOptimisticFailure = await runTest('商品卡删除应先乐观退出已入车状态并防重复点击', () => {
+    const body = extractFunctionBody(
+      shopHomeSource,
+      'const handleRemoveFromCart = async',
+      '  return (\n    <div className="shop-home-page">',
+    )
+
+    assert(
+      productCardSource.includes('removing?: boolean') &&
+        productCardSource.includes('removing = false') &&
+        productCardSource.includes('if (removing)') &&
+        shopHomeSource.includes('const [removingCartProductMap, setRemovingCartProductMap] = useState<Record<string, boolean>>({})') &&
+        body.includes('if (removingCartProductMap[productCode])') &&
+        body.includes('setRemovingCartProductMap((prev) => ({ ...prev, [productCode]: true }))') &&
+        body.includes('setOptimisticCartQuantityMap((prev) => ({ ...prev, [productCode]: 0 }))') &&
+        body.includes('delete next[productCode]') &&
+        shopHomeSource.includes('const isRemovingFromCart = Boolean(removingCartProductMap[product.productCode])') &&
+        shopHomeSource.includes('const optimisticCartQuantity = isRemovingFromCart') &&
+        shopHomeSource.includes('? 0') &&
+        shopHomeSource.includes('removing={isRemovingFromCart}'),
+      '商品卡删除没有先乐观置 0、缺少删除中去重 guard，或 ProductCard 未收到 removing 状态',
+    )
+  })
+  if (productCardRemoveOptimisticFailure) failures.push(productCardRemoveOptimisticFailure)
+
   const optimisticDynamicDataFailure = await runTest('商城首页应把乐观购物车数量覆盖到商品卡 dynamicData', () => {
     assert(
-      shopHomeSource.includes('const [optimisticCartQuantityMap, setOptimisticCartQuantityMap] = useState<Record<string, number>>({})') &&
-        shopHomeSource.includes('const optimisticCartQuantity = optimisticCartQuantityMap[product.productCode]') &&
+        shopHomeSource.includes('const [optimisticCartQuantityMap, setOptimisticCartQuantityMap] = useState<Record<string, number>>({})') &&
+        shopHomeSource.includes('const optimisticCartQuantity = isRemovingFromCart') &&
+        shopHomeSource.includes(': optimisticCartQuantityMap[product.productCode]') &&
+        shopHomeSource.includes('const syncedDynamicData: StoreOrderDynamicData =') &&
         shopHomeSource.includes('const cardDynamicData =') &&
+        shopHomeSource.includes('? syncedDynamicData') &&
+        shopHomeSource.includes('...syncedDynamicData') &&
         shopHomeSource.includes('cartQuantity: optimisticCartQuantity') &&
         shopHomeSource.includes('dynamicData={cardDynamicData}'),
       '商城首页没有把 optimisticCartQuantityMap 覆盖到 ProductCard dynamicData',

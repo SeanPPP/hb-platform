@@ -19,6 +19,7 @@ interface ProductCardProps {
   onQuantityChange: (product: StoreOrderProductItem, quantity: number) => Promise<void> | void
   onRemoveFromCart?: (product: StoreOrderProductItem) => Promise<void> | void
   loading?: boolean
+  removing?: boolean
 }
 
 export default function ProductCard({
@@ -30,6 +31,7 @@ export default function ProductCard({
   onQuantityChange,
   onRemoveFromCart,
   loading,
+  removing = false,
 }: ProductCardProps) {
   const stepQuantity = product.minOrderQuantity > 0 ? product.minOrderQuantity : 1
   const cartQuantity = dynamicData?.cartQuantity ?? 0
@@ -58,6 +60,10 @@ export default function ProductCard({
   }
 
   const applyQuantityChange = (nextQuantity: number) => {
+    if (removing) {
+      return
+    }
+
     const normalizedQuantity = normalizeQuantity(nextQuantity)
     setQuantity(normalizedQuantity)
 
@@ -72,6 +78,10 @@ export default function ProductCard({
   }
 
   const handleAddToCart = () => {
+    if (removing) {
+      return
+    }
+
     const addQuantity = quantity > 0 ? quantity : stepQuantity
     setQuantity(addQuantity)
     void onAddToCart(product, addQuantity)
@@ -156,7 +166,7 @@ export default function ProductCard({
               <Button
                 size="small"
                 onClick={() => applyQuantityChange(quantity - stepQuantity)}
-                disabled={quantity <= 0}
+                disabled={removing || quantity <= 0}
                 aria-label="Decrease quantity"
                 className="shop-product-quantity-button"
               >
@@ -169,6 +179,7 @@ export default function ProductCard({
                 step={stepQuantity}
                 controls={false}
                 value={quantity}
+                disabled={removing}
                 onChange={(value) => setQuantity(normalizeQuantity(value))}
                 onBlur={() => applyQuantityChange(quantity)}
                 onPressEnter={() => applyQuantityChange(quantity)}
@@ -178,6 +189,7 @@ export default function ProductCard({
                 size="small"
                 type="primary"
                 onClick={() => applyQuantityChange(quantity + stepQuantity)}
+                disabled={removing}
                 aria-label="Increase quantity"
                 className="shop-product-quantity-button"
               >
