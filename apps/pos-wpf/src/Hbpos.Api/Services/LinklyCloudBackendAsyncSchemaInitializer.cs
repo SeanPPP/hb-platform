@@ -27,6 +27,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                 [SessionId] NVARCHAR(64) NOT NULL,
                 [Status] NVARCHAR(32) NOT NULL,
                 [TxnRef] NVARCHAR(16) NULL,
+                [TransactionSuccess] BIT NULL,
                 [ResponseCode] NVARCHAR(32) NULL,
                 [ResponseText] NVARCHAR(512) NULL,
                 [RecoveryAction] NVARCHAR(64) NULL,
@@ -141,6 +142,12 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
             BEGIN
                 ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
                     ADD [LastHttpStatus] INT NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'TransactionSuccess') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [TransactionSuccess] BIT NULL;
             END;
 
             IF NOT EXISTS (

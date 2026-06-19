@@ -308,7 +308,7 @@ public sealed class LinklyBackendTerminalClient(
             var activeStatus = await GetActiveSessionAsync(settings, preSubmitCts.Token);
             if (activeStatus is not null)
             {
-                // 闂佽楠稿﹢閬嶁€﹂崼婵愬殨閻犺櫣灏ㄩ懓鍨€掑锝呬壕閻?active session 闂傚倷绀侀幖顐﹀疮閸愭祴鏋栨繛鎴炵瀹曟煡鏌嶈閸撴瑩鈥旈崘顔嘉ч柛顐亜濞堫參姊洪崨濞氭垿鎯勯鐐靛祦濞撴埃鍋撳┑顔瑰亾闂佺粯鐟㈤崑鎾翠繆閹绘帩鐓奸柡宀嬬節瀹曟﹢宕熼鈶╁亾瑜版帒鑸瑰鑸靛姈閻撴盯鏌涢弴銊ュ闁诡垰鐗忕槐鎺撴綇閵娧呯暫缂備礁顑呴ˇ顖烆敇婵傜閱囨繝闈涙缁狅絿绱撻崒姘偓椋庣礊閳ь剟鏌涘☉鍗炵仭闁哄棔鍗冲娲川婵犲倻鐟茬紓浣割儐閸ㄥ湱妲愰幘璇茬閻犲洤寮堕ˉ婵嬫⒑鐟欏嫷鍟忛柛鐘愁殜閹箖宕￠悘璇茬秺閹晠骞嬮幇顓炵伌妞ゃ垺鐗曢埢搴ㄥ箣閻愯尙褰撮梻鍌欑閻忔繈顢栭崶褝鑰块柟缁㈠枟閻?
+                // 发现活动中的 Linkly session 时，先恢复或拒绝新交易，避免同一终端重复提交。
                 return await RejectActiveSessionForNewPaymentAsync(activeStatus, cancellationToken);
             }
 
@@ -330,7 +330,7 @@ public sealed class LinklyBackendTerminalClient(
             }
             catch (LinklyBackendHttpException ex) when (ex.HttpStatus == HttpStatusCode.Conflict)
             {
-                // 409 婵犵數鍋涢顓熷垔鐎靛摜绀婇柍褜鍓熼弻鏇㈠幢濡も偓閺嗙喓绱掓潏銊ユ诞鐎规洖銈告慨鈧柍琛″亾缂佽鲸鎹囬幃妤呭捶椤撗呭姼閻庢鍠涘▔娑㈡晝?active session闂傚倷鐒︾€笛呯矙閹寸偟闄勯柡鍐ㄥ€荤粻鏂款熆閼搁潧濮堥柛銈呭閺屻倝骞侀幒鎴濆闁诡垳鍠栭弻锝嗘償閿濆棗娈岄梺鍝ュ櫏閸ㄩ亶骞堥妸銉ф殕闁告洦鍋嗛悡鎴︽⒑缂佹◤顏堝疮閸ф鍊堕柛銉墯閻撴盯鏌涘鈧粈浣糕枍瀹ュ鐓冪憸婊堝礈濮橆剛鏆嗛柟闂寸閻掑灚銇勯幒宥嗩樂濞存嚎鍨洪妵鍕棘閹稿寒妫￠悗鍨緲鐎氼厼顭囪箛娑辨晝闁靛鍔栧ú鐔煎蓟?
+                // 409 表示后端发现活动 session；重新读取它作为恢复入口。
                 activeStatus = await GetActiveSessionAsync(settings, preSubmitCts.Token);
                 if (activeStatus is null)
                 {
@@ -340,12 +340,12 @@ public sealed class LinklyBackendTerminalClient(
                     return new PaymentAuthorizationResult(false, null, message);
                 }
 
-                // 409 闂傚倷绀侀幉锟犳嚌妤ｅ啫瀚夋い鎺戝閸嬪寮堕崼娑樺妞も晝鍏橀弻銊モ攽閸℃瑥顣堕梺閫炲苯澧柛鐔告綑椤?active session 闂傚倸鍊搁崐鎼佸疮閹剁瓔鏁嬬憸鏃堝Υ娓氣偓閺佹劙宕煎☉妤佺潖闂備浇顫夐崕鎶藉疮閸ф鐑藉川椤掕偐鎳撻埞鍐垂椤旂懓浜鹃柡宥庣仜閿濆憘鏃堝川椤旇姤鐝梺璇茬箳閸嬫盯宕ョ€ｎ喖鑸瑰璺虹灱绾捐棄霉閿濆懏璐￠柟鍏呰兌缁辨帡顢氶崨顓犱哗闂佸疇顕х€涒晠濡堕敐澶婄闁挎梻鎳撴禍鎯ь熆閼搁潧濮囩紒鐘冲浮閺屾洝绠涢弴鐑嗏偓灞句繆閹绘帩鐓奸柡灞剧缁犳稓鈧綆浜滄慨搴ㄦ偡濠婂懎顣肩紒瀣笒椤曘儵宕熼姘鳖槹濡炪倖鎸鹃崰搴ㄥ焵椤掑倸浠遍柡?
+                // 新交易不能覆盖未完成 session，必须让收银员先恢复上一笔。
                 return await RejectActiveSessionForNewPaymentAsync(activeStatus, cancellationToken);
             }
             catch (LinklyBackendHttpException ex) when (IsBackendStartRejectedBeforeSession(ex))
             {
-                // 闂傚倷绀侀幉锟犳嚌閹灐褰掓倻缁涘鏅滃銈嗗笒鐎氼剟宕ｆ繝鍥х閺夊牆澧藉畝娑㈡煃瑜滈崜姘舵晝閵忕姷鏆﹂柣鎴ｆ鎯熼梺闈涱槶閸庤櫕绂掗銏″€?session 闂傚倷绀侀幉锟犲箰閸濄儳鐭撻柣銏㈩暯閸嬫挸顫濋渚囨￥缂備浇椴哥敮鎺楀煘閹寸偟绡€閹肩补鍓濋澶嬬節濞堝灝鏋ら柟铏崌瀹曟劙鎮烽柇锔藉瘜闂佺鐬奸崑鐐哄疾椤掑倵鍋撻崗澶婁壕闂佸憡鍔栭崕鍐测枔椤栫偞鈷戦柛婵嗗椤忊晝绱掗妸褍甯舵い顐ｇ箞閺佸啴宕掑顒€鎸ら梻浣筋潐閸庢娊顢氶鐑嗘綎濡わ絽鍟悡娑㈡煕椤愶絿绠ユ俊鎻掓贡閹插憡锛愭担鍝勫缂備礁鍊哥粔瑙勪繆閸洖宸濇い鎾跺Т鐢?Linkly闂傚倷鐒︾€笛呯矙閹达附鍤愭い鏍ㄧ缚娴滃綊鏌涘▎蹇ｆШ妞も晝鍏橀弻鏇熷緞閸繂濮庨梺璇查閵堟悂寮婚悢鑲╁祦闁割煈鍠氭禒濂告⒑缁洘娅呴柡鍫墰缁瑦寰勭仦绋夸壕闁挎繂鍊瑰▍鍥ㄣ亜韫囨挸鑸归柍钘夘樀楠炴瑩宕樿閸戝綊鏌ら崹娑欐珖闁逞屽墯椤旀牠宕伴弽顐ｅ床闁圭増婢橀崒銊╂偡濞嗗繐顏柛搴ｅ枛閺岋繝宕堕妸鍥ㄥ哺瀹?
+                // 请求在本地 session 创建前被后端拒绝，直接提示失败；此时没有未知交易需要恢复。
                 var message = string.IsNullOrWhiteSpace(ex.Message)
                     ? T("linkly.backend.configIncomplete", "ANZ Linkly Cloud backend configuration is incomplete.")
                     : ex.Message;
@@ -356,9 +356,16 @@ public sealed class LinklyBackendTerminalClient(
             using var localCancelCts = CancellationTokenSource.CreateLinkedTokenSource(
                 transactionTimeoutCts.Token,
                 dialogService.LocalCancelToken);
-            status = await PollUntilFinalAsync(settings, status, localCancelCts.Token);
-            var result = ToAuthorizationResult(status, amount, fallbackTxnRef, suppressPrintedReceipt: false);
-            keepDialogOpen = !result.Approved;
+            var pollResult = await PollUntilFinalAsync(settings, status, localCancelCts.Token);
+            status = pollResult.Status;
+            var result = ToAuthorizationResult(
+                status,
+                amount,
+                fallbackTxnRef,
+                suppressPrintedReceipt: false,
+                pollResult.ManualCancelRequested);
+            // 收银员已发起取消时，最终失败状态只是取消结果说明；应关闭 Linkly 弹窗，让支付页恢复操作。
+            keepDialogOpen = !result.Approved && !pollResult.ManualCancelRequested;
             return result;
         }
         catch (LinklyBackendLocalCancelException)
@@ -425,7 +432,8 @@ public sealed class LinklyBackendTerminalClient(
             // 闂傚倷鑳堕幊鎾绘偤閵娾晛绀夐柡鍥╁枑閸欏繑绻涢幋鐐垫噮妞も晜鐓￠弻鏇㈠醇濠靛浂妫″銈庡亝缁捇寮婚妶鍡欓檮濠㈣泛顦遍惄搴㈢節濞堝灝鏋撻柡鍛Т椤曪綁濡搁埡浣虹暰闂佺粯顨呴悧鍡涙⒒椤栨稐绻嗛柣鎰典簻閳ь剚顨婂顐ゆ嫚瀹割喚鍔烽梺鍝勵槹椤戞瑩宕甸弴銏＄厱闁挎棁顕ч獮妯尖偓瑙勬礀閻栧ジ寮婚妸銉㈡婵炲棙鍨熷Σ鍫ユ⒑闂堟稒澶勯柛銊ョ秺楠炲繗銇愰幒鎳炽劑鏌ㄩ弮鈧崹婵堝垝椤栨粎纾介柛灞剧懅椤︼箓鏌ｅΔ鈧换鎴﹀箞閵娾晛绠瑰ù锝呮憸閻ｈ鲸绻涙潏鍓хМ妞ゃ儲鎸剧划缁樼鐎ｎ偆鍘介梺鎸庣箓濡盯骞婇崨顖滅＜妞ゆ棁顕у畵鍡欌偓娈垮枔閸旀垵鐣锋總绋垮嵆闁绘梻顭堝▓蹇涙⒒娴ｅ憡鍟炵紒瀣浮閳ワ箓宕堕鈧悘铏繆椤栨艾鎮戝┑顖氥偢閺屾洟宕煎┑鍡樻疁闂?
             if (!keepDialogOpen)
             {
-                await dialogService.CloseAsync(cancellationToken);
+                // 关闭页面弹窗不能复用交易 token；收银员取消交易时该 token 可能已经取消。
+                await dialogService.CloseAsync(CancellationToken.None);
             }
         }
     }
@@ -461,8 +469,8 @@ public sealed class LinklyBackendTerminalClient(
                 lastStatus = status;
             }
 
-            status = await PollUntilFinalAsync(settings, status, timeoutCts.Token);
-            return status;
+            var pollResult = await PollUntilFinalAsync(settings, status, timeoutCts.Token);
+            return pollResult.Status;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -578,12 +586,15 @@ public sealed class LinklyBackendTerminalClient(
             : $"{detail} {guidance}";
     }
 
-    private async Task<LinklyCloudBackendSessionResponse> PollUntilFinalAsync(
+    private async Task<LinklyBackendPollResult> PollUntilFinalAsync(
         CardTerminalSettings settings,
         LinklyCloudBackendSessionResponse status,
         CancellationToken cancellationToken)
     {
-        status = await PresentStatusAsync(settings, status, message: null, cancellationToken);
+        var manualCancelRequested = false;
+        void MarkManualCancelRequested() => manualCancelRequested = true;
+
+        status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested);
         var shouldRefreshImmediately = !IsFinal(status) && !RequiresRecovery(status);
         while (!IsFinal(status))
         {
@@ -601,7 +612,7 @@ public sealed class LinklyBackendTerminalClient(
             status = RequiresRecovery(status)
                 ? await RecoverAsync(settings, status.SessionId, cancellationToken)
                 : await GetStatusAsync(settings, status.SessionId, cancellationToken);
-            status = await PresentStatusAsync(settings, status, message: null, cancellationToken);
+            status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested);
         }
 
         if (string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) &&
@@ -612,11 +623,11 @@ public sealed class LinklyBackendTerminalClient(
                 await DelayAsync(_pollInterval, cancellationToken);
 
                 status = await GetStatusAsync(settings, status.SessionId, cancellationToken);
-                status = await PresentStatusAsync(settings, status, message: null, cancellationToken);
+                status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested);
             }
         }
 
-        return status;
+        return new LinklyBackendPollResult(status, manualCancelRequested);
     }
 
     private async Task NotifyPaymentAttemptSessionStartedAsync(
@@ -694,7 +705,8 @@ public sealed class LinklyBackendTerminalClient(
         CardTerminalSettings settings,
         LinklyCloudBackendSessionResponse status,
         string? message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? onCancelSendKey = null)
     {
         while (true)
         {
@@ -716,35 +728,55 @@ public sealed class LinklyBackendTerminalClient(
                 throw new LinklyBackendLocalCancelException();
             }
 
-            // sendkey 婵犮垺鍎肩划鍓ф喆閿曞倸瑙﹂幖娣妽娴犳﹢鎮烽弴姘鳖槮闁轰焦鐗犻弻宀冪疀閹惧顦ラ柣鐘叉川缁垰銆掗崼鏇炴闁规鍠栫瑧闂佽鍏涚欢銈囨濠靛鐒奸柛顭戝枛鐢娊鏌熺捄鐚村姛缂侇喗鎸剧划鈺咁敍濞嗘垹鎲梺姹囧妼鐎氼厼銆掗崜浣虹＜闁割偁鍨诲▔銏ゆ煛鐎ｎ偆鐭庢い鏇樺€濆畷姘跺Χ閸℃浜ｉ梺鍝勬媼閸ｏ綁鍩€椤掍浇澹橀柕鍥ㄥ灩閹峰綊濡烽敐鍌氫壕?
+            var isCancelSendKey = IsCancelSendKeyAction(status, action);
+            if (isCancelSendKey)
+            {
+                // 只有当前终端明确显示取消键时，才记录收银员发起了取消动作。
+                onCancelSendKey?.Invoke();
+            }
+
             try
             {
                 status = await SendKeyAsync(settings, status.SessionId, action, cancellationToken);
                 LogStatusSnapshot("manual sendkey completed", status);
                 message = null;
             }
-            catch (HttpRequestException)
+            catch (LinklyBackendHttpException ex) when (ex.HttpStatus == HttpStatusCode.BadRequest)
             {
-                if (IsCancelSendKeyAction(status, action))
-                {
-                    throw new LinklyBackendLocalCancelException();
-                }
-
-                message = T("linkly.backend.sendKeyFailed", "Card terminal action failed. Try again or recover the transaction.");
+                // Linkly 拒绝 sendkey 只代表这次终端动作未被接受，不能据此结束交易等待。
+                message = isCancelSendKey
+                    ? null
+                    : T("linkly.backend.sendKeyRejected", "Card terminal action was not accepted. Continue waiting for the transaction result.");
                 try
                 {
                     status = await GetStatusAsync(settings, status.SessionId, cancellationToken);
                 }
                 catch (HttpRequestException)
                 {
-                    // 闂傚倷鑳剁划顖炩€﹂崼銉ユ槬闁哄稁鍘奸悞鍨亜閹达絾纭舵い锔肩畵閺屾盯鍩￠崒婊勫垱閻庢鍣崜鐔奉嚕閸撲焦鍟戦柕鍫濆濠⑩偓闂備浇宕垫慨鐢稿礉閹达箑纾块柟缁樺俯濞撳鏌涚仦鍓х煂缁炬崘鍋愰幉姝岀疀濞戞瑥浠虹紓鍌欑劍椤洭鍩炲鍡欑瘈闂傚牊绋撴晶娑欑箾閸繄鐏遍柟鍙夋倐閹囧醇閻旈顣插┑鐘媰閸涱厜锝夋倵閻㈤潧甯舵い顐ｇ箓閻ｇ兘宕堕妸銏＄亖闂備礁鎼ˇ閬嶅磿閹版澘绐楁繛鎴欏焺閺佸淇婇妶鍛櫤闁哄拋鍓熼幃姗€鎮欑捄杞版睏闂佽崵鍠愮换鍫ュ蓟閵堝洠鍋撻崷顓炐㈢悮姘節绾版ǚ鍋撻搹顐㈡殘缂備礁顑呴ˇ鐢稿春閳ь剚銇勯幒鍡椾壕闂佸疇顕ч柊锝夊春閸曨垰绀冮柍鍝勵儔閻涙粓姊绘担鑺ャ€冪紒鈧笟鈧幃褎绻濋崟銊ヤ壕闁割煈鍋嗛惌鎺楁煛鐏炶濮傛い銏＄懇閹剝鎯旈敐蹇曞缂傚倸鍊烽懗鍓佲偓姘箻瀹曠喖顢曢妶鍕崳闂傚倷绀侀幖顐︽偋閸愵喖纾婚柟鎯у绾捐棄霉閿濆懏鎲稿褎娲熼弻鏇㈠炊閵娿儳浠奸梺鐟板槻缂嶅﹥淇婇悜鑺ユ櫜闁稿本鐭竟?
+                    // 状态刷新失败时保留当前 session，进入下一轮轮询或恢复。
+                }
+
+                continue;
+            }
+            catch (HttpRequestException)
+            {
+                // sendkey 可能已到达终端；继续查当前 session，避免本地提前结束未知交易。
+                message = isCancelSendKey
+                    ? null
+                    : T("linkly.backend.sendKeyFailed", "Card terminal action failed. Try again or recover the transaction.");
+                try
+                {
+                    status = await GetStatusAsync(settings, status.SessionId, cancellationToken);
+                }
+                catch (HttpRequestException)
+                {
+                    // 状态刷新失败时保留当前 session，进入下一轮轮询或恢复。
                 }
 
                 continue;
             }
         }
     }
-
     private static bool IsLocalCancelAction(LinklyTerminalDialogAction action)
     {
         return string.Equals(action.Key, LinklyTerminalDialogKeys.LocalCancel, StringComparison.Ordinal);
@@ -774,6 +806,7 @@ public sealed class LinklyBackendTerminalClient(
                 RecoveryCount: 0,
                 LastHttpStatus: null,
                 Message: null,
+                ResponseCode: null,
                 IsInteractive: false,
                 IsFinal: true,
                 DisplayButtons: []),
@@ -807,7 +840,9 @@ public sealed class LinklyBackendTerminalClient(
             IsFinal: isFinal,
             DisplayButtons: BuildDisplayButtons(status),
             InputType: NormalizeOptional(status.InputType),
-            GraphicCode: NormalizeOptional(status.GraphicCode));
+            GraphicCode: NormalizeOptional(status.GraphicCode),
+            SupportsCancelPayment: SupportsCancelPayment(status),
+            ResponseCode: NormalizeOptional(status.ResponseCode));
     }
 
     private static IReadOnlyList<LinklyTerminalDialogButton> BuildDisplayButtons(
@@ -829,7 +864,7 @@ public sealed class LinklyBackendTerminalClient(
             return buttons;
         }
 
-        // Linkly 闂備浇顕у锕傦綖婢跺孩鎳岄梻?REST sendkey 闂?OK 婵?CANCEL 闂傚倸鍊风欢锟犲窗濞戞瑦鍙忛柕鍫濇啒閿濆牜妲炬繛瀛樼矋閹倸鐣烽悢纰辨晜闁搞儮鏅╁Σ?Key=0闂傚倷鐒︾€笛呯矙閹寸偟闄勯柡鍐ㄥ€荤粻鏃堟煛瀹ュ啫濡块柍缁樻閺屽秷顧侀柛鎾寸懇閸┿垺鎯旈妸銉т紜闂佸憡鍔曞鍫曟煥椤撱垺鈷戦柣鎾虫捣閺嬪啫鈹戦鍝勨偓鏇＄亽婵犮垼娉涢惉濂告儗閸℃稑绾ч柣鎰綑椤ュ銇勮箛鎾宠埞闁宠棄顦甸獮娆撳礃瑜忛弳妤呮⒑?
+        // Linkly REST sendkey 对 OK 和 CANCEL 都使用 Key=0，按终端旗标决定按钮文案。
         if (status.OKKeyFlag && status.CancelKeyFlag)
         {
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.okCancel", LinklyTerminalDialogKeys.OkCancel));
@@ -851,7 +886,7 @@ public sealed class LinklyBackendTerminalClient(
 
         if (status.AuthoriseKeyFlag)
         {
-            // 缂傚倸鍊烽悞锔剧矙閹烘纾块柟鎯版缁犳牠鏌￠崶銉ョ仼缂佺姵濞婇弻娑㈩敃閵堝懏鐎剧紓鍌氱М閸嬫捇姊绘担鍛婅础妞ゎ厼鐗撹棟妞ゆ牜鍋為崑鈺佲攽閸屾粠鐒炬俊?sendkey AUTH=3 闂傚倷绀侀幉锟犳偡閿曞倸鍨傞柛褎顨呴悞鍨亜閹达絾纭剁紒娑樼箳缁辨帗娼忛妸褏鐣虹紓浣割儏椤︻垶顢樻總绋块唶婵犻潧妫楃粻锝夋⒒閸屾瑧璐伴柛瀣у亾闂佺顑嗛幑鍥蓟濞戙垹鍐€闁靛ě鍐炬椒闂備焦鎮堕崝宥呯暆缁嬫鍤曢柡灞诲労閺佸鏌嶈閸撶喖宕洪埀顒併亜閹哄秶鍔嶉柣銊﹀灴閺屽秹濡烽敂鑽ゅ姺闂佺懓鍢查澶嬩繆閸洖绀冮柨婵嗘噸婢?
+            // 签名授权发送 AUTH=3，不能复用 OK/CANCEL 的 Key=0。
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.authoriseSignature", LinklyTerminalDialogKeys.Auth));
         }
 
@@ -875,6 +910,36 @@ public sealed class LinklyBackendTerminalClient(
     {
         return (status.Notifications ?? [])
             .Any(notification => string.Equals(notification.Type, "display", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool SupportsCancelPayment(LinklyCloudBackendSessionResponse status)
+    {
+        if (status.CancelKeyFlag)
+        {
+            return true;
+        }
+
+        return (status.Notifications ?? []).Any(NotificationHasCancelKeyFlag);
+    }
+
+    private static bool NotificationHasCancelKeyFlag(LinklyCloudBackendNotificationDto notification)
+    {
+        if (!string.Equals(notification.Type, "display", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(notification.PayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(notification.PayloadJson);
+            var response = ReadResponse(document.RootElement);
+            return ReadFlag(response, "CancelKeyFlag");
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool IsCardTerminalWaitDisplay(LinklyCloudBackendSessionResponse status)
@@ -1372,7 +1437,8 @@ public sealed class LinklyBackendTerminalClient(
         LinklyCloudBackendSessionResponse status,
         decimal requestedAmount,
         string requestedTxnRef,
-        bool suppressPrintedReceipt)
+        bool suppressPrintedReceipt,
+        bool manualCancelRequested = false)
     {
         if (string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase))
         {
@@ -1384,13 +1450,16 @@ public sealed class LinklyBackendTerminalClient(
         var receiptText = ReadReceiptText(status, suppressPrintedReceipt);
         var transaction = ToCardTransaction(transactionResult, amount, receiptText);
         var approved = string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) &&
-            transactionResult.Succeeded &&
-            string.Equals(transactionResult.ResponseCode?.Trim(), "00", StringComparison.OrdinalIgnoreCase);
+            transactionResult.Succeeded;
         var reference = LinklyBackendPaymentReference.Format(
             transaction.TxnRef ?? transactionResult.SessionId,
             transactionResult.SessionId,
             status.Environment,
             transactionResult.RefundReference);
+
+        var failureMessage = manualCancelRequested
+            ? T("linkly.backend.cancelled", "ANZ Linkly Cloud transaction was cancelled.")
+            : FormatResponseMessage(transactionResult.ResponseText, transactionResult.ResponseCode);
 
         return approved
             ? new PaymentAuthorizationResult(
@@ -1410,7 +1479,7 @@ public sealed class LinklyBackendTerminalClient(
             : new PaymentAuthorizationResult(
                 false,
                 reference,
-                FormatResponseMessage(transactionResult.ResponseText, transactionResult.ResponseCode),
+                failureMessage,
                 amount,
                 [transaction],
                 ProcessorName,
@@ -1420,8 +1489,13 @@ public sealed class LinklyBackendTerminalClient(
                 status.SessionId,
                 transaction.TxnRef,
                 transaction.ResponseCode,
-                transaction.ResponseText);
+                transaction.ResponseText,
+                StatusKey: manualCancelRequested ? "linkly.backend.cancelled" : null);
     }
+
+    private sealed record LinklyBackendPollResult(
+        LinklyCloudBackendSessionResponse Status,
+        bool ManualCancelRequested);
 
     private static CardTransactionDto ToCardTransaction(
         LinklyCloudTransactionResult response,
@@ -1452,6 +1526,9 @@ public sealed class LinklyBackendTerminalClient(
     {
         var protectedResponseCode = NormalizeOptional(status.ResponseCode);
         var protectedResponseText = NormalizeOptional(status.ResponseText);
+        var receiptApproval = string.IsNullOrWhiteSpace(protectedResponseCode)
+            ? TryReadReceiptApproval(status)
+            : null;
         var notifications = status.Notifications ?? [];
         var fallbackRefundReference = TryReadRefundReference(status, null);
         var transactionNotification = string.IsNullOrWhiteSpace(protectedResponseCode)
@@ -1461,17 +1538,19 @@ public sealed class LinklyBackendTerminalClient(
                 TransactionNotificationMatchesProtectedResult(notification, protectedResponseCode, protectedResponseText));
         if (transactionNotification is null || string.IsNullOrWhiteSpace(transactionNotification.PayloadJson))
         {
+            var fallbackResponseCode = protectedResponseCode ?? receiptApproval?.ResponseCode;
+            var fallbackResponseText = protectedResponseText ?? receiptApproval?.ResponseText;
             return new LinklyCloudTransactionResult(
                 status.SessionId,
-                string.Equals(protectedResponseCode, "00", StringComparison.OrdinalIgnoreCase),
+                IsSuccessfulTransaction(status.TransactionSuccess, fallbackResponseCode, notificationSuccess: null),
                 NormalizeOptional(status.TxnRef) ?? requestedTxnRef,
                 null,
                 null,
                 null,
                 null,
                 null,
-                protectedResponseCode,
-                protectedResponseText,
+                fallbackResponseCode,
+                fallbackResponseText,
                 null,
                 requestedAmount,
                 fallbackRefundReference);
@@ -1481,23 +1560,85 @@ public sealed class LinklyBackendTerminalClient(
         var response = ReadResponse(document.RootElement);
         var purchaseAnalysisData = ReadObject(response, "PurchaseAnalysisData");
         var notificationRefundReference = TryReadRefundReference(document.RootElement, out _);
+        var responseCodeFromNotification = ReadString(response, "ResponseCode");
+        var responseTextFromNotification = ReadString(response, "ResponseText");
+        var finalResponseCode = protectedResponseCode ?? responseCodeFromNotification ?? receiptApproval?.ResponseCode;
+        var finalResponseText = protectedResponseText ?? responseTextFromNotification ?? receiptApproval?.ResponseText;
+        var notificationSuccess = ReadBool(response, "Success");
         return new LinklyCloudTransactionResult(
             status.SessionId,
-            string.IsNullOrWhiteSpace(protectedResponseCode)
-                ? ReadBool(response, "Success") == true
-                : string.Equals(protectedResponseCode, "00", StringComparison.OrdinalIgnoreCase),
+            IsSuccessfulTransaction(status.TransactionSuccess, finalResponseCode, notificationSuccess),
             NormalizeOptional(status.TxnRef) ?? requestedTxnRef,
             ReadString(response, "AuthCode"),
             ReadString(response, "CardType"),
             ReadString(response, "CardName"),
             ReadString(response, "Pan"),
             ReadString(response, "Caid"),
-            protectedResponseCode ?? ReadString(response, "ResponseCode"),
-            protectedResponseText ?? ReadString(response, "ResponseText"),
+            finalResponseCode,
+            finalResponseText,
             ReadString(response, "Stan"),
             ReadDecimal(response, "AmtPurchase") ?? requestedAmount,
             ReadString(purchaseAnalysisData, "RFN") ?? notificationRefundReference ?? fallbackRefundReference);
     }
+
+    private static bool IsSuccessfulTransaction(
+        bool? transactionSuccess,
+        string? responseCode,
+        bool? notificationSuccess)
+    {
+        if (transactionSuccess == false)
+        {
+            return false;
+        }
+
+        if (LinklyApprovalResponseCodes.IsApproved(responseCode))
+        {
+            return true;
+        }
+
+        // 老数据或短暂不完整的 backend 状态可能没有 TransactionSuccess；保留 notification Success 兼容路径。
+        return transactionSuccess == true || notificationSuccess == true;
+    }
+
+    private static LinklyReceiptApproval? TryReadReceiptApproval(LinklyCloudBackendSessionResponse status)
+    {
+        if (!string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var receiptText = ReadReceiptText(status);
+        if (string.IsNullOrWhiteSpace(receiptText))
+        {
+            return null;
+        }
+
+        foreach (var rawLine in receiptText.Split(
+                     ['\r', '\n'],
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Reverse())
+        {
+            var separatorIndex = rawLine.LastIndexOf('-');
+            if (separatorIndex <= 0 || separatorIndex == rawLine.Length - 1)
+            {
+                continue;
+            }
+
+            var responseText = NormalizeOptional(rawLine[..separatorIndex]);
+            var responseCode = NormalizeOptional(rawLine[(separatorIndex + 1)..]);
+            // 只有 receipt 明确给出 Linkly 批准码时才作为 fallback，避免单纯 Completed 被误判成功。
+            if (string.IsNullOrWhiteSpace(responseText) ||
+                !LinklyApprovalResponseCodes.IsApproved(responseCode))
+            {
+                continue;
+            }
+
+            return new LinklyReceiptApproval(responseCode!, responseText);
+        }
+
+        return null;
+    }
+
+    private sealed record LinklyReceiptApproval(string ResponseCode, string ResponseText);
 
     private static string? TryReadRefundReference(
         LinklyCloudBackendSessionResponse status,
@@ -1843,7 +1984,15 @@ public sealed class LinklyBackendTerminalClient(
     {
         return string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase);
+            string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase) ||
+            IsCancelledStatus(status.Status);
+    }
+
+    private static bool IsCancelledStatus(string? status)
+    {
+        // Linkly 后端取消成功可能返回两种拼写，轮询必须在这里停止，避免误报上一笔未完成。
+        return string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Canceled", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresRecovery(LinklyCloudBackendSessionResponse status)
@@ -1883,10 +2032,49 @@ public sealed class LinklyBackendTerminalClient(
 
         var exponent = Math.Clamp(status.RecoveryCount, 0, 6);
         var multiplier = 1 << exponent;
-        var milliseconds = Math.Min(
+        var baseMilliseconds = Math.Min(
             _pollInterval.TotalMilliseconds * multiplier,
             TimeSpan.FromSeconds(30).TotalMilliseconds);
+        var jitterWindow = Math.Min(500d, baseMilliseconds / 2d);
+        var jitter = CalculateStableJitterMilliseconds(status, jitterWindow);
+        var milliseconds = Math.Clamp(
+            baseMilliseconds + jitter,
+            0d,
+            TimeSpan.FromSeconds(30).TotalMilliseconds);
         return TimeSpan.FromMilliseconds(milliseconds);
+    }
+
+    private static double CalculateStableJitterMilliseconds(
+        LinklyCloudBackendSessionResponse status,
+        double jitterWindow)
+    {
+        if (jitterWindow <= 0d)
+        {
+            return 0d;
+        }
+
+        // 使用 session 状态生成稳定抖动，避免多台收银机在恢复阶段同时重试。
+        var seed = $"{status.SessionId}|{status.RecoveryCount}|{status.LastHttpStatus}";
+        uint hash = 2166136261u;
+        unchecked
+        {
+            foreach (var ch in seed)
+            {
+                hash ^= ch;
+                hash *= 16777619u;
+            }
+        }
+
+        var range = Math.Max(1, (int)Math.Round(jitterWindow * 2d));
+        var offset = (hash % (uint)(range + 1)) - jitterWindow;
+        if (Math.Abs(offset) < 0.001d)
+        {
+            offset = (hash & 1u) == 0u
+                ? Math.Min(1d, jitterWindow)
+                : -Math.Min(1d, jitterWindow);
+        }
+
+        return offset;
     }
 
     private static bool IsRecoveryHttpStatus(int? httpStatus)
@@ -2024,6 +2212,30 @@ public sealed class LinklyBackendTerminalClient(
         };
     }
 
+    private static bool ReadFlag(JsonElement element, string propertyName)
+    {
+        if (!TryGetProperty(element, propertyName, out var value))
+        {
+            return false;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.Number when value.TryGetInt32(out var number) => number != 0,
+            JsonValueKind.String => IsTruthyFlag(value.GetString()),
+            _ => false
+        };
+    }
+
+    private static bool IsTruthyFlag(string? value)
+    {
+        var normalized = NormalizeOptional(value);
+        return string.Equals(normalized, "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "yes", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static decimal? ReadDecimal(JsonElement element, string propertyName)
     {
         if (!TryGetProperty(element, propertyName, out var value))
@@ -2131,7 +2343,7 @@ public sealed class LinklyBackendTerminalClient(
                 transactionReference = ReadTransactionReference(url, bodyJson, responseDetails),
                 txnType,
                 txnRef,
-                requestJson = bodyJson,
+                requestJson = RedactedJsonText(bodyJson),
                 responseJson = (string?)null
             });
     }
@@ -2170,7 +2382,7 @@ public sealed class LinklyBackendTerminalClient(
                 txnType,
                 txnRef = NormalizeOptional(txnRef) ?? responseDetails.TxnRef,
                 requestJson = (string?)null,
-                responseJson = bodyJson,
+                responseJson = RedactedJsonText(bodyJson),
                 responseTxnRef = responseDetails.TxnRef,
                 responseDate = responseDetails.Date,
                 responseTime = responseDetails.Time,
@@ -2297,6 +2509,19 @@ public sealed class LinklyBackendTerminalClient(
         return string.IsNullOrWhiteSpace(value) ? "<none>" : value.Trim();
     }
 
+    private static string? RedactedJsonText(string? bodyJson)
+    {
+        var redacted = RawJsonBody(bodyJson);
+        if (redacted is null)
+        {
+            return null;
+        }
+
+        return redacted is string text
+            ? text
+            : JsonSerializer.Serialize(redacted, JsonOptions);
+    }
+
     private static object? RawJsonBody(string? bodyJson)
     {
         if (string.IsNullOrWhiteSpace(bodyJson))
@@ -2307,12 +2532,79 @@ public sealed class LinklyBackendTerminalClient(
         try
         {
             using var document = JsonDocument.Parse(bodyJson);
-            return JsonSerializer.Deserialize<object>(document.RootElement.GetRawText(), JsonOptions);
+            return RedactLogJsonElement(document.RootElement, propertyName: null);
         }
         catch (JsonException)
         {
-            return bodyJson;
+            var normalized = bodyJson.Trim();
+            return new
+            {
+                hasValue = normalized.Length > 0,
+                length = normalized.Length
+            };
         }
+    }
+
+    private static object? RedactLogJsonElement(JsonElement element, string? propertyName)
+    {
+        if (IsSensitiveLogProperty(propertyName))
+        {
+            return DescribeSensitiveLogValue(element);
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(
+                    property => property.Name,
+                    property => RedactLogJsonElement(property.Value, property.Name),
+                    StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray()
+                .Select(item => RedactLogJsonElement(item, propertyName: null))
+                .ToArray(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number when element.TryGetInt64(out var number) => number,
+            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => element.GetRawText()
+        };
+    }
+
+    private static bool IsSensitiveLogProperty(string? propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        return string.Equals(propertyName, "receiptText", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "payloadJson", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "displayText", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "displayLines", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "graphicCode", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "inputType", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "analysisData", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "cardNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accountNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "pan", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "track2", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static object DescribeSensitiveLogValue(JsonElement element)
+    {
+        var value = element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : element.GetRawText();
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        // 支付收据和卡片分析字段只记录排障元数据，避免本地日志保存完整交易凭据。
+        return new
+        {
+            hasValue = normalized is not null,
+            length = normalized?.Length ?? 0,
+            lineCount = normalized is null ? 0 : normalized.Split('\n').Length
+        };
     }
 
     private static string LogValue(string? value)

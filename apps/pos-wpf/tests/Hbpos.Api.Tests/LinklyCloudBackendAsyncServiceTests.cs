@@ -251,6 +251,172 @@ namespace Hbpos.Api.Tests;
         Assert.Equal(202, response.LastHttpStatus);
     }
 
+    [Fact]
+    public async Task GetStatusAsync_refreshes_open_session_from_official_get_transaction_success()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: """
+                {
+                  "Response": {
+                    "Success": true,
+                    "TxnRef": "TXN-OFFICIAL",
+                    "ResponseCode": "08",
+                    "ResponseText": "APPROVE WITH SIG",
+                    "AmtPurchase": 1008,
+                    "PurchaseAnalysisData": { "RFN": "RFN-OFFICIAL" }
+                  }
+                }
+                """);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("Completed", response!.Status);
+        Assert.True(response.TransactionSuccess);
+        Assert.Equal("TXN-OFFICIAL", response.TxnRef);
+        Assert.Equal("08", response.ResponseCode);
+        Assert.Equal("APPROVE WITH SIG", response.ResponseText);
+        Assert.Equal(200, response.LastHttpStatus);
+        Assert.Equal(sessionId, transport.LastGetTransaction?.SessionId);
+        var notification = Assert.Single(response.Notifications, item => item.Type == "transaction");
+        using var payload = JsonDocument.Parse(notification.PayloadJson);
+        var officialResponse = payload.RootElement.GetProperty("Response");
+        Assert.Equal(1008, officialResponse.GetProperty("AmtPurchase").GetInt32());
+        Assert.Equal("RFN-OFFICIAL", officialResponse.GetProperty("PurchaseAnalysisData").GetProperty("RFN").GetString());
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_refreshes_completed_session_with_missing_transaction_success_from_official_get_transaction()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: """
+                {
+                  "Response": {
+                    "Success": true,
+                    "TxnRef": "TXN-OFFICIAL",
+                    "ResponseCode": "00",
+                    "ResponseText": "APPROVED"
+                  }
+                }
+                """);
+        var service = CreateService(transport);
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = sessionId,
+            Status = "Completed",
+            TxnRef = "TXN-LOCAL",
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            TransactionSuccess = null,
+            IsActive = false,
+            LastHttpStatus = 200,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.True(response!.TransactionSuccess);
+        Assert.Equal(sessionId, transport.LastGetTransaction?.SessionId);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_keeps_completed_session_completed_when_missing_success_refresh_is_not_final()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.Accepted);
+        var service = CreateService(transport);
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = sessionId,
+            Status = "Completed",
+            TxnRef = "TXN-LOCAL",
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            TransactionSuccess = null,
+            IsActive = false,
+            LastHttpStatus = 200,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("Completed", response!.Status);
+        Assert.Null(response.TransactionSuccess);
+        Assert.Equal("00", response.ResponseCode);
+        Assert.Equal(202, response.LastHttpStatus);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_refreshes_open_session_from_official_get_transaction_decline()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: """
+                {
+                  "Response": {
+                    "Success": false,
+                    "TxnRef": "TXN-DECLINED",
+                    "ResponseCode": "50",
+                    "ResponseText": "SYSTEM ERROR"
+                  }
+                }
+                """);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("Completed", response!.Status);
+        Assert.False(response.TransactionSuccess);
+        Assert.Equal("TXN-DECLINED", response.TxnRef);
+        Assert.Equal("50", response.ResponseCode);
+        Assert.Equal("SYSTEM ERROR", response.ResponseText);
+        Assert.Equal(200, response.LastHttpStatus);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Accepted)]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task GetStatusAsync_keeps_open_session_checking_when_official_get_transaction_is_not_final(HttpStatusCode statusCode)
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: statusCode,
+            getTransactionBody: null);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("Pending", response!.Status);
+        Assert.Null(response.TransactionSuccess);
+        Assert.Equal((int)statusCode, response.LastHttpStatus);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.RequestTimeout)]
     [InlineData(HttpStatusCode.InternalServerError)]
@@ -482,8 +648,19 @@ namespace Hbpos.Api.Tests;
             SessionId = "recover-session",
             Status = "Pending",
             TxnRef = "TXN-RECOVER",
+            ReceiptText = "MERCHANT RECEIPT\nAPPROVED",
             IsActive = true,
             UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        await service.Repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "recover-session",
+            Type = "receipt",
+            PayloadJson = """{ "Response": { "ReceiptText": ["MERCHANT RECEIPT", "APPROVED"] } }""",
+            ReceivedAt = DateTimeOffset.UtcNow
         }, CancellationToken.None);
 
         await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
@@ -512,6 +689,21 @@ namespace Hbpos.Api.Tests;
         AssertServiceEvidenceLog(logger.Lines, "acknowledge", "response", "POST", "4.1.2", expectRequestJson: false, expectResponseJson: true);
         AssertServiceEvidenceLog(logger.Lines, "receipt/printed", "request", "POST", "4.1.3", expectRequestJson: true, expectResponseJson: false);
         AssertServiceEvidenceLog(logger.Lines, "receipt/printed", "response", "POST", "4.1.3", expectRequestJson: false, expectResponseJson: true);
+        using var resumableLog = FindLinklyLog(logger.Lines, "resumable session", "response");
+        using var resumableResponseJson = JsonDocument.Parse(resumableLog
+            .RootElement
+            .GetProperty("details")
+            .GetProperty("data")
+            .GetProperty("responseJson")
+            .GetString()!);
+        var loggedReceiptText = resumableResponseJson.RootElement.GetProperty("receiptText");
+        Assert.True(loggedReceiptText.GetProperty("hasValue").GetBoolean());
+        var loggedPayloadJson = resumableResponseJson.RootElement
+            .GetProperty("notifications")[0]
+            .GetProperty("payloadJson");
+        Assert.True(loggedPayloadJson.GetProperty("hasValue").GetBoolean());
+        Assert.DoesNotContain("MERCHANT RECEIPT", logger.Lines, StringComparer.Ordinal);
+        Assert.DoesNotContain("\"ReceiptText\"", logger.Lines, StringComparer.Ordinal);
     }
 
     [Fact]
@@ -854,11 +1046,14 @@ namespace Hbpos.Api.Tests;
         using var requestLog = FindLinklyLog(logger.Lines, "token", "request");
         Assert.Equal("api-backend-token-provider", requestLog.RootElement.GetProperty("source").GetString());
         Assert.Equal("https://auth.sandbox.example/v1/tokens/cloudpos", requestLog.RootElement.GetProperty("details").GetProperty("url").GetString());
-        Assert.Equal("secret-pos-01", requestLog.RootElement.GetProperty("request").GetProperty("secret").GetString());
+        Assert.True(requestLog.RootElement.GetProperty("request").GetProperty("secret").GetProperty("hasValue").GetBoolean());
+        Assert.Equal(13, requestLog.RootElement.GetProperty("request").GetProperty("secret").GetProperty("length").GetInt32());
         Assert.Equal("11111111-1111-4111-8111-111111111111", requestLog.RootElement.GetProperty("request").GetProperty("posId").GetString());
         using var responseLog = FindLinklyLog(logger.Lines, "token", "response");
         Assert.Equal(200, responseLog.RootElement.GetProperty("httpStatus").GetInt32());
-        Assert.Equal("token-for-111111111111", responseLog.RootElement.GetProperty("response").GetProperty("token").GetString());
+        Assert.True(responseLog.RootElement.GetProperty("response").GetProperty("token").GetProperty("hasValue").GetBoolean());
+        Assert.DoesNotContain("secret-pos-01", logger.Lines, StringComparer.Ordinal);
+        Assert.DoesNotContain("token-for-111111111111", logger.Lines, StringComparer.Ordinal);
     }
 
     [Fact]
@@ -900,7 +1095,13 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("https://rest.sandbox.example/v1/sessions/session-1/transaction?async=true", requestLog.RootElement.GetProperty("details").GetProperty("url").GetString());
         Assert.Equal("260601120001", requestLog.RootElement.GetProperty("details").GetProperty("txnRef").GetString());
         Assert.Equal("260601120001", requestLog.RootElement.GetProperty("request").GetProperty("Request").GetProperty("TxnRef").GetString());
-        Assert.Equal("Bearer callback-secret", requestLog.RootElement.GetProperty("request").GetProperty("Notification").GetProperty("AuthorizationHeader").GetString());
+        var authorizationHeader = requestLog.RootElement
+            .GetProperty("request")
+            .GetProperty("Notification")
+            .GetProperty("AuthorizationHeader");
+        Assert.True(authorizationHeader.GetProperty("hasValue").GetBoolean());
+        Assert.Equal("Bearer", authorizationHeader.GetProperty("scheme").GetString());
+        Assert.DoesNotContain("callback-secret", logger.Lines, StringComparer.Ordinal);
         using var responseLog = FindLinklyLog(logger.Lines, "transaction", "response");
         Assert.Equal(200, responseLog.RootElement.GetProperty("httpStatus").GetInt32());
         Assert.Equal("session-1", responseLog.RootElement.GetProperty("response").GetProperty("SessionId").GetString());
@@ -1032,6 +1233,46 @@ namespace Hbpos.Api.Tests;
     }
 
     [Fact]
+    public async Task Transport_sendkey_posts_cancel_key_synchronously()
+    {
+        var logger = new RecordingLogger<HttpLinklyCloudBackendAsyncTransport>();
+        var handler = new LinklyTransportHttpMessageHandler(
+            """
+            {
+              "SessionId": "sendkey-session-1",
+              "ResponseType": "sendkey",
+              "Response": null
+            }
+            """);
+        var transport = new HttpLinklyCloudBackendAsyncTransport(new HttpClient(handler), logger);
+
+        await transport.SendKeyAsync(
+            new LinklyCloudBackendTransportSendKeyRequest(
+                "Sandbox",
+                "https://rest.sandbox.example/v1/",
+                "access-token",
+                "sendkey-session-1",
+                "0",
+                null),
+            CancellationToken.None);
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal(HttpMethod.Post, handler.LastRequest!.Method);
+        Assert.Equal(
+            "https://rest.sandbox.example/v1/sessions/sendkey-session-1/sendkey?async=false",
+            handler.LastRequest.RequestUri!.AbsoluteUri);
+        using var requestBody = JsonDocument.Parse(handler.LastRequestBody!);
+        var request = requestBody.RootElement.GetProperty("Request");
+        Assert.Equal("0", request.GetProperty("Key").GetString());
+        Assert.False(request.TryGetProperty("Data", out _));
+
+        using var requestLog = FindLinklyLog(logger.Lines, "sendkey", "request");
+        var requestDetails = requestLog.RootElement.GetProperty("details");
+        Assert.Equal("https://rest.sandbox.example/v1/sessions/sendkey-session-1/sendkey?async=false", requestDetails.GetProperty("url").GetString());
+        Assert.Contains("\"Key\":\"0\"", requestDetails.GetProperty("requestJson").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task TokenProvider_returns_clear_error_when_store_credential_is_missing()
     {
         var provider = new HttpLinklyCloudBackendTokenProvider(
@@ -1133,6 +1374,36 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("DECLINED", response.Message);
         Assert.Equal("Sandbox", transport.LastStatus?.Environment);
         Assert.Equal("server-token-POS-01", transport.LastStatus?.AccessToken);
+        Assert.Equal(("Sandbox", "S01", "POS-01"), Assert.Single(tokenProvider.Calls));
+    }
+
+    [Fact]
+    public async Task RunStatusTestAsync_returns_success_for_terminal_status_ok_response()
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.OK,
+            """
+            {
+              "Response": {
+                "Success": true,
+                "TxnRef": "LAST-TXN-1",
+                "Date": "050626",
+                "Time": "143000",
+                "ResponseCode": "T0",
+                "ResponseText": "APPROVED"
+              }
+            }
+            """);
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var service = CreateService(transport, tokenProvider);
+
+        var response = await service.RunStatusTestAsync("S01", "POS-01", "sandbox", CancellationToken.None);
+
+        Assert.True(response.Succeeded);
+        Assert.Equal("T0", response.ResponseCode);
+        Assert.Equal("APPROVED", response.ResponseText);
+        Assert.Equal("ANZ Linkly Cloud transaction status test succeeded.", response.Message);
+        Assert.Equal(200, response.HttpStatus);
         Assert.Equal(("Sandbox", "S01", "POS-01"), Assert.Single(tokenProvider.Calls));
     }
 
@@ -1371,6 +1642,81 @@ namespace Hbpos.Api.Tests;
         Assert.Null(scopedStatus.ReceiptPrintedAt);
         Assert.Null(await service.GetStatusAsync("S01", "POS-02", "Sandbox", session.SessionId, CancellationToken.None));
         Assert.Null(await service.GetStatusAsync("S01", "POS-01", "Production", session.SessionId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task NotificationAsync_fills_missing_transaction_success_for_completed_session_without_changing_txn_ref()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var sessionId = Guid.NewGuid().ToString("D");
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = sessionId,
+            Status = "Completed",
+            TxnRef = "TXN-LOCAL",
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            TransactionSuccess = null,
+            IsActive = false,
+            LastHttpStatus = 200,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        using var payload = JsonDocument.Parse("""{ "Response": { "Success": true, "TxnRef": "TXN-OFFICIAL", "ResponseCode": "00", "ResponseText": "APPROVED" } }""");
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox",
+            sessionId,
+            "transaction",
+            "Bearer sandbox-notify",
+            payload.RootElement,
+            CancellationToken.None);
+
+        var status = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(status);
+        Assert.True(status!.TransactionSuccess);
+        Assert.Equal("TXN-LOCAL", status.TxnRef);
+        Assert.Equal("00", status.ResponseCode);
+    }
+
+    [Fact]
+    public async Task NotificationAsync_does_not_fill_missing_transaction_success_from_sparse_conflicting_payload()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var sessionId = Guid.NewGuid().ToString("D");
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = sessionId,
+            Status = "Completed",
+            TxnRef = "TXN-LOCAL",
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            TransactionSuccess = null,
+            IsActive = false,
+            LastHttpStatus = 200,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        using var payload = JsonDocument.Parse("""{ "Response": { "Success": false } }""");
+
+        await service.ReceiveNotificationAsync(
+            "Sandbox",
+            sessionId,
+            "transaction",
+            "Bearer sandbox-notify",
+            payload.RootElement,
+            CancellationToken.None);
+
+        var status = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(status);
+        Assert.Null(status!.TransactionSuccess);
+        Assert.Equal("00", status.ResponseCode);
     }
 
     [Fact]
@@ -1623,7 +1969,9 @@ namespace Hbpos.Api.Tests;
 
     private sealed class CapturingLinklyCloudBackendAsyncTransport(
         HttpStatusCode responseStatusCode,
-        string? responseBody = null) : ILinklyCloudBackendAsyncTransport
+        string? responseBody = null,
+        HttpStatusCode? getTransactionStatusCode = null,
+        string? getTransactionBody = null) : ILinklyCloudBackendAsyncTransport
     {
         public LinklyCloudBackendNotificationRequest? LastNotification { get; private set; }
 
@@ -1636,6 +1984,8 @@ namespace Hbpos.Api.Tests;
         public LinklyCloudBackendTransportStatusRequest? LastStatus { get; private set; }
 
         public LinklyCloudBackendTransportSendKeyRequest? LastSendKey { get; private set; }
+
+        public LinklyCloudBackendTransportSessionRequest? LastGetTransaction { get; private set; }
 
         public Task<LinklyCloudBackendTransportResponse> StartTransactionAsync(
             LinklyCloudBackendTransportTransactionRequest request,
@@ -1652,6 +2002,16 @@ namespace Hbpos.Api.Tests;
         {
             LastRecover = request;
             return Task.FromResult(new LinklyCloudBackendTransportResponse(responseStatusCode, responseBody));
+        }
+
+        public Task<LinklyCloudBackendTransportResponse> GetTransactionAsync(
+            LinklyCloudBackendTransportSessionRequest request,
+            CancellationToken cancellationToken)
+        {
+            LastGetTransaction = request;
+            return Task.FromResult(new LinklyCloudBackendTransportResponse(
+                getTransactionStatusCode ?? responseStatusCode,
+                getTransactionBody ?? responseBody));
         }
 
         public Task<LinklyCloudBackendTransportResponse> SendLogonAsync(
@@ -1692,6 +2052,14 @@ namespace Hbpos.Api.Tests;
         }
 
         public async Task<LinklyCloudBackendTransportResponse> RecoverTransactionAsync(
+            LinklyCloudBackendTransportSessionRequest request,
+            CancellationToken cancellationToken)
+        {
+            await CompleteAsync(request.Environment, request.SessionId, cancellationToken);
+            return new LinklyCloudBackendTransportResponse(responseStatusCode, null);
+        }
+
+        public async Task<LinklyCloudBackendTransportResponse> GetTransactionAsync(
             LinklyCloudBackendTransportSessionRequest request,
             CancellationToken cancellationToken)
         {

@@ -402,6 +402,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public string LinklyTitleText => T("settings.linkly.title");
 
+    public string ActivePaymentProviderText => _loadedConfiguration.Processor == CardProcessorKind.Linkly
+        ? T("settings.payment.activeProvider.linkly")
+        : T("settings.payment.activeProvider.square");
+
+    public string ActivePaymentProviderDetailText => _loadedConfiguration.Processor == CardProcessorKind.Linkly
+        ? Format(
+            "settings.payment.activeProvider.linkly.detail",
+            T(GetLinklyModeLocalizationKey(ToSettingsMode(_loadedConfiguration.LinklyConnectionMode))))
+        : T("settings.payment.activeProvider.square.detail");
+
     public string ReceiptPrinterTitleText => T("settings.receiptPrinter.title");
 
     public bool IsDataMaintenanceSelected => SelectedCategory == SettingsCategory.DataMaintenance;
@@ -542,6 +552,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             SyncLinklyInputs();
             LogSquareSettings(
                 $"load settings succeeded squareEnvironment={SelectedSquareEnvironment} linklyEnvironment={SelectedLinklyEnvironment} hasSavedToken={HasSavedSquareToken} savedLocationId={LogValue(_savedSquareLocationId)} savedDeviceId={LogValue(_savedSquareDeviceId)}");
+            RaiseActivePaymentProviderProperties();
             SetStatus("settings.status.loaded");
         }, operationName: "load settings");
     }
@@ -889,12 +900,19 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(DeviceRegistrationTitleText));
         OnPropertyChanged(nameof(SquareTitleText));
         OnPropertyChanged(nameof(LinklyTitleText));
+        RaiseActivePaymentProviderProperties();
         OnPropertyChanged(nameof(LinklyCloudSecretStatusText));
         OnPropertyChanged(nameof(LinklyCloudCredentialStatusText));
         OnPropertyChanged(nameof(ReceiptPrinterTitleText));
         OnPropertyChanged(nameof(SquareTokenStatusText));
         OnPropertyChanged(nameof(SquareDeviceCodesUnavailableText));
         RefreshLocalizedMessages();
+    }
+
+    private void RaiseActivePaymentProviderProperties()
+    {
+        OnPropertyChanged(nameof(ActivePaymentProviderText));
+        OnPropertyChanged(nameof(ActivePaymentProviderDetailText));
     }
 
     private void OnCultureChanged(object? sender, EventArgs e)
@@ -1275,6 +1293,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SelectedSquareDevice = _squareState.SelectedDevice;
         SelectedSquareDeviceCode = _squareState.SelectedDeviceCode;
         _syncingSquare = false;
+        RaiseActivePaymentProviderProperties();
     }
 
     private void SyncSquareInputs()
@@ -1315,6 +1334,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         LinklyCloudPasswordText = _linklyState.CloudPasswordText;
         _squareState.LoadedConfiguration = _linklyState.LoadedConfiguration;
         _syncingLinkly = false;
+        RaiseActivePaymentProviderProperties();
     }
 
     private void SyncLinklyInputs()
@@ -1434,6 +1454,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             LinklyConnectionMode.CloudDirectSync => LinklySettingsMode.CloudDirectSync,
             LinklyConnectionMode.CloudBackendAsync => LinklySettingsMode.CloudBackendAsync,
             _ => LinklySettingsMode.LocalIp
+        };
+    }
+
+    private static string GetLinklyModeLocalizationKey(LinklySettingsMode mode)
+    {
+        return mode switch
+        {
+            LinklySettingsMode.CloudDirectSync => "settings.linkly.mode.cloudDirectSync",
+            LinklySettingsMode.CloudBackendAsync => "settings.linkly.mode.cloudBackendAsync",
+            _ => "settings.linkly.mode.localIp"
         };
     }
 

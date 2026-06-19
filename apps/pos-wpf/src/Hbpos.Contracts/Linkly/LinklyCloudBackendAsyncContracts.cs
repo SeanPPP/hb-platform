@@ -155,7 +155,8 @@ public sealed record LinklyCloudBackendSessionResponse(
     DateTimeOffset? ReceiptPrintedAt,
     DateTimeOffset? ClientAcknowledgedAt,
     int? LastHttpStatus,
-    IReadOnlyList<LinklyCloudBackendNotificationDto> Notifications);
+    IReadOnlyList<LinklyCloudBackendNotificationDto> Notifications,
+    bool? TransactionSuccess = null);
 
 public sealed record LinklyCloudBackendNotificationDto(
     string Type,

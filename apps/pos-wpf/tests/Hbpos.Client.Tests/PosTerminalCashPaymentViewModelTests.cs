@@ -2251,6 +2251,66 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_card_button_auto_completes_signature_receipt_fallback_approval()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-146SIG", "Signature Card Tea", "930146SIG", PriceSourceKind.StoreRetailPrice, 10.08m));
+        var cardTransactions = new[]
+        {
+            new CardTransactionDto(
+                "ANZ",
+                "260601120016",
+                null,
+                null,
+                null,
+                null,
+                null,
+                "08",
+                "APPROVE WITH SIG",
+                null,
+                null,
+                10.08m,
+                "----------------------\n*** MERCHANT COPY ***\nTOTAL      AUD     $10.08\nAPPROVE WITH SIG - 08\nPLEASE SIGN:")
+        };
+        var authorization = new PaymentAuthorizationResult(
+            true,
+            "ANZBACKEND:260601120016:signature-receipt-fallback-session-1:Sandbox",
+            "ANZ Linkly Cloud",
+            10.08m,
+            cardTransactions,
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.CloudBackendAsync.ToString(),
+            SessionId: "signature-receipt-fallback-session-1",
+            TxnRef: "260601120016",
+            ResponseCode: "08",
+            ResponseText: "APPROVE WITH SIG");
+        var orders = new InMemoryOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new InMemorySyncQueueRepository(),
+            cardTerminalClient: new ApprovedCardTerminalClient("CARD-SIGNATURE", authorization));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        PaymentCompletedEventArgs? completed = null;
+        viewModel.PaymentCompleted += (_, args) => completed = args;
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.NotNull(completed);
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.Empty(cart.Lines);
+        Assert.NotNull(orders.LastOrder);
+        var payment = Assert.Single(completed!.Order.Payments);
+        Assert.Equal(PaymentMethodKind.Card, payment.Method);
+        Assert.Equal(10.08m, payment.Amount);
+        var transaction = Assert.Single(payment.CardTransactions!);
+        Assert.Equal("08", transaction.ResponseCode);
+        Assert.Equal("APPROVE WITH SIG", transaction.ResponseText);
+        Assert.Contains("PLEASE SIGN:", transaction.ReceiptText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Payment_page_card_button_keeps_partial_tender_until_remaining_is_paid()
     {
         var cart = new PosCartService();
@@ -2786,6 +2846,118 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.SelectCardCommand.CanExecute(null));
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
         Assert.Equal("payment.status.cardCancelled", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_linkly_backend_cancel_result_allows_next_card_payment_without_recovery_prompt()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-160L", "Linkly Cancel Tea", "930160L", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            IgnoreCancellation = true
+        };
+        var recoverCallCount = 0;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            recoverPreviousCardTransactionAsync: () =>
+            {
+                recoverCallCount++;
+                return Task.FromResult(false);
+            });
+
+        var cancelledPaymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+
+        viewModel.CancelCommand.Execute(null);
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+            "linkly.backend.cancelled",
+            "ANZ Linkly Cloud transaction was cancelled."));
+        await cancelledPaymentTask;
+
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.IsCancelPaymentVisible);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.Equal("payment.status.cardCancelled", viewModel.StatusMessage);
+
+        workflow.AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        workflow.AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryPaymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
+            new PaymentTender(PaymentMethodKind.Card, 5m, "CARD-AFTER-CANCEL"),
+            "payment.status.cardTenderAdded"));
+        await retryPaymentTask;
+
+        var tender = Assert.Single(viewModel.PaymentTenders);
+        Assert.Equal(PaymentMethodKind.Card, tender.Method);
+        Assert.Equal("CARD-AFTER-CANCEL", tender.Reference);
+        Assert.Equal(0, recoverCallCount);
+        Assert.False(viewModel.CardPaymentErrorOverlay?.IsOpen == true);
+        Assert.Equal("payment.status.cardTenderAdded", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_virtual_linkly_cancel_result_allows_next_card_payment_without_recovery_prompt()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-160V", "Virtual Linkly Cancel Tea", "930160V", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            IgnoreCancellation = true
+        };
+        var recoverCallCount = 0;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            recoverPreviousCardTransactionAsync: () =>
+            {
+                recoverCallCount++;
+                return Task.FromResult(false);
+            });
+
+        var cancelledPaymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+
+        viewModel.CancelCommand.Execute(null);
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+            "payment.status.cardDeclined",
+            "CANCELLED (CN)"));
+        await cancelledPaymentTask;
+
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.IsCancelPaymentVisible);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.Equal("payment.status.cardCancelled", viewModel.StatusMessage);
+
+        workflow.AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        workflow.AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryPaymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
+            new PaymentTender(PaymentMethodKind.Card, 5m, "CARD-AFTER-VIRTUAL-CANCEL"),
+            "payment.status.cardTenderAdded"));
+        await retryPaymentTask;
+
+        var tender = Assert.Single(viewModel.PaymentTenders);
+        Assert.Equal(PaymentMethodKind.Card, tender.Method);
+        Assert.Equal("CARD-AFTER-VIRTUAL-CANCEL", tender.Reference);
+        Assert.Equal(0, recoverCallCount);
+        Assert.False(viewModel.CardPaymentErrorOverlay?.IsOpen == true);
+        Assert.Equal("payment.status.cardTenderAdded", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -3641,7 +3813,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
         }
     }
 
-    private sealed class ApprovedCardTerminalClient(string reference) : ICardTerminalClient
+    private sealed class ApprovedCardTerminalClient(
+        string reference,
+        PaymentAuthorizationResult? authorization = null) : ICardTerminalClient
     {
         public List<string?> RefundOriginalReferences { get; } = [];
 
@@ -3650,7 +3824,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             PosSessionState session,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(new PaymentAuthorizationResult(true, reference));
+            return Task.FromResult(authorization ?? new PaymentAuthorizationResult(true, reference));
         }
 
         public Task<PaymentAuthorizationResult> RefundAsync(

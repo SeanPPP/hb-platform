@@ -207,7 +207,7 @@ public sealed class LinklyCloudTerminalClient(
                 return new PaymentAuthorizationResult(false, null, message);
             }
 
-            Log($"transaction completed txnType={txnType} sessionId={result.SessionId} txnRef={LogValue(result.TxnRef ?? txnRef)} approved={result.Succeeded && string.Equals(result.ResponseCode?.Trim(), "00", StringComparison.OrdinalIgnoreCase)} responseCode={LogValue(result.ResponseCode)} outcome={result.Outcome}");
+            Log($"transaction completed txnType={txnType} sessionId={result.SessionId} txnRef={LogValue(result.TxnRef ?? txnRef)} approved={result.Succeeded && LinklyApprovalResponseCodes.IsApproved(result.ResponseCode)} responseCode={LogValue(result.ResponseCode)} outcome={result.Outcome}");
             await PresentDirectStatusAsync(
                 result.SessionId ?? txnRef,
                 result.Outcome.ToString(),
@@ -216,7 +216,8 @@ public sealed class LinklyCloudTerminalClient(
                 responseText: FormatDirectStatusMessage(result),
                 isInteractive: false,
                 isFinal: true,
-                CancellationToken.None);
+                CancellationToken.None,
+                responseCode: result.ResponseCode);
             var authorizationResult = ToAuthorizationResult(result, amount, txnRef);
             keepDialogOpen = !authorizationResult.Approved && !IsCancelledResult(result);
             return authorizationResult;
@@ -313,7 +314,8 @@ public sealed class LinklyCloudTerminalClient(
         string? responseText,
         bool isInteractive,
         bool isFinal,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? responseCode = null)
     {
         if (dialogService is null)
         {
@@ -333,7 +335,8 @@ public sealed class LinklyCloudTerminalClient(
                 Mode: LinklyTerminalDialogMode.CloudDirectStatus,
                 IsInteractive: isInteractive,
                 IsFinal: isFinal,
-                DisplayButtons: []),
+                DisplayButtons: [],
+                ResponseCode: responseCode),
             cancellationToken);
     }
 
@@ -457,8 +460,19 @@ public sealed class LinklyCloudTerminalClient(
         catch (Exception ex) when (ex is HttpRequestException or LinklyCloudApiException)
         {
             Log($"transaction direct sendkey failed sessionId={sessionId} error={ex.GetType().Name}");
-            return T("linkly.cloud.directCancelFailed", "Cancel request could not be sent. Try again or use the terminal.");
+            return IsCancelDialogAction(action)
+                // 虚拟刷卡取消以 Linkly 最终状态为准；sendkey 短暂拒绝时继续等待，避免把已取消交易误报为取消失败。
+                ? T("linkly.cloud.directPendingMessage", "Waiting for the card terminal result. Complete the operation on the terminal.")
+                : T("linkly.cloud.directCancelFailed", "Cancel request could not be sent. Try again or use the terminal.");
         }
+    }
+
+    private static bool IsCancelDialogAction(LinklyTerminalDialogAction action)
+    {
+        return string.Equals(
+            LinklyTerminalDialogKeys.Normalize(action.Key),
+            LinklyTerminalDialogKeys.OkCancel,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<LinklyCloudToken> GetTokenAsync(
@@ -508,15 +522,28 @@ public sealed class LinklyCloudTerminalClient(
             decimal.Round(amount, 2, MidpointRounding.AwayFromZero),
             null,
             NormalizeOptional(response.RefundReference));
-        var approved = response.Succeeded &&
-            string.Equals(response.ResponseCode?.Trim(), "00", StringComparison.OrdinalIgnoreCase);
+        var approved = response.Succeeded;
         var reference = string.IsNullOrWhiteSpace(response.RefundReference)
             ? $"ANZCLOUD:{txnRef}"
             : $"ANZCLOUD:{txnRef}:{response.RefundReference.Trim()}";
 
         return approved
-            ? new PaymentAuthorizationResult(true, reference, "ANZ Linkly Cloud", amount, [transaction])
-            : new PaymentAuthorizationResult(false, reference, FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction]);
+            ? new PaymentAuthorizationResult(
+                true,
+                reference,
+                "ANZ Linkly Cloud",
+                amount,
+                [transaction],
+                ResponseCode: transaction.ResponseCode,
+                ResponseText: transaction.ResponseText)
+            : new PaymentAuthorizationResult(
+                false,
+                reference,
+                FormatResponseMessage(response.ResponseText, response.ResponseCode),
+                amount,
+                [transaction],
+                ResponseCode: transaction.ResponseCode,
+                ResponseText: transaction.ResponseText);
     }
 
     private static bool IsPending(LinklyCloudTransactionResult result)

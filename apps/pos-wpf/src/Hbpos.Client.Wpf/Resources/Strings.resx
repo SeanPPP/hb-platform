@@ -608,6 +608,7 @@
   <data name="linkly.backend.refundMissingReference" xml:space="preserve"><value>Linkly Cloud refund requires an original RFN reference.</value></data>
   <data name="linkly.backend.amountMustBePositive" xml:space="preserve"><value>Card amount must be greater than zero.</value></data>
   <data name="linkly.backend.timeout" xml:space="preserve"><value>ANZ Linkly Cloud transaction timed out.</value></data>
+  <data name="linkly.backend.cancelled" xml:space="preserve"><value>ANZ Linkly Cloud transaction was cancelled.</value></data>
   <data name="linkly.backend.waitCancelled" xml:space="preserve"><value>Waiting for the ANZ Linkly Cloud backend response was cancelled before the transaction result could be confirmed.</value></data>
   <data name="linkly.backend.communicationFailed" xml:space="preserve"><value>ANZ Linkly Cloud backend communication failed.</value></data>
   <data name="linkly.backend.unavailable" xml:space="preserve"><value>ANZ Linkly Cloud backend API is offline. Cloud backend card payment was not started. Check the network or use another payment method.</value></data>

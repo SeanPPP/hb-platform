@@ -64,7 +64,9 @@ public sealed record LinklyTerminalDialogState(
     bool IsFinal = false,
     IReadOnlyList<LinklyTerminalDialogButton>? DisplayButtons = null,
     string? InputType = null,
-    string? GraphicCode = null);
+    string? GraphicCode = null,
+    bool SupportsCancelPayment = false,
+    string? ResponseCode = null);
 
 public sealed record LinklyTerminalDialogAction(
     string Key,
@@ -126,6 +128,8 @@ public interface ILinklyTerminalDialogPresenter
 
     string? ResponseText { get; }
 
+    string? ResponseCode { get; }
+
     string? MessageText { get; }
 
     bool IsInteractive { get; }
@@ -163,9 +167,11 @@ public sealed class WpfLinklyTerminalDialogService :
     private string? _displayText;
     private string? _receiptText;
     private string? _responseText;
+    private string? _responseCode;
     private string? _messageText;
     private bool _isInteractive;
     private bool _isFinal;
+    private bool _supportsCancelPayment;
     private LinklyTerminalDialogMode _mode = LinklyTerminalDialogMode.CloudBackendInteractive;
 
     public WpfLinklyTerminalDialogService(ILocalizationService localization)
@@ -232,6 +238,12 @@ public sealed class WpfLinklyTerminalDialogService :
         private set => SetProperty(ref _responseText, value);
     }
 
+    public string? ResponseCode
+    {
+        get => _responseCode;
+        private set => SetProperty(ref _responseCode, value);
+    }
+
     public string? MessageText
     {
         get => _messageText;
@@ -267,7 +279,9 @@ public sealed class WpfLinklyTerminalDialogService :
     public bool IsCancelPaymentVisible =>
         IsOpen &&
         IsInteractive &&
-        !IsFinal;
+        !IsFinal &&
+        !HasApprovedTerminalOutcome &&
+        (_mode == LinklyTerminalDialogMode.CloudDirectStatus || _supportsCancelPayment);
 
     public string CancelPaymentText => _localization.T("linkly.backend.dialog.button.cancelPayment");
 
@@ -331,9 +345,11 @@ public sealed class WpfLinklyTerminalDialogService :
         DisplayText = state.DisplayText;
         ReceiptText = state.ReceiptText;
         ResponseText = state.ResponseText;
+        ResponseCode = state.ResponseCode;
         MessageText = state.Message;
         IsInteractive = state.IsInteractive;
         IsFinal = state.IsFinal;
+        _supportsCancelPayment = state.SupportsCancelPayment;
 
         DisplayButtons.Clear();
         foreach (var button in state.DisplayButtons ?? [])
@@ -368,29 +384,50 @@ public sealed class WpfLinklyTerminalDialogService :
         {
             return;
         }
+        // backend async 取消必须发送 Linkly OK/CANCEL sendkey，让终端真正退出刷卡流程。
+        _pendingAction = new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.OkCancel, null);
+    }
 
-        // 只有 direct 模式保留独立取消；backend async 取消按钮必须来自 Linkly display flag。
-        // Direct 模式取消要发 Linkly OK/CANCEL；backend async 固定取消只停止本地等待。
-        var key = _mode == LinklyTerminalDialogMode.CloudDirectStatus
-            ? LinklyTerminalDialogKeys.OkCancel
-            : LinklyTerminalDialogKeys.LocalCancel;
-        if (_mode == LinklyTerminalDialogMode.CloudBackendInteractive)
+    private bool HasApprovedTerminalOutcome =>
+        IsApprovedResponseCode(ResponseCode) ||
+        ContainsApprovedTerminalOutcome(ResponseText) ||
+        ContainsApprovedTerminalOutcome(DisplayText) ||
+        ContainsApprovedTerminalOutcome(ReceiptText);
+
+    private static bool IsApprovedResponseCode(string? value)
+    {
+        // Linkly 批准码 00 和签名批准码 08 都表示交易已通过，不能再允许 POS 取消。
+        var normalized = value?.Trim();
+        return string.Equals(normalized, "00", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "08", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsApprovedTerminalOutcome(string? value)
+    {
+        // 后端异步轮询可能仍显示 Pending，但终端已给出 APPROVED；此时 POS 不能再提供取消入口。
+        if (string.IsNullOrWhiteSpace(value))
         {
-            // backend async 的取消必须能打断本地等待/轮询，不能只排队到下一次 UI 更新。
-            lock (_localCancelGate)
-            {
-                _localCancelCts.Cancel();
-            }
+            return false;
         }
 
-        _pendingAction = new LinklyTerminalDialogAction(key, null);
+        return IsApprovedTerminalText(value) ||
+            value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Any(IsApprovedTerminalText);
+    }
+
+    private static bool IsApprovedTerminalText(string value)
+    {
+        var normalized = value.Trim();
+        return string.Equals(normalized, "APPROVED", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("APPROVED ", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("APPROVED(", StringComparison.OrdinalIgnoreCase);
     }
 
     private Task CloseOrCancelAsync()
     {
         if (IsCancelPaymentVisible)
         {
-            // direct 模式沿用 OK/CANCEL sendkey；backend async 关闭只收起本地弹窗，不误发 Key=0。
+            // 交给统一取消逻辑；backend async 会发官方 OK/CANCEL sendkey。
             SubmitCancelPayment();
             return Task.CompletedTask;
         }
@@ -403,12 +440,14 @@ public sealed class WpfLinklyTerminalDialogService :
         _pendingAction = null;
         ResetLocalCancelToken();
         _mode = LinklyTerminalDialogMode.CloudBackendInteractive;
+        _supportsCancelPayment = false;
         IsOpen = false;
         SessionId = null;
         StatusText = string.Empty;
         DisplayText = null;
         ReceiptText = null;
         ResponseText = null;
+        ResponseCode = null;
         MessageText = null;
         IsInteractive = false;
         IsFinal = false;

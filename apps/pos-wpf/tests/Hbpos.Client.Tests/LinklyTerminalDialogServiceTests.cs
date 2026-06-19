@@ -36,7 +36,7 @@ public sealed class LinklyTerminalDialogServiceTests
         Assert.Equal(button, displayButton.Source);
         Assert.Equal("OK", displayButton.Text);
         Assert.True(service.IsCloseButtonVisible);
-        Assert.True(service.IsCancelPaymentVisible);
+        Assert.False(service.IsCancelPaymentVisible);
         Assert.Equal("Cancel payment", service.CancelPaymentText);
     }
 
@@ -144,7 +144,7 @@ public sealed class LinklyTerminalDialogServiceTests
     }
 
     [Fact]
-    public async Task UpdateAsync_shows_local_cancel_payment_for_backend_async()
+    public async Task UpdateAsync_shows_cancel_payment_for_backend_async()
     {
         var service = new WpfLinklyTerminalDialogService(new LocalizationService());
         var state = new LinklyTerminalDialogState(
@@ -158,7 +158,8 @@ public sealed class LinklyTerminalDialogServiceTests
             null,
             Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
             IsInteractive: true,
-            IsFinal: false);
+            IsFinal: false,
+            SupportsCancelPayment: true);
 
         await service.UpdateAsync(state, CancellationToken.None);
         service.CancelPaymentCommand.Execute(null);
@@ -166,11 +167,11 @@ public sealed class LinklyTerminalDialogServiceTests
         var action = await service.UpdateAsync(state, CancellationToken.None);
 
         Assert.True(service.IsCancelPaymentVisible);
-        Assert.Equal(LinklyTerminalDialogKeys.LocalCancel, action?.Key);
+        Assert.Equal(LinklyTerminalDialogKeys.OkCancel, action?.Key);
     }
 
     [Fact]
-    public async Task UpdateAsync_backend_async_cancel_payment_requests_local_cancel_once()
+    public async Task UpdateAsync_backend_async_cancel_payment_requests_ok_cancel_sendkey_once()
     {
         var service = new WpfLinklyTerminalDialogService(new LocalizationService());
         var state = new LinklyTerminalDialogState(
@@ -184,7 +185,8 @@ public sealed class LinklyTerminalDialogServiceTests
             null,
             Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
             IsInteractive: true,
-            IsFinal: false);
+            IsFinal: false,
+            SupportsCancelPayment: true);
 
         await service.UpdateAsync(state, CancellationToken.None);
         service.CancelPaymentCommand.Execute(null);
@@ -194,13 +196,13 @@ public sealed class LinklyTerminalDialogServiceTests
 
         Assert.True(service.IsCancelPaymentVisible);
         Assert.NotNull(action);
-        Assert.Equal(LinklyTerminalDialogKeys.LocalCancel, action.Key);
+        Assert.Equal(LinklyTerminalDialogKeys.OkCancel, action.Key);
         Assert.Null(action.Data);
         Assert.Null(nextAction);
     }
 
     [Fact]
-    public async Task CloseCommand_requests_backend_async_local_cancel_without_sending_cancel_key()
+    public async Task CloseCommand_requests_backend_async_ok_cancel_sendkey()
     {
         var service = new WpfLinklyTerminalDialogService(new LocalizationService());
         var state = new LinklyTerminalDialogState(
@@ -214,7 +216,8 @@ public sealed class LinklyTerminalDialogServiceTests
             null,
             Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
             IsInteractive: true,
-            IsFinal: false);
+            IsFinal: false,
+            SupportsCancelPayment: true);
 
         await service.UpdateAsync(state, CancellationToken.None);
         await service.CloseCommand.ExecuteAsync(null);
@@ -222,11 +225,11 @@ public sealed class LinklyTerminalDialogServiceTests
         var action = await service.UpdateAsync(state, CancellationToken.None);
         Assert.True(service.IsOpen);
         Assert.Equal("session-1", service.SessionId);
-        Assert.Equal(LinklyTerminalDialogKeys.LocalCancel, action?.Key);
+        Assert.Equal(LinklyTerminalDialogKeys.OkCancel, action?.Key);
     }
 
     [Fact]
-    public async Task UpdateAsync_resets_local_cancel_token_when_session_changes_after_cancel()
+    public async Task UpdateAsync_keeps_local_cancel_token_available_when_backend_async_cancel_changes_session()
     {
         var service = new WpfLinklyTerminalDialogService(new LocalizationService());
         var firstState = new LinklyTerminalDialogState(
@@ -240,7 +243,8 @@ public sealed class LinklyTerminalDialogServiceTests
             null,
             Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
             IsInteractive: true,
-            IsFinal: false);
+            IsFinal: false,
+            SupportsCancelPayment: true);
         var secondState = firstState with { SessionId = "session-2" };
 
         await service.UpdateAsync(firstState, CancellationToken.None);
@@ -250,9 +254,99 @@ public sealed class LinklyTerminalDialogServiceTests
         await service.UpdateAsync(secondState, CancellationToken.None);
         var newToken = service.LocalCancelToken;
 
-        Assert.True(oldToken.IsCancellationRequested);
+        Assert.False(oldToken.IsCancellationRequested);
         Assert.False(newToken.IsCancellationRequested);
-        Assert.NotEqual(oldToken, newToken);
+        Assert.Equal(oldToken, newToken);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_hides_backend_async_cancel_payment_when_status_does_not_support_cancel()
+    {
+        var service = new WpfLinklyTerminalDialogService(new LocalizationService());
+        var state = new LinklyTerminalDialogState(
+            "session-1",
+            "Pending",
+            "PRESS OK",
+            null,
+            null,
+            0,
+            null,
+            null,
+            Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
+            IsInteractive: true,
+            IsFinal: false,
+            DisplayButtons: [new LinklyTerminalDialogButton("linkly.backend.dialog.button.ok", LinklyTerminalDialogKeys.OkCancel)]);
+
+        await service.UpdateAsync(state, CancellationToken.None);
+        service.CancelPaymentCommand.Execute(null);
+
+        var action = await service.UpdateAsync(state, CancellationToken.None);
+
+        Assert.False(service.IsCancelPaymentVisible);
+        Assert.Null(action);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_hides_backend_async_cancel_payment_when_terminal_is_approved()
+    {
+        var service = new WpfLinklyTerminalDialogService(new LocalizationService());
+        var okButton = new LinklyTerminalDialogButton("linkly.backend.dialog.button.ok", LinklyTerminalDialogKeys.OkCancel);
+        var state = new LinklyTerminalDialogState(
+            "session-approved",
+            "Pending",
+            "APPROVED",
+            "MERCHANT RECEIPT\nAPPROVED",
+            "APPROVED",
+            0,
+            null,
+            null,
+            Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
+            IsInteractive: true,
+            IsFinal: false,
+            SupportsCancelPayment: true,
+            DisplayButtons: [okButton]);
+
+        await service.UpdateAsync(state, CancellationToken.None);
+        service.CancelPaymentCommand.Execute(null);
+
+        var action = await service.UpdateAsync(state, CancellationToken.None);
+
+        Assert.False(service.IsCancelPaymentVisible);
+        Assert.Null(action);
+        var displayButton = Assert.Single(service.DisplayButtons);
+        Assert.Equal(okButton, displayButton.Source);
+        Assert.Equal("OK", displayButton.Text);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_hides_backend_async_cancel_payment_when_response_code_is_approved()
+    {
+        var service = new WpfLinklyTerminalDialogService(new LocalizationService());
+        var okButton = new LinklyTerminalDialogButton("linkly.backend.dialog.button.ok", LinklyTerminalDialogKeys.OkCancel);
+        var state = new LinklyTerminalDialogState(
+            "session-approved-code",
+            "Pending",
+            "PRESENT CARD",
+            null,
+            null,
+            0,
+            null,
+            null,
+            Mode: LinklyTerminalDialogMode.CloudBackendInteractive,
+            IsInteractive: true,
+            IsFinal: false,
+            SupportsCancelPayment: true,
+            DisplayButtons: [okButton],
+            ResponseCode: "00");
+
+        await service.UpdateAsync(state, CancellationToken.None);
+        service.CancelPaymentCommand.Execute(null);
+
+        var action = await service.UpdateAsync(state, CancellationToken.None);
+
+        Assert.False(service.IsCancelPaymentVisible);
+        Assert.Null(action);
+        Assert.Equal("OK", Assert.Single(service.DisplayButtons).Text);
     }
 
     [Fact]

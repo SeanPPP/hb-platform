@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 
@@ -66,6 +67,67 @@ public sealed class LinklyCloudTerminalClientTests
         Assert.True(result.Approved);
         Assert.Equal(1, dialog.CloseCallCount);
         Assert.Contains(dialog.States, state => state.IsFinal);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_treats_signature_approval_response_code_08_as_approved_direct_cloud_transaction()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            TransactionResult = SignatureApproved("session-signature", "TXN-SIGNATURE")
+        };
+        var dialog = new FakeLinklyTerminalDialogService();
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero,
+            localization: null,
+            dialogService: dialog);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.Equal("08", result.ResponseCode);
+        Assert.Equal("APPROVE WITH SIG", result.ResponseText);
+        var transaction = Assert.Single(result.CardTransactions!);
+        Assert.Equal("08", transaction.ResponseCode);
+        Assert.Equal("APPROVE WITH SIG", transaction.ResponseText);
+        Assert.Equal(1, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_treats_json_success_true_as_approved_even_when_response_code_is_not_approved()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            TransactionResult = new LinklyCloudTransactionResult(
+                "session-success",
+                true,
+                "TXN-SUCCESS",
+                null,
+                null,
+                null,
+                null,
+                null,
+                "50",
+                "SYSTEM ERROR",
+                null,
+                10m,
+                null)
+        };
+        var dialog = new FakeLinklyTerminalDialogService();
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero,
+            localization: null,
+            dialogService: dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.Equal("50", result.ResponseCode);
+        Assert.Equal("SYSTEM ERROR", result.ResponseText);
     }
 
     [Fact]
@@ -338,6 +400,54 @@ public sealed class LinklyCloudTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_does_not_show_direct_cancel_failed_message_when_cancel_sendkey_is_rejected_but_terminal_cancels()
+    {
+        var apiClient = new FakeLinklyCloudApiClient
+        {
+            SendKeyException = new HttpRequestException("sendkey rejected"),
+            PendingTransactionCompletion = new TaskCompletionSource<LinklyCloudTransactionResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.OkCancel, null));
+        var client = new LinklyCloudTerminalClient(
+            apiClient,
+            new FakeLinklyCloudSecretStore(),
+            TimeSpan.Zero,
+            localization: null,
+            dialogService: dialog);
+
+        var purchaseTask = client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+        await WaitUntilAsync(() => apiClient.SendKeyCallCount == 1 && dialog.States.Count >= 2);
+        apiClient.PendingTransactionCompletion.SetResult(new LinklyCloudTransactionResult(
+            apiClient.LastTransactionSessionId!,
+            false,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "CN",
+            "CANCELLED",
+            null,
+            10m,
+            null));
+        var result = await purchaseTask;
+
+        Assert.False(result.Approved);
+        Assert.Equal("CANCELLED (CN)", result.Message);
+        Assert.Equal(1, dialog.CloseCallCount);
+        Assert.Equal(1, apiClient.SendKeyCallCount);
+        Assert.Equal(0, apiClient.GetTransactionCallCount);
+        Assert.DoesNotContain(dialog.States, state =>
+            string.Equals(
+                state.DisplayText,
+                "Cancel request could not be sent. Try again or use the terminal.",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PurchaseAsync_allows_direct_cancel_while_initial_transaction_request_is_pending()
     {
         var apiClient = new FakeLinklyCloudApiClient
@@ -454,6 +564,24 @@ public sealed class LinklyCloudTerminalClientTests
             "RFN-1");
     }
 
+    private static LinklyCloudTransactionResult SignatureApproved(string sessionId, string txnRef)
+    {
+        return new LinklyCloudTransactionResult(
+            sessionId,
+            true,
+            txnRef,
+            "123456",
+            "VISA",
+            "4",
+            "4111111111111234",
+            "MID",
+            "08",
+            "APPROVE WITH SIG",
+            "42",
+            10.08m,
+            "RFN-SIG");
+    }
+
     private static async Task WaitUntilAsync(Func<bool> predicate)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -534,6 +662,8 @@ public sealed class LinklyCloudTerminalClientTests
         public int GetTransactionCallCount { get; private set; }
 
         public int SendKeyCallCount { get; private set; }
+
+        public Exception? SendKeyException { get; init; }
 
         public string? LastSendKeySessionId { get; private set; }
 
@@ -648,6 +778,11 @@ public sealed class LinklyCloudTerminalClientTests
             SendKeyCallCount++;
             LastSendKeySessionId = sessionId;
             LastSendKeyKey = LinklyTerminalDialogKeys.Normalize(key);
+            if (SendKeyException is not null)
+            {
+                throw SendKeyException;
+            }
+
             return Task.CompletedTask;
         }
     }

@@ -258,6 +258,7 @@ public sealed class SettingsViewModelTests
         Assert.Equal("DEV-1", service.SavedConfiguration.SquareDeviceId);
         Assert.Equal(45, service.SavedConfiguration.TerminalTimeoutSeconds);
         Assert.Null(service.SavedSquareAccessToken);
+        Assert.Equal("Square is active for the next card payment.", viewModel.ActivePaymentProviderText);
         Assert.Equal("Square terminal settings saved. The next payment will use Counter.", viewModel.StatusMessage);
     }
 
@@ -570,6 +571,7 @@ public sealed class SettingsViewModelTests
         Assert.Equal(CardProcessorKind.Linkly, service.SavedConfiguration!.Processor);
         Assert.Equal("192.168.1.10", service.SavedConfiguration.LinklyHost);
         Assert.Equal(2011, service.SavedConfiguration.LinklyPort);
+        Assert.Equal("ANZ Linkly is active for the next card payment.", viewModel.ActivePaymentProviderText);
         Assert.Equal("ANZ Linkly terminal settings saved.", viewModel.StatusMessage);
     }
 
@@ -819,8 +821,10 @@ public sealed class SettingsViewModelTests
         Assert.Equal(1, service.LinklyCloudBackendTestCallCount);
         Assert.Equal(0, service.LinklyCloudTestCallCount);
         Assert.NotNull(service.SavedConfiguration);
+        Assert.Equal(CardProcessorKind.Linkly, service.SavedConfiguration!.Processor);
         Assert.Equal(CardTerminalEnvironment.Sandbox, service.SavedConfiguration!.Environment);
         Assert.Equal(LinklyConnectionMode.CloudBackendAsync, service.SavedConfiguration.LinklyConnectionMode);
+        Assert.Equal("ANZ Linkly is active for the next card payment.", viewModel.ActivePaymentProviderText);
     }
 
     [Fact]
