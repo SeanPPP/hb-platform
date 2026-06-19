@@ -1196,6 +1196,12 @@ namespace BlazorApp.Api.Services.React
                 return false;
             }
 
+            // 数量最终写入 int 字段，先做边界检查，避免超大数字在强转时抛 OverflowException。
+            if (decimalValue > int.MaxValue)
+            {
+                return false;
+            }
+
             quantity = (int)decimalValue;
             return true;
         }

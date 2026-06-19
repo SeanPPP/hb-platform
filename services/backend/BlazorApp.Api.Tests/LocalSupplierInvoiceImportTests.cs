@@ -291,6 +291,35 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task ConfirmAsync_WhenQuantityExceedsIntRange_ReturnsValidationError()
+        {
+            await SeedStoreAndSupplierAsync();
+            var service = CreateImportService();
+            var lines = CreateConfirmLines();
+            lines[0].RawValues["col_4"] = "999999999999999999999";
+
+            var result = await service.ConfirmAsync(
+                new LocalSupplierInvoiceImportConfirmRequest
+                {
+                    SourceColumns = CreateSourceColumns(),
+                    Header = new LocalSupplierInvoiceImportHeaderDto
+                    {
+                        StoreCode = "S01",
+                        SupplierCode = "SUP01",
+                        InvoiceNo = "INV-CONFIRM-QTY-OVERFLOW",
+                    },
+                    Mapping = CreateConfirmMapping(),
+                    Lines = lines
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+            var detailMessages = Assert.IsType<List<string>>(result.Details);
+            Assert.Contains("第 2 行数量无效: 999999999999999999999", detailMessages);
+        }
+
+        [Fact]
         public async Task ConfirmAsync_WhenInvoiceNoDuplicated_DoesNotCreateNewInvoice()
         {
             await SeedStoreAndSupplierAsync();

@@ -45,7 +45,8 @@ namespace BlazorApp.Api.Controllers.React
             if (user == null) return false;
             return user.Claims.Any(c =>
                 c.Type == ClaimTypes.Role
-                && (c.Value.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+                // 超级管理员角色统一走共享权限常量，避免“管理员”通过授权元数据却被分店 gate 拦截。
+                && (Permissions.IsSuperAdminRole(c.Value)
                     || c.Value.Equals("WarehouseManager", StringComparison.OrdinalIgnoreCase))
             );
         }

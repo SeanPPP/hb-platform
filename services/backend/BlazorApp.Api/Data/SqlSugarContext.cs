@@ -373,6 +373,7 @@ namespace BlazorApp.Api.Data
                 EnsureSalesStatisticRefreshStateJobColumns();
                 EnsureContainerDetailSchemaColumns();
                 CreateNormalIndexes();
+                EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -1123,6 +1124,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_LocalSupplier_Code_Unique\" ON \"LocalSupplier\" (\"LocalSupplierCode\")",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_WareHouseOrder_OrderNo_Unique\" ON \"WareHouseOrder\" (\"OrderNo\") WHERE \"OrderNo\" IS NOT NULL",
+                ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''",
 
                 // 普通索引
                 ["IX_User_IsActive"] =
@@ -1263,6 +1266,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Code_Unique' AND object_id = OBJECT_ID('LocalSupplier')) CREATE UNIQUE INDEX IX_LocalSupplier_Code_Unique ON [LocalSupplier](LocalSupplierCode)",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_OrderNo_Unique' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE UNIQUE INDEX IX_WareHouseOrder_OrderNo_Unique ON [WareHouseOrder]([OrderNo]) WHERE [OrderNo] IS NOT NULL",
+                ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreLocalSupplierInvoice_Business_Unique' AND object_id = OBJECT_ID('StoreLocalSupplierInvoice')) CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique ON [StoreLocalSupplierInvoice]([StoreCode], [SupplierCode], [InvoiceNo]) WHERE [IsDeleted] = 0 AND [StoreCode] IS NOT NULL AND [SupplierCode] IS NOT NULL AND [InvoiceNo] IS NOT NULL AND [InvoiceNo] <> ''",
             };
 
             foreach (var indexCheck in uniqueIndexChecks)
@@ -1391,6 +1396,7 @@ namespace BlazorApp.Api.Data
                     // 创建普通索引
                     CreateNormalIndexes();
                     CreateWareHouseOrderOrderNoUniqueIndex();
+                    EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
                 }
                 else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
                 {
@@ -1463,6 +1469,35 @@ namespace BlazorApp.Api.Data
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️ 创建 WareHouseOrder.OrderNo 唯一索引失败: {ex.Message}");
+            }
+        }
+
+        private void EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex()
+        {
+            try
+            {
+                if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    const string sql =
+                        "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreLocalSupplierInvoice_Business_Unique' AND object_id = OBJECT_ID('StoreLocalSupplierInvoice')) "
+                        + "CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique ON [StoreLocalSupplierInvoice]([StoreCode], [SupplierCode], [InvoiceNo]) "
+                        + "WHERE [IsDeleted] = 0 AND [StoreCode] IS NOT NULL AND [SupplierCode] IS NOT NULL AND [InvoiceNo] IS NOT NULL AND [InvoiceNo] <> ''";
+                    _db.Ado.ExecuteCommand(sql);
+                    Console.WriteLine("✓ StoreLocalSupplierInvoice 业务唯一索引检查完成");
+                }
+                else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+                {
+                    const string sql =
+                        "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" "
+                        + "ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") "
+                        + "WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''";
+                    _db.Ado.ExecuteCommand(sql);
+                    Console.WriteLine("✓ StoreLocalSupplierInvoice 业务唯一索引检查完成");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ 创建 StoreLocalSupplierInvoice 业务唯一索引失败: {ex.Message}");
             }
         }
 

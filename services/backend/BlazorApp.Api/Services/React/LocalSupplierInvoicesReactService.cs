@@ -8,7 +8,9 @@ using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -579,10 +581,7 @@ namespace BlazorApp.Api.Services.React
                     if (existingInvoice != null)
                     {
                         await db.Ado.RollbackTranAsync();
-                        return ApiResponse<string>.Error(
-                            $"分店【{dto.StoreCode}】、供应商【{dto.SupplierCode}】、单号【{dto.InvoiceNo}】已存在，不能重复创建",
-                            "DUPLICATE_INVOICE"
-                        );
+                        return DuplicateInvoiceError(dto);
                     }
 
                     // 主表、明细、总金额更新必须处于同一事务，避免中途失败后留下脏数据。
@@ -656,6 +655,18 @@ namespace BlazorApp.Api.Services.React
 
                     await db.Ado.CommitTranAsync();
                 }
+                catch (Exception ex) when (IsUniqueConstraintViolation(ex))
+                {
+                    await db.Ado.RollbackTranAsync();
+                    _logger.LogWarning(
+                        ex,
+                        "创建进货单命中数据库唯一约束: StoreCode={StoreCode}, SupplierCode={SupplierCode}, InvoiceNo={InvoiceNo}",
+                        dto.StoreCode,
+                        dto.SupplierCode,
+                        dto.InvoiceNo
+                    );
+                    return DuplicateInvoiceError(dto);
+                }
                 catch
                 {
                     await db.Ado.RollbackTranAsync();
@@ -664,12 +675,51 @@ namespace BlazorApp.Api.Services.React
 
                 return ApiResponse<string>.OK(invoiceGuid);
             }
+            catch (Exception ex) when (IsUniqueConstraintViolation(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "创建进货单命中数据库唯一约束: StoreCode={StoreCode}, SupplierCode={SupplierCode}, InvoiceNo={InvoiceNo}",
+                    dto.StoreCode,
+                    dto.SupplierCode,
+                    dto.InvoiceNo
+                );
+                return DuplicateInvoiceError(dto);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建进货单失败");
                 var msg = ex.InnerException?.Message ?? ex.Message ?? "创建失败";
                 return ApiResponse<string>.Error(msg, "CREATE_ERROR");
             }
+        }
+
+        private static ApiResponse<string> DuplicateInvoiceError(CreateInvoiceRequest dto)
+        {
+            return ApiResponse<string>.Error(
+                $"分店【{dto.StoreCode}】、供应商【{dto.SupplierCode}】、单号【{dto.InvoiceNo}】已存在，不能重复创建",
+                "DUPLICATE_INVOICE"
+            );
+        }
+
+        private static bool IsUniqueConstraintViolation(Exception ex)
+        {
+            for (var current = ex; current != null; current = current.InnerException)
+            {
+                // SQL Server 唯一索引/唯一约束冲突分别对应 2601/2627。
+                if (current is SqlException { Number: 2601 or 2627 })
+                {
+                    return true;
+                }
+
+                // PostgreSQL 唯一约束冲突 SQLSTATE=23505。
+                if (current is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public async Task<ApiResponse<bool>> DeleteAsync(string invoiceGuid, string updatedBy)
