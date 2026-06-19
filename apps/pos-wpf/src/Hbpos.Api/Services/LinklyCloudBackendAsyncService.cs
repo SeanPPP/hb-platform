@@ -1229,7 +1229,7 @@ public class LinklyCloudBackendAsyncService(
             session.DeviceCode,
             session.SessionId,
             cancellationToken);
-        if (ShouldKeepCompletedSession(latestBeforeWrite, session))
+        if (ShouldKeepFinalResultSession(latestBeforeWrite, session))
         {
             return latestBeforeWrite!;
         }
@@ -1242,21 +1242,21 @@ public class LinklyCloudBackendAsyncService(
             session.DeviceCode,
             session.SessionId,
             cancellationToken);
-        return ShouldKeepCompletedSession(latestAfterWrite, session)
+        return ShouldKeepFinalResultSession(latestAfterWrite, session)
             ? latestAfterWrite!
             : latestAfterWrite ?? session;
     }
 
-    private static bool ShouldKeepCompletedSession(
+    private static bool ShouldKeepFinalResultSession(
         LinklyCloudBackendSessionRecord? latest,
         LinklyCloudBackendSessionRecord incoming)
     {
-        if (latest is null || !IsCompleted(latest))
+        if (latest is null || !IsProtectedFinalResult(latest))
         {
             return false;
         }
 
-        if (!IsCompleted(incoming))
+        if (!IsProtectedFinalResult(incoming))
         {
             return true;
         }
@@ -1470,7 +1470,15 @@ public class LinklyCloudBackendAsyncService(
 
         using var document = JsonDocument.Parse(payloadJson);
         var response = ReadResponse(document.RootElement);
-        session.TransactionSuccess = ReadBool(response, "Success");
+        var transactionSuccess = ReadBool(response, "Success");
+        var responseCode = ReadString(response, "ResponseCode");
+        var responseText = ReadString(response, "ResponseText");
+        session.TransactionSuccess = transactionSuccess;
+        if (IsCancelledResponse(transactionSuccess, responseCode, responseText))
+        {
+            // Cancelled 是 POS 内部最终状态，只能由 Linkly 200 的明确取消结果派生。
+            session.Status = StatusCancelled;
+        }
         if (updateTxnRef)
         {
             // 官方 GET transaction 的 TxnRef 是恢复证据；notification 仍保留本地创建的保护引用。
@@ -1478,9 +1486,32 @@ public class LinklyCloudBackendAsyncService(
         }
         if (updateOutcomeEvidence)
         {
-            session.ResponseCode = ReadString(response, "ResponseCode");
-            session.ResponseText = ReadString(response, "ResponseText");
+            session.ResponseCode = responseCode;
+            session.ResponseText = responseText;
         }
+    }
+
+    private static bool IsCancelledResponse(bool? transactionSuccess, string? responseCode, string? responseText)
+    {
+        // 必须先有明确失败结果，再按官方取消码或精确文案归类，避免把 declined/timeout 误判为取消。
+        return transactionSuccess == false &&
+            (IsCancelledResponseCode(responseCode) || IsCancelledResponseText(responseText));
+    }
+
+    private static bool IsCancelledResponseCode(string? responseCode)
+    {
+        var normalized = NormalizeOptional(responseCode);
+        return string.Equals(normalized, "TM", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "HD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCancelledResponseText(string? responseText)
+    {
+        var normalized = NormalizeOptional(responseText);
+        return string.Equals(normalized, "OPERATOR CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "TXN CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "TRANSACTION CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "CANCELLED", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ApplyMissingTransactionSuccessPayload(LinklyCloudBackendSessionRecord session, string? payloadJson)
@@ -1645,6 +1676,12 @@ public class LinklyCloudBackendAsyncService(
     private static bool IsCompleted(LinklyCloudBackendSessionRecord session)
     {
         return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsProtectedFinalResult(LinklyCloudBackendSessionRecord session)
+    {
+        return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusCancelled, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyDictionary<string, string>? EnsurePurchaseAnalysisData(
@@ -3816,14 +3853,15 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
 
     private static bool IsCompleted(LinklyCloudBackendSessionRecord session)
     {
-        return string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsFinalForClientRecovery(LinklyCloudBackendSessionRecord session)
     {
-        return string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(session.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(session.Status, "NotSubmitted", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusCancelled, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateTxnRef()
@@ -3931,9 +3969,9 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
            AND target.[SessionId] = source.[SessionId]
         WHEN MATCHED
              AND NOT (
-                target.[Status] = 'Completed'
+                target.[Status] IN ('Completed', 'Cancelled')
                 AND (
-                    @Status <> 'Completed'
+                    @Status NOT IN ('Completed', 'Cancelled')
                     OR ISNULL(target.[TxnRef], N'') <> ISNULL(@TxnRef, N'')
                     OR (
                         target.[TransactionSuccess] IS NOT NULL
@@ -4135,7 +4173,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
               AND [DeviceCode] = @DeviceCode
               AND (
                     [IsActive] = 1
-                    OR ([Status] IN (N'Completed', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
+                    OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
                   )
             ORDER BY
                 CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,

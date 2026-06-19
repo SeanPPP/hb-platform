@@ -2995,7 +2995,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         };
         workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
             "payment.status.cardDeclined",
-            "DECLINED (55)"));
+            "DECLINED (55)",
+            isTerminalDecline: true));
         var viewModel = new PaymentViewModel(cart, workflow, Session);
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
@@ -3008,7 +3009,40 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.SelectCashCommand.CanExecute(null));
         Assert.True(viewModel.SelectCardCommand.CanExecute(null));
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+        Assert.True(viewModel.CardPaymentErrorOverlay!.IsOpen);
+        Assert.Equal(
+            "payment.card.error.overlay.cardDeclined.title",
+            viewModel.CardPaymentErrorOverlay.TitleKey);
+        Assert.Contains(
+            "DECLINED (55)",
+            viewModel.CardPaymentErrorOverlay.DisplayMessage,
+            StringComparison.Ordinal);
         Assert.Equal("DECLINED (55)", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_local_card_decline_status_does_not_show_bank_decline_overlay()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-160C", "Local Declined Card Tea", "930160C", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+            "payment.status.cardDeclined",
+            "Original card payment reference is required."));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorOverlay is null or { IsOpen: false });
+        Assert.Equal("Original card payment reference is required.", viewModel.StatusMessage);
     }
 
     [Fact]

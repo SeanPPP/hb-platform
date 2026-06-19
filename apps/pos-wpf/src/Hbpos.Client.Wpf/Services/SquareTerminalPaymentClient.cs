@@ -133,7 +133,8 @@ public sealed class SquareTerminalPaymentClient(
         var baseUri = settings.SquareApiBaseUrl.EndsWith("/")
             ? new Uri(settings.SquareApiBaseUrl, UriKind.Absolute)
             : new Uri(settings.SquareApiBaseUrl + "/", UriKind.Absolute);
-        using var request = new HttpRequestMessage(method, new Uri(baseUri, $"v2/{relativeUrl}"));
+        // SquareApiBaseUrl 已统一规范到 /v2/，这里仅追加资源路径，避免恢复链路请求 /v2/v2。
+        using var request = new HttpRequestMessage(method, new Uri(baseUri, relativeUrl));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.SquareAccessToken);
         request.Headers.Add("Square-Version", CardTerminalSettings.SquareVersion);
         return await httpClient.SendAsync(request, cancellationToken);

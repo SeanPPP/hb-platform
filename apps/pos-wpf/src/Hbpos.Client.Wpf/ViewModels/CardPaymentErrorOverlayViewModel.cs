@@ -1,3 +1,4 @@
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Hbpos.Client.Wpf.ViewModels;
@@ -73,6 +74,21 @@ public partial class CardPaymentErrorOverlayViewModel : ObservableObject
             TitleKey = "payment.card.error.overlay.unexpected.title",
             MessageKey = "payment.card.error.overlay.unexpected.message"
         };
+
+    public static CardPaymentErrorOverlayViewModel CardDeclined(string? reason)
+    {
+        var normalizedReason = string.IsNullOrWhiteSpace(reason)
+            ? Localization.LocalizationResourceProvider.Instance["payment.status.cardDeclined"]
+            : reason.Trim();
+        var messageFormat = Localization.LocalizationResourceProvider.Instance["payment.card.error.overlay.cardDeclined.message"];
+
+        return new CardPaymentErrorOverlayViewModel
+        {
+            TitleKey = "payment.card.error.overlay.cardDeclined.title",
+            MessageKey = "payment.card.error.overlay.cardDeclined.message",
+            MessageTextOverride = string.Format(CultureInfo.CurrentCulture, messageFormat, normalizedReason)
+        };
+    }
 
     public static CardPaymentErrorOverlayViewModel ActiveSessionRequiresRecovery()
         => new()

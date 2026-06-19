@@ -70,7 +70,8 @@ public sealed class LinklyBackendTerminalClient(
     Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
     ILocalizationService? localization = null,
     ILinklyPaymentAttemptContextAccessor? paymentAttemptContextAccessor = null,
-    TimeSpan? businessWait = null) : ILinklyBackendTerminalClient
+    TimeSpan? businessWait = null,
+    ILinklyBankReceiptPrinter? bankReceiptPrinter = null) : ILinklyBackendTerminalClient
 {
     private const string ProcessorName = "ANZ";
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
@@ -364,6 +365,20 @@ public sealed class LinklyBackendTerminalClient(
                 fallbackTxnRef,
                 suppressPrintedReceipt: false,
                 pollResult.ManualCancelRequested);
+            var declinedReceiptPrintResult = await TryPrintSignatureDeclinedReceiptAsync(
+                settings,
+                status,
+                result,
+                pollResult.SignatureDeclineRequested,
+                cancellationToken);
+            if (declinedReceiptPrintResult is { Succeeded: false })
+            {
+                result = result with
+                {
+                    Message = AppendDeclinedReceiptPrintFailure(result.Message, declinedReceiptPrintResult.Message)
+                };
+            }
+
             // 收银员已发起取消时，最终失败状态只是取消结果说明；应关闭 Linkly 弹窗，让支付页恢复操作。
             keepDialogOpen = !result.Approved && !pollResult.ManualCancelRequested;
             return result;
@@ -592,11 +607,14 @@ public sealed class LinklyBackendTerminalClient(
         CancellationToken cancellationToken)
     {
         var manualCancelRequested = false;
+        var signatureDeclineRequested = false;
         void MarkManualCancelRequested() => manualCancelRequested = true;
+        void MarkSignatureDeclineRequested() => signatureDeclineRequested = true;
 
-        status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested);
+        var signatureSlipPrintState = new LinklySignatureSlipPrintState();
+        status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested, MarkSignatureDeclineRequested, signatureSlipPrintState);
         var shouldRefreshImmediately = !IsFinal(status) && !RequiresRecovery(status);
-        while (!IsFinal(status))
+        while (!IsFinal(status) || IsUnresolvedSignatureReceiptStatus(status))
         {
             if (shouldRefreshImmediately)
             {
@@ -612,7 +630,7 @@ public sealed class LinklyBackendTerminalClient(
             status = RequiresRecovery(status)
                 ? await RecoverAsync(settings, status.SessionId, cancellationToken)
                 : await GetStatusAsync(settings, status.SessionId, cancellationToken);
-            status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested);
+            status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested, MarkSignatureDeclineRequested, signatureSlipPrintState);
         }
 
         if (string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) &&
@@ -623,11 +641,11 @@ public sealed class LinklyBackendTerminalClient(
                 await DelayAsync(_pollInterval, cancellationToken);
 
                 status = await GetStatusAsync(settings, status.SessionId, cancellationToken);
-                status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested);
+                status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested, MarkSignatureDeclineRequested, signatureSlipPrintState);
             }
         }
 
-        return new LinklyBackendPollResult(status, manualCancelRequested);
+        return new LinklyBackendPollResult(status, manualCancelRequested, signatureDeclineRequested);
     }
 
     private async Task NotifyPaymentAttemptSessionStartedAsync(
@@ -706,10 +724,33 @@ public sealed class LinklyBackendTerminalClient(
         LinklyCloudBackendSessionResponse status,
         string? message,
         CancellationToken cancellationToken,
-        Action? onCancelSendKey = null)
+        Action? onCancelSendKey = null,
+        Action? onSignatureDeclineSendKey = null,
+        LinklySignatureSlipPrintState? signatureSlipPrintState = null)
     {
         while (true)
         {
+            var signatureSlipPrinted = await TryPrintSignatureSlipAsync(
+                settings,
+                status,
+                signatureSlipPrintState,
+                cancellationToken);
+            if (signatureSlipPrinted is { Succeeded: false })
+            {
+                message = signatureSlipPrinted.Message;
+                if (signatureSlipPrintState is not null)
+                {
+                    signatureSlipPrintState.LastFailureMessage = signatureSlipPrinted.Message;
+                }
+            }
+            else if (signatureSlipPrinted is { Succeeded: true } &&
+                signatureSlipPrintState?.LastFailureMessage is { } lastPrintFailure &&
+                string.Equals(message, lastPrintFailure, StringComparison.Ordinal))
+            {
+                message = null;
+                signatureSlipPrintState.LastFailureMessage = null;
+            }
+
             var dialogState = ToDialogState(status, message);
             var updateStopwatch = Stopwatch.StartNew();
             var action = await dialogService.UpdateAsync(dialogState, cancellationToken);
@@ -728,7 +769,17 @@ public sealed class LinklyBackendTerminalClient(
                 throw new LinklyBackendLocalCancelException();
             }
 
+            if (IsSignatureApprovalAction(action) &&
+                IsSignatureReceiptPrompt(status) &&
+                signatureSlipPrinted?.Succeeded == false)
+            {
+                // 签名小票没有打出来前，不能让店员确认签名并完成订单。
+                message = signatureSlipPrinted.Message;
+                continue;
+            }
+
             var isCancelSendKey = IsCancelSendKeyAction(status, action);
+            var isSignatureDeclineSendKey = IsSignatureDeclineAction(status, action);
             if (isCancelSendKey)
             {
                 // 只有当前终端明确显示取消键时，才记录收银员发起了取消动作。
@@ -738,6 +789,12 @@ public sealed class LinklyBackendTerminalClient(
             try
             {
                 status = await SendKeyAsync(settings, status.SessionId, action, cancellationToken);
+                if (isSignatureDeclineSendKey)
+                {
+                    // 只有签名确认阶段明确发送 No/Declined，最终失败后才补打 Declined 银行小票。
+                    onSignatureDeclineSendKey?.Invoke();
+                }
+
                 LogStatusSnapshot("manual sendkey completed", status);
                 message = null;
             }
@@ -761,6 +818,12 @@ public sealed class LinklyBackendTerminalClient(
             catch (HttpRequestException)
             {
                 // sendkey 可能已到达终端；继续查当前 session，避免本地提前结束未知交易。
+                if (isSignatureDeclineSendKey)
+                {
+                    // 网络异常不能证明 No/Declined 未送达；保留拒签意图，最终 SIGNATURE ERROR 后仍补打 Declined 银行小票。
+                    onSignatureDeclineSendKey?.Invoke();
+                }
+
                 message = isCancelSendKey
                     ? null
                     : T("linkly.backend.sendKeyFailed", "Card terminal action failed. Try again or recover the transaction.");
@@ -789,6 +852,133 @@ public sealed class LinklyBackendTerminalClient(
         return status.CancelKeyFlag &&
             !status.OKKeyFlag &&
             string.Equals(LinklyTerminalDialogKeys.Normalize(action.Key), LinklyTerminalDialogKeys.OkCancel, StringComparison.Ordinal);
+    }
+
+    private static bool IsSignatureApprovalAction(LinklyTerminalDialogAction action)
+    {
+        var normalizedKey = LinklyTerminalDialogKeys.Normalize(action.Key);
+        return string.Equals(normalizedKey, LinklyTerminalDialogKeys.Yes, StringComparison.Ordinal) ||
+            string.Equals(normalizedKey, LinklyTerminalDialogKeys.Auth, StringComparison.Ordinal);
+    }
+
+    private static bool IsSignatureDeclineAction(
+        LinklyCloudBackendSessionResponse status,
+        LinklyTerminalDialogAction action)
+    {
+        return IsSignatureReceiptPrompt(status) &&
+            string.Equals(LinklyTerminalDialogKeys.Normalize(action.Key), LinklyTerminalDialogKeys.No, StringComparison.Ordinal);
+    }
+
+    private async Task<ReceiptPrintResult?> TryPrintSignatureSlipAsync(
+        CardTerminalSettings settings,
+        LinklyCloudBackendSessionResponse status,
+        LinklySignatureSlipPrintState? printState,
+        CancellationToken cancellationToken)
+    {
+        if (bankReceiptPrinter is null ||
+            printState is null ||
+            !IsSignatureReceiptPrompt(status))
+        {
+            return null;
+        }
+
+        var printKey = status.SessionId;
+        if (status.ReceiptPrintedAt is not null)
+        {
+            // 后端已确认签名小票打印过时，本轮只标记本地去重，避免重复补打。
+            printState.PrintedKeys.Add(printKey);
+            return new ReceiptPrintResult(true, T("receipt.print.success", "Receipt printed."));
+        }
+
+        var receiptText = ReadReceiptText(status);
+        if (printState.PrintedKeys.Contains(printKey))
+        {
+            return new ReceiptPrintResult(true, T("receipt.print.success", "Receipt printed."));
+        }
+
+        var result = await bankReceiptPrinter.PrintAsync(
+            settings.Environment.ToString(),
+            status.SessionId,
+            receiptText!,
+            LinklyBankReceiptKind.SignatureRequired,
+            cancellationToken: cancellationToken);
+        if (result.Succeeded)
+        {
+            printState.PrintedKeys.Add(printKey);
+            Log($"signature slip printed sessionId={status.SessionId}");
+        }
+        else
+        {
+            Log($"signature slip print failed sessionId={status.SessionId} message={LogValue(result.Message)}");
+        }
+
+        return result;
+    }
+
+    private async Task<ReceiptPrintResult?> TryPrintSignatureDeclinedReceiptAsync(
+        CardTerminalSettings settings,
+        LinklyCloudBackendSessionResponse status,
+        PaymentAuthorizationResult result,
+        bool signatureDeclineRequested,
+        CancellationToken cancellationToken)
+    {
+        if (bankReceiptPrinter is null ||
+            !signatureDeclineRequested ||
+            result.Approved)
+        {
+            return null;
+        }
+
+        var receiptText = ReadReceiptText(status);
+        if (!IsDeclinedBankReceiptText(receiptText))
+        {
+            return null;
+        }
+
+        var printResult = await bankReceiptPrinter.PrintAsync(
+            settings.Environment.ToString(),
+            status.SessionId,
+            receiptText!,
+            LinklyBankReceiptKind.Declined,
+            cardType: result.CardTransactions?.FirstOrDefault()?.CardType,
+            maskedCardNumber: result.CardTransactions?.FirstOrDefault()?.MaskedCardNumber,
+            responseCode: result.ResponseCode,
+            responseText: result.ResponseText,
+            cancellationToken: cancellationToken);
+        if (printResult.Succeeded)
+        {
+            Log($"signature declined receipt printed sessionId={status.SessionId}");
+        }
+        else
+        {
+            Log($"signature declined receipt print failed sessionId={status.SessionId} message={LogValue(printResult.Message)}");
+        }
+
+        return printResult;
+    }
+
+    private string AppendDeclinedReceiptPrintFailure(
+        string? originalMessage,
+        string? printMessage)
+    {
+        var original = NormalizeOptional(originalMessage) ??
+            T("linkly.backend.declined", "ANZ Linkly Cloud transaction was declined.");
+        var printFailure = NormalizeOptional(printMessage) ??
+            T("receipt.print.failed", "Receipt print failed.");
+        return string.Concat(
+            original,
+            " ",
+            T("linkly.backend.declinedReceiptPrintFailed", "Declined bank receipt could not be printed:"),
+            " ",
+            printFailure);
+    }
+
+    private static bool IsDeclinedBankReceiptText(string? receiptText)
+    {
+        var text = NormalizeOptional(receiptText);
+        return text is not null &&
+            (text.Contains("DECLINED", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("SIGNATURE ERROR", StringComparison.OrdinalIgnoreCase));
     }
 
     private Task PresentFinalFailureAsync(
@@ -859,43 +1049,103 @@ public sealed class LinklyBackendTerminalClient(
             return buttons;
         }
 
-        if (IsCardTerminalWaitDisplay(status))
+        var signatureDisplayFlags = TryReadLatestSignatureDisplayFlags(status);
+        if (IsCardTerminalWaitDisplay(status) && signatureDisplayFlags is null)
         {
             return buttons;
         }
 
+        var okKeyFlag = status.OKKeyFlag;
+        var cancelKeyFlag = status.CancelKeyFlag;
+        var acceptYesKeyFlag = status.AcceptYesKeyFlag;
+        var declineNoKeyFlag = status.DeclineNoKeyFlag;
+        var authoriseKeyFlag = status.AuthoriseKeyFlag;
+        if (signatureDisplayFlags is not null &&
+            !acceptYesKeyFlag &&
+            !declineNoKeyFlag &&
+            !authoriseKeyFlag)
+        {
+            // 顶层 session 有时会回退成旧 PROCESSING，签名确认按钮以最新 SIGNATURE OK? display 通知为准。
+            okKeyFlag = signatureDisplayFlags.Value.OKKeyFlag;
+            cancelKeyFlag = signatureDisplayFlags.Value.CancelKeyFlag;
+            acceptYesKeyFlag = signatureDisplayFlags.Value.AcceptYesKeyFlag;
+            declineNoKeyFlag = signatureDisplayFlags.Value.DeclineNoKeyFlag;
+            authoriseKeyFlag = signatureDisplayFlags.Value.AuthoriseKeyFlag;
+        }
+
         // Linkly REST sendkey 对 OK 和 CANCEL 都使用 Key=0，按终端旗标决定按钮文案。
-        if (status.OKKeyFlag && status.CancelKeyFlag)
+        if (okKeyFlag && cancelKeyFlag)
         {
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.okCancel", LinklyTerminalDialogKeys.OkCancel));
         }
-        else if (status.OKKeyFlag)
+        else if (okKeyFlag)
         {
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.ok", LinklyTerminalDialogKeys.OkCancel));
         }
 
-        if (status.AcceptYesKeyFlag)
+        if (acceptYesKeyFlag)
         {
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.yesApproved", LinklyTerminalDialogKeys.Yes));
         }
 
-        if (status.DeclineNoKeyFlag)
+        if (declineNoKeyFlag)
         {
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.noDeclined", LinklyTerminalDialogKeys.No, IsDestructive: true));
         }
 
-        if (status.AuthoriseKeyFlag)
+        if (authoriseKeyFlag)
         {
             // 签名授权发送 AUTH=3，不能复用 OK/CANCEL 的 Key=0。
             buttons.Add(new LinklyTerminalDialogButton("linkly.backend.dialog.button.authoriseSignature", LinklyTerminalDialogKeys.Auth));
         }
 
-        if (!status.OKKeyFlag && status.CancelKeyFlag)
+        if (!okKeyFlag && cancelKeyFlag)
         {
             buttons.Add(CreateCancelButton());
         }
 
         return buttons;
+    }
+
+    private static (
+        bool OKKeyFlag,
+        bool CancelKeyFlag,
+        bool AcceptYesKeyFlag,
+        bool DeclineNoKeyFlag,
+        bool AuthoriseKeyFlag)? TryReadLatestSignatureDisplayFlags(LinklyCloudBackendSessionResponse status)
+    {
+        if (!IsSignatureReceiptPrompt(status))
+        {
+            return null;
+        }
+
+        foreach (var notification in (status.Notifications ?? []).Reverse())
+        {
+            if (!string.Equals(notification.Type, "display", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(notification.PayloadJson) ||
+                !notification.PayloadJson.Contains("SIGNATURE OK?", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(notification.PayloadJson);
+                var response = ReadResponse(document.RootElement);
+                return (
+                    ReadFlag(response, "OKKeyFlag"),
+                    ReadFlag(response, "CancelKeyFlag"),
+                    ReadFlag(response, "AcceptYesKeyFlag"),
+                    ReadFlag(response, "DeclineNoKeyFlag"),
+                    ReadFlag(response, "AuthoriseKeyFlag"));
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private static LinklyTerminalDialogButton CreateCancelButton()
@@ -914,6 +1164,18 @@ public sealed class LinklyBackendTerminalClient(
 
     private static bool SupportsCancelPayment(LinklyCloudBackendSessionResponse status)
     {
+        var signatureDisplayFlags = TryReadLatestSignatureDisplayFlags(status);
+        if (signatureDisplayFlags is not null)
+        {
+            // 签名确认阶段以最新 SIGNATURE OK? 通知为准，避免旧 PROCESSING 顶层标志重新打开全局取消。
+            return signatureDisplayFlags.Value.CancelKeyFlag;
+        }
+
+        if (IsSignatureReceiptPrompt(status) && !status.CancelKeyFlag)
+        {
+            return false;
+        }
+
         if (status.CancelKeyFlag)
         {
             return true;
@@ -1495,7 +1757,15 @@ public sealed class LinklyBackendTerminalClient(
 
     private sealed record LinklyBackendPollResult(
         LinklyCloudBackendSessionResponse Status,
-        bool ManualCancelRequested);
+        bool ManualCancelRequested,
+        bool SignatureDeclineRequested);
+
+    private sealed class LinklySignatureSlipPrintState
+    {
+        public HashSet<string> PrintedKeys { get; } = new(StringComparer.Ordinal);
+
+        public string? LastFailureMessage { get; set; }
+    }
 
     private static CardTransactionDto ToCardTransaction(
         LinklyCloudTransactionResult response,
@@ -1526,9 +1796,6 @@ public sealed class LinklyBackendTerminalClient(
     {
         var protectedResponseCode = NormalizeOptional(status.ResponseCode);
         var protectedResponseText = NormalizeOptional(status.ResponseText);
-        var receiptApproval = string.IsNullOrWhiteSpace(protectedResponseCode)
-            ? TryReadReceiptApproval(status)
-            : null;
         var notifications = status.Notifications ?? [];
         var fallbackRefundReference = TryReadRefundReference(status, null);
         var transactionNotification = string.IsNullOrWhiteSpace(protectedResponseCode)
@@ -1538,19 +1805,17 @@ public sealed class LinklyBackendTerminalClient(
                 TransactionNotificationMatchesProtectedResult(notification, protectedResponseCode, protectedResponseText));
         if (transactionNotification is null || string.IsNullOrWhiteSpace(transactionNotification.PayloadJson))
         {
-            var fallbackResponseCode = protectedResponseCode ?? receiptApproval?.ResponseCode;
-            var fallbackResponseText = protectedResponseText ?? receiptApproval?.ResponseText;
             return new LinklyCloudTransactionResult(
                 status.SessionId,
-                IsSuccessfulTransaction(status.TransactionSuccess, fallbackResponseCode, notificationSuccess: null),
+                IsSuccessfulTransaction(status.TransactionSuccess, protectedResponseCode, notificationSuccess: null),
                 NormalizeOptional(status.TxnRef) ?? requestedTxnRef,
                 null,
                 null,
                 null,
                 null,
                 null,
-                fallbackResponseCode,
-                fallbackResponseText,
+                protectedResponseCode,
+                protectedResponseText,
                 null,
                 requestedAmount,
                 fallbackRefundReference);
@@ -1562,8 +1827,8 @@ public sealed class LinklyBackendTerminalClient(
         var notificationRefundReference = TryReadRefundReference(document.RootElement, out _);
         var responseCodeFromNotification = ReadString(response, "ResponseCode");
         var responseTextFromNotification = ReadString(response, "ResponseText");
-        var finalResponseCode = protectedResponseCode ?? responseCodeFromNotification ?? receiptApproval?.ResponseCode;
-        var finalResponseText = protectedResponseText ?? responseTextFromNotification ?? receiptApproval?.ResponseText;
+        var finalResponseCode = protectedResponseCode ?? responseCodeFromNotification;
+        var finalResponseText = protectedResponseText ?? responseTextFromNotification;
         var notificationSuccess = ReadBool(response, "Success");
         return new LinklyCloudTransactionResult(
             status.SessionId,
@@ -1639,6 +1904,59 @@ public sealed class LinklyBackendTerminalClient(
     }
 
     private sealed record LinklyReceiptApproval(string ResponseCode, string ResponseText);
+
+    private static bool IsUnresolvedSignatureReceiptStatus(LinklyCloudBackendSessionResponse status)
+    {
+        if (!string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+            !IsSignatureReceiptPrompt(status))
+        {
+            return false;
+        }
+
+        if (status.TransactionSuccess.HasValue ||
+            !string.IsNullOrWhiteSpace(NormalizeOptional(status.ResponseCode)))
+        {
+            return false;
+        }
+
+        return !(status.Notifications ?? []).Any(IsTransactionNotification);
+    }
+
+    private static bool IsSignatureReceiptPrompt(LinklyCloudBackendSessionResponse status)
+    {
+        var displayText = NormalizeOptional(status.DisplayText);
+        var receiptText = ReadReceiptText(status);
+        return !string.IsNullOrWhiteSpace(receiptText) &&
+            receiptText.Contains("PLEASE SIGN", StringComparison.OrdinalIgnoreCase) &&
+            receiptText.Contains("APPROVE WITH SIG", StringComparison.OrdinalIgnoreCase) &&
+            (
+                string.Equals(displayText, "SIGNATURE OK?", StringComparison.OrdinalIgnoreCase) ||
+                status.AcceptYesKeyFlag ||
+                status.AuthoriseKeyFlag ||
+                (status.Notifications ?? []).Any(NotificationHasSignaturePromptFlag));
+    }
+
+    private static bool NotificationHasSignaturePromptFlag(LinklyCloudBackendNotificationDto notification)
+    {
+        if (!string.Equals(notification.Type, "display", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(notification.PayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(notification.PayloadJson);
+            var response = ReadResponse(document.RootElement);
+            return notification.PayloadJson.Contains("SIGNATURE OK?", StringComparison.OrdinalIgnoreCase) ||
+                ReadFlag(response, "AcceptYesKeyFlag") ||
+                ReadFlag(response, "AuthoriseKeyFlag");
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     private static string? TryReadRefundReference(
         LinklyCloudBackendSessionResponse status,

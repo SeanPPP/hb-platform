@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Contracts.Linkly;
@@ -158,6 +159,26 @@ public interface ICardReceiptPrintedNotifier
     Task MarkReceiptPrintedAsync(
         string environment,
         string sessionId,
+        CancellationToken cancellationToken = default);
+}
+
+public enum LinklyBankReceiptKind
+{
+    SignatureRequired,
+    Declined
+}
+
+public interface ILinklyBankReceiptPrinter
+{
+    Task<ReceiptPrintResult> PrintAsync(
+        string environment,
+        string sessionId,
+        string receiptText,
+        LinklyBankReceiptKind kind = LinklyBankReceiptKind.SignatureRequired,
+        string? cardType = null,
+        string? maskedCardNumber = null,
+        string? responseCode = null,
+        string? responseText = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -343,7 +364,7 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
             {
                 foreach (var line in receiptText.Replace("\r\n", "\n").Split('\n'))
                 {
-                    builder.Text(line);
+                    builder.Text(LinklyBankReceiptTextSanitizer.Sanitize(line));
                 }
                 builder.Blank();
             }
@@ -620,6 +641,194 @@ public sealed class ReceiptPrintService(
     public void Dispose()
     {
         _printLock.Dispose();
+    }
+
+    private string T(string key, string fallback)
+    {
+        return localization?.T(key) ?? fallback;
+    }
+}
+
+internal static class LinklyBankReceiptTextSanitizer
+{
+    private static readonly Regex FullPanRegex = new(@"(?<!\d)(?:\d[ \t\u00A0.\-]*){11,18}\d(?!\d)", RegexOptions.Compiled);
+    private static readonly Regex ReferenceLineRegex = new(
+        @"^\s*(?:TXN\s*REF|RRN|RETRIEVAL\s*REF(?:ERENCE)?|STAN|TRACE(?:\s*NO)?|INVOICE(?:\s*NO)?|INV\s*NO)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    public static string Sanitize(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        if (ReferenceLineRegex.IsMatch(text))
+        {
+            // Linkly 对账号不是卡号；保留这些行，方便收银员按银行小票核验交易。
+            return text;
+        }
+
+        return FullPanRegex.Replace(text, match =>
+        {
+            var digits = new string(match.Value.Where(char.IsDigit).ToArray());
+            return digits.Length is >= 12 and <= 19
+                ? "****" + digits[^4..]
+                : match.Value;
+        });
+    }
+
+    public static string? BuildCardSummary(string? cardType, string? maskedCardNumber)
+    {
+        var type = Normalize(cardType);
+        var masked = Normalize(maskedCardNumber);
+        masked = masked is null ? null : Sanitize(masked);
+
+        return (type, masked) switch
+        {
+            (null, null) => null,
+            (null, _) => masked,
+            (_, null) => type,
+            _ => $"{type} {masked}"
+        };
+    }
+
+    private static string? Normalize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+}
+
+public sealed class LinklyBankReceiptPrinter(
+    IReceiptPrinterSettingsStore settingsStore,
+    IReceiptPrinterDriver driver,
+    IEnumerable<ICardReceiptPrintedNotifier>? cardReceiptPrintedNotifiers = null,
+    ILocalizationService? localization = null) : ILinklyBankReceiptPrinter
+{
+    private const int LineWidth = 42;
+    private readonly SemaphoreSlim _printLock = new(1, 1);
+    private readonly IReadOnlyList<ICardReceiptPrintedNotifier> _cardReceiptPrintedNotifiers =
+        (cardReceiptPrintedNotifiers ?? []).ToArray();
+
+    public async Task<ReceiptPrintResult> PrintAsync(
+        string environment,
+        string sessionId,
+        string receiptText,
+        LinklyBankReceiptKind kind = LinklyBankReceiptKind.SignatureRequired,
+        string? cardType = null,
+        string? maskedCardNumber = null,
+        string? responseCode = null,
+        string? responseText = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(receiptText))
+        {
+            return new ReceiptPrintResult(false, T("linkly.signatureSlip.empty", "Signature receipt is empty."));
+        }
+
+        await _printLock.WaitAsync(cancellationToken);
+        try
+        {
+            var settings = await settingsStore.LoadAsync(cancellationToken);
+            var document = BuildDocument(
+                receiptText,
+                kind,
+                LinklyBankReceiptTextSanitizer.BuildCardSummary(cardType, maskedCardNumber),
+                responseCode,
+                responseText);
+            var result = await driver.PrintAsync(document, settings, cancellationToken);
+            if (!result.Succeeded)
+            {
+                return new ReceiptPrintResult(false, result.Message);
+            }
+
+            // 只有签名确认小票用后端 printed marker 去重；Declined 顾客银行小票不能复用这个状态。
+            if (kind == LinklyBankReceiptKind.SignatureRequired)
+            {
+                foreach (var notifier in _cardReceiptPrintedNotifiers)
+                {
+                    try
+                    {
+                        await notifier.MarkReceiptPrintedAsync(environment, sessionId, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                    }
+                }
+            }
+            return new ReceiptPrintResult(true, T("receipt.print.success", "Receipt printed."));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new ReceiptPrintResult(false, ex.Message);
+        }
+        finally
+        {
+            _printLock.Release();
+        }
+    }
+
+    private static ReceiptPrintDocument BuildDocument(
+        string receiptText,
+        LinklyBankReceiptKind kind,
+        string? cardSummary,
+        string? responseCode,
+        string? responseText)
+    {
+        var elements = new List<ReceiptPrintElement>();
+        var previewRows = new List<ReceiptPreviewRow>();
+
+        void AddText(string text, ReceiptPrintAlignment alignment = ReceiptPrintAlignment.Left, bool isEmphasized = false)
+        {
+            elements.Add(new ReceiptPrintElement(ReceiptPrintElementKind.Text, text, alignment, isEmphasized));
+            previewRows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, text, alignment, isEmphasized));
+        }
+
+        void AddSeparator()
+        {
+            var separator = new string('-', LineWidth);
+            elements.Add(new ReceiptPrintElement(ReceiptPrintElementKind.Separator, separator));
+            previewRows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Separator, separator));
+        }
+
+        AddText(kind == LinklyBankReceiptKind.Declined ? "*** DECLINED ***" : "*** SIGNATURE REQUIRED ***", ReceiptPrintAlignment.Center, isEmphasized: true);
+        AddSeparator();
+
+        if (!string.IsNullOrWhiteSpace(cardSummary))
+        {
+            AddText($"Card: {cardSummary}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(responseCode))
+        {
+            AddText($"Code: {LinklyBankReceiptTextSanitizer.Sanitize(responseCode)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(responseText))
+        {
+            AddText($"Result: {LinklyBankReceiptTextSanitizer.Sanitize(responseText)}");
+        }
+
+        // 这里仅打印 Linkly 返回的刷卡签名内容，不能拼接订单商品明细。
+        foreach (var line in receiptText.Replace("\r\n", "\n").Split('\n'))
+        {
+            AddText(LinklyBankReceiptTextSanitizer.Sanitize(line));
+        }
+
+        AddSeparator();
+        if (kind == LinklyBankReceiptKind.SignatureRequired)
+        {
+            AddText("CUSTOMER SIGNATURE", ReceiptPrintAlignment.Center, isEmphasized: true);
+            AddText(string.Empty);
+            AddText(string.Empty);
+            AddText(new string('_', 32), ReceiptPrintAlignment.Center, isEmphasized: true);
+            AddText(string.Empty);
+        }
+
+        return new ReceiptPrintDocument(elements, previewRows);
     }
 
     private string T(string key, string fallback)

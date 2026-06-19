@@ -7,6 +7,7 @@ public static class LinklyCloudBackendStatusConstants
 {
     public const string StatusPending = "Pending";
     public const string StatusCompleted = "Completed";
+    public const string StatusCancelled = "Cancelled";
     public const string StatusFailed = "Failed";
     public const string StatusNotSubmitted = "NotSubmitted";
     public const string StatusTokenRefreshRequired = "TokenRefreshRequired";

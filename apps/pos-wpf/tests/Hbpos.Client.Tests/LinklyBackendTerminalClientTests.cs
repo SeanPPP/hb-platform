@@ -977,7 +977,7 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_uses_signature_receipt_approval_when_completed_status_has_no_response_code()
+    public async Task PurchaseAsync_waits_for_final_decline_after_signature_is_rejected()
     {
         var requests = new List<HttpRequestMessage>();
         var handler = new StubHttpMessageHandler(request =>
@@ -1004,11 +1004,17 @@ public sealed class LinklyBackendTerminalClientTests
                         "recoveryCount": 0,
                         "receiptPrintedAt": null,
                         "lastHttpStatus": 200,
-                        "authoriseKeyFlag": true,
+                        "acceptYesKeyFlag": true,
+                        "declineNoKeyFlag": true,
                         "notifications": [
                           {
                             "type": "display",
-                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"AuthoriseKeyFlag\":true}}",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SWIPE CARD\"],\"CancelKeyFlag\":true}}",
+                            "receivedAt": "2026-06-01T01:59:58Z"
+                          },
+                          {
+                            "type": "display",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"AcceptYesKeyFlag\":true,\"DeclineNoKeyFlag\":true}}",
                             "receivedAt": "2026-06-01T02:00:00Z"
                           }
                         ]
@@ -1037,7 +1043,7 @@ public sealed class LinklyBackendTerminalClientTests
                       }
                     }
                     """),
-                _ => JsonResponse(
+                4 => JsonResponse(
                     """
                     {
                       "success": true,
@@ -1050,8 +1056,692 @@ public sealed class LinklyBackendTerminalClientTests
                         "txnRef": "260601120016",
                         "responseCode": null,
                         "responseText": null,
-                        "displayText": "Completed",
+                        "displayText": "SIGNATURE OK?",
                         "receiptText": "----------------------\n*** MERCHANT COPY ***\nTOTAL      AUD     $10.08\nAPPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-receipt-fallback-session-1",
+                        "status": "Completed",
+                        "txnRef": "260601120016",
+                        "responseCode": "Q6",
+                        "responseText": "SIGNATURE ERROR",
+                        "transactionSuccess": false,
+                        "displayText": "TRANSACTION DECLINED",
+                        "receiptText": "DECLINED - Q6\nSIGNATURE ERROR",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{\"Response\":{\"Success\":false,\"TxnRef\":\"260601120016\",\"ResponseCode\":\"Q6\",\"ResponseText\":\"SIGNATURE ERROR\",\"AmtPurchase\":1008}}",
+                            "receivedAt": "2026-06-01T02:00:02Z"
+                          }
+                        ]
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.No, null));
+        var signaturePrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, dialog, signaturePrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.Equal("Q6", result.ResponseCode);
+        Assert.Equal("SIGNATURE ERROR", result.ResponseText);
+        Assert.Collection(
+            requests,
+            active => Assert.Equal(HttpMethod.Get, active.Method),
+            start => Assert.Equal(HttpMethod.Post, start.Method),
+            sendKey => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/signature-receipt-fallback-session-1/sendkey", sendKey.RequestUri!.AbsoluteUri),
+            completedWithoutResult => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/signature-receipt-fallback-session-1/status?environment=Sandbox", completedWithoutResult.RequestUri!.AbsoluteUri),
+            declined => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/signature-receipt-fallback-session-1/status?environment=Sandbox", declined.RequestUri!.AbsoluteUri));
+        var sendKeyBody = await requests[2].Content!.ReadAsStringAsync();
+        Assert.Equal("Sandbox", ReadJsonString(sendKeyBody, "environment"));
+        Assert.Equal(LinklyTerminalDialogKeys.No, ReadJsonString(sendKeyBody, "key"));
+        Assert.Null(TryReadJsonString(sendKeyBody, "data"));
+        Assert.Collection(
+            signaturePrinter.Prints,
+            signature => Assert.Equal(LinklyBankReceiptKind.SignatureRequired, signature.Kind),
+            declined =>
+            {
+                Assert.Equal(LinklyBankReceiptKind.Declined, declined.Kind);
+                Assert.Equal("DECLINED - Q6\nSIGNATURE ERROR", declined.ReceiptText);
+            });
+        var failedTransaction = Assert.Single(result.CardTransactions!);
+        Assert.Equal("Q6", failedTransaction.ResponseCode);
+        Assert.Equal("SIGNATURE ERROR", failedTransaction.ResponseText);
+        var signatureState = Assert.Single(dialog.States.Where(state => state.DisplayText == "SIGNATURE OK?"));
+        Assert.False(signatureState.SupportsCancelPayment);
+        Assert.Equal(0, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_prints_signature_slip_once_when_signature_prompt_repeats()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 or 3 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-print-once-session",
+                        "status": "Pending",
+                        "txnRef": "260601120017",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "SIGNATURE OK?",
+                        "receiptText": "LINE2\nCREDIT ACCOUNT\nPURCHASE AUD $10.08\nAPPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "acceptYesKeyFlag": true,
+                        "declineNoKeyFlag": true,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"AcceptYesKeyFlag\":true,\"DeclineNoKeyFlag\":true}}",
+                            "receivedAt": "2026-06-01T02:00:00Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-print-once-session",
+                        "status": "Completed",
+                        "txnRef": "260601120017",
+                        "responseCode": "08",
+                        "responseText": "APPROVE WITH SIG",
+                        "transactionSuccess": true,
+                        "displayText": "Completed",
+                        "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": []
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        var signaturePrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, dialog, signaturePrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        var print = Assert.Single(signaturePrinter.Prints);
+        Assert.Equal("Sandbox", print.Environment);
+        Assert.Equal("signature-print-once-session", print.SessionId);
+        Assert.Contains("PLEASE SIGN:", print.ReceiptText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_prints_declined_bank_receipt_after_signature_decline_final_result()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-declined-print-session",
+                        "status": "Pending",
+                        "txnRef": "260601120038",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "SIGNATURE OK?",
+                        "receiptText": "LINE2\nCREDIT ACCOUNT\nPURCHASE AUD $10.08\nAPPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "acceptYesKeyFlag": true,
+                        "declineNoKeyFlag": true,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"AcceptYesKeyFlag\":true,\"DeclineNoKeyFlag\":true}}",
+                            "receivedAt": "2026-06-01T02:00:00Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                3 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-declined-print-session",
+                        "status": "Pending",
+                        "txnRef": "260601120038",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "PROCESSING",
+                        "receiptText": "LINE2\nCREDIT ACCOUNT\nPURCHASE AUD $10.08\nAPPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 202,
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-declined-print-session",
+                        "status": "Completed",
+                        "txnRef": "260601120038",
+                        "responseCode": "Q6",
+                        "responseText": "SIGNATURE ERROR",
+                        "transactionSuccess": false,
+                        "displayText": "TRANSACTION DECLINED",
+                        "receiptText": "DECLINED - Q6\nSIGNATURE ERROR",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{\"Response\":{\"Success\":false,\"TxnRef\":\"260601120038\",\"ResponseCode\":\"Q6\",\"ResponseText\":\"SIGNATURE ERROR\",\"AmtPurchase\":1008,\"CardType\":\"VISA\",\"Pan\":\"4111111111111234\"}}",
+                            "receivedAt": "2026-06-01T02:00:04Z"
+                          }
+                        ]
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.No, null));
+        var bankReceiptPrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, dialog, bankReceiptPrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.Equal("Q6", result.ResponseCode);
+        Assert.Equal("SIGNATURE ERROR", result.ResponseText);
+        Assert.Collection(
+            bankReceiptPrinter.Prints,
+            signature =>
+            {
+                Assert.Equal(LinklyBankReceiptKind.SignatureRequired, signature.Kind);
+                Assert.Contains("PLEASE SIGN:", signature.ReceiptText, StringComparison.Ordinal);
+            },
+            declined =>
+            {
+                Assert.Equal(LinklyBankReceiptKind.Declined, declined.Kind);
+                Assert.Equal("DECLINED - Q6\nSIGNATURE ERROR", declined.ReceiptText);
+                Assert.Equal("VISA", declined.CardType);
+                Assert.Equal("****1234", declined.MaskedCardNumber);
+                Assert.Equal("Q6", declined.ResponseCode);
+                Assert.Equal("SIGNATURE ERROR", declined.ResponseText);
+            });
+        var sendKeyBody = await requests[2].Content!.ReadAsStringAsync();
+        Assert.Equal(LinklyTerminalDialogKeys.No, ReadJsonString(sendKeyBody, "key"));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_keeps_declined_when_signature_declined_receipt_print_fails()
+    {
+        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+            "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "storeCode": "S01",
+                    "deviceCode": "TERM-1",
+                    "sessionId": "signature-declined-print-fail-session",
+                    "status": "Pending",
+                    "txnRef": "260601120039",
+                    "responseCode": null,
+                    "responseText": null,
+                    "displayText": "SIGNATURE OK?",
+                    "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                    "recoveryCount": 0,
+                    "receiptPrintedAt": null,
+                    "lastHttpStatus": 200,
+                    "declineNoKeyFlag": true,
+                    "notifications": [
+                      {
+                        "type": "display",
+                        "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"DeclineNoKeyFlag\":true}}",
+                        "receivedAt": "2026-06-01T02:00:00Z"
+                      }
+                    ]
+                  }
+                }
+                """),
+            "/api/v1/linkly/cloud-backend/transactions/signature-declined-print-fail-session/sendkey" => JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "storeCode": "S01",
+                    "deviceCode": "TERM-1",
+                    "sessionId": "signature-declined-print-fail-session",
+                    "status": "Pending",
+                    "txnRef": "260601120039",
+                    "displayText": "PROCESSING",
+                    "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                    "recoveryCount": 0,
+                    "receiptPrintedAt": null,
+                    "lastHttpStatus": 202,
+                    "notifications": []
+                  }
+                }
+                """),
+            _ => JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "storeCode": "S01",
+                    "deviceCode": "TERM-1",
+                    "sessionId": "signature-declined-print-fail-session",
+                    "status": "Completed",
+                    "txnRef": "260601120039",
+                    "responseCode": "Q6",
+                    "responseText": "SIGNATURE ERROR",
+                    "transactionSuccess": false,
+                    "displayText": "TRANSACTION DECLINED",
+                    "receiptText": "DECLINED - Q6\nSIGNATURE ERROR",
+                    "recoveryCount": 0,
+                    "receiptPrintedAt": null,
+                    "lastHttpStatus": 200,
+                    "notifications": []
+                  }
+                }
+                """)
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.No, null));
+        var bankReceiptPrinter = new FakeLinklyBankReceiptPrinter
+        {
+            Results =
+            {
+                new ReceiptPrintResult(true, "signature printed"),
+                new ReceiptPrintResult(false, "printer offline")
+            }
+        };
+        var client = CreateClient(handler, dialog, bankReceiptPrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.Equal("Q6", result.ResponseCode);
+        Assert.Equal("SIGNATURE ERROR", result.ResponseText);
+        Assert.Contains("SIGNATURE ERROR", result.Message, StringComparison.Ordinal);
+        Assert.Contains("printer offline", result.Message, StringComparison.Ordinal);
+        Assert.Collection(
+            bankReceiptPrinter.Prints,
+            signature => Assert.Equal(LinklyBankReceiptKind.SignatureRequired, signature.Kind),
+            declined => Assert.Equal(LinklyBankReceiptKind.Declined, declined.Kind));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_prints_declined_bank_receipt_when_signature_decline_sendkey_network_fails_but_terminal_declines()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-decline-sendkey-network-session",
+                        "status": "Pending",
+                        "txnRef": "260601120041",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "SIGNATURE OK?",
+                        "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "declineNoKeyFlag": true,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"DeclineNoKeyFlag\":true}}",
+                            "receivedAt": "2026-06-01T02:00:00Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/transactions/signature-decline-sendkey-network-session/sendkey" => throw new HttpRequestException("connection reset after send"),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-decline-sendkey-network-session",
+                        "status": "Completed",
+                        "txnRef": "260601120041",
+                        "responseCode": "Q6",
+                        "responseText": "SIGNATURE ERROR",
+                        "transactionSuccess": false,
+                        "displayText": "TRANSACTION DECLINED",
+                        "receiptText": "DECLINED - Q6\nSIGNATURE ERROR",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{\"Response\":{\"Success\":false,\"TxnRef\":\"260601120041\",\"ResponseCode\":\"Q6\",\"ResponseText\":\"SIGNATURE ERROR\",\"AmtPurchase\":1008}}",
+                            "receivedAt": "2026-06-01T02:00:04Z"
+                          }
+                        ]
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.No, null));
+        var bankReceiptPrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, dialog, bankReceiptPrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.Equal("Q6", result.ResponseCode);
+        Assert.Equal("SIGNATURE ERROR", result.ResponseText);
+        Assert.Contains(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/sendkey", StringComparison.OrdinalIgnoreCase));
+        Assert.Collection(
+            bankReceiptPrinter.Prints,
+            signature => Assert.Equal(LinklyBankReceiptKind.SignatureRequired, signature.Kind),
+            declined =>
+            {
+                Assert.Equal(LinklyBankReceiptKind.Declined, declined.Kind);
+                Assert.Equal("DECLINED - Q6\nSIGNATURE ERROR", declined.ReceiptText);
+            });
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_does_not_print_declined_bank_receipt_when_signature_decline_sendkey_is_rejected()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-decline-sendkey-rejected-session",
+                        "status": "Pending",
+                        "txnRef": "260601120042",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "SIGNATURE OK?",
+                        "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "declineNoKeyFlag": true,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"DeclineNoKeyFlag\":true}}",
+                            "receivedAt": "2026-06-01T02:00:00Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/transactions/signature-decline-sendkey-rejected-session/sendkey" => JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "data": null,
+                      "errorCode": "LINKLY_CLOUD_BACKEND_REQUEST_INVALID",
+                      "message": "Linkly Cloud rejected the terminal action."
+                    }
+                    """,
+                    HttpStatusCode.BadRequest),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-decline-sendkey-rejected-session",
+                        "status": "Completed",
+                        "txnRef": "260601120042",
+                        "responseCode": "Q6",
+                        "responseText": "SIGNATURE ERROR",
+                        "transactionSuccess": false,
+                        "displayText": "TRANSACTION DECLINED",
+                        "receiptText": "DECLINED - Q6\nSIGNATURE ERROR",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{\"Response\":{\"Success\":false,\"TxnRef\":\"260601120042\",\"ResponseCode\":\"Q6\",\"ResponseText\":\"SIGNATURE ERROR\",\"AmtPurchase\":1008}}",
+                            "receivedAt": "2026-06-01T02:00:04Z"
+                          }
+                        ]
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.No, null));
+        var bankReceiptPrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, dialog, bankReceiptPrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.Equal("Q6", result.ResponseCode);
+        Assert.Equal("SIGNATURE ERROR", result.ResponseText);
+        Assert.Contains(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/sendkey", StringComparison.OrdinalIgnoreCase));
+        var print = Assert.Single(bankReceiptPrinter.Prints);
+        Assert.Equal(LinklyBankReceiptKind.SignatureRequired, print.Kind);
+        Assert.Contains("PLEASE SIGN:", print.ReceiptText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_does_not_print_declined_bank_receipt_for_non_signature_decline()
+    {
+        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+            _ => JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "storeCode": "S01",
+                    "deviceCode": "TERM-1",
+                    "sessionId": "ordinary-declined-session",
+                    "status": "Completed",
+                    "txnRef": "260601120040",
+                    "responseCode": "55",
+                    "responseText": "DECLINED",
+                    "transactionSuccess": false,
+                    "displayText": "TRANSACTION DECLINED",
+                    "receiptText": "DECLINED - 55",
+                    "recoveryCount": 0,
+                    "receiptPrintedAt": null,
+                    "lastHttpStatus": 200,
+                    "notifications": []
+                  }
+                }
+                """)
+        });
+        var bankReceiptPrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), bankReceiptPrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.Empty(bankReceiptPrinter.Prints);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_blocks_signature_approval_until_signature_slip_prints()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-print-retry-session",
+                        "status": "Pending",
+                        "txnRef": "260601120018",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "SIGNATURE OK?",
+                        "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "authoriseKeyFlag": true,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{\"Response\":{\"DisplayText\":[\"SIGNATURE OK?\"],\"AuthoriseKeyFlag\":true}}",
+                            "receivedAt": "2026-06-01T02:00:00Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                3 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-print-retry-session",
+                        "status": "Pending",
+                        "txnRef": "260601120018",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "PROCESSING",
+                        "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 202,
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-print-retry-session",
+                        "status": "Completed",
+                        "txnRef": "260601120018",
+                        "responseCode": "08",
+                        "responseText": "APPROVE WITH SIG",
+                        "transactionSuccess": true,
+                        "displayText": "Completed",
+                        "receiptText": "APPROVE WITH SIG - 08\nPLEASE SIGN:",
                         "recoveryCount": 0,
                         "receiptPrintedAt": null,
                         "lastHttpStatus": 200,
@@ -1063,29 +1753,24 @@ public sealed class LinklyBackendTerminalClientTests
         });
         var dialog = new FakeLinklyTerminalDialogService();
         dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.Auth, null));
-        var client = CreateClient(handler, dialog);
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.Auth, null));
+        var signaturePrinter = new FakeLinklyBankReceiptPrinter
+        {
+            Results =
+            {
+                new ReceiptPrintResult(false, "printer offline"),
+                new ReceiptPrintResult(true, "printed")
+            }
+        };
+        var client = CreateClient(handler, dialog, signaturePrinter);
 
         var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
 
         Assert.True(result.Approved);
-        Assert.Equal("08", result.ResponseCode);
-        Assert.Equal("APPROVE WITH SIG", result.ResponseText);
-        Assert.Equal(10.08m, result.AuthorizedAmount);
-        Assert.Collection(
-            requests,
-            active => Assert.Equal(HttpMethod.Get, active.Method),
-            start => Assert.Equal(HttpMethod.Post, start.Method),
-            sendKey => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/signature-receipt-fallback-session-1/sendkey", sendKey.RequestUri!.AbsoluteUri),
-            status => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/signature-receipt-fallback-session-1/status?environment=Sandbox", status.RequestUri!.AbsoluteUri));
-        var sendKeyBody = await requests[2].Content!.ReadAsStringAsync();
-        Assert.Equal("Sandbox", ReadJsonString(sendKeyBody, "environment"));
-        Assert.Equal(LinklyTerminalDialogKeys.Auth, ReadJsonString(sendKeyBody, "key"));
-        Assert.Null(TryReadJsonString(sendKeyBody, "data"));
-        var transaction = Assert.Single(result.CardTransactions!);
-        Assert.Equal("08", transaction.ResponseCode);
-        Assert.Equal("APPROVE WITH SIG", transaction.ResponseText);
-        Assert.Contains("PLEASE SIGN:", transaction.ReceiptText, StringComparison.Ordinal);
-        Assert.Equal(1, dialog.CloseCallCount);
+        Assert.Equal(2, signaturePrinter.Prints.Count);
+        Assert.Single(requests.Where(request => request.RequestUri!.AbsolutePath.EndsWith("/sendkey", StringComparison.OrdinalIgnoreCase)));
+        Assert.Contains(dialog.States, state => state.Message == "printer offline");
+        Assert.Contains(dialog.States, state => state.DisplayText == "SIGNATURE OK?" && state.Message is null);
     }
 
     [Theory]
@@ -2585,6 +3270,114 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_recovers_signature_buttons_from_latest_display_notification_when_status_flags_are_stale()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-stale-flags-session",
+                        "status": "Pending",
+                        "txnRef": "260601120037",
+                        "responseCode": null,
+                        "responseText": null,
+                        "displayText": "PROCESSING\r\nPLEASE WAIT",
+                        "receiptText": "LINE2\nCREDIT ACCOUNT\nPURCHASE AUD $10.08\nAPPROVE WITH SIG - 08\nPLEASE SIGN:",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": "2026-06-01T02:00:06Z",
+                        "lastHttpStatus": 202,
+                        "cancelKeyFlag": true,
+                        "okKeyFlag": false,
+                        "acceptYesKeyFlag": false,
+                        "declineNoKeyFlag": false,
+                        "authoriseKeyFlag": false,
+                        "notifications": [
+                          {
+                            "type": "display",
+                            "payloadJson": "{ \"Response\": { \"DisplayText\": [\"PROCESSING\", \"PLEASE WAIT\"], \"CancelKeyFlag\": false, \"AcceptYesKeyFlag\": false, \"DeclineNoKeyFlag\": false, \"AuthoriseKeyFlag\": false, \"OKKeyFlag\": false } }",
+                            "receivedAt": "2026-06-01T02:00:04Z"
+                          },
+                          {
+                            "type": "receipt",
+                            "payloadJson": "{ \"Response\": { \"ReceiptText\": [\"APPROVE WITH SIG - 08\", \"PLEASE SIGN:\"] } }",
+                            "receivedAt": "2026-06-01T02:00:05Z"
+                          },
+                          {
+                            "type": "display",
+                            "payloadJson": "{ \"Response\": { \"DisplayText\": [\"SIGNATURE OK?\"], \"CancelKeyFlag\": false, \"AcceptYesKeyFlag\": true, \"DeclineNoKeyFlag\": true, \"AuthoriseKeyFlag\": false, \"OKKeyFlag\": false } }",
+                            "receivedAt": "2026-06-01T02:00:06Z"
+                          }
+                        ]
+                      }
+                    }
+                    """),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "signature-stale-flags-session",
+                        "status": "Completed",
+                        "txnRef": "260601120037",
+                        "responseCode": "Q6",
+                        "responseText": "SIGNATURE ERROR",
+                        "transactionSuccess": false,
+                        "displayText": "TRANSACTION DECLINED",
+                        "receiptText": "DECLINED - Q6\nSIGNATURE ERROR",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": "2026-06-01T02:00:06Z",
+                        "lastHttpStatus": 200,
+                        "notifications": []
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction(LinklyTerminalDialogKeys.No, null));
+        var signaturePrinter = new FakeLinklyBankReceiptPrinter();
+        var client = CreateClient(handler, dialog, signaturePrinter);
+
+        var result = await client.PurchaseAsync(10.08m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        var signatureState = Assert.Single(dialog.States.Where(state => state.SessionId == "signature-stale-flags-session" && state.Status == "Pending"));
+        Assert.Equal("PROCESSING\r\nPLEASE WAIT", signatureState.DisplayText);
+        Assert.Collection(
+            signatureState.DisplayButtons!,
+            yes =>
+            {
+                Assert.Equal("linkly.backend.dialog.button.yesApproved", yes.TextResourceKey);
+                Assert.Equal(LinklyTerminalDialogKeys.Yes, yes.Key);
+            },
+            no =>
+            {
+                Assert.Equal("linkly.backend.dialog.button.noDeclined", no.TextResourceKey);
+                Assert.Equal(LinklyTerminalDialogKeys.No, no.Key);
+            });
+        Assert.False(signatureState.SupportsCancelPayment);
+        var sendKeyBody = await requests[2].Content!.ReadAsStringAsync();
+        Assert.Equal(LinklyTerminalDialogKeys.No, ReadJsonString(sendKeyBody, "key"));
+        var declinedPrint = Assert.Single(signaturePrinter.Prints);
+        Assert.Equal(LinklyBankReceiptKind.Declined, declinedPrint.Kind);
+        Assert.Equal("DECLINED - Q6\nSIGNATURE ERROR", declinedPrint.ReceiptText);
+    }
+
+    [Fact]
     public async Task PurchaseAsync_keeps_polling_current_session_when_sendkey_request_fails()
     {
         var requests = new List<HttpRequestMessage>();
@@ -3280,6 +4073,14 @@ public sealed class LinklyBackendTerminalClientTests
     private static LinklyBackendTerminalClient CreateClient(
         StubHttpMessageHandler handler,
         FakeLinklyTerminalDialogService dialog,
+        ILinklyBankReceiptPrinter bankReceiptPrinter)
+    {
+        return CreateClient(handler, dialog, TimeSpan.Zero, null, null, bankReceiptPrinter: bankReceiptPrinter);
+    }
+
+    private static LinklyBackendTerminalClient CreateClient(
+        StubHttpMessageHandler handler,
+        FakeLinklyTerminalDialogService dialog,
         ILocalizationService localization)
     {
         return CreateClient(handler, dialog, TimeSpan.Zero, null, localization);
@@ -3301,7 +4102,8 @@ public sealed class LinklyBackendTerminalClientTests
         Func<TimeSpan, CancellationToken, Task>? delayAsync,
         ILocalizationService? localization,
         ILinklyPaymentAttemptContextAccessor? paymentAttemptContextAccessor = null,
-        TimeSpan? businessWait = null)
+        TimeSpan? businessWait = null,
+        ILinklyBankReceiptPrinter? bankReceiptPrinter = null)
     {
         return new LinklyBackendTerminalClient(
             new HttpClient(handler) { BaseAddress = new Uri("https://api.example/") },
@@ -3310,7 +4112,8 @@ public sealed class LinklyBackendTerminalClientTests
             delayAsync,
             localization,
             paymentAttemptContextAccessor,
-            businessWait);
+            businessWait,
+            bankReceiptPrinter);
     }
 
     private static PosSessionState CreateSession()
@@ -3536,6 +4339,35 @@ public sealed class LinklyBackendTerminalClientTests
             CloseCallCount++;
             CloseTokenCancellationStates.Add(cancellationToken.IsCancellationRequested);
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeLinklyBankReceiptPrinter : ILinklyBankReceiptPrinter
+    {
+        public List<(string Environment, string SessionId, string ReceiptText, LinklyBankReceiptKind Kind, string? CardType, string? MaskedCardNumber, string? ResponseCode, string? ResponseText)> Prints { get; } = [];
+
+        public List<ReceiptPrintResult> Results { get; } = [];
+
+        public Task<ReceiptPrintResult> PrintAsync(
+            string environment,
+            string sessionId,
+            string receiptText,
+            LinklyBankReceiptKind kind = LinklyBankReceiptKind.SignatureRequired,
+            string? cardType = null,
+            string? maskedCardNumber = null,
+            string? responseCode = null,
+            string? responseText = null,
+            CancellationToken cancellationToken = default)
+        {
+            Prints.Add((environment, sessionId, receiptText, kind, cardType, maskedCardNumber, responseCode, responseText));
+            if (Results.Count == 0)
+            {
+                return Task.FromResult(new ReceiptPrintResult(true, "printed"));
+            }
+
+            var result = Results[0];
+            Results.RemoveAt(0);
+            return Task.FromResult(result);
         }
     }
 

@@ -378,6 +378,11 @@ internal sealed class CardPaymentSession
             "linkly.cloud.resultUnknown";
     }
 
+    private static bool IsCardDeclinedStatusKey(string statusKey)
+    {
+        return string.Equals(statusKey, "payment.status.cardDeclined", StringComparison.Ordinal);
+    }
+
     private static bool IsTimeoutMessage(string? message)
     {
         return !string.IsNullOrWhiteSpace(message) &&
@@ -394,7 +399,7 @@ internal sealed class CardPaymentSession
 
     private void ShowOverlayIfTerminalError(PaymentTenderAttemptResult result)
     {
-        var overlay = ClassifyCardPaymentError(result.StatusKey, result.StatusMessage);
+        var overlay = ClassifyCardPaymentError(result.StatusKey, result.StatusMessage, result.IsTerminalDecline);
         if (overlay is null)
             return;
 
@@ -405,7 +410,8 @@ internal sealed class CardPaymentSession
 
     private static CardPaymentErrorOverlayViewModel? ClassifyCardPaymentError(
         string statusKey,
-        string? statusMessage)
+        string? statusMessage,
+        bool isTerminalDecline)
     {
         var overlay = ClassifyCardPaymentErrorByStatusKey(statusKey);
         if (overlay is not null)
@@ -414,7 +420,11 @@ internal sealed class CardPaymentSession
         }
 
         if (string.IsNullOrWhiteSpace(statusMessage))
-            return null;
+        {
+            return isTerminalDecline && IsCardDeclinedStatusKey(statusKey)
+                ? CardPaymentErrorOverlayViewModel.CardDeclined(null)
+                : null;
+        }
 
         var message = statusMessage;
 
@@ -439,6 +449,10 @@ internal sealed class CardPaymentSession
 
         if (message.Contains("unavailable", StringComparison.OrdinalIgnoreCase))
             return CardPaymentErrorOverlayViewModel.ConnectionFailed();
+
+        // 普通银行拒付不是系统故障，但需要给收银员一个醒目的原因弹窗。
+        if (isTerminalDecline && IsCardDeclinedStatusKey(statusKey) && !IsConfirmedCardCancellation(message))
+            return CardPaymentErrorOverlayViewModel.CardDeclined(message);
 
         return null;
     }

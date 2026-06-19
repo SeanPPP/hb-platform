@@ -582,6 +582,12 @@
   <data name="payment.card.error.overlay.unexpected.message" xml:space="preserve">
     <value>刷卡支付时发生意外错误。请重试，如仍失败请联系技术支持。</value>
   </data>
+  <data name="payment.card.error.overlay.cardDeclined.title" xml:space="preserve">
+    <value>银行卡支付未通过</value>
+  </data>
+  <data name="payment.card.error.overlay.cardDeclined.message" xml:space="preserve">
+    <value>银行未批准本次交易。原因：{0}</value>
+  </data>
   <data name="payment.card.error.overlay.close" xml:space="preserve">
     <value>知道了</value>
   </data>

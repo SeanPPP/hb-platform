@@ -535,7 +535,8 @@ public sealed class CashPaymentWorkflowService(
 
             return PaymentTenderAttemptResult.Fail(
                 string.IsNullOrWhiteSpace(authorization.StatusKey) ? declinedStatusKey : authorization.StatusKey,
-                authorization.Message);
+                authorization.Message,
+                isTerminalDecline: HasTerminalDeclineEvidence(authorization));
         }
 
         var authorizedAmount = decimal.Round(
@@ -1329,6 +1330,20 @@ public sealed class CashPaymentWorkflowService(
         return decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
     }
 
+    private static bool HasTerminalDeclineEvidence(PaymentAuthorizationResult authorization)
+    {
+        // 只有终端或银行真实返回的代码/文案才触发“银行未批准”弹窗，避免本地校验错误被误报为银行拒付。
+        return !string.IsNullOrWhiteSpace(authorization.ResponseCode) ||
+            !string.IsNullOrWhiteSpace(authorization.ResponseText) ||
+            authorization.CardTransactions?.Any(HasCardTransactionResponseEvidence) == true;
+    }
+
+    private static bool HasCardTransactionResponseEvidence(CardTransactionDto transaction)
+    {
+        return !string.IsNullOrWhiteSpace(transaction.ResponseCode) ||
+            !string.IsNullOrWhiteSpace(transaction.ResponseText);
+    }
+
     private static string T(string key)
     {
         return LocalizationResourceProvider.Instance[key];
@@ -1417,16 +1432,20 @@ public sealed record PaymentTenderAttemptResult(
     bool Succeeded,
     string StatusKey,
     PaymentTender? Tender = null,
-    string? StatusMessage = null)
+    string? StatusMessage = null,
+    bool IsTerminalDecline = false)
 {
     public static PaymentTenderAttemptResult Success(PaymentTender tender, string statusKey, string? statusMessage = null)
     {
         return new PaymentTenderAttemptResult(true, statusKey, tender, statusMessage);
     }
 
-    public static PaymentTenderAttemptResult Fail(string statusKey, string? statusMessage = null)
+    public static PaymentTenderAttemptResult Fail(
+        string statusKey,
+        string? statusMessage = null,
+        bool isTerminalDecline = false)
     {
-        return new PaymentTenderAttemptResult(false, statusKey, null, statusMessage);
+        return new PaymentTenderAttemptResult(false, statusKey, null, statusMessage, isTerminalDecline);
     }
 }
 

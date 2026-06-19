@@ -175,8 +175,8 @@ namespace Hbpos.Api.Tests;
     [Fact]
     public void Sql_repository_upsert_does_not_overwrite_completed_with_non_completed()
     {
-        Assert.Contains("target.[Status] = 'Completed'", SqlSugarLinklyCloudBackendAsyncRepository.UpsertSessionSql, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("@Status <> 'Completed'", SqlSugarLinklyCloudBackendAsyncRepository.UpsertSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("target.[Status] IN ('Completed', 'Cancelled')", SqlSugarLinklyCloudBackendAsyncRepository.UpsertSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Status NOT IN ('Completed', 'Cancelled')", SqlSugarLinklyCloudBackendAsyncRepository.UpsertSessionSql, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -249,6 +249,47 @@ namespace Hbpos.Api.Tests;
         Assert.Null(response.RecoveryAction);
         Assert.Equal(3, response.RecoveryCount);
         Assert.Equal(202, response.LastHttpStatus);
+    }
+
+    [Fact]
+    public async Task RecoverAsync_maps_operator_cancelled_response_to_cancelled_status()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.OK,
+            """
+            {
+              "Response": {
+                "Success": false,
+                "TxnRef": "TXN-CANCELLED",
+                "ResponseCode": "TM",
+                "ResponseText": "Operator Cancelled"
+              }
+            }
+            """);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.RecoverAsync(
+            "S01",
+            "POS-01",
+            sessionId,
+            new LinklyCloudBackendRecoverRequest("Sandbox"),
+            CancellationToken.None);
+
+        Assert.Equal(LinklyCloudBackendStatusConstants.StatusCancelled, response.Status);
+        Assert.False(response.TransactionSuccess);
+        Assert.Equal("TM", response.ResponseCode);
+        Assert.Equal("Operator Cancelled", response.ResponseText);
+
+        var persisted = await service.Repository.GetSessionAsync(
+            "Sandbox",
+            "S01",
+            "POS-01",
+            sessionId,
+            CancellationToken.None);
+        Assert.Equal(LinklyCloudBackendStatusConstants.StatusCancelled, persisted?.Status);
+        Assert.False(persisted?.IsActive);
     }
 
     [Fact]
@@ -393,6 +434,95 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("50", response.ResponseCode);
         Assert.Equal("SYSTEM ERROR", response.ResponseText);
         Assert.Equal(200, response.LastHttpStatus);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_maps_apphub_cancelled_response_to_cancelled_status()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: """
+                {
+                  "Response": {
+                    "Success": false,
+                    "TxnRef": "TXN-APPHUB-CANCELLED",
+                    "ResponseCode": "HD",
+                    "ResponseText": "Txn Cancelled"
+                  }
+                }
+                """);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal(LinklyCloudBackendStatusConstants.StatusCancelled, response!.Status);
+        Assert.False(response.TransactionSuccess);
+        Assert.Equal("TXN-APPHUB-CANCELLED", response.TxnRef);
+        Assert.Equal("HD", response.ResponseCode);
+        Assert.Equal("Txn Cancelled", response.ResponseText);
+        Assert.Equal(200, response.LastHttpStatus);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_keeps_decline_completed_not_cancelled()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: """
+                {
+                  "Response": {
+                    "Success": false,
+                    "TxnRef": "TXN-DECLINED",
+                    "ResponseCode": "50",
+                    "ResponseText": "SYSTEM ERROR"
+                  }
+                }
+                """);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("Completed", response!.Status);
+        Assert.False(response.TransactionSuccess);
+        Assert.Equal("50", response.ResponseCode);
+        Assert.Equal("SYSTEM ERROR", response.ResponseText);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_keeps_operator_timeout_completed_not_cancelled()
+    {
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.Accepted,
+            getTransactionStatusCode: HttpStatusCode.OK,
+            getTransactionBody: """
+                {
+                  "Response": {
+                    "Success": false,
+                    "TxnRef": "TXN-TIMEOUT",
+                    "ResponseCode": "TI",
+                    "ResponseText": "Operator Timeout"
+                  }
+                }
+                """);
+        var service = CreateService(transport);
+        await SeedPendingSessionAsync(service.Repository, sessionId);
+
+        var response = await service.GetStatusAsync("S01", "POS-01", "Sandbox", sessionId, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("Completed", response!.Status);
+        Assert.False(response.TransactionSuccess);
+        Assert.Equal("TI", response.ResponseCode);
+        Assert.Equal("Operator Timeout", response.ResponseText);
     }
 
     [Theory]
@@ -590,6 +720,58 @@ namespace Hbpos.Api.Tests;
         Assert.Equal(status, response.Status);
         Assert.Equal(responseText, response.ResponseText);
         Assert.Null(response.ClientAcknowledgedAt);
+    }
+
+    [Fact]
+    public async Task GetResumableSessionAsync_returns_unacknowledged_cancelled_session_once()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "cancelled-session",
+            Status = LinklyCloudBackendStatusConstants.StatusCancelled,
+            TxnRef = "TXN-CANCELLED",
+            TransactionSuccess = false,
+            ResponseCode = "TM",
+            ResponseText = "Operator Cancelled",
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var response = await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("cancelled-session", response!.SessionId);
+        Assert.Equal(LinklyCloudBackendStatusConstants.StatusCancelled, response.Status);
+        Assert.Null(response.ClientAcknowledgedAt);
+    }
+
+    [Fact]
+    public async Task GetResumableSessionAsync_does_not_return_acknowledged_cancelled_session()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "cancelled-session",
+            Status = LinklyCloudBackendStatusConstants.StatusCancelled,
+            TxnRef = "TXN-CANCELLED",
+            TransactionSuccess = false,
+            ResponseCode = "TM",
+            ResponseText = "Operator Cancelled",
+            IsActive = false,
+            ClientAcknowledgedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var response = await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+
+        Assert.Null(response);
     }
 
     [Fact]
@@ -1884,6 +2066,76 @@ namespace Hbpos.Api.Tests;
 
         Assert.NotNull(afterMark.ReceiptPrintedAt);
         Assert.Contains("MERCHANT RECEIPT", afterMark.ReceiptText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MarkReceiptPrintedAsync_preserves_signature_confirmation_display_after_signature_receipt_prints()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        var session = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            CreateTransactionRequest(),
+            CancellationToken.None);
+        using var processingDisplay = JsonDocument.Parse("""
+            {
+              "Response": {
+                "DisplayText": ["PROCESSING", "PLEASE WAIT"],
+                "CancelKeyFlag": false,
+                "AcceptYesKeyFlag": false,
+                "DeclineNoKeyFlag": false,
+                "AuthoriseKeyFlag": false,
+                "OKKeyFlag": false,
+                "InputType": "0",
+                "GraphicCode": "0"
+              }
+            }
+            """);
+        using var signatureReceipt = JsonDocument.Parse("""
+            {
+              "Response": {
+                "ReceiptText": [
+                  "LINE2",
+                  "CREDIT ACCOUNT",
+                  "PURCHASE AUD $10.08",
+                  "APPROVE WITH SIG - 08",
+                  "PLEASE SIGN:"
+                ]
+              }
+            }
+            """);
+        using var signatureDisplay = JsonDocument.Parse("""
+            {
+              "Response": {
+                "DisplayText": ["SIGNATURE OK?"],
+                "CancelKeyFlag": false,
+                "AcceptYesKeyFlag": true,
+                "DeclineNoKeyFlag": true,
+                "AuthoriseKeyFlag": false,
+                "OKKeyFlag": false,
+                "InputType": "0",
+                "GraphicCode": "1"
+              }
+            }
+            """);
+
+        await service.ReceiveNotificationAsync("Sandbox", session.SessionId, "display", "Bearer sandbox-notify", processingDisplay.RootElement, CancellationToken.None);
+        await service.ReceiveNotificationAsync("Sandbox", session.SessionId, "receipt", "Bearer sandbox-notify", signatureReceipt.RootElement, CancellationToken.None);
+        await service.ReceiveNotificationAsync("Sandbox", session.SessionId, "display", "Bearer sandbox-notify", signatureDisplay.RootElement, CancellationToken.None);
+
+        var afterMark = await service.MarkReceiptPrintedAsync(
+            "S01",
+            "POS-01",
+            session.SessionId,
+            new LinklyCloudBackendMarkReceiptPrintedRequest("Sandbox"),
+            CancellationToken.None);
+
+        Assert.NotNull(afterMark.ReceiptPrintedAt);
+        Assert.Equal("SIGNATURE OK?", afterMark.DisplayText);
+        Assert.True(afterMark.AcceptYesKeyFlag);
+        Assert.True(afterMark.DeclineNoKeyFlag);
+        Assert.False(afterMark.CancelKeyFlag);
+        Assert.Contains("APPROVE WITH SIG - 08", afterMark.ReceiptText, StringComparison.Ordinal);
     }
 
     private static TestableLinklyCloudBackendAsyncService CreateService(
