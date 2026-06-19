@@ -524,6 +524,7 @@ public class ControllerAuthorizationMetadataTests
                     method.Name == nameof(ReactLocalSupplierInvoicesController.SyncFromHq)
                     || method.Name == nameof(ReactLocalSupplierInvoicesController.ImportPreview)
                     || method.Name == nameof(ReactLocalSupplierInvoicesController.ImportConfirm)
+                    || method.Name == nameof(ReactLocalSupplierInvoicesController.UpdateLastPurchasePrices)
                 ))
             {
                 continue;
@@ -539,7 +540,8 @@ public class ControllerAuthorizationMetadataTests
     [Theory]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.ImportPreview))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.ImportConfirm))]
-    public void ReactLocalSupplierInvoicesController_ImportEndpointsRequireEditPolicyAndAdminRole(
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.UpdateLastPurchasePrices))]
+    public void ReactLocalSupplierInvoicesController_AdminOnlyEditEndpointsRequireEditPolicyAndAdminRole(
         string methodName
     )
     {

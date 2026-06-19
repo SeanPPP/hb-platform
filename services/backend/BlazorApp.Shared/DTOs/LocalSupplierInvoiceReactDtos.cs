@@ -17,6 +17,8 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ReceivedTotalAmount { get; set; }
         public int? FlowStatus { get; set; }
         public int? InboundStatus { get; set; }
+        public int PriceIncreaseItemCount { get; set; }
+        public int PriceDecreaseItemCount { get; set; }
         public string? Remarks { get; set; }
         public DateTime CreatedAt { get; set; }
         public string? CreatedBy { get; set; }
@@ -79,6 +81,22 @@ namespace BlazorApp.Shared.DTOs
         public decimal? NewAutoRetailPrice { get; set; }
         public bool? IsSpecialProduct { get; set; }
         public string? OldStoreProductCode { get; set; }
+    }
+
+    public class UpdateLastPurchasePricesRequest
+    {
+        /// <summary>
+        /// 要强制刷新上次进货价的明细；为空时刷新整张进货单。
+        /// </summary>
+        public List<string>? DetailGuids { get; set; }
+    }
+
+    public class UpdateLastPurchasePricesResultDto
+    {
+        public int Total { get; set; }
+        public int Updated { get; set; }
+        public int Skipped { get; set; }
+        public List<string> Errors { get; set; } = new();
     }
 
     public class CreateInvoiceRequest
@@ -355,6 +373,7 @@ namespace BlazorApp.Shared.DTOs
     public class UpdateToStorePricesResultDto : BatchResultDto
     {
         public int Skipped { get; set; }
+        public int UpdatedPurchasePrices { get; set; }
     }
 
     public static class LocalSupplierInvoiceBatchUpdateJobStatusConstants

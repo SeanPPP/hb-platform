@@ -115,6 +115,104 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetGridDataAsync_统计当前页涨跌价商品数量()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-price-up", "INV-UP", new DateTime(2026, 1, 7));
+            await InsertInvoiceAsync("invoice-price-flat", "INV-FLAT", new DateTime(2026, 1, 6));
+
+            await _db.Insertable(new[]
+            {
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-up-1",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 2.00m,
+                    PurchasePrice = 2.50m,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-up-2",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 1.00m,
+                    PurchasePrice = 1.20m,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-flat",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 3.00m,
+                    PurchasePrice = 3.00m,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-down",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 5.00m,
+                    PurchasePrice = 4.80m,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-zero-last-price",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 0m,
+                    PurchasePrice = 1.00m,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-null-last-price",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = null,
+                    PurchasePrice = 1.00m,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-null-purchase-price",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 1.00m,
+                    PurchasePrice = null,
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-deleted",
+                    InvoiceGUID = "invoice-price-up",
+                    LastPurchasePrice = 1.00m,
+                    PurchasePrice = 9.00m,
+                    IsDeleted = true,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-other-invoice-down",
+                    InvoiceGUID = "invoice-price-flat",
+                    LastPurchasePrice = 4.00m,
+                    PurchasePrice = 3.50m,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().GetGridDataAsync(new GridRequestDto
+            {
+                StartRow = 0,
+                PageSize = 20,
+            });
+
+            Assert.True(result.Success, result.Message);
+            var priceUpInvoice = Assert.Single(result.Items!, item => item.InvoiceGUID == "invoice-price-up");
+            var flatInvoice = Assert.Single(result.Items!, item => item.InvoiceGUID == "invoice-price-flat");
+            Assert.Equal(2, priceUpInvoice.PriceIncreaseItemCount);
+            Assert.Equal(1, priceUpInvoice.PriceDecreaseItemCount);
+            Assert.Equal(0, flatInvoice.PriceIncreaseItemCount);
+            Assert.Equal(1, flatInvoice.PriceDecreaseItemCount);
+        }
+
+        [Fact]
         public async Task GetDetailsGridAsync_ReturnsPagedDetailsAndClampsPageSizeTo50()
         {
             await SeedStoreAndSupplierAsync();
@@ -148,6 +246,107 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(55, result.Total);
             Assert.Equal(50, result.Items?.Count);
             Assert.Equal("detail-55", result.Items?.First().DetailGUID);
+        }
+
+        [Fact]
+        public async Task GetDetailsGridAsync_按有效上次进货价筛选涨价和减价明细()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-price-change", "INV-PRICE", new DateTime(2026, 1, 8));
+
+            await _db.Insertable(new[]
+            {
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-up",
+                    InvoiceGUID = "invoice-price-change",
+                    LastPurchasePrice = 2.00m,
+                    PurchasePrice = 2.50m,
+                    CreatedAt = new DateTime(2026, 1, 1, 10, 0, 0),
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-down",
+                    InvoiceGUID = "invoice-price-change",
+                    LastPurchasePrice = 3.00m,
+                    PurchasePrice = 2.80m,
+                    CreatedAt = new DateTime(2026, 1, 1, 11, 0, 0),
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-flat",
+                    InvoiceGUID = "invoice-price-change",
+                    LastPurchasePrice = 4.00m,
+                    PurchasePrice = 4.00m,
+                    CreatedAt = new DateTime(2026, 1, 1, 12, 0, 0),
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-zero-last-price",
+                    InvoiceGUID = "invoice-price-change",
+                    LastPurchasePrice = 0m,
+                    PurchasePrice = 9.00m,
+                    CreatedAt = new DateTime(2026, 1, 1, 13, 0, 0),
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-null-last-price",
+                    InvoiceGUID = "invoice-price-change",
+                    LastPurchasePrice = null,
+                    PurchasePrice = 1.00m,
+                    CreatedAt = new DateTime(2026, 1, 1, 14, 0, 0),
+                    IsDeleted = false,
+                },
+                new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = "detail-null-purchase-price",
+                    InvoiceGUID = "invoice-price-change",
+                    LastPurchasePrice = 1.00m,
+                    PurchasePrice = null,
+                    CreatedAt = new DateTime(2026, 1, 1, 15, 0, 0),
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+
+            var upResult = await CreateService().GetDetailsGridAsync("invoice-price-change", new GridRequestDto
+            {
+                StartRow = 0,
+                PageSize = 50,
+                FilterModel = new Dictionary<string, FilterModelDto>
+                {
+                    ["priceChange"] = new()
+                    {
+                        FilterType = "text",
+                        Type = "equals",
+                        Filter = "up",
+                    },
+                },
+            });
+            var downResult = await CreateService().GetDetailsGridAsync("invoice-price-change", new GridRequestDto
+            {
+                StartRow = 0,
+                PageSize = 50,
+                FilterModel = new Dictionary<string, FilterModelDto>
+                {
+                    ["priceChange"] = new()
+                    {
+                        FilterType = "text",
+                        Type = "equals",
+                        Filter = "down",
+                    },
+                },
+            });
+
+            Assert.True(upResult.Success, upResult.Message);
+            Assert.Equal(1, upResult.Total);
+            Assert.Equal("detail-up", Assert.Single(upResult.Items!).DetailGUID);
+            Assert.True(downResult.Success, downResult.Message);
+            Assert.Equal(1, downResult.Total);
+            Assert.Equal("detail-down", Assert.Single(downResult.Items!).DetailGUID);
         }
 
         [Fact]
@@ -193,7 +392,7 @@ namespace BlazorApp.Api.Tests
                 .FirstAsync(x => x.DetailGUID == "detail-stale");
             Assert.Null(detail.ProductCode);
             Assert.Null(detail.StoreProductCode);
-            Assert.Null(detail.LastPurchasePrice);
+            Assert.Equal(9.99m, detail.LastPurchasePrice);
             Assert.True(detail.AutoPricing);
             Assert.Null(detail.IsSpecialProduct);
             Assert.Null(detail.DiscountRate);
@@ -203,6 +402,157 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(1, detail.BarcodeStatus);
             Assert.Equal(0, detail.BarcodeMatchCount);
             Assert.Equal((int)DetailAction.CreateProduct, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_LastPurchasePrice为空时_补充分店上次进货价()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-check-last-price-empty", "INV-CHECK-LAST-EMPTY", new DateTime(2026, 1, 8));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-last-empty",
+                ProductCode = "P-LAST-EMPTY",
+                ItemNumber = "LAST-EMPTY",
+                Barcode = "BAR-LAST-EMPTY",
+                ProductName = "Last Price Empty Product",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 4.44m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreRetailPrice
+            {
+                UUID = "store-price-last-empty",
+                StoreCode = "S01",
+                ProductCode = "P-LAST-EMPTY",
+                StoreProductCode = "S01-LAST-EMPTY",
+                SupplierCode = "SUP01",
+                PurchasePrice = 3.33m,
+                StoreRetailPriceValue = 6.66m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-last-empty",
+                InvoiceGUID = "invoice-check-last-price-empty",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "LAST-EMPTY",
+                Barcode = "BAR-LAST-EMPTY",
+                ProductName = "Last Price Empty Product",
+                PurchasePrice = 5.55m,
+                LastPurchasePrice = null,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-check-last-price-empty",
+                DetailGuids = new List<string> { "detail-last-empty" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-last-empty");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(3.33m, detail.LastPurchasePrice);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_LastPurchasePrice已有值时_不覆盖()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-check-last-price-existing", "INV-CHECK-LAST-EXISTING", new DateTime(2026, 1, 8));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-last-existing",
+                ProductCode = "P-LAST-EXISTING",
+                ItemNumber = "LAST-EXISTING",
+                Barcode = "BAR-LAST-EXISTING",
+                ProductName = "Last Price Existing Product",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 4.44m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreRetailPrice
+            {
+                UUID = "store-price-last-existing",
+                StoreCode = "S01",
+                ProductCode = "P-LAST-EXISTING",
+                StoreProductCode = "S01-LAST-EXISTING",
+                SupplierCode = "SUP01",
+                PurchasePrice = 3.33m,
+                StoreRetailPriceValue = 6.66m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-last-existing",
+                InvoiceGUID = "invoice-check-last-price-existing",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "LAST-EXISTING",
+                Barcode = "BAR-LAST-EXISTING",
+                ProductName = "Last Price Existing Product",
+                PurchasePrice = 5.55m,
+                LastPurchasePrice = 9.99m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-check-last-price-existing",
+                DetailGuids = new List<string> { "detail-last-existing" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-last-existing");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(9.99m, detail.LastPurchasePrice);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_分店价缺失时_用商品主档价补空上次进货价()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-check-last-price-product", "INV-CHECK-LAST-PRODUCT", new DateTime(2026, 1, 8));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-last-product",
+                ProductCode = "P-LAST-PRODUCT",
+                ItemNumber = "LAST-PRODUCT",
+                Barcode = "BAR-LAST-PRODUCT",
+                ProductName = "Last Price Product Fallback",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 4.44m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-last-product",
+                InvoiceGUID = "invoice-check-last-price-product",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "LAST-PRODUCT",
+                Barcode = "BAR-LAST-PRODUCT",
+                ProductName = "Last Price Product Fallback",
+                PurchasePrice = 5.55m,
+                LastPurchasePrice = null,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-check-last-price-product",
+                DetailGuids = new List<string> { "detail-last-product" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-last-product");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(4.44m, detail.LastPurchasePrice);
         }
 
         [Fact]
@@ -1157,7 +1507,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task UpdateDetailsToStorePricesAsync_只更新分店价格_不调用Hq商品同步服务()
+        public async Task UpdateDetailsToStorePricesAsync_更新分店进货价并同步商品主档_不调用Hq商品同步服务()
         {
             await SeedExecutablePriceUpdateAsync();
             var hqSync = new Mock<ILocalSupplierInvoiceHqProductSyncService>(MockBehavior.Strict);
@@ -1176,8 +1526,14 @@ namespace BlazorApp.Api.Tests
                 "tester"
             );
 
+            var product = await _db.Queryable<Product>()
+                .FirstAsync(x => x.ProductCode == "P001");
+
             Assert.True(result.Success);
             Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.UpdatedPurchasePrices);
+            Assert.Equal(5.55m, product.PurchasePrice);
+            Assert.Equal("tester", product.UpdatedBy);
             Assert.Null(typeof(UpdateToStorePricesResultDto).GetProperty("HqSynced"));
             hqSync.Verify(
                 x => x.EnsureHqProductsAsync(
@@ -1215,10 +1571,14 @@ namespace BlazorApp.Api.Tests
 
             var storePrice = await _db.Queryable<StoreRetailPrice>()
                 .FirstAsync(x => x.UUID == "SRP-001");
+            var product = await _db.Queryable<Product>()
+                .FirstAsync(x => x.ProductCode == "P001");
 
             Assert.True(result.Success);
             Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(0, result.Data?.UpdatedPurchasePrices);
             Assert.Equal(6.99m, storePrice.StoreRetailPriceValue);
+            Assert.Equal(1.11m, product.PurchasePrice);
         }
 
         [Fact]
@@ -1291,10 +1651,14 @@ namespace BlazorApp.Api.Tests
 
             var storePrice = await _db.Queryable<StoreRetailPrice>()
                 .FirstAsync(x => x.UUID == "SRP-001");
+            var product = await _db.Queryable<Product>()
+                .FirstAsync(x => x.ProductCode == "P001");
 
             Assert.True(result.Success);
             Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.UpdatedPurchasePrices);
             Assert.Equal(7.77m, storePrice.PurchasePrice);
+            Assert.Equal(7.77m, product.PurchasePrice);
         }
 
         [Fact]
@@ -1329,11 +1693,15 @@ namespace BlazorApp.Api.Tests
 
             var storePrice = await _db.Queryable<StoreRetailPrice>()
                 .FirstAsync(x => x.UUID == "SRP-001");
+            var product = await _db.Queryable<Product>()
+                .FirstAsync(x => x.ProductCode == "P001");
 
             Assert.True(result.Success);
             Assert.Equal(0, result.Data?.Updated);
             Assert.Equal(1, result.Data?.Skipped);
+            Assert.Equal(0, result.Data?.UpdatedPurchasePrices);
             Assert.Equal(1.11m, storePrice.PurchasePrice);
+            Assert.Equal(1.11m, product.PurchasePrice);
             Assert.Equal(originalUpdatedAt, storePrice.UpdatedAt);
             Assert.Equal("seed", storePrice.UpdatedBy);
         }
@@ -1547,6 +1915,167 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(1, result.Data?.Skipped);
             Assert.Equal(0, storePriceCount);
             Assert.Contains(result.Data?.Errors ?? new List<string>(), error => error.Contains("进货价为空或为0"));
+        }
+
+        [Fact]
+        public async Task UpdateLastPurchasePricesAsync_选中明细_强制覆盖已有上次进货价()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await SeedSecondExecutablePriceUpdateDetailAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.LastPurchasePrice == 9.99m)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.LastPurchasePrice == 8.88m)
+                .Where(x => x.DetailGUID == "detail-price-2")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateLastPurchasePricesAsync(
+                "invoice-execute",
+                new UpdateLastPurchasePricesRequest
+                {
+                    DetailGuids = new List<string> { "detail-price" },
+                },
+                "tester"
+            );
+
+            var first = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-price");
+            var second = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-price-2");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Total);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1.11m, first.LastPurchasePrice);
+            Assert.Equal(8.88m, second.LastPurchasePrice);
+            Assert.Equal("tester", first.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task UpdateLastPurchasePricesAsync_未传明细_刷新整张单并在分店价缺失时回退商品主档()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await SeedSecondExecutablePriceUpdateDetailAsync();
+            await _db.Deleteable<StoreRetailPrice>()
+                .Where(x => x.StoreCode == "S01" && x.ProductCode == "P002")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateLastPurchasePricesAsync(
+                "invoice-execute",
+                new UpdateLastPurchasePricesRequest(),
+                "tester"
+            );
+
+            var first = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-price");
+            var second = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-price-2");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Data?.Total);
+            Assert.Equal(2, result.Data?.Updated);
+            Assert.Equal(1.11m, first.LastPurchasePrice);
+            Assert.Equal(2.22m, second.LastPurchasePrice);
+        }
+
+        [Fact]
+        public async Task UpdateLastPurchasePricesAsync_明细分店为空白时_使用单头分店价()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.StoreCode == "")
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+            await _db.Updateable<Product>()
+                .SetColumns(x => x.PurchasePrice == 9.99m)
+                .Where(x => x.ProductCode == "P001")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateLastPurchasePricesAsync(
+                "invoice-execute",
+                new UpdateLastPurchasePricesRequest
+                {
+                    DetailGuids = new List<string> { "detail-price" },
+                },
+                "tester"
+            );
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-price");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1.11m, detail.LastPurchasePrice);
+        }
+
+        [Fact]
+        public async Task UpdateLastPurchasePricesAsync_选中明细不存在时_返回跳过原因()
+        {
+            await SeedExecutablePriceUpdateAsync();
+
+            var result = await CreateService().UpdateLastPurchasePricesAsync(
+                "invoice-execute",
+                new UpdateLastPurchasePricesRequest
+                {
+                    DetailGuids = new List<string> { "detail-price", "detail-missing" },
+                },
+                "tester"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Data?.Total);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.Skipped);
+            Assert.Contains(result.Data?.Errors ?? new List<string>(), error => error.Contains("明细不存在或不属于当前单据"));
+        }
+
+        [Fact]
+        public async Task UpdateLastPurchasePricesAsync_缺商品编码或无有效价格时跳过并返回原因()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(x => x.ProductCode == null)
+                .Where(x => x.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+            await _db.Insertable(new Product
+            {
+                UUID = "UUID-NO-PRICE",
+                ProductCode = "P-NO-PRICE",
+                ItemNumber = "ITEM-NO-PRICE",
+                Barcode = "BAR-NO-PRICE",
+                ProductName = "No Price Product",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 0m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-no-price",
+                InvoiceGUID = "invoice-execute",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "ITEM-NO-PRICE",
+                Barcode = "BAR-NO-PRICE",
+                ProductName = "No Price Product",
+                ProductCode = "P-NO-PRICE",
+                PurchasePrice = 1m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateLastPurchasePricesAsync(
+                "invoice-execute",
+                new UpdateLastPurchasePricesRequest(),
+                "tester"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Data?.Total);
+            Assert.Equal(0, result.Data?.Updated);
+            Assert.Equal(2, result.Data?.Skipped);
+            Assert.Contains(result.Data?.Errors ?? new List<string>(), error => error.Contains("未找到商品编码"));
+            Assert.Contains(result.Data?.Errors ?? new List<string>(), error => error.Contains("未找到有效上次进货价"));
         }
 
         [Fact]

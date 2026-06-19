@@ -284,6 +284,51 @@ namespace BlazorApp.Api.Services.React
                     .Take(pageSize)
                     .ToListAsync();
 
+                var invoiceGuids = list
+                    .Select(item => item.InvoiceGUID)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Distinct()
+                    .ToList();
+                if (invoiceGuids.Any())
+                {
+                    // 只统计当前页主表对应的明细，避免额外查询影响主表筛选和分页结果；上次价为空或 0 不参与涨跌价统计。
+                    var priceChangedDetails = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                        .Where(d =>
+                            d.IsDeleted == false
+                            && d.InvoiceGUID != null
+                            && invoiceGuids.Contains(d.InvoiceGUID)
+                            && d.LastPurchasePrice > 0
+                            && d.PurchasePrice.HasValue
+                            && d.PurchasePrice != d.LastPurchasePrice
+                        )
+                        .Select(d => new
+                        {
+                            d.InvoiceGUID,
+                            IsIncrease = d.PurchasePrice > d.LastPurchasePrice,
+                        })
+                        .ToListAsync();
+                    var priceChangeCountsByInvoice = priceChangedDetails
+                        .Where(item => !string.IsNullOrWhiteSpace(item.InvoiceGUID))
+                        .GroupBy(item => item.InvoiceGUID!)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => new
+                            {
+                                Increase = group.Count(item => item.IsIncrease),
+                                Decrease = group.Count(item => !item.IsIncrease),
+                            }
+                        );
+
+                    foreach (var item in list)
+                    {
+                        if (priceChangeCountsByInvoice.TryGetValue(item.InvoiceGUID, out var counts))
+                        {
+                            item.PriceIncreaseItemCount = counts.Increase;
+                            item.PriceDecreaseItemCount = counts.Decrease;
+                        }
+                    }
+                }
+
                 return GridResponseDto<LocalSupplierInvoiceListDto>.OK(list, total);
             }
             catch (Exception ex)
@@ -420,6 +465,26 @@ namespace BlazorApp.Api.Services.React
                     .Where((d, p) => d.InvoiceGUID == invoiceGuid && d.IsDeleted == false)
                     .OrderBy((d, p) => d.CreatedAt, OrderByType.Desc)
                     .OrderBy((d, p) => d.DetailGUID, OrderByType.Asc);
+
+                var priceChangeFilter = ResolveDetailPriceChangeFilter(request.FilterModel);
+                if (priceChangeFilter == "up")
+                {
+                    // 明细涨价筛选必须排除上次价为空或 0 的行，避免把新商品误算为涨价。
+                    query = query.Where((d, p) =>
+                        d.LastPurchasePrice > 0
+                        && d.PurchasePrice.HasValue
+                        && d.PurchasePrice > d.LastPurchasePrice
+                    );
+                }
+                else if (priceChangeFilter == "down")
+                {
+                    // 明细减价筛选同样只统计有有效上次价的行，保持和涨价口径一致。
+                    query = query.Where((d, p) =>
+                        d.LastPurchasePrice > 0
+                        && d.PurchasePrice.HasValue
+                        && d.PurchasePrice < d.LastPurchasePrice
+                    );
+                }
 
                 var total = await query.CountAsync();
                 var pageSize = ClampGridPageSize(request.PageSize, 50, 50, 100, 200);
@@ -1890,6 +1955,30 @@ namespace BlazorApp.Api.Services.React
             return allowed.Contains(requested) ? requested : fallback;
         }
 
+        private static string? ResolveDetailPriceChangeFilter(
+            Dictionary<string, FilterModelDto>? filterModel
+        )
+        {
+            if (filterModel == null || filterModel.Count == 0)
+                return null;
+
+            foreach (var kv in filterModel)
+            {
+                if (NormalizeGridColumnId(kv.Key) != "PriceChange")
+                    continue;
+
+                var value = kv.Value.Filter;
+                if (string.IsNullOrWhiteSpace(value) && kv.Value.Values?.Count > 0)
+                    value = kv.Value.Values[0];
+
+                var normalized = value?.Trim().ToLowerInvariant();
+                if (normalized is "up" or "down")
+                    return normalized;
+            }
+
+            return null;
+        }
+
         private static string NormalizeGridColumnId(string? columnId)
         {
             return columnId?.Trim().ToLowerInvariant() switch
@@ -1904,6 +1993,7 @@ namespace BlazorApp.Api.Services.React
                 "productkeyword" => "ProductKeyword",
                 "totalamount" => "TotalAmount",
                 "receivedtotalamount" => "ReceivedTotalAmount",
+                "pricechange" => "PriceChange",
                 "orderdate" => "OrderDate",
                 "inbounddate" => "InboundDate",
                 "createdat" => "CreatedAt",
@@ -2053,6 +2143,167 @@ namespace BlazorApp.Api.Services.React
             return (columns, skippedFields);
         }
 
+        public async Task<ApiResponse<UpdateLastPurchasePricesResultDto>> UpdateLastPurchasePricesAsync(
+            string invoiceGuid,
+            UpdateLastPurchasePricesRequest request,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var header = await db.Queryable<StoreLocalSupplierInvoice>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                    .FirstAsync();
+
+                if (header == null)
+                    return ApiResponse<UpdateLastPurchasePricesResultDto>.Error(
+                        "单据不存在",
+                        "NOT_FOUND"
+                    );
+
+                var selectedDetailGuids = (request.DetailGuids ?? new List<string>())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x.Trim())
+                    .Distinct()
+                    .ToList();
+
+                var detailsQuery = db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false);
+                if (selectedDetailGuids.Count > 0)
+                {
+                    detailsQuery = detailsQuery.Where(x => selectedDetailGuids.Contains(x.DetailGUID));
+                }
+
+                var details = await detailsQuery.ToListAsync();
+                var result = new UpdateLastPurchasePricesResultDto
+                {
+                    Total = selectedDetailGuids.Count > 0 ? selectedDetailGuids.Count : details.Count,
+                };
+
+                if (selectedDetailGuids.Count > 0)
+                {
+                    var foundDetailGuids = details
+                        .Select(x => x.DetailGUID)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .ToHashSet(StringComparer.Ordinal);
+                    foreach (var missingDetailGuid in selectedDetailGuids.Where(x => !foundDetailGuids.Contains(x)))
+                    {
+                        result.Skipped++;
+                        result.Errors.Add($"明细 {missingDetailGuid} 跳过：明细不存在或不属于当前单据");
+                    }
+                }
+
+                if (details.Count == 0)
+                    return ApiResponse<UpdateLastPurchasePricesResultDto>.OK(result, "没有可更新的明细");
+
+                var productCodes = details
+                    .Select(x => x.ProductCode)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Cast<string>()
+                    .Distinct()
+                    .ToList();
+                var storeCodes = details
+                    .Select(x => ResolveDetailStoreCode(x.StoreCode, header.StoreCode))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Cast<string>()
+                    .Distinct()
+                    .ToList();
+
+                var storePricesByKey = new Dictionary<string, StoreRetailPrice>();
+                if (productCodes.Count > 0 && storeCodes.Count > 0)
+                {
+                    storePricesByKey = (await db.Queryable<StoreRetailPrice>()
+                            .Where(x =>
+                                x.ProductCode != null
+                                && x.StoreCode != null
+                                && productCodes.Contains(x.ProductCode)
+                                && storeCodes.Contains(x.StoreCode)
+                                && x.IsDeleted == false
+                            )
+                            .ToListAsync())
+                        .GroupBy(x => $"{x.ProductCode}\u001f{x.StoreCode}")
+                        .ToDictionary(group => group.Key, group => group.First());
+                }
+
+                var productsByCode = new Dictionary<string, Product>();
+                if (productCodes.Count > 0)
+                {
+                    productsByCode = (await db.Queryable<Product>()
+                            .Where(x =>
+                                x.ProductCode != null
+                                && productCodes.Contains(x.ProductCode)
+                                && x.IsDeleted == false
+                            )
+                            .ToListAsync())
+                        .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                        .GroupBy(x => x.ProductCode!)
+                        .ToDictionary(group => group.Key, group => group.First());
+                }
+
+                var now = DateTime.UtcNow;
+                var updates = new List<StoreLocalSupplierInvoiceDetails>();
+                foreach (var detail in details)
+                {
+                    if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                    {
+                        result.Skipped++;
+                        result.Errors.Add($"明细 {detail.DetailGUID} 跳过：未找到商品编码");
+                        continue;
+                    }
+
+                    var storeCode = ResolveDetailStoreCode(detail.StoreCode, header.StoreCode);
+                    var storePriceKey = $"{detail.ProductCode}\u001f{storeCode}";
+                    storePricesByKey.TryGetValue(storePriceKey, out var storePrice);
+                    productsByCode.TryGetValue(detail.ProductCode, out var product);
+
+                    // 上次进货价快照按分店价优先；分店价缺失时回退商品主档进货价。
+                    var lastPurchasePrice = IsPositiveValue(storePrice?.PurchasePrice)
+                        ? storePrice!.PurchasePrice
+                        : product?.PurchasePrice;
+                    if (!IsPositiveValue(lastPurchasePrice))
+                    {
+                        result.Skipped++;
+                        result.Errors.Add($"明细 {detail.DetailGUID} 跳过：未找到有效上次进货价");
+                        continue;
+                    }
+
+                    updates.Add(new StoreLocalSupplierInvoiceDetails
+                    {
+                        DetailGUID = detail.DetailGUID,
+                        LastPurchasePrice = lastPurchasePrice,
+                        UpdatedAt = now,
+                        UpdatedBy = updatedBy,
+                    });
+                }
+
+                if (updates.Count > 0)
+                {
+                    await db.Updateable(updates)
+                        .UpdateColumns(x => new { x.LastPurchasePrice, x.UpdatedAt, x.UpdatedBy })
+                        .WhereColumns(x => x.DetailGUID)
+                        .ExecuteCommandAsync();
+                }
+
+                result.Updated = updates.Count;
+                return ApiResponse<UpdateLastPurchasePricesResultDto>.OK(result, "更新上次进货价完成");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新本地进货单上次进货价失败");
+                return ApiResponse<UpdateLastPurchasePricesResultDto>.Error(
+                    "更新上次进货价失败",
+                    "UPDATE_LAST_PURCHASE_PRICE_ERROR"
+                );
+            }
+        }
+
+        private static string? ResolveDetailStoreCode(string? detailStoreCode, string? headerStoreCode)
+        {
+            // 明细分店为空白时必须回退单头分店，保证上次进货价优先取当前分店价。
+            return string.IsNullOrWhiteSpace(detailStoreCode) ? headerStoreCode : detailStoreCode;
+        }
+
         public async Task<ApiResponse<UpdateToStorePricesResultDto>> UpdateDetailsToStorePricesAsync(
             UpdateToStorePricesRequest dto,
             string updatedBy
@@ -2088,6 +2339,21 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .ToList();
 
+                var productsByCode = new Dictionary<string, Product>();
+                if (dto.UpdateFields.UpdatePurchasePrice && productCodes.Count > 0)
+                {
+                    productsByCode = (await db.Queryable<Product>()
+                            .Where(product =>
+                                product.ProductCode != null
+                                && productCodes.Contains(product.ProductCode)
+                                && product.IsDeleted == false
+                            )
+                            .ToListAsync())
+                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                        .GroupBy(product => product.ProductCode!)
+                        .ToDictionary(group => group.Key, group => group.First());
+                }
+
                 var allPotentialPrices = await db.Queryable<StoreRetailPrice>()
                     .Where(sp =>
                         sp.IsDeleted == false
@@ -2111,9 +2377,37 @@ namespace BlazorApp.Api.Services.React
                     // 同一分店商品只保留最后一次计算结果，避免重复明细把同一价格记录反复加入大批量更新。
                     var updateMap = new Dictionary<string, StorePriceUpdatePlan>();
                     var insertMap = new Dictionary<string, StoreRetailPrice>();
+                    var productUpdateMap = new Dictionary<string, Product>();
                     var skipped = 0;
                     var skipMessages = new List<string>();
                     var now = DateTime.Now;
+
+                    if (dto.UpdateFields.UpdatePurchasePrice)
+                    {
+                        foreach (var detail in details)
+                        {
+                            var productCode = detail.ProductCode;
+                            if (
+                                string.IsNullOrWhiteSpace(productCode)
+                                || !productsByCode.TryGetValue(productCode, out var product)
+                            )
+                            {
+                                continue;
+                            }
+
+                            var purchasePriceToUpdate = dto.UpdateFields.PurchasePrice ?? detail.PurchasePrice;
+                            if (!IsPositiveValue(purchasePriceToUpdate))
+                            {
+                                continue;
+                            }
+
+                            // 更新到分店勾选进货价时，同步商品主档进货价；同一商品多条明细按最后一条有效明细生效。
+                            product.PurchasePrice = purchasePriceToUpdate.Value;
+                            product.UpdatedAt = now;
+                            product.UpdatedBy = updatedBy;
+                            productUpdateMap[productCode] = product;
+                        }
+                    }
 
                     foreach (var storeCode in targetStoreCodes)
                     {
@@ -2235,6 +2529,27 @@ namespace BlazorApp.Api.Services.React
                         );
                     }
 
+                    var productUpdates = productUpdateMap.Values.ToList();
+                    if (productUpdates.Count > 0)
+                    {
+                        for (var i = 0; i < productUpdates.Count; i += updateBatchSize)
+                        {
+                            var batch = productUpdates.Skip(i).Take(updateBatchSize).ToList();
+                            await db.Updateable(batch)
+                                .UpdateColumns(product => new
+                                {
+                                    product.PurchasePrice,
+                                    product.UpdatedAt,
+                                    product.UpdatedBy,
+                                })
+                                .ExecuteCommandAsync();
+                        }
+                        _logger.LogInformation(
+                            "更新到分店价格同步商品主档进货价成功，共更新 {Count} 个商品",
+                            productUpdates.Count
+                        );
+                    }
+
                     if (inserts.Count == 0 && updates.Count == 0)
                     {
                         _logger.LogWarning("没有找到需要更新或新建的分店价格记录");
@@ -2255,6 +2570,7 @@ namespace BlazorApp.Api.Services.React
                         Inserted = inserts.Count,
                         Updated = totalUpdated,
                         Skipped = skipped,
+                        UpdatedPurchasePrices = productUpdates.Count,
                         Failed = 0,
                         Errors = skipMessages,
                     };
@@ -2522,12 +2838,13 @@ namespace BlazorApp.Api.Services.React
                             result.ProductInfo.ProductName = product.ProductName;
                             result.ProductInfo.ProductImage = product.ProductImage;
 
-                            // 填充分店零售价信息
+                            // 填充分店零售价信息；上次进货价按分店价优先，缺失时回退商品主档进货价。
+                            StoreRetailPrice? storePrice = null;
                             if (
                                 !string.IsNullOrWhiteSpace(product.ProductCode)
                                 && storePricesByCode.TryGetValue(
                                     product.ProductCode,
-                                    out var storePrice
+                                    out storePrice
                                 )
                             )
                             {
@@ -2538,8 +2855,14 @@ namespace BlazorApp.Api.Services.React
                                 result.AutoPricing = detail.AutoPricing ?? storePrice.IsAutoPricing;
                                 result.IsSpecialProduct = storePrice.IsSpecialProduct;
                                 result.DiscountRate = storePrice.DiscountRate;
-                                result.LastPurchasePrice = storePrice.PurchasePrice;
                             }
+
+                            var detectedLastPurchasePrice = IsPositiveValue(storePrice?.PurchasePrice)
+                                ? storePrice!.PurchasePrice
+                                : product.PurchasePrice;
+                            result.LastPurchasePrice = IsPositiveValue(detectedLastPurchasePrice)
+                                ? detectedLastPurchasePrice
+                                : null;
                         }
                         else
                         {
@@ -2653,13 +2976,17 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    var detailByGuid = details.ToDictionary(detail => detail.DetailGUID);
                     var updateItems = results
                         .Select(r => new StoreLocalSupplierInvoiceDetails
                         {
                             DetailGUID = r.DetailGuid,
                             ProductCode = r.ProductInfo?.ProductCode,
                             StoreProductCode = r.ProductInfo?.StoreProductCode,
-                            LastPurchasePrice = r.LastPurchasePrice,
+                            // 商品检测只补空的上次进货价；已有快照必须保留，避免刷新检测时覆盖历史比较基准。
+                            LastPurchasePrice = detailByGuid.TryGetValue(r.DetailGuid, out var existingDetail)
+                                ? existingDetail.LastPurchasePrice ?? r.LastPurchasePrice
+                                : r.LastPurchasePrice,
                             AutoPricing = r.AutoPricing,
                             IsSpecialProduct = r.IsSpecialProduct,
                             DiscountRate = r.DiscountRate,

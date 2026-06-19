@@ -149,7 +149,19 @@ export interface BatchResultDto {
 
 export interface UpdateToStorePricesResult extends BatchResultDto {
   skipped?: number
+  updatedPurchasePrices?: number
   errors?: string[]
+}
+
+export interface UpdateLastPurchasePricesRequest {
+  detailGuids?: string[]
+}
+
+export interface UpdateLastPurchasePricesResult {
+  total: number
+  updated: number
+  skipped: number
+  errors: string[]
 }
 
 export type LocalSupplierInvoiceBatchJobStatus = 'Running' | 'Succeeded' | 'Failed' | string

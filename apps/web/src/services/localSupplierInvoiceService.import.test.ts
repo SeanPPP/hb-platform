@@ -155,7 +155,6 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         total: 2,
         updated: 1,
         skipped: 1,
-        failed: 0,
         errors: ['明细 detail-2 跳过：未找到有效上次进货价'],
       },
     }), {

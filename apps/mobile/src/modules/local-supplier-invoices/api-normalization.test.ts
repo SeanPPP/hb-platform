@@ -121,6 +121,15 @@ assertEqual(detailsRequest.startRow, 200, "third detail page starts at row 200")
 assertEqual(detailsRequest.endRow, 300, "third detail page ends at row 300");
 assertEqual(detailsRequest.pageSize, 100, "detail page size accepts 100");
 
+const priceDownDetailsRequest = buildInvoiceDetailsGridRequest({ priceChange: "down" });
+assertDeepEqual(
+  priceDownDetailsRequest.filterModel,
+  {
+    priceChange: { filterType: "text", type: "equals", filter: "down" },
+  },
+  "detail price change filter is sent to grid request"
+);
+
 const invalidDetailsRequest = buildInvoiceDetailsGridRequest({ pageSize: 20 });
 assertEqual(invalidDetailsRequest.pageSize, 50, "invalid detail page size falls back to 50");
 
@@ -135,6 +144,8 @@ const listPayload = normalizeInvoiceGridResponse({
       InvoiceNo: "INV-1",
       OrderDate: "2026-01-05T00:00:00",
       TotalAmount: "12.50",
+      PriceIncreaseItemCount: "2",
+      PriceDecreaseItemCount: "1",
     },
   ],
   Total: "3",
@@ -142,6 +153,8 @@ const listPayload = normalizeInvoiceGridResponse({
 assertEqual(listPayload.items.length, 1, "list payload keeps items");
 assertEqual(listPayload.items[0]?.invoiceGuid, "invoice-1", "list normalizes invoice guid");
 assertEqual(listPayload.items[0]?.totalAmount, 12.5, "list normalizes numeric amount");
+assertEqual(listPayload.items[0]?.priceIncreaseItemCount, 2, "list normalizes price increase count");
+assertEqual(listPayload.items[0]?.priceDecreaseItemCount, 1, "list normalizes price decrease count");
 assertEqual(listPayload.total, 3, "list normalizes total");
 
 const detailsPayload = normalizeInvoiceDetailsGridResponse({
@@ -152,6 +165,7 @@ const detailsPayload = normalizeInvoiceDetailsGridResponse({
       itemNumber: "IT001",
       barcode: "BAR001",
       productName: "Tea",
+      LastPurchasePrice: "3.80",
       purchasePrice: "4.20",
       quantity: "6",
       productImage: "https://example.com/p.png",
@@ -161,6 +175,7 @@ const detailsPayload = normalizeInvoiceDetailsGridResponse({
 });
 assertEqual(detailsPayload.items.length, 1, "detail payload keeps items");
 assertEqual(detailsPayload.items[0]?.detailGuid, "detail-1", "detail normalizes guid");
+assertEqual(detailsPayload.items[0]?.lastPurchasePrice, 3.8, "detail normalizes last purchase price");
 assertEqual(detailsPayload.items[0]?.purchasePrice, 4.2, "detail normalizes purchase price");
 assertEqual(detailsPayload.items[0]?.quantity, 6, "detail normalizes quantity");
 assertEqual(detailsPayload.total, 8, "detail normalizes total");

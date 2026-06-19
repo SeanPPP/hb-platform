@@ -4,6 +4,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  HistoryOutlined,
 
   PlusOutlined,
   RollbackOutlined,
@@ -68,6 +69,7 @@ import {
   startUpdateToStorePricesJob,
   updateDetailAction,
   updateInvoice,
+  updateLastPurchasePrices,
 } from '../../../../services/localSupplierInvoiceService'
 import {
   createHqSyncJobPoller,
@@ -90,6 +92,7 @@ import type {
   PasteDetailsJobResult,
   UpdateHqProductsResult,
   UpdateHqProductsJobResult,
+  UpdateLastPurchasePricesResult,
   UpdateToStorePricesFields,
   UpdateToStorePricesRequest,
   UpdateToStorePricesResult,
@@ -599,6 +602,7 @@ export default function InvoiceEditPage() {
   /* ---- 商品检测 ---- */
   const [checking, setChecking] = useState(false)
   const activeCheckProductsJobIdRef = useRef<string | null>(null)
+  const [updatingLastPurchasePrices, setUpdatingLastPurchasePrices] = useState(false)
 
   /* ---- 批量执行操作 ---- */
   const [executing, setExecuting] = useState(false)
@@ -1203,6 +1207,29 @@ export default function InvoiceEditPage() {
     })
   }
 
+  const showUpdateLastPurchasePricesResult = (result: UpdateLastPurchasePricesResult) => {
+    Modal.info({
+      title: t('posAdmin.invoiceDetail.updateLastPurchasePricesResultTitle', '更新上次进货价结果'),
+      width: 560,
+      content: (
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <div>{t('posAdmin.invoiceDetail.updateLastPurchasePricesTotal', '总处理：{{count}} 条', { count: result.total ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateLastPurchasePricesUpdated', '成功更新：{{count}} 条', { count: result.updated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateLastPurchasePricesSkipped', '跳过：{{count}} 条', { count: result.skipped ?? 0 })}</div>
+          {result.errors?.length > 0 && (
+            <div style={{ maxHeight: 180, overflow: 'auto', marginTop: 8 }}>
+              {result.errors.map((error, index) => (
+                <div key={`${error}-${index}`} style={{ color: '#ff4d4f', fontSize: 12 }}>
+                  {error}
+                </div>
+              ))}
+            </div>
+          )}
+        </Space>
+      ),
+    })
+  }
+
   const renderBackgroundTaskDetailsButton = (onClick: () => void) => (
     <Button type="link" size="small" style={{ padding: 0 }} onClick={onClick}>
       {t('posAdmin.invoiceDetail.backgroundTaskViewDetails', '查看详情')}
@@ -1552,7 +1579,8 @@ export default function InvoiceEditPage() {
           discountRate: checkResult.discountRate ?? undefined,
           pricingFloatRate: checkResult.pricingFloatRate ?? undefined,
           newAutoRetailPrice: checkResult.newAutoRetailPrice ?? undefined,
-          lastPurchasePrice: checkResult.lastPurchasePrice ?? undefined,
+          // 商品检测只补空的上次进货价；已有快照由手动按钮强制刷新，避免自动检测覆盖比较基准。
+          lastPurchasePrice: d.lastPurchasePrice ?? checkResult.lastPurchasePrice ?? undefined,
           activityType: checkResult.defaultAction ?? d.activityType,
         } as LocalSupplierInvoiceItemDto
       }),
@@ -1565,6 +1593,67 @@ export default function InvoiceEditPage() {
       }
     })
     setRowActions((prev) => ({ ...prev, ...newActions }))
+  }
+
+  const handleUpdateLastPurchasePrices = () => {
+    if (updatingLastPurchasePrices) return
+    if (!invoiceGuid || !ensureCanAccessInvoice()) return
+    if (!details.length) {
+      message.warning(t('posAdmin.invoiceDetail.noDetailToUpdateLastPurchasePrice', '没有明细数据可更新'))
+      return
+    }
+
+    const submittedInvoiceGuid = invoiceGuid
+    const selectedDetailGuids = selectedRowKeys.map(String)
+    const scopeLabel = selectedDetailGuids.length > 0
+      ? t('posAdmin.invoiceDetail.selectedRows', '已选明细')
+      : t('posAdmin.invoiceDetail.allRows', '全部明细')
+    const scopeCount = selectedDetailGuids.length > 0 ? selectedDetailGuids.length : details.length
+
+    Modal.confirm({
+      title: t('posAdmin.invoiceDetail.confirmUpdateLastPurchasePricesTitle', '确认更新上次进货价？'),
+      content: (
+        <Space direction="vertical" size={4}>
+          <div>{t('posAdmin.invoiceDetail.confirmUpdateLastPurchasePricesScope', '范围：{{scope}}（{{count}} 条）', { scope: scopeLabel, count: scopeCount })}</div>
+          <div>{t('posAdmin.invoiceDetail.confirmUpdateLastPurchasePricesDesc', '将按当前分店进货价优先、商品主档进货价兜底，强制刷新进货单明细的上次进货价。')}</div>
+        </Space>
+      ),
+      okText: t('posAdmin.invoiceDetail.updateLastPurchasePricesBtn', '更新上次进货价'),
+      cancelText: t('common.cancel', '取消'),
+      onOk: async () => {
+        setUpdatingLastPurchasePrices(true)
+        try {
+          const result = await updateLastPurchasePrices(submittedInvoiceGuid, {
+            detailGuids: selectedDetailGuids.length > 0 ? selectedDetailGuids : undefined,
+          })
+          const hasDetails = (result.errors?.length ?? 0) > 0
+          notification.success({
+            message: t('posAdmin.invoiceDetail.updateLastPurchasePricesCompleted', '更新上次进货价完成'),
+            description: (
+              <Space direction="vertical" size={4}>
+                <span>{t('posAdmin.invoiceDetail.updateLastPurchasePricesSummary', '成功 {{updated}} 条，跳过 {{skipped}} 条', {
+                  updated: result.updated ?? 0,
+                  skipped: result.skipped ?? 0,
+                })}</span>
+                {hasDetails && renderBackgroundTaskDetailsButton(() => showUpdateLastPurchasePricesResult(result))}
+              </Space>
+            ),
+            duration: hasDetails ? 0 : 4,
+          })
+          if (canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid)) {
+            await loadDetails()
+          }
+        } catch (error) {
+          notification.error({
+            message: t('posAdmin.invoiceDetail.updateLastPurchasePricesFailed', '更新上次进货价失败'),
+            description: error instanceof Error ? error.message : t('posAdmin.invoiceDetail.updateLastPurchasePricesFailed', '更新上次进货价失败'),
+            duration: 0,
+          })
+        } finally {
+          setUpdatingLastPurchasePrices(false)
+        }
+      },
+    })
   }
 
   // ---- 商品检测 ----
@@ -2826,6 +2915,16 @@ export default function InvoiceEditPage() {
                 {t('posAdmin.invoiceDetail.productDetectBtn', '商品检测')}
               </Button>
             )}
+            {isAdmin && (
+              <Button
+                icon={<HistoryOutlined />}
+                loading={updatingLastPurchasePrices}
+                disabled={updatingLastPurchasePrices || !details.length}
+                onClick={() => void handleUpdateLastPurchasePrices()}
+              >
+                {t('posAdmin.invoiceDetail.updateLastPurchasePricesBtn', '更新上次进货价')}
+              </Button>
+            )}
             {canWriteLocalPurchaseToHq && (
               <Button
                 icon={<CloudUploadOutlined />}
@@ -3132,7 +3231,11 @@ export default function InvoiceEditPage() {
         onOk={() => void handleUpdateToStorePrices()}
         width={600}
       >
-        <Form form={storePriceForm} layout="vertical">
+        <Form
+          form={storePriceForm}
+          layout="vertical"
+          initialValues={{ updatePurchasePrice: true }}
+        >
           <Form.Item
             name="targetStoreCodes"
             label={t('posAdmin.invoiceDetail.targetStoreLabel', '目标分店')}

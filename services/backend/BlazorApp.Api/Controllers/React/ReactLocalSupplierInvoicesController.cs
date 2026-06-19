@@ -982,6 +982,28 @@ namespace BlazorApp.Api.Controllers.React
             return BadRequest(new { success = false, message = result.Message });
         }
 
+        [HttpPost("{invoiceGuid}/details/update-last-purchase-prices")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> UpdateLastPurchasePrices(
+            [FromRoute] string invoiceGuid,
+            [FromBody] UpdateLastPurchasePricesRequest? dto
+        )
+        {
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var user = User.Identity?.Name ?? "system";
+            var result = await _service.UpdateLastPurchasePricesAsync(
+                invoiceGuid,
+                dto ?? new UpdateLastPurchasePricesRequest(),
+                user
+            );
+            if (result.Success)
+                return Ok(new { success = true, data = result.Data, message = result.Message });
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
         [HttpPut("{invoiceGuid}/details/{detailGuid}/action")]
         [Authorize(Policy = Permissions.LocalPurchase.Edit)]
         public async Task<IActionResult> UpdateDetailAction(
