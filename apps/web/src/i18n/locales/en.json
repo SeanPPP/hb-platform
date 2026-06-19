@@ -111,6 +111,9 @@
       "resetColumnFilter": "Reset",
       "clearColumnFilters": "Clear Column Filters",
       "exportOptions": "Export Options",
+      "exportFormat": "Export Format",
+      "exportExcel": "Export Excel",
+      "exportPdf": "Export PDF",
       "resetColumns": "Reset Columns",
       "selectExportColumns": "Select Export Columns",
       "exportSelectedColumns": "Export Selected Columns",
@@ -321,7 +324,9 @@
       "selectDetails": "Select details first",
       "detailsDeleted": "Deleted {{count}} details",
       "noDataToExport": "No data to export",
-      "detailsExported": "Exported {{count}} details"
+      "detailsExported": "Exported {{count}} details",
+      "detailsPdfExported": "Exported {{count}} details to PDF",
+      "detailsExportFailed": "Export failed. Please try again later."
     },
     "productTypes": {
       "normal": "Normal Product",
@@ -370,6 +375,8 @@
     "export": {
       "detailSuffix": "Product Details",
       "indexColumn": "No.",
+      "barcodeImageColumn": "Barcode Image",
+      "productImageColumn": "Product Image",
       "chineseNameColumn": "Chinese Name",
       "piecesColumn": "Pieces",
       "totalQuantityColumn": "Total Qty",

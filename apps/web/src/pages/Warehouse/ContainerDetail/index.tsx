@@ -38,6 +38,7 @@ import {
   InputNumber,
   Modal,
   Progress,
+  Radio,
   Select,
   Space,
   Spin,
@@ -84,7 +85,7 @@ import {
   type ContainerProductCreationJob,
   type ContainerProductCreationResultItem,
 } from '../../../services/containerProductCreationService'
-import { exportContainerDetailsToExcel, type ContainerDetailExportItem } from '../../../services/exportService'
+import { exportContainerDetailsToExcel, exportContainerDetailsToPdf, type ContainerDetailExportItem, type ContainerExportOptions } from '../../../services/exportService'
 import {
   buildPushProductsToHqOperationId,
   createPushProductsToHqJob,
@@ -169,6 +170,7 @@ import {
   rollbackContainerDetailWarehouseStatuses,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
   type ContainerDetailCostMissingField,
@@ -206,6 +208,7 @@ type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'contain
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
 type PendingContainerDetailPricePatch = Pick<UpdateContainerDetailRequest, 'hguid'> & Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格'>>
 type PendingContainerDetailPricePatchMap = Record<string, PendingContainerDetailPricePatch>
+type ContainerDetailExportFormat = 'excel' | 'pdf'
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -549,6 +552,7 @@ export default function ContainerDetailPage() {
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [exportColumnModalOpen, setExportColumnModalOpen] = useState(false)
+  const [exportFormat, setExportFormat] = useState<ContainerDetailExportFormat>('excel')
   const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
@@ -1084,6 +1088,15 @@ export default function ContainerDetailPage() {
     })),
     [t],
   )
+
+  const setExportFormatWithDefaults = (format: ContainerDetailExportFormat) => {
+    setExportFormat(format)
+    setSelectedExportColumnKeys(
+      format === 'pdf'
+        ? DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS
+        : DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+    )
+  }
 
   const setTagFiltersFromSelect = (values: ContainerDetailTagFilter[]) => {
     setSelectedTagFilters(values.includes('all') ? [] : values)
@@ -2604,7 +2617,10 @@ export default function ContainerDetailPage() {
     })
   })
 
-  const exportExcel = async (columnKeys: ContainerDetailExportColumnKey[] = DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS) => {
+  const exportDetails = async (
+    columnKeys: ContainerDetailExportColumnKey[] = DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+    format: ContainerDetailExportFormat = 'excel',
+  ) => {
     if (!ensureTargetRowsVisible()) return
     if (!selectedRowKeys.length) {
       const confirmed = await confirmExportAllRows()
@@ -2619,17 +2635,26 @@ export default function ContainerDetailPage() {
     try {
       const exportColumns = getContainerDetailExportColumns(columnKeys)
       const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(exportRows)
-      await exportContainerDetailsToExcel(items, {
-        columns: exportColumns.map((column) => ({
-          header: t(column.labelKey, column.fallbackLabel),
-          key: column.key,
-          width: column.width,
-          valueType: column.valueType,
-          currencySymbol: column.key === 'domesticPrice' ? '¥' : undefined,
-        })),
-        summary: {
-          title: t('containers.export.summaryTitle', '货柜主表信息'),
-          rows: [
+      const baseSummaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = [
+        [
+          { label: t('containers.fields.containerNumber'), value: container?.货柜编号 || '--' },
+          { label: t('containers.fields.loadingDate'), value: formatDate(container?.装柜日期) },
+          { label: t('containers.fields.estimatedArrival'), value: formatDate(container?.预计到岸日期) },
+        ],
+        [
+          { label: t('containers.fields.status'), value: getContainerStatusText(container?.状态, t) },
+          { label: t('containers.fields.actualArrival'), value: formatDate(container?.实际到货日期) },
+          { label: t('containers.fields.exchangeRate'), value: container?.汇率 ?? '--', valueType: container?.汇率 == null ? 'text' : 'number' },
+        ],
+        [
+          { label: t('containers.fields.freight'), value: container?.运费 ?? '--', valueType: container?.运费 == null ? 'text' : 'money' },
+          { label: t('containers.fields.totalVolume'), value: container?.总体积 ?? '--', valueType: container?.总体积 == null ? 'text' : 'volume' },
+          { label: t('containers.fields.remark'), value: container?.备注 || '--' },
+        ],
+      ]
+      // PDF 对外分享时不展示汇率和运费金额；Excel 仍保留完整核对信息。
+      const summaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = format === 'pdf'
+        ? [
             [
               { label: t('containers.fields.containerNumber'), value: container?.货柜编号 || '--' },
               { label: t('containers.fields.loadingDate'), value: formatDate(container?.装柜日期) },
@@ -2638,19 +2663,40 @@ export default function ContainerDetailPage() {
             [
               { label: t('containers.fields.status'), value: getContainerStatusText(container?.状态, t) },
               { label: t('containers.fields.actualArrival'), value: formatDate(container?.实际到货日期) },
-              { label: t('containers.fields.exchangeRate'), value: container?.汇率 ?? '--', valueType: container?.汇率 == null ? 'text' : 'number' },
+              { label: t('containers.fields.totalVolume'), value: container?.总体积 ?? '--', valueType: container?.总体积 == null ? 'text' : 'volume' },
             ],
             [
-              { label: t('containers.fields.freight'), value: container?.运费 ?? '--', valueType: container?.运费 == null ? 'text' : 'money' },
-              { label: t('containers.fields.totalVolume'), value: container?.总体积 ?? '--', valueType: container?.总体积 == null ? 'text' : 'volume' },
               { label: t('containers.fields.remark'), value: container?.备注 || '--' },
             ],
-          ],
+          ]
+        : baseSummaryRows
+      const exportOptions: ContainerExportOptions = {
+        columns: exportColumns.map((column) => ({
+          header: t(column.labelKey, column.fallbackLabel),
+          key: column.key,
+          width: column.width,
+          valueType: column.valueType,
+          currencySymbol: column.key === 'domesticPrice' ? '¥' as const : undefined,
+        })),
+        summary: {
+          title: t('containers.export.summaryTitle', '货柜主表信息'),
+          rows: summaryRows,
         },
         fileName: `${container?.货柜编号 || t('containers.detailTitle')}_${t('containers.export.detailSuffix')}`,
-        onProgress: (progress) => setExportProgress(progress),
-      })
-      message.success(t('containers.messages.detailsExported', { count: items.length }))
+        onProgress: (progress: number) => setExportProgress(progress),
+      }
+      if (format === 'pdf') {
+        await exportContainerDetailsToPdf(items, exportOptions)
+      } else {
+        await exportContainerDetailsToExcel(items, exportOptions)
+      }
+      message.success(
+        format === 'pdf'
+          ? t('containers.messages.detailsPdfExported', '已导出 {{count}} 条明细 PDF', { count: items.length })
+          : t('containers.messages.detailsExported', { count: items.length }),
+      )
+    } catch {
+      message.error(t('containers.messages.detailsExportFailed', '导出失败，请稍后重试'))
     } finally {
       setExporting(false)
       setExportProgress(0)
@@ -3718,16 +3764,37 @@ export default function ContainerDetailPage() {
                 <div className="container-detail-toolbar">
                   <div className="container-detail-action-row">
                     <Space wrap size={[6, 6]} className="container-detail-action-group">
-                      <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportExcel()}>
-                        {t('common.export')}
-                      </Button>
+                      <Dropdown
+                        disabled={exporting}
+                        menu={{
+                          items: [
+                            { key: 'excel', label: t('containers.actions.exportExcel', '导出 Excel') },
+                            { key: 'pdf', label: t('containers.actions.exportPdf', '导出 PDF') },
+                          ],
+                          onClick: ({ key }) => {
+                            if (key === 'excel') {
+                              void exportDetails(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS, 'excel')
+                            }
+                            if (key === 'pdf') {
+                              void exportDetails(DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS, 'pdf')
+                            }
+                          },
+                        }}
+                      >
+                        <Button size="small" icon={<DownloadOutlined />} loading={exporting}>
+                          {t('common.export')}
+                        </Button>
+                      </Dropdown>
                       <Dropdown
                         menu={{
                           items: [
                             { key: 'columns', label: t('containers.actions.selectExportColumns', '选择导出列') },
                           ],
                           onClick: ({ key }) => {
-                            if (key === 'columns') setExportColumnModalOpen(true)
+                            if (key === 'columns') {
+                              setExportFormatWithDefaults('excel')
+                              setExportColumnModalOpen(true)
+                            }
                           },
                         }}
                       >
@@ -3946,16 +4013,30 @@ export default function ContainerDetailPage() {
       <Modal
         title={t('containers.modals.exportColumnsTitle', '选择导出列')}
         open={exportColumnModalOpen}
-        okText={t('containers.actions.exportSelectedColumns', '按所选列导出')}
+        okText={exportFormat === 'pdf' ? t('containers.actions.exportPdf', '导出 PDF') : t('containers.actions.exportExcel', '导出 Excel')}
         cancelText={t('common.cancel')}
         okButtonProps={{ disabled: selectedExportColumnKeys.length === 0, loading: exporting }}
         onOk={() => {
           setExportColumnModalOpen(false)
-          void exportExcel(selectedExportColumnKeys)
+          void exportDetails(selectedExportColumnKeys, exportFormat)
         }}
         onCancel={() => setExportColumnModalOpen(false)}
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Space size={8}>
+            <Typography.Text type="secondary">{t('containers.actions.exportFormat', '导出格式')}</Typography.Text>
+            <Radio.Group
+              size="small"
+              value={exportFormat}
+              onChange={(event) => setExportFormatWithDefaults(event.target.value)}
+              optionType="button"
+              buttonStyle="solid"
+              options={[
+                { label: t('containers.actions.exportExcel', '导出 Excel'), value: 'excel' },
+                { label: t('containers.actions.exportPdf', '导出 PDF'), value: 'pdf' },
+              ]}
+            />
+          </Space>
           <Typography.Text type="secondary">
             {selectedRowKeys.length
               ? t('containers.text.exportSelectedRowsHint', '将导出已选择的 {{count}} 个商品。', { count: selectedRowKeys.length })
@@ -3965,7 +4046,9 @@ export default function ContainerDetailPage() {
             <Button size="small" onClick={() => setSelectedExportColumnKeys(CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.key))}>
               {t('containers.actions.selectAllExportColumns', '全选')}
             </Button>
-            <Button size="small" onClick={() => setSelectedExportColumnKeys(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)}>
+            <Button size="small" onClick={() => setSelectedExportColumnKeys(
+              exportFormat === 'pdf' ? DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS : DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+            )}>
               {t('containers.actions.resetDefaultExportColumns', '恢复默认')}
             </Button>
           </Space>

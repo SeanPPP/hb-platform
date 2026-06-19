@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs'
-import { populateContainerDetailsWorksheet, type ContainerDetailExportColumn } from './exportService'
+import { readFileSync } from 'node:fs'
+import { populateContainerDetailsWorksheet, resolveContainerDetailPdfLayout, type ContainerDetailExportColumn } from './exportService'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -56,3 +57,103 @@ assertEqual(worksheet.getRow(result.dataStartRowNumber).getCell(1).numFmt, '#,##
 assertEqual(worksheet.getRow(result.dataStartRowNumber).getCell(3).numFmt, '#,##0.0000', '体积应使用 4 位小数格式')
 assertEqual(worksheet.getRow(result.dataStartRowNumber).getCell(4).numFmt, '¥#,##0.00', '国内价格应使用人民币 2 位小数格式')
 assertEqual((worksheet.views[0] as { ySplit?: number } | undefined)?.ySplit, result.headerRowNumber, '冻结行应落在明细表头行')
+
+const imageWorkbook = new ExcelJS.Workbook()
+const imageWorksheet = imageWorkbook.addWorksheet('货柜明细图片列')
+const imageResult = populateContainerDetailsWorksheet(
+  imageWorksheet,
+  [
+    {
+      index: 1,
+      itemNumber: 'HB202-181',
+      barcode: '9527902200518',
+      barcodeImage: '9527902200518',
+      productImage: 'https://cdn.example.com/HB202-181.jpg',
+    },
+  ],
+  {
+    columns: [
+      { header: '序号', key: 'index', width: 8, valueType: 'integer' },
+      { header: '条码图片', key: 'barcodeImage', width: 24, valueType: 'text' },
+      { header: '商品图片', key: 'productImage', width: 18, valueType: 'text' },
+      { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' },
+    ],
+  },
+)
+assertEqual(imageResult.barcodeImageColIndex, 1, '条码图片列应返回零基列号')
+assertEqual(imageResult.productImageColIndex, 2, '商品图片列应返回零基列号')
+assertEqual(imageWorksheet.getRow(imageResult.dataStartRowNumber).height, 58, '选择图片列时应增加 Excel 行高')
+
+const plainWorkbook = new ExcelJS.Workbook()
+const plainWorksheet = plainWorkbook.addWorksheet('货柜明细普通列')
+const plainResult = populateContainerDetailsWorksheet(
+  plainWorksheet,
+  [{ index: 1, itemNumber: 'HB202-181' }],
+  {
+    columns: [
+      { header: '序号', key: 'index', width: 8, valueType: 'integer' },
+      { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' },
+    ],
+  },
+)
+assertEqual(plainResult.barcodeImageColIndex, -1, '未选择条码图片列时不应生成图片列')
+assertEqual(plainResult.productImageColIndex, -1, '未选择商品图片列时不应生成图片列')
+assertEqual(plainWorksheet.getRow(plainResult.dataStartRowNumber).height, undefined, '未选择图片列时应保持普通行高')
+
+const exportServiceSource = readFileSync('src/services/exportService.ts', 'utf8')
+const sixPdfColumns: ContainerDetailExportColumn[] = [
+  { header: '序号', key: 'index', width: 8, valueType: 'integer' },
+  { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' },
+  { header: '条码图片', key: 'barcodeImage', width: 24, valueType: 'text' },
+  { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' },
+  { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' },
+  { header: '备注', key: 'remark', width: 18, valueType: 'text' },
+]
+const portraitLayout = resolveContainerDetailPdfLayout(sixPdfColumns)
+assertEqual(portraitLayout.orientation, 'p', '6 列及以下货柜明细 PDF 应使用竖向 A4')
+assertEqual(portraitLayout.pageWidthPx, 793, '竖向 PDF 页面 DOM 宽度应匹配 A4 竖向比例')
+assertEqual(portraitLayout.pageHeightPx, 1122, '竖向 PDF 页面 DOM 高度应匹配 A4 竖向比例')
+assertEqual(portraitLayout.pdfWidthMm, 210, '竖向 PDF 写入宽度应为 210mm')
+assertEqual(portraitLayout.pdfHeightMm, 297, '竖向 PDF 写入高度应为 297mm')
+assertEqual(portraitLayout.rowsPerPageWithImages, 15, '竖向带图片 PDF 应按可扫码条码高度分页')
+assertEqual(portraitLayout.rowsPerPageWithoutImages, 36, '竖向无图片 PDF 应使用更多每页行数')
+
+const defaultPdfLayout = resolveContainerDetailPdfLayout([
+  { header: '序号', key: 'index', width: 8, valueType: 'integer' },
+  { header: '商品图片', key: 'productImage', width: 18, valueType: 'text' },
+  { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' },
+  { header: '条码图片', key: 'barcodeImage', width: 24, valueType: 'text' },
+  { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' },
+  { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' },
+])
+assertEqual(defaultPdfLayout.orientation, 'p', '货柜明细 PDF 默认 6 列应导出为竖向 A4')
+
+const landscapeLayout = resolveContainerDetailPdfLayout([
+  ...sixPdfColumns,
+  { header: '总装柜数', key: 'containerQuantity', width: 12, valueType: 'integer' },
+])
+assertEqual(landscapeLayout.orientation, 'l', '7 列及以上货柜明细 PDF 应使用横向 A4')
+assertEqual(landscapeLayout.pageWidthPx, 1122, '横向 PDF 页面 DOM 宽度应匹配 A4 横向比例')
+assertEqual(landscapeLayout.pageHeightPx, 793, '横向 PDF 页面 DOM 高度应匹配 A4 横向比例')
+assertEqual(landscapeLayout.pdfWidthMm, 297, '横向 PDF 写入宽度应为 297mm')
+assertEqual(landscapeLayout.pdfHeightMm, 210, '横向 PDF 写入高度应为 210mm')
+assertEqual(landscapeLayout.rowsPerPageWithImages, 11, '横向带图片 PDF 应保留原每页行数')
+assertEqual(landscapeLayout.rowsPerPageWithoutImages, 18, '横向无图片 PDF 应保留原每页行数')
+assertEqual(exportServiceSource.includes("import('jspdf')"), true, '货柜明细 PDF 导出应动态加载 jspdf，避免增加首屏包')
+assertEqual(exportServiceSource.includes('new jsPDF(layout.orientation'), true, '货柜明细 PDF 应按列数自动传入横竖向')
+assertEqual(exportServiceSource.includes('layout.pdfWidthMm, layout.pdfHeightMm'), true, '货柜明细 PDF 写入尺寸应来自自动布局')
+assertEqual(
+  exportServiceSource.includes('scale: 3'),
+  true,
+  'PDF 页面截图应提高倍率，减少条码边缘模糊',
+)
+assertEqual(exportServiceSource.includes("canvas.toDataURL('image/png')"), true, 'PDF 页面应使用 PNG 写入，避免条码被 JPEG 压缩')
+assertEqual(exportServiceSource.includes("pdf.addImage(imageData, 'PNG'"), true, 'PDF 应以无损 PNG 图片写入页面')
+assertEqual(
+  exportServiceSource.includes('width: 3, height: 74, fontSize: 13, margin: 8'),
+  true,
+  'PDF 条码源图应生成得足够清晰，保证可扫码',
+)
+assertEqual(exportServiceSource.includes('width: 138px'), true, 'PDF 条码图片应放大显示')
+assertEqual(exportServiceSource.includes('height: 58px'), true, 'PDF 条码图片应保持足够显示高度')
+assertEqual(exportServiceSource.includes(".pdf`"), true, '货柜明细 PDF 导出文件名应使用 .pdf 后缀')

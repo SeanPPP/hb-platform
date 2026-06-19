@@ -85,6 +85,9 @@ export type ContainerDetailEditableCellDirection = 'up' | 'down' | 'left' | 'rig
 export type ContainerDetailExportColumnKey =
   | 'index'
   | 'itemNumber'
+  | 'barcode'
+  | 'barcodeImage'
+  | 'productImage'
   | 'productName'
   | 'englishName'
   | 'containerPieces'
@@ -124,9 +127,21 @@ export const DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS: ContainerDetailExportC
   'oemPrice',
 ]
 
+export const DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS: ContainerDetailExportColumnKey[] = [
+  'index',
+  'productImage',
+  'itemNumber',
+  'barcodeImage',
+  'englishName',
+  'oemPrice',
+]
+
 export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinition[] = [
   { key: 'index', labelKey: 'containers.export.indexColumn', fallbackLabel: '序号', width: 8, valueType: 'integer' },
   { key: 'itemNumber', labelKey: 'containers.fields.itemNumber', fallbackLabel: '货号', width: 18, valueType: 'text' },
+  { key: 'barcode', labelKey: 'containers.fields.barcode', fallbackLabel: '条码', width: 20, valueType: 'text' },
+  { key: 'barcodeImage', labelKey: 'containers.export.barcodeImageColumn', fallbackLabel: '条码图片', width: 24, valueType: 'text' },
+  { key: 'productImage', labelKey: 'containers.export.productImageColumn', fallbackLabel: '商品图片', width: 18, valueType: 'text' },
   { key: 'productName', labelKey: 'containers.export.chineseNameColumn', fallbackLabel: '中文名称', width: 36, valueType: 'text' },
   { key: 'englishName', labelKey: 'containers.fields.englishName', fallbackLabel: '英文名称', width: 36, valueType: 'text' },
   { key: 'containerPieces', labelKey: 'containers.export.piecesColumn', fallbackLabel: '件数', width: 12, valueType: 'integer' },
@@ -598,6 +613,9 @@ export function buildContainerDetailExportRow(row: ContainerDetail, index = 0): 
   return {
     index: index + 1,
     itemNumber: getContainerDetailItemNumber(row) ?? '',
+    barcode: getContainerDetailBarcode(row) ?? '',
+    barcodeImage: getContainerDetailBarcode(row) ?? '',
+    productImage: getContainerDetailImageUrl(row) ?? '',
     productName: getContainerDetailProductName(row) ?? '',
     englishName: getContainerDetailEnglishName(row) ?? '',
     containerPieces: row.装柜件数 ?? 0,
