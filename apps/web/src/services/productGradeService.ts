@@ -17,7 +17,20 @@ const API_BASE = '/api/react/v1/product-grades'
 
 type ApiItem = Record<string, unknown>
 
+function toNullableBoolean(value: unknown) {
+  if (value == null) return null
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') return value.toLowerCase() === 'true'
+  return Boolean(value)
+}
+
 function transformGradeItem(raw: ApiItem): ProductGradeListItem {
+  const warehouseIsActive = raw.warehouseIsActive ?? raw.WarehouseIsActive
+  const minOrderQuantity = raw.minOrderQuantity ?? raw.MinOrderQuantity
+  const categoryGuid = raw.categoryGuid ?? raw.CategoryGuid ?? raw.categoryGUID ?? raw.CategoryGUID
+  const categoryName = raw.categoryName ?? raw.CategoryName
+  const categoryChineseName = raw.categoryChineseName ?? raw.CategoryChineseName
+
   return {
     id: String(raw.id ?? raw.Id ?? ''),
     productCode: String(raw.productCode ?? raw.ProductCode ?? ''),
@@ -27,11 +40,16 @@ function transformGradeItem(raw: ApiItem): ProductGradeListItem {
     hbProductNo: raw.hbProductNo != null ? String(raw.hbProductNo) : undefined,
     productName: raw.productName != null ? String(raw.productName) : undefined,
     productImage: raw.productImage != null ? String(raw.productImage) : undefined,
+    categoryGuid: categoryGuid != null ? String(categoryGuid) : undefined,
+    categoryName: categoryName != null ? String(categoryName) : undefined,
+    categoryChineseName: categoryChineseName != null ? String(categoryChineseName) : undefined,
     domesticPrice: raw.domesticPrice != null ? Number(raw.domesticPrice) : undefined,
     importPrice: raw.importPrice != null ? Number(raw.importPrice) : undefined,
     oemPrice: raw.oemPrice != null ? Number(raw.oemPrice) : undefined,
     retailPrice: raw.retailPrice != null ? Number(raw.retailPrice) : undefined,
     barcode: raw.barcode != null ? String(raw.barcode) : undefined,
+    warehouseIsActive: toNullableBoolean(warehouseIsActive),
+    minOrderQuantity: minOrderQuantity != null ? Number(minOrderQuantity) : null,
     createdAt: String(raw.createdAt ?? raw.CreatedAt ?? ''),
     updatedAt: raw.updatedAt != null ? String(raw.updatedAt) : undefined,
     createdBy: raw.createdBy != null ? String(raw.createdBy) : undefined,
@@ -48,6 +66,9 @@ export async function getProductGradeList(params: ProductGradeListParams): Promi
       grade: params.grade || undefined,
       supplierCode: params.supplierCode || undefined,
       hbProductNo: params.hbProductNo || undefined,
+      categoryGuid: params.categoryGuid || undefined,
+      uncategorizedOnly: params.uncategorizedOnly,
+      warehouseIsActive: params.warehouseIsActive,
       domesticPriceMin: params.domesticPriceMin,
       domesticPriceMax: params.domesticPriceMax,
       importPriceMin: params.importPriceMin,

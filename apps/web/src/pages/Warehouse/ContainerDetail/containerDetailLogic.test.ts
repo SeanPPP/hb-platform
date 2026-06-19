@@ -1316,10 +1316,11 @@ function getLocaleValue(source: Record<string, unknown>, key: string) {
 const containerDetailExportLabelKeys = CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.labelKey)
 
 const requiredContainerI18nKeys = [
+  'containers.actions.batchUpdateFloatRate',
+  'containers.actions.batchUpdatePrices',
   'containers.actions.showReadonlyOemPrice',
   'containers.actions.pushToHq',
   'containers.actions.saveDetails',
-  'containers.actions.recalculateCosts',
   'containers.actions.matchDomesticData',
   'containers.actions.previewImage',
   'containers.text.loadedRows',
@@ -1337,6 +1338,7 @@ const requiredContainerI18nKeys = [
   'containers.messages.detailSaveFailed',
   'containers.messages.noPendingPriceDetails',
   'containers.messages.detailPricesSaved',
+  'containers.messages.selectBatchProducts',
   'containers.messages.noMatchableDetails',
   'containers.messages.missingMatchableProductIdentity',
   'containers.messages.noDomesticDataToUpdate',
@@ -1353,6 +1355,10 @@ const requiredContainerI18nKeys = [
   'containers.messages.purchasePricesUpdateFailed',
   'containers.messages.newProductCannotToggleWarehouseStatus',
   'containers.messages.newProductsSkippedForWarehouseStatus',
+  'containers.modals.batchUpdateFloatRateTitle',
+  'containers.modals.batchUpdatePricesTitle',
+  'containers.modals.batchActionContent',
+  'containers.modals.batchActionAllHint',
   'containers.modals.rowCategoryTitle',
   'containers.export.summaryTitle',
   ...containerDetailExportLabelKeys,
@@ -1845,12 +1851,12 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)') &&
-  pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()'),
+    pageSource.includes('return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()'),
   true,
   '页面应调用匹配国内数据 helper，未勾选时按当前筛选结果全量处理',
 )
 assertEqual(
-  pageSource.includes('findContainerDetailRowsMissingProductName(targetRows)') &&
+  pageSource.includes('findContainerDetailRowsMissingProductName(scopedRows)') &&
     pageSource.includes("'containers.messages.createProductsMissingProductName'") &&
     pageSource.includes('missingProductNameRows.map((row) => row.label).join'),
   true,
@@ -2325,7 +2331,7 @@ const createNewProductsHandlerSource = pageSource.slice(
 )
 assertEqual(
   createNewProductsHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
-    createNewProductsHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < createNewProductsHandlerSource.indexOf('const detailHguids = targetRows.map'),
+    createNewProductsHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < createNewProductsHandlerSource.indexOf('const scopedRows = await confirmBatchRows'),
   true,
   '创建新商品前应提示先保存明细价格，避免后台 job 读取旧价格',
 )
@@ -2375,7 +2381,7 @@ const updateExistingPurchaseHandlerSource = pageSource.slice(
 )
 assertEqual(
   updateExistingPurchaseHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
-    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const candidates = targetRows.filter'),
+    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const scopedRows = await confirmBatchRows'),
   true,
   '更新已有商品价格前应阻止未保存的手动价格直接写入商品和分店价格',
 )
@@ -2417,8 +2423,8 @@ assertEqual(
     pageSource.includes('flushPendingDetailSaves') &&
     pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
     pageSource.indexOf('blurActiveContainerDetailEditableCell()') < pageSource.indexOf('await flushPendingDetailSaves()') &&
-    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingProductNameRows = findContainerDetailRowsMissingProductName(targetRows)') &&
-    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(targetRows)') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingProductNameRows = findContainerDetailRowsMissingProductName(scopedRows)') &&
+    pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(scopedRows)') &&
     pageSource.indexOf('await flushPendingDetailSaves()') < pageSource.indexOf('const job = await createContainerProductCreationJob({'),
   true,
   '创建新商品前必须先触发编辑单元格 blur 并等待货柜明细保存完成，避免后台 job 读取旧值',
@@ -2645,9 +2651,10 @@ assertEqual(pageSource.includes('renderNumericCell(formatNumber(row.调整浮率
 assertEqual(
   pageSource.includes('value={batchFloatRate}') &&
     pageSource.includes("placeholder={t('containers.fields.floatRate')}") &&
-    pageSource.includes('precision={2} controls={false} onChange={setBatchFloatRate}'),
+    pageSource.includes('precision={2}\n            controls={false}') &&
+    pageSource.includes('onChange={setBatchFloatRate}'),
   true,
-  '批量调整浮率输入应保持 2 位小数',
+  '批量修改浮率弹窗输入应保持 2 位小数',
 )
 assertDeepEqual(
   [
@@ -2657,9 +2664,9 @@ assertDeepEqual(
     'value={row.中包数}\n            keyboard={false}\n            min={0}\n            precision={0}\n            controls={false}',
     'value={row.进口价格}\n              keyboard={false}\n              min={0}\n              prefix="$"\n              precision={2}\n              controls={false}',
     'value={row.贴牌价格}\n            keyboard={false}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
-    '<InputNumber size="small" className="container-detail-bulk-input" value={batchFloatRate} placeholder={t(\'containers.fields.floatRate\')} precision={2} controls={false}',
-    '<InputNumber size="small" className="container-detail-bulk-input" value={batchImportPrice} placeholder={t(\'containers.fields.importPrice\')} min={0} prefix="$" precision={2} controls={false}',
-    '<InputNumber size="small" className="container-detail-bulk-input" value={batchOemPrice} placeholder={t(\'containers.fields.oemPrice\')} min={0} prefix="$" precision={2} controls={false}',
+    'value={batchFloatRate}\n            placeholder={t(\'containers.fields.floatRate\')}\n            precision={2}\n            controls={false}',
+    'value={batchImportPrice}\n            placeholder={t(\'containers.fields.importPrice\')}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
+    'value={batchOemPrice}\n            placeholder={t(\'containers.fields.oemPrice\')}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
     '<InputNumber value={headerForm.汇率} precision={4} controls={false}',
     '<InputNumber value={headerForm.运费} precision={2} controls={false}',
   ].filter((snippet) => !pageSource.includes(snippet)),
@@ -2670,6 +2677,28 @@ assertEqual(pageSource.includes('value={row.进口价格}'), true, '进口价格
 assertEqual(pageSource.includes('defaultValue={row.进口价格}'), false, '进口价格输入框不能使用 defaultValue')
 assertEqual(pageSource.includes('const updatePayload: UpdateContainerRequest'), true, '保存货柜头部应使用窄更新 payload')
 assertEqual(pageSource.includes('await updateContainer(containerGuid, nextContainer)'), false, '保存货柜头部不能把完整货柜对象发送到后端')
+assertEqual(
+  pageSource.includes('货柜编号: nextContainerNumber') &&
+    pageSource.includes("装柜日期: headerForm.装柜日期 ? headerForm.装柜日期.format('YYYY-MM-DD') : undefined") &&
+    pageSource.includes("预计到岸日期: headerForm.预计到岸日期 ? headerForm.预计到岸日期.format('YYYY-MM-DD') : undefined"),
+  true,
+  '保存货柜头部应携带可编辑的货柜编号、装柜日期和预计到岸日期',
+)
+assertEqual(
+  pageSource.includes('value={headerForm.货柜编号}') &&
+    pageSource.includes('value={headerForm.装柜日期}') &&
+    pageSource.includes('value={headerForm.预计到岸日期}') &&
+    pageSource.includes('<DatePicker allowClear={false} value={headerForm.装柜日期}') &&
+    pageSource.includes('<DatePicker allowClear={false} value={headerForm.预计到岸日期}') &&
+    pageSource.includes("message.error(t('containers.placeholders.enterContainerNumber'"),
+  true,
+  '货柜头部基础信息编辑态应覆盖编号和日期字段，禁止清空关键日期，并校验货柜编号不能为空',
+)
+assertEqual(
+  pageSource.includes("getContainerDetailCostMissingFields(nextCostContainer).filter((field) => field !== 'totalVolume')"),
+  false,
+  '保存非成本基础信息不应被汇率或运费缺失拦截',
+)
 assertEqual(
   pageSource.includes('const shouldRecalculateCosts =') &&
     pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildWholeContainerDetailBatchScope())'),
@@ -2700,9 +2729,10 @@ assertEqual(
   '保存货柜头部成功但成本重算失败时应独立提示，不能伪装成保存失败',
 )
 assertEqual(
-  pageSource.includes('batchFloatRate ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE'),
+  pageSource.includes('setBatchFloatRate(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE)') &&
+    pageSource.includes('applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(), batchFloatRate)'),
   true,
-  '批量浮率为空时应使用默认 1.30 参与成本重算',
+  '批量修改浮率弹窗打开时应默认填入 1.30，确认后按当前批量 scope 重算成本',
 )
 assertEqual(pageSource.includes("t('containers.formulas.transportCost'"), true, '表格页脚运输成本公式应使用 i18n key')
 assertEqual(pageSource.includes("t('containers.formulas.importPrice'"), true, '表格页脚进口价格公式应使用 i18n key')
@@ -2710,18 +2740,18 @@ assertEqual(pageSource.includes('运输成本 = 运费 × 明细体积 ÷ 装柜
 assertEqual(pageSource.includes('进口价格 = ((国内价格 ÷ 汇率 + 运输成本) × 调整浮率 × 10) ÷ 11'), true, '表格页脚应展示进口价格公式')
 assertEqual(
   pageSource.includes('const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)'),
-  true,
-  '页面应维护重算成本按钮的 loading 状态',
+  false,
+  '货柜明细工具栏不再维护独立重算成本按钮 loading 状态',
 )
 assertEqual(
   pageSource.includes('const handleRecalculateCosts = async () => {'),
-  true,
-  '页面应提供重算成本的手动处理入口',
+  false,
+  '货柜明细工具栏不再提供独立重算成本入口',
 )
 assertEqual(
   pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
-  true,
-  '重算成本应按当前筛选 scope 交给后端计算更新',
+  false,
+  '独立重算成本不再按当前筛选 scope 暴露，成本重算由头部保存和批量浮率自动触发',
 )
 assertEqual(
   pageSource.includes('dataSource={displayRows}'),
@@ -2982,10 +3012,57 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope()') &&
-    pageSource.includes('const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
+    pageSource.includes('return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
     pageSource.includes('const productCodes = eligibleRows'),
   true,
-  '应用价格应使用服务端 scope，批量上下架未选择时应作用于当前筛选结果全量中的已有商品',
+  '批量修改价格应使用服务端 scope，批量上下架未选择时应提示后作用于当前筛选结果全量中的已有商品',
+)
+assertEqual(
+  pageSource.includes('className="container-detail-bulk-input"') ||
+    pageSource.includes("t('containers.actions.applyFloatRate')") ||
+    pageSource.includes("t('containers.actions.applyPrices')") ||
+    pageSource.includes("t('containers.actions.recalculateCosts')") ||
+    pageSource.includes('onClick={() => void handleRecalculateCosts()}'),
+  false,
+  '工具栏不应再保留批量浮率、批量价格输入框或独立重算/应用按钮',
+)
+assertEqual(
+  pageSource.includes("key: 'batchFloatRate'") &&
+    pageSource.includes("key: 'batchPrices'") &&
+    pageSource.includes("key: 'backfillLastPrices'") &&
+    pageSource.includes("key: 'matchDomesticData'") &&
+    pageSource.includes("t('containers.actions.batchUpdateFloatRate'") &&
+    pageSource.includes("t('containers.actions.batchUpdatePrices'"),
+  true,
+  '批量操作菜单应包含批量修改浮率、批量修改价格、回填上次价格和匹配国内数据',
+)
+assertDeepEqual(
+  [
+    "const scope = await confirmBatchScope(t('containers.actions.backfillLastPrices'",
+    "const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))",
+    "const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))",
+    "const scopedRows = await confirmBatchRows(t('containers.actions.batchTranslate'))",
+    "const scopedRows = await confirmBatchRows(t('containers.actions.clearEnglishNames'), { danger: true })",
+    "const scopedRows = await confirmBatchRows(t('containers.actions.createNewProducts'))",
+    "const scopedRows = await confirmBatchRows(t('containers.actions.updateExistingPurchase'))",
+    "title={t('containers.modals.batchUpdateFloatRateTitle'",
+    "title={t('containers.modals.batchUpdatePricesTitle'",
+  ].filter((snippet) => !pageSource.includes(snippet)),
+  [],
+  '写入类批量操作应统一经过确认弹窗或输入确认弹窗',
+)
+assertEqual(
+  pageSource.includes('const getBatchActionTargetCount = async () => {') &&
+    pageSource.includes('...scopedFullDetailQuery,') &&
+    pageSource.includes('pageSize: 1,') &&
+    pageSource.includes('return result.itemsTotal') &&
+    pageSource.includes('const count = await getBatchActionTargetCount()') &&
+    pageSource.includes('renderBatchActionContent(batchModalTargetCount)') &&
+    pageSource.includes('return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
+    pageSource.includes('selectedRowKeys.length\n      ? { selectedHguids: selectedRowKeys.map(String) }\n      : { query: scopedFullDetailQuery }') &&
+    pageSource.includes("t('containers.modals.batchActionAllHint'"),
+  true,
+  '未选择商品时应按完整筛选条件取真实数量弹出提示，确认后按当前筛选范围执行全部明细',
 )
 assertEqual(
   pageSource.includes('data-column-key="image"') || pageSource.includes('data-column-key="index"'),
@@ -2999,8 +3076,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
-  true,
-  '重算成本应通过服务端 scope 接口写回后端',
+  false,
+  '货柜明细页不应再暴露独立重算成本 scope 写回入口',
 )
 assertEqual(
   pageSource.includes("await loadDetailChunk(1, 'reset')"),
@@ -3014,9 +3091,9 @@ assertEqual(
   true,
   '重算成本成功后应提示更新条数',
 )
-assertEqual(pageSource.includes('loading={recalculateCostsLoading}'), true, '重算成本按钮应绑定独立 loading 状态')
-assertEqual(pageSource.includes('onClick={() => void handleRecalculateCosts()}'), true, '重算成本按钮应调用手动重算入口')
-assertEqual(pageSource.includes("t('containers.actions.recalculateCosts')"), true, '货柜明细重算成本按钮应使用 i18n key')
+assertEqual(pageSource.includes('loading={recalculateCostsLoading}'), false, '工具栏不应再渲染独立重算成本按钮 loading')
+assertEqual(pageSource.includes('onClick={() => void handleRecalculateCosts()}'), false, '工具栏不应再调用独立重算成本入口')
+assertEqual(pageSource.includes("t('containers.actions.recalculateCosts')"), false, '工具栏不应再渲染重算成本按钮文案')
 assertEqual(
   pageSource.includes("renderColumnTitle('itemNumber', t('containers.fields.itemNumber'))") &&
     pageSource.includes("fixed: 'left'"),
@@ -3183,7 +3260,7 @@ assertEqual(
   pageSource.includes("key: 'batchCategory'") &&
     pageSource.includes('const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts') &&
     pageSource.includes('if (!canBatchSetCategory)') &&
-    pageSource.includes('openBatchCategory()') &&
+    pageSource.includes('void openBatchCategory()') &&
     pageSource.includes('handleBatchCategorySave') &&
     pageSource.includes('getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)') &&
     pageSource.includes('batchAssignProducts(targetCategoryGuid, productCodes)'),
@@ -3193,10 +3270,11 @@ assertEqual(
 assertEqual(
   pageSource.includes('const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager') &&
     pageSource.includes('if (!canBackfillLastPrices) return') &&
-    pageSource.includes('{canBackfillLastPrices ? (') &&
-    pageSource.includes('backfillContainerLastPricesByScope(containerGuid, buildDetailBatchScope())'),
+    pageSource.includes("key: 'backfillLastPrices'") &&
+    pageSource.includes('const scope = await confirmBatchScope') &&
+    pageSource.includes('backfillContainerLastPricesByScope(containerGuid, scope)'),
   true,
-  '回填上次价格按钮应与后端角色授权保持一致，仅 Admin 或 WarehouseManager 可见并可触发',
+  '回填上次价格应在批量操作菜单中保持角色限制，并通过确认后的批量 scope 触发',
 )
 const batchCategorySaveSource = pageSource.slice(
   pageSource.indexOf('const handleBatchCategorySave = async () => {'),

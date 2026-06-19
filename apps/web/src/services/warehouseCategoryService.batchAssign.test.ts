@@ -21,6 +21,17 @@ const originalFetch = globalThis.fetch
 
 try {
   globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: { affected: 3 },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+  const affected = await batchAssignProducts('cat-guid-1', ['product-1', 'product-2', 'product-3'])
+  assertEqual(affected, 3, '批量分配接口应返回后端实际影响商品数')
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
     success: false,
     message: '后端拒绝批量更新',
   }), {

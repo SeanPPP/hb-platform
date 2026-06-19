@@ -16,6 +16,11 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
         public decimal? OemPrice { get; set; }
         public decimal? RetailPrice { get; set; }
+        public bool? WarehouseIsActive { get; set; }
+        public int? MinOrderQuantity { get; set; }
+        public string? CategoryGuid { get; set; }
+        public string? CategoryName { get; set; }
+        public string? CategoryChineseName { get; set; }
         public string? Barcode { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
@@ -35,6 +40,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPriceMax { get; set; }
         public decimal? OemPriceMin { get; set; }
         public decimal? OemPriceMax { get; set; }
+        public bool? WarehouseIsActive { get; set; }
+        public string? CategoryGuid { get; set; }
+        public bool? UncategorizedOnly { get; set; }
         public string? SortField { get; set; }
         public string? SortDirection { get; set; }
     }

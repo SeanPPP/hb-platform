@@ -81,6 +81,10 @@ const defaultProductGradeExportOptions: Required<Pick<ProductGradeExportOptions,
 const MAX_RETRIES = 2
 const IMAGE_TIMEOUT_MS = 10_000
 const RETRY_BASE_DELAY_MS = 1_500
+const IMAGE_PROXY_ALLOWED_HOSTS = new Set([
+  'hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com',
+  'hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com',
+])
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -141,23 +145,35 @@ function isHttpImageUrl(url: string) {
   }
 }
 
+function canUseImageProxy(url: URL) {
+  return IMAGE_PROXY_ALLOWED_HOSTS.has(url.hostname.toLowerCase())
+}
+
 export function getImageDownloadCandidates(url: string) {
   const normalizedUrl = normalizeImageDownloadUrl(url)
   if (!normalizedUrl) return []
 
-  const candidates = [normalizedUrl]
-  if (!isHttpImageUrl(normalizedUrl)) return candidates
+  if (!isHttpImageUrl(normalizedUrl)) return [normalizedUrl]
 
   try {
     const parsedUrl = new URL(normalizedUrl)
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin : ''
-    if (parsedUrl.origin !== currentOrigin) {
-      // 外部图片经常禁止浏览器 fetch/CORS，失败时走后端同源代理兜底下载。
-      candidates.push(`/api/react/v1/image-proxy?url=${encodeURIComponent(parsedUrl.toString())}`)
+    if (parsedUrl.origin === currentOrigin) {
+      return [normalizedUrl]
     }
+
+    if (!canUseImageProxy(parsedUrl)) {
+      // 未知跨域图片直接跳过，避免导出时由操作员浏览器直连内网/link-local/恶意地址。
+      return []
+    }
+
+    return [
+      normalizedUrl,
+      `/api/react/v1/image-proxy?url=${encodeURIComponent(parsedUrl.toString())}`,
+    ]
   } catch {}
 
-  return candidates
+  return []
 }
 
 async function fetchImageAsBase64SingleAttempt(

@@ -459,6 +459,76 @@ namespace BlazorApp.Api.Services.React
                 // 过滤掉无效状态（Status 为 null 的记录）
                 query = query.Where(x => x.Status != null);
 
+                if (!string.IsNullOrWhiteSpace(request.ContainerNumberFilter))
+                {
+                    var containerNumberFilter = request.ContainerNumberFilter.Trim();
+                    query = query.Where(x =>
+                        x.ContainerNumber != null && x.ContainerNumber.Contains(containerNumberFilter)
+                    );
+                }
+
+                // 列头日期过滤按整天闭区间处理，避免结束日当天有时间部分的数据被排除。
+                if (request.LoadingDateStart.HasValue)
+                {
+                    var start = request.LoadingDateStart.Value.Date;
+                    query = query.Where(x => x.LoadingDate >= start);
+                }
+                if (request.LoadingDateEnd.HasValue)
+                {
+                    var endExclusive = request.LoadingDateEnd.Value.Date.AddDays(1);
+                    query = query.Where(x => x.LoadingDate < endExclusive);
+                }
+                if (request.EstimatedArrivalDateStart.HasValue)
+                {
+                    var start = request.EstimatedArrivalDateStart.Value.Date;
+                    query = query.Where(x => x.EstimatedArrivalDate >= start);
+                }
+                if (request.EstimatedArrivalDateEnd.HasValue)
+                {
+                    var endExclusive = request.EstimatedArrivalDateEnd.Value.Date.AddDays(1);
+                    query = query.Where(x => x.EstimatedArrivalDate < endExclusive);
+                }
+                if (request.ActualArrivalDateStart.HasValue)
+                {
+                    var start = request.ActualArrivalDateStart.Value.Date;
+                    query = query.Where(x => x.ActualArrivalDate >= start);
+                }
+                if (request.ActualArrivalDateEnd.HasValue)
+                {
+                    var endExclusive = request.ActualArrivalDateEnd.Value.Date.AddDays(1);
+                    query = query.Where(x => x.ActualArrivalDate < endExclusive);
+                }
+
+                if (request.TotalPiecesMin.HasValue)
+                {
+                    query = query.Where(x => x.TotalPieces >= request.TotalPiecesMin.Value);
+                }
+                if (request.TotalPiecesMax.HasValue)
+                {
+                    query = query.Where(x => x.TotalPieces <= request.TotalPiecesMax.Value);
+                }
+                if (request.TotalAmountMin.HasValue)
+                {
+                    query = query.Where(x => x.TotalAmount >= request.TotalAmountMin.Value);
+                }
+                if (request.TotalAmountMax.HasValue)
+                {
+                    query = query.Where(x => x.TotalAmount <= request.TotalAmountMax.Value);
+                }
+                if (request.TotalVolumeMin.HasValue)
+                {
+                    query = query.Where(x => x.TotalVolume >= request.TotalVolumeMin.Value);
+                }
+                if (request.TotalVolumeMax.HasValue)
+                {
+                    query = query.Where(x => x.TotalVolume <= request.TotalVolumeMax.Value);
+                }
+                if (request.Statuses?.Any() == true)
+                {
+                    var statuses = request.Statuses.Distinct().ToList();
+                    query = query.Where(x => x.Status.HasValue && statuses.Contains(x.Status.Value));
+                }
+
                 // 货号筛选：查找包含指定货号的货柜
                 if (!string.IsNullOrEmpty(request.ItemNumberFilter))
                 {
@@ -561,7 +631,7 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 更新货柜基本信息（实际到货日期、汇率、运费、备注、状态）
+        /// 更新货柜基本信息
         /// </summary>
         public async Task<bool> UpdateContainerAsync(string containerGuid, UpdateContainerDto dto)
         {
@@ -579,7 +649,57 @@ namespace BlazorApp.Api.Services.React
                     return false;
                 }
 
-                // 根据 DTO 的中文字段逐个更新
+                var nextContainerNumber = !string.IsNullOrWhiteSpace(dto.货柜编号)
+                    ? dto.货柜编号.Trim()
+                    : container.ContainerNumber;
+                var nextLoadingDate = dto.装柜日期 ?? container.LoadingDate;
+                var currentContainerNumber = container.ContainerNumber?.Trim();
+                var containerNumberChanged = !string.Equals(
+                    nextContainerNumber,
+                    currentContainerNumber,
+                    StringComparison.Ordinal
+                );
+                var loadingDateChanged = nextLoadingDate?.Date != container.LoadingDate?.Date;
+
+                // 仅在编号或装柜日期实际变化时做去重，避免历史脏数据阻断状态/备注等无关保存。
+                var shouldCheckDuplicate = containerNumberChanged || loadingDateChanged;
+                if (shouldCheckDuplicate && !string.IsNullOrWhiteSpace(nextContainerNumber))
+                {
+                    var duplicateQuery = _context
+                        .Db.Queryable<Container>()
+                        .Where(x =>
+                            x.ContainerCode != containerGuid && x.ContainerNumber == nextContainerNumber
+                        );
+                    duplicateQuery = nextLoadingDate.HasValue
+                        ? duplicateQuery.Where(x =>
+                            x.LoadingDate >= nextLoadingDate.Value.Date
+                            && x.LoadingDate < nextLoadingDate.Value.Date.AddDays(1)
+                        )
+                        : duplicateQuery.Where(x => x.LoadingDate == null);
+
+                    if (await duplicateQuery.AnyAsync())
+                    {
+                        var loadingDateText = nextLoadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
+                        throw new InvalidOperationException($"货柜编号 {nextContainerNumber} 在装柜日期 {loadingDateText} 已存在");
+                    }
+                }
+
+                // 根据 DTO 的中文字段逐个更新，避免前端未传字段覆盖已有基础信息。
+                if (!string.IsNullOrWhiteSpace(nextContainerNumber))
+                {
+                    container.ContainerNumber = nextContainerNumber;
+                }
+
+                if (dto.装柜日期.HasValue)
+                {
+                    container.LoadingDate = dto.装柜日期.Value;
+                }
+
+                if (dto.预计到岸日期.HasValue)
+                {
+                    container.EstimatedArrivalDate = dto.预计到岸日期.Value;
+                }
+
                 if (dto.实际到货日期.HasValue)
                 {
                     container.ActualArrivalDate = dto.实际到货日期.Value;
@@ -610,6 +730,9 @@ namespace BlazorApp.Api.Services.React
                     .Db.Updateable(container)
                     .UpdateColumns(x => new
                     {
+                        x.ContainerNumber,
+                        x.LoadingDate,
+                        x.EstimatedArrivalDate,
                         x.ActualArrivalDate,
                         x.ExchangeRate,
                         x.ShippingFee,

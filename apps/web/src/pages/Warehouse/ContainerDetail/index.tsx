@@ -55,7 +55,7 @@ import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -529,6 +529,11 @@ export default function ContainerDetailPage() {
   const [batchFloatRate, setBatchFloatRate] = useState<number | null>(null)
   const [batchImportPrice, setBatchImportPrice] = useState<number | null>(null)
   const [batchOemPrice, setBatchOemPrice] = useState<number | null>(null)
+  const [batchFloatRateModalOpen, setBatchFloatRateModalOpen] = useState(false)
+  const [batchFloatRateSaving, setBatchFloatRateSaving] = useState(false)
+  const [batchPricesModalOpen, setBatchPricesModalOpen] = useState(false)
+  const [batchPricesSaving, setBatchPricesSaving] = useState(false)
+  const [batchModalTargetCount, setBatchModalTargetCount] = useState(0)
   const [batchEnglishName, setBatchEnglishName] = useState('')
   const [batchEnglishNameModalOpen, setBatchEnglishNameModalOpen] = useState(false)
   const [batchEnglishNameSaving, setBatchEnglishNameSaving] = useState(false)
@@ -547,7 +552,6 @@ export default function ContainerDetailPage() {
   const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
-  const [recalculateCostsLoading, setRecalculateCostsLoading] = useState(false)
   const [backfillLastPricesLoading, setBackfillLastPricesLoading] = useState(false)
   const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
@@ -591,6 +595,9 @@ export default function ContainerDetailPage() {
   const pendingEditableCellFocusKeyRef = useRef<string | null>(null)
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
+    货柜编号?: string
+    装柜日期?: Dayjs | null
+    预计到岸日期?: Dayjs | null
     实际到货日期?: Dayjs | null
     汇率?: number
     运费?: number
@@ -773,6 +780,9 @@ export default function ContainerDetailPage() {
       visibleContainerGuidRef.current = containerGuid
       setContainer(info)
       setHeaderForm({
+        货柜编号: info.货柜编号,
+        装柜日期: info.装柜日期 ? dayjs(info.装柜日期) : null,
+        预计到岸日期: info.预计到岸日期 ? dayjs(info.预计到岸日期) : null,
         实际到货日期: info.实际到货日期 ? dayjs(info.实际到货日期) : null,
         汇率: info.汇率,
         运费: info.运费,
@@ -1214,6 +1224,93 @@ export default function ContainerDetailPage() {
     message.warning(t('containers.messages.selectedRowsHidden', '已选明细不在当前筛选结果中，请重新选择后再操作'))
     return false
   }
+
+  const renderBatchActionContent = (
+    count: number,
+    extra?: ReactNode,
+  ) => (
+    <Space direction="vertical" size={6}>
+      <Typography.Text>
+        {t('containers.modals.batchActionContent', '确认对 {{count}} 条明细执行该批量操作？', { count })}
+      </Typography.Text>
+      {!selectedRowKeys.length ? (
+        <Typography.Text type="warning">
+          {t('containers.modals.batchActionAllHint', '当前未选择商品，确认后将按当前筛选范围执行全部匹配明细。')}
+        </Typography.Text>
+      ) : null}
+      {extra}
+    </Space>
+  )
+
+  const confirmBatchAction = (
+    actionName: string,
+    count: number,
+    options: { danger?: boolean; extra?: ReactNode } = {},
+  ) => new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: actionName,
+      content: renderBatchActionContent(count, options.extra),
+      okText: actionName,
+      cancelText: t('common.cancel'),
+      okButtonProps: options.danger ? { danger: true } : undefined,
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
+  const getBatchActionTargetCount = async () => {
+    if (selectedRowKeys.length) return selectedRowKeys.length
+    try {
+      // 未勾选时确认数量必须和实际批量 scope 一致，包含列头文字筛选和标签筛选。
+      const result = await queryContainerProducts(containerGuid, {
+        ...scopedFullDetailQuery,
+        pageNumber: 1,
+        pageSize: 1,
+      })
+      return result.itemsTotal
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed', '加载货柜明细失败'))
+      return null
+    }
+  }
+
+  const confirmBatchScope = async (
+    actionName: string,
+    options: { danger?: boolean; extra?: ReactNode } = {},
+  ) => {
+    if (!ensureTargetRowsVisible()) return null
+    const count = await getBatchActionTargetCount()
+    if (count == null) return null
+    if (!count) {
+      message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
+      return null
+    }
+    const confirmed = await confirmBatchAction(actionName, count, options)
+    return confirmed ? buildDetailBatchScope() : null
+  }
+
+  const confirmBatchRows = async (
+    actionName: string,
+    options: { danger?: boolean; extra?: ReactNode } = {},
+  ) => {
+    if (!ensureTargetRowsVisible()) return null
+    const count = await getBatchActionTargetCount()
+    if (count == null) return null
+    if (!count) {
+      message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
+      return null
+    }
+    const confirmed = await confirmBatchAction(actionName, count, options)
+    if (!confirmed) return null
+    // 确认后再按当前远程筛选条件拉取全部匹配行，避免确认前为大货柜加载完整数据。
+    try {
+      return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed', '加载货柜明细失败'))
+      return null
+    }
+  }
+
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
   const canSubmitContainer = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
@@ -1385,14 +1482,15 @@ export default function ContainerDetailPage() {
 
   const saveHeader = async () => {
     if (!containerGuid || !access.canEditContainer) return
+    const nextContainerNumber = headerForm.货柜编号?.trim()
+    if (!nextContainerNumber) {
+      message.error(t('containers.placeholders.enterContainerNumber', '请输入货柜编号'))
+      return
+    }
     const nextCostContainer = {
       ...container,
       汇率: headerForm.汇率,
       运费: headerForm.运费,
-    }
-    const missingHeaderFields = getContainerDetailCostMissingFields(nextCostContainer).filter((field) => field !== 'totalVolume')
-    if (showCostRecalculateWarning(missingHeaderFields)) {
-      return
     }
     const shouldRecalculateCosts =
       (container?.汇率 ?? undefined) !== (headerForm.汇率 ?? undefined) ||
@@ -1402,6 +1500,9 @@ export default function ContainerDetailPage() {
     }
 
     const updatePayload: UpdateContainerRequest = {
+      货柜编号: nextContainerNumber,
+      装柜日期: headerForm.装柜日期 ? headerForm.装柜日期.format('YYYY-MM-DD') : undefined,
+      预计到岸日期: headerForm.预计到岸日期 ? headerForm.预计到岸日期.format('YYYY-MM-DD') : undefined,
       实际到货日期: headerForm.实际到货日期 ? headerForm.实际到货日期.format('YYYY-MM-DD') : undefined,
       汇率: headerForm.汇率,
       运费: headerForm.运费,
@@ -1419,7 +1520,6 @@ export default function ContainerDetailPage() {
       }
 
       if (shouldRecalculateCosts) {
-        setRecalculateCostsLoading(true)
         try {
           const result = await recalculateContainerCostsByScope(containerGuid, buildWholeContainerDetailBatchScope())
           message.success(t('containers.messages.headerSaveAndCostsRecalculated', '货柜信息已保存，已重算 {{count}} 条明细成本', { count: result.totalUpdated }))
@@ -1440,7 +1540,6 @@ export default function ContainerDetailPage() {
       }
     } finally {
       setSavingHeader(false)
-      setRecalculateCostsLoading(false)
     }
   }
 
@@ -1487,39 +1586,48 @@ export default function ContainerDetailPage() {
     await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails([update]))
   }
 
-  const applyFloatRate = async () => {
-    if (showCostRecalculateWarning(getContainerDetailCostMissingFields(container))) {
+  const openBatchFloatRateModal = async () => {
+    if (!ensureTargetRowsVisible()) return
+    const count = await getBatchActionTargetCount()
+    if (count == null) return
+    if (!count) {
+      message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return
     }
-    const nextFloatRate = batchFloatRate ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE
-    const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(), nextFloatRate)
-    await loadDetailChunk(1, 'reset')
-    setBatchFloatRate(null)
-    setSelectedRowKeys([])
-    message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
+    setBatchModalTargetCount(count)
+    setBatchFloatRate(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE)
+    setBatchFloatRateModalOpen(true)
   }
 
-  const handleRecalculateCosts = async () => {
-    if (!access.canEditContainer) return
+  const submitBatchFloatRate = async () => {
+    if (batchFloatRate == null) {
+      message.warning(t('containers.messages.enterFloatRate', '请输入调整浮率'))
+      return
+    }
     if (showCostRecalculateWarning(getContainerDetailCostMissingFields(container))) {
       return
     }
-    setRecalculateCostsLoading(true)
+    setBatchFloatRateSaving(true)
     try {
-      const result = await recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())
+      const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(), batchFloatRate)
       await loadDetailChunk(1, 'reset')
+      setBatchFloatRateModalOpen(false)
+      setBatchModalTargetCount(0)
+      setBatchFloatRate(null)
       setSelectedRowKeys([])
       message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
     } finally {
-      setRecalculateCostsLoading(false)
+      setBatchFloatRateSaving(false)
     }
   }
 
   const handleBackfillLastPrices = async () => {
     if (!canBackfillLastPrices) return
+    const scope = await confirmBatchScope(t('containers.actions.backfillLastPrices', '回填上次价格'))
+    if (!scope) return
     setBackfillLastPricesLoading(true)
     try {
-      const result = await backfillContainerLastPricesByScope(containerGuid, buildDetailBatchScope())
+      const result = await backfillContainerLastPricesByScope(containerGuid, scope)
       await loadDetailChunk(1, 'reset')
       setSelectedRowKeys([])
       message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
@@ -1530,11 +1638,10 @@ export default function ContainerDetailPage() {
 
   const handleMatchDomesticData = async () => {
     if (!access.canEditContainer) return
+    const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))
+    if (!scopedRows) return
     setMatchDomesticDataLoading(true)
     try {
-      if (!ensureTargetRowsVisible()) return
-      // 未勾选时按当前远程筛选结果全量匹配，避免虚拟表格只处理已加载块。
-      const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
       if (!scopedRows.length) {
         message.warning(t('containers.messages.noMatchableDetails'))
         return
@@ -1585,25 +1692,46 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const applyPrices = async () => {
+  const openBatchPricesModal = async () => {
+    if (!ensureTargetRowsVisible()) return
+    const count = await getBatchActionTargetCount()
+    if (count == null) return
+    if (!count) {
+      message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
+      return
+    }
+    setBatchModalTargetCount(count)
+    setBatchImportPrice(null)
+    setBatchOemPrice(null)
+    setBatchPricesModalOpen(true)
+  }
+
+  const submitBatchPrices = async () => {
     if (batchImportPrice == null && batchOemPrice == null) {
       message.warning(t('containers.messages.enterImportOrOemPrice'))
       return
     }
-    const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(), {
-      importPrice: batchImportPrice,
-      oemPrice: batchOemPrice,
-    })
-    await loadDetailChunk(1, 'reset')
-    setBatchImportPrice(null)
-    setBatchOemPrice(null)
-    setSelectedRowKeys([])
-    message.success(t('containers.messages.detailPricesUpdated', { count: result.totalUpdated }))
+    setBatchPricesSaving(true)
+    try {
+      const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(), {
+        importPrice: batchImportPrice,
+        oemPrice: batchOemPrice,
+      })
+      await loadDetailChunk(1, 'reset')
+      setBatchPricesModalOpen(false)
+      setBatchModalTargetCount(0)
+      setBatchImportPrice(null)
+      setBatchOemPrice(null)
+      setSelectedRowKeys([])
+      message.success(t('containers.messages.detailPricesUpdated', { count: result.totalUpdated }))
+    } finally {
+      setBatchPricesSaving(false)
+    }
   }
 
   const applyActive = async (isActive: boolean) => {
-    if (!ensureTargetRowsVisible()) return
-    const scopedRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
+    const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))
+    if (!scopedRows) return
     if (!scopedRows.length) {
       message.warning(t('containers.messages.selectProducts'))
       return
@@ -1646,18 +1774,22 @@ export default function ContainerDetailPage() {
   }
 
   const translateNames = async () => {
-    if (!ensureTargetRowsVisible()) return
-    const names = Array.from(new Set(targetRows.map(getContainerDetailTranslationSource).filter((value): value is string => Boolean(value))))
+    const scopedRows = await confirmBatchRows(t('containers.actions.batchTranslate'))
+    if (!scopedRows) return
+    const names = Array.from(new Set(scopedRows.map(getContainerDetailTranslationSource).filter((value): value is string => Boolean(value))))
     if (!names.length) {
       message.warning(t('containers.messages.noNamesToTranslate'))
       return
     }
     const translations = await batchTranslate(names)
-    const updates = buildContainerDetailTranslationUpdates(targetRows, translations)
-    const skippedInvalidCount = countContainerDetailInvalidTranslationResults(targetRows, translations)
+    const updates = buildContainerDetailTranslationUpdates(scopedRows, translations)
+    const skippedInvalidCount = countContainerDetailInvalidTranslationResults(scopedRows, translations)
     if (updates.length) {
       await batchUpdateDetails(updates)
       setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
+      if (!selectedRowKeys.length) {
+        await loadDetailChunk(1, 'reset')
+      }
       message.success(t('containers.messages.namesTranslated', { count: updates.length }))
     }
     if (skippedInvalidCount > 0) {
@@ -1668,22 +1800,28 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const openBatchEditEnglishName = () => {
+  const openBatchEditEnglishName = async () => {
     if (!ensureTargetRowsVisible()) return
-    if (!targetRows.length) {
-      message.warning(t('containers.messages.selectProducts'))
+    const count = await getBatchActionTargetCount()
+    if (count == null) return
+    if (!count) {
+      message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return
     }
+    setBatchModalTargetCount(count)
     setBatchEnglishName('')
     setBatchEnglishNameModalOpen(true)
   }
 
-  const openBatchCategory = () => {
+  const openBatchCategory = async () => {
     if (!ensureTargetRowsVisible()) return
-    if (!targetRows.length) {
+    const count = await getBatchActionTargetCount()
+    if (count == null) return
+    if (!count) {
       message.warning(t('containers.messages.noCategoryFilterRows', '当前没有可分类的明细'))
       return
     }
+    setBatchModalTargetCount(count)
     setTargetCategoryGuid(undefined)
     // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
     setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
@@ -1804,7 +1942,7 @@ export default function ContainerDetailPage() {
     }
     if (!ensureTargetRowsVisible()) return
 
-    const batchCategoryTargetRows = selectedRowKeys.length ? selectedRows : displayRows
+    const batchCategoryTargetRows = selectedRowKeys.length ? selectedRows : await fetchAllRowsForCurrentQuery()
     const { productCodes, skippedMissingCodeCount } = getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)
     if (!productCodes.length) {
       message.warning(t('containers.messages.noProductsForCategoryAssign', '当前目标明细没有可分类的已有商品'))
@@ -1826,6 +1964,7 @@ export default function ContainerDetailPage() {
       )
       setSelectedRowKeys([])
       setBatchCategoryOpen(false)
+      setBatchModalTargetCount(0)
       setTargetCategoryGuid(undefined)
       message.success(t('containers.messages.batchCategoryUpdated', '已设置 {{count}} 个商品分类', { count: productCodes.length }))
       if (skippedMissingCodeCount > 0) {
@@ -1839,7 +1978,8 @@ export default function ContainerDetailPage() {
   }
 
   const submitBatchEditEnglishName = async () => {
-    const updates = buildContainerDetailEnglishNameUpdates(targetRows, batchEnglishName)
+    const scopedRows = selectedRowKeys.length ? selectedRows : await fetchAllRowsForCurrentQuery()
+    const updates = buildContainerDetailEnglishNameUpdates(scopedRows, batchEnglishName)
     if (!updates.length) {
       message.warning(t('containers.messages.enterEnglishName'))
       return
@@ -1850,8 +1990,12 @@ export default function ContainerDetailPage() {
       const result = await batchUpdateDetails(updates)
       if (result.totalUpdated > 0) {
         setRows((items) => applyContainerDetailEnglishNameUpdates(items, updates))
+        if (!selectedRowKeys.length) {
+          await loadDetailChunk(1, 'reset')
+        }
       }
       setBatchEnglishNameModalOpen(false)
+      setBatchModalTargetCount(0)
       setBatchEnglishName('')
       message.success(t('containers.messages.englishNamesUpdated', { count: result.totalUpdated }))
     } catch (error) {
@@ -1861,29 +2005,24 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const clearEnglishNames = () => {
-    if (!ensureTargetRowsVisible()) return
-    const updates = buildContainerDetailClearEnglishNameUpdates(targetRows)
+  const clearEnglishNames = async () => {
+    const scopedRows = await confirmBatchRows(t('containers.actions.clearEnglishNames'), { danger: true })
+    if (!scopedRows) return
+    const updates = buildContainerDetailClearEnglishNameUpdates(scopedRows)
     if (!updates.length) {
       message.warning(t('containers.messages.selectProducts'))
       return
     }
 
-    Modal.confirm({
-      title: t('containers.modals.clearEnglishNamesTitle'),
-      content: t('containers.modals.clearEnglishNamesContent', { count: updates.length }),
-      okText: t('containers.actions.clearEnglishNames'),
-      okButtonProps: { danger: true },
-      cancelText: t('common.cancel'),
-      onOk: async () => {
-        await batchUpdateDetails(updates)
-        setRows((items) => applyContainerDetailEnglishNameUpdates(
-          items,
-          updates.map((update) => ({ hguid: update.hguid, 英文名称: undefined })),
-        ))
-        message.success(t('containers.messages.englishNamesCleared', { count: updates.length }))
-      },
-    })
+    await batchUpdateDetails(updates)
+    setRows((items) => applyContainerDetailEnglishNameUpdates(
+      items,
+      updates.map((update) => ({ hguid: update.hguid, 英文名称: undefined })),
+    ))
+    if (!selectedRowKeys.length) {
+      await loadDetailChunk(1, 'reset')
+    }
+    message.success(t('containers.messages.englishNamesCleared', { count: updates.length }))
   }
 
   const showHqTranslationResult = (result: HqTranslationResult) => {
@@ -2315,13 +2454,14 @@ export default function ContainerDetailPage() {
 
   const createNewProducts = async () => {
     if (createProductsLoadingRef.current) return
-    if (!ensureTargetRowsVisible()) return
     if (!access.canEditContainer || !access.canManagePosProducts) {
       message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
       return
     }
     if (!ensureNoPendingPriceDetails()) return
-    const detailHguids = targetRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
+    const scopedRows = await confirmBatchRows(t('containers.actions.createNewProducts'))
+    if (!scopedRows) return
+    const detailHguids = scopedRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
     if (!detailHguids.length) {
       message.warning(t('containers.messages.noEligibleNewProducts'))
       return
@@ -2333,7 +2473,7 @@ export default function ContainerDetailPage() {
       message.error(error instanceof Error ? error.message : t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试'))
       return
     }
-    const missingProductNameRows = findContainerDetailRowsMissingProductName(targetRows)
+    const missingProductNameRows = findContainerDetailRowsMissingProductName(scopedRows)
     if (missingProductNameRows.length) {
       message.warning(t(
         'containers.messages.createProductsMissingProductName',
@@ -2342,7 +2482,7 @@ export default function ContainerDetailPage() {
       ))
       return
     }
-    const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(targetRows)
+    const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(scopedRows)
     if (missingRetailPriceRows.length) {
       message.warning(t(
         'containers.messages.createProductsMissingRetailPrice',
@@ -2377,9 +2517,10 @@ export default function ContainerDetailPage() {
   }
 
   const updateExistingPurchase = async () => {
-    if (!ensureTargetRowsVisible()) return
     if (!ensureNoPendingPriceDetails()) return
-    const candidates = targetRows.filter((row) => !row.是否新商品)
+    const scopedRows = await confirmBatchRows(t('containers.actions.updateExistingPurchase'))
+    if (!scopedRows) return
+    const candidates = scopedRows.filter((row) => !row.是否新商品)
     if (!candidates.length) {
       message.info(t('containers.messages.noExistingProductsToUpdate'))
       return
@@ -3345,6 +3486,71 @@ export default function ContainerDetailPage() {
   return (
     <PageContainer title={container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : t('menu.containerDetail')}>
       <Modal
+        title={t('containers.modals.batchUpdateFloatRateTitle', '批量修改浮率')}
+        open={batchFloatRateModalOpen}
+        okText={t('containers.actions.batchUpdateFloatRate', '批量修改浮率')}
+        cancelText={t('common.cancel')}
+        confirmLoading={batchFloatRateSaving}
+        onOk={() => void submitBatchFloatRate()}
+        onCancel={() => {
+          setBatchFloatRateModalOpen(false)
+          setBatchModalTargetCount(0)
+          setBatchFloatRate(null)
+        }}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {renderBatchActionContent(batchModalTargetCount)}
+          <InputNumber
+            autoFocus
+            value={batchFloatRate}
+            placeholder={t('containers.fields.floatRate')}
+            precision={2}
+            controls={false}
+            style={{ width: '100%' }}
+            onChange={setBatchFloatRate}
+          />
+        </Space>
+      </Modal>
+      <Modal
+        title={t('containers.modals.batchUpdatePricesTitle', '批量修改价格')}
+        open={batchPricesModalOpen}
+        okText={t('containers.actions.batchUpdatePrices', '批量修改价格')}
+        cancelText={t('common.cancel')}
+        confirmLoading={batchPricesSaving}
+        onOk={() => void submitBatchPrices()}
+        onCancel={() => {
+          setBatchPricesModalOpen(false)
+          setBatchModalTargetCount(0)
+          setBatchImportPrice(null)
+          setBatchOemPrice(null)
+        }}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {renderBatchActionContent(batchModalTargetCount)}
+          <InputNumber
+            autoFocus
+            value={batchImportPrice}
+            placeholder={t('containers.fields.importPrice')}
+            min={0}
+            prefix="$"
+            precision={2}
+            controls={false}
+            style={{ width: '100%' }}
+            onChange={setBatchImportPrice}
+          />
+          <InputNumber
+            value={batchOemPrice}
+            placeholder={t('containers.fields.oemPrice')}
+            min={0}
+            prefix="$"
+            precision={2}
+            controls={false}
+            style={{ width: '100%' }}
+            onChange={setBatchOemPrice}
+          />
+        </Space>
+      </Modal>
+      <Modal
         title={t('containers.modals.batchEditEnglishNameTitle')}
         open={batchEnglishNameModalOpen}
         okText={t('containers.actions.batchEditEnglishName')}
@@ -3352,16 +3558,20 @@ export default function ContainerDetailPage() {
         onOk={() => void submitBatchEditEnglishName()}
         onCancel={() => {
           setBatchEnglishNameModalOpen(false)
+          setBatchModalTargetCount(0)
           setBatchEnglishName('')
         }}
       >
-        <Input
-          autoFocus
-          value={batchEnglishName}
-          placeholder={t('containers.placeholders.batchEnglishName')}
-          onChange={(event) => setBatchEnglishName(event.target.value)}
-          onPressEnter={() => void submitBatchEditEnglishName()}
-        />
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {renderBatchActionContent(batchModalTargetCount)}
+          <Input
+            autoFocus
+            value={batchEnglishName}
+            placeholder={t('containers.placeholders.batchEnglishName')}
+            onChange={(event) => setBatchEnglishName(event.target.value)}
+            onPressEnter={() => void submitBatchEditEnglishName()}
+          />
+        </Space>
       </Modal>
       <Modal
         title={t('containers.modals.batchCategoryTitle', '批量设置分类')}
@@ -3374,11 +3584,13 @@ export default function ContainerDetailPage() {
         okButtonProps={{ disabled: !targetCategoryGuid || categoryLoading || !categories.length }}
         onCancel={() => {
           setBatchCategoryOpen(false)
+          setBatchModalTargetCount(0)
           setTargetCategoryGuid(undefined)
         }}
         onOk={() => void handleBatchCategorySave()}
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {renderBatchActionContent(batchModalTargetCount)}
           <Typography.Text type="secondary">
             {t('containers.modals.batchCategoryContent', '请选择目标分类，确认后会把当前目标明细对应的仓库商品设置到该分类。')}
           </Typography.Text>
@@ -3453,9 +3665,24 @@ export default function ContainerDetailPage() {
               </Space>
             </Space>
             <Descriptions bordered size="small" column={4} style={{ marginTop: 16 }}>
-              <Descriptions.Item label={t('containers.fields.containerNumber')}>{container?.货柜编号 || '--'}</Descriptions.Item>
-              <Descriptions.Item label={t('containers.fields.loadingDate')}>{formatDate(container?.装柜日期)}</Descriptions.Item>
-              <Descriptions.Item label={t('containers.fields.estimatedArrival')}>{formatDate(container?.预计到岸日期)}</Descriptions.Item>
+              <Descriptions.Item label={t('containers.fields.containerNumber')}>
+                {headerEditing ? (
+                  <Input
+                    value={headerForm.货柜编号}
+                    onChange={(event) => setHeaderForm((prev) => ({ ...prev, 货柜编号: event.target.value }))}
+                  />
+                ) : container?.货柜编号 || '--'}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('containers.fields.loadingDate')}>
+                {headerEditing ? (
+                  <DatePicker allowClear={false} value={headerForm.装柜日期} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 装柜日期: value }))} />
+                ) : formatDate(container?.装柜日期)}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('containers.fields.estimatedArrival')}>
+                {headerEditing ? (
+                  <DatePicker allowClear={false} value={headerForm.预计到岸日期} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 预计到岸日期: value }))} />
+                ) : formatDate(container?.预计到岸日期)}
+              </Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.status')}>
                 {headerEditing ? (
                   <Select
@@ -3547,6 +3774,13 @@ export default function ContainerDetailPage() {
                         <Dropdown
                           menu={{
                             items: [
+                              { key: 'batchFloatRate', label: t('containers.actions.batchUpdateFloatRate', '批量修改浮率'), disabled: batchFloatRateSaving },
+                              { key: 'batchPrices', label: t('containers.actions.batchUpdatePrices', '批量修改价格'), disabled: batchPricesSaving },
+                              ...(canBackfillLastPrices
+                                ? [{ key: 'backfillLastPrices', label: t('containers.actions.backfillLastPrices', '回填上次价格'), disabled: backfillLastPricesLoading }]
+                                : []),
+                              { key: 'matchDomesticData', label: t('containers.actions.matchDomesticData'), disabled: matchDomesticDataLoading },
+                              { type: 'divider' },
                               { key: 'translate', label: t('containers.actions.batchTranslate') },
                               { key: 'editEnglishName', label: t('containers.actions.batchEditEnglishName') },
                               { key: 'clearEnglishName', label: t('containers.actions.clearEnglishNames') },
@@ -3561,10 +3795,14 @@ export default function ContainerDetailPage() {
                               { key: 'inactive', label: t('containers.actions.batchDeactivate') },
                             ],
                             onClick: ({ key }) => {
+                              if (key === 'batchFloatRate') void openBatchFloatRateModal()
+                              if (key === 'batchPrices') void openBatchPricesModal()
+                              if (key === 'backfillLastPrices') void handleBackfillLastPrices()
+                              if (key === 'matchDomesticData') void handleMatchDomesticData()
                               if (key === 'translate') void translateNames()
-                              if (key === 'editEnglishName') openBatchEditEnglishName()
-                              if (key === 'clearEnglishName') clearEnglishNames()
-                              if (key === 'batchCategory') openBatchCategory()
+                              if (key === 'editEnglishName') void openBatchEditEnglishName()
+                              if (key === 'clearEnglishName') void clearEnglishNames()
+                              if (key === 'batchCategory') void openBatchCategory()
                               if (key === 'createNew') void createNewProducts()
                               if (key === 'updatePurchase') void updateExistingPurchase()
                               if (key === 'active') void applyActive(true)
@@ -3607,15 +3845,6 @@ export default function ContainerDetailPage() {
 
                   {access.canEditContainer ? (
                     <Space wrap size={[6, 6]} className="container-detail-bulk-row">
-                      <InputNumber size="small" className="container-detail-bulk-input" value={batchFloatRate} placeholder={t('containers.fields.floatRate')} precision={2} controls={false} onChange={setBatchFloatRate} />
-                      <Button size="small" onClick={() => void applyFloatRate()}>{t('containers.actions.applyFloatRate')}</Button>
-                      <Button size="small" loading={recalculateCostsLoading} onClick={() => void handleRecalculateCosts()}>{t('containers.actions.recalculateCosts')}</Button>
-                      {canBackfillLastPrices ? (
-                        <Button size="small" loading={backfillLastPricesLoading} onClick={() => void handleBackfillLastPrices()}>{t('containers.actions.backfillLastPrices', '回填上次价格')}</Button>
-                      ) : null}
-                      <Button size="small" loading={matchDomesticDataLoading} onClick={() => void handleMatchDomesticData()}>{t('containers.actions.matchDomesticData')}</Button>
-                      <InputNumber size="small" className="container-detail-bulk-input" value={batchImportPrice} placeholder={t('containers.fields.importPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchImportPrice} />
-                      <InputNumber size="small" className="container-detail-bulk-input" value={batchOemPrice} placeholder={t('containers.fields.oemPrice')} min={0} prefix="$" precision={2} controls={false} onChange={setBatchOemPrice} />
                       <Button
                         size="small"
                         icon={<SaveOutlined />}
@@ -3625,8 +3854,6 @@ export default function ContainerDetailPage() {
                       >
                         {t('containers.actions.saveDetails', '保存明细')}{pendingPricePatchCount ? ` (${pendingPricePatchCount})` : ''}
                       </Button>
-                      <Button size="small" onClick={() => void applyPrices()}>{t('containers.actions.applyPrices')}</Button>
-                      <Switch size="small" checkedChildren={t('containers.text.selectedFirst')} unCheckedChildren={t('containers.text.allDisplayed')} checked={selectedRowKeys.length > 0} disabled />
                     </Space>
                   ) : null}
 

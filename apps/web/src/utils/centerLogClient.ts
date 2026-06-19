@@ -263,6 +263,18 @@ function normalizeUnknownError(error: unknown) {
   }
 }
 
+function isAbortOrCanceledError(error: unknown) {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') {
+    return true
+  }
+
+  if (error instanceof Error) {
+    return error.name === 'AbortError' || error.name === 'CanceledError'
+  }
+
+  return false
+}
+
 export interface RequestErrorReportInput {
   url: string
   method: string
@@ -277,6 +289,11 @@ export interface ExternalFetchErrorReportInput extends RequestErrorReportInput {
 }
 
 export function reportRequestError(input: RequestErrorReportInput) {
+  if (isAbortOrCanceledError(input.error)) {
+    // 用户切换筛选/离开页面触发的正常取消不算异常，避免中心日志被 AbortError 噪音淹没。
+    return
+  }
+
   // 日志写入接口自身失败时必须短路，避免 request -> log -> request 的递归放大。
   if (isCenterLogIngestRequest(input.url)) {
     return
@@ -324,6 +341,11 @@ export function buildExternalFetchErrorLog(input: ExternalFetchErrorReportInput)
 }
 
 export function reportExternalFetchError(input: ExternalFetchErrorReportInput) {
+  if (isAbortOrCanceledError(input.error)) {
+    // 外部图片/资源下载的主动取消同样是正常控制流，不写入中心日志。
+    return
+  }
+
   if (isCenterLogIngestRequest(input.url)) {
     return
   }

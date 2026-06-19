@@ -24,6 +24,7 @@ import {
   message,
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { FilterDropdownProps } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -44,6 +45,40 @@ import { useAuthStore } from '../../../store/auth'
 import type { ContainerMain, CreateContainerRequest, DateFilterOption } from '../../../types/container'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
+type ContainerColumnTextFilterKey = 'containerNumberFilter'
+type ContainerColumnDateStartKey = 'loadingDateStart' | 'estimatedArrivalDateStart' | 'actualArrivalDateStart'
+type ContainerColumnDateEndKey = 'loadingDateEnd' | 'estimatedArrivalDateEnd' | 'actualArrivalDateEnd'
+type ContainerColumnNumberKey =
+  | 'totalPiecesMin'
+  | 'totalPiecesMax'
+  | 'totalAmountMin'
+  | 'totalAmountMax'
+  | 'totalVolumeMin'
+  | 'totalVolumeMax'
+
+interface ContainerColumnFilters {
+  containerNumberFilter?: string
+  loadingDateStart?: string
+  loadingDateEnd?: string
+  estimatedArrivalDateStart?: string
+  estimatedArrivalDateEnd?: string
+  actualArrivalDateStart?: string
+  actualArrivalDateEnd?: string
+  totalPiecesMin?: number
+  totalPiecesMax?: number
+  totalAmountMin?: number
+  totalAmountMax?: number
+  totalVolumeMin?: number
+  totalVolumeMax?: number
+  statuses?: number[]
+}
+
+interface LoadDataOptions {
+  dateType?: string
+  dateRange?: RangeValue
+  itemNumberFilter?: string
+  columnFilters?: ContainerColumnFilters
+}
 
 dayjs.extend(isoWeek)
 
@@ -239,6 +274,7 @@ export default function ContainersPage() {
   const [dateType, setDateType] = useState('预计到岸日期')
   const [dateRange, setDateRange] = useState<RangeValue>(null)
   const [itemNumberFilter, setItemNumberFilter] = useState('')
+  const [columnFilters, setColumnFilters] = useState<ContainerColumnFilters>({})
   const [dateOptions, setDateOptions] = useState<DateFilterOption[]>([
     { value: '预计到岸日期', label: t('containers.fields.estimatedArrivalDate') },
     { value: '实际到货日期', label: t('containers.fields.actualArrivalDate') },
@@ -276,16 +312,21 @@ export default function ContainersPage() {
     [containers],
   )
 
-  const loadData = async (nextPage = page, nextPageSize = pageSize) => {
+  const loadData = async (nextPage = page, nextPageSize = pageSize, options: LoadDataOptions = {}) => {
     setLoading(true)
     try {
+      const activeDateType = options.dateType ?? dateType
+      const activeDateRange = Object.prototype.hasOwnProperty.call(options, 'dateRange') ? options.dateRange : dateRange
+      const activeItemNumberFilter = options.itemNumberFilter ?? itemNumberFilter
+      const activeColumnFilters = options.columnFilters ?? columnFilters
       const result = await getContainerList({
-        dateType,
-        startDate: dateRange?.[0]?.format('YYYY-MM-DD'),
-        endDate: dateRange?.[1]?.format('YYYY-MM-DD'),
+        dateType: activeDateType,
+        startDate: activeDateRange?.[0]?.format('YYYY-MM-DD'),
+        endDate: activeDateRange?.[1]?.format('YYYY-MM-DD'),
         page: nextPage,
         pageSize: nextPageSize,
-        itemNumberFilter: itemNumberFilter || undefined,
+        itemNumberFilter: activeItemNumberFilter || undefined,
+        ...activeColumnFilters,
       })
       setContainers(result.containers)
       setTotal(result.totalCount)
@@ -409,6 +450,194 @@ export default function ContainersPage() {
     }
   }
 
+  const updateColumnFilters = (patch: ContainerColumnFilters) => {
+    setColumnFilters((current) => {
+      const next = { ...current, ...patch }
+      Object.entries(patch).forEach(([key, value]) => {
+        if (value === undefined || value === '' || (Array.isArray(value) && !value.length)) {
+          delete next[key as keyof ContainerColumnFilters]
+        }
+      })
+      return next
+    })
+  }
+
+  const applyColumnFilters = (
+    confirm: FilterDropdownProps['confirm'],
+    nextFilters: ContainerColumnFilters = columnFilters,
+  ) => {
+    confirm()
+    void loadData(1, pageSize, { columnFilters: nextFilters })
+  }
+
+  const clearColumnFilter = (
+    keys: Array<keyof ContainerColumnFilters>,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    const nextFilters = { ...columnFilters }
+    keys.forEach((key) => {
+      delete nextFilters[key]
+    })
+    setColumnFilters(nextFilters)
+    applyColumnFilters(confirm, nextFilters)
+  }
+
+  const getColumnDateRange = (
+    startKey: ContainerColumnDateStartKey,
+    endKey: ContainerColumnDateEndKey,
+  ): RangeValue => {
+    const start = columnFilters[startKey] ? dayjs(columnFilters[startKey]) : null
+    const end = columnFilters[endKey] ? dayjs(columnFilters[endKey]) : null
+    return start || end ? [start, end] : null
+  }
+
+  const updateColumnDateRange = (
+    startKey: ContainerColumnDateStartKey,
+    endKey: ContainerColumnDateEndKey,
+    value: RangeValue,
+  ) => {
+    updateColumnFilters({
+      [startKey]: value?.[0]?.format('YYYY-MM-DD'),
+      [endKey]: value?.[1]?.format('YYYY-MM-DD'),
+    } as ContainerColumnFilters)
+  }
+
+  const normalizeFilterNumber = (value: string | number | null) => {
+    if (value === null || value === '') return undefined
+    const numberValue = Number(value)
+    return Number.isFinite(numberValue) ? numberValue : undefined
+  }
+
+  const filterIcon = (active?: boolean) => <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
+  const filterDropdownStyle = { padding: 8, width: 240 }
+
+  const makeTextFilterDropdown = (key: ContainerColumnTextFilterKey, placeholder: string) => ({ confirm }: FilterDropdownProps) => (
+    <div style={filterDropdownStyle} onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Input
+          autoFocus
+          allowClear
+          value={columnFilters[key] ?? ''}
+          placeholder={placeholder}
+          onChange={(event) => updateColumnFilters({ [key]: event.target.value } as ContainerColumnFilters)}
+          onPressEnter={() => applyColumnFilters(confirm)}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('containers.actions.applyColumnFilter')}
+          </Button>
+          <Button size="small" onClick={() => clearColumnFilter([key], confirm)}>
+            {t('containers.actions.resetColumnFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const makeDateRangeFilterDropdown = (
+    startKey: ContainerColumnDateStartKey,
+    endKey: ContainerColumnDateEndKey,
+  ) => ({ confirm }: FilterDropdownProps) => (
+    <div style={{ ...filterDropdownStyle, width: 280 }} onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <DatePicker.RangePicker
+          value={getColumnDateRange(startKey, endKey)}
+          onChange={(value) => updateColumnDateRange(startKey, endKey, value)}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('containers.actions.applyColumnFilter')}
+          </Button>
+          <Button size="small" onClick={() => clearColumnFilter([startKey, endKey], confirm)}>
+            {t('containers.actions.resetColumnFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const makeNumberRangeFilterDropdown = (
+    minKey: ContainerColumnNumberKey,
+    maxKey: ContainerColumnNumberKey,
+  ) => ({ confirm }: FilterDropdownProps) => (
+    <div style={filterDropdownStyle} onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Space.Compact style={{ width: '100%' }}>
+          <InputNumber
+            value={columnFilters[minKey]}
+            placeholder={t('containers.placeholders.minValue')}
+            controls={false}
+            style={{ width: '50%' }}
+            onChange={(value) => updateColumnFilters({ [minKey]: normalizeFilterNumber(value) } as ContainerColumnFilters)}
+          />
+          <InputNumber
+            value={columnFilters[maxKey]}
+            placeholder={t('containers.placeholders.maxValue')}
+            controls={false}
+            style={{ width: '50%' }}
+            onChange={(value) => updateColumnFilters({ [maxKey]: normalizeFilterNumber(value) } as ContainerColumnFilters)}
+          />
+        </Space.Compact>
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('containers.actions.applyColumnFilter')}
+          </Button>
+          <Button size="small" onClick={() => clearColumnFilter([minKey, maxKey], confirm)}>
+            {t('containers.actions.resetColumnFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const makeStatusFilterDropdown = ({ confirm }: FilterDropdownProps) => (
+    <div style={filterDropdownStyle} onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Select
+          mode="multiple"
+          allowClear
+          value={columnFilters.statuses ?? []}
+          options={containerStatusOptions}
+          placeholder={t('containers.placeholders.selectStatus')}
+          style={{ width: '100%' }}
+          onChange={(values) => updateColumnFilters({ statuses: values })}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => applyColumnFilters(confirm)}>
+            {t('containers.actions.applyColumnFilter')}
+          </Button>
+          <Button size="small" onClick={() => clearColumnFilter(['statuses'], confirm)}>
+            {t('containers.actions.resetColumnFilter')}
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const textFilterProps = (key: ContainerColumnTextFilterKey, placeholder: string) => ({
+    filterDropdown: makeTextFilterDropdown(key, placeholder),
+    filterIcon,
+    filtered: Boolean(columnFilters[key]?.trim()),
+  })
+
+  const dateRangeFilterProps = (
+    startKey: ContainerColumnDateStartKey,
+    endKey: ContainerColumnDateEndKey,
+  ) => ({
+    filterDropdown: makeDateRangeFilterDropdown(startKey, endKey),
+    filterIcon,
+    filtered: Boolean(columnFilters[startKey] || columnFilters[endKey]),
+  })
+
+  const numberRangeFilterProps = (
+    minKey: ContainerColumnNumberKey,
+    maxKey: ContainerColumnNumberKey,
+  ) => ({
+    filterDropdown: makeNumberRangeFilterDropdown(minKey, maxKey),
+    filterIcon,
+    filtered: typeof columnFilters[minKey] === 'number' || typeof columnFilters[maxKey] === 'number',
+  })
+
   const columns: ColumnsType<ContainerMain> = [
     {
       title: t('containers.columns.index'),
@@ -419,22 +648,65 @@ export default function ContainersPage() {
       title: t('containers.fields.containerNumber'),
       dataIndex: '货柜编号',
       width: 160,
+      ...textFilterProps('containerNumberFilter', t('containers.placeholders.filterContainerNumber')),
       render: (text: string, record) => (
         <Button type="link" onClick={() => navigate(`/warehouse/container/detail/${record.hguid}`)}>
           {text || record.hguid}
         </Button>
       ),
     },
-    { title: t('containers.fields.loadingDate'), dataIndex: '装柜日期', width: 120, render: renderContainerWeekDate },
-    { title: t('containers.fields.estimatedArrivalDate'), dataIndex: '预计到岸日期', width: 130, render: renderContainerWeekDate },
-    { title: t('containers.fields.actualArrivalDate'), dataIndex: '实际到货日期', width: 130, render: renderContainerWeekDate },
-    { title: t('containers.fields.totalPieces'), dataIndex: '合计件数', width: 100, align: 'right', render: (v) => formatNumber(v) },
-    { title: t('containers.fields.totalAmount'), dataIndex: '合计金额', width: 130, align: 'right', render: formatAmount },
-    { title: t('containers.fields.totalVolumeCbm'), dataIndex: '总体积', width: 120, align: 'right', render: (v) => formatNumber(v, 2) },
+    {
+      title: t('containers.fields.loadingDate'),
+      dataIndex: '装柜日期',
+      width: 120,
+      ...dateRangeFilterProps('loadingDateStart', 'loadingDateEnd'),
+      render: renderContainerWeekDate,
+    },
+    {
+      title: t('containers.fields.estimatedArrivalDate'),
+      dataIndex: '预计到岸日期',
+      width: 130,
+      ...dateRangeFilterProps('estimatedArrivalDateStart', 'estimatedArrivalDateEnd'),
+      render: renderContainerWeekDate,
+    },
+    {
+      title: t('containers.fields.actualArrivalDate'),
+      dataIndex: '实际到货日期',
+      width: 130,
+      ...dateRangeFilterProps('actualArrivalDateStart', 'actualArrivalDateEnd'),
+      render: renderContainerWeekDate,
+    },
+    {
+      title: t('containers.fields.totalPieces'),
+      dataIndex: '合计件数',
+      width: 100,
+      align: 'right',
+      ...numberRangeFilterProps('totalPiecesMin', 'totalPiecesMax'),
+      render: (v) => formatNumber(v),
+    },
+    {
+      title: t('containers.fields.totalAmount'),
+      dataIndex: '合计金额',
+      width: 130,
+      align: 'right',
+      ...numberRangeFilterProps('totalAmountMin', 'totalAmountMax'),
+      render: formatAmount,
+    },
+    {
+      title: t('containers.fields.totalVolumeCbm'),
+      dataIndex: '总体积',
+      width: 120,
+      align: 'right',
+      ...numberRangeFilterProps('totalVolumeMin', 'totalVolumeMax'),
+      render: (v) => formatNumber(v, 2),
+    },
     {
       title: t('containers.fields.status'),
       dataIndex: '状态',
       width: 120,
+      filterDropdown: makeStatusFilterDropdown,
+      filterIcon,
+      filtered: Boolean(columnFilters.statuses?.length),
       render: (_status, record) => {
         const recordKey = itemKeyOf(record)
         const canUpdateStatus = access.canEditContainer && Boolean(record.hguid) && record.状态 != null && Boolean(containerStatusMeta[record.状态])
@@ -493,7 +765,14 @@ export default function ContainersPage() {
                   setDateType('预计到岸日期')
                   setDateRange(null)
                   setItemNumberFilter('')
-                  void loadData(1, pageSize)
+                  setColumnFilters({})
+                  // 顶部重置同时清空列头过滤，避免界面已清空但请求仍带旧条件。
+                  void loadData(1, pageSize, {
+                    dateType: '预计到岸日期',
+                    dateRange: null,
+                    itemNumberFilter: '',
+                    columnFilters: {},
+                  })
                 }}
               >
                 {t('common.reset')}

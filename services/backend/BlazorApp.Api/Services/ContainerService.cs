@@ -302,7 +302,53 @@ namespace BlazorApp.Api.Services
                     return false;
                 }
 
-                // 更新字段
+                var nextContainerNumber = !string.IsNullOrWhiteSpace(dto.货柜编号)
+                    ? dto.货柜编号.Trim()
+                    : container.ContainerNumber;
+                var nextLoadingDate = dto.装柜日期 ?? container.LoadingDate;
+                var currentContainerNumber = container.ContainerNumber?.Trim();
+                var containerNumberChanged = !string.Equals(
+                    nextContainerNumber,
+                    currentContainerNumber,
+                    StringComparison.Ordinal
+                );
+                var loadingDateChanged = nextLoadingDate?.Date != container.LoadingDate?.Date;
+
+                // 仅在编号或装柜日期实际变化时做去重，避免历史脏数据阻断状态/备注等无关保存。
+                var shouldCheckDuplicate = containerNumberChanged || loadingDateChanged;
+                if (shouldCheckDuplicate && !string.IsNullOrWhiteSpace(nextContainerNumber))
+                {
+                    var duplicateQuery = _localContext.Db.Queryable<Container>()
+                        .Where(x => x.ContainerCode != containerGuid && x.ContainerNumber == nextContainerNumber);
+                    duplicateQuery = nextLoadingDate.HasValue
+                        ? duplicateQuery.Where(x =>
+                            x.LoadingDate >= nextLoadingDate.Value.Date &&
+                            x.LoadingDate < nextLoadingDate.Value.Date.AddDays(1))
+                        : duplicateQuery.Where(x => x.LoadingDate == null);
+
+                    if (await duplicateQuery.AnyAsync())
+                    {
+                        var loadingDateText = nextLoadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
+                        throw new InvalidOperationException($"货柜编号 {nextContainerNumber} 在装柜日期 {loadingDateText} 已存在");
+                    }
+                }
+
+                // 根据 DTO 的中文字段逐个更新，避免前端未传字段覆盖已有基础信息。
+                if (!string.IsNullOrWhiteSpace(nextContainerNumber))
+                {
+                    container.ContainerNumber = nextContainerNumber;
+                }
+
+                if (dto.装柜日期.HasValue)
+                {
+                    container.LoadingDate = dto.装柜日期.Value;
+                }
+
+                if (dto.预计到岸日期.HasValue)
+                {
+                    container.EstimatedArrivalDate = dto.预计到岸日期.Value;
+                }
+
                 if (dto.实际到货日期.HasValue)
                 {
                     container.ActualArrivalDate = dto.实际到货日期.Value;
@@ -330,7 +376,17 @@ namespace BlazorApp.Api.Services
 
                 // 保存更改
                 var rowsAffected = await _localContext.Db.Updateable(container)
-                    .UpdateColumns(x => new { x.ActualArrivalDate, x.ExchangeRate, x.ShippingFee, x.Remarks, x.Status })
+                    .UpdateColumns(x => new
+                    {
+                        x.ContainerNumber,
+                        x.LoadingDate,
+                        x.EstimatedArrivalDate,
+                        x.ActualArrivalDate,
+                        x.ExchangeRate,
+                        x.ShippingFee,
+                        x.Remarks,
+                        x.Status,
+                    })
                     .Where(x => x.ContainerCode == containerGuid)
                     .ExecuteCommandAsync();
 

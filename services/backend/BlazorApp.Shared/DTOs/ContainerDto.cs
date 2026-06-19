@@ -646,6 +646,76 @@ namespace BlazorApp.Shared.DTOs
         public string? ItemNumberFilter { get; set; }
 
         /// <summary>
+        /// 货柜编号列头过滤
+        /// </summary>
+        public string? ContainerNumberFilter { get; set; }
+
+        /// <summary>
+        /// 装柜日期列头过滤开始日期
+        /// </summary>
+        public DateTime? LoadingDateStart { get; set; }
+
+        /// <summary>
+        /// 装柜日期列头过滤结束日期
+        /// </summary>
+        public DateTime? LoadingDateEnd { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期列头过滤开始日期
+        /// </summary>
+        public DateTime? EstimatedArrivalDateStart { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期列头过滤结束日期
+        /// </summary>
+        public DateTime? EstimatedArrivalDateEnd { get; set; }
+
+        /// <summary>
+        /// 实际到货日期列头过滤开始日期
+        /// </summary>
+        public DateTime? ActualArrivalDateStart { get; set; }
+
+        /// <summary>
+        /// 实际到货日期列头过滤结束日期
+        /// </summary>
+        public DateTime? ActualArrivalDateEnd { get; set; }
+
+        /// <summary>
+        /// 合计件数列头过滤最小值
+        /// </summary>
+        public decimal? TotalPiecesMin { get; set; }
+
+        /// <summary>
+        /// 合计件数列头过滤最大值
+        /// </summary>
+        public decimal? TotalPiecesMax { get; set; }
+
+        /// <summary>
+        /// 合计金额列头过滤最小值
+        /// </summary>
+        public decimal? TotalAmountMin { get; set; }
+
+        /// <summary>
+        /// 合计金额列头过滤最大值
+        /// </summary>
+        public decimal? TotalAmountMax { get; set; }
+
+        /// <summary>
+        /// 总体积列头过滤最小值
+        /// </summary>
+        public decimal? TotalVolumeMin { get; set; }
+
+        /// <summary>
+        /// 总体积列头过滤最大值
+        /// </summary>
+        public decimal? TotalVolumeMax { get; set; }
+
+        /// <summary>
+        /// 状态列头过滤
+        /// </summary>
+        public List<int>? Statuses { get; set; }
+
+        /// <summary>
         /// 排序字段
         /// </summary>
         public string? SortBy { get; set; } = "货号";

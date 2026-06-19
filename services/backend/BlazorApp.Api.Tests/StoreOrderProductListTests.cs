@@ -1041,6 +1041,36 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderListAsync_CreatedAtDescendingSortsBeforePaging()
+    {
+        for (var index = 1; index <= 25; index++)
+        {
+            await SeedStoreOrderAsync(
+                $"ORDER-CREATED-{index:D3}",
+                flowStatus: 1,
+                insertStore: index == 1,
+                createdAt: new DateTime(2026, 6, 1).AddMinutes(index)
+            );
+        }
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+            SortBy = "createdAt",
+            SortDescending = true,
+        });
+
+        Assert.Equal(25, result.Total);
+        Assert.Equal(20, result.Items.Count);
+        Assert.Equal(
+            Enumerable.Range(6, 20).Reverse().Select(index => $"ORDER-CREATED-{index:D3}"),
+            result.Items.Select(item => item.OrderGUID)
+        );
+    }
+
+    [Fact]
     public async Task GetOrderListAsync_FiltersByDetailItemNumber()
     {
         await SeedStoreOrderAsync("ORDER-MATCH", flowStatus: 1, insertStore: true);

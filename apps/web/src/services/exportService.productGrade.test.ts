@@ -94,15 +94,39 @@ function withWindowOrigin(origin: string, run: () => void) {
 }
 
 withWindowOrigin('https://erp.example.com', () => {
-  const candidates = getImageDownloadCandidates('https://img.supplier.example.com/a b.jpg?size=500')
+  const candidates = getImageDownloadCandidates(
+    'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/a b.jpg?size=500',
+  )
 
-  assertEqual(candidates.length, 2, '跨域图片应保留直连并追加代理兜底')
-  assertEqual(candidates[0], 'https://img.supplier.example.com/a%20b.jpg?size=500', '跨域图片直连地址应先归一化')
+  assertEqual(candidates.length, 2, '白名单跨域图片应保留直连并追加代理兜底')
+  assertEqual(
+    candidates[0],
+    'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/a%20b.jpg?size=500',
+    '白名单跨域图片直连地址应先归一化',
+  )
   assertEqual(
     candidates[1],
-    '/api/react/v1/image-proxy?url=https%3A%2F%2Fimg.supplier.example.com%2Fa%2520b.jpg%3Fsize%3D500',
-    '跨域图片代理地址应编码原始 URL',
+    '/api/react/v1/image-proxy?url=https%3A%2F%2Fhotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com%2FYW200%2Fa%2520b.jpg%3Fsize%3D500',
+    '白名单跨域图片代理地址应编码原始 URL',
   )
+})
+
+withWindowOrigin('https://erp.example.com', () => {
+  const candidates = getImageDownloadCandidates('https://img.supplier.example.com/a b.jpg?size=500')
+
+  assertEqual(candidates.length, 0, '未知跨域图片不应产生浏览器直连或后端代理候选')
+})
+
+withWindowOrigin('https://erp.example.com', () => {
+  const candidates = getImageDownloadCandidates('http://localhost/private.jpg')
+
+  assertEqual(candidates.length, 0, 'localhost 图片不应产生浏览器直连或后端代理候选')
+})
+
+withWindowOrigin('https://erp.example.com', () => {
+  const candidates = getImageDownloadCandidates('http://169.254.169.254/latest/meta-data')
+
+  assertEqual(candidates.length, 0, 'link-local 地址不应产生浏览器直连或后端代理候选')
 })
 
 withWindowOrigin('https://erp.example.com', () => {

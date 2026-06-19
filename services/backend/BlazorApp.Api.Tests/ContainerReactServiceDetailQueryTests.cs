@@ -64,6 +64,116 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
     }
 
     [Fact]
+    public async Task GetContainersAsync_列头过滤应作用于全列表并更新总数()
+    {
+        await SeedContainerAsync(
+            "C-LIST-1",
+            "FFAU 7818368",
+            loadingDate: new DateTime(2026, 6, 17),
+            estimatedArrivalDate: new DateTime(2026, 7, 15),
+            totalPieces: 909m,
+            totalAmount: 339615m,
+            totalVolume: 67.04m,
+            status: 0
+        );
+        await SeedContainerAsync(
+            "C-LIST-2",
+            "CSGU7035442",
+            loadingDate: new DateTime(2026, 6, 16),
+            estimatedArrivalDate: new DateTime(2026, 7, 14),
+            totalPieces: 1185m,
+            totalAmount: 300397.50m,
+            totalVolume: 68m,
+            status: 1
+        );
+        await SeedContainerAsync(
+            "C-LIST-3",
+            "CSGU7030456",
+            loadingDate: new DateTime(2026, 6, 16),
+            estimatedArrivalDate: new DateTime(2026, 7, 14),
+            totalPieces: 756m,
+            totalAmount: 301886.40m,
+            totalVolume: 63.56m,
+            status: 1
+        );
+        var service = CreateService(CreateContainerListMapper());
+
+        var result = await service.GetContainersAsync(
+            new ContainerQueryRequest
+            {
+                Page = 1,
+                PageSize = 20,
+                ContainerNumberFilter = "CSGU",
+                LoadingDateStart = new DateTime(2026, 6, 16),
+                LoadingDateEnd = new DateTime(2026, 6, 16),
+                EstimatedArrivalDateStart = new DateTime(2026, 7, 14),
+                EstimatedArrivalDateEnd = new DateTime(2026, 7, 14),
+                TotalPiecesMin = 1000m,
+                TotalAmountMax = 310000m,
+                TotalVolumeMin = 60m,
+                TotalVolumeMax = 70m,
+                Statuses = new List<int> { 1 },
+            }
+        );
+
+        Assert.Equal(1, result.TotalCount);
+        Assert.Equal("CSGU7035442", Assert.Single(result.Containers).货柜编号);
+    }
+
+    [Fact]
+    public async Task GetContainersAsync_实际到货日期结束日应包含整天()
+    {
+        await SeedContainerAsync(
+            "C-ACTUAL-1",
+            "OOLU9955404",
+            actualArrivalDate: new DateTime(2026, 6, 8, 16, 30, 0),
+            status: 2
+        );
+        await SeedContainerAsync(
+            "C-ACTUAL-2",
+            "FFAU2703638",
+            actualArrivalDate: new DateTime(2026, 6, 9),
+            status: 2
+        );
+        var service = CreateService(CreateContainerListMapper());
+
+        var result = await service.GetContainersAsync(
+            new ContainerQueryRequest
+            {
+                Page = 1,
+                PageSize = 20,
+                ActualArrivalDateStart = new DateTime(2026, 6, 8),
+                ActualArrivalDateEnd = new DateTime(2026, 6, 8),
+            }
+        );
+
+        Assert.Equal(1, result.TotalCount);
+        Assert.Equal("OOLU9955404", Assert.Single(result.Containers).货柜编号);
+    }
+
+    [Fact]
+    public async Task GetContainersAsync_空列头过滤应保持原分页总数()
+    {
+        await SeedContainerAsync("C-EMPTY-1", "CSGU7035442", status: 1);
+        await SeedContainerAsync("C-EMPTY-2", "CSGU7030456", status: 1);
+        await SeedContainerAsync("C-EMPTY-3", "FFAU 7818368", status: 0);
+        var service = CreateService(CreateContainerListMapper());
+
+        var result = await service.GetContainersAsync(
+            new ContainerQueryRequest
+            {
+                Page = 1,
+                PageSize = 2,
+                ContainerNumberFilter = " ",
+                Statuses = new List<int>(),
+            }
+        );
+
+        Assert.Equal(3, result.TotalCount);
+        Assert.Equal(2, result.Containers.Count);
+    }
+
+    [Fact]
     public async Task QueryContainerDetailsAsync_应服务端筛选排序分页并返回全量标签统计()
     {
         await SeedContainerAsync("C-QUERY", "CSLU6099486");
@@ -600,20 +710,32 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         SqliteTempFileCleanup.DeleteIfExists(_hbSalesDbPath);
     }
 
-    private async Task SeedContainerAsync(string containerCode, string containerNumber)
+    private async Task SeedContainerAsync(
+        string containerCode,
+        string containerNumber,
+        DateTime? loadingDate = null,
+        DateTime? estimatedArrivalDate = null,
+        DateTime? actualArrivalDate = null,
+        decimal? totalPieces = null,
+        decimal? totalAmount = null,
+        decimal? totalVolume = null,
+        int? status = null
+    )
     {
         await _localDb.Insertable(
             new Container
             {
                 ContainerCode = containerCode,
                 ContainerNumber = containerNumber,
-                LoadingDate = new DateTime(2026, 5, 12),
-                EstimatedArrivalDate = new DateTime(2026, 6, 2),
-                ActualArrivalDate = new DateTime(2026, 6, 8),
+                LoadingDate = loadingDate ?? new DateTime(2026, 5, 12),
+                EstimatedArrivalDate = estimatedArrivalDate ?? new DateTime(2026, 6, 2),
+                ActualArrivalDate = actualArrivalDate ?? new DateTime(2026, 6, 8),
                 ExchangeRate = 4.5m,
                 ShippingFee = 12000m,
-                TotalVolume = 69.868m,
-                Status = 2,
+                TotalPieces = totalPieces,
+                TotalAmount = totalAmount,
+                TotalVolume = totalVolume ?? 69.868m,
+                Status = status ?? 2,
             }
         ).ExecuteCommandAsync();
     }
@@ -741,14 +863,38 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         ).ExecuteCommandAsync();
     }
 
-    private ContainerReactService CreateService()
+    private static IMapper CreateContainerListMapper()
+    {
+        var mapper = new Mock<IMapper>();
+        mapper
+            .Setup(x => x.Map<List<ContainerMainDto>>(It.IsAny<List<Container>>()))
+            .Returns((List<Container> containers) =>
+                containers
+                    .Select(container => new ContainerMainDto
+                    {
+                        HGUID = container.ContainerCode,
+                        货柜编号 = container.ContainerNumber,
+                        装柜日期 = container.LoadingDate,
+                        预计到岸日期 = container.EstimatedArrivalDate,
+                        实际到货日期 = container.ActualArrivalDate,
+                        合计件数 = container.TotalPieces,
+                        合计金额 = container.TotalAmount,
+                        总体积 = container.TotalVolume,
+                        状态 = container.Status,
+                    })
+                    .ToList()
+            );
+        return mapper.Object;
+    }
+
+    private ContainerReactService CreateService(IMapper? mapper = null)
     {
         return new ContainerReactService(
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(),
             CreateHBSalesSqlSugarContext(_hbSalesDb),
             new ConfigurationBuilder().Build(),
-            Mock.Of<IMapper>(),
+            mapper ?? Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
             Mock.Of<IContainerHqSyncService>(),
             CreateTranslationServiceMock()

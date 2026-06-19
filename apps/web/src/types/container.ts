@@ -211,6 +211,20 @@ export interface ContainerQueryRequest {
   page?: number
   pageSize?: number
   itemNumberFilter?: string
+  containerNumberFilter?: string
+  loadingDateStart?: string
+  loadingDateEnd?: string
+  estimatedArrivalDateStart?: string
+  estimatedArrivalDateEnd?: string
+  actualArrivalDateStart?: string
+  actualArrivalDateEnd?: string
+  totalPiecesMin?: number
+  totalPiecesMax?: number
+  totalAmountMin?: number
+  totalAmountMax?: number
+  totalVolumeMin?: number
+  totalVolumeMax?: number
+  statuses?: number[]
   sortBy?: string
   sortDirection?: string
 }
@@ -229,6 +243,9 @@ export interface DateFilterOption {
 }
 
 export interface UpdateContainerRequest {
+  货柜编号?: string
+  装柜日期?: string
+  预计到岸日期?: string
   实际到货日期?: string
   汇率?: number
   运费?: number

@@ -55,6 +55,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             {
                 ContainerCode = "OOCU5568972",
                 ContainerNumber = "OOCU5568972",
+                LoadingDate = new DateTime(2026, 5, 26),
+                EstimatedArrivalDate = new DateTime(2026, 6, 16),
                 ActualArrivalDate = new DateTime(2026, 6, 15),
                 ExchangeRate = 4.5m,
                 ShippingFee = 100m,
@@ -68,6 +70,9 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             "OOCU5568972",
             new UpdateContainerDto
             {
+                货柜编号 = " OOCU5568973 ",
+                装柜日期 = new DateTime(2026, 5, 27),
+                预计到岸日期 = new DateTime(2026, 6, 17),
                 实际到货日期 = new DateTime(2026, 6, 16),
                 汇率 = 4.6m,
                 运费 = 1280m,
@@ -79,11 +84,95 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var container = await _localDb.Queryable<Container>()
             .SingleAsync(x => x.ContainerCode == "OOCU5568972");
         Assert.True(success);
+        Assert.Equal("OOCU5568973", container.ContainerNumber);
+        Assert.Equal(new DateTime(2026, 5, 27), container.LoadingDate);
+        Assert.Equal(new DateTime(2026, 6, 17), container.EstimatedArrivalDate);
         Assert.Equal(1, container.Status);
         Assert.Equal(new DateTime(2026, 6, 16), container.ActualArrivalDate);
         Assert.Equal(4.6m, container.ExchangeRate);
         Assert.Equal(1280m, container.ShippingFee);
         Assert.Equal("运输中", container.Remarks);
+    }
+
+    [Fact]
+    public async Task ContainerReactServiceUpdateContainerAsync_更新成同编号同装柜日期_应拒绝保存()
+    {
+        await _localDb.Insertable(
+            new List<Container>
+            {
+                new()
+                {
+                    ContainerCode = "C-EXISTING",
+                    ContainerNumber = "CSNU6209359",
+                    LoadingDate = new DateTime(2026, 5, 29, 8, 30, 0),
+                    Status = 1,
+                },
+                new()
+                {
+                    ContainerCode = "C-TARGET",
+                    ContainerNumber = "CSNU6209360",
+                    LoadingDate = new DateTime(2026, 5, 30),
+                    Status = 1,
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.UpdateContainerAsync(
+                "C-TARGET",
+                new UpdateContainerDto
+                {
+                    货柜编号 = " CSNU6209359 ",
+                    装柜日期 = new DateTime(2026, 5, 29, 15, 45, 0),
+                }
+            )
+        );
+
+        Assert.Equal("货柜编号 CSNU6209359 在装柜日期 2026-05-29 已存在", ex.Message);
+    }
+
+    [Fact]
+    public async Task ContainerReactServiceUpdateContainerAsync_历史重复数据只改状态备注_应允许保存()
+    {
+        await _localDb.Insertable(
+            new List<Container>
+            {
+                new()
+                {
+                    ContainerCode = "C-DUPLICATE-1",
+                    ContainerNumber = "CSNU6209359",
+                    LoadingDate = new DateTime(2026, 5, 29, 8, 30, 0),
+                    Status = 1,
+                },
+                new()
+                {
+                    ContainerCode = "C-DUPLICATE-2",
+                    ContainerNumber = "CSNU6209359",
+                    LoadingDate = new DateTime(2026, 5, 29, 15, 45, 0),
+                    Status = 1,
+                    Remarks = "旧备注",
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var success = await service.UpdateContainerAsync(
+            "C-DUPLICATE-2",
+            new UpdateContainerDto
+            {
+                货柜编号 = " CSNU6209359 ",
+                装柜日期 = new DateTime(2026, 5, 29),
+                状态 = 2,
+                备注 = "只改状态备注",
+            }
+        );
+
+        var container = await _localDb.Queryable<Container>()
+            .SingleAsync(x => x.ContainerCode == "C-DUPLICATE-2");
+        Assert.True(success);
+        Assert.Equal(2, container.Status);
+        Assert.Equal("只改状态备注", container.Remarks);
     }
 
     [Fact]

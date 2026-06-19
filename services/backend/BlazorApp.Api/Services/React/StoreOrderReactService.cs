@@ -2622,6 +2622,11 @@ namespace BlazorApp.Api.Services.React
                             .OrderByDescending(o => o.OrderDate)
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
+                    case "createdat":
+                        // 商品等级“加入仓库订单”下拉复用订单列表接口，必须先按创建时间排序再分页，避免首屏不是最新订单。
+                        orderedQuery = q.OrderBy(o => o.CreatedAt, orderType)
+                            .OrderBy(o => o.OrderGUID, orderType);
+                        break;
                     case "totalamount":
                         orderedQuery = q.OrderBy(o => o.ImportTotalAmount ?? 0, orderType)
                             .OrderBy(o => o.OrderGUID, orderType);
@@ -2762,6 +2767,19 @@ namespace BlazorApp.Api.Services.React
                                         .ToList()
                                     : items
                                         .OrderBy(x => x.FlowStatus)
+                                        .ThenBy(x => x.OrderGUID)
+                                        .ToList();
+                            break;
+                        case "createdat":
+                            // SQL Server 分页后这里再次按创建时间稳定排序，保证下拉翻页追加顺序一致。
+                            items =
+                                orderType == OrderByType.Desc
+                                    ? items
+                                        .OrderByDescending(x => x.CreatedAt)
+                                        .ThenByDescending(x => x.OrderGUID)
+                                        .ToList()
+                                    : items
+                                        .OrderBy(x => x.CreatedAt)
                                         .ThenBy(x => x.OrderGUID)
                                         .ToList();
                             break;

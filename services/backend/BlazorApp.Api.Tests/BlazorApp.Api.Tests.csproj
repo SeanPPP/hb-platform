@@ -47,6 +47,7 @@
     <Compile Include="LocationReactServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="ProductGradeReactServiceTests.cs" />
+    <Compile Include="ReactImageProxyControllerTests.cs" />
     <Compile Include="ProductWarehouseReactServiceNonHotbargainTests.cs" />
     <Compile Include="ProductWarehouseReactServiceSyncTests.cs" />
     <Compile Include="WarehouseProductHqSyncJobServiceTests.cs" />
