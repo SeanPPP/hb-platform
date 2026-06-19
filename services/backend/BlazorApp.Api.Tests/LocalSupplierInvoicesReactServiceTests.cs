@@ -2000,6 +2000,7 @@ namespace BlazorApp.Api.Tests
                 CreateService(),
                 CreateSqlSugarContext(_db),
                 Mock.Of<ILocalSupplierInvoiceHqSyncService>(),
+                Mock.Of<ILocalSupplierInvoiceImportService>(),
                 null,
                 batchUpdateJobService
             );

@@ -110,6 +110,115 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsSpecialProduct { get; set; }
     }
 
+    public static class LocalSupplierInvoiceImportMatchStatus
+    {
+        public const string Matched = "matched";
+        public const string Missing = "missing";
+        public const string NotFound = "not_found";
+        public const string MultipleMatches = "multiple_matches";
+    }
+
+    public class LocalSupplierInvoiceImportSourceColumnDto
+    {
+        public string Key { get; set; } = string.Empty;
+        public string Header { get; set; } = string.Empty;
+    }
+
+    public class LocalSupplierInvoiceImportMappingDto
+    {
+        public string? ItemNumberColumnKey { get; set; }
+        public string? BarcodeColumnKey { get; set; }
+        public string? ProductNameColumnKey { get; set; }
+        public string? QuantityColumnKey { get; set; }
+        public string? PriceColumnKey { get; set; }
+    }
+
+    public class LocalSupplierInvoiceImportConfirmMappingDto
+    {
+        [Required]
+        public string ItemNumberColumnKey { get; set; } = string.Empty;
+
+        [Required]
+        public string BarcodeColumnKey { get; set; } = string.Empty;
+
+        [Required]
+        public string ProductNameColumnKey { get; set; } = string.Empty;
+
+        [Required]
+        public string QuantityColumnKey { get; set; } = string.Empty;
+
+        [Required]
+        public string PriceColumnKey { get; set; } = string.Empty;
+    }
+
+    public class LocalSupplierInvoiceImportLookupOptionDto
+    {
+        public string Code { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+    }
+
+    public class LocalSupplierInvoiceImportMatchDto
+    {
+        public string Status { get; set; } = LocalSupplierInvoiceImportMatchStatus.Missing;
+        public string? RawValue { get; set; }
+        public string? SelectedCode { get; set; }
+        public string? SelectedName { get; set; }
+        public List<LocalSupplierInvoiceImportLookupOptionDto> Candidates { get; set; } = new();
+    }
+
+    public class LocalSupplierInvoiceImportHeaderDto
+    {
+        public string? StoreCode { get; set; }
+        public string? StoreName { get; set; }
+        public string? SupplierCode { get; set; }
+        public string? SupplierName { get; set; }
+        public string? InvoiceNo { get; set; }
+        public DateTime? OrderDate { get; set; }
+        public DateTime? InboundDate { get; set; }
+        public string? Remarks { get; set; }
+        public LocalSupplierInvoiceImportMatchDto StoreMatch { get; set; } = new();
+        public LocalSupplierInvoiceImportMatchDto SupplierMatch { get; set; } = new();
+    }
+
+    public class LocalSupplierInvoiceImportLineDto
+    {
+        public int RowNumber { get; set; }
+        public Dictionary<string, string?> RawValues { get; set; } = new();
+    }
+
+    public class LocalSupplierInvoiceImportPreviewDto
+    {
+        public string FileName { get; set; } = string.Empty;
+        public string FileType { get; set; } = string.Empty;
+        public List<LocalSupplierInvoiceImportSourceColumnDto> SourceColumns { get; set; } = new();
+        public LocalSupplierInvoiceImportMappingDto RecommendedMapping { get; set; } = new();
+        public LocalSupplierInvoiceImportHeaderDto Header { get; set; } = new();
+        public List<LocalSupplierInvoiceImportLineDto> Lines { get; set; } = new();
+        public List<string> Warnings { get; set; } = new();
+        public List<string> Errors { get; set; } = new();
+    }
+
+    public class LocalSupplierInvoiceImportConfirmRequest
+    {
+        [Required]
+        public List<LocalSupplierInvoiceImportSourceColumnDto> SourceColumns { get; set; } = new();
+
+        [Required]
+        public LocalSupplierInvoiceImportHeaderDto Header { get; set; } = new();
+
+        [Required]
+        public LocalSupplierInvoiceImportConfirmMappingDto Mapping { get; set; } = new();
+
+        [Required]
+        public List<LocalSupplierInvoiceImportLineDto> Lines { get; set; } = new();
+    }
+
+    public class LocalSupplierInvoiceImportConfirmResultDto
+    {
+        public string InvoiceGuid { get; set; } = string.Empty;
+        public List<string> Warnings { get; set; } = new();
+    }
+
     public class DetectSupplierItemRequest
     {
         public string StoreCode { get; set; } = string.Empty;

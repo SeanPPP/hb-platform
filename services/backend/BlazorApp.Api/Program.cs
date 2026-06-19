@@ -578,6 +578,8 @@ builder.Services.AddScoped<
     ILocalSupplierInvoiceHqProductSyncService,
     LocalSupplierInvoiceHqProductSyncService
 >();
+builder.Services.AddScoped<ILocalSupplierInvoiceOcrService, NoopLocalSupplierInvoiceOcrService>();
+builder.Services.AddScoped<ILocalSupplierInvoiceImportService, LocalSupplierInvoiceImportService>();
 builder.Services.AddSingleton<
     ILocalSupplierInvoiceBatchUpdateJobService,
     LocalSupplierInvoiceBatchUpdateJobService

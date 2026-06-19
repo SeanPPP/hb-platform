@@ -15,6 +15,9 @@ import type {
   InvoiceDetailUpsertItemDto,
   LocalSupplierInvoiceHqSyncRequest,
   LocalSupplierInvoiceHqSyncResult,
+  LocalSupplierInvoiceImportConfirmRequest,
+  LocalSupplierInvoiceImportConfirmResponse,
+  LocalSupplierInvoiceImportPreviewResponse,
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
@@ -32,11 +35,51 @@ import type {
 import request, { RequestError, unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/local-supplier-invoices'
+const API_ROOT = (((import.meta as ImportMeta & { env?: ImportMetaEnv }).env?.VITE_API_BASE_URL) || '').trim()
 
 function assertApiSuccess<T>(response: ApiResponse<T>, fallbackMessage: string): void {
   if (response.success === false || response.isSuccess === false) {
     throw new RequestError(response.message || fallbackMessage, 200, response)
   }
+}
+
+function buildApiUrl(url: string): string {
+  return url.startsWith('http://') || url.startsWith('https://')
+    ? url
+    : `${API_ROOT}${url}`.replace(/([^:]\/)\/+/g, '$1')
+}
+
+async function parseFormDataResponse<T>(response: Response): Promise<T> {
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    return (await response.json()) as T
+  }
+
+  return (await response.text()) as T
+}
+
+async function postFormData<T>(url: string, formData: FormData, fallbackMessage: string): Promise<T> {
+  const response = await fetch(buildApiUrl(url), {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+  })
+  const payload = await parseFormDataResponse<ApiResponse<T>>(response)
+
+  if (!response.ok) {
+    const message =
+      typeof payload === 'object' &&
+      payload !== null &&
+      'message' in payload &&
+      typeof payload.message === 'string'
+        ? payload.message
+        : `请求失败 (${response.status})`
+    throw new RequestError(message, response.status, payload)
+  }
+
+  // 这里沿用统一的 success 语义，避免导入预览遇到 200 + success=false 时被误判成功。
+  assertApiSuccess(payload, fallbackMessage)
+  return unwrapApiData(payload)
 }
 
 export async function getInvoiceGrid(data: Record<string, unknown>) {
@@ -278,6 +321,27 @@ export async function batchExecuteActions(data: BatchExecuteActionsRequest): Pro
     confirmedAt: data.confirmedAt,
   })
   assertApiSuccess(response, '批量执行操作失败')
+  return unwrapApiData(response)
+}
+
+export async function previewInvoiceImport(file: File): Promise<LocalSupplierInvoiceImportPreviewResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return postFormData<LocalSupplierInvoiceImportPreviewResponse>(
+    `${API_BASE}/import/preview`,
+    formData,
+    '预览导入文件失败',
+  )
+}
+
+export async function confirmInvoiceImport(
+  payload: LocalSupplierInvoiceImportConfirmRequest,
+): Promise<LocalSupplierInvoiceImportConfirmResponse> {
+  const response = await request.post<ApiResponse<LocalSupplierInvoiceImportConfirmResponse>>(
+    `${API_BASE}/import/confirm`,
+    payload,
+  )
+  assertApiSuccess(response, '确认创建导入进货单失败')
   return unwrapApiData(response)
 }
 

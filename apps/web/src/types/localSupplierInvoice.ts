@@ -260,6 +260,71 @@ export interface LocalSupplierInvoiceHqSyncResult {
   errors: string[]
 }
 
+export type LocalSupplierInvoiceImportField =
+  | 'itemNumber'
+  | 'barcode'
+  | 'productName'
+  | 'quantity'
+  | 'price'
+
+export interface LocalSupplierInvoiceImportSourceColumn {
+  key: string
+  header?: string
+  sampleValue?: string
+}
+
+export interface LocalSupplierInvoiceImportColumnMapping {
+  itemNumberColumnKey?: string | null
+  barcodeColumnKey?: string | null
+  productNameColumnKey?: string | null
+  quantityColumnKey?: string | null
+  priceColumnKey?: string | null
+}
+
+export interface LocalSupplierInvoiceImportPreviewHeader {
+  storeCode?: string
+  storeName?: string
+  supplierCode?: string
+  supplierName?: string
+  invoiceNo?: string
+  orderDate?: string
+  inboundDate?: string
+  totalAmount?: number
+  remarks?: string
+}
+
+export interface LocalSupplierInvoiceImportPreviewLine {
+  rowNumber?: number
+  rawValues: Record<string, string | null | undefined>
+}
+
+export interface LocalSupplierInvoiceImportPreviewResponse {
+  sourceColumns: LocalSupplierInvoiceImportSourceColumn[]
+  recommendedMapping?: LocalSupplierInvoiceImportColumnMapping
+  header: LocalSupplierInvoiceImportPreviewHeader
+  lines: LocalSupplierInvoiceImportPreviewLine[]
+  warnings: string[]
+  errors: string[]
+}
+
+export interface LocalSupplierInvoiceImportConfirmRequest {
+  sourceColumns: LocalSupplierInvoiceImportSourceColumn[]
+  header: LocalSupplierInvoiceImportPreviewHeader
+  mapping: Required<{
+    itemNumberColumnKey: string
+    barcodeColumnKey: string
+    productNameColumnKey: string
+    quantityColumnKey: string
+    priceColumnKey: string
+  }>
+  lines: LocalSupplierInvoiceImportPreviewLine[]
+}
+
+export interface LocalSupplierInvoiceImportConfirmResponse {
+  invoiceGuid: string
+  warnings?: string[]
+}
+
 export interface GetInvoiceDetailResponse {
   invoice: LocalSupplierInvoiceDetailDto
   details: LocalSupplierInvoiceItemDto[]

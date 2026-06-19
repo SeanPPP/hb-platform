@@ -564,89 +564,103 @@ namespace BlazorApp.Api.Services.React
 
                 var db = _context.Db;
 
-                var existingInvoice = await db.Queryable<StoreLocalSupplierInvoice>()
-                    .Where(x => x.IsDeleted == false)
-                    .Where(x => x.StoreCode == dto.StoreCode)
-                    .Where(x => x.SupplierCode == dto.SupplierCode)
-                    .Where(x => x.InvoiceNo == dto.InvoiceNo)
-                    .FirstAsync();
-
-                if (existingInvoice != null)
-                    return ApiResponse<string>.Error(
-                        $"分店【{dto.StoreCode}】、供应商【{dto.SupplierCode}】、单号【{dto.InvoiceNo}】已存在，不能重复创建",
-                        "DUPLICATE_INVOICE"
-                    );
-
                 var invoiceGuid = UuidHelper.GenerateUuid7();
                 var now = DateTime.UtcNow;
-
-                var header = new StoreLocalSupplierInvoice
+                await db.Ado.BeginTranAsync();
+                try
                 {
-                    InvoiceGUID = invoiceGuid,
-                    StoreCode = dto.StoreCode,
-                    SupplierCode = dto.SupplierCode,
-                    InvoiceNo = dto.InvoiceNo,
-                    OrderDate = dto.OrderDate,
-                    InboundDate = dto.InboundDate,
-                    Remarks = dto.Remarks,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                    IsDeleted = false,
-                };
+                    var existingInvoice = await db.Queryable<StoreLocalSupplierInvoice>()
+                        .Where(x => x.IsDeleted == false)
+                        .Where(x => x.StoreCode == dto.StoreCode)
+                        .Where(x => x.SupplierCode == dto.SupplierCode)
+                        .Where(x => x.InvoiceNo == dto.InvoiceNo)
+                        .FirstAsync();
 
-                await db.Insertable(header).ExecuteCommandAsync();
-
-                var validItems = (dto.Items ?? new List<PastedDetailItem>())
-                    .Where(i => i != null && i.Quantity > 0 && i.Price > 0)
-                    .ToList();
-
-                var detailRows = validItems
-                    .Select(i => new StoreLocalSupplierInvoiceDetails
+                    if (existingInvoice != null)
                     {
-                        DetailGUID = UuidHelper.GenerateUuid7(),
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<string>.Error(
+                            $"分店【{dto.StoreCode}】、供应商【{dto.SupplierCode}】、单号【{dto.InvoiceNo}】已存在，不能重复创建",
+                            "DUPLICATE_INVOICE"
+                        );
+                    }
+
+                    // 主表、明细、总金额更新必须处于同一事务，避免中途失败后留下脏数据。
+                    var header = new StoreLocalSupplierInvoice
+                    {
                         InvoiceGUID = invoiceGuid,
                         StoreCode = dto.StoreCode,
                         SupplierCode = dto.SupplierCode,
-                        StoreProductCode = i.StoreProductCode,
-                        ProductCode = i.ProductCode,
-                        ItemNumber = i.ItemNumber,
-                        Barcode = !string.IsNullOrWhiteSpace(i.Barcode)
-                            ? i.Barcode
-                            : (IsLikelyBarcode(i.NameOrBarcode) ? i.NameOrBarcode : null),
-                        ProductName = !string.IsNullOrWhiteSpace(i.ProductName)
-                            ? i.ProductName
-                            : (
-                                string.IsNullOrWhiteSpace(i.Barcode)
-                                && !IsLikelyBarcode(i.NameOrBarcode)
-                                    ? i.NameOrBarcode
-                                    : null
-                            ),
-                        Quantity = i.Quantity,
-                        PurchasePrice = i.Price,
-                        LastPurchasePrice = i.LastPurchasePrice,
-                        RetailPrice = i.RetailPrice,
-                        AutoPricing = i.AutoPricing,
-                        PricingFloatRate = i.PricingFloatRate,
-                        NewAutoRetailPrice = i.NewAutoRetailPrice,
-                        IsSpecialProduct = i.IsSpecialProduct,
-                        Amount = i.Price * i.Quantity,
+                        InvoiceNo = dto.InvoiceNo,
+                        OrderDate = dto.OrderDate,
+                        InboundDate = dto.InboundDate,
+                        Remarks = dto.Remarks,
+                        FlowStatus = 0,
+                        InboundStatus = 0,
                         CreatedAt = now,
                         UpdatedAt = now,
                         IsDeleted = false,
-                    })
-                    .ToList();
+                    };
 
-                if (detailRows.Count > 0)
-                    await db.Insertable(detailRows).ExecuteCommandAsync();
+                    await db.Insertable(header).ExecuteCommandAsync();
 
-                var total = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
-                    .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
-                    .SumAsync(x => x.Amount ?? 0);
-                await db.Updateable<StoreLocalSupplierInvoice>()
-                    .SetColumns(x => x.TotalAmount == total)
-                    .SetColumns(x => x.UpdatedAt == now)
-                    .Where(x => x.InvoiceGUID == invoiceGuid)
-                    .ExecuteCommandAsync();
+                    var validItems = (dto.Items ?? new List<PastedDetailItem>())
+                        .Where(i => i != null && i.Quantity > 0 && i.Price > 0)
+                        .ToList();
+
+                    var detailRows = validItems
+                        .Select(i => new StoreLocalSupplierInvoiceDetails
+                        {
+                            DetailGUID = UuidHelper.GenerateUuid7(),
+                            InvoiceGUID = invoiceGuid,
+                            StoreCode = dto.StoreCode,
+                            SupplierCode = dto.SupplierCode,
+                            StoreProductCode = i.StoreProductCode,
+                            ProductCode = i.ProductCode,
+                            ItemNumber = i.ItemNumber,
+                            Barcode = !string.IsNullOrWhiteSpace(i.Barcode)
+                                ? i.Barcode
+                                : (IsLikelyBarcode(i.NameOrBarcode) ? i.NameOrBarcode : null),
+                            ProductName = !string.IsNullOrWhiteSpace(i.ProductName)
+                                ? i.ProductName
+                                : (
+                                    string.IsNullOrWhiteSpace(i.Barcode)
+                                    && !IsLikelyBarcode(i.NameOrBarcode)
+                                        ? i.NameOrBarcode
+                                        : null
+                                ),
+                            Quantity = i.Quantity,
+                            PurchasePrice = i.Price,
+                            LastPurchasePrice = i.LastPurchasePrice,
+                            RetailPrice = i.RetailPrice,
+                            AutoPricing = i.AutoPricing,
+                            PricingFloatRate = i.PricingFloatRate,
+                            NewAutoRetailPrice = i.NewAutoRetailPrice,
+                            IsSpecialProduct = i.IsSpecialProduct,
+                            Amount = i.Price * i.Quantity,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            IsDeleted = false,
+                        })
+                        .ToList();
+
+                    if (detailRows.Count > 0)
+                        await db.Insertable(detailRows).ExecuteCommandAsync();
+
+                    var total = detailRows.Sum(x => x.Amount ?? 0);
+                    await db.Updateable<StoreLocalSupplierInvoice>()
+                        .SetColumns(x => x.TotalAmount == total)
+                        .SetColumns(x => x.UpdatedAt == now)
+                        .Where(x => x.InvoiceGUID == invoiceGuid)
+                        .ExecuteCommandAsync();
+
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 return ApiResponse<string>.OK(invoiceGuid);
             }

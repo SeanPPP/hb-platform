@@ -517,7 +517,11 @@ public class ControllerAuthorizationMetadataTests
         foreach (var method in publicMethods)
         {
             if (controllerType == typeof(ReactLocalSupplierInvoicesController)
-                && method.Name == nameof(ReactLocalSupplierInvoicesController.SyncFromHq))
+                && (
+                    method.Name == nameof(ReactLocalSupplierInvoicesController.SyncFromHq)
+                    || method.Name == nameof(ReactLocalSupplierInvoicesController.ImportPreview)
+                    || method.Name == nameof(ReactLocalSupplierInvoicesController.ImportConfirm)
+                ))
             {
                 continue;
             }
@@ -527,6 +531,22 @@ public class ControllerAuthorizationMetadataTests
                 $"{controllerType.Name}.{method.Name}"
             );
         }
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ImportPreview))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ImportConfirm))]
+    public void ReactLocalSupplierInvoicesController_ImportEndpointsRequireEditPolicyAndAdminRole(
+        string methodName
+    )
+    {
+        var method = GetDeclaredMethod(typeof(ReactLocalSupplierInvoicesController), methodName);
+        var authorizeAttributes = method
+            .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            .ToList();
+
+        Assert.Contains(authorizeAttributes, attribute => attribute.Policy == Permissions.LocalPurchase.Edit);
+        Assert.Contains(authorizeAttributes, attribute => attribute.Roles == "Admin,管理员");
     }
 
     [Fact]

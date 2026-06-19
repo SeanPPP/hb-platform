@@ -19,12 +19,14 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ILocalSupplierInvoiceHqSyncService _hqSyncService;
         private readonly ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService;
         private readonly ILocalSupplierInvoiceBatchUpdateJobService? _batchUpdateJobService;
+        private readonly ILocalSupplierInvoiceImportService _importService;
         private readonly SqlSugarContext _dbContext;
 
         public ReactLocalSupplierInvoicesController(
             ILocalSupplierInvoicesReactService service,
             SqlSugarContext dbContext,
             ILocalSupplierInvoiceHqSyncService hqSyncService,
+            ILocalSupplierInvoiceImportService importService,
             ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null,
             ILocalSupplierInvoiceBatchUpdateJobService? batchUpdateJobService = null
         )
@@ -32,6 +34,7 @@ namespace BlazorApp.Api.Controllers.React
             _service = service;
             _dbContext = dbContext;
             _hqSyncService = hqSyncService;
+            _importService = importService;
             _hqProductSyncService = hqProductSyncService;
             _batchUpdateJobService = batchUpdateJobService;
         }
@@ -402,6 +405,73 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("import/preview")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> ImportPreview(
+            [FromForm] IFormFile file,
+            CancellationToken cancellationToken
+        )
+        {
+            var result = await _importService.PreviewAsync(file, cancellationToken);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    code = result.ErrorCode,
+                    details = result.Details,
+                }
+            );
+        }
+
+        [HttpPost("import/confirm")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> ImportConfirm(
+            [FromBody] LocalSupplierInvoiceImportConfirmRequest dto,
+            CancellationToken cancellationToken
+        )
+        {
+            if (dto?.Header == null)
+                return BadRequest(new { success = false, message = "缺少导入确认数据" });
+
+            // 确认导入前再次校验分店权限，避免用户通过改包导入无权门店。
+            if (!await CanAccessStoreAsync(dto.Header.StoreCode))
+                return Forbid();
+
+            var result = await _importService.ConfirmAsync(dto, cancellationToken);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    code = result.ErrorCode,
+                    details = result.Details,
+                }
+            );
         }
 
         [HttpPut("{invoiceGuid}")]

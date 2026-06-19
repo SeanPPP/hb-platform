@@ -44,6 +44,7 @@
     <Compile Include="RoleServicePermissionTests.cs" />
     <Compile Include="SeasonalCardRemainingReactServiceTests.cs" />
     <Compile Include="LocalSupplierInvoicesReactServiceTests.cs" />
+    <Compile Include="LocalSupplierInvoiceImportTests.cs" />
     <Compile Include="LocationReactServiceTests.cs" />
     <Compile Include="ProductWarehouseReactServiceTests.cs" />
     <Compile Include="ProductGradeReactServiceTests.cs" />
