@@ -1,6 +1,11 @@
 import ExcelJS from 'exceljs'
 import { readFileSync } from 'node:fs'
-import { populateContainerDetailsWorksheet, resolveContainerDetailPdfLayout, type ContainerDetailExportColumn } from './exportService'
+import {
+  mapContainerExportProgress,
+  populateContainerDetailsWorksheet,
+  resolveContainerDetailPdfLayout,
+  type ContainerDetailExportColumn,
+} from './exportService'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -99,6 +104,13 @@ const plainResult = populateContainerDetailsWorksheet(
 assertEqual(plainResult.barcodeImageColIndex, -1, '未选择条码图片列时不应生成图片列')
 assertEqual(plainResult.productImageColIndex, -1, '未选择商品图片列时不应生成图片列')
 assertEqual(plainWorksheet.getRow(plainResult.dataStartRowNumber).height, undefined, '未选择图片列时应保持普通行高')
+assertEqual(mapContainerExportProgress(-10, 10, 55), 10, '导出进度映射应截断负数')
+assertEqual(mapContainerExportProgress(100, 55, 90), 90, '导出进度映射应到达区间终点')
+assertEqual(
+  mapContainerExportProgress(20, 55, 90) > mapContainerExportProgress(65, 10, 55),
+  true,
+  '图片准备后的写表进度应继续向前，不能回退',
+)
 
 const exportServiceSource = readFileSync('src/services/exportService.ts', 'utf8')
 const sixPdfColumns: ContainerDetailExportColumn[] = [

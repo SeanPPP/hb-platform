@@ -720,12 +720,27 @@ export async function exportContainerDetailsToExcel(
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('货柜明细')
+  const columns = getContainerDetailWorksheetColumns(options)
+  const includeBarcodeImages = columns.some((column) => column.key === 'barcodeImage')
+  const includeProductImages = columns.some((column) => column.key === 'productImage')
+  const hasImageColumns = includeBarcodeImages || includeProductImages
 
-  const worksheetInfo = populateContainerDetailsWorksheet(worksheet, items, options)
-  const preparedImages = await prepareContainerDetailExportImages(items, options, {
-    includeBarcodeImages: worksheetInfo.barcodeImageColIndex >= 0,
-    includeProductImages: worksheetInfo.productImageColIndex >= 0,
-  })
+  const preparedImages = hasImageColumns
+    ? await prepareContainerDetailExportImages(
+        items,
+        withContainerExportProgressRange(options, 10, 55),
+        { includeBarcodeImages, includeProductImages },
+      )
+    : createEmptyContainerExportPreparedImages()
+  if (hasImageColumns) {
+    options.onProgress?.(55, '图片准备完成，正在写入货柜明细...')
+  }
+
+  const worksheetInfo = populateContainerDetailsWorksheet(
+    worksheet,
+    items,
+    hasImageColumns ? withContainerExportProgressRange(options, 55, 90) : options,
+  )
   addContainerDetailWorksheetImages(workbook, worksheet, items, worksheetInfo, preparedImages)
   options.onProgress?.(95, '正在生成 Excel 文件...')
   const buffer = await workbook.xlsx.writeBuffer()
@@ -742,6 +757,36 @@ export async function exportContainerDetailsToExcel(
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
   options.onProgress?.(100, '导出完成')
+}
+
+export function mapContainerExportProgress(progress: number, start: number, end: number) {
+  const safeProgress = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
+  return start + Math.floor((safeProgress / 100) * (end - start))
+}
+
+function withContainerExportProgressRange(
+  options: ContainerExportOptions,
+  start: number,
+  end: number,
+): ContainerExportOptions {
+  if (!options.onProgress) {
+    return options
+  }
+
+  return {
+    ...options,
+    onProgress: (progress, message) => {
+      options.onProgress?.(mapContainerExportProgress(progress, start, end), message)
+    },
+  }
+}
+
+function createEmptyContainerExportPreparedImages(): ContainerExportPreparedImages {
+  return {
+    barcodeImageMap: new Map(),
+    productImageMap: new Map(),
+    failedProductImageRows: new Set(),
+  }
 }
 
 export async function exportContainerDetailsToPdf(
