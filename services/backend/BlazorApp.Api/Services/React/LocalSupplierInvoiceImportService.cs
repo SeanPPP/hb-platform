@@ -1148,7 +1148,7 @@ namespace BlazorApp.Api.Services.React
                     column =>
                     {
                         var index = sourceColumns.IndexOf(column);
-                        return worksheet.Cell(rowNumber, index + 1).GetFormattedString().Trim();
+                        return (string?)worksheet.Cell(rowNumber, index + 1).GetFormattedString().Trim();
                     }
                 );
                 lines.Add(new LocalSupplierInvoiceImportLineDto { RowNumber = rowNumber, RawValues = rawValues });

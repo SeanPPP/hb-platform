@@ -16,8 +16,10 @@ export interface TableIntegrityReport {
   totalChecked: number
   orphanedCount: number
   missingCount: number
+  invalidKeyCount: number
   orphanedProductCodes: string[]
   missingProductCodes: string[]
+  errors: string[]
 }
 
 export interface ProductIntegrityFixRequestDto {

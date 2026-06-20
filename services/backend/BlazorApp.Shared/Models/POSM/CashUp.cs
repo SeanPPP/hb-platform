@@ -11,11 +11,11 @@ public class CashUp
 {
     // 日结单ID
     [SugarColumn(ColumnName = "cash_up_guid", IsPrimaryKey = true, ColumnDescription = "日结单ID")]
-    public string CashUpGuid { get; set; }
+    public string CashUpGuid { get; set; } = string.Empty;
 
     // 日结单编号
     [SugarColumn(ColumnName = "cash_up_number", ColumnDescription = "日结单编号", Length = 50)]
-    public string CashUpNumber { get; set; }
+    public string CashUpNumber { get; set; } = string.Empty;
     
     // 分店编码
     [SugarColumn(ColumnName = "store_code", ColumnDescription = "分店编码", Length = 50)]

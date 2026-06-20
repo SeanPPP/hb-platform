@@ -456,7 +456,7 @@ namespace BlazorApp.Api.Services
                         (m, d) =>
                             new
                             {
-                                Date = d.B结账日期.Value.Date,
+                                Date = d.B结账日期!.Value.Date,
                                 CheckoutTime = d.B结账时间,
                                 BranchCode = d.B分店代码 ?? string.Empty,
                                 ProductCode = d.B产品编号,
@@ -599,18 +599,18 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation("加载了 {StoreCount} 个分店信息", storeDict.Count);
 
                 // 5. 生成各维度统计报表
-                result.DailyStatistics = await ProcessDailyStatistics(
+                result.DailyStatistics = ProcessDailyStatistics(
                     validSalesData,
                     startDate,
                     endDate
                 );
-                result.HourlyStatistics = await ProcessHourlyStoreStatistics(
+                result.HourlyStatistics = ProcessHourlyStoreStatistics(
                     validSalesData,
                     storeDict,
                     startDate,
                     endDate
                 );
-                result.StoreStatistics = await ProcessStoreDateStatistics(
+                result.StoreStatistics = ProcessStoreDateStatistics(
                     validSalesData,
                     storeDict,
                     startDate,
@@ -691,7 +691,7 @@ namespace BlazorApp.Api.Services
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
         /// <returns>每日销售统计列表</returns>
-        private async Task<List<DailySalesStatistic>> ProcessDailyStatistics(
+        private List<DailySalesStatistic> ProcessDailyStatistics(
             List<SalesDataAggregate> salesData,
             DateTime startDate,
             DateTime endDate
@@ -743,7 +743,7 @@ namespace BlazorApp.Api.Services
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
         /// <returns>分时销售统计列表</returns>
-        private async Task<List<HourlySalesStatistic>> ProcessHourlyStoreStatistics(
+        private List<HourlySalesStatistic> ProcessHourlyStoreStatistics(
             List<SalesDataAggregate> salesData,
             Dictionary<string, Store> storeDict,
             DateTime startDate,
@@ -751,6 +751,7 @@ namespace BlazorApp.Api.Services
         )
         {
             var statisticsList = new List<HourlySalesStatistic>();
+            LogSkippedBranchCodeRows("分时分店销售统计", salesData);
 
             // 按日期、小时、分店分组统计
             var groupedData = salesData
@@ -777,15 +778,19 @@ namespace BlazorApp.Api.Services
                 var averageOrderValue =
                     stat.OrderCount > 0 ? stat.TotalAmount / stat.OrderCount : 0m;
 
-                var store = storeDict.GetValueOrDefault(stat.BranchCode);
+                // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                if (string.IsNullOrWhiteSpace(stat.BranchCode))
+                    continue;
+                var branchCode = stat.BranchCode;
+                var store = storeDict.GetValueOrDefault(branchCode);
 
                 statisticsList.Add(
                     new HourlySalesStatistic
                     {
                         Date = stat.Date,
                         Hour = stat.Hour,
-                        BranchCode = stat.BranchCode,
-                        BranchName = store?.StoreName ?? stat.BranchCode ?? string.Empty,
+                        BranchCode = branchCode,
+                        BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = stat.TotalAmount,
                         TotalQuantity = (int)stat.TotalQuantity,
                         OrderCount = stat.OrderCount,
@@ -807,7 +812,7 @@ namespace BlazorApp.Api.Services
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
         /// <returns>分店销售统计列表</returns>
-        private async Task<List<StoreSalesStatistic>> ProcessStoreDateStatistics(
+        private List<StoreSalesStatistic> ProcessStoreDateStatistics(
             List<SalesDataAggregate> salesData,
             Dictionary<string, Store> storeDict,
             DateTime startDate,
@@ -815,6 +820,7 @@ namespace BlazorApp.Api.Services
         )
         {
             var statisticsList = new List<StoreSalesStatistic>();
+            LogSkippedBranchCodeRows("分店每日销售统计", salesData);
 
             // 按日期、分店分组统计
             var groupedData = salesData
@@ -835,14 +841,18 @@ namespace BlazorApp.Api.Services
                 var averageOrderValue =
                     stat.OrderCount > 0 ? stat.TotalAmount / stat.OrderCount : 0m;
 
-                var store = storeDict.GetValueOrDefault(stat.BranchCode);
+                // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                if (string.IsNullOrWhiteSpace(stat.BranchCode))
+                    continue;
+                var branchCode = stat.BranchCode;
+                var store = storeDict.GetValueOrDefault(branchCode);
 
                 statisticsList.Add(
                     new StoreSalesStatistic
                     {
                         Date = stat.Date,
-                        BranchCode = stat.BranchCode,
-                        BranchName = store?.StoreName ?? stat.BranchCode ?? string.Empty,
+                        BranchCode = branchCode,
+                        BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = stat.TotalAmount,
                         TotalQuantity = (int)stat.TotalQuantity,
                         OrderCount = stat.OrderCount,
@@ -865,7 +875,7 @@ namespace BlazorApp.Api.Services
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
         /// <returns>供应商销售统计列表</returns>
-        private async Task<List<SupplierSalesStatistic>> ProcessSupplierDateStatistics(
+        private List<SupplierSalesStatistic> ProcessSupplierDateStatistics(
             List<SalesDataAggregate> salesData,
             Dictionary<string, PosmProductSupplierMapping> supplierMapping,
             SupplierNames supplierNames,
@@ -943,7 +953,7 @@ namespace BlazorApp.Api.Services
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
         /// <returns>分店供应商销售统计列表</returns>
-        private async Task<List<StoreSupplierSalesDetail>> ProcessStoreSupplierStatistics(
+        private List<StoreSupplierSalesDetail> ProcessStoreSupplierStatistics(
             List<SalesDataAggregate> salesData,
             Dictionary<string, PosmProductSupplierMapping> supplierMapping,
             SupplierNames supplierNames,
@@ -952,11 +962,15 @@ namespace BlazorApp.Api.Services
         )
         {
             var statisticsList = new List<StoreSupplierSalesDetail>();
+            LogSkippedBranchCodeRows("分店供应商销售统计", salesData);
 
             // 按日期、分店、供应商分组统计
             var groupedData = salesData
+                // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                .Where(d => !string.IsNullOrWhiteSpace(d.BranchCode))
                 .GroupBy(d =>
                 {
+                    var branchCode = d.BranchCode!;
                     var productCode = d.ProductCode!;
                     PosmProductSupplierMapping? mapping = null;
                     if (supplierMapping.TryGetValue(productCode, out mapping))
@@ -974,7 +988,7 @@ namespace BlazorApp.Api.Services
                         return new
                         {
                             Date = d.Date,
-                            BranchCode = d.BranchCode ?? string.Empty,
+                            BranchCode = branchCode,
                             SupplierCode = supplierCode ?? string.Empty,
                         };
                     }
@@ -982,7 +996,7 @@ namespace BlazorApp.Api.Services
                     return new
                     {
                         Date = d.Date,
-                        BranchCode = d.BranchCode ?? string.Empty,
+                        BranchCode = branchCode,
                         SupplierCode = string.Empty,
                     };
                 })
@@ -1091,11 +1105,15 @@ namespace BlazorApp.Api.Services
         )
         {
             var statisticsList = new List<AustralianSupplierStoreSalesDetail>();
+            LogSkippedBranchCodeRows("澳洲供应商分店销售统计", salesData);
 
             // 按日期、分店、供应商分组统计（仅限澳洲本地供应商）
             var groupedData = salesData
+                // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                .Where(d => !string.IsNullOrWhiteSpace(d.BranchCode))
                 .GroupBy(d =>
                 {
+                    var branchCode = d.BranchCode!;
                     var productCode = d.ProductCode!;
                     PosmProductSupplierMapping? mapping = null;
                     if (supplierMapping.TryGetValue(productCode, out mapping))
@@ -1103,7 +1121,7 @@ namespace BlazorApp.Api.Services
                         return new
                         {
                             Date = d.Date,
-                            BranchCode = d.BranchCode ?? string.Empty,
+                            BranchCode = branchCode,
                             SupplierCode = mapping.LocalSupplierCode ?? string.Empty,
                         };
                     }
@@ -1111,7 +1129,7 @@ namespace BlazorApp.Api.Services
                     return new
                     {
                         Date = d.Date,
-                        BranchCode = d.BranchCode ?? string.Empty,
+                        BranchCode = branchCode,
                         SupplierCode = string.Empty,
                     };
                 })
@@ -1172,11 +1190,15 @@ namespace BlazorApp.Api.Services
         )
         {
             var statisticsList = new List<ChinaSupplierStoreSalesDetail>();
+            LogSkippedBranchCodeRows("中国供应商分店销售统计", salesData);
 
             // 按日期、分店、供应商分组统计（仅限中国供应商）
             var groupedData = salesData
+                // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                .Where(d => !string.IsNullOrWhiteSpace(d.BranchCode))
                 .GroupBy(d =>
                 {
+                    var branchCode = d.BranchCode!;
                     var productCode = d.ProductCode!;
                     PosmProductSupplierMapping? mapping = null;
                     if (
@@ -1188,7 +1210,7 @@ namespace BlazorApp.Api.Services
                         return new
                         {
                             Date = d.Date,
-                            BranchCode = d.BranchCode ?? string.Empty,
+                            BranchCode = branchCode,
                             SupplierCode = mapping.ChinaSupplierCode ?? string.Empty,
                         };
                     }
@@ -1197,14 +1219,18 @@ namespace BlazorApp.Api.Services
                 })
                 .Where(g => g != null)
                 .Where(g => g!.Key != null && !string.IsNullOrEmpty(g.Key.SupplierCode))
-                .Select(g => new
+                .Select(g =>
                 {
-                    g!.Key.Date,
-                    g.Key.BranchCode,
-                    g.Key.SupplierCode,
-                    TotalAmount = g.Sum(d => d.TotalAmount),
-                    TotalQuantity = g.Sum(d => d.TotalQuantity),
-                    OrderCount = g.Select(d => d.OrderNo).Distinct().Count(),
+                    var key = g!.Key!;
+                    return new
+                    {
+                        key.Date,
+                        key.BranchCode,
+                        key.SupplierCode,
+                        TotalAmount = g.Sum(d => d.TotalAmount),
+                        TotalQuantity = g.Sum(d => d.TotalQuantity),
+                        OrderCount = g.Select(d => d.OrderNo).Distinct().Count(),
+                    };
                 })
                 .ToList();
 
@@ -1289,13 +1315,13 @@ namespace BlazorApp.Api.Services
 
                 if (toInsert.Any())
                 {
-                    await InsertInBatches(toInsert, mainContext);
+                    InsertInBatches(toInsert, mainContext);
                     _logger.LogInformation("批量插入 {Count} 条供应商统计记录", toInsert.Count);
                 }
 
                 if (toUpdate.Any())
                 {
-                    await UpdateInBatches(toUpdate, mainContext);
+                    UpdateInBatches(toUpdate, mainContext);
                     _logger.LogInformation(
                         "批量更新 {Count} 条供应商统计记录（累加）",
                         toUpdate.Count
@@ -1362,13 +1388,13 @@ namespace BlazorApp.Api.Services
 
                 if (toInsert.Any())
                 {
-                    await InsertInBatches(toInsert, mainContext);
+                    InsertInBatches(toInsert, mainContext);
                     _logger.LogInformation("批量插入 {Count} 条每日统计记录", toInsert.Count);
                 }
 
                 if (toUpdate.Any())
                 {
-                    await UpdateInBatches(toUpdate, mainContext);
+                    UpdateInBatches(toUpdate, mainContext);
                     _logger.LogInformation("批量更新 {Count} 条每日统计记录", toUpdate.Count);
                 }
             }
@@ -1436,13 +1462,13 @@ namespace BlazorApp.Api.Services
 
                 if (toInsert.Any())
                 {
-                    await InsertInBatches(toInsert, mainContext);
+                    InsertInBatches(toInsert, mainContext);
                     _logger.LogInformation("批量插入 {Count} 条分时统计记录", toInsert.Count);
                 }
 
                 if (toUpdate.Any())
                 {
-                    await UpdateInBatches(toUpdate, mainContext);
+                    UpdateInBatches(toUpdate, mainContext);
                     _logger.LogInformation("批量更新 {Count} 条分时统计记录", toUpdate.Count);
                 }
             }
@@ -1507,13 +1533,13 @@ namespace BlazorApp.Api.Services
 
                 if (toInsert.Any())
                 {
-                    await InsertInBatches(toInsert, mainContext);
+                    InsertInBatches(toInsert, mainContext);
                     _logger.LogInformation("批量插入 {Count} 条分店统计记录", toInsert.Count);
                 }
 
                 if (toUpdate.Any())
                 {
-                    await UpdateInBatches(toUpdate, mainContext);
+                    UpdateInBatches(toUpdate, mainContext);
                     _logger.LogInformation("批量更新 {Count} 条分店统计记录", toUpdate.Count);
                 }
             }
@@ -1582,13 +1608,13 @@ namespace BlazorApp.Api.Services
 
                 if (toInsert.Any())
                 {
-                    await InsertInBatches(toInsert, mainContext);
+                    InsertInBatches(toInsert, mainContext);
                     _logger.LogInformation("批量插入 {Count} 条供应商分店统计记录", toInsert.Count);
                 }
 
                 if (toUpdate.Any())
                 {
-                    await UpdateInBatches(toUpdate, mainContext);
+                    UpdateInBatches(toUpdate, mainContext);
                     _logger.LogInformation("批量更新 {Count} 条供应商分店统计记录", toUpdate.Count);
                 }
             }
@@ -1627,7 +1653,7 @@ namespace BlazorApp.Api.Services
                     if (statistics.Any())
                     {
                         // 插入新数据
-                        await InsertInBatches(statistics, mainContext);
+                        InsertInBatches(statistics, mainContext);
                         _logger.LogInformation(
                             "批量插入 {Count} 条澳洲供应商门店统计记录",
                             statistics.Count
@@ -1677,7 +1703,7 @@ namespace BlazorApp.Api.Services
                     if (statistics.Any())
                     {
                         // 插入新数据
-                        await InsertInBatches(statistics, mainContext);
+                        InsertInBatches(statistics, mainContext);
                         _logger.LogInformation(
                             "批量插入 {Count} 条中国供应商门店统计记录",
                             statistics.Count
@@ -1699,6 +1725,29 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        private void LogSkippedBranchCodeRows(
+            string statisticName,
+            IReadOnlyCollection<SalesDataAggregate> salesData
+        )
+        {
+            var skippedRows = salesData
+                .Where(data => string.IsNullOrWhiteSpace(data.BranchCode))
+                .ToList();
+            if (skippedRows.Count == 0)
+            {
+                return;
+            }
+
+            // 分店维度不写空编码统计行，但必须把跳过口径写入日志，便于排查源数据异常。
+            _logger.LogWarning(
+                "{StatisticName} 跳过 {Count} 条缺少分店编码的销售记录，金额合计 {Amount}，数量合计 {Quantity}",
+                statisticName,
+                skippedRows.Count,
+                skippedRows.Sum(data => data.TotalAmount),
+                skippedRows.Sum(data => data.TotalQuantity)
+            );
+        }
+
         /// <summary>
         /// 批量插入数据
         /// 使用 Fastest.BulkCopy 提高插入性能
@@ -1708,7 +1757,7 @@ namespace BlazorApp.Api.Services
         /// <param name="context">数据库上下文</param>
         /// <param name="batchSize">批次大小</param>
         /// <param name="commandTimeoutSeconds">命令超时时间</param>
-        private async Task InsertInBatches<TEntity>(
+        private void InsertInBatches<TEntity>(
             List<TEntity> entities,
             SqlSugarContext context,
             int batchSize = BatchSize,
@@ -1764,7 +1813,7 @@ namespace BlazorApp.Api.Services
         /// <param name="context">数据库上下文</param>
         /// <param name="batchSize">批次大小</param>
         /// <param name="commandTimeoutSeconds">命令超时时间</param>
-        private async Task UpdateInBatches<TEntity>(
+        private void UpdateInBatches<TEntity>(
             List<TEntity> entities,
             SqlSugarContext context,
             int batchSize = BatchSize,

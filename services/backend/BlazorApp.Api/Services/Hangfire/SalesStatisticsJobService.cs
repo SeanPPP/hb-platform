@@ -371,12 +371,12 @@ namespace BlazorApp.Api.Services
                             && so.OrderTime != null
                             && so.OrderTime.Value.Date == date
                     )
-                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date })
+                    .GroupBy((pd, so) => new { Date = so.OrderTime!.Value.Date })
                     .Select(
                         (pd, so) =>
                             new
                             {
-                                Date = so.OrderTime.Value.Date,
+                                Date = so.OrderTime!.Value.Date,
                                 // 按支付明细统计总金额
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
                                 // 计算总数量
@@ -473,8 +473,8 @@ namespace BlazorApp.Api.Services
                         (pd, so) =>
                             new
                             {
-                                Date = so.OrderTime.Value.Date,
-                                Hour = so.OrderTime.Value.Hour,
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
                                 so.BranchCode,
                             }
                     )
@@ -482,8 +482,8 @@ namespace BlazorApp.Api.Services
                         (pd, so) =>
                             new
                             {
-                                Date = so.OrderTime.Value.Date,
-                                Hour = so.OrderTime.Value.Hour,
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
                                 TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
@@ -543,17 +543,29 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
+                LogSkippedBranchCodeRows(
+                    "分时分店销售统计",
+                    allHourlyData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 为每个分店创建分时统计记录
                 foreach (var data in allHourlyData)
                 {
-                    var store = storeDict.GetValueOrDefault(data.BranchCode);
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
+                    var store = storeDict.GetValueOrDefault(branchCode);
 
                     var storeStatistic = new HourlySalesStatistic
                     {
                         Date = data.Date,
                         Hour = data.Hour,
-                        BranchCode = data.BranchCode,
-                        BranchName = store?.StoreName ?? data.BranchCode ?? string.Empty,
+                        BranchCode = branchCode,
+                        BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = data.TotalAmount,
                         TotalQuantity = (int)data.TotalQuantity,
                         CustomerCount = data.CustomerCount,
@@ -892,13 +904,13 @@ namespace BlazorApp.Api.Services
                 // 设置日期过滤条件
                 if (isSingleDate)
                 {
-                    query = query.Where(o => o.OrderTime.Value.Date == targetStartDate);
+                    query = query.Where(o => o.OrderTime!.Value.Date == targetStartDate);
                 }
                 else
                 {
                     query = query.Where(o =>
-                        o.OrderTime.Value.Date >= targetStartDate
-                        && o.OrderTime.Value.Date <= targetEndDate
+                        o.OrderTime!.Value.Date >= targetStartDate
+                        && o.OrderTime!.Value.Date <= targetEndDate
                     );
                 }
 
@@ -907,8 +919,10 @@ namespace BlazorApp.Api.Services
                 {
                     query = query.Where(
                         (o, d, m) =>
-                            supplierCodes.Contains(m.LocalSupplierCode)
-                            || supplierCodes.Contains(m.ChinaSupplierCode)
+                            (m.LocalSupplierCode != null
+                                && supplierCodes.Contains(m.LocalSupplierCode))
+                            || (m.ChinaSupplierCode != null
+                                && supplierCodes.Contains(m.ChinaSupplierCode))
                     );
                 }
 
@@ -962,7 +976,7 @@ namespace BlazorApp.Api.Services
                     .Select(g => new SupplierSalesStatistic
                     {
                         Date = g.Key.Date,
-                        SupplierCode = g.Key.ChinaSupplierCode,
+                        SupplierCode = g.Key.ChinaSupplierCode ?? string.Empty,
                         IsDomestic = true,
                         TotalAmount = g.Sum(x => x.TotalAmount) ?? 0m,
                         TotalQuantity = (int)g.Sum(x => x.Quantity),
@@ -985,7 +999,9 @@ namespace BlazorApp.Api.Services
                 if (allLocalCodes.Any())
                 {
                     var localSuppliers = await _context.HBLocalSupplierDb.GetListAsync(s =>
-                        allLocalCodes.Contains(s.LocalSupplierCode) && !s.IsDeleted
+                        s.LocalSupplierCode != null
+                        && allLocalCodes.Contains(s.LocalSupplierCode)
+                        && !s.IsDeleted
                     );
                     foreach (var s in localSuppliers)
                     {
@@ -1000,7 +1016,9 @@ namespace BlazorApp.Api.Services
                 if (allChinaCodes.Any())
                 {
                     var chinaSuppliers = await _context.ChinaSupplierDb.GetListAsync(s =>
-                        allChinaCodes.Contains(s.SupplierCode) && !s.IsDeleted
+                        s.SupplierCode != null
+                        && allChinaCodes.Contains(s.SupplierCode)
+                        && !s.IsDeleted
                     );
                     foreach (var s in chinaSuppliers)
                     {
@@ -1718,34 +1736,64 @@ namespace BlazorApp.Api.Services
                 !string.IsNullOrWhiteSpace(branchCode)
                 && (!targetBranchCodes.Any() || targetBranchCodes.Contains(branchCode));
 
-            // 金额仍以支付明细为准；只在内存中解析分店，避免订单分店为空时漏入统计。
-            var amountByBranch = paymentRows
+            var resolvedPaymentRows = paymentRows
                 .Select(row => new
                 {
                     BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
                     row.Amount,
                 })
-                .Where(row => IsTargetBranch(row.BranchCode))
-                .GroupBy(row => row.BranchCode)
-                .ToDictionary(group => group.Key, group => group.Sum(row => row.Amount));
+                .ToList();
+            LogSkippedBranchCodeRows(
+                "分店每日销售统计金额",
+                resolvedPaymentRows,
+                row => row.BranchCode,
+                row => row.Amount,
+                _ => 0m
+            );
 
-            // 销量使用销售明细 Quantity，不能使用订单头 ItemCount。
-            var quantityByBranch = quantityRows
+            var resolvedQuantityRows = quantityRows
                 .Select(row => new
                 {
                     BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
                     row.Quantity,
                 })
-                .Where(row => IsTargetBranch(row.BranchCode))
-                .GroupBy(row => row.BranchCode)
-                .ToDictionary(group => group.Key, group => group.Sum(row => row.Quantity));
+                .ToList();
+            LogSkippedBranchCodeRows(
+                "分店每日销售统计销量",
+                resolvedQuantityRows,
+                row => row.BranchCode,
+                _ => 0m,
+                row => row.Quantity
+            );
 
-            var orderCountByBranch = orderRows
+            var resolvedOrderRows = orderRows
                 .Select(row => new
                 {
                     row.OrderGuid,
                     BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
                 })
+                .ToList();
+            LogSkippedBranchCodeRows(
+                "分店每日销售统计订单数",
+                resolvedOrderRows,
+                row => row.BranchCode,
+                _ => 0m,
+                _ => 0m
+            );
+
+            // 金额仍以支付明细为准；只在内存中解析分店，避免订单分店为空时漏入统计。
+            var amountByBranch = resolvedPaymentRows
+                .Where(row => IsTargetBranch(row.BranchCode))
+                .GroupBy(row => row.BranchCode)
+                .ToDictionary(group => group.Key, group => group.Sum(row => row.Amount));
+
+            // 销量使用销售明细 Quantity，不能使用订单头 ItemCount。
+            var quantityByBranch = resolvedQuantityRows
+                .Where(row => IsTargetBranch(row.BranchCode))
+                .GroupBy(row => row.BranchCode)
+                .ToDictionary(group => group.Key, group => group.Sum(row => row.Quantity));
+
+            var orderCountByBranch = resolvedOrderRows
                 .Where(row => IsTargetBranch(row.BranchCode) && !string.IsNullOrWhiteSpace(row.OrderGuid))
                 .GroupBy(row => row.BranchCode)
                 .ToDictionary(
@@ -2318,12 +2366,12 @@ namespace BlazorApp.Api.Services
                 // 设置日期过滤条件
                 if (isSingleDate)
                 {
-                    query = query.Where(o => o.OrderTime.Value.Date == startDate);
+                    query = query.Where(o => o.OrderTime!.Value.Date == startDate);
                 }
                 else
                 {
                     query = query.Where(o =>
-                        o.OrderTime.Value.Date >= startDate && o.OrderTime.Value.Date <= endDate
+                        o.OrderTime!.Value.Date >= startDate && o.OrderTime!.Value.Date <= endDate
                     );
                 }
 
@@ -2332,8 +2380,10 @@ namespace BlazorApp.Api.Services
                 {
                     query = query.Where(
                         (o, d, m) =>
-                            supplierCodes.Contains(m.LocalSupplierCode)
-                            || supplierCodes.Contains(m.ChinaSupplierCode)
+                            (m.LocalSupplierCode != null
+                                && supplierCodes.Contains(m.LocalSupplierCode))
+                            || (m.ChinaSupplierCode != null
+                                && supplierCodes.Contains(m.ChinaSupplierCode))
                     );
                 }
 
@@ -2380,7 +2430,7 @@ namespace BlazorApp.Api.Services
                     .Select(g => new SupplierSalesStatistic
                     {
                         Date = g.Key.Date,
-                        SupplierCode = g.Key.ChinaSupplierCode,
+                        SupplierCode = g.Key.ChinaSupplierCode!,
                         IsDomestic = true,
                         TotalAmount = g.Sum(x => x.TotalAmount) ?? 0m,
                         TotalQuantity = (int)g.Sum(x => x.Quantity),
@@ -2402,7 +2452,9 @@ namespace BlazorApp.Api.Services
                 if (allLocalCodes.Any())
                 {
                     var localSuppliers = await context.HBLocalSupplierDb.GetListAsync(s =>
-                        allLocalCodes.Contains(s.LocalSupplierCode) && !s.IsDeleted
+                        s.LocalSupplierCode != null
+                        && allLocalCodes.Contains(s.LocalSupplierCode)
+                        && !s.IsDeleted
                     );
                     foreach (var s in localSuppliers)
                     {
@@ -2417,7 +2469,9 @@ namespace BlazorApp.Api.Services
                 if (allChinaCodes.Any())
                 {
                     var chinaSuppliers = await context.ChinaSupplierDb.GetListAsync(s =>
-                        allChinaCodes.Contains(s.SupplierCode) && !s.IsDeleted
+                        s.SupplierCode != null
+                        && allChinaCodes.Contains(s.SupplierCode)
+                        && !s.IsDeleted
                     );
                     foreach (var s in chinaSuppliers)
                     {
@@ -2793,10 +2847,21 @@ namespace BlazorApp.Api.Services
 
                 var statisticsList = new List<StoreSupplierSalesDetail>();
 
+                LogSkippedBranchCodeRows(
+                    "分店供应商销售统计",
+                    storeSupplierData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 构建每个门店供应商的统计记录
                 foreach (var data in storeSupplierData)
                 {
-                    var branchCode = data.BranchCode ?? string.Empty;
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
                     var localSupplierCode = data.LocalSupplierCode ?? string.Empty;
                     var chinaSupplierCode = data.ChinaSupplierCode;
 
@@ -3500,12 +3565,12 @@ namespace BlazorApp.Api.Services
                             && so.OrderTime != null
                             && so.OrderTime.Value.Date == date
                     )
-                    .GroupBy((pd, so) => new { Date = so.OrderTime.Value.Date })
+                    .GroupBy((pd, so) => new { Date = so.OrderTime!.Value.Date })
                     .Select(
                         (pd, so) =>
                             new
                             {
-                                Date = so.OrderTime.Value.Date,
+                                Date = so.OrderTime!.Value.Date,
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
                                 TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
                                 OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
@@ -3604,8 +3669,8 @@ namespace BlazorApp.Api.Services
                         (pd, so) =>
                             new
                             {
-                                Date = so.OrderTime.Value.Date,
-                                Hour = so.OrderTime.Value.Hour,
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
                                 so.BranchCode,
                             }
                     )
@@ -3613,8 +3678,8 @@ namespace BlazorApp.Api.Services
                         (pd, so) =>
                             new
                             {
-                                Date = so.OrderTime.Value.Date,
-                                Hour = so.OrderTime.Value.Hour,
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
                                 TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
@@ -3674,17 +3739,29 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
+                LogSkippedBranchCodeRows(
+                    "分时分店销售统计",
+                    allHourlyData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 为每个分店创建分时统计记录
                 foreach (var data in allHourlyData)
                 {
-                    var store = storeDict.GetValueOrDefault(data.BranchCode);
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
+                    var store = storeDict.GetValueOrDefault(branchCode);
 
                     var storeStatistic = new HourlySalesStatistic
                     {
                         Date = data.Date,
                         Hour = data.Hour,
-                        BranchCode = data.BranchCode,
-                        BranchName = store?.StoreName ?? data.BranchCode ?? string.Empty,
+                        BranchCode = branchCode,
+                        BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = data.TotalAmount,
                         TotalQuantity = (int)data.TotalQuantity,
                         CustomerCount = data.CustomerCount,
@@ -4001,10 +4078,21 @@ namespace BlazorApp.Api.Services
 
                 var statisticsList = new List<StoreSupplierSalesDetail>();
 
+                LogSkippedBranchCodeRows(
+                    "分店供应商销售统计",
+                    storeSupplierData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 构建每个门店供应商的统计记录
                 foreach (var data in storeSupplierData)
                 {
-                    var branchCode = data.BranchCode ?? string.Empty;
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
                     var localSupplierCode = data.LocalSupplierCode ?? string.Empty;
                     var chinaSupplierCode = data.ChinaSupplierCode;
 
@@ -4233,10 +4321,21 @@ namespace BlazorApp.Api.Services
 
                 var statisticsList = new List<AustralianSupplierStoreSalesDetail>();
 
+                LogSkippedBranchCodeRows(
+                    "澳洲供应商分店销售统计",
+                    storeSupplierData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 构建每个澳洲供应商门店的统计记录
                 foreach (var data in storeSupplierData)
                 {
-                    var branchCode = data.BranchCode ?? string.Empty;
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
                     var localSupplierCode = data.LocalSupplierCode ?? string.Empty;
 
                     var supplierCode = localSupplierCode;
@@ -4411,10 +4510,21 @@ namespace BlazorApp.Api.Services
 
                 var statisticsList = new List<ChinaSupplierStoreSalesDetail>();
 
+                LogSkippedBranchCodeRows(
+                    "中国供应商分店销售统计",
+                    storeSupplierData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 构建每个中国供应商门店的统计记录
                 foreach (var data in storeSupplierData)
                 {
-                    var branchCode = data.BranchCode ?? string.Empty;
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
                     var chinaSupplierCode = data.ChinaSupplierCode ?? string.Empty;
 
                     if (string.IsNullOrEmpty(chinaSupplierCode))
@@ -4591,10 +4701,21 @@ namespace BlazorApp.Api.Services
 
                 var statisticsList = new List<AustralianSupplierStoreSalesDetail>();
 
+                LogSkippedBranchCodeRows(
+                    "澳洲供应商分店销售统计",
+                    storeSupplierData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 构建每个澳洲供应商门店的统计记录
                 foreach (var data in storeSupplierData)
                 {
-                    var branchCode = data.BranchCode ?? string.Empty;
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
                     var localSupplierCode = data.LocalSupplierCode ?? string.Empty;
 
                     var supplierCode = localSupplierCode;
@@ -4820,10 +4941,21 @@ namespace BlazorApp.Api.Services
 
                 var statisticsList = new List<ChinaSupplierStoreSalesDetail>();
 
+                LogSkippedBranchCodeRows(
+                    "中国供应商分店销售统计",
+                    storeSupplierData,
+                    data => data.BranchCode,
+                    data => data.TotalAmount,
+                    data => data.TotalQuantity
+                );
+
                 // 构建每个中国供应商门店的统计记录
                 foreach (var data in storeSupplierData)
                 {
-                    var branchCode = data.BranchCode ?? string.Empty;
+                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                    if (string.IsNullOrWhiteSpace(data.BranchCode))
+                        continue;
+                    var branchCode = data.BranchCode;
                     var chinaSupplierCode = data.ChinaSupplierCode ?? string.Empty;
 
                     if (string.IsNullOrEmpty(chinaSupplierCode))
@@ -4945,6 +5077,32 @@ namespace BlazorApp.Api.Services
                 logger.LogError(ex, "更新中国供应商门店统计数据失败: {Date}", date);
                 throw;
             }
+        }
+
+        private void LogSkippedBranchCodeRows<T>(
+            string statisticName,
+            IEnumerable<T> rows,
+            Func<T, string?> branchCodeSelector,
+            Func<T, decimal> amountSelector,
+            Func<T, decimal> quantitySelector
+        )
+        {
+            var skippedRows = rows
+                .Where(row => string.IsNullOrWhiteSpace(branchCodeSelector(row)))
+                .ToList();
+            if (skippedRows.Count == 0)
+            {
+                return;
+            }
+
+            // 分店维度不写空编码统计行，但必须把跳过口径写入日志，便于排查源数据异常。
+            _logger.LogWarning(
+                "{StatisticName} 跳过 {Count} 条缺少分店编码的销售记录，金额合计 {Amount}，数量合计 {Quantity}",
+                statisticName,
+                skippedRows.Count,
+                skippedRows.Sum(amountSelector),
+                skippedRows.Sum(quantitySelector)
+            );
         }
     }
 }

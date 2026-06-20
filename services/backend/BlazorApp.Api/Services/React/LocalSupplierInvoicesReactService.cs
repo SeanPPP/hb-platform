@@ -68,7 +68,9 @@ namespace BlazorApp.Api.Services.React
                     }
                     else
                     {
-                        query = query.Where((h, st, sup) => allowedStoreCodes.Contains(h.StoreCode));
+                        query = query.Where((h, st, sup) =>
+                            h.StoreCode != null && allowedStoreCodes.Contains(h.StoreCode)
+                        );
                     }
                 }
 
@@ -178,7 +180,7 @@ namespace BlazorApp.Api.Services.React
                             .Where(d =>
                                 d.IsDeleted == false
                                 && (
-                                    d.ItemNumber.Contains(keyword)
+                                    (d.ItemNumber != null && d.ItemNumber.Contains(keyword))
                                     || (d.Barcode != null && d.Barcode.Contains(keyword))
                                     || (
                                         d.StoreProductCode != null
@@ -2081,7 +2083,7 @@ namespace BlazorApp.Api.Services.React
                 var purchasePriceToUpdate = updateFields.PurchasePrice ?? detail.PurchasePrice;
                 if (IsPositiveValue(purchasePriceToUpdate))
                 {
-                    storePrice.PurchasePrice = purchasePriceToUpdate.Value;
+                    storePrice.PurchasePrice = purchasePriceToUpdate.GetValueOrDefault();
                     columns.Add(nameof(StoreRetailPrice.PurchasePrice));
                 }
                 else
@@ -2096,7 +2098,7 @@ namespace BlazorApp.Api.Services.React
                 var retailPriceToUpdate = updateFields.RetailPrice ?? detail.RetailPrice ?? detail.NewAutoRetailPrice;
                 if (IsPositiveValue(retailPriceToUpdate))
                 {
-                    storePrice.StoreRetailPriceValue = retailPriceToUpdate.Value;
+                    storePrice.StoreRetailPriceValue = retailPriceToUpdate.GetValueOrDefault();
                     columns.Add(nameof(StoreRetailPrice.StoreRetailPriceValue));
                 }
                 else
@@ -2117,7 +2119,7 @@ namespace BlazorApp.Api.Services.React
                 var isSpecialProductToUpdate = updateFields.IsSpecialProduct ?? detail.IsSpecialProduct;
                 if (isSpecialProductToUpdate != null)
                 {
-                    storePrice.IsSpecialProduct = isSpecialProductToUpdate.Value;
+                    storePrice.IsSpecialProduct = isSpecialProductToUpdate.GetValueOrDefault();
                     columns.Add(nameof(StoreRetailPrice.IsSpecialProduct));
                 }
                 else
@@ -2131,7 +2133,7 @@ namespace BlazorApp.Api.Services.React
                 var discountRateToUpdate = updateFields.DiscountRate ?? detail.DiscountRate;
                 if (IsPositiveValue(discountRateToUpdate))
                 {
-                    storePrice.DiscountRate = discountRateToUpdate.Value;
+                    storePrice.DiscountRate = discountRateToUpdate.GetValueOrDefault();
                     columns.Add(nameof(StoreRetailPrice.DiscountRate));
                 }
                 else
@@ -2357,8 +2359,10 @@ namespace BlazorApp.Api.Services.React
                 var allPotentialPrices = await db.Queryable<StoreRetailPrice>()
                     .Where(sp =>
                         sp.IsDeleted == false
+                        && sp.StoreCode != null
                         && targetStoreCodes.Contains(sp.StoreCode)
-                        && productCodes.Contains(sp.ProductCode!)
+                        && sp.ProductCode != null
+                        && productCodes.Contains(sp.ProductCode)
                     )
                     .ToListAsync();
 
@@ -2402,7 +2406,7 @@ namespace BlazorApp.Api.Services.React
                             }
 
                             // 更新到分店勾选进货价时，同步商品主档进货价；同一商品多条明细按最后一条有效明细生效。
-                            product.PurchasePrice = purchasePriceToUpdate.Value;
+                            product.PurchasePrice = purchasePriceToUpdate.GetValueOrDefault();
                             product.UpdatedAt = now;
                             product.UpdatedBy = updatedBy;
                             productUpdateMap[productCode] = product;
@@ -2705,6 +2709,7 @@ namespace BlazorApp.Api.Services.React
                 var productCodes = productByItemNumber
                     .Values.Select(p => p.ProductCode)
                     .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Select(c => c!)
                     .Distinct()
                     .ToList();
 
@@ -2925,7 +2930,7 @@ namespace BlazorApp.Api.Services.React
                         && detail.PurchasePrice > 0;
                     if (shouldShowAutoPricingPreview)
                     {
-                        var purchasePrice = detail.PurchasePrice.Value;
+                        var purchasePrice = detail.PurchasePrice.GetValueOrDefault();
                         var strategy = _autoPricingService.FindBestStrategyForPrice(
                             purchasePrice,
                             supplierStrategies,
@@ -3319,12 +3324,14 @@ namespace BlazorApp.Api.Services.React
                 var barcodes = details
                     .Select(x => x.Barcode?.Trim())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!)
                     .Distinct()
                     .ToList();
 
                 var itemNumbers = details
                     .Select(x => x.ItemNumber?.Trim())
                     .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!)
                     .Distinct()
                     .ToList();
 
@@ -3372,7 +3379,10 @@ namespace BlazorApp.Api.Services.React
                         {
                             if (!productByBarcode.ContainsKey(p.Barcode))
                                 productByBarcode[p.Barcode] = new List<string>();
-                            productByBarcode[p.Barcode].Add(p.ProductCode);
+                            if (!string.IsNullOrWhiteSpace(p.ProductCode))
+                            {
+                                productByBarcode[p.Barcode].Add(p.ProductCode);
+                            }
                         }
                     }
 
@@ -3395,7 +3405,10 @@ namespace BlazorApp.Api.Services.React
                         {
                             if (!productByBarcode.ContainsKey(mc.MultiBarcode))
                                 productByBarcode[mc.MultiBarcode] = new List<string>();
-                            productByBarcode[mc.MultiBarcode].Add(mc.ProductCode);
+                            if (!string.IsNullOrWhiteSpace(mc.ProductCode))
+                            {
+                                productByBarcode[mc.MultiBarcode].Add(mc.ProductCode);
+                            }
                         }
                     }
                 }
@@ -3415,11 +3428,20 @@ namespace BlazorApp.Api.Services.React
                         1000,
                         async chunk =>
                             await db.Queryable<Product>()
-                                .Where(p => chunk.Contains(p.ProductCode) && p.IsDeleted == false)
+                                .Where(p =>
+                                    p.ProductCode != null
+                                    && chunk.Contains(p.ProductCode)
+                                    && p.IsDeleted == false
+                                )
                                 .ToListAsync()
                     );
                     foreach (var p in prods)
-                        productDetails[p.ProductCode] = p;
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.ProductCode))
+                        {
+                            productDetails[p.ProductCode] = p;
+                        }
+                    }
                 }
 
                 var supplierCodes = productDetails
@@ -3496,7 +3518,7 @@ namespace BlazorApp.Api.Services.React
                             detailDto.MatchedProducts.Add(
                                 new BarcodeAbnormalMatchedProductDto
                                 {
-                                    ProductCode = matchedProduct.ProductCode,
+                                    ProductCode = matchedProduct.ProductCode ?? string.Empty,
                                     ProductName = matchedProduct.ProductName ?? string.Empty,
                                     SupplierCode = matchedProduct.LocalSupplierCode ?? string.Empty,
                                     SupplierName = suppliers.GetValueOrDefault(
@@ -3603,12 +3625,19 @@ namespace BlazorApp.Api.Services.React
                 {
                     var allProducts = await db.Queryable<Product>()
                         .Where(p =>
-                            matchedProductCodes.Contains(p.ProductCode!) && p.IsDeleted == false
+                            p.ProductCode != null
+                            && matchedProductCodes.Contains(p.ProductCode)
+                            && p.IsDeleted == false
                         )
                         .ToListAsync();
 
                     foreach (var p in allProducts)
-                        productDetails[p.ProductCode] = p;
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.ProductCode))
+                        {
+                            productDetails[p.ProductCode] = p;
+                        }
+                    }
                 }
 
                 var supplierCodes = productDetails
@@ -3636,7 +3665,7 @@ namespace BlazorApp.Api.Services.React
                     MatchedProducts = productDetails
                         .Values.Select(p => new BarcodeAbnormalMatchedProductDto
                         {
-                            ProductCode = p.ProductCode,
+                            ProductCode = p.ProductCode ?? string.Empty,
                             ProductName = p.ProductName ?? string.Empty,
                             SupplierCode = p.LocalSupplierCode ?? string.Empty,
                             SupplierName = suppliers.GetValueOrDefault(
@@ -4804,19 +4833,39 @@ namespace BlazorApp.Api.Services.React
                     return result;
                 }
 
-                var invoiceGuidList = invoices.Select(i => i.InvoiceGUID).ToList();
+                var invoiceGuidList = invoices
+                    .Select(i => i.InvoiceGUID)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Select(guid => guid!)
+                    .ToList();
                 var details = await localDb
                     .Queryable<StoreLocalSupplierInvoiceDetails>()
-                    .Where(d => invoiceGuidList.Contains(d.InvoiceGUID) && d.IsDeleted == false)
+                    .Where(d =>
+                        d.InvoiceGUID != null
+                        && invoiceGuidList.Contains(d.InvoiceGUID)
+                        && d.IsDeleted == false
+                    )
                     .ToListAsync();
 
-                var hqInvoiceGuids = invoices.Select(i => i.InvoiceGUID).ToList();
+                var hqInvoiceGuids = invoices
+                    .Select(i => i.InvoiceGUID)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Select(guid => guid!)
+                    .ToList();
                 var existingHqInvoices = await hqDb.Queryable<RED_进货单主表Store>()
-                    .Where(h => hqInvoiceGuids.Contains(h.HGUID))
+                    .Where(h => h.HGUID != null && hqInvoiceGuids.Contains(h.HGUID))
                     .ToListAsync();
-                var existingHqInvoiceSet = existingHqInvoices.Select(h => h.HGUID).ToHashSet();
+                var existingHqInvoiceSet = existingHqInvoices
+                    .Select(h => h.HGUID)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Select(guid => guid!)
+                    .ToHashSet();
 
-                var hqDetailGuids = details.Select(d => d.DetailGUID).ToList();
+                var hqDetailGuids = details
+                    .Select(d => d.DetailGUID)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Select(guid => guid!)
+                    .ToList();
                 var existingHqDetails = new HashSet<string>();
                 if (hqDetailGuids.Any())
                 {
@@ -4825,11 +4874,16 @@ namespace BlazorApp.Api.Services.React
                     {
                         var chunk = hqDetailGuids.Skip(i).Take(chunkSize).ToList();
                         var chunkExisting = await hqDb.Queryable<RED_进货单详情表Store>()
-                            .Where(h => chunk.Contains(h.HGUID))
+                            .Where(h => h.HGUID != null && chunk.Contains(h.HGUID))
                             .Select(h => h.HGUID)
                             .ToListAsync();
                         foreach (var g in chunkExisting)
-                            existingHqDetails.Add(g);
+                        {
+                            if (!string.IsNullOrWhiteSpace(g))
+                            {
+                                existingHqDetails.Add(g);
+                            }
+                        }
                     }
                 }
 

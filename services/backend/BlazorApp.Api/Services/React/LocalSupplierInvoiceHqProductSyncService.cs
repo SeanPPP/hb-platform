@@ -339,11 +339,11 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var productCode = UuidHelper.GenerateUuid7();
+                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
-                    UUID = productCode,
-                    ProductCode = productCode,
+                    UUID = generatedProductCode,
+                    ProductCode = generatedProductCode,
                     ProductCategoryGUID = detail.ProductCategoryGUID,
                     LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
                     ItemNumber = detail.ItemNumber,
@@ -423,11 +423,11 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var productCode = UuidHelper.GenerateUuid7();
+                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
-                    UUID = productCode,
-                    ProductCode = productCode,
+                    UUID = generatedProductCode,
+                    ProductCode = generatedProductCode,
                     ProductCategoryGUID = detail.ProductCategoryGUID,
                     LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
                     ItemNumber = detail.ItemNumber,
@@ -455,8 +455,14 @@ namespace BlazorApp.Api.Services.React
                 // 已有商品是全局主档，这里只绑定明细并更新目标分店价格，避免越过分店范围修改商品资料。
             }
 
-            detail.ProductCode = product.ProductCode;
-            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode);
+            if (string.IsNullOrWhiteSpace(product.ProductCode))
+            {
+                throw new InvalidOperationException("同步分店进货单时商品编码不能为空");
+            }
+
+            var productCode = product.ProductCode;
+            detail.ProductCode = productCode;
+            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, productCode);
             detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
             detail.UpdatedAt = now;
             detail.UpdatedBy = updatedBy;
@@ -481,7 +487,8 @@ namespace BlazorApp.Api.Services.React
             var productCode = product.ProductCode!;
             var existingPrices = await db.Queryable<StoreRetailPrice>()
                 .Where(x =>
-                    storeCodes.Contains(x.StoreCode)
+                    x.StoreCode != null
+                    && storeCodes.Contains(x.StoreCode)
                     && x.ProductCode == productCode
                     && x.IsDeleted == false
                 )

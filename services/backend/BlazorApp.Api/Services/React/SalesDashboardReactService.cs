@@ -1437,7 +1437,12 @@ namespace BlazorApp.Api.Services.React
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date.AddDays(1);
 
-                var hasSupplierFilter = supplierCodes != null && supplierCodes.Any();
+                var filteredSupplierCodes = supplierCodes?
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct()
+                    .ToList();
+                var hasSupplierFilter = filteredSupplierCodes?.Count > 0;
                 int totalCount;
 
                 if (hasSupplierFilter)
@@ -1458,8 +1463,11 @@ namespace BlazorApp.Api.Services.React
                         );
                     }
 
+                    var requiredSupplierCodes = filteredSupplierCodes!;
                     supplierQuery = supplierQuery.Where(
-                        (o, d, m) => supplierCodes.Contains(m.ChinaSupplierCode ?? string.Empty)
+                        (o, d, m) =>
+                            m.ChinaSupplierCode != null
+                            && requiredSupplierCodes.Contains(m.ChinaSupplierCode)
                     );
 
                     totalCount = await supplierQuery.CountAsync();
@@ -1495,11 +1503,11 @@ namespace BlazorApp.Api.Services.React
                     {
                         products = await _context
                             .Db.Queryable<Product>()
-                            .Where(p => productCodes.Contains(p.ProductCode))
+                            .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                             .ToListAsync();
                     }
 
-                    var productDict = products.ToDictionary(p => p.ProductCode ?? string.Empty);
+                    var productDict = products.ToDictionary(p => p.ProductCode!);
 
                     var data = salesData
                         .Select(s => new SalesProductDetailDto
@@ -1593,7 +1601,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         products = await _context
                             .Db.Queryable<Product>()
-                            .Where(p => productCodes.Contains(p.ProductCode))
+                            .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                             .ToListAsync();
                     }
 
@@ -1826,13 +1834,17 @@ namespace BlazorApp.Api.Services.React
                         .ToListAsync();
 
                     // 步骤 8: 提取当前页面的产品代码列表
-                    var productCodes = groupedData.Select(x => x.ProductCode).ToList();
+                    var productCodes = groupedData
+                        .Select(x => x.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .ToList();
 
                     // 步骤 9: 查询产品的额外信息（ItemNumber、ProductImage）
                     var products = productCodes.Any()
                         ? await _context
                             .Db.Queryable<Product>()
-                            .Where(p => productCodes.Contains(p.ProductCode))
+                            .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                             .Select(p => new ProductInfo
                             {
                                 ProductCode = p.ProductCode ?? string.Empty,
@@ -2001,13 +2013,17 @@ namespace BlazorApp.Api.Services.React
                         .ToListAsync();
 
                     // 步骤 8: 提取当前页面的产品代码列表
-                    var productCodes = groupedData.Select(x => x.ProductCode).ToList();
+                    var productCodes = groupedData
+                        .Select(x => x.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .ToList();
 
                     // 步骤 9: 查询产品的额外信息
                     var products = productCodes.Any()
                         ? await _context
                             .Db.Queryable<Product>()
-                            .Where(p => productCodes.Contains(p.ProductCode))
+                            .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                             .Select(p => new ProductInfo
                             {
                                 ProductCode = p.ProductCode ?? string.Empty,
@@ -2599,7 +2615,7 @@ namespace BlazorApp.Api.Services.React
                         TotalRevenueLY = 0,
                         TotalQuantity = s.TotalQuantity,
                         TotalQuantityLY = 0,
-                        OrderCount = (int)s.OrderCount,
+                        OrderCount = (int)(s.OrderCount ?? 0),
                         OrderCountLY = 0,
                         HbRevenue = hbRevenueDict.GetValueOrDefault(s.BranchCode, 0),
                         HbRevenueLY = 0,
@@ -2678,7 +2694,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             item.TotalRevenueLY = compareItem.TotalRevenue;
                             item.TotalQuantityLY = compareItem.TotalQuantity;
-                            item.OrderCountLY = (int)compareItem.OrderCount;
+                            item.OrderCountLY = (int)(compareItem.OrderCount ?? 0);
                             item.HbRevenueLY = compareHbRevenueDict.GetValueOrDefault(
                                 item.BranchCode,
                                 0
@@ -2917,13 +2933,21 @@ namespace BlazorApp.Api.Services.React
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date;
 
+                var normalizedBranchCodes = branchCodes?
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!.Trim())
+                    .Distinct()
+                    .ToList();
+
                 var query = _context
                     .Db.Queryable<HourlySalesStatistic>()
                     .Where(s => s.Date >= startDate && s.Date <= endDate);
 
-                if (branchCodes != null && branchCodes.Any())
+                if (normalizedBranchCodes != null && normalizedBranchCodes.Any())
                 {
-                    query = query.Where(s => branchCodes.Contains(s.BranchCode));
+                    query = query.Where(s =>
+                        s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                    );
                 }
 
                 var hourlyData = await query
@@ -2938,7 +2962,12 @@ namespace BlazorApp.Api.Services.React
                     .ToListAsync()
                     .ContinueWith(t => t.Result.OrderBy(x => x.Hour).ToList());
 
-                var branchCodeSet = hourlyData.Select(h => h.BranchCode).Distinct().ToHashSet();
+                var branchCodeSet = hourlyData
+                    .Select(h => h.BranchCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct()
+                    .ToHashSet();
                 var storeMap = await GetStoreNameMapAsync(branchCodeSet);
 
                 var lyStartDate = dateRange.CompareStartDate;
@@ -2948,9 +2977,11 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<HourlySalesStatistic>()
                     .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
 
-                if (branchCodes != null && branchCodes.Any())
+                if (normalizedBranchCodes != null && normalizedBranchCodes.Any())
                 {
-                    lyQuery = lyQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                    lyQuery = lyQuery.Where(s =>
+                        s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                    );
                 }
 
                 var lyHourlyData = await lyQuery
@@ -3202,6 +3233,11 @@ namespace BlazorApp.Api.Services.React
                         .OrderByDescending(g => g.Sum(x => x.TotalAmount))
                         .ToList();
 
+                    if (weekDto == null)
+                    {
+                        continue;
+                    }
+
                     foreach (var branchGroup in branchGroups)
                     {
                         var branchCode = branchGroup.Key;
@@ -3243,6 +3279,7 @@ namespace BlazorApp.Api.Services.React
                                 YoYChange = branchYoYChange,
                                 Children = new List<WeeklyPerformanceHierarchyDto>(),
                             };
+                            weekDto.Children ??= new List<WeeklyPerformanceHierarchyDto>();
                             weekDto.Children.Add(branchDto);
                         }
 
@@ -3870,33 +3907,41 @@ namespace BlazorApp.Api.Services.React
         {
             var branchSet = branchCodes
                 .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!.Trim())
                 .Distinct()
                 .ToList();
             if (!branchSet.Any())
                 return new List<string>();
 
             var deviceCodes = await _posmContext.Db.Queryable<POSM_设备注册信息表>()
-                .Where(d => branchSet.Contains(d.分店代码))
+                .Where(d => d.分店代码 != null && branchSet.Contains(d.分店代码))
                 .Select(d => d.系统设备编号)
                 .ToListAsync();
             deviceCodes = deviceCodes
                 .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
                 .Distinct()
                 .ToList();
             if (!deviceCodes.Any())
                 return new List<string>();
 
-            return await _posmContext.Db.Queryable<SalesOrder>()
-                .Where(o =>
-                    o.Status == 1
-                    && o.OrderTime >= startDate
-                    && o.OrderTime < endExclusive
-                    && (o.BranchCode == null || o.BranchCode == "")
-                    && o.DeviceCode != null
-                    && deviceCodes.Contains(o.DeviceCode)
-                )
-                .Select(o => o.OrderGuid)
-                .ToListAsync();
+            return (
+                await _posmContext.Db.Queryable<SalesOrder>()
+                    .Where(o =>
+                        o.Status == 1
+                        && o.OrderTime >= startDate
+                        && o.OrderTime < endExclusive
+                        && (o.BranchCode == null || o.BranchCode == "")
+                        && o.DeviceCode != null
+                        && deviceCodes.Contains(o.DeviceCode)
+                    )
+                    .Select(o => o.OrderGuid)
+                    .ToListAsync()
+            )
+                .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                .Select(orderGuid => orderGuid!)
+                .Distinct()
+                .ToList();
         }
 
         private async Task<Dictionary<string, (string? Barcode, string? ProductName)>> GetPosmFallbackInfoFromStatisticsAsync(

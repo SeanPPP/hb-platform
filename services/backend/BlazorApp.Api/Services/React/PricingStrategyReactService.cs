@@ -287,7 +287,7 @@ namespace BlazorApp.Api.Services.React
                         MaxPrice = d.MaxPrice,
                         StartRate = d.StartRate,
                         EndRate = d.EndRate,
-                        Algorithm = d.Algorithm,
+                        Algorithm = d.Algorithm ?? "Linear",
                     })
                     .ToList();
                 await _context.PricingStrategyDetailDb.InsertRangeAsync(rules);

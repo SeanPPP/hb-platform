@@ -10,7 +10,7 @@ namespace BlazorApp.Shared.DTOs
     {
         [Required]
         [JsonPropertyName("supplierCode")]
-        public string SupplierCode { get; set; }
+        public string SupplierCode { get; set; } = string.Empty;
 
         /// <summary>
         /// Optional prefix code, e.g. "001"
@@ -102,7 +102,7 @@ namespace BlazorApp.Shared.DTOs
     public class UpdatePriceItemDto
     {
         [Required]
-        public string ProductCode { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
 
         public decimal? PrivateLabelPrice { get; set; }
     }
@@ -121,7 +121,7 @@ namespace BlazorApp.Shared.DTOs
     public class UpdateBatchItemDto
     {
         [Required]
-        public string ProductCode { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
 
         public string? ProductName { get; set; }
 
@@ -134,7 +134,7 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class CreateDomesticProductBatchResponse
     {
-        public string BatchNumber { get; set; }
+        public string BatchNumber { get; set; } = string.Empty;
         public int TotalCreated { get; set; }
         public int NormalProductCount { get; set; }
         public int SetProductCount { get; set; }
@@ -146,10 +146,10 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class BatchCreatedItemDto
     {
-        public string ProductCode { get; set; }
-        public string HBProductNo { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
+        public string HBProductNo { get; set; } = string.Empty;
         public string? Barcode { get; set; }
-        public string ProductName { get; set; }
+        public string ProductName { get; set; } = string.Empty;
         public int ProductType { get; set; }
         public decimal? PrivateLabelPrice { get; set; }
         public int? SetQuantity { get; set; }
@@ -162,10 +162,10 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class SubItemDto
     {
-        public string ProductCode { get; set; }
-        public string HBProductNo { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
+        public string HBProductNo { get; set; } = string.Empty;
         public string? Barcode { get; set; }
-        public string ProductName { get; set; }
+        public string ProductName { get; set; } = string.Empty;
         public decimal? PrivateLabelPrice { get; set; }
     }
 
@@ -174,8 +174,8 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class DomesticProductBatchDto
     {
-        public string BatchNumber { get; set; }
-        public string SupplierCode { get; set; }
+        public string BatchNumber { get; set; } = string.Empty;
+        public string SupplierCode { get; set; } = string.Empty;
         public string? SupplierName { get; set; }
         public DateTime CreatedTime { get; set; }
         public int NormalProductCount { get; set; }
@@ -189,8 +189,8 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class DomesticProductBatchDetailDto
     {
-        public string BatchNumber { get; set; }
-        public string SupplierCode { get; set; }
+        public string BatchNumber { get; set; } = string.Empty;
+        public string SupplierCode { get; set; } = string.Empty;
         public string? SupplierName { get; set; }
         public DateTime CreatedTime { get; set; }
         public string? Remark { get; set; }
@@ -215,10 +215,10 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class BatchDetailItemDto
     {
-        public string ProductCode { get; set; }
-        public string HBProductNo { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
+        public string HBProductNo { get; set; } = string.Empty;
         public string? Barcode { get; set; }
-        public string ProductName { get; set; }
+        public string ProductName { get; set; } = string.Empty;
 
         /// <summary>
         /// 0=Normal, 1=Set, 2=SetSubItem

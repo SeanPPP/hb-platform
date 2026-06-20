@@ -377,6 +377,7 @@ namespace BlazorApp.Api.Services.React
                     retail.H使用状态 == true
                     && product.H使用状态 == true
                     && supplierCodes.Contains(retail.H供应商编码)
+                    && product.H货号 != null
                     && itemNumbers.Contains(product.H货号)
                     && !string.IsNullOrEmpty(product.H商品编码)
                 )

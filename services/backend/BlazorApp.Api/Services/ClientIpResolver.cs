@@ -72,6 +72,11 @@ namespace BlazorApp.Api.Services
         {
             foreach (var value in context.Request.Headers[headerName])
             {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
                 foreach (var part in value.Split(','))
                 {
                     var candidate = NormalizeIpAddress(part);

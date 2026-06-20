@@ -12,6 +12,10 @@ namespace BlazorApp.Api.Filters
         public void Apply(OpenApiOperation operation, OperationFilterContext context)
         {
             var apiPath = context.ApiDescription.RelativePath;
+            if (string.IsNullOrEmpty(apiPath))
+            {
+                return;
+            }
 
             if (apiPath.Contains("/pda/", StringComparison.OrdinalIgnoreCase))
             {

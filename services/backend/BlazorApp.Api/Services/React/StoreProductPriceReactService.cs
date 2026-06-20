@@ -79,17 +79,23 @@ namespace BlazorApp.Api.Services.React
 
                 if (!string.IsNullOrWhiteSpace(query.ProductCode))
                 {
-                    baseQuery = baseQuery.Where(p => p.ProductCode.Contains(query.ProductCode));
+                    baseQuery = baseQuery.Where(p =>
+                        p.ProductCode != null && p.ProductCode.Contains(query.ProductCode)
+                    );
                 }
 
                 if (!string.IsNullOrWhiteSpace(query.ItemNumber))
                 {
-                    baseQuery = baseQuery.Where(p => p.ItemNumber.Contains(query.ItemNumber));
+                    baseQuery = baseQuery.Where(p =>
+                        p.ItemNumber != null && p.ItemNumber.Contains(query.ItemNumber)
+                    );
                 }
 
                 if (!string.IsNullOrWhiteSpace(query.Barcode))
                 {
-                    baseQuery = baseQuery.Where(p => p.Barcode.Contains(query.Barcode));
+                    baseQuery = baseQuery.Where(p =>
+                        p.Barcode != null && p.Barcode.Contains(query.Barcode)
+                    );
                 }
 
                 if (query.ProductType.HasValue)
@@ -267,31 +273,43 @@ namespace BlazorApp.Api.Services.React
 
                 try
                 {
-                    var query = db.Updateable<StoreRetailPrice>()
-                        .SetColumnsIF(
-                            dto.PurchasePrice.HasValue,
-                            x => x.PurchasePrice == dto.PurchasePrice.Value
-                        )
-                        .SetColumnsIF(
-                            dto.StoreRetailPriceValue.HasValue,
-                            x => x.StoreRetailPriceValue == dto.StoreRetailPriceValue.Value
-                        )
-                        .SetColumnsIF(
-                            dto.IsAutoPricing.HasValue,
-                            x => x.IsAutoPricing == dto.IsAutoPricing.Value
-                        )
-                        .SetColumnsIF(
-                            dto.IsSpecialProduct.HasValue,
-                            x => x.IsSpecialProduct == dto.IsSpecialProduct.Value
-                        )
-                        .SetColumnsIF(
-                            dto.DiscountRate.HasValue,
-                            x => x.DiscountRate == dto.DiscountRate.Value
-                        )
+                    var query = db.Updateable<StoreRetailPrice>();
+
+                    if (dto.PurchasePrice.HasValue)
+                    {
+                        query = query.SetColumns(x => x.PurchasePrice == dto.PurchasePrice.Value);
+                    }
+
+                    if (dto.StoreRetailPriceValue.HasValue)
+                    {
+                        query = query.SetColumns(x =>
+                            x.StoreRetailPriceValue == dto.StoreRetailPriceValue.Value
+                        );
+                    }
+
+                    if (dto.IsAutoPricing.HasValue)
+                    {
+                        query = query.SetColumns(x => x.IsAutoPricing == dto.IsAutoPricing.Value);
+                    }
+
+                    if (dto.IsSpecialProduct.HasValue)
+                    {
+                        query = query.SetColumns(x =>
+                            x.IsSpecialProduct == dto.IsSpecialProduct.Value
+                        );
+                    }
+
+                    if (dto.DiscountRate.HasValue)
+                    {
+                        query = query.SetColumns(x => x.DiscountRate == dto.DiscountRate.Value);
+                    }
+
+                    query = query
                         .SetColumns(x => x.UpdatedAt == DateTime.Now)
                         .SetColumns(x => x.UpdatedBy == updatedBy)
                         .Where(x =>
-                            dto.ProductCodes.Contains(x.ProductCode)
+                            x.ProductCode != null
+                            && dto.ProductCodes.Contains(x.ProductCode)
                             && x.IsDeleted == false
                             && x.StoreCode == dto.StoreCode
                         );
@@ -363,6 +381,7 @@ namespace BlazorApp.Api.Services.React
                         .With(SqlWith.NoLock)
                         .Where(x =>
                             x.StoreCode == dto.SourceStoreCode
+                            && x.ProductCode != null
                             && dto.ProductCodes.Contains(x.ProductCode)
                             && x.IsDeleted == false
                         )
@@ -374,7 +393,10 @@ namespace BlazorApp.Api.Services.React
                         return ApiResponse<object>.Error("未找到源分店的价格数据", "NOT_FOUND");
                     }
 
-                    var sourcePriceMap = sourcePrices.ToDictionary(x => x.ProductCode);
+                    var sourcePriceMap = sourcePrices
+                        .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                        .GroupBy(x => x.ProductCode!)
+                        .ToDictionary(g => g.Key, g => g.First());
 
                     var updateable = db.Updateable<StoreRetailPrice>()
                         .SetColumns(x => x.UpdatedAt == DateTime.Now)
@@ -542,7 +564,9 @@ namespace BlazorApp.Api.Services.React
 
                     var affectedRows = await updateable
                         .Where(x =>
-                            dto.TargetStoreCodes.Contains(x.StoreCode)
+                            x.StoreCode != null
+                            && dto.TargetStoreCodes.Contains(x.StoreCode)
+                            && x.ProductCode != null
                             && dto.ProductCodes.Contains(x.ProductCode)
                             && x.IsDeleted == false
                         )

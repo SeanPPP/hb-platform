@@ -75,6 +75,8 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="search">搜索关键词</param>
         /// <param name="supplierCode">供应商编码</param>
         /// <param name="isActive">是否启用</param>
+        /// <param name="sortField">排序字段</param>
+        /// <param name="sortDirection">排序方向</param>
         /// <returns>前缀分页列表</returns>
         [HttpGet]
         [Authorize(Roles = "Admin,WarehouseManager")]

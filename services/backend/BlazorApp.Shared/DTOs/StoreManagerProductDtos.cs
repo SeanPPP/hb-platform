@@ -22,8 +22,8 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreManagerProductListItemDto
     {
-        public string ProductCode { get; set; }
-        public string ProductName { get; set; }
+        public string ProductCode { get; set; } = string.Empty;
+        public string ProductName { get; set; } = string.Empty;
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
         public string? ProductImage { get; set; }
@@ -31,10 +31,10 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreManagerStorePriceDto
     {
-        public string UUID { get; set; }
-        public string StoreCode { get; set; }
-        public string StoreName { get; set; }
-        public string ProductCode { get; set; }
+        public string UUID { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string StoreName { get; set; } = string.Empty;
+        public string ProductCode { get; set; } = string.Empty;
         public decimal? PurchasePrice { get; set; }
         public decimal? StoreRetailPriceValue { get; set; }
         public bool IsAutoPricing { get; set; }
@@ -42,9 +42,9 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreManagerMultiCodePriceDto
     {
-        public string UUID { get; set; }
-        public string StoreCode { get; set; }
-        public string ProductCode { get; set; }
+        public string UUID { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string ProductCode { get; set; } = string.Empty;
         public string? MultiBarcode { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? MultiCodeRetailPrice { get; set; }
@@ -53,14 +53,14 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreManagerProductDetailDto
     {
-        public StoreManagerProductListItemDto Product { get; set; }
-        public List<StoreManagerStorePriceDto> StorePrices { get; set; }
-        public List<StoreManagerMultiCodePriceDto> MultiCodePrices { get; set; }
+        public StoreManagerProductListItemDto Product { get; set; } = new();
+        public List<StoreManagerStorePriceDto> StorePrices { get; set; } = new();
+        public List<StoreManagerMultiCodePriceDto> MultiCodePrices { get; set; } = new();
     }
 
     public class StoreManagerUpdatePriceDto
     {
-        public string UUID { get; set; }
+        public string UUID { get; set; } = string.Empty;
         public decimal? PurchasePrice { get; set; }
         public decimal? StoreRetailPriceValue { get; set; }
         public bool? IsAutoPricing { get; set; }
@@ -68,7 +68,7 @@ namespace BlazorApp.Shared.DTOs
 
     public class StoreManagerUpdateMultiCodePriceDto
     {
-        public string UUID { get; set; }
+        public string UUID { get; set; } = string.Empty;
         public decimal? PurchasePrice { get; set; }
         public decimal? MultiCodeRetailPrice { get; set; }
         public bool? IsAutoPricing { get; set; }

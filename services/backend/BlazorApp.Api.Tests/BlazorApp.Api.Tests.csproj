@@ -54,6 +54,7 @@
     <Compile Include="WarehouseProductHqSyncJobServiceTests.cs" />
     <Compile Include="DataSyncFullServiceWarehouseProductsTests.cs" />
     <Compile Include="DataSyncIncrementalPosmSupplierMappingsTests.cs" />
+    <Compile Include="DataSyncIncrementalStoreRetailPriceTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
@@ -74,6 +75,7 @@
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />
     <Compile Include="ProductSupplierImageBatchUpdateTests.cs" />
+    <Compile Include="ProductIntegrityServiceTests.cs" />
     <Compile Include="ProductStoreSyncJobServiceTests.cs" />
     <Compile Include="ReactProductStoreSyncJobContractTests.cs" />
     <Compile Include="SyncProductsToStoresRequestTests.cs" />

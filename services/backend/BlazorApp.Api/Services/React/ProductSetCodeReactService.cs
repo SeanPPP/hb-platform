@@ -1038,6 +1038,16 @@ namespace BlazorApp.Api.Services.React
                                 "SYNC_TO_STORES_ERROR"
                             );
                         }
+                        if (syncResult.Data == null)
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            _logger.LogError("同步到分店返回空结果: {Message}", syncResult.Message);
+                            return ApiResponse<BatchResultDto>.Error(
+                                $"同步到分店返回空结果: {syncResult.Message}",
+                                "SYNC_TO_STORES_EMPTY_RESULT"
+                            );
+                        }
+
                         syncedCount = syncResult.Data.Inserted + syncResult.Data.Updated;
                         _logger.LogInformation($"同步到分店: {syncedCount} 条");
 

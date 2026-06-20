@@ -726,7 +726,7 @@ namespace BlazorApp.Api.Services.React
 
                     var hqInfoUpdate =
                         hqDb.Updateable<BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表>()
-                            .Where(p => productCodes.Contains(p.H商品编码))
+                            .Where(p => p.H商品编码 != null && productCodes.Contains(p.H商品编码))
                             .SetColumns(p => p.FGC_LastModifier == "HBweb")
                             .SetColumns(p => p.FGC_LastModifyDate == now);
                     if (dto.ImportPrice.HasValue)
@@ -741,7 +741,7 @@ namespace BlazorApp.Api.Services.React
 
                     var hqStockUpdate =
                         hqDb.Updateable<BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表>()
-                            .Where(p => productCodes.Contains(p.H商品编码))
+                            .Where(p => p.H商品编码 != null && productCodes.Contains(p.H商品编码))
                             .SetColumns(p => p.FGC_LastModifier == "HBweb")
                             .SetColumns(p => p.FGC_LastModifyDate == now);
                     if (dto.ImportPrice.HasValue)
@@ -835,7 +835,7 @@ namespace BlazorApp.Api.Services.React
                             }
 
                             var pUpdate = db.Updateable<Product>()
-                                .Where(p => productCodes.Contains(p.ProductCode));
+                                .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode));
                             if (dto.ImportPrice.HasValue)
                                 pUpdate = pUpdate.SetColumns(p =>
                                     p.PurchasePrice == dto.ImportPrice.Value
@@ -849,7 +849,9 @@ namespace BlazorApp.Api.Services.React
 
                             var srpUpdate = db.Updateable<StoreRetailPrice>()
                                 .Where(srp =>
-                                    productCodes.Contains(srp.ProductCode) && !srp.IsDeleted
+                                    srp.ProductCode != null
+                                    && productCodes.Contains(srp.ProductCode)
+                                    && !srp.IsDeleted
                                 );
                             if (dto.ImportPrice.HasValue)
                                 srpUpdate = srpUpdate.SetColumns(srp =>

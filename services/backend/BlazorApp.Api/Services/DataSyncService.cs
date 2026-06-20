@@ -2088,10 +2088,14 @@ namespace BlazorApp.Api.Services
 
                 // 建立货号到商品编码的映射表（用于处理货号相同但商品编码不同的情况）
                 var itemNumberToProductCodeMap = dicProducts
-                    .GroupBy(p => p.H货号)
+                    .Where(p =>
+                        !string.IsNullOrWhiteSpace(p.H货号)
+                        && !string.IsNullOrWhiteSpace(p.H商品编码)
+                    )
+                    .GroupBy(p => p.H货号!)
                     .ToDictionary(
                         g => g.Key,
-                        g => g.First().H商品编码 // 如果同一货号有多条记录，取第一条
+                        g => g.First().H商品编码! // 如果同一货号有多条记录，取第一条
                     );
                 _logger.LogInformation(
                     "建立货号到商品编码映射表，共 {Count} 个货号",
@@ -2152,7 +2156,10 @@ namespace BlazorApp.Api.Services
                             }
                         }
 
-                        mergedProducts[correctProductCode] = product;
+                        if (!string.IsNullOrWhiteSpace(correctProductCode))
+                        {
+                            mergedProducts[correctProductCode] = product;
+                        }
                     }
                 }
 
@@ -2186,6 +2193,11 @@ namespace BlazorApp.Api.Services
                         }
 
                         // 如果已存在HBSales数据，保留其装箱数和体积字段
+                        if (string.IsNullOrWhiteSpace(correctProductCode))
+                        {
+                            continue;
+                        }
+
                         if (mergedProducts.ContainsKey(correctProductCode))
                         {
                             var existingProduct = mergedProducts[correctProductCode];

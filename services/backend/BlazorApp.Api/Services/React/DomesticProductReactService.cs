@@ -1855,18 +1855,26 @@ namespace BlazorApp.Api.Services.React
                     // 查询供应商信息用于填充返回结果
                     var supplierCodes = productsToUpdate
                         .Select(p => p.SupplierCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
                         .Distinct()
                         .ToList();
                     var suppliers = await db.Queryable<ChinaSupplier>()
-                        .Where(s => supplierCodes.Contains(s.SupplierCode))
+                        .Where(s => s.SupplierCode != null && supplierCodes.Contains(s.SupplierCode))
                         .ToListAsync();
-                    var supplierDict = suppliers.ToDictionary(s => s.SupplierCode);
+                    var supplierDict = suppliers
+                        .Where(s => !string.IsNullOrWhiteSpace(s.SupplierCode))
+                        .GroupBy(s => s.SupplierCode!)
+                        .ToDictionary(g => g.Key, g => g.First());
 
                     // 构建返回的更新商品列表
                     foreach (var product in productsToUpdate)
                     {
                         var productDto = _mapper.Map<DomesticProductDto>(product);
-                        if (supplierDict.TryGetValue(product.SupplierCode, out var supplier))
+                        if (
+                            !string.IsNullOrWhiteSpace(product.SupplierCode)
+                            && supplierDict.TryGetValue(product.SupplierCode, out var supplier)
+                        )
                         {
                             productDto.SupplierName = supplier.SupplierName;
                         }
@@ -2489,16 +2497,23 @@ namespace BlazorApp.Api.Services.React
                 try
                 {
                     var hbSalesDb = _hbSalesContext.Db;
-                    var syncProductCodes = products.Select(p => p.ProductCode).ToList();
+                    var syncProductCodes = products
+                        .Select(p => p.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .ToList();
 
                     // 检查HBSales中存在的商品
                     var existingProducts = await hbSalesDb
                         .Queryable<BlazorApp.Shared.Models.HqEntities.CPT_DIC_商品信息字典表>()
-                        .Where(x => syncProductCodes.Contains(x.商品编码))
+                        .Where(x => x.商品编码 != null && syncProductCodes.Contains(x.商品编码))
                         .Select(x => x.商品编码)
                         .ToListAsync();
 
-                    var existingCodes = existingProducts.ToHashSet();
+                    var existingCodes = existingProducts
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .ToHashSet();
                     var notExistingCodes = syncProductCodes
                         .Where(code => !existingCodes.Contains(code))
                         .ToList();
@@ -2567,7 +2582,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 supplierCodes.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN '{p.SupplierCode.Replace("'", "''")}' "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN '{SqlLiteral(p.SupplierCode!)}' "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2584,7 +2599,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 productNames.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN N'{p.ProductName.Replace("'", "''")}' "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN N'{SqlLiteral(p.ProductName!)}' "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2601,7 +2616,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 englishNames.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN N'{p.EnglishProductName.Replace("'", "''")}' "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN N'{SqlLiteral(p.EnglishProductName!)}' "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2618,7 +2633,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 hbProductNos.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN '{p.HBProductNo.Replace("'", "''")}' "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN '{SqlLiteral(p.HBProductNo!)}' "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2635,7 +2650,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 barcodes.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN '{p.Barcode.Replace("'", "''")}' "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN '{SqlLiteral(p.Barcode!)}' "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2652,7 +2667,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 specs.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN N'{p.ProductSpecification.Replace("'", "''")}' "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN N'{SqlLiteral(p.ProductSpecification!)}' "
                                 )
                             );
                             updateSqlParts.Add($"[规格] = CASE [商品编码] {cases}ELSE [规格] END");
@@ -2665,7 +2680,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 productTypes.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.ProductType} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.ProductType} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2682,7 +2697,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 domesticPrices.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.DomesticPrice.Value} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.DomesticPrice.GetValueOrDefault()} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2697,7 +2712,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 oemPrices.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.OEMPrice.Value} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.OEMPrice.GetValueOrDefault()} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2714,7 +2729,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 importPrices.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.ImportPrice.Value} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.ImportPrice.GetValueOrDefault()} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2731,7 +2746,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 packingQuantities.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.PackingQuantity.Value} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.PackingQuantity.GetValueOrDefault()} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2748,7 +2763,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 unitVolumes.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.UnitVolume.Value} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.UnitVolume.GetValueOrDefault()} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2765,7 +2780,7 @@ namespace BlazorApp.Api.Services.React
                             var cases = string.Join(
                                 "",
                                 middlePackQuantities.Select(p =>
-                                    $"WHEN '{p.ProductCode}' THEN {p.MiddlePackQuantity.Value} "
+                                    $"WHEN '{SqlLiteral(p.ProductCode)}' THEN {p.MiddlePackQuantity.GetValueOrDefault()} "
                                 )
                             );
                             updateSqlParts.Add(
@@ -2784,7 +2799,7 @@ namespace BlazorApp.Api.Services.React
                                 var cases = string.Join(
                                     "",
                                     productImages.Select(p =>
-                                        $"WHEN '{p.ProductCode}' THEN '{p.ProductImage.Replace("'", "''")}' "
+                                        $"WHEN '{SqlLiteral(p.ProductCode)}' THEN '{SqlLiteral(p.ProductImage!)}' "
                                     )
                                 );
                                 updateSqlParts.Add(
@@ -2808,7 +2823,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             var codesStr = string.Join(
                                 "','",
-                                productsToUpdate.Select(p => p.ProductCode.Replace("'", "''"))
+                                productsToUpdate.Select(p => SqlLiteral(p.ProductCode))
                             );
                             var sql =
                                 $"UPDATE [CPT_DIC_商品信息字典表] SET {string.Join(", ", updateSqlParts)} WHERE [商品编码] IN ('{codesStr}')";
@@ -3105,13 +3120,20 @@ namespace BlazorApp.Api.Services.React
                 var retailPriceCount = 0;
 
                 // === 1. 写入 DIC_商品信息字典表 ===
-                var syncProductCodes = validProducts.Select(p => p.ProductCode).ToList();
+                var syncProductCodes = validProducts
+                    .Select(p => p.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .ToList();
                 var existingProducts =
                     await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表>()
-                        .Where(x => syncProductCodes.Contains(x.H商品编码))
+                        .Where(x => x.H商品编码 != null && syncProductCodes.Contains(x.H商品编码))
                         .Select(x => x.H商品编码)
                         .ToListAsync();
-                var existingCodes = existingProducts.ToHashSet();
+                var existingCodes = existingProducts
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .ToHashSet();
                 var notExistingProducts = validProducts
                     .Where(p => !existingCodes.Contains(p.ProductCode))
                     .ToList();
@@ -3223,9 +3245,15 @@ namespace BlazorApp.Api.Services.React
 
                 // === 2. 查询所有启用分店 ===
                 var activeStores =
-                    await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.HqBranch>()
-                        .Select(b => b.BranchCode)
-                        .ToListAsync();
+                    (
+                        await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.HqBranch>()
+                            .Select(b => b.BranchCode)
+                            .ToListAsync()
+                    )
+                        .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                        .Select(storeCode => storeCode!)
+                        .Distinct()
+                        .ToList();
 
                 var now = DateTime.Now;
                 var nowStr = now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -3239,11 +3267,15 @@ namespace BlazorApp.Api.Services.React
                     // === 3. 批量写入 DIC_商品零售价表（按分店） ===
                     var syncProductCodesForRetail = validProducts
                         .Select(p => p.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
                         .ToList();
                     var existingRetails =
                         await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.DIC_商品零售价表>()
                             .Where(r =>
-                                syncProductCodesForRetail.Contains(r.H商品编码)
+                                r.H商品编码 != null
+                                && syncProductCodesForRetail.Contains(r.H商品编码)
+                                && r.H分店代码 != null
                                 && activeStores.Contains(r.H分店代码)
                             )
                             .Select(r => new { r.H分店代码, r.H商品编码 })
@@ -3327,13 +3359,21 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // === 4. 批量写入 CBP_DIC_商品库存表 ===
-                var inventoryProductCodes = validProducts.Select(p => p.ProductCode).ToList();
+                var inventoryProductCodes = validProducts
+                    .Select(p => p.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .ToList();
                 var existingInventories =
                     await hqDb.Queryable<BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表>()
-                        .Where(x => inventoryProductCodes.Contains(x.H商品编码))
+                        .Where(x => x.H商品编码 != null && inventoryProductCodes.Contains(x.H商品编码))
                         .Select(x => x.H商品编码)
                         .ToListAsync();
-                var existingInventorySet = new HashSet<string>(existingInventories);
+                var existingInventorySet = new HashSet<string>(
+                    existingInventories
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                );
 
                 var toInsertInventories =
                     new List<BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表>();
@@ -3414,6 +3454,12 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[SendToHq] 发送商品到HQ失败");
                 return ApiResponse<SyncResult>.Error($"发送失败: {ex.Message}", "SEND_TO_HQ_ERROR");
             }
+        }
+
+        private static string SqlLiteral(string value)
+        {
+            // 原生批量 CASE SQL 使用字面量匹配商品编码，必须统一转义单引号。
+            return value.Replace("'", "''");
         }
     }
 }
