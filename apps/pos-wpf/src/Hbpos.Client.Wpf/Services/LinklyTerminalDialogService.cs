@@ -396,10 +396,8 @@ public sealed class WpfLinklyTerminalDialogService :
 
     private static bool IsApprovedResponseCode(string? value)
     {
-        // Linkly 批准码 00 和签名批准码 08 都表示交易已通过，不能再允许 POS 取消。
-        var normalized = value?.Trim();
-        return string.Equals(normalized, "00", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "08", StringComparison.OrdinalIgnoreCase);
+        // 对话框取消保护复用 Linkly 批准码表，避免交易成功判断和 UI 判断分叉。
+        return LinklyApprovalResponseCodes.IsApproved(value);
     }
 
     private static bool ContainsApprovedTerminalOutcome(string? value)

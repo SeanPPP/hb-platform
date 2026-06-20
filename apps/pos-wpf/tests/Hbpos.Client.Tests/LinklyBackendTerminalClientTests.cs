@@ -3079,6 +3079,75 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Empty(pending.DisplayButtons!);
     }
 
+    [Fact]
+    public async Task PurchaseAsync_display_notification_without_key_flags_uses_localized_waiting_result_message()
+    {
+        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+            "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "storeCode": "S01",
+                    "deviceCode": "TERM-1",
+                    "sessionId": "display-no-key-session",
+                    "status": "Pending",
+                    "txnRef": "260601120033",
+                    "displayText": "TAP OK TO CONTINUE",
+                    "receiptText": null,
+                    "recoveryCount": 0,
+                    "receiptPrintedAt": null,
+                    "lastHttpStatus": 202,
+                    "notifications": [
+                      {
+                        "type": "display",
+                        "payloadJson": "{ \"Response\": { \"DisplayText\": [\"TAP OK TO CONTINUE\"] } }",
+                        "receivedAt": "2026-06-01T02:00:05Z"
+                      }
+                    ]
+                  }
+                }
+                """),
+            _ => JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "storeCode": "S01",
+                    "deviceCode": "TERM-1",
+                    "sessionId": "display-no-key-session",
+                    "status": "Completed",
+                    "txnRef": "260601120033",
+                    "responseCode": "00",
+                    "responseText": "APPROVED",
+                    "transactionSuccess": true,
+                    "displayText": "APPROVED",
+                    "receiptText": "NO KEY RECEIPT",
+                    "recoveryCount": 0,
+                    "receiptPrintedAt": null,
+                    "lastHttpStatus": 200,
+                    "notifications": []
+                  }
+                }
+                """)
+        });
+        var localization = new LocalizationService();
+        localization.SetCulture("zh-CN");
+        var dialog = new FakeLinklyTerminalDialogService();
+        var client = CreateClient(handler, dialog, localization);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        var pending = Assert.Single(dialog.States.Where(state => state.SessionId == "display-no-key-session" && state.Status == "Pending"));
+        Assert.Equal("等待刷卡终端返回结果...", pending.DisplayText);
+        Assert.Empty(pending.DisplayButtons!);
+    }
+
     [Theory]
     [InlineData("SWIPE CARD", "cancelKeyFlag")]
     [InlineData("PRESENT CARD", "cancelKeyFlag")]

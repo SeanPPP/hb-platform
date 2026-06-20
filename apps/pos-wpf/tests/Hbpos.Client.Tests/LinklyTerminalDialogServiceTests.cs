@@ -318,8 +318,11 @@ public sealed class LinklyTerminalDialogServiceTests
         Assert.Equal("OK", displayButton.Text);
     }
 
-    [Fact]
-    public async Task UpdateAsync_hides_backend_async_cancel_payment_when_response_code_is_approved()
+    [Theory]
+    [InlineData("00")]
+    [InlineData("08")]
+    [InlineData("11")]
+    public async Task UpdateAsync_hides_backend_async_cancel_payment_when_response_code_is_approved(string responseCode)
     {
         var service = new WpfLinklyTerminalDialogService(new LocalizationService());
         var okButton = new LinklyTerminalDialogButton("linkly.backend.dialog.button.ok", LinklyTerminalDialogKeys.OkCancel);
@@ -337,7 +340,7 @@ public sealed class LinklyTerminalDialogServiceTests
             IsFinal: false,
             SupportsCancelPayment: true,
             DisplayButtons: [okButton],
-            ResponseCode: "00");
+            ResponseCode: responseCode);
 
         await service.UpdateAsync(state, CancellationToken.None);
         service.CancelPaymentCommand.Execute(null);

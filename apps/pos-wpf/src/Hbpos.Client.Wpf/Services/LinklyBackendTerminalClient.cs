@@ -1003,17 +1003,17 @@ public sealed class LinklyBackendTerminalClient(
             cancellationToken);
     }
 
-    private static LinklyTerminalDialogState ToDialogState(
+    private LinklyTerminalDialogState ToDialogState(
         LinklyCloudBackendSessionResponse status,
         string? message)
     {
         var isFinal = IsFinal(status);
         var responseText = NormalizeOptional(status.ResponseText);
-        // 闂傚倷绀侀幖顐︽偋閸愵喖纾婚柟鎯у绾捐棄霉閿濆懏鎲稿褎鐩弻宥堫檨闁稿繑绋戦—鍐箳閺冨倻鐣舵繝銏ｆ硾閻偐澹曢懖鈺傚枑闊洦绋掗崑銊モ攽閻樺疇澹橀柛娆忥躬閺屾盯骞樺鐐樂缂侇喚鏁诲娲传閸曨偅鏆㈤梺鍛婂姂閸斿酣宕㈤柆宥嗏拺闁告稑顭堟禒婊堟煕閹惧绠氶柕鍥ㄥ姈閹峰懘鎼归崷顓犲姸闂備胶绮懝楣冾敋椤撶姷鐭嗗鑸靛姈閳锋垶銇勯幒鍡椾壕闂佽绻戠换鍫濈暦閵忋倕围濠㈣泛顑呴崜顕€姊洪崫鍕枌濠碘€虫川缁棃宕奸弴鐔哄幍闂佹眹鍨归悘姘跺吹閳ь剟姊?婵犵數濮伴崹娲磿閼测晛鍨濋柛鎾楀嫬鏋傞梺鎸庢煥婢х晫澹曟總鍛婄厵闁诡垎灞芥婵炲瓨绮犻崹鍫曞蓟?
+        // 显示文本优先级：最终状态用 ResponseText 或 Status；自动继续提示用等待文案；其余用终端 DisplayText。
         var displayText = isFinal
             ? responseText ?? NormalizeOptional(status.Status)
             : IsAutoContinueDisplay(status)
-                ? "Waiting for card terminal result..."
+                ? T("payment.status.cardProcessing", "Waiting for card terminal result...")
             : NormalizeOptional(status.DisplayText);
 
         return new LinklyTerminalDialogState(
