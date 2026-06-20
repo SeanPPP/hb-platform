@@ -367,13 +367,10 @@ namespace BlazorApp.Api.Services.React
                 result.HbwebCreated++;
             }
 
-            // 已有商品只绑定明细；新建商品会在绑定后补齐所有启用分店价格。
+            // 更新HQ商品链路不回写本单明细，避免把“上次进货价”等明细字段改成本次操作值。
+            // 这里只在内存中补齐商品编码，供后续本地价格和HQ价格写入使用。
             detail.ProductCode = product.ProductCode;
             detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode!);
-            detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
-            detail.UpdatedAt = now;
-            detail.UpdatedBy = updatedBy;
-            await db.Updateable(detail).ExecuteCommandAsync();
 
             // 更新HQ商品时，只有新建本地商品才需要补齐所有启用分店价格。
             if (isNewProduct)
