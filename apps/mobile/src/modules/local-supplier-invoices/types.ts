@@ -1,6 +1,7 @@
 export type InvoiceListPageSize = 20 | 50 | 100;
 export type InvoiceDetailPageSize = 50 | 100 | 200;
 export type SortDirection = "asc" | "desc";
+export type InvoiceDetailPriceChangeFilter = "all" | "up" | "down";
 
 export interface InvoiceGridFilters {
   storeCode?: string;
@@ -30,6 +31,7 @@ export interface InvoiceGridQuery {
 export interface InvoiceDetailsGridQuery {
   page?: number;
   pageSize?: number;
+  priceChange?: InvoiceDetailPriceChangeFilter;
 }
 
 export interface GridFilterModel {
@@ -64,6 +66,8 @@ export interface LocalSupplierInvoice {
   inboundDate: string;
   totalAmount: number | null;
   receivedTotalAmount: number | null;
+  priceIncreaseItemCount: number;
+  priceDecreaseItemCount: number;
   flowStatus: number | null;
   inboundStatus: number | null;
   remarks: string;
@@ -84,6 +88,7 @@ export interface LocalSupplierInvoiceItem {
   specification: string;
   unit: string;
   quantity: number | null;
+  lastPurchasePrice: number | null;
   purchasePrice: number | null;
   retailPrice: number | null;
   amount: number | null;

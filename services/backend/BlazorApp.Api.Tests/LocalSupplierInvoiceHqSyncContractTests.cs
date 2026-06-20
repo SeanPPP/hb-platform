@@ -271,7 +271,8 @@ public sealed class LocalSupplierInvoiceHqSyncContractTests : IDisposable
         return new ReactLocalSupplierInvoicesController(
             Mock.Of<ILocalSupplierInvoicesReactService>(),
             CreateSqlSugarContext(_localDb),
-            syncService
+            syncService,
+            Mock.Of<ILocalSupplierInvoiceImportService>()
         );
     }
 

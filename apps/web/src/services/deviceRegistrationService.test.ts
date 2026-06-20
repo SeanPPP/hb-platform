@@ -148,25 +148,25 @@ try {
 
   assertEqual(
     calls[0]?.url,
-    '/api/react/v1/device-registration/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Windows',
-    'Device registration list should use react API base path',
+    '/api/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Windows',
+    'Device registration list should use legacy device API base path',
   )
   assertEqual(calls[0]?.method, 'GET', 'Device registration list should use GET')
   assertEqual(
     calls[1]?.url,
-    '/api/react/v1/device-registration/12/activate',
-    'Device activation should use react API base path',
+    '/api/12/activate',
+    'Device activation should use legacy device API base path',
   )
   assertEqual(calls[1]?.method, 'POST', 'Device activation should use POST')
   assertEqual(
     calls[2]?.url,
-    '/api/react/v1/device-registration/12/disable',
-    'Device disable should use react API base path',
+    '/api/12/disable',
+    'Device disable should use legacy device API base path',
   )
   assertEqual(
     calls[3]?.url,
-    '/api/react/v1/device-registration/12/lock',
-    'Device lock should use react API base path',
+    '/api/12/lock',
+    'Device lock should use legacy device API base path',
   )
 } finally {
   globalThis.fetch = originalFetch

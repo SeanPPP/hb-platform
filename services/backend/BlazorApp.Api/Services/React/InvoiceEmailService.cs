@@ -157,7 +157,13 @@ namespace BlazorApp.Api.Services.React
             SecureSocketOptions secureSocketOptions
         )
         {
-            return smtpClient.ConnectAsync(options.Host, options.Port, secureSocketOptions);
+            var host = options.Host;
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                throw new InvalidOperationException("未配置发票邮件 SMTP Host");
+            }
+
+            return smtpClient.ConnectAsync(host, options.Port, secureSocketOptions);
         }
 
         protected virtual Task AuthenticateSmtpClientAsync(

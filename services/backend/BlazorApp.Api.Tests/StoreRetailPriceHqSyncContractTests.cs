@@ -165,7 +165,7 @@ public class StoreRetailPriceHqSyncContractTests
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
         localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
         CreateScheduledTaskLogTable(localDb);
-        hqDb.CodeFirst.InitTables(typeof(DIC_商品零售价表));
+        InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new Store
         {
             StoreGUID = "store-S01",
@@ -214,7 +214,7 @@ public class StoreRetailPriceHqSyncContractTests
         using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
         localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
-        hqDb.CodeFirst.InitTables(typeof(DIC_商品零售价表));
+        InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new[]
         {
             new Store
@@ -273,7 +273,7 @@ public class StoreRetailPriceHqSyncContractTests
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
         localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
         CreateScheduledTaskLogTable(localDb);
-        hqDb.CodeFirst.InitTables(typeof(DIC_商品零售价表));
+        InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new Store
         {
             StoreGUID = "store-S01",
@@ -354,6 +354,12 @@ public class StoreRetailPriceHqSyncContractTests
                 FGC_LastModifyDate = new DateTime(2026, 4, 15),
             },
         }).ExecuteCommandAsync();
+        await hqDb.Insertable(new[]
+        {
+            BuildHqProduct(1, "P01", isActive: true),
+            BuildHqProduct(2, "P02", isActive: true),
+            BuildHqProduct(3, "OUTSIDE", isActive: true),
+        }).ExecuteCommandAsync();
         var service = CreateHqSyncService(localDb, hqDb, CreateMapper());
 
         var result = await service.SyncForPageAsync(
@@ -371,6 +377,168 @@ public class StoreRetailPriceHqSyncContractTests
         var updated = await localDb.Queryable<StoreRetailPrice>().SingleAsync(x => x.UUID == "retail-update");
         Assert.Equal("SUP02", updated.SupplierCode);
         Assert.Equal(6.6m, updated.StoreRetailPriceValue);
+    }
+
+    [Fact]
+    public async Task SyncForPageAsync_HQ商品停用_不写入本地零售价()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
+        CreateScheduledTaskLogTable(localDb);
+        InitHqRetailPriceTables(hqDb);
+        await localDb.Insertable(new Store
+        {
+            StoreGUID = "store-S01",
+            StoreCode = "S01",
+            StoreName = "S01",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await hqDb.Insertable(new DIC_商品零售价表
+        {
+            ID = 1,
+            HGUID = "retail-disabled-product",
+            H分店代码 = "S01",
+            H商品编码 = "P-DISABLED",
+            H分店商品编码 = "S01-P-DISABLED",
+            H供应商编码 = "SUP01",
+            H进货价 = 1.2m,
+            H分店零售价 = 2.4m,
+            H折扣率 = 0.5m,
+            H使用状态 = true,
+            FGC_CreateDate = new DateTime(2026, 5, 1),
+            FGC_LastModifyDate = new DateTime(2026, 5, 20),
+        }).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqProduct(1, "P-DISABLED", isActive: false)).ExecuteCommandAsync();
+        var service = CreateHqSyncService(localDb, hqDb, CreateMapper());
+
+        var result = await service.SyncForPageAsync(
+            new List<string> { "S01" },
+            new DateTime(2026, 5, 1),
+            new DateTime(2026, 5, 31)
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.AddedCount);
+        Assert.False(await localDb.Queryable<StoreRetailPrice>().AnyAsync());
+    }
+
+    [Fact]
+    public async Task CopyHqToTableByKeysetAsync_HQ商品停用_全量路径不写入本地零售价()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        localDb.CodeFirst.InitTables(typeof(StoreRetailPrice));
+        InitHqRetailPriceTables(hqDb);
+        await hqDb.Insertable(new DIC_商品零售价表
+        {
+            ID = 1,
+            HGUID = "retail-disabled-product-full",
+            H分店代码 = "S01",
+            H商品编码 = "P-DISABLED-FULL",
+            H分店商品编码 = "S01-P-DISABLED-FULL",
+            H供应商编码 = "SUP01",
+            H进货价 = 1.2m,
+            H分店零售价 = 2.4m,
+            H折扣率 = 0.5m,
+            H使用状态 = true,
+            FGC_CreateDate = new DateTime(2026, 5, 1),
+            FGC_LastModifyDate = new DateTime(2026, 5, 20),
+        }).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqProduct(1, "P-DISABLED-FULL", isActive: false)).ExecuteCommandAsync();
+        var service = CreateHqSyncService(localDb, hqDb, CreateMapper());
+
+        var inserted = await InvokeCopyHqToTableByKeysetAsync(
+            service,
+            localDb,
+            new List<string>(),
+            "StoreRetailPrice"
+        );
+
+        Assert.Equal(0, inserted);
+        Assert.False(await localDb.Queryable<StoreRetailPrice>().AnyAsync());
+    }
+
+    [Fact]
+    public async Task CopyHqToTableByKeysetAsync_HQ商品字典重复启用_全量路径只写入一条零售价()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        localDb.CodeFirst.InitTables(typeof(StoreRetailPrice));
+        InitHqRetailPriceTables(hqDb);
+        await hqDb.Insertable(new DIC_商品零售价表
+        {
+            ID = 1,
+            HGUID = "retail-duplicate-active-product",
+            H分店代码 = "S01",
+            H商品编码 = "P-DUP-ACTIVE",
+            H分店商品编码 = "S01-P-DUP-ACTIVE",
+            H供应商编码 = "SUP01",
+            H进货价 = 1.2m,
+            H分店零售价 = 2.4m,
+            H折扣率 = 0.5m,
+            H使用状态 = true,
+            FGC_CreateDate = new DateTime(2026, 5, 1),
+            FGC_LastModifyDate = new DateTime(2026, 5, 20),
+        }).ExecuteCommandAsync();
+        var firstProduct = BuildHqProduct(1, "P-DUP-ACTIVE", isActive: true);
+        var secondProduct = BuildHqProduct(2, "P-DUP-ACTIVE", isActive: true);
+        secondProduct.HGUID = "product-P-DUP-ACTIVE-copy";
+        await hqDb.Insertable(new[] { firstProduct, secondProduct }).ExecuteCommandAsync();
+        var service = CreateHqSyncService(localDb, hqDb, CreateMapper());
+
+        var inserted = await InvokeCopyHqToTableByKeysetAsync(
+            service,
+            localDb,
+            new List<string>(),
+            "StoreRetailPrice"
+        );
+
+        Assert.Equal(1, inserted);
+        var row = Assert.Single(await localDb.Queryable<StoreRetailPrice>().ToListAsync());
+        Assert.Equal("retail-duplicate-active-product", row.UUID);
+    }
+
+    [Fact]
+    public void BuildHqQuery_SqlServer方言_使用Exists过滤启用商品且不Join放大价格行()
+    {
+        using var hqDb = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=127.0.0.1;Database=HQ;User Id=test;Password=test;TrustServerCertificate=True;",
+            DbType = DbType.SqlServer,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
+        var service = CreateHqSyncService(
+            (SqlSugarClient)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarClient)),
+            hqDb,
+            CreateMapper()
+        );
+
+        var query = InvokeBuildHqQuery(
+            service,
+            new List<string> { "S01" },
+            new DateTime(2026, 5, 1),
+            new DateTime(2026, 5, 31)
+        );
+        var sql = query.ToSql().Key;
+
+        Assert.Contains("EXISTS", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DIC_商品信息字典表", sql);
+        Assert.DoesNotContain("JOIN [DIC_商品信息字典表]", sql, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -531,6 +699,45 @@ public class StoreRetailPriceHqSyncContractTests
         ).CreateMapper();
     }
 
+    private static async Task<int> InvokeCopyHqToTableByKeysetAsync(
+        StoreRetailPriceHqSyncService service,
+        ISqlSugarClient targetDb,
+        List<string> targetStoreCodes,
+        string tableName
+    )
+    {
+        var method = typeof(StoreRetailPriceHqSyncService).GetMethod(
+            "CopyHqToTableByKeysetAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        Assert.NotNull(method);
+
+        var task = (Task<int>)method.Invoke(
+            service,
+            new object[] { targetDb, targetStoreCodes, tableName }
+        )!;
+        return await task;
+    }
+
+    private static ISugarQueryable<DIC_商品零售价表> InvokeBuildHqQuery(
+        StoreRetailPriceHqSyncService service,
+        List<string> targetStoreCodes,
+        DateTime? startDate,
+        DateTime? endDate
+    )
+    {
+        var method = typeof(StoreRetailPriceHqSyncService).GetMethod(
+            "BuildHqQuery",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        Assert.NotNull(method);
+
+        return (ISugarQueryable<DIC_商品零售价表>)method.Invoke(
+            service,
+            new object?[] { targetStoreCodes, startDate, endDate }
+        )!;
+    }
+
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
     {
         var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(
@@ -551,6 +758,49 @@ public class StoreRetailPriceHqSyncContractTests
             .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(context, db);
         return context;
+    }
+
+    private static void InitHqRetailPriceTables(ISqlSugarClient hqDb)
+    {
+        hqDb.CodeFirst.InitTables(typeof(DIC_商品零售价表), typeof(DIC_商品信息字典表));
+    }
+
+    private static DIC_商品信息字典表 BuildHqProduct(int id, string productCode, bool isActive)
+    {
+        return new DIC_商品信息字典表
+        {
+            ID = id,
+            HGUID = $"product-{productCode}",
+            H商品标签GUID = string.Empty,
+            H商品分类码GUID = string.Empty,
+            H供货商编码 = string.Empty,
+            H商品编码 = productCode,
+            H货号 = productCode,
+            H主条形码 = productCode,
+            H商品名称 = productCode,
+            H商品类型 = 0,
+            H大写名称 = productCode,
+            H规格 = string.Empty,
+            H单位 = string.Empty,
+            H进货价 = 0m,
+            H零售价 = 0m,
+            H是否自动定价 = false,
+            H商品图片 = string.Empty,
+            中包数量 = 0,
+            H腾讯云图地址 = string.Empty,
+            H使用状态 = isActive,
+            H是否特殊商品 = false,
+            H进货单主表GUID = string.Empty,
+            H进货单详情GUID = string.Empty,
+            CBP商品中文名称 = string.Empty,
+            CBP供应商编码 = string.Empty,
+            CBP商品分类码GUID = string.Empty,
+            FGC_Creator = "test",
+            FGC_CreateDate = new DateTime(2026, 5, 1),
+            FGC_LastModifier = "test",
+            FGC_LastModifyDate = new DateTime(2026, 5, 1),
+            FGC_UpdateHelp = string.Empty,
+        };
     }
 
     private static ConnectionConfig CreateConnectionConfig(string connectionString)

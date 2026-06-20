@@ -105,8 +105,10 @@ async function main() {
         totalChecked: 10,
         orphanedCount: 2,
         missingCount: 0,
+        invalidKeyCount: 0,
         orphanedProductCodes: ['P001', 'P002'],
         missingProductCodes: [],
+        errors: [],
       },
       storeReports: [
         {
@@ -118,16 +120,20 @@ async function main() {
               totalChecked: 100,
               orphanedCount: 0,
               missingCount: 3,
+              invalidKeyCount: 0,
               orphanedProductCodes: [],
               missingProductCodes: ['P100', 'P101'],
+              errors: [],
             },
             {
               tableName: 'StoreMultiCodeProduct',
               totalChecked: 8,
               orphanedCount: 1,
               missingCount: 4,
+              invalidKeyCount: 0,
               orphanedProductCodes: ['P200'],
               missingProductCodes: ['P201', 'P202'],
+              errors: [],
             },
           ],
         },
@@ -174,8 +180,10 @@ async function main() {
         totalChecked: 1,
         orphanedCount: 0,
         missingCount: 0,
+        invalidKeyCount: 0,
         orphanedProductCodes: [],
         missingProductCodes: [],
+        errors: [],
       },
       storeReports: [],
     })
@@ -184,6 +192,33 @@ async function main() {
     assertEqual(summary.issueRows.length, 0, '无问题时不应生成表格行')
   })
   if (productIntegrityAllPassFailure) failures.push(productIntegrityAllPassFailure)
+
+  const productIntegrityInvalidKeyFailure = await runTest('商品一致性检查只有无效关键编码时也应显示问题', () => {
+    const summary = buildProductIntegritySummary({
+      checkTime: '2026-06-15T00:00:00Z',
+      durationSeconds: 0.5,
+      productSetCodeReport: {
+        tableName: 'ProductSetCode',
+        totalChecked: 1,
+        orphanedCount: 0,
+        missingCount: 0,
+        invalidKeyCount: 3,
+        orphanedProductCodes: [],
+        missingProductCodes: [],
+        errors: ['ProductSetCode 存在 3 条缺少 ProductCode 或 SetProductCode 的记录，未参与自动修复。'],
+      },
+      storeReports: [],
+    })
+
+    assertEqual(summary.issueCount, 3, '无效关键编码应计入问题数')
+    assertEqual(summary.issueRows.length, 1, '无效关键编码应生成问题行')
+    assertEqual(summary.issueRows[0].issueType, '无效关键编码', '问题行类型应标记为无效关键编码')
+    assert(
+      summary.issueRows[0].sampleProductCodes.some((message) => message.includes('缺少 ProductCode')),
+      '问题行应保留后端错误说明',
+    )
+  })
+  if (productIntegrityInvalidKeyFailure) failures.push(productIntegrityInvalidKeyFailure)
 
   const productIntegrityFixSummaryFailure = await runTest('商品一致性修复结果应从 reports 汇总', () => {
     const summary = buildProductIntegrityFixSummary({

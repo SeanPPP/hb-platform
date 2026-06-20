@@ -183,7 +183,8 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
 
             var byCode = wpList
-                .GroupBy(x => x.ProductCode)
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .GroupBy(x => x.ProductCode!)
                 .ToDictionary(g => g.Key, g => g.First());
             var byItem = wpList
                 .Where(x => !string.IsNullOrWhiteSpace(x.ItemNumber))
@@ -1178,18 +1179,27 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // 同步到门店零售价和多码商品表
-                var activeStores = await _context
-                    .Db.Queryable<Store>()
-                    .Where(s => s.IsActive == true && s.IsDeleted == false)
-                    .Select(s => s.StoreCode)
-                    .ToListAsync();
+                var activeStores = (
+                    await _context
+                        .Db.Queryable<Store>()
+                        .Where(s => s.IsActive == true && s.IsDeleted == false)
+                        .Select(s => s.StoreCode)
+                        .ToListAsync()
+                )
+                    .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                    .Select(storeCode => storeCode!)
+                    .Distinct()
+                    .ToList();
 
                 if (activeStores.Any() && toCreateProducts.Any())
                 {
                     var toCreateStoreRetailPrices = new List<StoreRetailPrice>();
                     var toCreateStoreMultiCodeProducts = new List<StoreMultiCodeProduct>();
 
-                    var createdProductsDict = toCreateProducts.ToDictionary(p => p.ProductCode);
+                    var createdProductsDict = toCreateProducts
+                        .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                        .GroupBy(p => p.ProductCode!)
+                        .ToDictionary(g => g.Key, g => g.First());
 
                     foreach (var product in toCreateProducts)
                     {
@@ -3377,8 +3387,8 @@ namespace BlazorApp.Api.Services.React
                     new DomesticProductNotInWarehouseDto
                     {
                         ProductCode = item.ProductCode,
-                        ItemNumber = item.ItemNumber,
-                        Barcode = item.Barcode,
+                        ItemNumber = item.ItemNumber ?? string.Empty,
+                        Barcode = item.Barcode ?? string.Empty,
                         // 国内导入弹窗需要图片；原始图片为空时按货号生成默认图片地址。
                         ProductImage = ProductImageUrlHelper.EnsureImageUrl(
                             item.ProductImage,
@@ -3389,7 +3399,7 @@ namespace BlazorApp.Api.Services.React
                             out var nameResolution
                         )
                             ? nameResolution.DisplayName
-                            : item.ProductName,
+                            : item.ProductName ?? string.Empty,
                         EnglishName = nameResolutions.TryGetValue(
                             item.ProductCode,
                             out var englishResolution
@@ -3419,7 +3429,11 @@ namespace BlazorApp.Api.Services.React
                     .ToListAsync();
                 var multiCodes = await _context
                     .Db.Queryable<StoreMultiCodeProduct>()
-                    .Where(mcp => productCodes.Contains(mcp.ProductCode) && !mcp.IsDeleted)
+                    .Where(mcp =>
+                        mcp.ProductCode != null
+                        && productCodes.Contains(mcp.ProductCode)
+                        && !mcp.IsDeleted
+                    )
                     .Select(mcp => mcp.ProductCode)
                     .ToListAsync();
 
@@ -3489,9 +3503,13 @@ namespace BlazorApp.Api.Services.React
                 var productsDict = (
                     await _context
                         .Db.Queryable<Product>()
-                        .Where(p => codes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && codes.Contains(p.ProductCode))
                         .ToListAsync()
-                ).ToDictionary(p => p.ProductCode);
+                )
+                    // 商品编码为空时不能参与字典键匹配，避免放大查询范围。
+                    .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                    .GroupBy(p => p.ProductCode!)
+                    .ToDictionary(g => g.Key, g => g.First());
 
                 // 4. 批量查询套装商品关联数据
                 var allSetProducts = await _context
@@ -3499,13 +3517,15 @@ namespace BlazorApp.Api.Services.React
                     .Where(sp => codes.Contains(sp.ProductCode) && !sp.IsDeleted)
                     .ToListAsync();
                 var setProductsByCode = allSetProducts
-                    .GroupBy(sp => sp.ProductCode)
+                    .Where(sp => !string.IsNullOrWhiteSpace(sp.ProductCode))
+                    .GroupBy(sp => sp.ProductCode!)
                     .ToDictionary(g => g.Key, g => g.ToList());
 
                 // 5. 批量查询已存在的套装编码
                 var allSetCodeIds = allSetProducts
                     .Select(sp => sp.SetProductCode)
-                    .Where(x => x != null)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!)
                     .Distinct()
                     .ToList();
                 var existingProductSetCodes = allSetCodeIds.Any()
@@ -3519,16 +3539,29 @@ namespace BlazorApp.Api.Services.React
                             .Select(psc => new { psc.ProductCode, psc.SetCodeId })
                             .ToListAsync()
                     )
-                        .GroupBy(x => x.ProductCode)
-                        .ToDictionary(g => g.Key, g => g.Select(x => x.SetCodeId).ToHashSet())
-                    : new Dictionary<string, HashSet<string?>>();
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.SetCodeId)
+                        )
+                        .GroupBy(x => x.ProductCode!)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.Select(x => x.SetCodeId!).ToHashSet()
+                        )
+                    : new Dictionary<string, HashSet<string>>();
 
                 // 6. 批量查询活跃门店
-                var activeStores = await _context
+                var activeStores = (
+                    await _context
                     .Db.Queryable<Store>()
                     .Where(s => s.IsActive == true && s.IsDeleted == false)
                     .Select(s => s.StoreCode)
-                    .ToListAsync();
+                    .ToListAsync()
+                )
+                    .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                    .Select(storeCode => storeCode!)
+                    .Distinct()
+                    .ToList();
 
                 // 7. 批量查询已存在的多码商品
                 var allSetBarcodes = allSetProducts
@@ -3540,9 +3573,11 @@ namespace BlazorApp.Api.Services.React
                         await _context
                             .Db.Queryable<StoreMultiCodeProduct>()
                             .Where(smc =>
-                                codes.Contains(smc.ProductCode)
+                                smc.ProductCode != null
+                                && codes.Contains(smc.ProductCode)
                                 && !smc.IsDeleted
-                                && allSetBarcodes.Contains(smc.MultiBarcode!)
+                                && smc.MultiBarcode != null
+                                && allSetBarcodes.Contains(smc.MultiBarcode)
                             )
                             .Select(smc => new
                             {
@@ -3551,16 +3586,27 @@ namespace BlazorApp.Api.Services.React
                                 smc.StoreCode,
                             })
                             .ToListAsync()
-                    ).GroupBy(x => x.ProductCode).ToDictionary(g => g.Key, g => g.Select(x => (x.MultiBarcode, x.StoreCode)).ToHashSet()) : new Dictionary<string, HashSet<(string?, string?)>>();
+                    )
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.MultiBarcode)
+                            && !string.IsNullOrWhiteSpace(x.StoreCode)
+                        )
+                        .GroupBy(x => x.ProductCode!)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.Select(x => (x.MultiBarcode!, x.StoreCode!)).ToHashSet()
+                        ) : new Dictionary<string, HashSet<(string MultiBarcode, string StoreCode)>>();
 
                 // 8. 批量查询门店零售价
                 var storeRetailPricesByCode = (
                     await _context
                         .Db.Queryable<StoreRetailPrice>()
-                        .Where(srp => codes.Contains(srp.ProductCode) && !srp.IsDeleted)
+                        .Where(srp => srp.ProductCode != null && codes.Contains(srp.ProductCode) && !srp.IsDeleted)
                         .ToListAsync()
                 )
-                    .GroupBy(srp => srp.ProductCode)
+                    .Where(srp => !string.IsNullOrWhiteSpace(srp.ProductCode))
+                    .GroupBy(srp => srp.ProductCode!)
                     .ToDictionary(g => g.Key, g => g.ToList());
 
                 // 待操作的列表（批量插入/更新）
@@ -3719,10 +3765,14 @@ namespace BlazorApp.Api.Services.React
                         )
                     )
                     {
-                        existingProduct.ProductName = nameResolution.EnglishName;
-                        existingProduct.EnglishName = nameResolution.EnglishName;
-                        existingProduct.UpdatedAt = now;
-                        toUpdateProducts.Add(existingProduct);
+                        var translatedEnglishName = nameResolution.EnglishName;
+                        if (!string.IsNullOrWhiteSpace(translatedEnglishName))
+                        {
+                            existingProduct.ProductName = translatedEnglishName;
+                            existingProduct.EnglishName = translatedEnglishName;
+                            existingProduct.UpdatedAt = now;
+                            toUpdateProducts.Add(existingProduct);
+                        }
                     }
 
                     // 处理套装商品（使用内存查找，避免 N+1）
@@ -3733,7 +3783,7 @@ namespace BlazorApp.Api.Services.React
                     if (isSetProduct && setProducts.Count > 0)
                     {
                         existingProductSetCodes.TryGetValue(productCode, out var existingSet);
-                        existingSet ??= new HashSet<string?>();
+                        existingSet ??= new HashSet<string>();
                         // 国内导入补套装子码时同样按零售价比例分摊主进货价，保持和货柜创建路径一致。
                         var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
                             setProducts,
@@ -3744,20 +3794,22 @@ namespace BlazorApp.Api.Services.React
 
                         foreach (var sp in setProducts)
                         {
-                            if (existingSet.Contains(sp.SetProductCode))
+                            if (string.IsNullOrWhiteSpace(sp.SetProductCode))
                                 continue;
-                            existingSet.Add(sp.SetProductCode);
+                            var setProductCode = sp.SetProductCode;
+                            if (existingSet.Contains(setProductCode))
+                                continue;
+                            existingSet.Add(setProductCode);
                             var setPurchasePrice =
-                                sp.SetProductCode != null
-                                && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
+                                allocatedPurchasePrices.TryGetValue(setProductCode, out var allocatedPurchasePrice)
                                     ? allocatedPurchasePrice
                                     : sp.ImportPrice ?? wp.ImportPrice;
                             toInsertProductSetCodes.Add(
                                 new ProductSetCode
                                 {
-                                    SetCodeId = sp.SetProductCode,
+                                    SetCodeId = setProductCode,
                                     ProductCode = productCode,
-                                    SetProductCode = sp.SetProductCode,
+                                    SetProductCode = setProductCode,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
                                     SetPurchasePrice = setPurchasePrice,
@@ -3777,7 +3829,7 @@ namespace BlazorApp.Api.Services.React
                     if (request.SyncMultiCodes)
                     {
                         existingMultiCodeKeys.TryGetValue(productCode, out var existingKeys);
-                        existingKeys ??= new HashSet<(string?, string?)>();
+                        existingKeys ??= new HashSet<(string MultiBarcode, string StoreCode)>();
                         var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
                             setProducts,
                             wp.ImportPrice,
@@ -3787,13 +3839,14 @@ namespace BlazorApp.Api.Services.React
 
                         foreach (var sp in setProducts)
                         {
-                            if (sp.SetBarcode == null)
+                            if (string.IsNullOrWhiteSpace(sp.SetBarcode))
                                 continue;
+                            var setBarcode = sp.SetBarcode;
                             foreach (var storeCode in activeStores)
                             {
-                                if (existingKeys.Contains((sp.SetBarcode, storeCode)))
+                                if (existingKeys.Contains((setBarcode, storeCode)))
                                     continue;
-                                existingKeys.Add((sp.SetBarcode, storeCode));
+                                existingKeys.Add((setBarcode, storeCode));
                                 var setPurchasePrice =
                                     sp.SetProductCode != null
                                     && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
@@ -3807,7 +3860,7 @@ namespace BlazorApp.Api.Services.React
                                         StoreCode = storeCode,
                                         MultiCodeProductCode = sp.SetProductCode,
                                         StoreMultiCodeProductCode = storeCode + sp.SetProductCode,
-                                        MultiBarcode = sp.SetBarcode,
+                                        MultiBarcode = setBarcode,
                                         PurchasePrice = setPurchasePrice,
                                         MultiCodeRetailPrice = sp.OEMPrice,
                                         DiscountRate = 0,
@@ -4063,7 +4116,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     product.ProductImage = ProductImageUrlHelper.EnsureImageUrl(
                         dto.ProductImage,
-                        product.ItemNumber ?? product.ProductCode
+                        product.ItemNumber ?? product.ProductCode ?? string.Empty
                     );
                 }
                 product.IsActive = dto.IsActive;
@@ -4469,9 +4522,12 @@ namespace BlazorApp.Api.Services.React
                 var productsDict = (
                     await _context
                         .Db.Queryable<Product>()
-                        .Where(p => codes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && codes.Contains(p.ProductCode))
                         .ToListAsync()
-                ).ToDictionary(p => p.ProductCode);
+                )
+                    .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                    .GroupBy(p => p.ProductCode!)
+                    .ToDictionary(g => g.Key, g => g.First());
 
                 // 批量查询已存在的仓库商品编码（避免 N+1 问题）
                 var existingWpCodes = (

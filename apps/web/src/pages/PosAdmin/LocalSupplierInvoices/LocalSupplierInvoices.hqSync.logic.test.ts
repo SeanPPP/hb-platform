@@ -338,6 +338,7 @@ async function main() {
     assert(editPageSource.includes('hqUpdateForm.validateFields()'), '更新HQ商品应校验独立弹窗表单')
     assert(editPageSource.includes('startUpdateToStorePricesJob(request)'), '更新到分店应提交后台任务')
     assert(editPageSource.includes('getUpdateToStorePricesJob(jobId)'), '更新到分店应轮询后台任务')
+    assert(storeModalSource.includes('initialValues={{ updatePurchasePrice: true }}'), '更新到分店弹窗默认应勾选更新进货价')
     assert(storeModalSource.includes('name="updatePurchasePrice"'), '更新到分店弹窗应保留更新进货价字段开关')
     assert(storeModalSource.includes('name="updateRetailPrice"'), '更新到分店弹窗应保留更新零售价字段开关')
     assert(storeModalSource.includes('name="updateIsAutoPricing"'), '更新到分店弹窗应保留更新自动定价字段开关')

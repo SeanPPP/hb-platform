@@ -635,7 +635,7 @@ namespace BlazorApp.Api.Tests
                 item => item.UserGUID == "soft-deleted-scoped-user"
             );
 
-            var dualUser = Assert.Single(result.Data.Items, item => item.UserGUID == "dual-user");
+            var dualUser = Assert.Single(result.Data.Items!, item => item.UserGUID == "dual-user");
             Assert.Equal(new[] { "Store 1" }, dualUser.StoreNames);
         }
 

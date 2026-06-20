@@ -66,6 +66,22 @@ export interface ContainerExportOptions {
   onProgress?: (progress: number, message: string) => void
 }
 
+interface ContainerExportPreparedImages {
+  barcodeImageMap: Map<string, string>
+  productImageMap: Map<number, string>
+  failedProductImageRows: Set<number>
+}
+
+export interface ContainerDetailPdfLayout {
+  orientation: 'p' | 'l'
+  pageWidthPx: number
+  pageHeightPx: number
+  pdfWidthMm: number
+  pdfHeightMm: number
+  rowsPerPageWithImages: number
+  rowsPerPageWithoutImages: number
+}
+
 const defaultExportOptions: ExportOptions = {
   includeLabelPrice: false,
   includeBarcodeImage: true,
@@ -704,8 +720,28 @@ export async function exportContainerDetailsToExcel(
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('货柜明细')
+  const columns = getContainerDetailWorksheetColumns(options)
+  const includeBarcodeImages = columns.some((column) => column.key === 'barcodeImage')
+  const includeProductImages = columns.some((column) => column.key === 'productImage')
+  const hasImageColumns = includeBarcodeImages || includeProductImages
 
-  populateContainerDetailsWorksheet(worksheet, items, options)
+  const preparedImages = hasImageColumns
+    ? await prepareContainerDetailExportImages(
+        items,
+        withContainerExportProgressRange(options, 10, 55),
+        { includeBarcodeImages, includeProductImages },
+      )
+    : createEmptyContainerExportPreparedImages()
+  if (hasImageColumns) {
+    options.onProgress?.(55, '图片准备完成，正在写入货柜明细...')
+  }
+
+  const worksheetInfo = populateContainerDetailsWorksheet(
+    worksheet,
+    items,
+    hasImageColumns ? withContainerExportProgressRange(options, 55, 90) : options,
+  )
+  addContainerDetailWorksheetImages(workbook, worksheet, items, worksheetInfo, preparedImages)
   options.onProgress?.(95, '正在生成 Excel 文件...')
   const buffer = await workbook.xlsx.writeBuffer()
 
@@ -723,26 +759,118 @@ export async function exportContainerDetailsToExcel(
   options.onProgress?.(100, '导出完成')
 }
 
+export function mapContainerExportProgress(progress: number, start: number, end: number) {
+  const safeProgress = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
+  return start + Math.floor((safeProgress / 100) * (end - start))
+}
+
+function withContainerExportProgressRange(
+  options: ContainerExportOptions,
+  start: number,
+  end: number,
+): ContainerExportOptions {
+  if (!options.onProgress) {
+    return options
+  }
+
+  return {
+    ...options,
+    onProgress: (progress, message) => {
+      options.onProgress?.(mapContainerExportProgress(progress, start, end), message)
+    },
+  }
+}
+
+function createEmptyContainerExportPreparedImages(): ContainerExportPreparedImages {
+  return {
+    barcodeImageMap: new Map(),
+    productImageMap: new Map(),
+    failedProductImageRows: new Set(),
+  }
+}
+
+export async function exportContainerDetailsToPdf(
+  items: ContainerDetailExportItem[],
+  options: ContainerExportOptions = {},
+): Promise<void> {
+  const columns = getContainerDetailWorksheetColumns(options)
+  const includeBarcodeImages = columns.some((column) => column.key === 'barcodeImage')
+  const includeProductImages = columns.some((column) => column.key === 'productImage')
+  const preparedImages = await prepareContainerDetailExportImages(items, options, {
+    includeBarcodeImages,
+    includeProductImages,
+  })
+  const layout = resolveContainerDetailPdfLayout(columns)
+
+  options.onProgress?.(70, '正在生成 PDF 页面...')
+  const root = buildContainerDetailPdfRoot(items, columns, preparedImages, layout, options.summary)
+  document.body.appendChild(root)
+
+  try {
+    const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
+    const pdf = new jsPDF(layout.orientation, 'mm', 'a4')
+    const pages = Array.from(root.querySelectorAll<HTMLElement>('.container-detail-export-pdf-page'))
+
+    for (const [pageIndex, pageElement] of pages.entries()) {
+      const canvas = await html2canvas(pageElement, {
+        // PDF 通过页面截图写入，使用更高倍率和 PNG 避免条码边缘被压缩到不可扫码。
+        scale: 3,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+      })
+      const imageData = canvas.toDataURL('image/png')
+      if (pageIndex > 0) {
+        pdf.addPage()
+      }
+      pdf.addImage(imageData, 'PNG', 0, 0, layout.pdfWidthMm, layout.pdfHeightMm)
+      options.onProgress?.(
+        75 + Math.floor(((pageIndex + 1) / Math.max(pages.length, 1)) * 20),
+        `正在写入 PDF 第 ${pageIndex + 1}/${pages.length} 页...`,
+      )
+    }
+
+    pdf.save(`${options.fileName || '货柜明细'}_${new Date().toISOString().split('T')[0]}.pdf`)
+    options.onProgress?.(100, 'PDF 导出完成')
+  } finally {
+    root.remove()
+  }
+}
+
+export function resolveContainerDetailPdfLayout(columns: ContainerDetailExportColumn[]): ContainerDetailPdfLayout {
+  // 少列 PDF 竖向更适合阅读；列数较多时保留横向，避免内容被压得过窄。
+  if (columns.length <= 6) {
+    return {
+      orientation: 'p',
+      pageWidthPx: 793,
+      pageHeightPx: 1122,
+      pdfWidthMm: 210,
+      pdfHeightMm: 297,
+      rowsPerPageWithImages: 15,
+      rowsPerPageWithoutImages: 36,
+    }
+  }
+
+  return {
+    orientation: 'l',
+    pageWidthPx: 1122,
+    pageHeightPx: 793,
+    pdfWidthMm: 297,
+    pdfHeightMm: 210,
+    rowsPerPageWithImages: 11,
+    rowsPerPageWithoutImages: 18,
+  }
+}
+
 export function populateContainerDetailsWorksheet(
   worksheet: ExcelJS.Worksheet,
   items: ContainerDetailExportItem[],
   options: ContainerExportOptions = {},
 ) {
-  const columns = options.columns?.length
-    ? options.columns
-    : [
-        { header: '序号', key: 'index', width: 8, valueType: 'integer' as const },
-        { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' as const },
-        { header: '中文名称', key: 'productName', width: 36, valueType: 'text' as const },
-        { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' as const },
-        { header: '件数', key: 'containerPieces', width: 12, valueType: 'integer' as const },
-        { header: '总装柜数', key: 'containerQuantity', width: 12, valueType: 'integer' as const },
-        { header: '单件体积', key: 'unitVolume', width: 12, valueType: 'volume' as const },
-        { header: '总体积', key: 'totalVolume', width: 12, valueType: 'volume' as const },
-        { header: '中包数', key: 'middlePackQuantity', width: 12, valueType: 'integer' as const },
-        { header: '国内价格', key: 'domesticPrice', width: 12, valueType: 'money' as const, currencySymbol: '¥' as const },
-        { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' as const },
-      ]
+  const columns = getContainerDetailWorksheetColumns(options)
+  const barcodeImageColIndex = columns.findIndex((column) => column.key === 'barcodeImage')
+  const productImageColIndex = columns.findIndex((column) => column.key === 'productImage')
+  const hasImageColumn = barcodeImageColIndex >= 0 || productImageColIndex >= 0
 
   worksheet.columns = columns.map((column) => ({
     key: column.key,
@@ -766,7 +894,13 @@ export function populateContainerDetailsWorksheet(
 
   options.onProgress?.(20, '正在写入货柜明细...')
   items.forEach((item, index) => {
-    worksheet.addRow(item)
+    const row = worksheet.addRow(item)
+    if (hasImageColumn) {
+      row.height = 58
+      row.eachCell((cell) => {
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+      })
+    }
     if (index % 100 === 0) {
       options.onProgress?.(20 + Math.floor((index / Math.max(items.length, 1)) * 70), `正在处理第 ${index + 1}/${items.length} 条...`)
     }
@@ -783,7 +917,379 @@ export function populateContainerDetailsWorksheet(
   })
 
   worksheet.views = [{ state: 'frozen', ySplit: headerRowNumber }]
-  return { headerRowNumber, dataStartRowNumber: headerRowNumber + 1 }
+  return {
+    headerRowNumber,
+    dataStartRowNumber: headerRowNumber + 1,
+    barcodeImageColIndex,
+    productImageColIndex,
+  }
+}
+
+function getContainerDetailWorksheetColumns(options: ContainerExportOptions) {
+  return options.columns?.length
+    ? options.columns
+    : [
+        { header: '序号', key: 'index', width: 8, valueType: 'integer' as const },
+        { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' as const },
+        { header: '中文名称', key: 'productName', width: 36, valueType: 'text' as const },
+        { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' as const },
+        { header: '件数', key: 'containerPieces', width: 12, valueType: 'integer' as const },
+        { header: '总装柜数', key: 'containerQuantity', width: 12, valueType: 'integer' as const },
+        { header: '单件体积', key: 'unitVolume', width: 12, valueType: 'volume' as const },
+        { header: '总体积', key: 'totalVolume', width: 12, valueType: 'volume' as const },
+        { header: '中包数', key: 'middlePackQuantity', width: 12, valueType: 'integer' as const },
+        { header: '国内价格', key: 'domesticPrice', width: 12, valueType: 'money' as const, currencySymbol: '¥' as const },
+        { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' as const },
+      ]
+}
+
+async function prepareContainerDetailExportImages(
+  items: ContainerDetailExportItem[],
+  options: ContainerExportOptions,
+  imageOptions: { includeBarcodeImages: boolean; includeProductImages: boolean },
+): Promise<ContainerExportPreparedImages> {
+  const barcodeImageMap = new Map<string, string>()
+  const productImageMap = new Map<number, string>()
+  const failedProductImageRows = new Set<number>()
+
+  if (imageOptions.includeBarcodeImages) {
+    const barcodes = Array.from(new Set(items.map((item) => String(item.barcodeImage || item.barcode || '').trim()).filter(Boolean)))
+    if (barcodes.length) {
+      options.onProgress?.(25, '正在生成条码图片...')
+      // PDF 条码需要保持可扫码，源图优先生成得更清晰，再由页面按比例缩放。
+      const generated = await generateBarcodeImages(barcodes, { width: 3, height: 74, fontSize: 13, margin: 8 })
+      generated.forEach((value, key) => barcodeImageMap.set(key, value))
+    }
+  }
+
+  if (imageOptions.includeProductImages) {
+    const imageEntries = items
+      .map((item, index) => ({
+        index,
+        itemNumber: String(item.itemNumber || item.index || index + 1),
+        url: String(item.productImage || '').trim(),
+      }))
+      .filter((entry) => Boolean(entry.url))
+
+    if (imageEntries.length) {
+      options.onProgress?.(35, '正在下载商品图片...')
+      const batchSize = 5
+      let downloaded = 0
+      for (let i = 0; i < imageEntries.length; i += batchSize) {
+        const batch = imageEntries.slice(i, i + batchSize)
+        const results = await Promise.all(
+          batch.map(async (entry) => {
+            const { data, reason } = await fetchImageAsBase64WithRetry(entry.url)
+            if (!data && reason) {
+              failedProductImageRows.add(entry.index)
+            }
+            return { index: entry.index, data }
+          }),
+        )
+        results.forEach((result) => {
+          if (result.data) {
+            productImageMap.set(result.index, result.data)
+          }
+        })
+        downloaded += batch.length
+        options.onProgress?.(
+          35 + Math.floor((downloaded / Math.max(imageEntries.length, 1)) * 30),
+          `正在下载商品图片 (${downloaded}/${imageEntries.length})...`,
+        )
+      }
+    }
+  }
+
+  return { barcodeImageMap, productImageMap, failedProductImageRows }
+}
+
+function addContainerDetailWorksheetImages(
+  workbook: ExcelJS.Workbook,
+  worksheet: ExcelJS.Worksheet,
+  items: ContainerDetailExportItem[],
+  worksheetInfo: ReturnType<typeof populateContainerDetailsWorksheet>,
+  preparedImages: ContainerExportPreparedImages,
+) {
+  items.forEach((item, index) => {
+    const rowNumber = worksheetInfo.dataStartRowNumber + index
+    const row = worksheet.getRow(rowNumber)
+
+    if (worksheetInfo.barcodeImageColIndex >= 0) {
+      const barcode = String(item.barcodeImage || item.barcode || '').trim()
+      const barcodeData = barcode ? preparedImages.barcodeImageMap.get(barcode) : ''
+      if (barcodeData) {
+        const imageId = workbook.addImage({
+          base64: barcodeData.split(',')[1],
+          extension: 'png',
+        })
+        worksheet.addImage(imageId, {
+          tl: { col: worksheetInfo.barcodeImageColIndex, row: rowNumber - 1 },
+          br: { col: worksheetInfo.barcodeImageColIndex + 1, row: rowNumber },
+          editAs: 'oneCell',
+        } as any)
+      }
+    }
+
+    if (worksheetInfo.productImageColIndex >= 0) {
+      const imageData = preparedImages.productImageMap.get(index)
+      const cell = row.getCell(worksheetInfo.productImageColIndex + 1)
+      if (imageData) {
+        const ext = imageData.includes('image/jpeg') ? 'jpeg' : 'png'
+        const imageId = workbook.addImage({
+          base64: imageData.split(',')[1],
+          extension: ext,
+        })
+        worksheet.addImage(imageId, {
+          tl: { col: worksheetInfo.productImageColIndex, row: rowNumber - 1 },
+          br: { col: worksheetInfo.productImageColIndex + 1, row: rowNumber },
+          editAs: 'oneCell',
+        } as any)
+      } else if (preparedImages.failedProductImageRows.has(index)) {
+        cell.value = '图片下载失败'
+        cell.font = { color: { argb: 'FFFF0000' }, size: 9 }
+      }
+    }
+  })
+}
+
+function buildContainerDetailPdfRoot(
+  items: ContainerDetailExportItem[],
+  columns: ContainerDetailExportColumn[],
+  preparedImages: ContainerExportPreparedImages,
+  layout: ContainerDetailPdfLayout,
+  summary?: ContainerExportSummary,
+) {
+  const root = document.createElement('div')
+  root.style.position = 'fixed'
+  root.style.left = '-10000px'
+  root.style.top = '0'
+  root.style.width = `${layout.pageWidthPx}px`
+  root.style.background = '#ffffff'
+  root.style.zIndex = '-1'
+
+  const hasImageColumn = columns.some((column) => column.key === 'barcodeImage' || column.key === 'productImage')
+  const rowsPerPage = hasImageColumn ? layout.rowsPerPageWithImages : layout.rowsPerPageWithoutImages
+  const pages: ContainerDetailExportItem[][] = []
+  for (let i = 0; i < items.length; i += rowsPerPage) {
+    pages.push(items.slice(i, i + rowsPerPage))
+  }
+  if (!pages.length) {
+    pages.push([])
+  }
+
+  root.innerHTML = pages.map((pageItems, pageIndex) => (
+    buildContainerDetailPdfPageHtml({
+      pageItems,
+      pageIndex,
+      totalPages: pages.length,
+      firstRowIndex: pageIndex * rowsPerPage,
+      columns,
+      preparedImages,
+      layout,
+      summary: pageIndex === 0 ? summary : undefined,
+    })
+  )).join('')
+
+  return root
+}
+
+function buildContainerDetailPdfPageHtml({
+  pageItems,
+  pageIndex,
+  totalPages,
+  firstRowIndex,
+  columns,
+  preparedImages,
+  layout,
+  summary,
+}: {
+  pageItems: ContainerDetailExportItem[]
+  pageIndex: number
+  totalPages: number
+  firstRowIndex: number
+  columns: ContainerDetailExportColumn[]
+  preparedImages: ContainerExportPreparedImages
+  layout: ContainerDetailPdfLayout
+  summary?: ContainerExportSummary
+}) {
+  const columnCount = Math.max(columns.length, 1)
+  const summaryHtml = summary ? buildContainerDetailPdfSummaryHtml(summary, columnCount) : ''
+  const headerHtml = columns.map((column) => `<th>${escapeContainerDetailPdfHtml(column.header)}</th>`).join('')
+  const bodyHtml = pageItems.map((item, index) => {
+    const rowIndex = firstRowIndex + index
+    const cells = columns.map((column) => buildContainerDetailPdfCellHtml(column, item, rowIndex, preparedImages)).join('')
+    return `<tr>${cells}</tr>`
+  }).join('')
+
+  return `
+    <section class="container-detail-export-pdf-page" style="
+      box-sizing:border-box;
+      width:${layout.pageWidthPx}px;
+      min-height:${layout.pageHeightPx}px;
+      padding:24px;
+      background:#fff;
+      color:#1f2937;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif;
+    ">
+      ${buildContainerDetailPdfStyleHtml()}
+      ${summaryHtml}
+      <table class="container-detail-export-pdf-table">
+        <thead><tr>${headerHtml}</tr></thead>
+        <tbody>${bodyHtml}</tbody>
+      </table>
+      <div class="container-detail-export-pdf-page-number">${pageIndex + 1} / ${totalPages}</div>
+    </section>
+  `
+}
+
+function buildContainerDetailPdfStyleHtml() {
+  return `
+    <style>
+      .container-detail-export-pdf-summary-title {
+        font-size: 18px;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+      .container-detail-export-pdf-summary {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 10px;
+        table-layout: fixed;
+      }
+      .container-detail-export-pdf-summary td {
+        border: 1px solid #d9e2ef;
+        padding: 5px 7px;
+        font-size: 12px;
+        line-height: 1.18;
+      }
+      .container-detail-export-pdf-summary-label {
+        background: #eaf3ff;
+        font-weight: 700;
+        width: 11%;
+      }
+      .container-detail-export-pdf-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+      .container-detail-export-pdf-table th {
+        background: #1677ff;
+        color: #fff;
+        border: 1px solid #0f5fd4;
+        padding: 5px;
+        font-size: 11px;
+        line-height: 1.15;
+        text-align: center;
+      }
+      .container-detail-export-pdf-table td {
+        border: 1px solid #d9e2ef;
+        padding: 3px 5px;
+        font-size: 10px;
+        line-height: 1.15;
+        text-align: center;
+        vertical-align: middle;
+        word-break: break-word;
+      }
+      .container-detail-export-pdf-table tr:nth-child(even) td {
+        background: #fafafa;
+      }
+      .container-detail-export-pdf-image {
+        width: 138px;
+        max-width: 100%;
+        height: 58px;
+        object-fit: contain;
+        image-rendering: auto;
+      }
+      .container-detail-export-pdf-product-image {
+        max-width: 54px;
+        max-height: 54px;
+        object-fit: contain;
+      }
+      .container-detail-export-pdf-failed {
+        color: #d4380d;
+        font-size: 10px;
+      }
+      .container-detail-export-pdf-page-number {
+        margin-top: 10px;
+        color: #667085;
+        font-size: 10px;
+        text-align: right;
+      }
+    </style>
+  `
+}
+
+function buildContainerDetailPdfSummaryHtml(summary: ContainerExportSummary, columnCount: number) {
+  const rows = summary.rows.map((summaryRow) => {
+    const cells = summaryRow.map((item) => `
+      <td class="container-detail-export-pdf-summary-label">${escapeContainerDetailPdfHtml(item.label)}</td>
+      <td>${escapeContainerDetailPdfHtml(formatContainerDetailPdfValue(item.value, item.valueType))}</td>
+    `).join('')
+    return `<tr>${cells}</tr>`
+  }).join('')
+
+  return `
+    <div class="container-detail-export-pdf-summary-title">${escapeContainerDetailPdfHtml(summary.title)}</div>
+    <table class="container-detail-export-pdf-summary" data-column-count="${columnCount}">
+      <tbody>${rows}</tbody>
+    </table>
+  `
+}
+
+function buildContainerDetailPdfCellHtml(
+  column: ContainerDetailExportColumn,
+  item: ContainerDetailExportItem,
+  rowIndex: number,
+  preparedImages: ContainerExportPreparedImages,
+) {
+  if (column.key === 'barcodeImage') {
+    const barcode = String(item.barcodeImage || item.barcode || '').trim()
+    const imageData = barcode ? preparedImages.barcodeImageMap.get(barcode) : ''
+    return imageData
+      ? `<td><img class="container-detail-export-pdf-image" src="${escapeContainerDetailPdfAttribute(imageData)}" /></td>`
+      : '<td></td>'
+  }
+
+  if (column.key === 'productImage') {
+    const imageData = preparedImages.productImageMap.get(rowIndex)
+    if (imageData) {
+      return `<td><img class="container-detail-export-pdf-product-image" src="${escapeContainerDetailPdfAttribute(imageData)}" /></td>`
+    }
+    if (preparedImages.failedProductImageRows.has(rowIndex)) {
+      return '<td><span class="container-detail-export-pdf-failed">图片下载失败</span></td>'
+    }
+    return '<td></td>'
+  }
+
+  return `<td>${escapeContainerDetailPdfHtml(formatContainerDetailPdfValue(item[column.key], column.valueType, column.currencySymbol))}</td>`
+}
+
+function formatContainerDetailPdfValue(
+  value: string | number | boolean | undefined,
+  valueType?: ContainerDetailExportValueType,
+  currencySymbol: '$' | '¥' = '$',
+) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value === 'number') {
+    if (valueType === 'integer') return value.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+    if (valueType === 'money') return `${currencySymbol}${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    if (valueType === 'volume') return value.toLocaleString('zh-CN', { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+    return value.toLocaleString('zh-CN')
+  }
+  return String(value)
+}
+
+function escapeContainerDetailPdfHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function escapeContainerDetailPdfAttribute(value: string) {
+  return escapeContainerDetailPdfHtml(value).replace(/`/g, '&#96;')
 }
 
 function writeContainerExportSummary(

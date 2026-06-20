@@ -1001,10 +1001,16 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
 
             var categoryByGuid = categories
-                .GroupBy(category => NormalizeCategoryGuid(category.CategoryGUID), StringComparer.OrdinalIgnoreCase)
+                .Select(category => new
+                {
+                    Category = category,
+                    NormalizedGuid = NormalizeCategoryGuid(category.CategoryGUID),
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x.NormalizedGuid))
+                .GroupBy(x => x.NormalizedGuid!, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
                     group => group.Key,
-                    group => group.First(),
+                    group => group.First().Category,
                     StringComparer.OrdinalIgnoreCase
                 );
 
@@ -1559,7 +1565,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     var products = await _context
                         .Db.Queryable<DomesticProduct>()
-                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                         .ToListAsync();
                     productMap = products.ToDictionary(p => p.ProductCode, p => p);
                 }
@@ -1569,7 +1575,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     var warehouseProducts = await _context
                         .Db.Queryable<WarehouseProduct>()
-                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                         .ToListAsync();
                     warehouseProductMap = warehouseProducts.ToDictionary(p => p.ProductCode, p => p);
                 }
@@ -1580,7 +1586,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     var matchedProducts = await _context
                         .Db.Queryable<Product>()
-                        .Where(p => productCodes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode))
                         .ToListAsync();
                     localProductMap = matchedProducts
                         .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
@@ -2639,10 +2645,13 @@ namespace BlazorApp.Api.Services.React
                         .Db.Queryable<ContainerDetail>()
                         .Where(x =>
                             x.ContainerCode == container.ContainerCode
+                            && x.ProductCode != null
                             && productCodes.Contains(x.ProductCode)
                         )
                         .ToListAsync();
-                    detailDict = existingDetails.ToDictionary(d => d.ProductCode);
+                    detailDict = existingDetails
+                        .Where(d => !string.IsNullOrWhiteSpace(d.ProductCode))
+                        .ToDictionary(d => d.ProductCode!, d => d);
                 }
                 catch (Exception exPreload)
                 {

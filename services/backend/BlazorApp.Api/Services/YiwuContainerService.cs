@@ -965,16 +965,22 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<bool> BatchRecalculateContainerSummaryAsync(List<string> containerCodes)
         {
-            if (!containerCodes?.Any() == true)
+            if (containerCodes == null || containerCodes.Count == 0)
             {
                 return true;
             }
+
+            var validContainerCodes = containerCodes;
 
             try
             {
                 // 批量查询所有容器的明细数据
                 var allDetails = await _context.Db.Queryable<ContainerDetail>()
-                    .Where(cd => cd.ContainerCode != null && containerCodes.Contains(cd.ContainerCode) && !cd.IsDeleted)
+                    .Where(cd =>
+                        cd.ContainerCode != null
+                        && validContainerCodes.Contains(cd.ContainerCode!)
+                        && !cd.IsDeleted
+                    )
                     .ToListAsync();
 
                 // 按容器分组并计算汇总数据

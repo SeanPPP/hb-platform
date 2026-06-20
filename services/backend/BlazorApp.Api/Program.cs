@@ -189,45 +189,35 @@ builder.Services.AddHostedService<ScheduledTaskService>();
 // 🌐 配置跨域资源共享策略，支持 Cookie 认证方案
 // ⚠️ 重要：AllowCredentials() 必须与 WithOrigins() 一起使用，不能与 AllowAnyOrigin() 一起使用
 // 原因：当使用凭据时，必须明确指定允许的源，不能使用通配符 "*"
+var configuredCorsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+var corsOrigins =
+    configuredCorsOrigins?.Length > 0
+        ? configuredCorsOrigins
+        : new[]
+        {
+            // 🔧 开发环境默认域名
+            "http://localhost:8000", // 前端开发服务器
+            "http://localhost:3000", // 备用前端端口
+            "http://localhost:5002", // 后端 API 端口
+            "https://localhost", // 支持 HTTPS localhost（宝塔面板）
+            // 🌐 生产环境域名
+            "https://www.dats.com.au",
+            "https://www.malmar.com.au",
+            "https://www.yatstal.com.au",
+            "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
+            "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
+            "http://hotbargain.vip",
+        };
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(
         "AllowSpecific",
         policy =>
         {
-            // 🔍 从配置文件读取允许的域名列表
-            var allowedOriginsSection = builder.Configuration.GetSection("Cors:AllowedOrigins");
-            var allowedOrigins = allowedOriginsSection.Get<string[]>();
-
-            // 📝 如果配置文件中没有指定，则使用默认列表
-            var origins =
-                allowedOrigins?.Length > 0
-                    ? allowedOrigins
-                    : new[]
-                    {
-                        // 🔧 开发环境默认域名
-                        "http://localhost:8000", // 前端开发服务器
-                        "http://localhost:3000", // 备用前端端口
-                        "http://localhost:5002", // 后端 API 端口
-                        "https://localhost", // 支持 HTTPS localhost（宝塔面板）
-                        // 🌐 生产环境域名
-                        "https://www.dats.com.au",
-                        "https://www.malmar.com.au",
-                        "https://www.yatstal.com.au",
-                        "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
-                        "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
-                        "http://hotbargain.vip",
-                    };
-
-            // 📋 记录允许的域名列表到日志
-            var logger = builder
-                .Services.BuildServiceProvider()
-                .GetRequiredService<ILogger<Program>>();
-            logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", origins));
-
             // ✅ 配置 CORS 策略
             policy
-                .WithOrigins(origins) // 📍 指定允许的源（域名列表）
+                .WithOrigins(corsOrigins) // 📍 指定允许的源（域名列表）
                 .AllowAnyMethod() // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
                 .AllowAnyHeader() // 🔓 允许所有请求头
                 .AllowCredentials(); // 🍪 允许发送凭据（Cookie、Authorization 头等）
@@ -578,6 +568,8 @@ builder.Services.AddScoped<
     ILocalSupplierInvoiceHqProductSyncService,
     LocalSupplierInvoiceHqProductSyncService
 >();
+builder.Services.AddScoped<ILocalSupplierInvoiceOcrService, NoopLocalSupplierInvoiceOcrService>();
+builder.Services.AddScoped<ILocalSupplierInvoiceImportService, LocalSupplierInvoiceImportService>();
 builder.Services.AddSingleton<
     ILocalSupplierInvoiceBatchUpdateJobService,
     LocalSupplierInvoiceBatchUpdateJobService
@@ -629,6 +621,9 @@ builder.Services.AddSingleton<
 // 🏗️ 构建WebApplication实例
 // 此时所有服务配置完成，开始构建实际的Web应用程序
 var app = builder.Build();
+
+// 📋 在应用构建完成后记录实际启用的 CORS 域名，避免在服务注册阶段提前创建容器。
+app.Logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", corsOrigins));
 
 // 📝 初始化缓存键日志记录器
 using (var scope = app.Services.CreateScope())

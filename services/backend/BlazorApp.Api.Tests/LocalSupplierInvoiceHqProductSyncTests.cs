@@ -186,6 +186,53 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateHqProductsAsync_更新HQ价格但不回写本单明细上次进货价()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-no-writeback",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            LastPurchasePrice = 3.21m,
+            IsDeleted = false,
+        });
+
+        var result = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-no-writeback" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(result.Success, BuildFailureMessage(result));
+        Assert.Equal(1, result.Data!.HqPurchasePricesUpdated);
+
+        var hqPrice = await _hqDb.Queryable<DIC_商品零售价表>()
+            .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
+        Assert.Equal(8m, hqPrice.H进货价);
+
+        var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
+            .FirstAsync(x => x.DetailGUID == "detail-no-writeback");
+        Assert.Equal(3.21m, detail.LastPurchasePrice);
+    }
+
+    [Fact]
     public async Task UpdateHqProductsAsync_目标分店HQ价格不存在_插入时使用更新字段完整建价()
     {
         await SeedStoreAsync("S01", true);
@@ -425,7 +472,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
 
         var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
             .FirstAsync(x => x.DetailGUID == "detail-case");
-        Assert.Equal("P-001", detail.ProductCode);
+        Assert.True(string.IsNullOrWhiteSpace(detail.ProductCode));
 
         var hqPrice = await _hqDb.Queryable<DIC_商品零售价表>()
             .FirstAsync(x => x.H分店代码 == "S01" && x.H商品编码 == "P-001");
@@ -476,7 +523,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
 
         var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
             .FirstAsync(x => x.DetailGUID == "detail-stale-code");
-        Assert.Equal("P-001", detail.ProductCode);
+        Assert.Equal("STALE-PRODUCT", detail.ProductCode);
     }
 
     [Fact]
@@ -631,15 +678,15 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
 
         var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
             .FirstAsync(x => x.DetailGUID == "detail-new-local-product");
-        Assert.False(string.IsNullOrWhiteSpace(detail.ProductCode));
+        Assert.True(string.IsNullOrWhiteSpace(detail.ProductCode));
 
         var product = await _localDb.Queryable<Product>()
-            .FirstAsync(x => x.ProductCode == detail.ProductCode);
+            .FirstAsync(x => x.ItemNumber == "ITEM-NEW-LOCAL");
         Assert.Equal("ITEM-NEW-LOCAL", product.ItemNumber);
         Assert.Equal("930000009999", product.Barcode);
 
         var localPrices = await _localDb.Queryable<StoreRetailPrice>()
-            .Where(x => x.ProductCode == detail.ProductCode)
+            .Where(x => x.ProductCode == product.ProductCode)
             .OrderBy(x => x.StoreCode)
             .ToListAsync();
         Assert.Equal(new[] { "S01", "S02" }, localPrices.Select(x => x.StoreCode).ToArray());
@@ -651,7 +698,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             Assert.Equal(0.15m, price.DiscountRate);
             Assert.False(price.IsAutoPricing);
             Assert.True(price.IsSpecialProduct);
-            Assert.Equal($"{price.StoreCode}{detail.ProductCode}", price.StoreProductCode);
+            Assert.Equal($"{price.StoreCode}{product.ProductCode}", price.StoreProductCode);
         });
     }
 

@@ -58,6 +58,22 @@ namespace BlazorApp.Api.Services
             return value.Replace("'", "''");
         }
 
+        private static void ApplyInvalidKeyReport(
+            TableIntegrityReport report,
+            int invalidKeyCount,
+            string messageTemplate
+        )
+        {
+            report.InvalidKeyCount = invalidKeyCount;
+            if (invalidKeyCount <= 0)
+            {
+                return;
+            }
+
+            // 检查阶段也必须暴露脏关键字段；修复阶段仍保持只报告、不自动修复。
+            report.Errors.Add(string.Format(messageTemplate, invalidKeyCount));
+        }
+
         #region Check Methods
 
         public async Task<ApiResponse<ProductIntegrityCheckResultDto>> CheckIntegrityAsync(
@@ -160,12 +176,22 @@ namespace BlazorApp.Api.Services
 
             var totalSql =
                 $@"SELECT COUNT(DISTINCT t.ProductCode) FROM StoreRetailPrice t
-                   WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL AND t.StoreCode = '{escapedCode}'";
+                   WHERE t.IsDeleted = 0 AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL AND t.StoreCode = '{escapedCode}'";
             report.TotalChecked = await db.Ado.GetIntAsync(totalSql);
+
+            var invalidKeySql =
+                $@"SELECT COUNT(*) FROM StoreRetailPrice t
+                   WHERE t.IsDeleted = 0 AND t.StoreCode = '{escapedCode}'
+                   AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NULL";
+            ApplyInvalidKeyReport(
+                report,
+                await db.Ado.GetIntAsync(invalidKeySql),
+                $"分店 {storeCode} StoreRetailPrice 存在 {{0}} 条缺少 ProductCode 的记录，未参与自动修复。"
+            );
 
             var orphanedCountSql =
                 $@"SELECT COUNT(DISTINCT t.ProductCode) FROM StoreRetailPrice t
-                   WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL AND t.StoreCode = '{escapedCode}'
+                   WHERE t.IsDeleted = 0 AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL AND t.StoreCode = '{escapedCode}'
                    AND NOT EXISTS (SELECT 1 FROM Product p WHERE p.ProductCode = t.ProductCode AND p.IsDeleted = 0)";
             report.OrphanedCount = await db.Ado.GetIntAsync(orphanedCountSql);
 
@@ -182,11 +208,11 @@ namespace BlazorApp.Api.Services
             {
                 var orphanedSampleSql = IsPostgreSQL
                     ? $@"SELECT DISTINCT t.ProductCode FROM StoreRetailPrice t
-                        WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL AND t.StoreCode = '{escapedCode}'
+                        WHERE t.IsDeleted = 0 AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL AND t.StoreCode = '{escapedCode}'
                         AND NOT EXISTS (SELECT 1 FROM Product p WHERE p.ProductCode = t.ProductCode AND p.IsDeleted = 0)
                         LIMIT {MaxSampleCount}"
                     : $@"SELECT DISTINCT TOP {MaxSampleCount} t.ProductCode FROM StoreRetailPrice t
-                        WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL AND t.StoreCode = '{escapedCode}'
+                        WHERE t.IsDeleted = 0 AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL AND t.StoreCode = '{escapedCode}'
                         AND NOT EXISTS (SELECT 1 FROM Product p WHERE p.ProductCode = t.ProductCode AND p.IsDeleted = 0)";
                 report.OrphanedProductCodes = await db.Ado.SqlQueryAsync<string>(orphanedSampleSql);
             }
@@ -223,12 +249,27 @@ namespace BlazorApp.Api.Services
 
             var totalSql =
                 $@"SELECT COUNT(DISTINCT sm.ProductCode) FROM StoreMultiCodeProduct sm
-                   WHERE sm.IsDeleted = 0 AND sm.ProductCode IS NOT NULL AND sm.StoreCode = '{escapedCode}'";
+                   WHERE sm.IsDeleted = 0 AND NULLIF(LTRIM(RTRIM(sm.ProductCode)), '') IS NOT NULL AND sm.StoreCode = '{escapedCode}'";
             report.TotalChecked = await db.Ado.GetIntAsync(totalSql);
+
+            var invalidKeySql =
+                $@"SELECT COUNT(*) FROM StoreMultiCodeProduct sm
+                   WHERE sm.IsDeleted = 0 AND sm.StoreCode = '{escapedCode}'
+                   AND (
+                       NULLIF(LTRIM(RTRIM(sm.ProductCode)), '') IS NULL
+                       OR NULLIF(LTRIM(RTRIM(sm.MultiCodeProductCode)), '') IS NULL
+                   )";
+            ApplyInvalidKeyReport(
+                report,
+                await db.Ado.GetIntAsync(invalidKeySql),
+                $"分店 {storeCode} StoreMultiCodeProduct 存在 {{0}} 条缺少 ProductCode 或 MultiCodeProductCode 的记录，未参与自动修复。"
+            );
 
             var orphanedCountSql =
                 $@"SELECT COUNT(*) FROM StoreMultiCodeProduct sm
                    WHERE sm.IsDeleted = 0 AND sm.StoreCode = '{escapedCode}'
+                   AND NULLIF(LTRIM(RTRIM(sm.ProductCode)), '') IS NOT NULL
+                   AND NULLIF(LTRIM(RTRIM(sm.MultiCodeProductCode)), '') IS NOT NULL
                    AND NOT EXISTS (
                        SELECT 1 FROM ProductSetCode psc
                        WHERE psc.ProductCode = sm.ProductCode
@@ -240,6 +281,8 @@ namespace BlazorApp.Api.Services
             var missingCountSql =
                 $@"SELECT COUNT(*) FROM ProductSetCode psc
                    WHERE psc.IsDeleted = 0 AND psc.IsActive = 1
+                   AND NULLIF(LTRIM(RTRIM(psc.ProductCode)), '') IS NOT NULL
+                   AND NULLIF(LTRIM(RTRIM(psc.SetProductCode)), '') IS NOT NULL
                    AND NOT EXISTS (
                        SELECT 1 FROM StoreMultiCodeProduct sm
                        WHERE sm.ProductCode = psc.ProductCode
@@ -254,6 +297,8 @@ namespace BlazorApp.Api.Services
                 var orphanedSampleSql = IsPostgreSQL
                     ? $@"SELECT DISTINCT sm.ProductCode FROM StoreMultiCodeProduct sm
                         WHERE sm.IsDeleted = 0 AND sm.StoreCode = '{escapedCode}'
+                        AND NULLIF(LTRIM(RTRIM(sm.ProductCode)), '') IS NOT NULL
+                        AND NULLIF(LTRIM(RTRIM(sm.MultiCodeProductCode)), '') IS NOT NULL
                         AND NOT EXISTS (
                             SELECT 1 FROM ProductSetCode psc
                             WHERE psc.ProductCode = sm.ProductCode
@@ -263,6 +308,8 @@ namespace BlazorApp.Api.Services
                         LIMIT {MaxSampleCount}"
                     : $@"SELECT DISTINCT TOP {MaxSampleCount} sm.ProductCode FROM StoreMultiCodeProduct sm
                         WHERE sm.IsDeleted = 0 AND sm.StoreCode = '{escapedCode}'
+                        AND NULLIF(LTRIM(RTRIM(sm.ProductCode)), '') IS NOT NULL
+                        AND NULLIF(LTRIM(RTRIM(sm.MultiCodeProductCode)), '') IS NOT NULL
                         AND NOT EXISTS (
                             SELECT 1 FROM ProductSetCode psc
                             WHERE psc.ProductCode = sm.ProductCode
@@ -277,6 +324,8 @@ namespace BlazorApp.Api.Services
                 var missingSampleSql = IsPostgreSQL
                     ? $@"SELECT psc.ProductCode FROM ProductSetCode psc
                         WHERE psc.IsDeleted = 0 AND psc.IsActive = 1
+                        AND NULLIF(LTRIM(RTRIM(psc.ProductCode)), '') IS NOT NULL
+                        AND NULLIF(LTRIM(RTRIM(psc.SetProductCode)), '') IS NOT NULL
                         AND NOT EXISTS (
                             SELECT 1 FROM StoreMultiCodeProduct sm
                             WHERE sm.ProductCode = psc.ProductCode
@@ -287,6 +336,8 @@ namespace BlazorApp.Api.Services
                         LIMIT {MaxSampleCount}"
                     : $@"SELECT TOP {MaxSampleCount} psc.ProductCode FROM ProductSetCode psc
                         WHERE psc.IsDeleted = 0 AND psc.IsActive = 1
+                        AND NULLIF(LTRIM(RTRIM(psc.ProductCode)), '') IS NOT NULL
+                        AND NULLIF(LTRIM(RTRIM(psc.SetProductCode)), '') IS NOT NULL
                         AND NOT EXISTS (
                             SELECT 1 FROM StoreMultiCodeProduct sm
                             WHERE sm.ProductCode = psc.ProductCode
@@ -309,13 +360,28 @@ namespace BlazorApp.Api.Services
             try
             {
                 var totalSql =
-                    "SELECT COUNT(DISTINCT ProductCode) FROM ProductSetCode WHERE IsDeleted = 0 AND ProductCode IS NOT NULL";
+                    "SELECT COUNT(DISTINCT ProductCode) FROM ProductSetCode WHERE IsDeleted = 0 AND NULLIF(LTRIM(RTRIM(ProductCode)), '') IS NOT NULL";
                 report.TotalChecked = await db.Ado.GetIntAsync(totalSql);
                 Console.WriteLine($"  [ProductSetCode] 检测商品编码总数: {report.TotalChecked}");
 
+                var invalidKeySql =
+                    @"SELECT COUNT(*) FROM ProductSetCode
+                      WHERE IsDeleted = 0
+                      AND (
+                          NULLIF(LTRIM(RTRIM(ProductCode)), '') IS NULL
+                          OR NULLIF(LTRIM(RTRIM(SetProductCode)), '') IS NULL
+                      )";
+                ApplyInvalidKeyReport(
+                    report,
+                    await db.Ado.GetIntAsync(invalidKeySql),
+                    "ProductSetCode 存在 {0} 条缺少 ProductCode 或 SetProductCode 的记录，未参与自动修复。"
+                );
+
                 var orphanedCountSql =
                     @"SELECT COUNT(DISTINCT t.ProductCode) FROM ProductSetCode t
-                      WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL
+                      WHERE t.IsDeleted = 0
+                      AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL
+                      AND NULLIF(LTRIM(RTRIM(t.SetProductCode)), '') IS NOT NULL
                       AND NOT EXISTS (SELECT 1 FROM Product p WHERE p.ProductCode = t.ProductCode AND p.IsDeleted = 0)";
                 report.OrphanedCount = await db.Ado.GetIntAsync(orphanedCountSql);
                 Console.WriteLine($"  [ProductSetCode] 孤立记录数（需删除）: {report.OrphanedCount}");
@@ -324,11 +390,15 @@ namespace BlazorApp.Api.Services
                 {
                     var orphanedSampleSql = IsPostgreSQL
                         ? $@"SELECT DISTINCT t.ProductCode FROM ProductSetCode t
-                            WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL
+                            WHERE t.IsDeleted = 0
+                            AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL
+                            AND NULLIF(LTRIM(RTRIM(t.SetProductCode)), '') IS NOT NULL
                             AND NOT EXISTS (SELECT 1 FROM Product p WHERE p.ProductCode = t.ProductCode AND p.IsDeleted = 0)
                             LIMIT {MaxSampleCount}"
                         : $@"SELECT DISTINCT TOP {MaxSampleCount} t.ProductCode FROM ProductSetCode t
-                            WHERE t.IsDeleted = 0 AND t.ProductCode IS NOT NULL
+                            WHERE t.IsDeleted = 0
+                            AND NULLIF(LTRIM(RTRIM(t.ProductCode)), '') IS NOT NULL
+                            AND NULLIF(LTRIM(RTRIM(t.SetProductCode)), '') IS NOT NULL
                             AND NOT EXISTS (SELECT 1 FROM Product p WHERE p.ProductCode = t.ProductCode AND p.IsDeleted = 0)";
                     report.OrphanedProductCodes = await db.Ado.SqlQueryAsync<string>(orphanedSampleSql);
                     Console.WriteLine(
@@ -467,11 +537,18 @@ namespace BlazorApp.Api.Services
                             storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                             storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
 
-                            var storeRecords = await storeDb
+                            var rawStoreRecords = await storeDb
                                 .Queryable<StoreRetailPrice>()
                                 .Where(sr => sr.StoreCode == storeCode && sr.IsDeleted == false)
                                 .Select(sr => sr.ProductCode)
                                 .ToListAsync();
+                            var invalidProductCodeCount = rawStoreRecords.Count(string.IsNullOrWhiteSpace);
+                            // 缺少商品编码的数据不能参与字典匹配，但必须进入报告，避免数据质量问题被静默吞掉。
+                            var storeRecords = rawStoreRecords
+                                .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                                .Select(productCode => productCode!)
+                                .Distinct()
+                                .ToList();
 
                             var storeProductSet = new HashSet<string>(storeRecords);
 
@@ -493,6 +570,7 @@ namespace BlazorApp.Api.Services
                                 OrphanedProductCodes = orphanedProductCodes,
                                 OrphanedCount = orphanedProductCodes.Count,
                                 MissingProductCodes = missingProductCodes,
+                                InvalidKeyCount = invalidProductCodeCount,
                             };
                         }
                         finally
@@ -502,6 +580,14 @@ namespace BlazorApp.Api.Services
                         }
                     });
                     var changePlans = (await Task.WhenAll(queryTasks)).ToList();
+                    report.Errors.AddRange(
+                        changePlans
+                            .Where(plan => plan.InvalidKeyCount > 0)
+                            .Select(plan =>
+                                $"分店 {plan.StoreCode} StoreRetailPrice 存在 {plan.InvalidKeyCount} 条缺少 ProductCode 的记录，未参与自动修复。"
+                            )
+                    );
+                    report.ErrorCount = report.Errors.Count;
 
                     // 阶段二：并发执行软删除（只有UPDATE，不会死锁）
                     var deleteTasks = changePlans
@@ -526,6 +612,7 @@ namespace BlazorApp.Api.Services
                                     .Where(sr =>
                                         sr.StoreCode == plan.StoreCode
                                         && sr.IsDeleted == false
+                                        && sr.ProductCode != null
                                         && plan.OrphanedProductCodes.Contains(sr.ProductCode)
                                     )
                                     .ExecuteCommandAsync();
@@ -654,19 +741,37 @@ namespace BlazorApp.Api.Services
                 db.Ado.CommandTimeOut = CommandTimeoutSeconds;
                 try
                 {
-                    var productSetCodes = await db.Queryable<ProductSetCode>()
+                    var rawProductSetCodes = await db.Queryable<ProductSetCode>()
                         .Where(p => p.IsDeleted == false && p.IsActive == true)
                         .ToListAsync();
+                    var invalidSetCodeCount = rawProductSetCodes.Count(p =>
+                        string.IsNullOrWhiteSpace(p.ProductCode)
+                        || string.IsNullOrWhiteSpace(p.SetProductCode)
+                    );
+                    if (invalidSetCodeCount > 0)
+                    {
+                        // 套装编码缺关键字段时只能报告，不能进入 HashSet/字典匹配。
+                        report.Errors.Add(
+                            $"ProductSetCode 存在 {invalidSetCodeCount} 条缺少 ProductCode 或 SetProductCode 的记录，未参与自动修复。"
+                        );
+                    }
+
+                    var productSetCodes = rawProductSetCodes
+                        .Where(p =>
+                            !string.IsNullOrWhiteSpace(p.ProductCode)
+                            && !string.IsNullOrWhiteSpace(p.SetProductCode)
+                        )
+                        .ToList();
                     Console.WriteLine(
                         $"  [StoreMultiCodeProduct] 套装编码总数: {productSetCodes.Count}"
                     );
 
                     var setCodeDict = productSetCodes
-                        .GroupBy(sc => sc.ProductCode)
+                        .GroupBy(sc => sc.ProductCode!)
                         .ToDictionary(g => g.Key, g => g.ToList());
 
                     var setCodeKeySet = new HashSet<string>(
-                        productSetCodes.Select(sc => $"{sc.ProductCode}\u0001{sc.SetProductCode}")
+                        productSetCodes.Select(sc => $"{sc.ProductCode!}\u0001{sc.SetProductCode!}")
                     );
 
                     var semaphore = new SemaphoreSlim(5);
@@ -682,11 +787,27 @@ namespace BlazorApp.Api.Services
                             storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                             storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
 
-                            var storeRecords = await storeDb
+                            var rawStoreRecords = await storeDb
                                 .Queryable<StoreMultiCodeProduct>()
                                 .Where(sm => sm.StoreCode == storeCode && sm.IsDeleted == false)
                                 .Select(sm => new { sm.ProductCode, sm.MultiCodeProductCode })
                                 .ToListAsync();
+                            var invalidStoreMultiCodeCount = rawStoreRecords.Count(r =>
+                                string.IsNullOrWhiteSpace(r.ProductCode)
+                                || string.IsNullOrWhiteSpace(r.MultiCodeProductCode)
+                            );
+                            // 分店多码缺关键字段时保留为报告错误，防止修复统计漏报坏数据。
+                            var storeRecords = rawStoreRecords
+                                .Where(r =>
+                                    !string.IsNullOrWhiteSpace(r.ProductCode)
+                                    && !string.IsNullOrWhiteSpace(r.MultiCodeProductCode)
+                                )
+                                .Select(r => new
+                                {
+                                    ProductCode = r.ProductCode!,
+                                    MultiCodeProductCode = r.MultiCodeProductCode!,
+                                })
+                                .ToList();
 
                             var storeKeySet = new HashSet<string>(
                                 storeRecords.Select(r =>
@@ -717,12 +838,18 @@ namespace BlazorApp.Api.Services
                             return new StoreMultiCodeChangePlan
                             {
                                 StoreCode = storeCode,
-                                OrphanedProductCodes = orphanedRecords
-                                    .Select(r => r.ProductCode).Distinct().ToList(),
-                                OrphanedMultiCodes = orphanedRecords
-                                    .Select(r => r.MultiCodeProductCode).Distinct().ToList(),
+                                OrphanedKeys = orphanedRecords
+                                    .Select(r =>
+                                        new StoreMultiCodeKey(
+                                            r.ProductCode,
+                                            r.MultiCodeProductCode
+                                        )
+                                    )
+                                    .Distinct()
+                                    .ToList(),
                                 OrphanedCount = orphanedRecords.Count,
                                 MissingEntries = missingEntries,
+                                InvalidKeyCount = invalidStoreMultiCodeCount,
                             };
                         }
                         finally
@@ -732,6 +859,14 @@ namespace BlazorApp.Api.Services
                         }
                     });
                     changePlans = (await Task.WhenAll(queryTasks)).ToList();
+                    report.Errors.AddRange(
+                        changePlans
+                            .Where(plan => plan.InvalidKeyCount > 0)
+                            .Select(plan =>
+                                $"分店 {plan.StoreCode} StoreMultiCodeProduct 存在 {plan.InvalidKeyCount} 条缺少 ProductCode 或 MultiCodeProductCode 的记录，未参与自动修复。"
+                            )
+                    );
+                    report.ErrorCount = report.Errors.Count;
 
                     // 阶段二：并发执行软删除（只有UPDATE，不会死锁）
                     var deleteTasks = changePlans
@@ -748,18 +883,10 @@ namespace BlazorApp.Api.Services
                                 storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                                 storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
 
-                                var deleted = await storeDb
-                                    .Updateable<StoreMultiCodeProduct>()
-                                    .SetColumns(sm => sm.IsDeleted == true)
-                                    .SetColumns(sm => sm.UpdatedAt == DateTime.UtcNow)
-                                    .SetColumns(sm => sm.UpdatedBy == "IntegrityFix")
-                                    .Where(sm =>
-                                        sm.StoreCode == plan.StoreCode
-                                        && sm.IsDeleted == false
-                                        && plan.OrphanedProductCodes.Contains(sm.ProductCode)
-                                        && plan.OrphanedMultiCodes.Contains(sm.MultiCodeProductCode)
-                                    )
-                                    .ExecuteCommandAsync();
+                                var deleted = await SoftDeleteStoreMultiCodeOrphansAsync(
+                                    storeDb,
+                                    plan
+                                );
 
                                 Console.WriteLine(
                                     $"    [分店 {plan.StoreCode}] 已删除 {deleted}"
@@ -880,10 +1007,32 @@ namespace BlazorApp.Api.Services
                 {
                     Console.WriteLine($"  [ProductSetCode] 软删除孤立记录...");
 
+                    var invalidKeyCount = await db.Queryable<ProductSetCode>()
+                        .Where(p =>
+                            p.IsDeleted == false
+                            && (
+                                p.ProductCode == null
+                                || p.ProductCode.Trim() == string.Empty
+                                || p.SetProductCode == null
+                                || p.SetProductCode.Trim() == string.Empty
+                            )
+                        )
+                        .CountAsync();
+                    if (invalidKeyCount > 0)
+                    {
+                        // ProductSetCode 自身缺关键编码时只报告，不作为孤立记录自动删除。
+                        report.Errors.Add(
+                            $"ProductSetCode 存在 {invalidKeyCount} 条缺少 ProductCode 或 SetProductCode 的记录，未参与自动修复。"
+                        );
+                        report.ErrorCount = report.Errors.Count;
+                    }
+
                     var deleteSql =
                         @"UPDATE ProductSetCode
                           SET IsDeleted = 1, UpdatedAt = @now, UpdatedBy = 'IntegrityFix'
                           WHERE IsDeleted = 0
+                          AND NULLIF(LTRIM(RTRIM(ProductCode)), '') IS NOT NULL
+                          AND NULLIF(LTRIM(RTRIM(SetProductCode)), '') IS NOT NULL
                           AND NOT EXISTS (
                               SELECT 1 FROM Product p WHERE p.ProductCode = ProductSetCode.ProductCode AND p.IsDeleted = 0
                           )";
@@ -893,6 +1042,8 @@ namespace BlazorApp.Api.Services
                         var countSql =
                             @"SELECT COUNT(*) FROM ProductSetCode
                               WHERE IsDeleted = 0
+                              AND NULLIF(LTRIM(RTRIM(ProductCode)), '') IS NOT NULL
+                              AND NULLIF(LTRIM(RTRIM(SetProductCode)), '') IS NOT NULL
                               AND NOT EXISTS (
                                   SELECT 1 FROM Product p WHERE p.ProductCode = ProductSetCode.ProductCode AND p.IsDeleted = 0
                               )";
@@ -964,14 +1115,62 @@ namespace BlazorApp.Api.Services
             return await query.ToListAsync();
         }
 
+        private static async Task<int> SoftDeleteStoreMultiCodeOrphansAsync(
+            ISqlSugarClient db,
+            StoreMultiCodeChangePlan plan
+        )
+        {
+            var deleted = 0;
+            foreach (var keyChunk in plan.OrphanedKeys.Chunk(200))
+            {
+                var parameters = new List<SugarParameter>
+                {
+                    new("@storeCode", plan.StoreCode),
+                    new("@updatedAt", DateTime.UtcNow),
+                };
+                var predicates = new List<string>();
+                var index = 0;
+
+                foreach (var key in keyChunk)
+                {
+                    var productParam = $"@productCode{index}";
+                    var multiCodeParam = $"@multiCode{index}";
+                    predicates.Add(
+                        $"(ProductCode = {productParam} AND MultiCodeProductCode = {multiCodeParam})"
+                    );
+                    parameters.Add(new SugarParameter(productParam, key.ProductCode));
+                    parameters.Add(new SugarParameter(multiCodeParam, key.MultiCodeProductCode));
+                    index++;
+                }
+
+                if (predicates.Count == 0)
+                {
+                    continue;
+                }
+
+                // 必须按复合键精确匹配，避免两个 IN 集合交叉后误删有效多码记录。
+                var sql =
+                    $@"UPDATE StoreMultiCodeProduct
+                       SET IsDeleted = 1, UpdatedAt = @updatedAt, UpdatedBy = 'IntegrityFix'
+                       WHERE StoreCode = @storeCode
+                       AND IsDeleted = 0
+                       AND ({string.Join(" OR ", predicates)})";
+                deleted += await db.Ado.ExecuteCommandAsync(sql, parameters.ToArray());
+            }
+
+            return deleted;
+        }
+
         private class StoreMultiCodeChangePlan
         {
             public string StoreCode { get; set; } = "";
-            public List<string> OrphanedProductCodes { get; set; } = new();
-            public List<string> OrphanedMultiCodes { get; set; } = new();
+            public List<StoreMultiCodeKey> OrphanedKeys { get; set; } = new();
             public int OrphanedCount { get; set; }
             public List<ProductSetCode> MissingEntries { get; set; } = new();
+            public int InvalidKeyCount { get; set; }
         }
+
+        private sealed record StoreMultiCodeKey(string ProductCode, string MultiCodeProductCode);
 
         private class StoreRetailPriceChangePlan
         {
@@ -979,6 +1178,7 @@ namespace BlazorApp.Api.Services
             public List<string> OrphanedProductCodes { get; set; } = new();
             public int OrphanedCount { get; set; }
             public List<string> MissingProductCodes { get; set; } = new();
+            public int InvalidKeyCount { get; set; }
         }
 
         #endregion

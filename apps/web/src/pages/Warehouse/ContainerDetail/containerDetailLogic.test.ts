@@ -70,6 +70,7 @@ import {
   resolveContainerDetailOemPrice,
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   getContainerDetailCostMissingFields,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
@@ -131,6 +132,16 @@ assertDeepEqual(
   ],
   '货柜明细默认导出列应为用户指定的 Excel 核对模板',
 )
+assertEqual(
+  DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.some((key) => key === 'barcodeImage' || key === 'productImage'),
+  false,
+  '货柜明细默认导出列不应包含图片列，避免默认导出变慢',
+)
+assertDeepEqual(
+  DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
+  ['index', 'productImage', 'itemNumber', 'barcodeImage', 'englishName', 'oemPrice'],
+  '货柜明细 PDF 默认导出列应为序号、商品图片、货号、条码图片、英文和贴牌价格',
+)
 
 const customExportColumnKeys: ContainerDetailExportColumnKey[] = ['oemPrice', 'itemNumber', 'containerQuantity']
 assertDeepEqual(
@@ -144,6 +155,13 @@ assertDeepEqual(
     .map((column) => column.key),
   ['lastImportPrice', 'lastOEMPrice'],
   '货柜明细可选导出列应包含上次进货价格和上次贴牌价格',
+)
+assertDeepEqual(
+  CONTAINER_DETAIL_EXPORT_COLUMNS
+    .filter((column) => column.key === 'barcode' || column.key === 'barcodeImage' || column.key === 'productImage')
+    .map((column) => column.key),
+  ['barcode', 'barcodeImage', 'productImage'],
+  '货柜明细可选导出列应包含条码、条码图片和商品图片',
 )
 assertEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.find((column) => column.key === 'lastImportPrice')?.labelKey,
@@ -263,6 +281,7 @@ const exportRow = buildContainerDetailExportRow({
     条形码: '9525812910005',
     商品名称: '商品信息名称',
     英文名称: 'Product Info Name',
+    商品图片: 'https://cdn.example.com/info-image.jpg',
     商品类型: '套装商品',
     零售价格: 9.99,
   },
@@ -270,6 +289,9 @@ const exportRow = buildContainerDetailExportRow({
 assertDeepEqual(
   {
     itemNumber: exportRow.itemNumber,
+    barcode: exportRow.barcode,
+    barcodeImage: exportRow.barcodeImage,
+    productImage: exportRow.productImage,
     productName: exportRow.productName,
     englishName: exportRow.englishName,
     containerPieces: exportRow.containerPieces,
@@ -282,6 +304,9 @@ assertDeepEqual(
   },
   {
     itemNumber: 'HB291-005',
+    barcode: '9525812910005',
+    barcodeImage: '9525812910005',
+    productImage: 'https://cdn.example.com/info-image.jpg',
     productName: '明细名称',
     englishName: 'Detail Name',
     containerPieces: 3,
@@ -338,6 +363,9 @@ assertDeepEqual(
     {
       index: 1,
       itemNumber: '',
+      barcode: '',
+      barcodeImage: '',
+      productImage: '',
       productName: '',
       englishName: '',
       containerPieces: 0,
@@ -1306,6 +1334,13 @@ const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDe
 const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
 const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
 const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
+assertEqual(
+  pageSource.includes('PDF 对外分享时不展示汇率和运费金额；Excel 仍保留完整核对信息。') &&
+    pageSource.includes("const summaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = format === 'pdf'") &&
+    pageSource.includes(': baseSummaryRows'),
+  true,
+  '货柜明细 PDF 基础信息不应展示汇率和运费金额，Excel 应保留完整摘要',
+)
 
 function getLocaleValue(source: Record<string, unknown>, key: string) {
   return key.split('.').reduce<unknown>((current, part) => (
@@ -1424,6 +1459,9 @@ assertDeepEqual(
   [
     'No.',
     'Item No.',
+    'Barcode',
+    'Barcode Image',
+    'Product Image',
     'Chinese Name',
     'English Name',
     'Pieces',

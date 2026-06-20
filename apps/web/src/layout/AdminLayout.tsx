@@ -158,8 +158,13 @@ function DesktopAdminLayout() {
           mode="inline"
           items={menus}
           selectedKeys={selectedKeys}
-          openKeys={collapsed ? [] : openKeys}
-          onOpenChange={(keys) => setOpenKeys(keys as string[])}
+          // 折叠态不要受控 openKeys，否则 AntD 弹出子菜单会被立即收起。
+          {...(!collapsed
+            ? {
+                openKeys,
+                onOpenChange: (keys) => setOpenKeys(keys as string[]),
+              }
+            : {})}
           onClick={handleMenuClick}
         />
       </Sider>

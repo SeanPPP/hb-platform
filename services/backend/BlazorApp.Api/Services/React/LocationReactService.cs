@@ -1001,7 +1001,7 @@ namespace BlazorApp.Api.Services.React
                 : query.OrderBy(orderByExpression);
         }
 
-        private static Expression<Func<Location, object>> CreateOrderByExpression(string sortBy)
+        private static Expression<Func<Location, object?>> CreateOrderByExpression(string sortBy)
         {
             return sortBy switch
             {

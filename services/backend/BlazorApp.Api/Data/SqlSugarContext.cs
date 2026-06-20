@@ -373,6 +373,7 @@ namespace BlazorApp.Api.Data
                 EnsureSalesStatisticRefreshStateJobColumns();
                 EnsureContainerDetailSchemaColumns();
                 CreateNormalIndexes();
+                EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -562,7 +563,7 @@ namespace BlazorApp.Api.Data
         private void EnsureEmployeeProfilePhoneColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(EmployeeProfile));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -601,7 +602,13 @@ namespace BlazorApp.Api.Data
         private void EnsureUserLastLoginIpColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(User));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
+            {
+                // 兼容早期手工建表/SQLite 测试库：User 实体未显式标注表名时，实体映射名可能与旧表名不同。
+                tableName = "User";
+            }
+
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -610,10 +617,23 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "LastLoginIp", "nvarchar(50)", "varchar(50)", "varchar(50)");
         }
 
+        private bool IsKnownTable(string tableName)
+        {
+            if (_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return true;
+            }
+
+            // SQLite 测试库和部分旧库由手写 SQL 建表，逐表清单比 IsAnyTable 更能反映真实状态。
+            return _db.DbMaintenance
+                .GetTableInfoList(false)
+                .Any(table => string.Equals(table.Name, tableName, StringComparison.OrdinalIgnoreCase));
+        }
+
         private void EnsureRefreshTokenUserIpAddressIndex()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(RefreshToken));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -646,7 +666,7 @@ namespace BlazorApp.Api.Data
         private void EnsureLocalSupplierImageBaseUrlColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(HBLocalSupplier));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -685,7 +705,7 @@ namespace BlazorApp.Api.Data
         private void EnsureStoreContactEmailColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(Store));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -724,7 +744,7 @@ namespace BlazorApp.Api.Data
         private void EnsureSalesStatisticRefreshStateJobColumns()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(SalesStatisticRefreshState));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -739,7 +759,7 @@ namespace BlazorApp.Api.Data
         private void EnsureContainerDetailSchemaColumns()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(ContainerDetail));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -1123,6 +1143,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_LocalSupplier_Code_Unique\" ON \"LocalSupplier\" (\"LocalSupplierCode\")",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_WareHouseOrder_OrderNo_Unique\" ON \"WareHouseOrder\" (\"OrderNo\") WHERE \"OrderNo\" IS NOT NULL",
+                ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''",
 
                 // 普通索引
                 ["IX_User_IsActive"] =
@@ -1263,6 +1285,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Code_Unique' AND object_id = OBJECT_ID('LocalSupplier')) CREATE UNIQUE INDEX IX_LocalSupplier_Code_Unique ON [LocalSupplier](LocalSupplierCode)",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_OrderNo_Unique' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE UNIQUE INDEX IX_WareHouseOrder_OrderNo_Unique ON [WareHouseOrder]([OrderNo]) WHERE [OrderNo] IS NOT NULL",
+                ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreLocalSupplierInvoice_Business_Unique' AND object_id = OBJECT_ID('StoreLocalSupplierInvoice')) CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique ON [StoreLocalSupplierInvoice]([StoreCode], [SupplierCode], [InvoiceNo]) WHERE [IsDeleted] = 0 AND [StoreCode] IS NOT NULL AND [SupplierCode] IS NOT NULL AND [InvoiceNo] IS NOT NULL AND [InvoiceNo] <> ''",
             };
 
             foreach (var indexCheck in uniqueIndexChecks)
@@ -1391,6 +1415,7 @@ namespace BlazorApp.Api.Data
                     // 创建普通索引
                     CreateNormalIndexes();
                     CreateWareHouseOrderOrderNoUniqueIndex();
+                    EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
                 }
                 else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
                 {
@@ -1463,6 +1488,35 @@ namespace BlazorApp.Api.Data
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️ 创建 WareHouseOrder.OrderNo 唯一索引失败: {ex.Message}");
+            }
+        }
+
+        private void EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex()
+        {
+            try
+            {
+                if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    const string sql =
+                        "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreLocalSupplierInvoice_Business_Unique' AND object_id = OBJECT_ID('StoreLocalSupplierInvoice')) "
+                        + "CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique ON [StoreLocalSupplierInvoice]([StoreCode], [SupplierCode], [InvoiceNo]) "
+                        + "WHERE [IsDeleted] = 0 AND [StoreCode] IS NOT NULL AND [SupplierCode] IS NOT NULL AND [InvoiceNo] IS NOT NULL AND [InvoiceNo] <> ''";
+                    _db.Ado.ExecuteCommand(sql);
+                    Console.WriteLine("✓ StoreLocalSupplierInvoice 业务唯一索引检查完成");
+                }
+                else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+                {
+                    const string sql =
+                        "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" "
+                        + "ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") "
+                        + "WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''";
+                    _db.Ado.ExecuteCommand(sql);
+                    Console.WriteLine("✓ StoreLocalSupplierInvoice 业务唯一索引检查完成");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ 创建 StoreLocalSupplierInvoice 业务唯一索引失败: {ex.Message}");
             }
         }
 
@@ -1780,7 +1834,58 @@ namespace BlazorApp.Api.Data
             {
                 return DbType.PostgreSQL;
             }
+
+            if (IsSqliteConnectionString(connectionString))
+            {
+                return DbType.Sqlite;
+            }
+
             return DbType.SqlServer;
+        }
+
+        private static bool IsSqliteConnectionString(string connectionString)
+        {
+            var builder = new System.Data.Common.DbConnectionStringBuilder
+            {
+                ConnectionString = connectionString,
+            };
+
+            if (
+                builder.ContainsKey("Server")
+                || builder.ContainsKey("Database")
+                || builder.ContainsKey("Initial Catalog")
+            )
+            {
+                return false;
+            }
+
+            var mode = GetConnectionValue(builder, "Mode");
+            if (string.Equals(mode, "Memory", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var dataSource = GetConnectionValue(builder, "Data Source")
+                ?? GetConnectionValue(builder, "DataSource")
+                ?? GetConnectionValue(builder, "Filename");
+            if (string.IsNullOrWhiteSpace(dataSource))
+            {
+                return false;
+            }
+
+            var value = dataSource.Trim();
+            return string.Equals(value, ":memory:", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".db", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".sqlite3", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string? GetConnectionValue(
+            System.Data.Common.DbConnectionStringBuilder builder,
+            string key
+        )
+        {
+            return builder.TryGetValue(key, out var value) ? Convert.ToString(value) : null;
         }
 
         /// <summary>

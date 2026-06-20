@@ -334,7 +334,10 @@ namespace BlazorApp.Api.Services.React
 
                 if (query.ProductCategoryGUIDs != null && query.ProductCategoryGUIDs.Count > 0)
                 {
-                    q = q.Where(p => query.ProductCategoryGUIDs.Contains(p.ProductCategoryGUID));
+                    q = q.Where(p =>
+                        p.ProductCategoryGUID != null
+                        && query.ProductCategoryGUIDs.Contains(p.ProductCategoryGUID)
+                    );
                 }
 
                 if (query.ProductType.HasValue)
@@ -429,7 +432,7 @@ namespace BlazorApp.Api.Services.React
                         LocalSupplierCode = p.LocalSupplierCode,
                         ItemNumber = p.ItemNumber,
                         Barcode = p.Barcode,
-                        ProductName = p.ProductName,
+                        ProductName = p.ProductName ?? string.Empty,
                         ProductType = p.ProductType,
                         MiddlePackageQuantity = p.MiddlePackageQuantity,
                         PurchasePrice = p.PurchasePrice,
@@ -568,7 +571,7 @@ namespace BlazorApp.Api.Services.React
                         LocalSupplierCode = p.LocalSupplierCode,
                         ItemNumber = p.ItemNumber,
                         Barcode = p.Barcode,
-                        ProductName = p.ProductName,
+                        ProductName = p.ProductName ?? string.Empty,
                         ProductType = p.ProductType,
                         MiddlePackageQuantity = p.MiddlePackageQuantity,
                         PurchasePrice = p.PurchasePrice,
@@ -646,7 +649,9 @@ namespace BlazorApp.Api.Services.React
                         };
                     }
 
-                    query = query.Where((price, store) => storeCodes.Contains(price.StoreCode));
+                    query = query.Where((price, store) =>
+                        price.StoreCode != null && storeCodes.Contains(price.StoreCode)
+                    );
                 }
 
                 var records = await query
@@ -1521,6 +1526,13 @@ namespace BlazorApp.Api.Services.React
 
                         foreach (var item in batchList)
                         {
+                            if (string.IsNullOrWhiteSpace(item.Product.ProductCode))
+                            {
+                                result.HqFailedCount++;
+                                AddBatchImageError(result, "存在缺少商品编码的商品，未更新图片");
+                                continue;
+                            }
+
                             if (!hqRowsByProductCode.TryGetValue(item.Product.ProductCode, out var matchedRows))
                             {
                                 result.HqFailedCount++;
@@ -1723,7 +1735,9 @@ namespace BlazorApp.Api.Services.React
                 // 应用分店过滤条件(优化:先过滤StoreCode)
                 if (filter.StoreCodes != null && filter.StoreCodes.Any())
                 {
-                    query = query.Where((p, sp, s, ls) => filter.StoreCodes.Contains(sp.StoreCode));
+                    query = query.Where((p, sp, s, ls) =>
+                        sp.StoreCode != null && filter.StoreCodes.Contains(sp.StoreCode)
+                    );
                 }
 
                 // 应用商品主表过滤条件

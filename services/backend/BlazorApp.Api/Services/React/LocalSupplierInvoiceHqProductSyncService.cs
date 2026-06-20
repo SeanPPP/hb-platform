@@ -339,11 +339,11 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var productCode = UuidHelper.GenerateUuid7();
+                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
-                    UUID = productCode,
-                    ProductCode = productCode,
+                    UUID = generatedProductCode,
+                    ProductCode = generatedProductCode,
                     ProductCategoryGUID = detail.ProductCategoryGUID,
                     LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
                     ItemNumber = detail.ItemNumber,
@@ -367,13 +367,10 @@ namespace BlazorApp.Api.Services.React
                 result.HbwebCreated++;
             }
 
-            // 已有商品只绑定明细；新建商品会在绑定后补齐所有启用分店价格。
+            // 更新HQ商品链路不回写本单明细，避免把“上次进货价”等明细字段改成本次操作值。
+            // 这里只在内存中补齐商品编码，供后续本地价格和HQ价格写入使用。
             detail.ProductCode = product.ProductCode;
             detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode!);
-            detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
-            detail.UpdatedAt = now;
-            detail.UpdatedBy = updatedBy;
-            await db.Updateable(detail).ExecuteCommandAsync();
 
             // 更新HQ商品时，只有新建本地商品才需要补齐所有启用分店价格。
             if (isNewProduct)
@@ -423,11 +420,11 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var productCode = UuidHelper.GenerateUuid7();
+                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
-                    UUID = productCode,
-                    ProductCode = productCode,
+                    UUID = generatedProductCode,
+                    ProductCode = generatedProductCode,
                     ProductCategoryGUID = detail.ProductCategoryGUID,
                     LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
                     ItemNumber = detail.ItemNumber,
@@ -455,8 +452,14 @@ namespace BlazorApp.Api.Services.React
                 // 已有商品是全局主档，这里只绑定明细并更新目标分店价格，避免越过分店范围修改商品资料。
             }
 
-            detail.ProductCode = product.ProductCode;
-            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode);
+            if (string.IsNullOrWhiteSpace(product.ProductCode))
+            {
+                throw new InvalidOperationException("同步分店进货单时商品编码不能为空");
+            }
+
+            var productCode = product.ProductCode;
+            detail.ProductCode = productCode;
+            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, productCode);
             detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
             detail.UpdatedAt = now;
             detail.UpdatedBy = updatedBy;
@@ -481,7 +484,8 @@ namespace BlazorApp.Api.Services.React
             var productCode = product.ProductCode!;
             var existingPrices = await db.Queryable<StoreRetailPrice>()
                 .Where(x =>
-                    storeCodes.Contains(x.StoreCode)
+                    x.StoreCode != null
+                    && storeCodes.Contains(x.StoreCode)
                     && x.ProductCode == productCode
                     && x.IsDeleted == false
                 )

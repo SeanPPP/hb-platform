@@ -19,12 +19,14 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ILocalSupplierInvoiceHqSyncService _hqSyncService;
         private readonly ILocalSupplierInvoiceHqProductSyncService? _hqProductSyncService;
         private readonly ILocalSupplierInvoiceBatchUpdateJobService? _batchUpdateJobService;
+        private readonly ILocalSupplierInvoiceImportService _importService;
         private readonly SqlSugarContext _dbContext;
 
         public ReactLocalSupplierInvoicesController(
             ILocalSupplierInvoicesReactService service,
             SqlSugarContext dbContext,
             ILocalSupplierInvoiceHqSyncService hqSyncService,
+            ILocalSupplierInvoiceImportService importService,
             ILocalSupplierInvoiceHqProductSyncService? hqProductSyncService = null,
             ILocalSupplierInvoiceBatchUpdateJobService? batchUpdateJobService = null
         )
@@ -32,6 +34,7 @@ namespace BlazorApp.Api.Controllers.React
             _service = service;
             _dbContext = dbContext;
             _hqSyncService = hqSyncService;
+            _importService = importService;
             _hqProductSyncService = hqProductSyncService;
             _batchUpdateJobService = batchUpdateJobService;
         }
@@ -42,7 +45,8 @@ namespace BlazorApp.Api.Controllers.React
             if (user == null) return false;
             return user.Claims.Any(c =>
                 c.Type == ClaimTypes.Role
-                && (c.Value.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+                // 超级管理员角色统一走共享权限常量，避免“管理员”通过授权元数据却被分店 gate 拦截。
+                && (Permissions.IsSuperAdminRole(c.Value)
                     || c.Value.Equals("WarehouseManager", StringComparison.OrdinalIgnoreCase))
             );
         }
@@ -402,6 +406,73 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("import/preview")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> ImportPreview(
+            [FromForm] IFormFile file,
+            CancellationToken cancellationToken
+        )
+        {
+            var result = await _importService.PreviewAsync(file, cancellationToken);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    code = result.ErrorCode,
+                    details = result.Details,
+                }
+            );
+        }
+
+        [HttpPost("import/confirm")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> ImportConfirm(
+            [FromBody] LocalSupplierInvoiceImportConfirmRequest dto,
+            CancellationToken cancellationToken
+        )
+        {
+            if (dto?.Header == null)
+                return BadRequest(new { success = false, message = "缺少导入确认数据" });
+
+            // 确认导入前再次校验分店权限，避免用户通过改包导入无权门店。
+            if (!await CanAccessStoreAsync(dto.Header.StoreCode))
+                return Forbid();
+
+            var result = await _importService.ConfirmAsync(dto, cancellationToken);
+            if (result.Success)
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        data = result.Data,
+                        message = result.Message,
+                    }
+                );
+
+            return BadRequest(
+                new
+                {
+                    success = false,
+                    message = result.Message,
+                    code = result.ErrorCode,
+                    details = result.Details,
+                }
+            );
         }
 
         [HttpPut("{invoiceGuid}")]
@@ -906,6 +977,28 @@ namespace BlazorApp.Api.Controllers.React
 
             var user = User.Identity?.Name ?? "system";
             var result = await _service.BatchUpdateDetailsAsync(invoiceGuid, dto, user);
+            if (result.Success)
+                return Ok(new { success = true, data = result.Data, message = result.Message });
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
+        [HttpPost("{invoiceGuid}/details/update-last-purchase-prices")]
+        [Authorize(Policy = Permissions.LocalPurchase.Edit)]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> UpdateLastPurchasePrices(
+            [FromRoute] string invoiceGuid,
+            [FromBody] UpdateLastPurchasePricesRequest? dto
+        )
+        {
+            if (!await CanAccessInvoiceAsync(invoiceGuid))
+                return Forbid();
+
+            var user = User.Identity?.Name ?? "system";
+            var result = await _service.UpdateLastPurchasePricesAsync(
+                invoiceGuid,
+                dto ?? new UpdateLastPurchasePricesRequest(),
+                user
+            );
             if (result.Success)
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             return BadRequest(new { success = false, message = result.Message });

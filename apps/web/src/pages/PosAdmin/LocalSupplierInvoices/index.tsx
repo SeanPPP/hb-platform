@@ -1,4 +1,4 @@
-import { CloudSyncOutlined, CopyOutlined, PlusOutlined } from '@ant-design/icons'
+import { CloudSyncOutlined, CopyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -44,6 +44,7 @@ import {
   isStoreCodeInManagedScope,
   shouldSkipScopedStoreQuery,
 } from '../../../utils/managedStoreScope'
+import ImportInvoiceModal from './ImportInvoiceModal'
 
 const SORT_FIELD_MAP: Record<string, string> = {
   storeName: 'storeName',
@@ -130,6 +131,7 @@ export default function LocalSupplierInvoicesPage() {
 
   // 创建 Modal
   const [createVisible, setCreateVisible] = useState(false)
+  const [importVisible, setImportVisible] = useState(false)
   const [createForm] = Form.useForm()
   const [creating, setCreating] = useState(false)
   const [_invoiceNoChecking, setInvoiceNoChecking] = useState(false)
@@ -310,6 +312,12 @@ export default function LocalSupplierInvoicesPage() {
     } finally {
       setCreating(false)
     }
+  }
+
+  const handleImportedInvoiceCreated = async (invoiceGuid: string) => {
+    setImportVisible(false)
+    await loadData()
+    navigate(`/pos-admin/local-supplier-invoices/${invoiceGuid}`)
   }
 
   const openHqSyncModal = () => {
@@ -634,6 +642,15 @@ export default function LocalSupplierInvoicesPage() {
           )}
           {isAdmin && (
             <Button
+              icon={<UploadOutlined />}
+              disabled={storeOptions.length === 0}
+              onClick={() => setImportVisible(true)}
+            >
+              {t('posAdmin.invoices.import.uploadButton')}
+            </Button>
+          )}
+          {isAdmin && (
+            <Button
               type="primary"
               icon={<PlusOutlined />}
               disabled={storeOptions.length === 0}
@@ -865,6 +882,14 @@ export default function LocalSupplierInvoicesPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <ImportInvoiceModal
+        open={importVisible}
+        storeOptions={storeOptions}
+        supplierOptions={supplierOptions}
+        onCancel={() => setImportVisible(false)}
+        onCreated={handleImportedInvoiceCreated}
+      />
     </Card>
   )
 }

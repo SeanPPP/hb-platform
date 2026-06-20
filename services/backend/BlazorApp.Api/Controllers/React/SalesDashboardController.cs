@@ -27,6 +27,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="service">销售仪表盘服务</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="userService">用户服务</param>
+        /// <param name="cacheWarmer">销售仪表盘缓存预热服务</param>
         public SalesDashboardController(
             ISalesDashboardReactService service,
             ILogger<SalesDashboardController> logger,
@@ -145,7 +146,6 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="compareStartDate">对比开始日期（可选）</param>
         /// <param name="compareEndDate">对比结束日期（可选）</param>
         /// <param name="compareMode">对比模式</param>
-        /// <param name="supplierCode">供应商代码（可选）</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>小时销售数据列表</returns>
         [HttpGet("hourly-sales")]

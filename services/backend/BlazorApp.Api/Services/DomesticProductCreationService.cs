@@ -555,7 +555,7 @@ namespace BlazorApp.Api.Services
         /// <summary>
         /// 获取批次列表（分页）
         /// </summary>
-        public async Task<ApiResponse<PagedResult<DomesticProductBatchDto>>> GetBatchListAsync(
+        public Task<ApiResponse<PagedResult<DomesticProductBatchDto>>> GetBatchListAsync(
             int page = 1,
             int pageSize = 20,
             string? supplierCode = null,
@@ -620,17 +620,21 @@ namespace BlazorApp.Api.Services
                     PageSize = pageSize,
                 };
 
-                return ApiResponse<PagedResult<DomesticProductBatchDto>>.OK(
-                    result,
-                    "获取批次列表成功"
+                return Task.FromResult(
+                    ApiResponse<PagedResult<DomesticProductBatchDto>>.OK(
+                        result,
+                        "获取批次列表成功"
+                    )
                 );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "获取批次列表失败");
-                return ApiResponse<PagedResult<DomesticProductBatchDto>>.Error(
-                    "获取批次列表失败: " + ex.Message,
-                    "GET_BATCH_LIST_ERROR"
+                return Task.FromResult(
+                    ApiResponse<PagedResult<DomesticProductBatchDto>>.Error(
+                        "获取批次列表失败: " + ex.Message,
+                        "GET_BATCH_LIST_ERROR"
+                    )
                 );
             }
         }

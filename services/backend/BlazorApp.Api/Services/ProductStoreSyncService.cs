@@ -92,7 +92,7 @@ namespace BlazorApp.Api.Services
 
                 var products = await productDb
                     .AsQueryable()
-                    .Where(p => request.ProductCodes.Contains(p.ProductCode))
+                    .Where(p => p.ProductCode != null && request.ProductCodes.Contains(p.ProductCode))
                     .Where(p => p.IsDeleted == false)
                     .ToListAsync();
 

@@ -8,7 +8,7 @@ export interface ProductIntegrityIssueRow {
   key: string
   scope: string
   tableName: string
-  issueType: '孤立记录' | '缺失记录'
+  issueType: '孤立记录' | '缺失记录' | '无效关键编码'
   count: number
   sampleProductCodes: string[]
 }
@@ -57,11 +57,26 @@ function appendIssueRows(
       sampleProductCodes: tableReport.missingProductCodes ?? [],
     })
   }
+
+  if ((tableReport.invalidKeyCount ?? 0) > 0) {
+    rows.push({
+      key: `${scope}-${tableReport.tableName}-invalid-key`,
+      scope,
+      tableName: tableReport.tableName,
+      issueType: '无效关键编码',
+      count: tableReport.invalidKeyCount,
+      sampleProductCodes: tableReport.errors ?? [],
+    })
+  }
 }
 
 function getIssueCount(tableReport: TableIntegrityReport | undefined | null) {
   if (!tableReport) return 0
-  return (tableReport.orphanedCount ?? 0) + (tableReport.missingCount ?? 0)
+  return (
+    (tableReport.orphanedCount ?? 0) +
+    (tableReport.missingCount ?? 0) +
+    (tableReport.invalidKeyCount ?? 0)
+  )
 }
 
 function getStoreScope(storeCode: string, storeName?: string) {

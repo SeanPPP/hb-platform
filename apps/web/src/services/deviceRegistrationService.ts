@@ -9,6 +9,7 @@ import type {
 } from '../types/deviceRegistration'
 import request, { unwrapApiData } from '../utils/request'
 
+const DEVICE_API_BASE = '/api'
 const REACT_API_BASE = '/api/react/v1/device-registration'
 
 function getString(raw: Record<string, unknown>, ...keys: string[]) {
@@ -120,6 +121,7 @@ export async function getDeviceRegistrations(params?: {
   deviceType?: string
   deviceSystem?: string
 }): Promise<DeviceRegistrationPagedResult> {
+  // 列表分页和状态动作仍由旧设备注册控制器承载；详情编辑走 React 控制器。
   const response = await request.get<
     ApiResponse<{
       devices?: Record<string, unknown>[]
@@ -130,7 +132,7 @@ export async function getDeviceRegistrations(params?: {
         totalPages?: number
       }
     }>
-  >(`${REACT_API_BASE}/paged`, {
+  >(`${DEVICE_API_BASE}/paged`, {
     params: {
       page: params?.page ?? 1,
       pageSize: params?.pageSize ?? 50,
@@ -153,15 +155,15 @@ export async function getDeviceRegistrations(params?: {
 }
 
 export async function activateDevice(id: number) {
-  return request.post<ApiResponse<object>>(`${REACT_API_BASE}/${id}/activate`, {})
+  return request.post<ApiResponse<object>>(`${DEVICE_API_BASE}/${id}/activate`, {})
 }
 
 export async function disableDevice(id: number) {
-  return request.post<ApiResponse<object>>(`${REACT_API_BASE}/${id}/disable`, {})
+  return request.post<ApiResponse<object>>(`${DEVICE_API_BASE}/${id}/disable`, {})
 }
 
 export async function lockDevice(id: number) {
-  return request.post<ApiResponse<object>>(`${REACT_API_BASE}/${id}/lock`, {})
+  return request.post<ApiResponse<object>>(`${DEVICE_API_BASE}/${id}/lock`, {})
 }
 
 export async function getDeviceRegistrationDetail(id: number): Promise<DeviceRegistrationDetail> {
