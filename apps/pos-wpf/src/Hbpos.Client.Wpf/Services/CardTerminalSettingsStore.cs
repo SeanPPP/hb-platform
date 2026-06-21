@@ -373,7 +373,10 @@ public sealed class CardTerminalSettingsStore(
     public async Task<CardTerminalSettings> GetSettingsAsync(CancellationToken cancellationToken = default)
     {
         var configuration = await LoadAsync(cancellationToken);
-        var squareAccessToken = await GetSquareAccessTokenAsync(cancellationToken);
+        // Linkly 付款不依赖 Square token，读取设置时不能触发 Square 后端刷新。
+        var squareAccessToken = configuration.Processor == CardProcessorKind.Square
+            ? await GetSquareAccessTokenAsync(cancellationToken)
+            : null;
         var linklyCloudSecret = await GetLinklyCloudSecretAsync(configuration.Environment, cancellationToken);
         var environmentSettings = CardTerminalSettings.FromEnvironment();
 

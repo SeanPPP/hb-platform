@@ -582,6 +582,12 @@
   <data name="payment.card.error.overlay.unexpected.message" xml:space="preserve">
     <value>刷卡支付时发生意外错误。请重试，如仍失败请联系技术支持。</value>
   </data>
+  <data name="payment.card.error.overlay.cardDeclined.title" xml:space="preserve">
+    <value>银行卡支付未通过</value>
+  </data>
+  <data name="payment.card.error.overlay.cardDeclined.message" xml:space="preserve">
+    <value>银行未批准本次交易。原因：{0}</value>
+  </data>
   <data name="payment.card.error.overlay.close" xml:space="preserve">
     <value>知道了</value>
   </data>
@@ -1781,6 +1787,9 @@
   </data>
   <data name="linkly.backend.timeout" xml:space="preserve">
     <value>ANZ Linkly Cloud 交易超时。</value>
+  </data>
+  <data name="linkly.backend.cancelled" xml:space="preserve">
+    <value>ANZ Linkly Cloud 交易已取消。</value>
   </data>
   <data name="linkly.backend.waitCancelled" xml:space="preserve">
     <value>Linkly 后端等待被中断，交易结果未确认，请确认状态后再重试。</value>

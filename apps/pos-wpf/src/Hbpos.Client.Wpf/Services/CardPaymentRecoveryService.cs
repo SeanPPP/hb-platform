@@ -528,18 +528,31 @@ public sealed class CardPaymentRecoveryService(
     {
         return string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase);
+            string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase) ||
+            IsCancelledStatus(status.Status);
     }
 
     private static bool IsApproved(LinklyCloudBackendSessionResponse status)
     {
         return string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(status.ResponseCode?.Trim(), "00", StringComparison.OrdinalIgnoreCase);
+            status.TransactionSuccess == true;
     }
 
     private static bool IsDeclinedOrFailed(LinklyCloudBackendSessionResponse status)
     {
+        if (string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase))
+        {
+            return status.TransactionSuccess == false;
+        }
+
         return IsFinal(status);
+    }
+
+    private static bool IsCancelledStatus(string? status)
+    {
+        // Linkly 后端可能用英式或美式拼写表示收银员取消成功；都应视为可清除终态。
+        return string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Canceled", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool CanBindRecoveredSession(
@@ -659,7 +672,99 @@ public sealed class CardPaymentRecoveryService(
         }
 
         var txnRef = status.TxnRef ?? attempt.TxnRef ?? status.SessionId;
-        return LinklyBackendPaymentReference.Format(txnRef, status.SessionId, status.Environment, refundReference: null);
+        return LinklyBackendPaymentReference.Format(txnRef, status.SessionId, status.Environment, TryReadRefundReference(status));
+    }
+
+    private static string? TryReadRefundReference(LinklyCloudBackendSessionResponse status)
+    {
+        foreach (var notification in (status.Notifications ?? []).Reverse())
+        {
+            if (!string.Equals(notification.Type, "transaction", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(notification.PayloadJson))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(notification.PayloadJson);
+                var response = ReadResponse(document.RootElement);
+                var purchaseAnalysisData = ReadValue(response, "PurchaseAnalysisData");
+                // 官方 GET transaction payload 里 RFN 是后续退款和认证证据链的关键引用。
+                return TryReadRefundReferenceValue(purchaseAnalysisData) ??
+                    TryReadRefundReferenceValue(response) ??
+                    TryReadRefundReferenceValue(document.RootElement);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private static JsonElement ReadResponse(JsonElement root)
+    {
+        return TryGetProperty(root, "Response", out var response) ? response : root;
+    }
+
+    private static JsonElement ReadValue(JsonElement element, string propertyName)
+    {
+        return TryGetProperty(element, propertyName, out var value) ? value : default;
+    }
+
+    private static string? TryReadRefundReferenceValue(JsonElement element, bool allowScalar = false)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => TryReadRefundReferenceObject(element),
+            JsonValueKind.Array => element.EnumerateArray()
+                .Select(item => TryReadRefundReferenceValue(item))
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+            JsonValueKind.String when allowScalar => NormalizeOptional(element.GetString()),
+            _ => null
+        };
+    }
+
+    private static string? TryReadRefundReferenceObject(JsonElement element)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, "RFN", StringComparison.OrdinalIgnoreCase))
+            {
+                return TryReadRefundReferenceValue(property.Value, allowScalar: true);
+            }
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            var value = TryReadRefundReferenceValue(property.Value);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static CardTransactionDto BuildCardTransaction(

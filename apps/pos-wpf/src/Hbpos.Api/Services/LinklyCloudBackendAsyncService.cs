@@ -249,6 +249,36 @@ public class LinklyCloudBackendAsyncService(
             normalizedDeviceCode,
             normalizedSessionId,
             cancellationToken);
+        if (ShouldRefreshOfficialTransaction(session))
+        {
+            var refreshesCompletedMissingSuccess = ShouldRefreshCompletedMissingSuccess(session);
+            var token = await tokenProvider.GetTokenAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                cancellationToken);
+            var transportRequest = new LinklyCloudBackendTransportSessionRequest(
+                normalizedEnvironment,
+                token.RestBaseUrl,
+                token.AccessToken,
+                normalizedSessionId);
+            var transportResponse = await SendWithRecoverableFailureAsync(
+                () => transport.GetTransactionAsync(transportRequest, cancellationToken));
+            if (refreshesCompletedMissingSuccess)
+            {
+                ApplyCompletedMissingSuccessRefresh(session!, transportResponse);
+                session!.UpdatedAt = DateTimeOffset.UtcNow;
+                session.LastHttpStatus = (int)transportResponse.StatusCode;
+                session.RecoveryAction = null;
+            }
+            else
+            {
+                ApplyTransportResponse(session!, transportResponse);
+            }
+
+            await AddOfficialTransactionNotificationAsync(session!, transportResponse, cancellationToken);
+            session = await UpsertSessionAndReadLatestAsync(session!, cancellationToken);
+        }
 
         var result = session is null ? null : await BuildResponseAsync(session, cancellationToken);
         LogRecoveryServiceEvidence(
@@ -615,9 +645,17 @@ public class LinklyCloudBackendAsyncService(
         if (string.Equals(normalizedType, "transaction", StringComparison.OrdinalIgnoreCase))
         {
             LogTransactionNotificationSnapshot(normalizedSessionId, payloadJson);
-            if (!IsCompleted(session) || string.IsNullOrWhiteSpace(session.ResponseCode))
+            var updateOutcomeEvidence = !IsCompleted(session) ||
+                string.IsNullOrWhiteSpace(session.ResponseCode);
+            var fillMissingSuccess = session.TransactionSuccess is null &&
+                (updateOutcomeEvidence || CanFillMissingTransactionSuccess(session, payloadJson));
+            if (updateOutcomeEvidence || fillMissingSuccess)
             {
-                ApplyCompletedPayload(session, payloadJson);
+                ApplyCompletedPayload(
+                    session,
+                    payloadJson,
+                    updateTxnRef: false,
+                    updateOutcomeEvidence: updateOutcomeEvidence);
             }
             else
             {
@@ -787,7 +825,7 @@ public class LinklyCloudBackendAsyncService(
             out var responseTime);
         var succeeded = transportResponse.StatusCode == HttpStatusCode.OK &&
             status &&
-            string.Equals(responseCode, "00", StringComparison.OrdinalIgnoreCase);
+            IsSuccessfulStatusTestResponse(responseCode);
         var message = BuildStatusTestMessage(transportResponse.StatusCode, succeeded, responseCode, responseText);
         var result = new LinklyCloudBackendStatusTestResponse(
             normalizedEnvironment,
@@ -1191,7 +1229,7 @@ public class LinklyCloudBackendAsyncService(
             session.DeviceCode,
             session.SessionId,
             cancellationToken);
-        if (ShouldKeepCompletedSession(latestBeforeWrite, session))
+        if (ShouldKeepFinalResultSession(latestBeforeWrite, session))
         {
             return latestBeforeWrite!;
         }
@@ -1204,29 +1242,47 @@ public class LinklyCloudBackendAsyncService(
             session.DeviceCode,
             session.SessionId,
             cancellationToken);
-        return ShouldKeepCompletedSession(latestAfterWrite, session)
+        return ShouldKeepFinalResultSession(latestAfterWrite, session)
             ? latestAfterWrite!
             : latestAfterWrite ?? session;
     }
 
-    private static bool ShouldKeepCompletedSession(
+    private static bool ShouldKeepFinalResultSession(
         LinklyCloudBackendSessionRecord? latest,
         LinklyCloudBackendSessionRecord incoming)
     {
-        if (latest is null || !IsCompleted(latest))
+        if (latest is null || !IsProtectedFinalResult(latest))
         {
             return false;
         }
 
-        if (!IsCompleted(incoming))
+        if (!IsProtectedFinalResult(incoming))
         {
             return true;
         }
 
-        // 闂佽娴烽幊鎾诲嫉椤掑嫬鍨傛慨妯挎硾鐟欙箓骞栨潏鍓хɑ闁?receipt/display 濠电偞鍨堕幐鍝ョ矓鐎垫瓕濮抽柤纰卞墯閸熸椽鏌涢埄鍐噭缁惧彞鍗抽弻锟犲醇濮橆兛澹曠紓鍌氬€风粈渚€鎮ч崨顓ф僵闁挎洖鍊搁崣濠囨煙閹冾暢婵炲鍨介弻锛勨偓锝庡亞閻滆崵绱掓潏銊х疄婵﹣绮欐俊鑸靛緞鐎ｎ亶娼梺璇叉捣閹虫捇宕姘肩劷闁汇垹鎲￠崵濠冦亜韫囨挸顏╃紓宥嗩殔閳藉骞橀姘缂傚倷鐒﹂〃鍡涘蓟瑜嶉～婵嬫晝閸屾艾寮烽梺鍦亾婢у酣宕?
+        // 已完成 session 只保护交易结果证据；允许旧资料补写缺失的 TransactionSuccess。
+        var transactionSuccessConflict =
+            latest.TransactionSuccess is not null &&
+            incoming.TransactionSuccess is not null &&
+            latest.TransactionSuccess != incoming.TransactionSuccess;
         return !SameOptional(latest.TxnRef, incoming.TxnRef) ||
+            transactionSuccessConflict ||
             !SameOptional(latest.ResponseCode, incoming.ResponseCode) ||
             !SameOptional(latest.ResponseText, incoming.ResponseText);
+    }
+
+    private static bool ShouldRefreshOfficialTransaction(LinklyCloudBackendSessionRecord? session)
+    {
+        // 未确认的活动 session 和缺失 Success 的 completed session 都要向官方刷新结果。
+        return session is { ClientAcknowledgedAt: null } &&
+            (session.IsActive || ShouldRefreshCompletedMissingSuccess(session));
+    }
+
+    private static bool ShouldRefreshCompletedMissingSuccess(LinklyCloudBackendSessionRecord? session)
+    {
+        return session is { ClientAcknowledgedAt: null, TransactionSuccess: null } &&
+            IsCompleted(session);
     }
 
     private async Task<LinklyCloudBackendSessionResponse> BuildResponseAsync(
@@ -1266,7 +1322,8 @@ public class LinklyCloudBackendAsyncService(
             notifications.Select(notification => new LinklyCloudBackendNotificationDto(
                 notification.Type,
                 notification.PayloadJson,
-                notification.ReceivedAt)).ToArray());
+                notification.ReceivedAt)).ToArray(),
+            session.TransactionSuccess);
     }
 
     private static async Task<LinklyCloudBackendTransportResponse> SendWithRecoverableFailureAsync(
@@ -1385,7 +1442,7 @@ public class LinklyCloudBackendAsyncService(
 
         if (response.StatusCode == HttpStatusCode.BadRequest)
         {
-            // sendkey 400 闁告瑯浜欓崬顒傛偘閵婏附鎷辨繛鍡忓墲鐎垫粓鏌ㄩ娆惧殲婵懓鍊瑰Λ銈夊极閸剛骞㈠ù婧垮€栧Σ妤冪磼閹惧浜ù鐘茬С�?async notification / recovery 濞戞挸鎼崳顖炲Υ?
+            // Linkly 拒绝 sendkey 只说明终端动作未被接受；交易仍可能通过通知或状态查询完成。
             session.Status = StatusPending;
             session.IsActive = true;
             return;
@@ -1397,7 +1454,11 @@ public class LinklyCloudBackendAsyncService(
         session.IsActive = false;
     }
 
-    private static void ApplyCompletedPayload(LinklyCloudBackendSessionRecord session, string? payloadJson)
+    private static void ApplyCompletedPayload(
+        LinklyCloudBackendSessionRecord session,
+        string? payloadJson,
+        bool updateTxnRef = true,
+        bool updateOutcomeEvidence = true)
     {
         session.Status = StatusCompleted;
         session.IsActive = false;
@@ -1409,8 +1470,110 @@ public class LinklyCloudBackendAsyncService(
 
         using var document = JsonDocument.Parse(payloadJson);
         var response = ReadResponse(document.RootElement);
-        session.ResponseCode = ReadString(response, "ResponseCode");
-        session.ResponseText = ReadString(response, "ResponseText");
+        var transactionSuccess = ReadBool(response, "Success");
+        var responseCode = ReadString(response, "ResponseCode");
+        var responseText = ReadString(response, "ResponseText");
+        session.TransactionSuccess = transactionSuccess;
+        if (IsCancelledResponse(transactionSuccess, responseCode, responseText))
+        {
+            // Cancelled 是 POS 内部最终状态，只能由 Linkly 200 的明确取消结果派生。
+            session.Status = StatusCancelled;
+        }
+        if (updateTxnRef)
+        {
+            // 官方 GET transaction 的 TxnRef 是恢复证据；notification 仍保留本地创建的保护引用。
+            session.TxnRef = ReadString(response, "TxnRef") ?? session.TxnRef;
+        }
+        if (updateOutcomeEvidence)
+        {
+            session.ResponseCode = responseCode;
+            session.ResponseText = responseText;
+        }
+    }
+
+    private static bool IsCancelledResponse(bool? transactionSuccess, string? responseCode, string? responseText)
+    {
+        // 必须先有明确失败结果，再按官方取消码或精确文案归类，避免把 declined/timeout 误判为取消。
+        return transactionSuccess == false &&
+            (IsCancelledResponseCode(responseCode) || IsCancelledResponseText(responseText));
+    }
+
+    private static bool IsCancelledResponseCode(string? responseCode)
+    {
+        var normalized = NormalizeOptional(responseCode);
+        return string.Equals(normalized, "TM", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "HD", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCancelledResponseText(string? responseText)
+    {
+        var normalized = NormalizeOptional(responseText);
+        return string.Equals(normalized, "OPERATOR CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "TXN CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "TRANSACTION CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "CANCELLED", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ApplyMissingTransactionSuccessPayload(LinklyCloudBackendSessionRecord session, string? payloadJson)
+    {
+        if (!CanFillMissingTransactionSuccess(session, payloadJson))
+        {
+            return;
+        }
+
+        using var document = JsonDocument.Parse(payloadJson!);
+        var response = ReadResponse(document.RootElement);
+        session.TransactionSuccess = ReadBool(response, "Success");
+    }
+
+    private static void ApplyCompletedMissingSuccessRefresh(
+        LinklyCloudBackendSessionRecord session,
+        LinklyCloudBackendTransportResponse response)
+    {
+        // 旧 completed 记录只补缺失的 Success；官方未返回最终结果时不能回滚本地 completed 证据。
+        if (response.StatusCode == HttpStatusCode.OK)
+        {
+            ApplyMissingTransactionSuccessPayload(session, response.Body);
+        }
+    }
+
+    private static bool CanFillMissingTransactionSuccess(LinklyCloudBackendSessionRecord session, string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        using var document = JsonDocument.Parse(payloadJson);
+        var response = ReadResponse(document.RootElement);
+        var responseCode = ReadString(response, "ResponseCode");
+        // 已完成交易只允许从同一结果证据补写 Success，避免迟到的失败通知覆盖已完成结果。
+        return string.IsNullOrWhiteSpace(session.ResponseCode) ||
+            (!string.IsNullOrWhiteSpace(responseCode) && SameOptional(session.ResponseCode, responseCode));
+    }
+
+    private async Task AddOfficialTransactionNotificationAsync(
+        LinklyCloudBackendSessionRecord session,
+        LinklyCloudBackendTransportResponse response,
+        CancellationToken cancellationToken)
+    {
+        if (response.StatusCode != HttpStatusCode.OK ||
+            string.IsNullOrWhiteSpace(response.Body))
+        {
+            return;
+        }
+
+        // 官方 GET transaction 的完整 payload 要作为恢复证据返回给 POS，用于 RFN、金额和收据证据解析。
+        await repository.AddNotificationAsync(new LinklyCloudBackendNotificationRecord
+        {
+            Environment = session.Environment,
+            StoreCode = session.StoreCode,
+            DeviceCode = session.DeviceCode,
+            SessionId = session.SessionId,
+            Type = "transaction",
+            PayloadJson = response.Body,
+            ReceivedAt = DateTimeOffset.UtcNow
+        }, cancellationToken);
     }
 
     private void LogTransactionNotificationSnapshot(string sessionId, string payloadJson)
@@ -1515,6 +1678,12 @@ public class LinklyCloudBackendAsyncService(
         return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsProtectedFinalResult(LinklyCloudBackendSessionRecord session)
+    {
+        return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusCancelled, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static IReadOnlyDictionary<string, string>? EnsurePurchaseAnalysisData(
         string txnType,
         long amount,
@@ -1617,6 +1786,13 @@ public class LinklyCloudBackendAsyncService(
         {
             return false;
         }
+    }
+
+    private static bool IsSuccessfulStatusTestResponse(string? responseCode)
+    {
+        // Linkly 状态测试的 T0 表示终端状态正常，和交易批准码 00 都应算成功。
+        return string.Equals(responseCode, "00", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "T0", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildStatusTestMessage(
@@ -2039,6 +2215,8 @@ public class LinklyCloudBackendAsyncService(
         object? response,
         string certCase)
     {
+        var redactedRequestJson = RedactedEvidenceJsonText(requestJson);
+        var redactedResponseJson = RedactedEvidenceJsonText(responseJson);
         LogServiceJson(
             operation,
             phase,
@@ -2054,17 +2232,17 @@ public class LinklyCloudBackendAsyncService(
                 {
                     method,
                     url,
-                    body = RawJsonBody(requestJson)
+                    body = RedactedEvidenceJsonBody(requestJson)
                 },
-            response,
+            responseJson is null ? response : RedactedEvidenceJsonBody(responseJson),
             new
             {
                 certCase,
                 method,
                 url,
                 transactionReference,
-                requestJson,
-                responseJson
+                requestJson = redactedRequestJson,
+                responseJson = redactedResponseJson
             });
     }
 
@@ -2073,7 +2251,20 @@ public class LinklyCloudBackendAsyncService(
         return value is null ? null : JsonSerializer.Serialize(value, ServiceJsonOptions);
     }
 
-    private static object? RawJsonBody(string? bodyJson)
+    private static string? RedactedEvidenceJsonText(string? bodyJson)
+    {
+        var redacted = RedactedEvidenceJsonBody(bodyJson);
+        if (redacted is null)
+        {
+            return null;
+        }
+
+        return redacted is string text
+            ? text
+            : JsonSerializer.Serialize(redacted, ServiceJsonOptions);
+    }
+
+    private static object? RedactedEvidenceJsonBody(string? bodyJson)
     {
         if (string.IsNullOrWhiteSpace(bodyJson))
         {
@@ -2082,12 +2273,87 @@ public class LinklyCloudBackendAsyncService(
 
         try
         {
-            return JsonSerializer.Deserialize<JsonElement>(bodyJson);
+            using var document = JsonDocument.Parse(bodyJson);
+            return RedactEvidenceJsonElement(document.RootElement, propertyName: null);
         }
         catch (JsonException)
         {
-            return bodyJson;
+            var normalized = bodyJson.Trim();
+            return new
+            {
+                hasValue = normalized.Length > 0,
+                length = normalized.Length
+            };
         }
+    }
+
+    private static object? RedactEvidenceJsonElement(JsonElement element, string? propertyName)
+    {
+        if (IsSensitiveEvidenceLogProperty(propertyName))
+        {
+            return DescribeSensitiveEvidenceLogValue(element);
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(
+                    property => property.Name,
+                    property => RedactEvidenceJsonElement(property.Value, property.Name),
+                    StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray()
+                .Select(item => RedactEvidenceJsonElement(item, propertyName: null))
+                .ToArray(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number when element.TryGetInt64(out var number) => number,
+            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => element.GetRawText()
+        };
+    }
+
+    private static bool IsSensitiveEvidenceLogProperty(string? propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        return string.Equals(propertyName, "receiptText", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "payloadJson", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "displayText", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "displayLines", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "graphicCode", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "inputType", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "analysisData", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "purchaseAnalysisData", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "pan", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "cardNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accountNumber", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "track2", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "secret", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "password", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "token", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accessToken", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "authorization", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "authorizationHeader", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static object DescribeSensitiveEvidenceLogValue(JsonElement element)
+    {
+        var value = element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : element.GetRawText();
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        // 恢复证据日志只保留排障元数据，避免收据、通知 payload 或认证材料进入集中日志。
+        return new
+        {
+            hasValue = normalized is not null,
+            length = normalized?.Length ?? 0,
+            lineCount = normalized is null ? 0 : normalized.Split('\n').Length
+        };
     }
 
     private void LogServiceJson(
@@ -2418,7 +2684,7 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
                 url,
                 httpStatus: null,
                 elapsedMs: null,
-                request: RawJsonBody(bodyJson),
+                request: RedactedJsonBody(bodyJson),
                 response: null));
     }
 
@@ -2444,7 +2710,7 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
                 statusCode,
                 elapsedMs,
                 request: null,
-                response: RawJsonBody(bodyJson)));
+                response: RedactedJsonBody(bodyJson)));
     }
 
     private static string LogJsonBody(string? value)
@@ -2492,7 +2758,7 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
             JsonOptions);
     }
 
-    private static object? RawJsonBody(string? bodyJson)
+    private static object? RedactedJsonBody(string? bodyJson)
     {
         if (string.IsNullOrWhiteSpace(bodyJson))
         {
@@ -2502,12 +2768,50 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
         try
         {
             using var document = JsonDocument.Parse(bodyJson);
-            return JsonSerializer.Deserialize<object>(document.RootElement.GetRawText(), JsonOptions);
+            return RedactTokenJsonElement(document.RootElement, propertyName: null);
         }
         catch (JsonException)
         {
             return bodyJson;
         }
+    }
+
+    private static object? RedactTokenJsonElement(JsonElement element, string? propertyName)
+    {
+        if (string.Equals(propertyName, "secret", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "token", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accessToken", StringComparison.OrdinalIgnoreCase))
+        {
+            var value = element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : element.GetRawText();
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            // Token provider 日志只保留排障元数据，不能记录 secret/token 原文。
+            return new
+            {
+                hasValue = normalized is not null,
+                length = normalized?.Length ?? 0
+            };
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(
+                    property => property.Name,
+                    property => RedactTokenJsonElement(property.Value, property.Name),
+                    StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray()
+                .Select(item => RedactTokenJsonElement(item, propertyName: null))
+                .ToArray(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number when element.TryGetInt64(out var number) => number,
+            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => element.GetRawText()
+        };
     }
 
     private static string? ReadString(JsonElement element, string propertyName)
@@ -2669,6 +2973,10 @@ public interface ILinklyCloudBackendAsyncTransport
         LinklyCloudBackendTransportSessionRequest request,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudBackendTransportResponse> GetTransactionAsync(
+        LinklyCloudBackendTransportSessionRequest request,
+        CancellationToken cancellationToken);
+
     Task<LinklyCloudBackendTransportResponse> SendLogonAsync(
         LinklyCloudBackendTransportSessionRequest request,
         CancellationToken cancellationToken);
@@ -2792,6 +3100,26 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             cancellationToken);
     }
 
+    public Task<LinklyCloudBackendTransportResponse> GetTransactionAsync(
+        LinklyCloudBackendTransportSessionRequest request,
+        CancellationToken cancellationToken)
+    {
+        return SendAsync(
+            request.Environment,
+            request.RestBaseUrl,
+            request.AccessToken,
+            request.SessionId,
+            txnType: null,
+            txnRef: null,
+            operation: "transaction-status",
+            endpointSegment: "transaction",
+            // 重启恢复必须拿官方同步交易结果，不能只依赖本地通知缓存。
+            asyncMode: false,
+            method: HttpMethod.Get,
+            body: null,
+            cancellationToken);
+    }
+
     public Task<LinklyCloudBackendTransportResponse> SendLogonAsync(
         LinklyCloudBackendTransportSessionRequest request,
         CancellationToken cancellationToken)
@@ -2868,7 +3196,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             txnRef: null,
             operation: "sendkey",
             endpointSegment: "sendkey",
-            asyncMode: true,
+            // Linkly 官方 SendKey 示例使用同步模式；取消键必须拿到明确接收结果，不能只拿 202 已开始。
+            asyncMode: false,
             method: HttpMethod.Post,
             body: new LinklyCloudBackendApiRequest(fields, Notification: null),
             cancellationToken);
@@ -2965,7 +3294,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
                 txnRefSpecified: !string.IsNullOrWhiteSpace(txnRef),
                 requestJson: bodyJson,
                 responseJson: null,
-                request: RawJsonBody(bodyJson),
+                request: RedactedJsonBody(bodyJson),
                 response: null));
     }
 
@@ -3000,7 +3329,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
                 requestJson: null,
                 responseJson: bodyJson,
                 request: null,
-                response: RawJsonBody(bodyJson)));
+                response: RedactedJsonBody(bodyJson)));
     }
 
     private static string LogValue(string? value)
@@ -3057,8 +3386,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
                     txnType,
                     txnRef,
                     txnRefSpecified,
-                    requestJson,
-                    responseJson,
+                    requestJson = RedactedJsonText(requestJson),
+                    responseJson = RedactedJsonText(responseJson),
                     responseTxnRef = responseDetails.TxnRef,
                     responseDate = responseDetails.Date,
                     responseTime = responseDetails.Time,
@@ -3133,7 +3462,20 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         };
     }
 
-    private static object? RawJsonBody(string? bodyJson)
+    private static string? RedactedJsonText(string? bodyJson)
+    {
+        var redacted = RedactedJsonBody(bodyJson);
+        if (redacted is null)
+        {
+            return null;
+        }
+
+        return redacted is string text
+            ? text
+            : JsonSerializer.Serialize(redacted, LogJsonOptions);
+    }
+
+    private static object? RedactedJsonBody(string? bodyJson)
     {
         if (string.IsNullOrWhiteSpace(bodyJson))
         {
@@ -3143,12 +3485,81 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         try
         {
             using var document = JsonDocument.Parse(bodyJson);
-            return JsonSerializer.Deserialize<object>(document.RootElement.GetRawText(), JsonOptions);
+            return RedactJsonElement(document.RootElement, propertyName: null);
         }
         catch (JsonException)
         {
             return bodyJson;
         }
+    }
+
+    private static object? RedactJsonElement(JsonElement element, string? propertyName)
+    {
+        if (IsSensitiveLogProperty(propertyName))
+        {
+            return DescribeSensitiveLogValue(propertyName!, element);
+        }
+
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(
+                    property => property.Name,
+                    property => RedactJsonElement(property.Value, property.Name),
+                    StringComparer.Ordinal),
+            JsonValueKind.Array => element.EnumerateArray()
+                .Select(item => RedactJsonElement(item, propertyName: null))
+                .ToArray(),
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number when element.TryGetInt64(out var number) => number,
+            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => element.GetRawText()
+        };
+    }
+
+    private static bool IsSensitiveLogProperty(string? propertyName)
+    {
+        return string.Equals(propertyName, "secret", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "password", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "token", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "accessToken", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "authorization", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(propertyName, "authorizationHeader", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static object DescribeSensitiveLogValue(string propertyName, JsonElement element)
+    {
+        var value = element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : element.GetRawText();
+
+        if (propertyName.Contains("authorization", StringComparison.OrdinalIgnoreCase))
+        {
+            return DescribeAuthorizationHeader(value);
+        }
+
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        // 日志只保留排障元数据，避免 secret/token 原文进入本地或集中日志。
+        return new
+        {
+            hasValue = normalized is not null,
+            length = normalized?.Length ?? 0
+        };
+    }
+
+    private static object DescribeAuthorizationHeader(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        var separator = normalized?.IndexOf(' ', StringComparison.Ordinal) ?? -1;
+        return new
+        {
+            hasValue = normalized is not null,
+            scheme = separator > 0 ? normalized![..separator] : null,
+            length = normalized?.Length ?? 0
+        };
     }
 
     private sealed record LinklyCloudBackendApiRequest(
@@ -3442,14 +3853,15 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
 
     private static bool IsCompleted(LinklyCloudBackendSessionRecord session)
     {
-        return string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsFinalForClientRecovery(LinklyCloudBackendSessionRecord session)
     {
-        return string.Equals(session.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(session.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(session.Status, "NotSubmitted", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(session.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusCancelled, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateTxnRef()
@@ -3472,6 +3884,7 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             TxnRef = session.TxnRef,
             ResponseCode = session.ResponseCode,
             ResponseText = session.ResponseText,
+            TransactionSuccess = session.TransactionSuccess,
             RecoveryAction = session.RecoveryAction,
             DisplayText = session.DisplayText,
             DisplayLines = session.DisplayLines,
@@ -3532,13 +3945,13 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         BEGIN
             INSERT INTO [dbo].[POSM_LinklyCloudBackendSession] (
                 [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt])
             VALUES (
                 @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef,
-                @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
+                @TransactionSuccess, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
                 @CancelKeyFlag, @OKKeyFlag, @AcceptYesKeyFlag, @DeclineNoKeyFlag, @AuthoriseKeyFlag,
                 @InputType, @GraphicCode, @ReceiptText,
                 @RecoveryCount, @ReceiptPrintedAt, @ClientAcknowledgedAt, @LastHttpStatus, @IsActive, @UpdatedAt);
@@ -3556,16 +3969,21 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
            AND target.[SessionId] = source.[SessionId]
         WHEN MATCHED
              AND NOT (
-                target.[Status] = 'Completed'
+                target.[Status] IN ('Completed', 'Cancelled')
                 AND (
-                    @Status <> 'Completed'
+                    @Status NOT IN ('Completed', 'Cancelled')
                     OR ISNULL(target.[TxnRef], N'') <> ISNULL(@TxnRef, N'')
+                    OR (
+                        target.[TransactionSuccess] IS NOT NULL
+                        AND ISNULL(CONVERT(INT, target.[TransactionSuccess]), -1) <> ISNULL(CONVERT(INT, @TransactionSuccess), -1)
+                    )
                     OR ISNULL(target.[ResponseCode], N'') <> ISNULL(@ResponseCode, N'')
                     OR ISNULL(target.[ResponseText], N'') <> ISNULL(@ResponseText, N'')
                 )) THEN
             UPDATE SET
                 [Status] = @Status,
                 [TxnRef] = @TxnRef,
+                [TransactionSuccess] = @TransactionSuccess,
                 [ResponseCode] = @ResponseCode,
                 [ResponseText] = @ResponseText,
                 [RecoveryAction] = @RecoveryAction,
@@ -3588,13 +4006,13 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         WHEN NOT MATCHED THEN
             INSERT (
                 [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt])
             VALUES (
                 @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef,
-                @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
+                @TransactionSuccess, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
                 @CancelKeyFlag, @OKKeyFlag, @AcceptYesKeyFlag, @DeclineNoKeyFlag, @AuthoriseKeyFlag,
                 @InputType, @GraphicCode, @ReceiptText,
                 @RecoveryCount, @ReceiptPrintedAt, @ClientAcknowledgedAt, @LastHttpStatus, @IsActive, @UpdatedAt);
@@ -3665,7 +4083,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -3692,7 +4110,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -3717,7 +4135,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -3745,7 +4163,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             SELECT TOP 1
                 [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
-                [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [TransactionSuccess], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
@@ -3755,7 +4173,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
               AND [DeviceCode] = @DeviceCode
               AND (
                     [IsActive] = 1
-                    OR ([Status] IN (N'Completed', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
+                    OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
                   )
             ORDER BY
                 CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
@@ -3870,6 +4288,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             new SugarParameter("@SessionId", session.SessionId),
             new SugarParameter("@Status", session.Status),
             new SugarParameter("@TxnRef", session.TxnRef),
+            new SugarParameter("@TransactionSuccess", session.TransactionSuccess),
             new SugarParameter("@ResponseCode", session.ResponseCode),
             new SugarParameter("@ResponseText", session.ResponseText),
             new SugarParameter("@RecoveryAction", session.RecoveryAction),
@@ -3915,6 +4334,8 @@ public sealed class LinklyCloudBackendSessionRecord
     public string Status { get; set; } = string.Empty;
 
     public string? TxnRef { get; set; }
+
+    public bool? TransactionSuccess { get; set; }
 
     public string? ResponseCode { get; set; }
 

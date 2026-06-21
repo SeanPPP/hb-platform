@@ -194,6 +194,50 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
+    public async Task GetSettingsAsync_skips_square_token_refresh_when_linkly_cloud_backend_is_active()
+    {
+        var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
+        {
+            ["CardTerminal:Processor"] = nameof(CardProcessorKind.Linkly),
+            ["CardTerminal:Environment"] = nameof(CardTerminalEnvironment.Sandbox),
+            ["CardTerminal:LinklyConnectionMode"] = nameof(LinklyConnectionMode.CloudBackendAsync)
+        });
+        var apiClient = new FakeSquareTokenApiClient
+        {
+            Response = new SquareTokenResponse("Sandbox", RemoteToken, DateTimeOffset.UtcNow)
+        };
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
+
+        var settings = await store.GetSettingsAsync();
+
+        Assert.Equal(CardProcessorKind.Linkly, settings.Processor);
+        Assert.Equal(LinklyConnectionMode.CloudBackendAsync, settings.LinklyConnectionMode);
+        Assert.Null(settings.SquareAccessToken);
+        Assert.Equal(0, apiClient.CallCount);
+    }
+
+    [Fact]
+    public async Task GetSettingsAsync_refreshes_square_token_when_square_is_active_and_cache_is_missing()
+    {
+        var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
+        {
+            ["CardTerminal:Processor"] = nameof(CardProcessorKind.Square),
+            ["CardTerminal:Environment"] = nameof(CardTerminalEnvironment.Production)
+        });
+        var apiClient = new FakeSquareTokenApiClient
+        {
+            Response = new SquareTokenResponse("Production", RemoteToken, DateTimeOffset.UtcNow)
+        };
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
+
+        var settings = await store.GetSettingsAsync();
+
+        Assert.Equal(CardProcessorKind.Square, settings.Processor);
+        AssertSecretEquals(RemoteToken, settings.SquareAccessToken, "Square should still fetch a backend token when active");
+        Assert.Equal(1, apiClient.CallCount);
+    }
+
+    [Fact]
     public async Task GetSquareAccessTokenAsync_uses_local_token_without_calling_backend()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>

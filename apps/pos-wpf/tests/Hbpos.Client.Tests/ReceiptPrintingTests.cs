@@ -52,6 +52,59 @@ public sealed class ReceiptPrintingTests
     }
 
     [Fact]
+    public void Receipt_text_formatter_masks_full_pan_in_embedded_bank_receipt_text()
+    {
+        var receipt = CreateReceipt(
+            Guid.NewGuid(),
+            bankReceiptText:
+                "APPROVED CARD RECEIPT\n" +
+                "CARD 4111111111111234\n" +
+                "ALT 4111 1111 1111 5678\n" +
+                "DASH 4111-1111-1111-9999\n" +
+                "TAB 4111\t1111\t1111\t2468\n" +
+                "NBSP 4111\u00A01111\u00A01111\u00A01357\n" +
+                "MULTI 4111  1111  1111  8642\n" +
+                "DOT 4111.1111.1111.9753");
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+
+        Assert.Contains("CARD ****1234", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("ALT ****5678", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("DASH ****9999", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("TAB ****2468", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("NBSP ****1357", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("MULTI ****8642", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("DOT ****9753", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111111111111234", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111 1111 1111 5678", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111-1111-1111-9999", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111\t1111\t1111\t2468", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111\u00A01111\u00A01111\u00A01357", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111  1111  1111  8642", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111.1111.1111.9753", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_keeps_bank_reference_numbers_while_masking_pan()
+    {
+        var receipt = CreateReceipt(
+            Guid.NewGuid(),
+            bankReceiptText:
+                "TXN REF 260601120038\n" +
+                "RRN 123456789012\n" +
+                "CARD 4111111111111234");
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+
+        Assert.Contains("TXN REF 260601120038", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("RRN 123456789012", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("CARD ****1234", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111111111111234", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Receipt_print_service_prints_latest_receipt_with_configured_settings()
     {
         var receipt = CreateReceipt(Guid.NewGuid());
@@ -273,7 +326,8 @@ public sealed class ReceiptPrintingTests
         Guid orderGuid,
         decimal? tenderedAmount = null,
         decimal? changeAmount = null,
-        string paymentReference = "ANZ:123")
+        string paymentReference = "ANZ:123",
+        string bankReceiptText = "APPROVED CARD RECEIPT")
     {
         return new ReceiptDetails(
             orderGuid,
@@ -307,7 +361,7 @@ public sealed class ReceiptPrintingTests
                             "123456",
                             new DateTimeOffset(2026, 5, 27, 9, 1, 0, TimeSpan.Zero),
                             9.00m,
-                            "APPROVED CARD RECEIPT")
+                            bankReceiptText)
                     ])
             ],
             tenderedAmount,

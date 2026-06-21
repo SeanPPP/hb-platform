@@ -849,15 +849,79 @@
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" Margin="12,8,12,6" Padding="10,8" Background="#FFE2E2E6" BorderBrush="#80C3C6D6" BorderThickness="1" CornerRadius="14">
-                <StackPanel>
-                    <TextBlock Text="{loc:Loc pos.terminal.inputBuffer}" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                    <TextBlock Text="{Binding KeypadBuffer, TargetNullValue=0}"
+                <!-- 输入缓冲区和退格按钮共享同一外框，保持总宽度不超过下方键盘。 -->
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Grid.ColumnSpan="2"
+                               Text="{loc:Loc pos.terminal.inputBuffer}"
+                               FontSize="9"
+                               FontWeight="Black"
+                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                    <TextBlock Grid.Row="1"
+                               Grid.Column="0"
+                               Text="{Binding KeypadBuffer, TargetNullValue=0}"
                                FontFamily="Consolas"
                                FontSize="30"
                                FontWeight="Black"
                                TextAlignment="Right"
-                               TextTrimming="CharacterEllipsis" />
-                </StackPanel>
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center" />
+                    <Button Grid.Row="1"
+                            Grid.Column="1"
+                            Width="48"
+                            Height="42"
+                            Margin="8,0,0,0"
+                            Background="White"
+                            BorderBrush="#1F000000"
+                            Command="{Binding KeypadInputCommand}"
+                            CommandParameter="Back"
+                            ToolTip="{loc:Loc Backspace}">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="RootBorder"
+                                        Padding="4"
+                                        Background="{TemplateBinding Background}"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="12"
+                                        RenderTransformOrigin="0.5,0.5">
+                                    <Border.RenderTransform>
+                                        <ScaleTransform ScaleX="1" ScaleY="1" />
+                                    </Border.RenderTransform>
+                                    <Border.Effect>
+                                        <DropShadowEffect BlurRadius="4" Opacity="0.1" ShadowDepth="1" />
+                                    </Border.Effect>
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="RootBorder" Property="Background" Value="#FFFFF1F0" />
+                                        <Setter TargetName="RootBorder" Property="BorderBrush" Value="#33B3261E" />
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="RootBorder" Property="RenderTransform">
+                                            <Setter.Value>
+                                                <ScaleTransform ScaleX="0.95" ScaleY="0.95" />
+                                            </Setter.Value>
+                                        </Setter>
+                                        <Setter TargetName="RootBorder" Property="Background" Value="#FFFFDAD6" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                        <!-- 红色退格图标用于提示这是逐位删除，不是清空整个缓冲区。 -->
+                        <materialDesign:PackIcon Kind="BackspaceOutline" Width="22" Height="22" Foreground="{StaticResource PosDangerBrush}" />
+                    </Button>
+                </Grid>
             </Border>
 
             <UniformGrid Grid.Row="1" Columns="3" Rows="5" Margin="12,0,12,6" VerticalAlignment="Stretch">

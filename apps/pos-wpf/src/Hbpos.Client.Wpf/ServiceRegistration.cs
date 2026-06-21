@@ -123,6 +123,7 @@ public static class ServiceRegistration
         services.AddSingleton<IReceiptTextFormatter, ReceiptTextFormatter>();
         services.AddSingleton<IReceiptPrinterDriver, XpReceiptPrinterDriver>();
         services.AddSingleton<IReceiptPrintService, ReceiptPrintService>();
+        services.AddSingleton<ILinklyBankReceiptPrinter, LinklyBankReceiptPrinter>();
         services.AddSingleton<ICashDrawerService, CashDrawerService>();
         services.AddSingleton<IDailyCloseService, DailyCloseService>();
         services.AddSingleton<IDailyClosePrintService, DailyClosePrintService>();

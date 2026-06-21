@@ -600,7 +600,7 @@ public sealed class LinklyController(
             statusCode: null,
             request: new
             {
-                authorization = Request.Headers.Authorization.ToString(),
+                authorization = DescribeAuthorizationHeader(Request.Headers.Authorization.ToString()),
                 payload
             },
             response: null);
@@ -729,6 +729,19 @@ public sealed class LinklyController(
     {
         Console.WriteLine($"[HBPOS][Api][LinklyCloud] {DateTimeOffset.Now:O} {json}");
         logger?.LogInformation("[HBPOS][Api][LinklyCloud] {Message}", json);
+    }
+
+    private static object DescribeAuthorizationHeader(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        var separator = normalized?.IndexOf(' ', StringComparison.Ordinal) ?? -1;
+        // 回调 bearer 属于认证材料，日志只保留存在性和 scheme，禁止记录原文。
+        return new
+        {
+            hasValue = normalized is not null,
+            scheme = separator > 0 ? normalized![..separator] : null,
+            length = normalized?.Length ?? 0
+        };
     }
 
     private static string BuildJsonLog(

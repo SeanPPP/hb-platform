@@ -221,13 +221,59 @@
                     </StackPanel>
 
                     <Grid Visibility="{Binding IsPaymentTerminalSelected, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="16" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <Border Grid.Column="0"
+                        <Border Grid.Row="0"
+                                Grid.Column="0"
+                                Grid.ColumnSpan="3"
+                                Background="#FFF6F8FB"
+                                BorderBrush="{StaticResource PosBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="16,14"
+                                Margin="0,0,0,16">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Left"
+                                        Width="38"
+                                        Height="38"
+                                        Background="#FFEAF2FF"
+                                        CornerRadius="8"
+                                        Margin="0,0,12,0">
+                                    <materialDesign:PackIcon Kind="InformationOutline"
+                                                             Width="21"
+                                                             Height="21"
+                                                             Foreground="{StaticResource PosPrimaryBrush}"
+                                                             HorizontalAlignment="Center"
+                                                             VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc settings.payment.activeProvider.title}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                    <TextBlock Text="{Binding ActivePaymentProviderText}"
+                                               FontSize="18"
+                                               FontWeight="Black"
+                                               Margin="0,2,0,0" />
+                                    <TextBlock Text="{Binding ActivePaymentProviderDetailText}"
+                                               FontSize="12"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,0" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Row="1"
+                                Grid.Column="0"
                                 Style="{StaticResource SettingsActionCardStyle}">
                             <Grid>
                                 <Grid.RowDefinitions>
@@ -513,7 +559,8 @@
                             </Grid>
                         </Border>
 
-                        <Border Grid.Column="2"
+                        <Border Grid.Row="1"
+                                Grid.Column="2"
                                 Style="{StaticResource SettingsActionCardStyle}">
                             <StackPanel>
                                 <DockPanel Margin="0,0,0,18">

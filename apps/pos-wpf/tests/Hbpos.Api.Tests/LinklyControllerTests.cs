@@ -576,7 +576,10 @@ public sealed class LinklyControllerTests
         Assert.Equal("request", requestLog.RootElement.GetProperty("direction").GetString());
         Assert.Equal("Sandbox", requestLog.RootElement.GetProperty("environment").GetString());
         Assert.Equal("session-123", requestLog.RootElement.GetProperty("sessionId").GetString());
-        Assert.Equal("Bearer sandbox-notify", requestLog.RootElement.GetProperty("request").GetProperty("authorization").GetString());
+        var authorization = requestLog.RootElement.GetProperty("request").GetProperty("authorization");
+        Assert.True(authorization.GetProperty("hasValue").GetBoolean());
+        Assert.Equal("Bearer", authorization.GetProperty("scheme").GetString());
+        Assert.DoesNotContain("sandbox-notify", logger.Lines, StringComparer.Ordinal);
         Assert.Equal("APPROVED", requestLog.RootElement.GetProperty("request").GetProperty("payload").GetProperty("Response").GetProperty("ResponseText").GetString());
         using var responseLog = FindLinklyLog(logger.Lines, "notification-transaction", "response");
         Assert.Equal(200, responseLog.RootElement.GetProperty("httpStatus").GetInt32());
