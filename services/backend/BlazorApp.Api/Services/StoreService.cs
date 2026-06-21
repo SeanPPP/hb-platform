@@ -144,7 +144,14 @@ namespace BlazorApp.Api.Services
                     storeQuery = storeQuery.Where(s => s.IsActive == query.IsActive.Value);
                 }
 
-                // 4. 用户关联筛选条件 - 使用子查询优化性能
+                // 4. 品牌名称精确筛选，表格列筛选传入完整品牌名。
+                var brandName = query.BrandName?.Trim();
+                if (!string.IsNullOrEmpty(brandName))
+                {
+                    storeQuery = storeQuery.Where(s => s.BrandName == brandName);
+                }
+
+                // 5. 用户关联筛选条件 - 使用子查询优化性能
                 if (!string.IsNullOrEmpty(query.UserGUID))
                 {
                     var userStoreGuids = await db.Queryable<UserStore>()
@@ -154,21 +161,36 @@ namespace BlazorApp.Api.Services
                     storeQuery = storeQuery.Where(s => userStoreGuids.Contains(s.StoreGUID));
                 }
 
-                // 5. 获取符合条件的总记录数
+                // 6. 获取符合条件的总记录数
                 var total = await storeQuery.CountAsync();
 
-                // 6. 应用排序规则
-                storeQuery = ApplySorting(storeQuery, query.SortField, query.SortOrder);
+                List<string> storeGuids;
+                if (IsTotalUsersSort(query.SortField))
+                {
+                    // 用户数是关联表聚合字段，先在服务端取匹配分店再按统计值排序后分页。
+                    storeGuids = await GetPagedStoreGuidsSortedByTotalUsersAsync(
+                        db,
+                        storeQuery,
+                        query.SortOrder,
+                        query.Page,
+                        query.PageSize
+                    );
+                }
+                else
+                {
+                    // 7. 应用普通分店字段排序
+                    storeQuery = ApplySorting(storeQuery, query.SortField, query.SortOrder);
 
-                // 7. 获取当前页分店GUID列表，用于后续的用户统计查询
-                var storeGuids = await storeQuery
-                    .Skip((query.Page - 1) * query.PageSize) // 分页跳过
-                    .Take(query.PageSize) // 分页取数量
-                    .Select(s => s.StoreGUID) // 只选择GUID
-                    .ToListAsync();
+                    // 8. 获取当前页分店GUID列表，用于后续的用户统计查询
+                    storeGuids = await storeQuery
+                        .Skip((query.Page - 1) * query.PageSize) // 分页跳过
+                        .Take(query.PageSize) // 分页取数量
+                        .Select(s => s.StoreGUID) // 只选择GUID
+                        .ToListAsync();
+                }
 
-                // 7. 批量获取用户统计信息 - 分步查询优化性能
-                // 7.1 获取每个分店的用户总数
+                // 9. 批量获取用户统计信息 - 分步查询优化性能
+                // 9.1 获取每个分店的用户总数
                 var totalUserStats = await db.Queryable<UserStore>()
                     .Where(us => storeGuids.Contains(us.StoreGUID))
                     .GroupBy(us => us.StoreGUID)
@@ -179,7 +201,7 @@ namespace BlazorApp.Api.Services
                     })
                     .ToListAsync();
 
-                // 7.2 获取每个分店的活跃用户数
+                // 9.2 获取每个分店的活跃用户数
                 var activeUserStats = await db.Queryable<UserStore>()
                     .InnerJoin<User>((us, u) => us.UserGUID == u.UserGUID)
                     .Where((us, u) => storeGuids.Contains(us.StoreGUID) && u.IsActive)
@@ -211,9 +233,6 @@ namespace BlazorApp.Api.Services
                 var storeDetailQuery = db.Queryable<Store>()
                     .Where(s => storeGuids.Contains(s.StoreGUID));
 
-                // 应用相同的排序规则
-                storeDetailQuery = ApplySorting(storeDetailQuery, query.SortField, query.SortOrder);
-
                 var stores = await storeDetailQuery
                     .Select(s => new StoreDto
                     {
@@ -233,6 +252,14 @@ namespace BlazorApp.Api.Services
                         ActiveUsers = 0, // 将在内存中填充
                     })
                     .ToListAsync();
+
+                var storeGuidOrder = storeGuids
+                    .Select((storeGuid, index) => new { storeGuid, index })
+                    .ToDictionary(x => x.storeGuid, x => x.index);
+
+                stores = stores
+                    .OrderBy(store => storeGuidOrder.TryGetValue(store.StoreGUID, out var index) ? index : int.MaxValue)
+                    .ToList();
 
                 // 在内存中填充用户统计信息
                 foreach (var store in stores)
@@ -262,6 +289,59 @@ namespace BlazorApp.Api.Services
                     "GET_STORES_ERROR"
                 );
             }
+        }
+
+        private static bool IsTotalUsersSort(string? sortField)
+        {
+            return string.Equals(sortField, "totalUsers", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsDescendingSort(string? sortOrder)
+        {
+            return !string.IsNullOrEmpty(sortOrder) && sortOrder.ToLower() == "desc";
+        }
+
+        private async Task<List<string>> GetPagedStoreGuidsSortedByTotalUsersAsync(
+            ISqlSugarClient db,
+            ISugarQueryable<Store> storeQuery,
+            string? sortOrder,
+            int page,
+            int pageSize
+        )
+        {
+            var matchedStores = await storeQuery
+                .Select(s => new
+                {
+                    s.StoreGUID,
+                    s.StoreName,
+                })
+                .ToListAsync();
+
+            var matchedStoreGuids = matchedStores.Select(s => s.StoreGUID).ToList();
+            var totalUserStats = await db.Queryable<UserStore>()
+                .Where(us => matchedStoreGuids.Contains(us.StoreGUID))
+                .GroupBy(us => us.StoreGUID)
+                .Select(group => new
+                {
+                    StoreGUID = group.StoreGUID,
+                    TotalUsers = SqlFunc.AggregateCount(group.StoreGUID),
+                })
+                .ToListAsync();
+
+            var totalUsersByStoreGuid = totalUserStats.ToDictionary(x => x.StoreGUID, x => x.TotalUsers);
+            var orderedStores = IsDescendingSort(sortOrder)
+                ? matchedStores
+                    .OrderByDescending(store => totalUsersByStoreGuid.TryGetValue(store.StoreGUID, out var totalUsers) ? totalUsers : 0)
+                    .ThenBy(store => store.StoreName)
+                : matchedStores
+                    .OrderBy(store => totalUsersByStoreGuid.TryGetValue(store.StoreGUID, out var totalUsers) ? totalUsers : 0)
+                    .ThenBy(store => store.StoreName);
+
+            return orderedStores
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(store => store.StoreGUID)
+                .ToList();
         }
 
         /// <summary>
@@ -337,6 +417,44 @@ namespace BlazorApp.Api.Services
             {
                 _logger.LogError(ex, "根据分店代码获取分店信息失败: {StoreCode}", storeCode);
                 return ApiResponse<StoreDto>.Error("获取分店信息失败", "GET_STORE_BY_CODE_ERROR");
+            }
+        }
+
+        /// <summary>
+        /// 获取下一个建议分店编码
+        /// </summary>
+        public async Task<ApiResponse<string>> GetNextStoreCodeAsync()
+        {
+            try
+            {
+                var storeCodes = await _context.Db.Queryable<Store>()
+                    .Where(store => !store.IsDeleted && store.StoreCode != null && store.StoreCode != "")
+                    .Select(store => store.StoreCode)
+                    .ToListAsync();
+
+                var maxCode = 0;
+                foreach (var storeCode in storeCodes)
+                {
+                    var normalizedCode = storeCode?.Trim();
+                    // 自动编码只基于纯数字分店编码，避免 S001/GUID 等历史标识干扰。
+                    if (
+                        !string.IsNullOrWhiteSpace(normalizedCode)
+                        && normalizedCode.All(char.IsDigit)
+                        && int.TryParse(normalizedCode, out var numericCode)
+                        && numericCode > maxCode
+                    )
+                    {
+                        maxCode = numericCode;
+                    }
+                }
+
+                var nextCode = Math.Max(maxCode + 1, 1001).ToString();
+                return ApiResponse<string>.OK(nextCode, "获取下一个分店编码成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取下一个分店编码失败");
+                return ApiResponse<string>.Error("获取下一个分店编码失败", "GET_NEXT_STORE_CODE_ERROR");
             }
         }
 
@@ -934,10 +1052,18 @@ namespace BlazorApp.Api.Services
             try
             {
                 var db = _context.Db;
+                var normalizedStoreCode = dto.StoreCode?.Trim();
+                if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+                {
+                    return ApiResponse<StoreDto>.Error(
+                        "分店代码不能为空",
+                        "STORE_CODE_REQUIRED"
+                    );
+                }
 
                 // 检查分店代码是否重复
                 var existingStore = await db.Queryable<Store>()
-                    .Where(s => s.StoreCode == dto.StoreCode)
+                    .Where(s => s.StoreCode == normalizedStoreCode)
                     .FirstAsync();
 
                 if (existingStore != null)
@@ -945,19 +1071,20 @@ namespace BlazorApp.Api.Services
                     return ApiResponse<StoreDto>.Error(
                         "分店代码已存在",
                         "DUPLICATE_STORE_CODE",
-                        new { storeCode = dto.StoreCode }
+                        new { storeCode = normalizedStoreCode }
                     );
                 }
 
                 var store = new Store
                 {
                     StoreName = dto.StoreName,
-                    StoreCode = dto.StoreCode,
+                    StoreCode = normalizedStoreCode,
                     Address = dto.Address,
                     ABN = dto.ABN,
                     BrandName = dto.BrandName,
                     StoreGUID = Guid.NewGuid().ToString(),
-                    IsActive = true,
+                    // 新建分店默认不启用收银系统；只有表单显式开启时才写入 true。
+                    IsActive = dto.IsActive,
                     Phone = dto.ContactPhone,
                     ContactEmail = dto.ContactEmail,
                     CreatedAt = DateTime.UtcNow,
@@ -1150,7 +1277,7 @@ namespace BlazorApp.Api.Services
             string? sortOrder
         )
         {
-            var isDescending = !string.IsNullOrEmpty(sortOrder) && sortOrder.ToLower() == "desc";
+            var isDescending = IsDescendingSort(sortOrder);
 
             return sortField?.ToLower() switch
             {
@@ -1160,6 +1287,12 @@ namespace BlazorApp.Api.Services
                 "storecode" => isDescending
                     ? query.OrderByDescending(s => s.StoreCode)
                     : query.OrderBy(s => s.StoreCode),
+                "brandname" => isDescending
+                    ? query.OrderByDescending(s => s.BrandName)
+                    : query.OrderBy(s => s.BrandName),
+                "contactphone" => isDescending
+                    ? query.OrderByDescending(s => s.Phone)
+                    : query.OrderBy(s => s.Phone),
                 "createdat" => isDescending
                     ? query.OrderByDescending(s => s.CreatedAt)
                     : query.OrderBy(s => s.CreatedAt),

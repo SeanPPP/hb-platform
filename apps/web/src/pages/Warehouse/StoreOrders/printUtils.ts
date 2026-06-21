@@ -37,7 +37,30 @@ function normalizePrintLocale(locale?: string) {
   return locale?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
 }
 
+function parseLeadingDateParts(value: string) {
+  const dateParts = value.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (!dateParts) {
+    return null
+  }
+
+  return {
+    year: Number(dateParts[1]),
+    month: Number(dateParts[2]),
+    day: Number(dateParts[3]),
+  }
+}
+
 export function formatPrintDate(value?: string, withTime = true, locale?: string) {
+  if (!withTime && typeof value === 'string') {
+    const dateParts = parseLeadingDateParts(value)
+    if (dateParts) {
+      const localDate = new Date(dateParts.year, dateParts.month - 1, dateParts.day)
+      const printLocale = normalizePrintLocale(locale)
+      // date-only 字符串不能走 new Date('yyyy-MM-dd')，否则 UTC 负时区会显示成前一天。
+      return localDate.toLocaleDateString(printLocale)
+    }
+  }
+
   const target = value ? new Date(value) : new Date()
   if (Number.isNaN(target.getTime())) {
     return value || '--'
@@ -45,6 +68,24 @@ export function formatPrintDate(value?: string, withTime = true, locale?: string
 
   const printLocale = normalizePrintLocale(locale)
   return withTime ? target.toLocaleString(printLocale, { hour12: false }) : target.toLocaleDateString(printLocale)
+}
+
+function formatDatePart(year: number, month: number, day: number) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+export function formatDocumentFileDate(value?: string | Date) {
+  if (typeof value === 'string') {
+    const dateParts = parseLeadingDateParts(value)
+    if (dateParts) {
+      return formatDatePart(dateParts.year, dateParts.month, dateParts.day)
+    }
+  }
+
+  const target = value ? new Date(value) : new Date()
+  const safeTarget = Number.isNaN(target.getTime()) ? new Date() : target
+  // 文件名日期固定用 yyyy-MM-dd，避免不同系统区域设置导出出不同文件名。
+  return formatDatePart(safeTarget.getFullYear(), safeTarget.getMonth() + 1, safeTarget.getDate())
 }
 
 export function formatCurrency(value?: number) {
@@ -67,6 +108,7 @@ export function buildDocumentFileName(
   orderNo: string | undefined,
   extension: string,
   fallbackTexts: DocumentFileNameFallbackTexts,
+  datePart?: string,
 ) {
   // 文件名中的未知文案交给调用方注入翻译，工具函数只负责清洗与拼接。
   const unknownStoreText = fallbackTexts.unknownStore
@@ -74,7 +116,8 @@ export function buildDocumentFileName(
   const safePrefix = sanitizeFileNamePart(prefix)
   const safeStoreName = sanitizeFileNamePart(storeName || unknownStoreText)
   const safeOrderNo = sanitizeFileNamePart(orderNo || unknownOrderText)
-  return `${safePrefix}_${safeStoreName}_${safeOrderNo}.${extension}`
+  const safeDatePart = datePart ? sanitizeFileNamePart(datePart) : ''
+  return [safePrefix, safeStoreName, safeOrderNo, safeDatePart].filter(Boolean).join('_') + `.${extension}`
 }
 
 export function resolveStorePrintInfo(storeCode?: string, store?: StoreDto | null): StorePrintInfo {

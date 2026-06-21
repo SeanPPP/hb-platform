@@ -23,6 +23,7 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<DataSyncIncrementalService> _logger;
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
+        private const string StoreRetailPricesIncrementalTaskType = "SyncStoreRetailPricesIncremental";
 
         public DataSyncIncrementalService(
             SqlSugarContext localContext,
@@ -1245,7 +1246,11 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<Product>()
                     .Select(x => x.ProductCode)
                     .ToListAsync();
-                var existingCodes = new HashSet<string>(existingProducts);
+                var existingCodes = new HashSet<string>(
+                    existingProducts
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                );
 
                 for (var page = 1; page <= pages; page++)
                 {
@@ -1338,7 +1343,8 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 增量同步分店零售价：DIC_商品零售价表 → StoreRetailPrice
-        /// 基于最近一次成功同步的时间点，默认100天内进行增量同步，支持分店筛选
+        /// 基于最近一次成功同步时间点或请求指定起始时间，
+        /// 找不到历史成功记录时由统一服务的 DefaultIncrementalDays 配置决定，支持分店筛选。
         /// </summary>
         public async Task<SyncResult> SyncStoreRetailPricesFromHqIncrementalAsync(
             List<string>? selectedStoreCodes = null,
@@ -1347,208 +1353,53 @@ namespace BlazorApp.Api.Services.React
         {
             if (_storeRetailPriceHqSyncService != null)
             {
+                var effectiveStart = await ResolveStoreRetailPriceIncrementalStartAsync(
+                    startDateFromRequest
+                );
                 return await _storeRetailPriceHqSyncService.SyncIncrementalAsync(
                     selectedStoreCodes,
-                    startDateFromRequest
+                    effectiveStart
                 );
             }
 
             throw new InvalidOperationException("分店零售价 HQ 统一同步服务未注册");
+        }
 
-            var result = new SyncResult();
-            var taskLog = await _taskLogService.LogTaskStartAsync(
-                "SyncStoreRetailPricesIncremental",
-                new TaskParameters(),
-                TaskTrigger.Manual
+        private async Task<DateTime?> ResolveStoreRetailPriceIncrementalStartAsync(
+            DateTime? startDateFromRequest
+        )
+        {
+            if (startDateFromRequest.HasValue)
+            {
+                _logger.LogInformation(
+                    "[ReactSync] 分店零售价增量：使用请求指定起始日期: {Time}",
+                    startDateFromRequest.Value
+                );
+                return startDateFromRequest.Value;
+            }
+
+            var lastSuccessTask = await _localContext.Db.Queryable<ScheduledTaskLog>()
+                .Where(t =>
+                    t.TaskType == StoreRetailPricesIncrementalTaskType
+                    && t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
+                )
+                .OrderByDescending(t => t.StartedAt)
+                .FirstAsync();
+
+            if (lastSuccessTask?.StartedAt is DateTime syncStartTime)
+            {
+                // 旧增量入口按最近成功任务的开始时间恢复窗口，避免委托统一服务后扩大同步范围。
+                _logger.LogInformation(
+                    "[ReactSync] 分店零售价增量：上次成功同步时间: {Time}",
+                    syncStartTime
+                );
+                return syncStartTime;
+            }
+
+            _logger.LogInformation(
+                "[ReactSync] 分店零售价增量：未找到历史成功记录，使用统一服务默认窗口"
             );
-
-            try
-            {
-                _logger.LogInformation("[ReactSync] 分店零售价增量同步：开始");
-
-                DateTime effectiveStart;
-                if (startDateFromRequest.HasValue)
-                {
-                    effectiveStart = startDateFromRequest.Value;
-                    _logger.LogInformation(
-                        "[ReactSync] 零售价增量：使用请求指定起始日期: {Time}",
-                        effectiveStart
-                    );
-                }
-                else
-                {
-                    var recentTasks = await _taskLogService.GetRecentTasksAsync(
-                        1,
-                        "SyncStoreRetailPricesIncremental"
-                    );
-                    var lastSuccessTask = recentTasks.FirstOrDefault(t =>
-                        t.Status == BlazorApp.Shared.Models.HBweb.TaskStatus.Success
-                    );
-
-                    DateTime? syncStartTime = lastSuccessTask?.StartedAt;
-                    var daysRange = 30;
-
-                    if (syncStartTime.HasValue)
-                    {
-                        daysRange = Math.Min(
-                            daysRange,
-                            (int)(DateTime.UtcNow - syncStartTime.Value).TotalDays
-                        );
-                        _logger.LogInformation(
-                            "[ReactSync] 零售价增量：上次成功同步时间: {Time}, 范围: {Days} 天",
-                            syncStartTime,
-                            daysRange
-                        );
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "[ReactSync] 零售价增量：未找到历史记录，同步最近 {Days} 天的数据",
-                            daysRange
-                        );
-                    }
-
-                    var startDate = DateTime.UtcNow.AddDays(-daysRange);
-                    effectiveStart = startDate;
-                }
-
-                var hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-
-                // 【分店零售价增量同步】
-                // 数据源：HQ.dbo.DIC_商品零售价表
-                // 目标表：HBweb.dbo.StoreRetailPrice
-                // 同步策略：按 FGC_LastModifyDate 字段增量同步
-                // 支持按分店筛选：selectedStoreCodes
-                var query = hqDb.Queryable<DIC_商品零售价表>()
-                    .Where(x => x.FGC_LastModifyDate >= effectiveStart);
-
-                if (selectedStoreCodes?.Any() == true)
-                    query = query.Where(x => selectedStoreCodes.Contains(x.H分店代码!));
-
-                var total = await query.CountAsync();
-                hqDb.Dispose();
-
-                if (total == 0)
-                {
-                    _logger.LogInformation("[ReactSync] 零售价增量：没有新数据需要同步");
-                    result.IsSuccess = true;
-                    result.Message = "没有新数据需要同步";
-                    await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
-                    return result;
-                }
-
-                const int hqBatchSize = 50000;
-                const int writePageSize = 10000;
-                var pages = (int)Math.Ceiling(total / (double)hqBatchSize);
-                var added = 0;
-                var updated = 0;
-                var errors = 0;
-
-                for (var page = 1; page <= pages; page++)
-                {
-                    var skip = (page - 1) * hqBatchSize;
-                    hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var batch = await hqDb.Queryable<DIC_商品零售价表>()
-                        .Where(x => x.FGC_LastModifyDate >= effectiveStart)
-                        .WhereIF(
-                            selectedStoreCodes?.Any() == true,
-                            x => selectedStoreCodes!.Contains(x.H分店代码!)
-                        )
-                        .OrderBy(x => x.FGC_LastModifyDate)
-                        .Skip(skip)
-                        .Take(hqBatchSize)
-                        .ToListAsync();
-                    hqDb.Dispose();
-
-                    if (!batch.Any())
-                        continue;
-
-                    var localBatch = _mapper.Map<List<StoreRetailPrice>>(batch);
-
-                    var toInsert = localBatch
-                        .Where(x => x.StoreCode != null && x.ProductCode != null)
-                        .ToList();
-                    var existingGuids = await _localContext
-                        .Db.Queryable<StoreRetailPrice>()
-                        .Where(x =>
-                            toInsert
-                                .Select(i => i.StoreCode + "-" + i.ProductCode)
-                                .Contains(x.StoreCode + "-" + x.ProductCode)
-                        )
-                        .Select(x => x.StoreCode + "-" + x.ProductCode)
-                        .ToListAsync();
-                    var existingSet = new HashSet<string>(existingGuids);
-
-                    var toUpdate = toInsert
-                        .Where(x => existingSet.Contains(x.StoreCode + "-" + x.ProductCode))
-                        .ToList();
-                    toInsert = toInsert
-                        .Where(x => !existingSet.Contains(x.StoreCode + "-" + x.ProductCode))
-                        .ToList();
-
-                    try
-                    {
-                        if (toUpdate.Any())
-                        {
-                            await _localContext
-                                .Db.Fastest<StoreRetailPrice>()
-                                .AS("StoreRetailPrice")
-                                .PageSize(writePageSize)
-                                .BulkUpdateAsync(toUpdate);
-                            updated += toUpdate.Count;
-                        }
-                        if (toInsert.Any())
-                        {
-                            await _localContext
-                                .Db.Fastest<StoreRetailPrice>()
-                                .AS("StoreRetailPrice")
-                                .PageSize(writePageSize)
-                                .BulkCopyAsync(toInsert);
-                            added += toInsert.Count;
-                        }
-                        _logger.LogInformation(
-                            "[ReactSync] 零售价增量页{Page}: 插入{Inserted}, 更新{Updated}",
-                            page,
-                            toInsert.Count,
-                            toUpdate.Count
-                        );
-                    }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        _logger.LogError(
-                            ex,
-                            "[ReactSync] 零售价增量页{Page}出错: {Error}",
-                            page,
-                            ex.Message
-                        );
-                    }
-                }
-
-                result.IsSuccess = errors == 0;
-                result.Message =
-                    errors == 0
-                        ? $"增量同步完成，新增 {added} 条，更新 {updated} 条"
-                        : $"增量同步部分完成，新增 {added} 条，更新 {updated} 条，{errors} 页出错";
-                result.AddedCount = added;
-                result.UpdatedCount = updated;
-                result.ErrorCount = errors;
-
-                if (result.IsSuccess)
-                    await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
-                else
-                    await _taskLogService.LogTaskFailureAsync(taskLog.Id, result.Message);
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[ReactSync] 分店零售价增量同步异常: {Error}", ex.Message);
-                await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
-                result.IsSuccess = false;
-                result.Message = $"同步失败: {ex.Message}";
-                return result;
-            }
+            return null;
         }
 
         /// <summary>
@@ -1819,7 +1670,8 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<CBP_DIC_国内供应商信息表>()
                     .Where(x => x.FGC_LastModifyDate != null && x.FGC_LastModifyDate != "")
                     .Where(x =>
-                        x.FGC_LastModifyDate.CompareTo(
+                        x.FGC_LastModifyDate != null
+                        && x.FGC_LastModifyDate.CompareTo(
                             effectiveStart.ToString("yyyy-MM-dd HH:mm:ss")
                         ) >= 0
                     )
@@ -1845,7 +1697,11 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<ChinaSupplier>()
                     .Select(x => x.SupplierCode)
                     .ToListAsync();
-                var existingSet = new HashSet<string>(existingCodes);
+                var existingSet = new HashSet<string>(
+                    existingCodes
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                );
 
                 for (var page = 1; page <= pages; page++)
                 {
@@ -2417,7 +2273,8 @@ namespace BlazorApp.Api.Services.React
                     var batch = await hqDb.Queryable<CPT_DIC_货位编码信息表>()
                         .Where(x => x.FGC_LastModifyDate != null && x.FGC_LastModifyDate != "")
                         .Where(x =>
-                            x.FGC_LastModifyDate.CompareTo(
+                            x.FGC_LastModifyDate != null
+                            && x.FGC_LastModifyDate.CompareTo(
                                 effectiveStart.ToString("yyyy-MM-dd HH:mm:ss")
                             ) >= 0
                         )
@@ -2577,7 +2434,8 @@ namespace BlazorApp.Api.Services.React
                 var total = await hqDb.Queryable<CPT_RED_货位存货信息表>()
                     .Where(x => x.FGC_LastModifyDate != null && x.FGC_LastModifyDate != "")
                     .Where(x =>
-                        x.FGC_LastModifyDate.CompareTo(
+                        x.FGC_LastModifyDate != null
+                        && x.FGC_LastModifyDate.CompareTo(
                             effectiveStart.ToString("yyyy-MM-dd HH:mm:ss")
                         ) >= 0
                     )
@@ -2613,7 +2471,8 @@ namespace BlazorApp.Api.Services.React
                     var batch = await hqDb.Queryable<CPT_RED_货位存货信息表>()
                         .Where(x => x.FGC_LastModifyDate != null && x.FGC_LastModifyDate != "")
                         .Where(x =>
-                            x.FGC_LastModifyDate.CompareTo(
+                            x.FGC_LastModifyDate != null
+                            && x.FGC_LastModifyDate.CompareTo(
                                 effectiveStart.ToString("yyyy-MM-dd HH:mm:ss")
                             ) >= 0
                         )

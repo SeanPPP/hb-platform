@@ -356,7 +356,7 @@ namespace BlazorApp.Api.Services.React
             var query = _hqContext.Db.Queryable<RED_进货单主表Store>()
                 .Where(x => !string.IsNullOrEmpty(x.HGUID))
                 .Where(x => x.FGC_LastModifyDate >= startDate)
-                .Where(x => targetStoreCodes.Contains(x.H分店代码));
+                .Where(x => x.H分店代码 != null && targetStoreCodes.Contains(x.H分店代码));
             if (endDate.HasValue)
             {
                 query = query.Where(x => x.FGC_LastModifyDate <= endDate.Value);
@@ -385,7 +385,7 @@ namespace BlazorApp.Api.Services.React
         )
         {
             return BuildBaseHqDetailQuery(targetStoreCodes)
-                .Where(x => parentGuids.Contains(x.H主表GUID));
+                .Where(x => x.H主表GUID != null && parentGuids.Contains(x.H主表GUID));
         }
 
         private ISugarQueryable<RED_进货单详情表Store> BuildBaseHqDetailQuery(
@@ -395,7 +395,7 @@ namespace BlazorApp.Api.Services.React
             return _hqContext.Db.Queryable<RED_进货单详情表Store>()
                 .Where(x => !string.IsNullOrEmpty(x.HGUID))
                 .Where(x => !string.IsNullOrEmpty(x.H主表GUID))
-                .Where(x => targetStoreCodes.Contains(x.H分店代码));
+                .Where(x => x.H分店代码 != null && targetStoreCodes.Contains(x.H分店代码));
         }
 
         private async Task BackfillMissingParentsAsync(List<string> parentGuids, SyncBatchResult result)
@@ -493,7 +493,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var chunkList = chunk.ToList();
                 var rows = await _hqContext.Db.Queryable<RED_进货单主表Store>()
-                    .Where(x => chunkList.Contains(x.HGUID))
+                    .Where(x => x.HGUID != null && chunkList.Contains(x.HGUID))
                     .ToListAsync();
                 result.AddRange(rows);
             }

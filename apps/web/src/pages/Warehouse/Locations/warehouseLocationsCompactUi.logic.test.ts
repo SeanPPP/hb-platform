@@ -157,6 +157,52 @@ async function main() {
   })
   if (locationBarcodeFailure) failures.push(locationBarcodeFailure)
 
+  const sortingFailure = await runTest('仓库标签基础列应使用服务端远程排序', () => {
+    const sortableMarkers = [
+      "dataIndex: 'locationCode'",
+      "dataIndex: 'locationType'",
+      "dataIndex: 'locationBarcode'",
+      "dataIndex: 'status'",
+      "key: 'usage'",
+      "dataIndex: 'updatedAt'",
+      "dataIndex: 'updatedBy'",
+    ]
+
+    for (const marker of sortableMarkers) {
+      const column = readColumnBlock(locationsPageSource, marker)
+      assert(column.includes('sorter: true'), `${marker} 缺少 sorter: true`)
+      assert(column.includes('sortOrder:'), `${marker} 缺少受控 sortOrder`)
+    }
+
+    const unsortableMarkers = [
+      "key: 'index'",
+      "key: 'itemNumbers'",
+      "key: 'productBarcodes'",
+      "key: 'productNames'",
+      "key: 'productImages'",
+      "key: 'action'",
+    ]
+
+    for (const marker of unsortableMarkers) {
+      const column = readColumnBlock(locationsPageSource, marker)
+      assert(!column.includes('sorter: true'), `${marker} 不应开启排序`)
+      assert(!column.includes('sortOrder:'), `${marker} 不应绑定排序状态`)
+    }
+
+    assert(locationsPageSource.includes('LOCATION_SORT_FIELD_MAP'), '页面缺少远程排序字段白名单')
+    assert(locationsPageSource.includes("Usage: 'Usage'") || locationsPageSource.includes("usage: 'Usage'"), '使用状态排序应映射到 Usage')
+    assert(locationsPageSource.includes("const [sortBy, setSortBy] = useState<LocationSortBy>(DEFAULT_LOCATION_SORT_BY)"), '页面缺少 sortBy 状态')
+    assert(locationsPageSource.includes("const [sortOrder, setSortOrder] = useState<SortOrder>(DEFAULT_LOCATION_SORT_ORDER)"), '页面缺少 sortOrder 状态')
+    assert(locationsPageSource.includes('sortDirection: toApiSortDirection(effectiveSortOrder)'), '列表请求应发送排序方向')
+    assert(locationsPageSource.includes('onChange={handleTableChange}'), '表格应使用统一排序分页回调')
+    assert(locationsPageSource.includes("extra.action === 'sort'"), '排序回调应识别 sort action')
+    assert(locationsPageSource.includes('pagination.pageSize || pageSize'), '排序变更应沿用当前页容量')
+    assert(locationsPageSource.includes('nextSortBy') && locationsPageSource.includes('nextSortOrder'), '排序回调应传递服务端排序字段和方向')
+    assert(locationServiceSource.includes('SortDirection: params.sortDirection'), 'locationService 应发送后端 DTO 的 SortDirection 字段')
+    assert(!locationServiceSource.includes('sortDirection: params.sortDirection'), 'locationService 不应发送小写 sortDirection 字段')
+  })
+  if (sortingFailure) failures.push(sortingFailure)
+
   const cssFailure = await runTest('仓库标签紧凑 CSS 应局部限制并保留关键字段', () => {
     const headerRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .ant-table-column-title')
     const nowrapRule = readCssRule(compactCssSource, '.warehouse-locations-compact-table .warehouse-locations-nowrap')

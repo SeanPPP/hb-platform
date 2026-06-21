@@ -1,5 +1,6 @@
-import { Breadcrumb, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ShoppingCartOutlined } from '@ant-design/icons'
+import { Breadcrumb, Button, Empty, Pagination, Select, Space, Spin, Tag, Tooltip, message } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import ShopScanBar from '../../components/ShopScanBar'
@@ -14,6 +15,7 @@ import {
   getStoreOrderProductsDynamicData,
   lookupStoreOrderProductsByBarcode,
   removeStoreOrderCartItem,
+  updateStoreOrderCartItem,
 } from '../../services/storeOrderService'
 import { getCategoryTree, type WarehouseCategoryNode } from '../../services/warehouseCategoryService'
 import {
@@ -53,6 +55,11 @@ function logShopHomePerf(stage: string, payload: Record<string, unknown>) {
   console.info('[shop-home-perf]', stage, payload)
 }
 
+// 商城列表页大小必须与顶部筛选和底部分页保持一致。
+const SHOP_HOME_PAGE_SIZE_OPTIONS = [50, 100, 200, 500]
+// 商品卡连续点击时只在用户短暂停顿后提交最终数量，避免并发请求覆盖最新输入。
+const SHOP_PRODUCT_QUANTITY_UPDATE_DEBOUNCE_MS = 300
+
 export default function ShopHomePage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -65,7 +72,7 @@ export default function ShopHomePage() {
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(200)
   const [categoryName, setCategoryName] = useState('')
   const [categoryTree, setCategoryTree] = useState<WarehouseCategoryNode[]>([])
   const [parentChain, setParentChain] = useState<WarehouseCategoryNode[]>([])
@@ -85,9 +92,24 @@ export default function ShopHomePage() {
   const [pickerLoading, setPickerLoading] = useState(false)
   const [pickerDynamicDataMap, setPickerDynamicDataMap] = useState<Record<string, StoreOrderDynamicData>>({})
   const [gradeFilter, setGradeFilter] = useState<string[]>([])
+  const [quantityLoadingMap, setQuantityLoadingMap] = useState<Record<string, boolean>>({})
+  const [optimisticCartQuantityMap, setOptimisticCartQuantityMap] = useState<Record<string, number>>({})
+  const [removingCartProductMap, setRemovingCartProductMap] = useState<Record<string, boolean>>({})
+  const [cartOnlyFilter, setCartOnlyFilter] = useState(false)
+  const quantityUpdateTimersRef = useRef<Record<string, number>>({})
+  const quantityUpdateVersionRef = useRef<Record<string, number>>({})
   const selectedStore = useShopStore((state) => state.selectedStore)
+  const cart = useShopStore((state) => state.cart)
   const setCart = useShopStore((state) => state.setCart)
   const shouldShowCategoryPath = Boolean(keyword)
+
+  useEffect(() => {
+    return () => {
+      Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))
+      quantityUpdateTimersRef.current = {}
+      quantityUpdateVersionRef.current = {}
+    }
+  }, [])
 
   const categoryLookup = useMemo<WarehouseCategoryLookup | null>(() => {
     if (!categoryTree.length) {
@@ -112,7 +134,53 @@ export default function ShopHomePage() {
     }, {})
   }, [categoryLookup, i18n.language, products, shouldShowCategoryPath])
 
+  const cartProductItems = useMemo<StoreOrderProductItem[]>(() => {
+    return (cart?.items ?? []).map((item) => ({
+      productCode: item.productCode,
+      itemNumber: item.itemNumber,
+      barcode: item.barcode,
+      productName: item.productName,
+      productImage: item.productImage,
+      // 购物车明细没有完整商品 DTO；复用购物车价格和最小订量即可驱动商品卡展示与数量更新。
+      oemPrice: item.price,
+      importPrice: item.importPrice,
+      minOrderQuantity: item.minOrderQuantity || 1,
+      stockQuantity: 0,
+      isInStock: item.isActive,
+    }))
+  }, [cart?.items])
+
+  const cartProductDynamicDataMap = useMemo<Record<string, StoreOrderDynamicData>>(() => {
+    return (cart?.items ?? []).reduce<Record<string, StoreOrderDynamicData>>((acc, item) => {
+      acc[item.productCode] = {
+        productCode: item.productCode,
+        cartQuantity: item.quantity,
+      }
+      return acc
+    }, {})
+  }, [cart?.items])
+
+  const cartQuantityByProductCode = useMemo<Record<string, number>>(() => {
+    return (cart?.items ?? []).reduce<Record<string, number>>((acc, item) => {
+      acc[item.productCode] = item.quantity
+      return acc
+    }, {})
+  }, [cart?.items])
+
+  const cartProductPageItems = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize
+    return cartProductItems.slice(startIndex, startIndex + pageSize)
+  }, [cartProductItems, currentPage, pageSize])
+
+  const displayProducts = cartOnlyFilter ? cartProductPageItems : products
+  const displayTotal = cartOnlyFilter ? cartProductItems.length : total
+  const cartProductCount = cart?.items.length ?? 0
+
   const pageTitle = useMemo(() => {
+    if (cartOnlyFilter) {
+      return t('shop.cartProductsTitle')
+    }
+
     if (keyword) {
       return t('shop.searchTitle', { keyword })
     }
@@ -122,11 +190,35 @@ export default function ShopHomePage() {
     }
 
     return t('shop.allProducts')
-  }, [categoryId, categoryName, keyword, t])
+  }, [cartOnlyFilter, categoryId, categoryName, keyword, t])
 
   useEffect(() => {
     setCurrentPage(1)
   }, [categoryId, keyword])
+
+  useEffect(() => {
+    if (!cartOnlyFilter) {
+      return
+    }
+
+    const totalPages = Math.max(1, Math.ceil(cartProductItems.length / pageSize))
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages)
+    }
+  }, [cartOnlyFilter, cartProductItems.length, currentPage, pageSize])
+
+  useEffect(() => {
+    if (cart?.items.length) {
+      return
+    }
+
+    Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))
+    quantityUpdateTimersRef.current = {}
+    quantityUpdateVersionRef.current = {}
+    setOptimisticCartQuantityMap({})
+    setRemovingCartProductMap({})
+    setQuantityLoadingMap({})
+  }, [cart?.items.length])
 
   const loadDynamicDataMap = useCallback(
     async (productCodes: string[]) => {
@@ -515,26 +607,6 @@ export default function ShopHomePage() {
     },
   })
 
-  const handleAddToCart = async (product: StoreOrderProductItem, quantity: number) => {
-    if (!selectedStore?.storeCode) {
-      message.warning(t('shop.selectStoreFirst'))
-      return
-    }
-
-    try {
-      const nextCart = await addStoreOrderCartItem({
-        storeCode: selectedStore.storeCode,
-        productCode: product.productCode,
-        quantity,
-      })
-      setCart(nextCart)
-      message.success(t('shop.addedToCart', { quantity, name: product.productName }))
-      await refreshDynamicDataForProducts([product.productCode])
-    } catch (error) {
-      message.error(t('shop.addToCartFailed'))
-    }
-  }
-
   const handleCategoryPathClick = useCallback(
     (product: StoreOrderProductItem) => {
       if (!product.warehouseCategoryGUID) {
@@ -547,29 +619,195 @@ export default function ShopHomePage() {
     [navigate],
   )
 
+  const handleAddToCart = useCallback(
+    async (product: StoreOrderProductItem, quantity: number) => {
+      if (!selectedStore?.storeCode) {
+        message.warning(t('shop.selectStoreFirst'))
+        return
+      }
+
+      const addQuantity = Math.max(1, Math.floor(Number.isFinite(quantity) ? quantity : 0))
+      setOptimisticCartQuantityMap((prev) => ({ ...prev, [product.productCode]: addQuantity }))
+      setQuantityLoadingMap((prev) => ({ ...prev, [product.productCode]: true }))
+      try {
+        const nextCart = await addStoreOrderCartItem({
+          storeCode: selectedStore.storeCode,
+          productCode: product.productCode,
+          quantity: addQuantity,
+        })
+        setCart(nextCart)
+        await refreshDynamicDataForProducts([product.productCode]).catch(() => {})
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+      } catch (error) {
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+        message.error(t('shop.addToCartFailed'))
+      } finally {
+        setQuantityLoadingMap((prev) => {
+          const next = { ...prev }
+          delete next[product.productCode]
+          return next
+        })
+      }
+    },
+    [dynamicDataMap, refreshDynamicDataForProducts, selectedStore?.storeCode, setCart, t],
+  )
+
+  const handleProductQuantityChange = useCallback(
+    (product: StoreOrderProductItem, quantity: number) => {
+      if (!selectedStore?.storeCode) {
+        message.warning(t('shop.selectStoreFirst'))
+        return
+      }
+
+      const productCode = product.productCode
+      const normalizedQuantity = Math.max(0, Math.floor(Number.isFinite(quantity) ? quantity : 0))
+      const currentCartQuantity = cartQuantityByProductCode[productCode] ?? 0
+      const hasPendingQuantityWork =
+        optimisticCartQuantityMap[productCode] !== undefined ||
+        quantityUpdateTimersRef.current[productCode] !== undefined ||
+        quantityLoadingMap[productCode]
+
+      if (normalizedQuantity === currentCartQuantity && !hasPendingQuantityWork) {
+        return
+      }
+
+      if (normalizedQuantity <= 0 && currentCartQuantity <= 0 && !hasPendingQuantityWork) {
+        return
+      }
+
+      if (quantityUpdateTimersRef.current[productCode]) {
+        window.clearTimeout(quantityUpdateTimersRef.current[productCode])
+      }
+
+      const updateVersion = (quantityUpdateVersionRef.current[productCode] ?? 0) + 1
+      quantityUpdateVersionRef.current[productCode] = updateVersion
+      setOptimisticCartQuantityMap((prev) => ({ ...prev, [productCode]: normalizedQuantity }))
+      setQuantityLoadingMap((prev) => ({ ...prev, [productCode]: true }))
+
+      quantityUpdateTimersRef.current[productCode] = window.setTimeout(() => {
+        delete quantityUpdateTimersRef.current[productCode]
+        void (async () => {
+          if (quantityUpdateVersionRef.current[productCode] !== updateVersion) return
+
+          try {
+            // 商品卡数量就是购物车数量，连续点击时只提交最终数量，避免旧请求覆盖新数量。
+            const nextCart = await updateStoreOrderCartItem({
+              storeCode: selectedStore.storeCode,
+              productCode,
+              quantity: normalizedQuantity,
+            })
+
+            if (quantityUpdateVersionRef.current[productCode] !== updateVersion) return
+
+            setCart(nextCart)
+            await refreshDynamicDataForProducts([productCode]).catch(() => {})
+
+            if (quantityUpdateVersionRef.current[productCode] !== updateVersion) return
+
+            // 后端确认保存后再提示；同一商品复用 message key，连续点击只保留最终数量提示。
+            message.success({
+              content: t('shop.cartQuantityUpdated', { quantity: normalizedQuantity }),
+              key: `shop-product-quantity-${productCode}`,
+            })
+
+            setOptimisticCartQuantityMap((prev) => {
+              const next = { ...prev }
+              delete next[productCode]
+              return next
+            })
+          } catch (error) {
+            if (quantityUpdateVersionRef.current[productCode] === updateVersion) {
+              setOptimisticCartQuantityMap((prev) => {
+                const next = { ...prev }
+                delete next[productCode]
+                return next
+              })
+              message.error(t('shop.cartUpdateFailed', 'Failed to update quantity'))
+            }
+          } finally {
+            if (quantityUpdateVersionRef.current[productCode] === updateVersion) {
+              setQuantityLoadingMap((prev) => {
+                const next = { ...prev }
+                delete next[productCode]
+                return next
+              })
+            }
+          }
+        })()
+      }, SHOP_PRODUCT_QUANTITY_UPDATE_DEBOUNCE_MS)
+    },
+    [
+      cartQuantityByProductCode,
+      optimisticCartQuantityMap,
+      quantityLoadingMap,
+      refreshDynamicDataForProducts,
+      selectedStore?.storeCode,
+      setCart,
+      t,
+    ],
+  )
+
   const handleRemoveFromCart = async (product: StoreOrderProductItem) => {
     if (!selectedStore?.storeCode) {
       message.warning(t('shop.selectStoreFirst'))
       return
     }
 
-    const cart = await getActiveStoreOrderCart(selectedStore.storeCode)
-    const cartItem = cart?.items.find((item) => item.productCode === product.productCode)
-
-    if (!cartItem) {
-      message.warning(t('shop.itemNotFoundInCart'))
+    const productCode = product.productCode
+    if (removingCartProductMap[productCode]) {
       return
     }
 
+    // 删除按钮点击后先让卡片退出已入车状态，避免重复点击触发第二次删除。
+    setRemovingCartProductMap((prev) => ({ ...prev, [productCode]: true }))
+    setOptimisticCartQuantityMap((prev) => ({ ...prev, [productCode]: 0 }))
+
     try {
+      const cart = await getActiveStoreOrderCart(selectedStore.storeCode)
+      const cartItem = cart?.items.find((item) => item.productCode === productCode)
+
+      if (!cartItem) {
+        setOptimisticCartQuantityMap((prev) => {
+          const next = { ...prev }
+          delete next[productCode]
+          return next
+        })
+        message.warning(t('shop.itemNotFoundInCart'))
+        return
+      }
+
       await removeStoreOrderCartItem({
         storeCode: selectedStore.storeCode,
         detailGUID: cartItem.detailGUID,
       })
       message.success(t('shop.removedFromCart', { name: product.productName }))
       await Promise.all([refreshCart(), refreshDynamicData()])
+      setOptimisticCartQuantityMap((prev) => {
+        const next = { ...prev }
+        delete next[productCode]
+        return next
+      })
     } catch (error) {
+      setOptimisticCartQuantityMap((prev) => {
+        const next = { ...prev }
+        delete next[productCode]
+        return next
+      })
       message.error(t('shop.cartRemoveFailed'))
+    } finally {
+      setRemovingCartProductMap((prev) => {
+        const next = { ...prev }
+        delete next[productCode]
+        return next
+      })
     }
   }
 
@@ -609,7 +847,7 @@ export default function ShopHomePage() {
 
         <div className="shop-home-controls">
           <div className="shop-home-pagination-info">
-            {t('shop.paginationInfo', { total, page: currentPage })}
+            {t('shop.paginationInfo', { total: displayTotal, page: currentPage })}
           </div>
           <div className="shop-home-filters">
             <Space size={4} wrap>
@@ -648,6 +886,17 @@ export default function ShopHomePage() {
                   </Tag.CheckableTag>
                 </Tooltip>
               ))}
+              <Button
+                size="small"
+                type={cartOnlyFilter ? 'primary' : 'default'}
+                icon={<ShoppingCartOutlined />}
+                onClick={() => {
+                  setCartOnlyFilter((current) => !current)
+                  setCurrentPage(1)
+                }}
+              >
+                {t('shop.cartProductsFilter', { count: cartProductCount })}
+              </Button>
             </Space>
           </div>
           <div className="shop-home-filters">
@@ -659,44 +908,68 @@ export default function ShopHomePage() {
                 setCurrentPage(1)
                 setPageSize(value)
               }}
-              options={[
-                { value: 50, label: '50' },
-                { value: 100, label: '100' },
-                { value: 200, label: '200' },
-              ]}
+              options={SHOP_HOME_PAGE_SIZE_OPTIONS.map((value) => ({ value, label: String(value) }))}
             />
           </div>
         </div>
       </div>
 
-      {loading ? (
+      {loading && !cartOnlyFilter ? (
         <div className="shop-home-loading">
           <Spin size="large" />
         </div>
-      ) : products.length ? (
+      ) : displayProducts.length ? (
         <>
           <div className="shop-home-grid">
-            {products.map((product) => (
-              <ProductCard
-                key={product.productCode}
-                product={product}
-                dynamicData={dynamicDataMap[product.productCode]}
-                categoryPath={categoryPathMap[product.productCode]}
-                onCategoryPathClick={
-                  shouldShowCategoryPath && product.warehouseCategoryGUID
-                    ? handleCategoryPathClick
-                    : undefined
-                }
-                onAddToCart={handleAddToCart}
-                onRemoveFromCart={handleRemoveFromCart}
-              />
-            ))}
+            {displayProducts.map((product) => {
+              const dynamicData = cartOnlyFilter
+                ? cartProductDynamicDataMap[product.productCode]
+                : dynamicDataMap[product.productCode]
+              const syncedDynamicData: StoreOrderDynamicData = {
+                ...(dynamicData ?? {
+                  productCode: product.productCode,
+                }),
+                // 商品卡购物车数量以全局 cart 快照为准，避免购物车抽屉清空后页面动态数据滞后。
+                productCode: dynamicData?.productCode ?? product.productCode,
+                cartQuantity: cartQuantityByProductCode[product.productCode] ?? 0,
+              }
+              const isRemovingFromCart = Boolean(removingCartProductMap[product.productCode])
+              const optimisticCartQuantity = isRemovingFromCart
+                ? 0
+                : optimisticCartQuantityMap[product.productCode]
+              const cardDynamicData =
+                optimisticCartQuantity === undefined
+                  ? syncedDynamicData
+                  : {
+                    ...syncedDynamicData,
+                    cartQuantity: optimisticCartQuantity,
+                  }
+
+              return (
+                <ProductCard
+                  key={product.productCode}
+                  product={product}
+                  dynamicData={cardDynamicData}
+                  categoryPath={categoryPathMap[product.productCode]}
+                  onCategoryPathClick={
+                    shouldShowCategoryPath && product.warehouseCategoryGUID
+                      ? handleCategoryPathClick
+                      : undefined
+                  }
+                  onAddToCart={handleAddToCart}
+                  onQuantityChange={handleProductQuantityChange}
+                  onRemoveFromCart={handleRemoveFromCart}
+                  loading={Boolean(quantityLoadingMap[product.productCode] || isRemovingFromCart)}
+                  removing={isRemovingFromCart}
+                />
+              )
+            })}
           </div>
 
           <div className="shop-home-pagination">
             <Pagination
               current={currentPage}
-              total={total}
+              total={displayTotal}
               pageSize={pageSize}
               onChange={(page, size) => {
                 setCurrentPage(page)
@@ -704,13 +977,13 @@ export default function ShopHomePage() {
                   setPageSize(size)
                 }
               }}
-              pageSizeOptions={['50', '100', '200']}
+              pageSizeOptions={SHOP_HOME_PAGE_SIZE_OPTIONS.map(String)}
               showSizeChanger
             />
           </div>
         </>
       ) : (
-        <Empty description={t('shop.noProductsFound')} />
+        <Empty description={cartOnlyFilter ? t('shop.noCartProductsFound') : t('shop.noProductsFound')} />
       )}
 
       <ShopScanResultPicker

@@ -34,7 +34,7 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "发票邮件 SMTP 密码解密失败，收件人：{ToEmail}", message.ToEmail);
                 return ApiResponse<bool>.Error(
-                    "发票邮件 SMTP 密码解密失败，请重新保存发票邮箱配置",
+                    "发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置",
                     "INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED"
                 );
             }
@@ -157,7 +157,13 @@ namespace BlazorApp.Api.Services.React
             SecureSocketOptions secureSocketOptions
         )
         {
-            return smtpClient.ConnectAsync(options.Host, options.Port, secureSocketOptions);
+            var host = options.Host;
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                throw new InvalidOperationException("未配置发票邮件 SMTP Host");
+            }
+
+            return smtpClient.ConnectAsync(host, options.Port, secureSocketOptions);
         }
 
         protected virtual Task AuthenticateSmtpClientAsync(

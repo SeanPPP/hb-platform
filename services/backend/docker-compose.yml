@@ -11,20 +11,24 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5002
       - ASPNETCORE_HTTP_PORTS=5002
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
-      - ConnectionString=REDACTED
+      # 生产连接字符串只从服务器 .env 注入，避免把敏感值写入 compose。
+      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
+      - ConnectionStrings__StoreHzgHQConnection=${CONNECTION_STRING_STORE_HQ}
+      - ConnectionStrings__HBSalesConnection=${CONNECTION_STRING_SALES}
+      - ConnectionStrings__PostgresConnection=${CONNECTION_STRING_POSTGRES}
+      - ConnectionStrings__HBPOSMConnection=${CONNECTION_STRING_POSM}
+      - ConnectionStrings__HBSalesRecord=${CONNECTION_STRING_SALES_RECORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=${JWT_ISSUER:-BlazorApp}
       - Jwt__Audience=${JWT_AUDIENCE:-BlazorAppUsers}
       - Jwt__ExpireMinutes=${JWT_EXPIRE_MINUTES:-480}
       - Cookie__Secure=${COOKIE_SECURE:-true}
       - Cookie__SameSite=${COOKIE_SAMESITE:-Lax}
+      # SMTP 密码密文依赖 DataProtection key ring，必须落到宿主机目录以跨容器重建保留。
+      - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
       - Translation__Provider=deepseek
-      - Translation__DeepSeek__ApiKey=REDACTED
+      # 生产翻译密钥只从服务器 .env 注入，避免在 compose 中写入明文或占位值。
+      - Translation__DeepSeek__ApiKey=${DEEPSEEK_API_KEY}
       - TencentCloud__SecretId=${TENCENT_SECRET_ID}
       - TencentCloud__SecretKey=${TENCENT_SECRET_KEY}
       - TencentCloud__BucketName=${TENCENT_BUCKET_NAME}
@@ -33,6 +37,7 @@ services:
       - TencentCloud__ImageRegion=${TENCENT_IMAGE_REGION}
     volumes:
       - hb-api-logs:/app/logs
+      - ./data-protection-keys:/app/App_Data/DataProtectionKeys
     restart: unless-stopped
     networks:
       - hb-network

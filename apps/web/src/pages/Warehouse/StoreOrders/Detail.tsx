@@ -9,6 +9,7 @@ import {
   PrinterOutlined,
   SaveOutlined,
   SearchOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import {
   Alert,
@@ -45,7 +46,7 @@ import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import { useAuthStore } from '../../../store/auth'
-import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
+import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { getStores } from '../../../services/storeService'
 import ContainerProductPicker from './components/ContainerProductPicker'
 import {
@@ -54,7 +55,6 @@ import {
   batchAddStoreOrderLines,
   batchUpdateStoreOrderLines,
   batchUpdateStoreOrderProductStatus,
-  completeStoreOrder,
   createStoreOrderPasteReplaceJob,
   getStoreOrderDetail,
   getStoreOrderDetailFull,
@@ -62,6 +62,7 @@ import {
   getStoreOrderPasteReplaceJob,
   getStoreOrderProducts,
   removeStoreOrderLine,
+  refreshStoreOrderImportPrices,
   startPickingStoreOrder,
   updateStoreOrderHeader,
   updateStoreOrderLine,
@@ -71,7 +72,7 @@ import {
   updateStoreOrderProductStatus,
 } from '../../../services/storeOrderService'
 import type { StoreDto } from '../../../types/store'
-import type { LocalSupplierDto } from '../../../types/localSupplier'
+import type { ChinaSupplierItem } from '../../../types/chinaSupplier'
 import type {
   StoreOrderDetail,
   StoreOrderDetailLine,
@@ -96,6 +97,7 @@ import {
   parseStoreOrderPasteRows,
   setExistingPastePreviewAction,
   type StoreOrderPasteAction,
+  type StoreOrderPasteQuantityMode,
   type StoreOrderPastePreviewFilter,
   type StoreOrderPastePreviewItem,
 } from './pastePreview'
@@ -104,6 +106,13 @@ import {
   StoreOrderPasteReplacePollingTimeoutError,
   createStoreOrderPasteReplaceJobPoller,
 } from './pasteReplaceJobPolling'
+import {
+  applyPasteOptimisticRowsToDetail,
+  buildPasteOptimisticRows,
+  resolvePasteOptimisticPendingAfterJob,
+  type StoreOrderPasteOptimisticPending,
+} from './pasteOptimisticRows'
+import { formatStoreOrderVolume } from './volumeFormat'
 import './compact.css'
 
 function formatDateTime(value?: string) {
@@ -119,6 +128,13 @@ function formatDateTime(value?: string) {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function formatLocalDateForInput(value = new Date()) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 function formatAmount(value?: number) {
   if (value === undefined || value === null) {
     return '--'
@@ -126,16 +142,23 @@ function formatAmount(value?: number) {
   return value.toFixed(2)
 }
 
-function formatVolume(value?: number) {
-  if (value === undefined || value === null) {
-    return '--'
-  }
-  return value.toFixed(4)
+function formatCurrencyAmount(value?: number) {
+  const amount = formatAmount(value)
+  return amount === '--' ? amount : `$${amount}`
 }
 
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
+type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner'
+
+function resolvePasteTargetField(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteTargetField {
+  return writeTarget === 'allocQuantityByInner' ? 'allocQuantity' : writeTarget
+}
+
+function resolvePasteQuantityMode(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteQuantityMode {
+  return writeTarget === 'allocQuantityByInner' ? 'inner' : 'direct'
+}
 
 interface EditedLinePayload {
   detailGUID: string
@@ -218,6 +241,9 @@ interface ProductPickerModalProps {
   onConfirm: (items: Array<{ productCode: string; quantity: number; importPrice?: number }>) => Promise<void>
 }
 
+const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100
+const PRODUCT_PICKER_PAGE_SIZE_OPTIONS = ['50', '100', '500']
+
 interface BatchEditModalProps {
   open: boolean
   loading?: boolean
@@ -233,12 +259,15 @@ interface BatchEditModalProps {
 
 function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: ProductPickerModalProps) {
   const { t } = useTranslation()
+  const productRequestControllerRef = useRef<AbortController | null>(null)
+  const supplierRequestControllerRef = useRef<AbortController | null>(null)
+  const supplierOptionsLoadedRef = useRef(false)
   const [fetching, setFetching] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [products, setProducts] = useState<StoreOrderProductItem[]>([])
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [pageNumber, setPageNumber] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)
   const [total, setTotal] = useState(0)
   const [supplierOptions, setSupplierOptions] = useState<Array<{ label: string; value: string }>>([])
   const [supplierCode, setSupplierCode] = useState<string>()
@@ -254,51 +283,87 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     supplierCode?: string
   }) => {
     const nextKeyword = overrides?.keyword ?? keyword
+    const trimmedKeyword = nextKeyword.trim()
     const nextPageNumber = overrides?.pageNumber ?? pageNumber
     const nextPageSize = overrides?.pageSize ?? pageSize
     const nextSupplierCode = overrides?.supplierCode ?? supplierCode
 
+    productRequestControllerRef.current?.abort()
+    const currentController = new AbortController()
+    productRequestControllerRef.current = currentController
+
     setFetching(true)
     try {
-      const result = await getStoreOrderProducts({
-        itemNumber: nextKeyword.trim() || undefined,
-        localSupplierCode: nextSupplierCode || undefined,
-        excludeExistingWarehouseProducts: true,
-        excludeOrderGUID: orderGUID,
-        pageNumber: nextPageNumber,
-        pageSize: nextPageSize,
-        sortBy: 'Default',
-      })
+      const result = await getStoreOrderProducts(
+        {
+          // 商品弹窗只有一个搜索框，需要同时覆盖货号/条码和商品名称。
+          itemNumber: trimmedKeyword || undefined,
+          productName: trimmedKeyword || undefined,
+          supplierCode: nextSupplierCode || undefined,
+          excludeOrderGUID: orderGUID,
+          pageNumber: nextPageNumber,
+          pageSize: nextPageSize,
+          sortBy: 'Default',
+        },
+        currentController.signal,
+      )
+      if (productRequestControllerRef.current !== currentController) {
+        return
+      }
       setProducts(result.items)
       setTotal(result.total)
       setPageNumber(nextPageNumber)
       setPageSize(nextPageSize)
     } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadProductsFailed'))
     } finally {
-      setFetching(false)
+      if (productRequestControllerRef.current === currentController) {
+        productRequestControllerRef.current = null
+        setFetching(false)
+      }
     }
   }
 
   const loadSupplierOptions = async () => {
+    if (supplierOptionsLoadedRef.current || supplierLoading) {
+      return
+    }
+
+    supplierRequestControllerRef.current?.abort()
+    const currentController = new AbortController()
+    supplierRequestControllerRef.current = currentController
+
     setSupplierLoading(true)
     try {
-      const suppliers: LocalSupplierDto[] = await getActiveLocalSuppliers()
-      // 供应商下拉只保留有效编码，便于按编码筛选商品列表。
+      const suppliers: ChinaSupplierItem[] = await getActiveChinaSuppliers(currentController.signal)
+      if (supplierRequestControllerRef.current !== currentController) {
+        return
+      }
+      // 商品选择弹窗按国内供应商过滤，避免误用澳洲供应商编码导致候选商品为空。
       setSupplierOptions(
         suppliers
-          .filter((item) => Boolean(item.localSupplierCode))
+          .filter((item) => Boolean(item.supplierCode))
           .map((item) => ({
-            label: item.name || item.localSupplierCode,
-            value: item.localSupplierCode,
+            label: item.supplierName || item.supplierCode,
+            value: item.supplierCode,
           })),
       )
+      supplierOptionsLoadedRef.current = true
     } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
       console.error(error)
-      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadSuppliersFailed', '加载澳洲供应商失败'))
+      message.error(error instanceof Error ? error.message : t('storeOrders.detail.loadSuppliersFailed', '加载国内供应商失败'))
     } finally {
-      setSupplierLoading(false)
+      if (supplierRequestControllerRef.current === currentController) {
+        supplierRequestControllerRef.current = null
+        setSupplierLoading(false)
+      }
     }
   }
 
@@ -306,36 +371,54 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     if (!open) {
       return
     }
-    void loadSupplierOptions()
     void loadProducts({ pageNumber: 1 })
   }, [open])
 
   useEffect(() => {
     if (!open) {
+      productRequestControllerRef.current?.abort()
+      supplierRequestControllerRef.current?.abort()
+      productRequestControllerRef.current = null
+      supplierRequestControllerRef.current = null
+      supplierOptionsLoadedRef.current = false
       setKeyword('')
       setProducts([])
       setSelectedRowKeys([])
       setPageNumber(1)
-      setPageSize(10)
+      setPageSize(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)
       setTotal(0)
       setSupplierOptions([])
       setSupplierCode(undefined)
+      setFetching(false)
       setSupplierLoading(false)
       setEditingValues({})
     }
   }, [open])
 
+  const renderPickerCopyButton = (value: string, label: string) => (
+    <Tooltip title={t('common.copy')}>
+      <Button
+        aria-label={label}
+        className="store-order-picker-copy-button"
+        icon={<CopyOutlined />}
+        size="small"
+        type="link"
+        onClick={() => void copyTextToClipboard(value)}
+      />
+    </Tooltip>
+  )
+
   const columns: ColumnsType<StoreOrderProductItem> = [
     {
       title: t('column.image'),
       dataIndex: 'productImage',
-      width: 84,
+      width: 48,
       render: (value: string | undefined, record) => (
         <Image
           src={value}
           alt={record.productName}
-          width={40}
-          height={40}
+          width={32}
+          height={32}
           style={{ borderRadius: 4, objectFit: 'cover' }}
           fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
         />
@@ -344,14 +427,12 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
-      width: 140,
+      width: 98,
       render: (value: string | undefined) =>
         value ? (
-          <Space size={4} wrap>
-            <Typography.Text>{value}</Typography.Text>
-            <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
-              {t('common.copy')}
-            </Button>
+          <Space size={2} wrap={false} className="store-order-picker-inline-cell">
+            <Typography.Text className="store-order-picker-nowrap" title={value}>{value}</Typography.Text>
+            {renderPickerCopyButton(value, `${t('common.copy')} ${value}`)}
           </Space>
         ) : (
           renderDangerValue('--')
@@ -360,48 +441,67 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.productName'),
       dataIndex: 'productName',
-      width: 240,
-      ellipsis: true,
-      render: (value: string | undefined) => value || '--',
+      width: 170,
+      render: (value: string | undefined) => (
+        <span className="store-order-picker-two-line" title={value}>
+          {value || '--'}
+        </span>
+      ),
     },
     {
       title: t('column.supplierName', '供应商名称'),
-      dataIndex: 'localSupplierName',
-      width: 180,
-      ellipsis: true,
-      render: (value: string | undefined, record) => value || record.localSupplierCode || '--',
+      dataIndex: 'domesticSupplierName',
+      width: 108,
+      render: (value: string | undefined, record) => {
+        const displayValue = value || record.domesticSupplierCode || '--'
+        return (
+          <span className="store-order-picker-two-line" title={displayValue}>
+            {displayValue}
+          </span>
+        )
+      },
     },
     {
       title: t('column.barcode'),
       dataIndex: 'barcode',
-      width: 170,
-      render: (value: string | undefined) => <BarcodePreview value={value} textMaxWidth={110} />,
+      width: 122,
+      render: (value: string | undefined) =>
+        value ? (
+          <Space size={2} wrap={false} className="store-order-picker-inline-cell store-order-picker-barcode-cell">
+            <Typography.Text className="store-order-picker-nowrap" title={value}>{value}</Typography.Text>
+            {renderPickerCopyButton(value, `${t('common.copy')} ${value}`)}
+          </Space>
+        ) : (
+          renderDangerValue('--')
+        ),
     },
     {
       title: t('column.stock'),
       dataIndex: 'stockQuantity',
-      width: 90,
+      width: 56,
     },
     {
       title: t('column.minOrder'),
       dataIndex: 'minOrderQuantity',
-      width: 110,
+      width: 62,
     },
     {
       title: t('column.defaultImportPrice'),
       dataIndex: 'importPrice',
-      width: 120,
-      render: (value: number | undefined) => formatAmount(value),
+      width: 84,
+      render: (value: number | undefined) => formatCurrencyAmount(value),
     },
     {
       title: t('column.allocQuantity'),
       key: 'quantity',
-      width: 120,
+      width: 70,
       render: (_, record) => (
         <InputNumber
+          className="store-order-picker-number-input"
           min={0}
           precision={0}
-          style={{ width: '100%' }}
+          size="small"
+          style={{ width: 58 }}
           value={editingValues[record.productCode]?.quantity ?? record.minOrderQuantity ?? 1}
           onChange={(value) =>
             setEditingValues((current) => ({
@@ -418,12 +518,16 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     {
       title: t('column.importPriceShort'),
       key: 'importPriceEdit',
-      width: 120,
+      width: 82,
       render: (_, record) => (
         <InputNumber
+          className="store-order-picker-number-input store-order-picker-price-input"
           min={0}
+          // 商品弹窗价格直接显示 $，方便和数量列区分。
+          prefix="$"
           precision={2}
-          style={{ width: '100%' }}
+          size="small"
+          style={{ width: 70 }}
           value={editingValues[record.productCode]?.importPrice ?? record.importPrice}
           onChange={(value) =>
             setEditingValues((current) => ({
@@ -463,9 +567,10 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 
   return (
     <Modal
+      className="store-order-product-picker-modal"
       title={t('storeOrders.selectProductTitle')}
       open={open}
-      width={1280}
+      width={1080}
       destroyOnClose
       okText={t('storeOrders.addSelected', { count: selectedRowKeys.length })}
       cancelText={t('common.close')}
@@ -488,11 +593,21 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
             allowClear
             showSearch
             optionFilterProp="label"
-            placeholder={t('storeOrders.detail.filterLocalSupplier', '筛选澳洲供应商')}
+            placeholder={t('storeOrders.detail.filterDomesticSupplier', '筛选国内供应商')}
             value={supplierCode}
             loading={supplierLoading}
             options={supplierOptions}
             style={{ width: 260 }}
+            onOpenChange={(visible) => {
+              if (visible) {
+                void loadSupplierOptions()
+                return
+              }
+              // 下拉收起时取消尚未完成的供应商请求，避免旧请求回写已关闭的筛选框。
+              supplierRequestControllerRef.current?.abort()
+              supplierRequestControllerRef.current = null
+              setSupplierLoading(false)
+            }}
             onChange={(value) => {
               // 切换供应商后回到第一页，避免旧分页落在空页。
               setSupplierCode(value)
@@ -501,26 +616,29 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
           />
         </Space>
         <Table
+          className="store-order-product-picker-table"
           rowKey="productCode"
           loading={fetching}
           size="small"
+          tableLayout="fixed"
           dataSource={products}
           columns={columns}
           rowSelection={{
             selectedRowKeys,
             onChange: setSelectedRowKeys,
             preserveSelectedRowKeys: true,
-            columnWidth: 40,
+            columnWidth: 32,
           }}
           pagination={{
             current: pageNumber,
             pageSize,
             total,
             showSizeChanger: true,
+            pageSizeOptions: PRODUCT_PICKER_PAGE_SIZE_OPTIONS,
             onChange: (nextPage, nextPageSize) =>
               void loadProducts({ pageNumber: nextPage, pageSize: nextPageSize }),
           }}
-          scroll={{ x: 1200, y: 480 }}
+          scroll={{ y: 440 }}
         />
       </Space>
     </Modal>
@@ -634,6 +752,10 @@ export default function StoreOrderDetailPage() {
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
   const { access, currentUser } = useAuthStore()
+  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  // 只用于配货单等只读文档入口，不开放订单编辑、状态流转或明细写入能力。
+  const canUseStoreOrderDocumentActions = access.isWarehouseStaff
+  const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const detailRequestControllerRef = useRef<AbortController | null>(null)
@@ -662,7 +784,7 @@ export default function StoreOrderDetailPage() {
   const [quickAddItemNumber, setQuickAddItemNumber] = useState('')
   const [quickAddQuantity, setQuickAddQuantity] = useState<number>(1)
   const [pasteData, setPasteData] = useState('')
-  const [pasteTargetField, setPasteTargetField] = useState<StoreOrderPasteTargetField>('allocQuantity')
+  const [pasteTargetField, setPasteTargetField] = useState<StoreOrderPasteWriteTarget>('allocQuantity')
   const [detailItemFilter, setDetailItemFilter] = useState('')
   const [columnMapping, setColumnMapping] = useState({
     itemNumber: 0,
@@ -673,6 +795,8 @@ export default function StoreOrderDetailPage() {
   const [pastePreviewFilter, setPastePreviewFilter] = useState<StoreOrderPastePreviewFilter>('all')
   const [parsingPaste, setParsingPaste] = useState(false)
   const [submittingPaste, setSubmittingPaste] = useState(false)
+  const [pasteOptimisticPending, setPasteOptimisticPending] = useState<StoreOrderPasteOptimisticPending | null>(null)
+  const [refreshImportPriceLoading, setRefreshImportPriceLoading] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
   const [detailPageSize, setDetailPageSize] = useState(50)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
@@ -821,14 +945,19 @@ export default function StoreOrderDetailPage() {
   }
 
   const loadStores = async () => {
+    if (!canUseWarehouseManagerActions) {
+      // 仓库员工只能查看当前订单分店，不能访问完整分店下拉接口；避免辅助数据 403 阻断明细展示。
+      setStores([])
+      lastLoadedStoresQueryKeyRef.current = storesQueryKey
+      return
+    }
+
     setStoresLoading(true)
     try {
-      const canViewAllStores = access.isAdmin || access.isWarehouseManager
       const result = await getStores({
         page: 1,
         pageSize: 300,
         isActive: true,
-        userGUID: canViewAllStores ? undefined : currentUser?.userGUID,
         sortField: 'storeName',
         sortOrder: 'ascend',
       })
@@ -894,6 +1023,7 @@ export default function StoreOrderDetailPage() {
     return () => {
       stopPasteReplacePollingRef.current?.()
       stopPasteReplacePollingRef.current = null
+      setPasteOptimisticPending(null)
     }
   }, [id])
 
@@ -926,15 +1056,19 @@ export default function StoreOrderDetailPage() {
       }))
 
       if (headerForm.storeCode && !options.some((item) => item.value === headerForm.storeCode)) {
+        const currentStoreLabel = detail?.storeName
+          ? `${detail.storeName} (${headerForm.storeCode})`
+          : `${headerForm.storeCode} (${t('column.currentStore')})`
+
         options.push({
           value: headerForm.storeCode,
-          label: `${headerForm.storeCode} (${t('column.currentStore')})`,
+          label: currentStoreLabel,
         })
       }
 
       return options
     },
-    [headerForm.storeCode, stores],
+    [detail?.storeName, headerForm.storeCode, stores, t],
   )
 
   const totalAllocQuantity =
@@ -982,6 +1116,8 @@ export default function StoreOrderDetailPage() {
     () => buildPasteSubmitItems(pastePreviewItems).length,
     [pastePreviewItems],
   )
+  const pasteQuantityMode = resolvePasteQuantityMode(pasteTargetField)
+  const pasteApiTargetField = resolvePasteTargetField(pasteTargetField)
 
   const filteredPastePreviewItems = useMemo(
     () => filterPastePreviewItems(pastePreviewItems, pastePreviewFilter),
@@ -1073,9 +1209,10 @@ export default function StoreOrderDetailPage() {
     canCompleteOrder,
     isReadonlyOrder,
   } = deriveStoreOrderDetailPermissions(detail?.flowStatus)
+  const isPasteOptimisticPreviewActive = pasteOptimisticPending?.orderGUID === detail?.orderGUID
 
   function ensureOrderEditable() {
-    if (canEditOrder) {
+    if (canUseWarehouseManagerActions && canEditOrder) {
       return true
     }
 
@@ -1115,6 +1252,10 @@ export default function StoreOrderDetailPage() {
 
   const handleSaveHeader = async () => {
     if (!detail) {
+      return
+    }
+    if (!canUseWarehouseManagerActions) {
+      message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
     setSavingHeader(true)
@@ -1189,6 +1330,8 @@ export default function StoreOrderDetailPage() {
     try {
       const result = await getStoreOrderProducts({
         itemNumber: normalizedItemNumber,
+        // 快速加入允许下架商品按货号加入，但后端仍会排除已删除商品。
+        includeInactiveWarehouseProducts: true,
         pageNumber: 1,
         pageSize: 50,
         sortBy: 'Default',
@@ -1460,7 +1603,60 @@ export default function StoreOrderDetailPage() {
     }
   }
 
-  const resetPasteState = (targetField: StoreOrderPasteTargetField = 'allocQuantity') => {
+  const handleRefreshImportPricesFromWarehouse = () => {
+    if (!detail || !canUseWarehouseManagerActions) {
+      return
+    }
+
+    const targetDetailGUIDs = selectedLineKeys.map(String).filter(Boolean)
+    const isSelectedScope = targetDetailGUIDs.length > 0
+    const selectedCount = targetDetailGUIDs.length
+
+    Modal.confirm({
+      title: t('storeOrders.detail.refreshImportPricesTitle'),
+      content: (
+        <Space direction="vertical" size={8}>
+          <Typography.Text>
+            {isSelectedScope
+              ? t('storeOrders.detail.refreshImportPricesSelectedContent', { count: selectedCount })
+              : t('storeOrders.detail.refreshImportPricesWholeOrderContent')}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {t('storeOrders.detail.refreshImportPricesWarning')}
+          </Typography.Text>
+        </Space>
+      ),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setRefreshImportPriceLoading(true)
+        try {
+          const result = await refreshStoreOrderImportPrices({
+            orderGUID: detail.orderGUID,
+            detailGUIDs: isSelectedScope ? targetDetailGUIDs : undefined,
+          })
+          message.success(
+            t('storeOrders.detail.refreshImportPricesSuccess', {
+              updated: result.updatedCount,
+              unchanged: result.unchangedCount,
+              skipped: result.skippedCount,
+              missing: result.missingWarehousePriceCount,
+            }),
+          )
+          setSelectedLineKeys([])
+          setEditingRows({})
+          await loadDetail(false)
+        } catch (error) {
+          console.error(error)
+          message.error(error instanceof Error ? error.message : t('storeOrders.detail.refreshImportPricesFailed'))
+        } finally {
+          setRefreshImportPriceLoading(false)
+        }
+      },
+    })
+  }
+
+  const resetPasteState = (targetField: StoreOrderPasteWriteTarget = 'allocQuantity') => {
     setPasteData('')
     setPasteTargetField(targetField)
     setColumnMapping({
@@ -1523,7 +1719,7 @@ export default function StoreOrderDetailPage() {
       return
     }
 
-    const validItems = buildPasteSubmitItems(pastePreviewItems)
+    const validItems = buildPasteSubmitItems(pastePreviewItems, { quantityMode: pasteQuantityMode })
 
     if (!validItems.length) {
       message.warning(t('storeOrders.detail.noValidImportProducts'))
@@ -1535,16 +1731,24 @@ export default function StoreOrderDetailPage() {
       const orderGUID = detail.orderGUID
       stopPasteReplacePollingRef.current?.()
       stopPasteReplacePollingRef.current = null
+      setPasteOptimisticPending(null)
 
       const createdJob = await createStoreOrderPasteReplaceJob({
         orderGUID,
-        targetField: pasteTargetField,
+        targetField: pasteApiTargetField,
         items: validItems,
       })
       if (!createdJob.jobId) {
         message.error(createdJob.message || t('storeOrders.detail.pasteImportFailed'))
         return
       }
+
+      const optimisticRows = buildPasteOptimisticRows({
+        currentItems: detail.items,
+        previewItems: pastePreviewItems,
+        targetField: pasteApiTargetField,
+        quantityMode: pasteQuantityMode,
+      })
 
       // 后端批量导入改为后台 job，前端只负责等待终态并刷新当前订单。
       const poller = createStoreOrderPasteReplaceJobPoller({
@@ -1553,21 +1757,38 @@ export default function StoreOrderDetailPage() {
       })
       stopPasteReplacePollingRef.current = poller.stop
 
+      // Job 创建成功后先展示 Excel 预览行，避免大批量写入期间表格长时间没有反馈。
+      setPasteOptimisticPending({
+        jobId: createdJob.jobId,
+        orderGUID,
+      })
+      setDetail((current) =>
+        current?.orderGUID === orderGUID
+          ? applyPasteOptimisticRowsToDetail(current, optimisticRows)
+          : current,
+      )
+      setDetailPage(1)
+      setSelectedLineKeys([])
+      setEditingRows({})
       setPasteModalOpen(false)
       resetPasteState(pasteTargetField)
-      message.success(t('storeOrders.detail.pasteJobSubmitted', '导入任务已提交，完成后会自动提示结果。'))
+      message.success(t('storeOrders.detail.pasteJobSubmitted', '已先显示本次 Excel 预览，后台正在写入；完成后会自动刷新确认。'))
 
       void poller.promise
         .then(async (result) => {
           if (stopPasteReplacePollingRef.current === poller.stop) {
             stopPasteReplacePollingRef.current = null
           }
+          setPasteOptimisticPending((current) => resolvePasteOptimisticPendingAfterJob(current, result))
 
           if (result.status === 'Failed') {
             notification.error({
               message: t('storeOrders.detail.pasteImportFailed'),
               description: result.message,
             })
+            if (visibleDetailIdRef.current === orderGUID) {
+              await loadDetail(false)
+            }
             return
           }
 
@@ -1581,24 +1802,33 @@ export default function StoreOrderDetailPage() {
             await loadDetail(false)
           }
         })
-        .catch((error) => {
+        .catch(async (error) => {
           if (error instanceof StoreOrderPasteReplacePollingCancelledError) {
             return
           }
           if (stopPasteReplacePollingRef.current === poller.stop) {
             stopPasteReplacePollingRef.current = null
           }
+          setPasteOptimisticPending((current) =>
+            current?.jobId === createdJob.jobId ? null : current,
+          )
           if (error instanceof StoreOrderPasteReplacePollingTimeoutError) {
             notification.warning({
               message: t('storeOrders.detail.pasteImportTimeout', 'Excel 粘贴导入仍在后台执行'),
               description: t('storeOrders.detail.pasteImportTimeoutDesc', '后台任务仍可能继续执行，请稍后刷新订单明细确认结果。'),
             })
+            if (visibleDetailIdRef.current === orderGUID) {
+              await loadDetail(false)
+            }
             return
           }
           notification.error({
             message: t('storeOrders.detail.pasteImportFailed'),
             description: error instanceof Error ? error.message : undefined,
           })
+          if (visibleDetailIdRef.current === orderGUID) {
+            await loadDetail(false)
+          }
         })
     } catch (error) {
       console.error(error)
@@ -1685,7 +1915,7 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
-    if (!canCompleteOrder) {
+    if (!canUseWarehouseManagerActions || !canCompleteOrder) {
       message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
@@ -1697,7 +1927,14 @@ export default function StoreOrderDetailPage() {
       onOk: async () => {
         try {
           setLineActionLoading(true)
-          await completeStoreOrder(detail.orderGUID)
+          const currentOutboundDate = headerForm.outboundDate?.slice(0, 10)
+          // 完成订单时只在出库日期为空时补当天，避免覆盖已录入或刚在表单中填写的日期。
+          const nextOutboundDate = currentOutboundDate || formatLocalDateForInput()
+          await updateStoreOrderOutboundDate({
+            orderGUID: detail.orderGUID,
+            outboundDate: nextOutboundDate,
+            completeOrder: true,
+          })
           message.success(t('storeOrders.detail.orderCompleted'))
           await loadDetail(false)
         } catch (error) {
@@ -1712,6 +1949,10 @@ export default function StoreOrderDetailPage() {
 
   const handleChangeOrderStatus = (newStatus: StoreOrderFlowStatus) => {
     if (!detail || detail.flowStatus === newStatus) {
+      return
+    }
+    if (!canUseWarehouseManagerActions) {
+      message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
 
@@ -1746,7 +1987,7 @@ export default function StoreOrderDetailPage() {
     if (!detail) {
       return
     }
-    if (!canStartPicking) {
+    if (!canUseWarehouseManagerActions || !canStartPicking) {
       message.warning(t('storeOrders.detail.orderReadonlyRefresh'))
       return
     }
@@ -1799,7 +2040,7 @@ export default function StoreOrderDetailPage() {
     return quantity
   }
 
-  const columns: ColumnsType<StoreOrderDetailLine> = [
+  const columns: ColumnsType<StoreOrderDetailLine> = ([
     {
       title: '#',
       dataIndex: 'index',
@@ -1892,7 +2133,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'allocQuantity', node)}
           min={0}
           precision={0}
-          disabled={isReadonlyOrder}
+          disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={getQuantityHighlight(record)}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.allocQuantity ?? value ?? 0}
@@ -1918,7 +2159,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
-          disabled={isReadonlyOrder}
+          disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}
           value={editingRows[record.detailGUID]?.importPrice ?? value}
@@ -1956,8 +2197,8 @@ export default function StoreOrderDetailPage() {
         return nextValue === undefined || nextValue === null
           ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
-            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.0000'))
-            : renderStoreOrderDetailNumericCell(formatVolume(nextValue))
+            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.00'))
+            : renderStoreOrderDetailNumericCell(formatStoreOrderVolume(nextValue))
       },
     },
     {
@@ -1974,8 +2215,8 @@ export default function StoreOrderDetailPage() {
         return nextValue === undefined || nextValue === null
           ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
-            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.0000'))
-            : renderStoreOrderDetailNumericCell(formatVolume(nextValue))
+            ? renderStoreOrderDetailNumericCell(renderDangerValue('0.00'))
+            : renderStoreOrderDetailNumericCell(formatStoreOrderVolume(nextValue))
       },
     },
     {
@@ -1998,7 +2239,7 @@ export default function StoreOrderDetailPage() {
               icon={<SaveOutlined />}
               aria-label={t('common.save')}
               className="store-order-detail-action-button"
-              disabled={isReadonlyOrder}
+              disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
               onClick={() => void handleSaveLine(record)}
             />
           </Tooltip>
@@ -2009,7 +2250,7 @@ export default function StoreOrderDetailPage() {
               icon={<EditOutlined />}
               aria-label={record.isActive ? t('common.inactiveUpper') : t('common.activeUpper')}
               className="store-order-detail-action-button"
-              disabled={isReadonlyOrder}
+              disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
               onClick={() => void handleToggleLineStatus(record)}
             />
           </Tooltip>
@@ -2027,14 +2268,16 @@ export default function StoreOrderDetailPage() {
                 icon={<DeleteOutlined />}
                 aria-label={t('common.delete')}
                 className="store-order-detail-action-button"
-                disabled={isReadonlyOrder}
+                disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
               />
             </Tooltip>
           </Popconfirm>
         </Space>
       ),
     },
-  ]
+  ] as ColumnsType<StoreOrderDetailLine>).filter(
+    (column) => canUseWarehouseManagerActions || column.key !== 'actions',
+  )
 
   if (!id) {
     return (
@@ -2092,48 +2335,50 @@ export default function StoreOrderDetailPage() {
                 column={3}
                 size="small"
                 extra={
-                  <Space wrap>
-                    <Button
-                      icon={<SaveOutlined />}
-                      loading={savingHeader}
-                      onClick={() => void handleSaveHeader()}
-                    >
-                      {t('storeOrders.saveOrderHeader')}
-                    </Button>
-                    <Button
-                      icon={<CheckOutlined />}
-                      loading={lineActionLoading}
-                      disabled={isReadonlyOrder || !canStartPicking}
-                      onClick={() => void handleStartPicking()}
-                    >
-                      {t('storeOrders.startPicking')}
-                    </Button>
-                    <Button
-                      type="primary"
-                      icon={<CheckOutlined />}
-                      loading={lineActionLoading}
-                      disabled={!canCompleteOrder}
-                      onClick={() => void handleCompleteOrder()}
-                    >
-                      {t('storeOrders.completeOrder')}
-                    </Button>
-                    <Space size={4}>
-                      <Typography.Text type="secondary">{t('storeOrders.detail.changeOrderStatus')}</Typography.Text>
-                      <Select
-                        style={{ width: 150 }}
-                        placeholder={t('storeOrders.detail.changeOrderStatus')}
-                        value={
-                          orderStatusChangeOptions.some((item) => item.value === detail.flowStatus)
-                            ? detail.flowStatus
-                            : undefined
-                        }
-                        loading={statusChanging}
-                        disabled={statusChanging}
-                        options={orderStatusChangeOptions}
-                        onChange={(value) => handleChangeOrderStatus(value)}
-                      />
+                  canUseWarehouseManagerActions ? (
+                    <Space wrap>
+                      <Button
+                        icon={<SaveOutlined />}
+                        loading={savingHeader}
+                        onClick={() => void handleSaveHeader()}
+                      >
+                        {t('storeOrders.saveOrderHeader')}
+                      </Button>
+                      <Button
+                        icon={<CheckOutlined />}
+                        loading={lineActionLoading}
+                        disabled={isReadonlyOrder || !canStartPicking}
+                        onClick={() => void handleStartPicking()}
+                      >
+                        {t('storeOrders.startPicking')}
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<CheckOutlined />}
+                        loading={lineActionLoading}
+                        disabled={!canCompleteOrder}
+                        onClick={() => void handleCompleteOrder()}
+                      >
+                        {t('storeOrders.completeOrder')}
+                      </Button>
+                      <Space size={4}>
+                        <Typography.Text type="secondary">{t('storeOrders.detail.changeOrderStatus')}</Typography.Text>
+                        <Select
+                          style={{ width: 150 }}
+                          placeholder={t('storeOrders.detail.changeOrderStatus')}
+                          value={
+                            orderStatusChangeOptions.some((item) => item.value === detail.flowStatus)
+                              ? detail.flowStatus
+                              : undefined
+                          }
+                          loading={statusChanging}
+                          disabled={statusChanging}
+                          options={orderStatusChangeOptions}
+                          onChange={(value) => handleChangeOrderStatus(value)}
+                        />
+                      </Space>
                     </Space>
-                  </Space>
+                  ) : undefined
                 }
               >
                 <Descriptions.Item label={t('storeOrders.orderNoLabel')}>{detail.orderNo || '--'}</Descriptions.Item>
@@ -2142,7 +2387,7 @@ export default function StoreOrderDetailPage() {
                     showSearch
                     style={{ width: '100%' }}
                     loading={storesLoading}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.storeCode}
                     options={storeOptions}
                     optionFilterProp="label"
@@ -2180,7 +2425,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.orderDateLabel')}>
                   <Input
                     type="date"
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.orderDate ? headerForm.orderDate.slice(0, 10) : ''}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2193,7 +2438,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.outboundDate')}>
                   <Input
                     type="date"
-                    disabled={!canEditOutboundDate}
+                    disabled={!canUseWarehouseManagerActions || !canEditOutboundDate}
                     value={headerForm.outboundDate ? headerForm.outboundDate.slice(0, 10) : ''}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2205,8 +2450,8 @@ export default function StoreOrderDetailPage() {
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderQtyLabel')}>{detail.totalQuantity}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.shipQtyLabel')}>{totalAllocQuantity}</Descriptions.Item>
-                <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatVolume(totalOrderVolume)}</Descriptions.Item>
-                <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatVolume(totalAllocVolume)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatStoreOrderVolume(totalOrderVolume)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatStoreOrderVolume(totalAllocVolume)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderAmountLabel')}>{formatAmount(estimatedSalesAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.importAmountLabel')}>{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.gstAmountLabel')}>{formatAmount(gstAmount)}</Descriptions.Item>
@@ -2214,7 +2459,7 @@ export default function StoreOrderDetailPage() {
                   <InputNumber
                     min={0}
                     precision={2}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     style={{ width: '100%' }}
                     value={headerForm.shippingFee}
                     onChange={(value) =>
@@ -2228,7 +2473,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.addressLabel')} span={2}>
                   <Input.TextArea
                     rows={2}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.address}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2242,7 +2487,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.contactEmailLabel')}>
                   <Input
                     type="email"
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.contactEmail}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2257,7 +2502,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>
                   <Input.TextArea
                     rows={3}
-                    disabled={isReadonlyOrder}
+                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
                     value={headerForm.remarks}
                     onChange={(event) =>
                       setHeaderForm((current) => ({
@@ -2274,82 +2519,128 @@ export default function StoreOrderDetailPage() {
             <Card
               title={t('storeOrders.orderDetailSection')}
               extra={
-                <Space wrap>
-                  <Input
-                    allowClear
-                    disabled={isReadonlyOrder}
-                    placeholder={t('storeOrders.quickAddPlaceholder')}
-                    style={{ width: 220 }}
-                    value={quickAddItemNumber}
-                    onChange={(event) => setQuickAddItemNumber(event.target.value)}
-                    onPressEnter={() => void handleQuickAdd()}
-                  />
-                  <InputNumber
-                    min={1}
-                    precision={0}
-                    disabled={isReadonlyOrder}
-                    placeholder={t('storeOrders.allocQtyPlaceholder')}
-                    value={quickAddQuantity}
-                    onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
-                  />
-                  <Button
-                    icon={<PlusOutlined />}
-                    loading={lineActionLoading}
-                    disabled={isReadonlyOrder}
-                    onClick={() => void handleQuickAdd()}
-                  >
-                    {t('storeOrders.quickAdd')}
-                  </Button>
-                  <Button icon={<SearchOutlined />} disabled={isReadonlyOrder} onClick={() => setPickerOpen(true)}>
-                    {t('storeOrders.selectProduct')}
-                  </Button>
-                  <Button
-                    icon={<ContainerOutlined />}
-                    loading={containerPickerLoading}
-                    disabled={isReadonlyOrder}
-                    onClick={() => void handleOpenContainerPicker()}
-                  >
-                    {t('storeOrders.containerPicker')}
-                  </Button>
-                  <Button
-                    icon={<PrinterOutlined />}
-                    onClick={() => detail && navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
-                  >
-                    {t('storeOrders.pickingList')}
-                  </Button>
-                  <Button
-                    icon={<FileTextOutlined />}
-                    onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
-                  >
-                    {t('storeOrders.invoice')}
-                  </Button>
-                  <Button
-                    icon={<CopyOutlined />}
-                    className="store-order-excel-paste-button"
-                    disabled={isReadonlyOrder}
-                    onClick={() => {
-                      resetPasteState('allocQuantity')
-                      setPasteModalOpen(true)
-                    }}
-                  >
-                    {t('storeOrders.excelPaste')}
-                  </Button>
-                  <Button
-                    icon={<SaveOutlined />}
-                    className="store-order-save-edited-lines-button"
-                    loading={lineActionLoading}
-                    disabled={isReadonlyOrder || editedLineCount === 0}
-                    onClick={() => void handleSaveEditedLines()}
-                  >
-                    {t('storeOrders.detail.saveEditedLines')}
-                  </Button>
-                  <Button disabled={isReadonlyOrder || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
-                    {t('storeOrders.batchModify')}
-                  </Button>
-                  <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
-                </Space>
+                canUseStoreOrderDetailExtraActions ? (
+                  <Space wrap>
+                    {canUseWarehouseManagerActions ? (
+                      <Input
+                        allowClear
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        placeholder={t('storeOrders.quickAddPlaceholder')}
+                        style={{ width: 220 }}
+                        value={quickAddItemNumber}
+                        onChange={(event) => setQuickAddItemNumber(event.target.value)}
+                        onPressEnter={() => void handleQuickAdd()}
+                      />
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <InputNumber
+                        min={1}
+                        precision={0}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        placeholder={t('storeOrders.allocQtyPlaceholder')}
+                        value={quickAddQuantity}
+                        onChange={(value) => setQuickAddQuantity(Number(value ?? 1))}
+                      />
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<PlusOutlined />}
+                        loading={lineActionLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        onClick={() => void handleQuickAdd()}
+                      >
+                        {t('storeOrders.quickAdd')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button icon={<SearchOutlined />} disabled={isReadonlyOrder || isPasteOptimisticPreviewActive} onClick={() => setPickerOpen(true)}>
+                        {t('storeOrders.selectProduct')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<ContainerOutlined />}
+                        loading={containerPickerLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        onClick={() => void handleOpenContainerPicker()}
+                      >
+                        {t('storeOrders.containerPicker')}
+                      </Button>
+                    ) : null}
+                    {detail ? (
+                      <Button
+                        icon={<PrinterOutlined />}
+                        onClick={() => navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)}
+                      >
+                        {t('storeOrders.pickingList')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<FileTextOutlined />}
+                        onClick={() => detail && navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)}
+                      >
+                        {t('storeOrders.invoice')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<CopyOutlined />}
+                        className="store-order-excel-paste-button"
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive}
+                        onClick={() => {
+                          resetPasteState('allocQuantity')
+                          setPasteModalOpen(true)
+                        }}
+                      >
+                        {t('storeOrders.excelPaste')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<SaveOutlined />}
+                        className="store-order-save-edited-lines-button"
+                        loading={lineActionLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || editedLineCount === 0}
+                        onClick={() => void handleSaveEditedLines()}
+                      >
+                        {t('storeOrders.detail.saveEditedLines')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<SyncOutlined />}
+                        loading={refreshImportPriceLoading}
+                        disabled={!detail || isPasteOptimisticPreviewActive || refreshImportPriceLoading}
+                        onClick={handleRefreshImportPricesFromWarehouse}
+                      >
+                        {t('storeOrders.detail.refreshImportPrices')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
+                        {t('storeOrders.batchModify')}
+                      </Button>
+                    ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Typography.Text type="secondary">{t('storeOrders.detail.selectedRows', { count: selectedLineKeys.length })}</Typography.Text>
+                    ) : null}
+                  </Space>
+                ) : undefined
               }
             >
+              {isPasteOptimisticPreviewActive ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={t('storeOrders.detail.pasteOptimisticPreviewTitle', '已先显示本次 Excel 预览')}
+                  description={t(
+                    'storeOrders.detail.pasteOptimisticPreviewDescription',
+                    '后台正在写入；完成后会自动刷新确认。失败时会刷新服务器数据并提示原因。',
+                  )}
+                  style={{ marginBottom: 12 }}
+                />
+              ) : null}
               <div className="store-order-detail-filter-bar">
                 <Space wrap size={[8, 8]}>
                   <Typography.Text strong>{t('storeOrders.statsFilter')}</Typography.Text>
@@ -2410,12 +2701,16 @@ export default function StoreOrderDetailPage() {
                 loading={lineActionLoading}
                 columns={columns}
                 dataSource={detail.items}
-                rowSelection={{
-                  selectedRowKeys: selectedLineKeys,
-                  onChange: setSelectedLineKeys,
-                  preserveSelectedRowKeys: false,
-                  columnWidth: 34,
-                }}
+                rowSelection={
+                  canUseWarehouseManagerActions
+                    ? {
+                        selectedRowKeys: selectedLineKeys,
+                        onChange: setSelectedLineKeys,
+                        preserveSelectedRowKeys: false,
+                        columnWidth: 34,
+                      }
+                    : undefined
+                }
                 pagination={{
                   current: detailPage,
                   pageSize: detailPageSize,
@@ -2501,7 +2796,7 @@ export default function StoreOrderDetailPage() {
                   key="confirm"
                   type="primary"
                   loading={submittingPaste}
-                  disabled={isReadonlyOrder || validPastePreviewCount === 0}
+                  disabled={!canUseWarehouseManagerActions || isReadonlyOrder || validPastePreviewCount === 0}
                   onClick={() => void handleConfirmPaste()}
                 >
                   {t('storeOrders.detail.importValidRows', { count: validPastePreviewCount })}
@@ -2514,12 +2809,18 @@ export default function StoreOrderDetailPage() {
                   <div style={{ marginTop: 8 }}>
                     <Radio.Group
                       value={pasteTargetField}
-                      onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteTargetField)}
+                      onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteWriteTarget)}
                     >
                       <Radio value="allocQuantity">{t('storeOrders.detail.allocQuantityDefault')}</Radio>
+                      <Radio value="allocQuantityByInner">{t('storeOrders.detail.allocQuantityByInner')}</Radio>
                       <Radio value="quantity">{t('storeOrders.detail.orderQuantity')}</Radio>
                     </Radio.Group>
                   </div>
+                  <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
+                    {pasteTargetField === 'allocQuantityByInner'
+                      ? t('storeOrders.detail.allocQuantityByInnerHelp')
+                      : t('storeOrders.detail.writeTargetHelp')}
+                  </Typography.Text>
                 </div>
 
                 <div>
@@ -2677,15 +2978,15 @@ export default function StoreOrderDetailPage() {
                           key: 'existingQuantity',
                           width: 100,
                           render: (_, record) => {
-                            const value = pasteTargetField === 'allocQuantity' ? record.existingAllocQuantity : record.existingQuantity
+                            const value = pasteApiTargetField === 'allocQuantity' ? record.existingAllocQuantity : record.existingQuantity
                             return value === undefined ? '--' : value
                           },
                         },
                         {
-                          title: pasteTargetField === 'allocQuantity' ? t('column.shipQuantity') : t('column.orderQuantity'),
+                          title: pasteApiTargetField === 'allocQuantity' ? t('column.shipQuantity') : t('column.orderQuantity'),
                           dataIndex: 'quantity',
                           width: 110,
-                          render: (_, record) => formatPastePreviewQuantity(record),
+                          render: (_, record) => formatPastePreviewQuantity(record, pasteQuantityMode),
                         },
                         {
                           title: t('storeOrders.detail.pasteAction', '处理方式'),

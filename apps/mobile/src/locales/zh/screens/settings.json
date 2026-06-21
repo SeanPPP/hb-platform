@@ -13,6 +13,26 @@
   "language": {
     "description": "切换 App 显示语言，立即生效。"
   },
+  "apiHost": {
+    "title": "服务器地址",
+    "description": "查看并修改当前 App 连接的后端服务器地址。",
+    "current": "当前服务器地址",
+    "change": "修改服务器地址",
+    "modalTitle": "服务器地址设置",
+    "modalDescription": "修改后，后续接口请求会使用新的服务器地址。",
+    "presetsLabel": "预设地址",
+    "inputLabel": "服务器地址",
+    "emptyTitle": "请输入服务器地址",
+    "emptyMessage": "服务器地址不能为空。",
+    "savedTitle": "服务器地址已保存",
+    "savedMessage": "后续请求将使用：{{host}}",
+    "saveFailedTitle": "保存失败",
+    "saveFailedMessage": "服务器地址保存失败，请稍后重试。",
+    "presets": {
+      "production": "线上服务器",
+      "local": "本地服务器"
+    }
+  },
   "updates": {
     "title": "应用更新",
     "description": "App 会静默下载可用更新，并在下次重新打开时生效。",

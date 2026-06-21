@@ -206,6 +206,7 @@ public sealed class ContainerReactServiceLocalSupplierCodeTests : IDisposable
             DbType = DbType.Sqlite,
             IsAutoCloseConnection = false,
             InitKeyType = InitKeyType.Attribute,
+            MoreSettings = new ConnMoreSettings { IsNoReadXmlDescription = true },
         };
 
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)

@@ -6,6 +6,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -48,6 +49,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             typeof(WareHouseOrderDetails),
             typeof(Store),
             typeof(DomesticProduct),
+            typeof(ChinaSupplier),
+            typeof(CPT_DIC_外购客户信息表),
             typeof(ProductLocation),
             typeof(Location)
         );
@@ -193,7 +196,9 @@ public sealed class StoreOrderProductListTests : IDisposable
     {
         await SeedProductAsync("P001", "ITEM-001");
         await SeedProductAsync("P002", "ITEM-002");
+        await SeedProductAsync("P003", "ITEM-003");
         await SeedWarehouseProductAsync("P001", isDeleted: false, oemPrice: 10m, importPrice: 7m);
+        await SeedWarehouseProductAsync("P003", isDeleted: false, isActive: false);
 
         var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
         {
@@ -207,6 +212,201 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal("ITEM-001-BAR", item.Barcode);
         Assert.Equal(10m, item.OEMPrice);
         Assert.Equal(7m, item.ImportPrice);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_QuickAddQueryIncludesInactiveWarehouseProductsWhenFlagEnabled()
+    {
+        await SeedProductAsync("P-QUICK-ACTIVE", "QUICK-ACTIVE");
+        await SeedWarehouseProductAsync("P-QUICK-ACTIVE");
+        await SeedProductAsync("P-QUICK-INACTIVE-PRODUCT", "QUICK-INACTIVE-PRODUCT", isActive: false);
+        await SeedWarehouseProductAsync("P-QUICK-INACTIVE-PRODUCT");
+        await SeedProductAsync("P-QUICK-INACTIVE-WAREHOUSE", "QUICK-INACTIVE-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-QUICK-INACTIVE-WAREHOUSE", isActive: false);
+        await SeedProductAsync("P-QUICK-DELETED-PRODUCT", "QUICK-DELETED-PRODUCT", isDeleted: true);
+        await SeedWarehouseProductAsync("P-QUICK-DELETED-PRODUCT");
+        await SeedProductAsync("P-QUICK-DELETED-WAREHOUSE", "QUICK-DELETED-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-QUICK-DELETED-WAREHOUSE", isDeleted: true);
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "QUICK",
+            IncludeInactiveWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var productCodes = result.Items.Select(item => item.ProductCode).ToList();
+        Assert.Contains("P-QUICK-ACTIVE", productCodes);
+        Assert.Contains("P-QUICK-INACTIVE-PRODUCT", productCodes);
+        Assert.Contains("P-QUICK-INACTIVE-WAREHOUSE", productCodes);
+        Assert.DoesNotContain("P-QUICK-DELETED-PRODUCT", productCodes);
+        Assert.DoesNotContain("P-QUICK-DELETED-WAREHOUSE", productCodes);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_IncludeInactiveFlagDoesNotBypassStatusOutsideQuickAddShape()
+    {
+        await SeedProductAsync(
+            "P-ABUSE-ACTIVE",
+            "ABUSE-ACTIVE",
+            productName: "Inactive Search Active"
+        );
+        await SeedWarehouseProductAsync("P-ABUSE-ACTIVE");
+        await SeedProductAsync(
+            "P-ABUSE-INACTIVE",
+            "ABUSE-INACTIVE",
+            isActive: false,
+            productName: "Inactive Search Hidden"
+        );
+        await SeedWarehouseProductAsync("P-ABUSE-INACTIVE");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "ABUSE",
+            ProductName = "Inactive Search",
+            IncludeInactiveWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var productCodes = result.Items.Select(item => item.ProductCode).ToList();
+        Assert.Contains("P-ABUSE-ACTIVE", productCodes);
+        Assert.DoesNotContain("P-ABUSE-INACTIVE", productCodes);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerIncludesInactiveWarehouseProductsAndFiltersDomesticSupplier()
+    {
+        await SeedChinaSupplierAsync("CN001", "义乌一号");
+        await SeedChinaSupplierAsync("CN002", "义乌二号");
+        await SeedProductAsync("P-INACTIVE", "ITEM-INACTIVE");
+        await SeedWarehouseProductAsync("P-INACTIVE", isActive: false, oemPrice: 11m, importPrice: 8m);
+        await SeedDomesticProductAsync("P-INACTIVE", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN001");
+        await SeedProductAsync("P-OTHER-SUPPLIER", "ITEM-OTHER-SUPPLIER");
+        await SeedWarehouseProductAsync("P-OTHER-SUPPLIER");
+        await SeedDomesticProductAsync("P-OTHER-SUPPLIER", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN002");
+        await SeedProductAsync("P-IN-ORDER", "ITEM-IN-ORDER");
+        await SeedWarehouseProductAsync("P-IN-ORDER");
+        await SeedDomesticProductAsync("P-IN-ORDER", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN001");
+        await SeedDeletedOrderDetailAsync("ORDER-PICKER", "P-IN-ORDER", isDeleted: false);
+        await SeedProductAsync("P-DELETED-WAREHOUSE", "ITEM-DELETED-WAREHOUSE");
+        await SeedWarehouseProductAsync("P-DELETED-WAREHOUSE", isDeleted: true);
+        await SeedDomesticProductAsync("P-DELETED-WAREHOUSE", unitVolume: 0.1m, packingQuantity: 12, supplierCode: "CN001");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-INACTIVE", item.ProductCode);
+        Assert.Equal("CN001", item.DomesticSupplierCode);
+        Assert.Equal("义乌一号", item.DomesticSupplierName);
+        Assert.Equal(11m, item.OEMPrice);
+        Assert.Equal(8m, item.ImportPrice);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerResolvesDomesticSupplierByItemNumberWhenProductCodesDiffer()
+    {
+        await SeedChinaSupplierAsync("CN001", "义乌一号");
+        await SeedChinaSupplierAsync("CN002", "义乌二号");
+        await SeedProductAsync("P-HB008", "HB008-01", barcode: "9528500822001");
+        await SeedWarehouseProductAsync("P-HB008");
+        await SeedDomesticProductAsync(
+            "DP-HB008-01",
+            unitVolume: 0.1m,
+            packingQuantity: 12,
+            supplierCode: "CN001",
+            hbProductNo: "HB008-01",
+            barcode: "9528500822001"
+        );
+
+        var included = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(included.Items);
+        Assert.Equal("P-HB008", item.ProductCode);
+        Assert.Equal("CN001", item.DomesticSupplierCode);
+        Assert.Equal("义乌一号", item.DomesticSupplierName);
+
+        var excluded = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN002",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        Assert.Empty(excluded.Items);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerResolvesDomesticSupplierByBarcodeOnly()
+    {
+        await SeedChinaSupplierAsync("CN001", "义乌一号");
+        await SeedProductAsync("P-HB249", "HB249-001", barcode: "9528502490011");
+        await SeedWarehouseProductAsync("P-HB249");
+        await SeedDomesticProductAsync(
+            "DP-HB249-DIFFERENT",
+            unitVolume: 0.1m,
+            packingQuantity: 12,
+            supplierCode: "CN001",
+            hbProductNo: "HB249-OTHER",
+            barcode: "9528502490011"
+        );
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            SupplierCode = "CN001",
+            ItemNumber = "HB249-001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-HB249", item.ProductCode);
+        Assert.Equal("CN001", item.DomesticSupplierCode);
+        Assert.Equal("义乌一号", item.DomesticSupplierName);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerUnifiedKeywordMatchesProductName()
+    {
+        await SeedProductAsync("P-NAME", "TABLE-01", productName: "Kids Chair + Table");
+        await SeedWarehouseProductAsync("P-NAME");
+        await SeedProductAsync("P-ITEM", "CHAIR-ITEM", productName: "Unrelated Product");
+        await SeedWarehouseProductAsync("P-ITEM");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            ItemNumber = "Kids",
+            ProductName = "Kids",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("P-NAME", item.ProductCode);
+        Assert.Equal("Kids Chair + Table", item.ProductName);
     }
 
     [Fact]
@@ -378,6 +578,108 @@ public sealed class StoreOrderProductListTests : IDisposable
             .Where(item => item.OrderGUID == "ORDER-PASTE-UNKNOWN" && item.ProductCode == "P-UNKNOWN")
             .FirstAsync();
         Assert.Equal(6m, row.AllocQuantity);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_重新粘贴软删除明细_应复活并计入合计()
+    {
+        await SeedStoreOrderAsync("ORDER-PASTE-RESTORE");
+        await SeedOrderLineAsync(
+            "ORDER-PASTE-RESTORE",
+            "P-RESTORE",
+            "ITEM-RESTORE",
+            quantity: 4m,
+            allocQuantity: 6m,
+            isDeleted: true
+        );
+
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PASTE-RESTORE",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P-RESTORE", Quantity = 3m, Action = "replace" },
+            },
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var row = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PASTE-RESTORE" && item.ProductCode == "P-RESTORE")
+            .FirstAsync();
+        Assert.False(row.IsDeleted);
+        Assert.Equal(3m, row.AllocQuantity);
+        Assert.Equal(6m, row.ImportAmount);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-PASTE-RESTORE")
+            .FirstAsync();
+        Assert.Equal(6m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_批量粘贴两百行_应保持语义且避免逐行查询()
+    {
+        await SeedStoreOrderAsync("ORDER-PASTE-BULK");
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P001", "ITEM-001", quantity: 3m, allocQuantity: 4m);
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P002", "ITEM-002", quantity: 5m, allocQuantity: 6m);
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P003", "ITEM-003", quantity: 7m, allocQuantity: 8m);
+        await SeedOrderLineAsync("ORDER-PASTE-BULK", "P004", "ITEM-004", quantity: 9m, allocQuantity: 10m);
+
+        for (var index = 5; index <= 210; index++)
+        {
+            var productCode = $"P{index:D3}";
+            await SeedProductAsync(productCode, $"ITEM-{index:D3}");
+            await SeedWarehouseProductAsync(productCode, oemPrice: 3m, importPrice: 2m);
+        }
+
+        var items = new List<ProductQuantityDto>
+        {
+            new() { ProductCode = "P001", Quantity = 5m, Action = "append" },
+            new() { ProductCode = "P002", Quantity = 12m, ImportPrice = 4m, Action = "replace" },
+            new() { ProductCode = "P003", Quantity = 99m, Action = "skip" },
+            new() { ProductCode = "P004", Quantity = 0m, Action = "replace" },
+        };
+        items.AddRange(
+            Enumerable.Range(5, 206)
+                .Select(index => new ProductQuantityDto
+                {
+                    ProductCode = $"P{index:D3}",
+                    Quantity = 2m,
+                    ImportPrice = index == 5 ? 9.5m : null,
+                    Action = "replace",
+                })
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PASTE-BULK",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = items,
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var rows = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(row => row.OrderGUID == "ORDER-PASTE-BULK")
+            .ToListAsync();
+
+        Assert.Equal(210, rows.Count);
+        Assert.Equal(9m, rows.Single(row => row.ProductCode == "P001").AllocQuantity);
+        Assert.Equal(12m, rows.Single(row => row.ProductCode == "P002").AllocQuantity);
+        Assert.Equal(4m, rows.Single(row => row.ProductCode == "P002").ImportPrice);
+        Assert.Equal(8m, rows.Single(row => row.ProductCode == "P003").AllocQuantity);
+        Assert.Equal(10m, rows.Single(row => row.ProductCode == "P004").AllocQuantity);
+        Assert.Equal(2m, rows.Single(row => row.ProductCode == "P005").AllocQuantity);
+        Assert.Equal(9.5m, rows.Single(row => row.ProductCode == "P005").ImportPrice);
+        Assert.Equal(19m, rows.Single(row => row.ProductCode == "P005").ImportAmount);
+
+        Assert.True(
+            _sqlLogs.Count <= 30,
+            $"Excel 粘贴应保持批量 SQL，实际执行 {_sqlLogs.Count} 条。"
+        );
     }
 
     [Fact]
@@ -665,7 +967,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             "ITEM-002",
             quantity: 2m,
             allocQuantity: 1m,
-            isActive: false
+            isActive: true,
+            warehouseIsActive: false
         );
         await SeedOrderLineAsync("ORDER-003", "P003", "ITEM-003", quantity: 3m, allocQuantity: 1m);
 
@@ -704,6 +1007,19 @@ public sealed class StoreOrderProductListTests : IDisposable
         var inactiveItem = Assert.Single(inactiveResult.Data.Items);
         Assert.Equal("P002", inactiveItem.ProductCode);
         Assert.False(inactiveItem.IsActive);
+
+        var activeResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-003",
+            new StoreOrderDetailQueryDto
+            {
+                StatFilter = "active",
+                PageNumber = 1,
+                PageSize = 50,
+            }
+        );
+
+        Assert.NotNull(activeResult.Data);
+        Assert.DoesNotContain(activeResult.Data.Items, item => item.ProductCode == "P002");
     }
 
     [Fact]
@@ -722,6 +1038,36 @@ public sealed class StoreOrderProductListTests : IDisposable
 
         var item = Assert.Single(result.Items);
         Assert.Equal(outboundDate, item.OutboundDate);
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_CreatedAtDescendingSortsBeforePaging()
+    {
+        for (var index = 1; index <= 25; index++)
+        {
+            await SeedStoreOrderAsync(
+                $"ORDER-CREATED-{index:D3}",
+                flowStatus: 1,
+                insertStore: index == 1,
+                createdAt: new DateTime(2026, 6, 1).AddMinutes(index)
+            );
+        }
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+            SortBy = "createdAt",
+            SortDescending = true,
+        });
+
+        Assert.Equal(25, result.Total);
+        Assert.Equal(20, result.Items.Count);
+        Assert.Equal(
+            Enumerable.Range(6, 20).Reverse().Select(index => $"ORDER-CREATED-{index:D3}"),
+            result.Items.Select(item => item.OrderGUID)
+        );
     }
 
     [Fact]
@@ -814,6 +1160,126 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(new[] { "S001", "S002", "S010" }, result.Data.Select(item => item.Code));
     }
 
+    [Fact]
+    public async Task GetUnmatchedStoreOrderGroupsAsync_GroupsOnlyOrdersWithoutLocalStoreMatch()
+    {
+        const string hqGuid = "11111111-1111-1111-1111-111111111111";
+        await SeedStoreAsync("local-store-guid", "S001", "本地一店");
+        await SeedStoreAsync("local-store-guid-2", "S002", "本地二店");
+        await SeedStoreOrderAsync("ORDER-CODE", storeCode: "S001", insertStore: false);
+        await SeedStoreOrderAsync("ORDER-GUID", storeCode: "local-store-guid-2", insertStore: false);
+        await SeedStoreOrderAsync("ORDER-HQ-1", storeCode: hqGuid, insertStore: false, orderDate: new DateTime(2026, 6, 10));
+        await SeedStoreOrderAsync("ORDER-HQ-2", storeCode: hqGuid, insertStore: false, orderDate: new DateTime(2026, 6, 12));
+        await SeedStoreOrderAsync("ORDER-UNKNOWN", storeCode: "UNKNOWN-GUID", insertStore: false, orderDate: new DateTime(2026, 6, 11));
+        await SeedExternalCustomerAsync(hqGuid, "Ada - Tas - Kingston");
+
+        var result = await CreateService().GetUnmatchedStoreOrderGroupsAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { hqGuid, "UNKNOWN-GUID" }, result.Data.Select(item => item.SourceStoreCode));
+        var hqGroup = Assert.Single(result.Data, item => item.SourceStoreCode == hqGuid);
+        Assert.Equal("Ada - Tas - Kingston", hqGroup.SourceStoreName);
+        Assert.Equal(2, hqGroup.OrderCount);
+        Assert.Equal(new DateTime(2026, 6, 12), hqGroup.LatestOrderDate);
+    }
+
+    [Fact]
+    public async Task BatchMapStoreOrderStoreCodeAsync_UpdatesOnlyUnmatchedOrderHeaders()
+    {
+        const string hqGuid = "22222222-2222-2222-2222-222222222222";
+        await SeedStoreAsync("target-store-guid", "S100", "目标分店");
+        await SeedStoreAsync("matched-store-guid", "S200", "已匹配分店");
+        await SeedStoreOrderAsync("ORDER-HQ-1", storeCode: hqGuid, insertStore: false);
+        await SeedStoreOrderAsync("ORDER-HQ-2", storeCode: hqGuid, insertStore: false);
+        await SeedStoreOrderAsync("ORDER-MATCHED", storeCode: "S200", insertStore: false);
+        await SeedDeletedOrderDetailAsync("ORDER-HQ-1", "P-DETAIL", storeCode: hqGuid, isDeleted: false);
+
+        var result = await CreateService().BatchMapStoreOrderStoreCodeAsync(
+            new BatchMapStoreOrderStoreCodeDto
+            {
+                Mappings = new List<StoreOrderStoreCodeMappingDto>
+                {
+                    new() { SourceStoreCode = hqGuid, TargetStoreCode = "S100" },
+                    new() { SourceStoreCode = "S200", TargetStoreCode = "S100" },
+                },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data.UpdatedCount);
+        Assert.Equal(1, result.Data.SkippedCount);
+
+        var fixedOrders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => new[] { "ORDER-HQ-1", "ORDER-HQ-2" }.Contains(item.OrderGUID))
+            .ToListAsync();
+        Assert.All(fixedOrders, item => Assert.Equal("S100", item.StoreCode));
+
+        var matchedOrder = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-MATCHED")
+            .FirstAsync();
+        Assert.Equal("S200", matchedOrder.StoreCode);
+
+        var untouchedDetail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-HQ-1")
+            .FirstAsync();
+        Assert.Equal(hqGuid, untouchedDetail.StoreCode);
+    }
+
+    [Fact]
+    public async Task BatchMapStoreOrderStoreCodeAsync_FailsWhenTargetStoreMissing()
+    {
+        const string hqGuid = "33333333-3333-3333-3333-333333333333";
+        await SeedStoreOrderAsync("ORDER-HQ", storeCode: hqGuid, insertStore: false);
+
+        var result = await CreateService().BatchMapStoreOrderStoreCodeAsync(
+            new BatchMapStoreOrderStoreCodeDto
+            {
+                Mappings = new List<StoreOrderStoreCodeMappingDto>
+                {
+                    new() { SourceStoreCode = hqGuid, TargetStoreCode = "MISSING" },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Contains("目标分店不存在", result.Message);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-HQ")
+            .FirstAsync();
+        Assert.Equal(hqGuid, order.StoreCode);
+    }
+
+    [Fact]
+    public async Task BatchMapStoreOrderStoreCodeAsync_AllowsInactiveTargetStoreForHistoricalRepair()
+    {
+        const string hqGuid = "44444444-4444-4444-4444-444444444444";
+        await SeedStoreAsync("inactive-target-store-guid", "S300", "停用目标分店", isActive: false);
+        await SeedStoreOrderAsync("ORDER-INACTIVE-TARGET", storeCode: hqGuid, insertStore: false);
+
+        var result = await CreateService().BatchMapStoreOrderStoreCodeAsync(
+            new BatchMapStoreOrderStoreCodeDto
+            {
+                Mappings = new List<StoreOrderStoreCodeMappingDto>
+                {
+                    new() { SourceStoreCode = hqGuid, TargetStoreCode = "S300" },
+                },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.UpdatedCount);
+        Assert.Equal(0, result.Data.SkippedCount);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-INACTIVE-TARGET")
+            .FirstAsync();
+        Assert.Equal("S300", order.StoreCode);
+    }
+
     [Theory]
     [InlineData("totalOrderAmount", true, "ORDER-HIGH", "ORDER-MID")]
     [InlineData("totalOrderAmount", false, "ORDER-LOW", "ORDER-MID")]
@@ -890,7 +1356,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             PageNumber = 1,
             PageSize = 2,
             StatusList = new List<int> { 1 },
-            SortBy = "totalQuantity",
+            SortBy = "importTotalAmount",
             SortDescending = true,
         });
 
@@ -932,6 +1398,127 @@ public sealed class StoreOrderProductListTests : IDisposable
                 log.Contains("FROM `WareHouseOrderDetails`", StringComparison.OrdinalIgnoreCase)
             ) >= 4
         );
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_FiltersMainColumnFields()
+    {
+        var outboundDate = new DateTime(2026, 6, 10);
+        var createdAt = new DateTime(2026, 6, 1, 8, 0, 0);
+        var updatedAt = new DateTime(2026, 6, 12, 9, 30, 0);
+        await SeedStoreOrderAsync(
+            "ORDER-COLUMN-MATCH",
+            flowStatus: 1,
+            outboundDate: outboundDate,
+            insertStore: true,
+            remarks: "Fragile gift bags",
+            createdAt: createdAt,
+            updatedBy: "stephanie",
+            updatedAt: updatedAt
+        );
+        await SeedOrderLineAsync(
+            "ORDER-COLUMN-MATCH",
+            "P-COLUMN-MATCH",
+            "ITEM-COLUMN-MATCH",
+            quantity: 3m,
+            allocQuantity: 2m
+        );
+        await SeedStoreOrderAsync(
+            "ORDER-COLUMN-OTHER",
+            flowStatus: 1,
+            outboundDate: outboundDate.AddDays(5),
+            insertStore: false,
+            remarks: "Other note",
+            createdAt: createdAt.AddDays(-10),
+            updatedBy: "dong",
+            updatedAt: updatedAt.AddDays(5)
+        );
+        await SeedOrderLineAsync(
+            "ORDER-COLUMN-OTHER",
+            "P-COLUMN-OTHER",
+            "ITEM-COLUMN-OTHER",
+            quantity: 3m,
+            allocQuantity: 2m
+        );
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            StatusList = new List<int> { 1 },
+            ColumnFilters = new StoreOrderListColumnFilterDto
+            {
+                OrderNo = "MATCH",
+                OutboundDateStart = outboundDate,
+                OutboundDateEnd = outboundDate,
+                Remarks = "gift",
+                CreatedAtStart = createdAt.Date,
+                CreatedAtEnd = createdAt.Date,
+                UpdatedBy = "steph",
+                UpdatedAtStart = updatedAt.Date,
+                UpdatedAtEnd = updatedAt.Date,
+            },
+        });
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("ORDER-COLUMN-MATCH", item.OrderGUID);
+        Assert.Equal(1, result.Total);
+    }
+
+    [Fact]
+    public async Task GetOrderListAsync_FiltersAggregateAndVolumeColumnsBeforePaging()
+    {
+        await SeedStoreOrderAsync("ORDER-LOW-FILTER", flowStatus: 1, insertStore: true);
+        await SeedOrderLineAsync(
+            "ORDER-LOW-FILTER",
+            "P-LOW-FILTER",
+            "ITEM-LOW-FILTER",
+            quantity: 1m,
+            allocQuantity: 1m
+        );
+        await SeedStoreOrderAsync("ORDER-MID-FILTER", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync(
+            "ORDER-MID-FILTER",
+            "P-MID-FILTER",
+            "ITEM-MID-FILTER",
+            quantity: 3m,
+            allocQuantity: 2m
+        );
+        await SeedStoreOrderAsync("ORDER-HIGH-FILTER", flowStatus: 1, insertStore: false);
+        await SeedOrderLineAsync(
+            "ORDER-HIGH-FILTER",
+            "P-HIGH-FILTER",
+            "ITEM-HIGH-FILTER",
+            quantity: 5m,
+            allocQuantity: 4m
+        );
+
+        var result = await CreateService().GetOrderListAsync(new StoreOrderListFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 1,
+            StatusList = new List<int> { 1 },
+            SortBy = "totalQuantity",
+            SortDescending = true,
+            ColumnFilters = new StoreOrderListColumnFilterDto
+            {
+                TotalQuantityMin = 3m,
+                TotalQuantityMax = 5m,
+                TotalOrderAmountMin = 6m,
+                TotalOrderAmountMax = 10m,
+                TotalOrderVolumeMin = 3m,
+                TotalOrderVolumeMax = 5m,
+                TotalAllocVolumeMin = 2m,
+                TotalAllocVolumeMax = 4m,
+                TotalAllocQuantityMin = 2m,
+                TotalAllocQuantityMax = 4m,
+                ImportTotalAmountMin = 4m,
+                ImportTotalAmountMax = 8m,
+            },
+        });
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal("ORDER-HIGH-FILTER", Assert.Single(result.Items).OrderGUID);
     }
 
     [Fact]
@@ -980,6 +1567,32 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateOrderOutboundDateAsync_RejectsCompleteOrderWhenStatusIsNotSubmittedOrPicking()
+    {
+        var originalOutboundDate = new DateTime(2026, 6, 2);
+        await SeedStoreOrderAsync(
+            "ORDER-OUT-INVALID-COMPLETE",
+            flowStatus: 0,
+            outboundDate: originalOutboundDate
+        );
+
+        var result = await CreateService().UpdateOrderOutboundDateAsync(new UpdateOrderOutboundDateDto
+        {
+            OrderGuid = "ORDER-OUT-INVALID-COMPLETE",
+            OutboundDate = new DateTime(2026, 6, 10),
+            CompleteOrder = true,
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("只有已提交或配货中状态的订单才能标记为完成", result.Message);
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-OUT-INVALID-COMPLETE")
+            .FirstAsync();
+        Assert.Equal(originalOutboundDate, order.OutboundDate);
+        Assert.Equal(0, order.FlowStatus);
+    }
+
+    [Fact]
     public async Task UpdateOrderOutboundDateAsync_ReturnsFailureWhenOrderDoesNotExist()
     {
         var result = await CreateService().UpdateOrderOutboundDateAsync(new UpdateOrderOutboundDateDto
@@ -991,6 +1604,92 @@ public sealed class StoreOrderProductListTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Equal("Order not found", result.Message);
+    }
+
+    [Fact]
+    public async Task RefreshOrderLineImportPricesAsync_已完成订单按仓库表刷新整单并重算汇总()
+    {
+        await SeedStoreOrderAsync("ORDER-REFRESH-ALL", flowStatus: 2);
+        await SeedOrderLineAsync("ORDER-REFRESH-ALL", "P-REFRESH-1", "ITEM-REFRESH-1", quantity: 3m, allocQuantity: 4m);
+        await SeedOrderLineAsync("ORDER-REFRESH-ALL", "P-REFRESH-2", "ITEM-REFRESH-2", quantity: 5m, allocQuantity: 6m);
+        await SeedOrderLineAsync("ORDER-REFRESH-ALL", "P-REFRESH-3", "ITEM-REFRESH-3", quantity: 7m, allocQuantity: 8m);
+        await _db.Updateable<WareHouseOrderDetails>()
+            .SetColumns(item => new WareHouseOrderDetails { ImportAmount = 1m })
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-2")
+            .ExecuteCommandAsync();
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct { ImportPrice = 5m })
+            .Where(item => item.ProductCode == "P-REFRESH-1")
+            .ExecuteCommandAsync();
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct { ImportPrice = 0m })
+            .Where(item => item.ProductCode == "P-REFRESH-3")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().RefreshOrderLineImportPricesAsync(
+            new RefreshStoreOrderImportPricesDto { OrderGUID = "ORDER-REFRESH-ALL" }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data!.UpdatedCount);
+        Assert.Equal(0, result.Data.UnchangedCount);
+        Assert.Equal(1, result.Data.SkippedCount);
+        Assert.Equal(1, result.Data.MissingWarehousePriceCount);
+
+        var refreshed = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-1")
+            .FirstAsync();
+        var skipped = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-3")
+            .FirstAsync();
+        var correctedAmount = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-ALL-P-REFRESH-2")
+            .FirstAsync();
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-REFRESH-ALL")
+            .FirstAsync();
+
+        Assert.Equal(5m, refreshed.ImportPrice);
+        Assert.Equal(20m, refreshed.ImportAmount);
+        Assert.Equal(2m, correctedAmount.ImportPrice);
+        Assert.Equal(12m, correctedAmount.ImportAmount);
+        Assert.Equal(2m, skipped.ImportPrice);
+        Assert.Equal(48m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task RefreshOrderLineImportPricesAsync_传入明细时只刷新选中行()
+    {
+        await SeedStoreOrderAsync("ORDER-REFRESH-SELECTED");
+        await SeedOrderLineAsync("ORDER-REFRESH-SELECTED", "P-REFRESH-A", "ITEM-REFRESH-A", quantity: 1m, allocQuantity: 2m);
+        await SeedOrderLineAsync("ORDER-REFRESH-SELECTED", "P-REFRESH-B", "ITEM-REFRESH-B", quantity: 3m, allocQuantity: 4m);
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct { ImportPrice = 5m })
+            .Where(item => item.ProductCode == "P-REFRESH-A" || item.ProductCode == "P-REFRESH-B")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().RefreshOrderLineImportPricesAsync(
+            new RefreshStoreOrderImportPricesDto
+            {
+                OrderGUID = "ORDER-REFRESH-SELECTED",
+                DetailGUIDs = new List<string> { "ORDER-REFRESH-SELECTED-P-REFRESH-B" },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.Data?.UpdatedCount);
+
+        var untouched = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-SELECTED-P-REFRESH-A")
+            .FirstAsync();
+        var refreshed = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == "ORDER-REFRESH-SELECTED-P-REFRESH-B")
+            .FirstAsync();
+
+        Assert.Equal(2m, untouched.ImportPrice);
+        Assert.Equal(5m, refreshed.ImportPrice);
+        Assert.Equal(20m, refreshed.ImportAmount);
     }
 
     public void Dispose()
@@ -1028,14 +1727,15 @@ public sealed class StoreOrderProductListTests : IDisposable
         string? localSupplierCode = null,
         decimal? purchasePrice = null,
         bool isActive = true,
-        bool isDeleted = false
+        bool isDeleted = false,
+        string? productName = null
     )
     {
         await _db.Insertable(new Product
         {
             UUID = $"{productCode}-uuid",
             ProductCode = productCode,
-            ProductName = $"商品 {productCode}",
+            ProductName = productName ?? $"商品 {productCode}",
             ItemNumber = itemNumber,
             Barcode = barcode ?? $"{itemNumber}-BAR",
             LocalSupplierCode = localSupplierCode,
@@ -1071,7 +1771,11 @@ public sealed class StoreOrderProductListTests : IDisposable
         DateTime? orderDate = null,
         DateTime? outboundDate = null,
         bool insertStore = true,
-        string storeCode = "S001"
+        string storeCode = "S001",
+        string? remarks = null,
+        DateTime? createdAt = null,
+        string? updatedBy = null,
+        DateTime? updatedAt = null
     )
     {
         if (insertStore)
@@ -1087,11 +1791,15 @@ public sealed class StoreOrderProductListTests : IDisposable
             OrderDate = orderDate ?? new DateTime(2026, 6, 1),
             OutboundDate = outboundDate,
             FlowStatus = flowStatus,
+            Remarks = remarks,
+            CreatedAt = createdAt ?? new DateTime(2026, 6, 1),
+            UpdatedBy = updatedBy,
+            UpdatedAt = updatedAt,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedStoreAsync(string storeGuid, string storeCode, string storeName)
+    private async Task SeedStoreAsync(string storeGuid, string storeCode, string storeName, bool isActive = true)
     {
         await _db.Insertable(new Store
         {
@@ -1099,7 +1807,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             StoreCode = storeCode,
             StoreName = storeName,
             Address = "测试地址",
-            IsActive = true,
+            IsActive = isActive,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -1146,12 +1854,13 @@ public sealed class StoreOrderProductListTests : IDisposable
         decimal quantity,
         decimal allocQuantity,
         bool isActive = true,
+        bool warehouseIsActive = true,
         bool isDeleted = false,
         bool productIsDeleted = false
     )
     {
         await SeedProductAsync(productCode, itemNumber, isActive: isActive, isDeleted: productIsDeleted);
-        await SeedWarehouseProductAsync(productCode, importPrice: 2m);
+        await SeedWarehouseProductAsync(productCode, importPrice: 2m, isActive: warehouseIsActive);
         await _db.Insertable(new DomesticProduct
         {
             ProductCode = productCode,
@@ -1202,14 +1911,32 @@ public sealed class StoreOrderProductListTests : IDisposable
     private async Task SeedDomesticProductAsync(
         string productCode,
         decimal unitVolume,
-        int packingQuantity
+        int packingQuantity,
+        string? supplierCode = null,
+        string? hbProductNo = null,
+        string? barcode = null
     )
     {
         await _db.Insertable(new DomesticProduct
         {
             ProductCode = productCode,
+            SupplierCode = supplierCode,
+            HBProductNo = hbProductNo,
+            Barcode = barcode,
             UnitVolume = unitVolume,
             PackingQuantity = packingQuantity,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedChinaSupplierAsync(string supplierCode, string supplierName)
+    {
+        await _db.Insertable(new ChinaSupplier
+        {
+            Guid = $"{supplierCode}-guid",
+            SupplierCode = supplierCode,
+            SupplierName = supplierName,
+            Status = 1,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -1266,7 +1993,8 @@ public sealed class StoreOrderProductListTests : IDisposable
     private async Task SeedDeletedOrderDetailAsync(
         string orderGuid,
         string productCode,
-        bool isDeleted
+        bool isDeleted,
+        string? storeCode = null
     )
     {
         await _db.Insertable(new WareHouseOrderDetails
@@ -1274,7 +2002,18 @@ public sealed class StoreOrderProductListTests : IDisposable
             DetailGUID = $"{orderGuid}-{productCode}",
             OrderGUID = orderGuid,
             ProductCode = productCode,
+            StoreCode = storeCode,
             IsDeleted = isDeleted,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedExternalCustomerAsync(string hguid, string customerName)
+    {
+        await _db.Insertable(new CPT_DIC_外购客户信息表
+        {
+            HGUID = hguid,
+            客户名称 = customerName,
+            状态 = 1,
         }).ExecuteCommandAsync();
     }
 
@@ -1287,7 +2026,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         );
         dbField!.SetValue(context, _db);
 
-        return new StoreOrderReactService(
+        var service = new StoreOrderReactService(
             context,
             NullLogger<StoreOrderReactService>.Instance,
             new HttpContextAccessor(),
@@ -1296,5 +2035,13 @@ public sealed class StoreOrderProductListTests : IDisposable
             Mock.Of<IMapper>(),
             Mock.Of<IInvoiceEmailService>()
         );
+
+        var hqField = typeof(StoreOrderReactService).GetField(
+            "_createHqConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        hqField!.SetValue(service, () => _db);
+
+        return service;
     }
 }

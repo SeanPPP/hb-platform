@@ -196,6 +196,7 @@ PublishScripts/
 
 # ASP.NET Core Data Protection key ring
 **/App_Data/DataProtectionKeys/
+data-protection-keys/
 
 # NuGet Packages
 *.nupkg

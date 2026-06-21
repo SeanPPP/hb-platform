@@ -81,7 +81,7 @@ namespace BlazorApp.Api.Services
                 RefAsync<int> totalCount = 0;
 
                 var products = await sortedQueryable
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
+                    .Includes(wp => wp.Product!.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
                     .Includes(wp => wp.Locations) // 包含仓库位置信息
                     .ToPageListAsync(query.PageNumber, query.PageSize, totalCount);
 
@@ -129,7 +129,7 @@ namespace BlazorApp.Api.Services
                 // 查询商品详情，包含所有关联信息
                 var product = await _context
                     .Db.Queryable<WarehouseProduct>()
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
+                    .Includes(wp => wp.Product!.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
                     .Includes(wp => wp.Locations) // 仓库位置信息
                     .FirstAsync(wp => wp.ProductCode == productCode);
 
@@ -162,7 +162,7 @@ namespace BlazorApp.Api.Services
                 // 首先尝试通过WarehouseProduct的ProductCode查找
                 var warehouseProduct = await _context
                     .Db.Queryable<WarehouseProduct>()
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory)
+                    .Includes(wp => wp.Product!.WarehouseCategory)
                     .Includes(wp => wp.Locations)
                     .Where(wp => wp.ProductCode == itemNumber)
                     .FirstAsync();
@@ -184,7 +184,7 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Product>((wp, p) => wp.ProductCode == p.ProductCode)
                     .Where((wp, p) => p.ItemNumber == itemNumber)
                     .Select((wp, p) => wp)
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory)
+                    .Includes(wp => wp.Product!.WarehouseCategory)
                     .Includes(wp => wp.Locations)
                     .FirstAsync();
 
@@ -205,7 +205,7 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Product>((wp, p) => wp.ProductCode == p.ProductCode)
                     .Where((wp, p) => p.Barcode == itemNumber)
                     .Select((wp, p) => wp)
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory)
+                    .Includes(wp => wp.Product!.WarehouseCategory)
                     .Includes(wp => wp.Locations)
                     .FirstAsync();
 
@@ -257,7 +257,7 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Product>((wp, p) => wp.ProductCode == p.ProductCode)
                     .Where((wp, p) => p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber))
                     .Select((wp, p) => wp)
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory)
+                    .Includes(wp => wp.Product!.WarehouseCategory)
                     .Includes(wp => wp.Locations)
                     .ToListAsync();
 
@@ -609,7 +609,7 @@ namespace BlazorApp.Api.Services
 
                 // 查询预警商品，按库存数量升序排列（最紧急的在前面）
                 var alertProducts = await queryable
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
+                    .Includes(wp => wp.Product!.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
                     .Includes(wp => wp.Locations) // 包含仓库位置信息
                     .OrderBy(wp => wp.StockQuantity) // 按库存数量从低到高排序
                     .ToListAsync();
@@ -683,7 +683,7 @@ namespace BlazorApp.Api.Services
                     .LeftJoin<Product>((wp, p) => wp.ProductCode == p.ProductCode)
                     .Where((wp, p) => p.Barcode == barcode && wp.IsActive) // 条码匹配且商品已启用
                     .Select((wp, p) => wp)
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
+                    .Includes(wp => wp.Product!.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
                     .Includes(wp => wp.Locations) // 包含仓库位置信息
                     .ToListAsync();
 
@@ -810,7 +810,7 @@ namespace BlazorApp.Api.Services
                 var queryable = BuildWarehouseProductQuery(exportQuery);
 
                 var products = await queryable
-                    .Includes(wp => wp.Product, p => p.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
+                    .Includes(wp => wp.Product!.WarehouseCategory) // 🔥 二级导航：Product及其WarehouseCategory
                     .Includes(wp => wp.Locations) // 包含仓库位置信息
                     .ToListAsync();
 

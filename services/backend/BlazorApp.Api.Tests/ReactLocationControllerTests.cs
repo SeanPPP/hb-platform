@@ -143,6 +143,36 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetMobileUnusedLocations_WhenDeviceAuthorized_UsesUnusedUpdatedAtDescendingLimit()
+        {
+            var serviceMock = new Mock<ILocationReactService>();
+            serviceMock
+                .Setup(service => service.GetPagedListAsync(It.Is<LocationReactFilterDto>(filter =>
+                    filter.PageNumber == 1
+                    && filter.PageSize == 50
+                    && filter.IsUsed == false
+                    && filter.SortBy == "UpdatedAt"
+                    && filter.SortDirection == "desc"
+                )))
+                .ReturnsAsync(new PagedListReactDto<LocationReactDto>
+                {
+                    Items = new List<LocationReactDto>
+                    {
+                        new() { LocationGuid = "loc-unused", LocationCode = "A-00-00-01" },
+                    },
+                    Total = 1,
+                    PageNumber = 1,
+                    PageSize = 50,
+                });
+            var controller = CreateDeviceAuthorizedController(serviceMock.Object);
+
+            var result = await controller.GetMobileUnusedLocations();
+
+            Assert.IsType<OkObjectResult>(result);
+            serviceMock.VerifyAll();
+        }
+
+        [Fact]
         public void UnbindProduct_允许设备授权进入方法内校验()
         {
             var method = typeof(ReactLocationController).GetMethod(

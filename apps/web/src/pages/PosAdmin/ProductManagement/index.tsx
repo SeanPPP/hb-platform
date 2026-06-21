@@ -42,7 +42,9 @@ import {
   Tree,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface'
 import dayjs from 'dayjs'
+import type { ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -89,12 +91,24 @@ import { batchTranslate } from '../../../services/translationService'
 import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { RequestError } from '../../../utils/request'
-import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductDto, PosProductFilterParams, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductColumnFilters, PosProductDateFilterOperator, PosProductDto, PosProductFilterParams, PosProductNumberFilterOperator, PosProductTextFilterOperator, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
 import type { StoreOption } from '../../../services/storeService'
-import { compareProductStoreRecordsByName } from './storeRecordSorting'
+import {
+  compareProductStoreRecordsByActive,
+  compareProductStoreRecordsByAutoPricing,
+  compareProductStoreRecordsByDiscountRate,
+  compareProductStoreRecordsByName,
+  compareProductStoreRecordsByPurchasePrice,
+  compareProductStoreRecordsByRetailPrice,
+  compareProductStoreRecordsBySpecialProduct,
+  compareProductStoreRecordsByStoreCode,
+  compareProductStoreRecordsByStoreProductCode,
+  compareProductStoreRecordsByUpdatedAt,
+  compareProductStoreRecordsByUpdatedBy,
+} from './storeRecordSorting'
 import {
   clearActiveSupplierImageBatchJob,
   normalizeSupplierImageBatchJobKey,
@@ -114,6 +128,11 @@ import {
   getDefaultSupplierImageBatchScope,
   type SupplierImageBatchScope,
 } from './productImageBatchScope'
+import {
+  buildProductIntegrityFixSummary,
+  buildProductIntegritySummary,
+  type ProductIntegrityIssueRow,
+} from './productIntegrityReport'
 
 type ProductRow = PosProductDto & { key: string }
 type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
@@ -151,6 +170,90 @@ const SUPPLIER_IMAGE_BATCH_TIMEOUT_MS = 30 * 60 * 1000
 const PRODUCT_IMAGE_FALLBACK = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjQwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMjAiIHk9IjI0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjY2NjIj7ml6DnvKk8L3RleHQ+PC9zdmc+'
 const DEFAULT_PRODUCT_IMAGE_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200'
 const CHINESE_TEXT_PATTERN = /[\u4e00-\u9fff]/
+const PRODUCT_TEXT_FILTER_OPERATORS: PosProductTextFilterOperator[] = ['contains', 'equals', 'startsWith', 'endsWith']
+const PRODUCT_NUMBER_FILTER_OPERATORS: PosProductNumberFilterOperator[] = ['equals', 'between', 'gte', 'lte']
+const PRODUCT_DATE_FILTER_OPERATORS: PosProductDateFilterOperator[] = ['equals', 'between', 'gte', 'lte']
+
+function readProductColumnFilterToken(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || !value) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function normalizeProductTableFilters(filters: Record<string, FilterValue | null>): PosProductColumnFilters {
+  return Object.entries(filters).reduce<PosProductColumnFilters>((next, [key, values]) => {
+    const normalizedValues = (values ?? [])
+      .map((value) => String(value).trim())
+      .filter(hasProductColumnFilterValue)
+    if (normalizedValues.length) {
+      next[key] = normalizedValues
+    }
+    return next
+  }, {})
+}
+
+function hasProductColumnFilterValue(value: string) {
+  const trimmedValue = value.trim()
+  if (!trimmedValue) return false
+  const token = readProductColumnFilterToken(trimmedValue)
+  const operator = typeof token.operator === 'string' ? token.operator : ''
+  if (!operator) return true
+
+  if (PRODUCT_TEXT_FILTER_OPERATORS.includes(operator as PosProductTextFilterOperator)) {
+    return typeof token.value === 'string' && Boolean(token.value.trim())
+  }
+  if (PRODUCT_NUMBER_FILTER_OPERATORS.includes(operator as PosProductNumberFilterOperator)) {
+    if (operator === 'between') {
+      return Boolean(String(token.min ?? '').trim() || String(token.max ?? '').trim())
+    }
+    return Boolean(String(token.value ?? '').trim())
+  }
+  if (PRODUCT_DATE_FILTER_OPERATORS.includes(operator as PosProductDateFilterOperator)) {
+    if (operator === 'between') {
+      return Boolean(String(token.start ?? '').trim() || String(token.end ?? '').trim())
+    }
+    return Boolean(String(token.value ?? '').trim())
+  }
+  return true
+}
+
+function getProductFilterTokenValue(filters: PosProductColumnFilters, key: string) {
+  return filters[key]?.[0]
+}
+
+function productFilterActive(filters: PosProductColumnFilters, key: string) {
+  return Boolean(filters[key]?.length)
+}
+
+function buildProductTextFilterToken(operator: PosProductTextFilterOperator, value: string) {
+  // 下拉编辑期间保留空值 token，避免先选操作符时被 AntD 清空；提交查询时再过滤空筛选。
+  return JSON.stringify({ operator, value: value.trim() })
+}
+
+function buildProductNumberFilterToken(operator: PosProductNumberFilterOperator, values: { value?: number | string | null; min?: number | string | null; max?: number | string | null }) {
+  const payload = operator === 'between'
+    ? {
+        operator,
+        min: values.min === undefined || values.min === null ? '' : String(values.min).trim(),
+        max: values.max === undefined || values.max === null ? '' : String(values.max).trim(),
+      }
+    : {
+        operator,
+        value: values.value === undefined || values.value === null ? '' : String(values.value).trim(),
+      }
+  return JSON.stringify(payload)
+}
+
+function buildProductDateFilterToken(operator: PosProductDateFilterOperator, values: { value?: string; start?: string; end?: string }) {
+  const payload = operator === 'between'
+    ? { operator, start: values.start || '', end: values.end || '' }
+    : { operator, value: values.value || '' }
+  return JSON.stringify(payload)
+}
 
 function containsChineseText(value?: string) {
   return Boolean(value && CHINESE_TEXT_PATTERN.test(value))
@@ -284,13 +387,15 @@ function extractPushToHqErrorResult(error: unknown): PushProductsToHqResult | nu
 
 const SORT_FIELD_MAP: Record<string, string> = {
   productCode: 'productcode',
-  itemNumber: 'productcode',
+  itemNumber: 'itemnumber',
   barcode: 'barcode',
   productName: 'productname',
   localSupplierCode: 'localsuppliercode',
-  categoryName: 'categoryname',
+  categoryGuid: 'productcategoryguid',
+  categoryName: 'productcategoryguid',
   purchasePrice: 'purchaseprice',
   retailPrice: 'retailprice',
+  isAutoPricing: 'isautopricing',
   isActive: 'isactive',
   productType: 'producttype',
   storeRecordCount: 'storerecordcount',
@@ -327,6 +432,7 @@ export default function ProductManagementPage() {
   const [storeRecordCountMax, setStoreRecordCountMax] = useState<number | undefined>(undefined)
   const [storeRecordCountMinInput, setStoreRecordCountMinInput] = useState<number | undefined>(undefined)
   const [storeRecordCountMaxInput, setStoreRecordCountMaxInput] = useState<number | undefined>(undefined)
+  const [columnFilters, setColumnFilters] = useState<PosProductColumnFilters>({})
   const [queryVersion, setQueryVersion] = useState(0)
   const [sortBy, setSortBy] = useState('productCode')
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('ascend')
@@ -404,6 +510,10 @@ export default function ProductManagementPage() {
   const [integrityLoading, setIntegrityLoading] = useState(false)
   const [integrityResult, setIntegrityResult] = useState<ProductIntegrityCheckResultDto | null>(null)
   const [fixLoading, setFixLoading] = useState(false)
+  const integritySummary = useMemo(
+    () => buildProductIntegritySummary(integrityResult),
+    [integrityResult],
+  )
 
   // 供应商列表接口有时只返回编码，使用筛选下拉中的供应商资料补齐名称。
   const supplierNameMap = useMemo(
@@ -423,6 +533,240 @@ export default function ProductManagementPage() {
   }, [imageBatchSupplierCode, imageBatchTemplate])
   const isStoreRecordCountCustomMode = storeRecordCountModeInput === 'custom'
   const hasAppliedStoreRecordCountFilter = storeRecordCountMode !== 'all'
+  const supplierColumnFilterOptions = useMemo(
+    () => supplierOptions.map((option) => ({
+      text: option.label,
+      value: option.value,
+    })),
+    [supplierOptions],
+  )
+  const categoryColumnFilterOptions = useMemo(() => {
+    const flatten = (nodes: ProductCategoryDto[]): Array<{ text: string; value: string }> => nodes.flatMap((node) => [
+      { text: node.name, value: node.guid },
+      ...flatten(node.children ?? []),
+    ])
+    return flatten(categoryTree)
+  }, [categoryTree])
+  const getProductTypeLabel = useCallback((productType: unknown) => {
+    const normalizedType = normalizeProductType(productType)
+    if (normalizedType === 1) return t('posAdmin.products.setProduct', '套装')
+    if (normalizedType === 2) return t('posAdmin.products.multiCodeProductShort', '多码')
+    return t('posAdmin.products.normalProduct', '普通')
+  }, [t])
+  const productTypeColumnFilterOptions = useMemo(() => [
+    { text: getProductTypeLabel(0), value: '0' },
+    { text: getProductTypeLabel(1), value: '1' },
+    { text: getProductTypeLabel(2), value: '2' },
+  ], [getProductTypeLabel])
+  const booleanColumnFilterOptions = useMemo(() => [
+    { text: t('common.yes', '是'), value: 'true' },
+    { text: t('common.no', '否'), value: 'false' },
+  ], [t])
+  const activeColumnFilterOptions = useMemo(() => [
+    { text: t('posAdmin.products.enable', '启用'), value: 'true' },
+    { text: t('posAdmin.products.disable', '禁用'), value: 'false' },
+  ], [t])
+
+  const productColumnFilterIcon = (filtered?: boolean) => (
+    <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
+  )
+  const textOperatorOptions = PRODUCT_TEXT_FILTER_OPERATORS.map((operator) => ({
+    value: operator,
+    label: {
+      contains: t('posAdmin.products.columnFilterContains', '包含'),
+      equals: t('posAdmin.products.columnFilterEquals', '等于'),
+      startsWith: t('posAdmin.products.columnFilterStartsWith', '开头是'),
+      endsWith: t('posAdmin.products.columnFilterEndsWith', '结尾是'),
+    }[operator],
+  }))
+  const numberOperatorOptions = PRODUCT_NUMBER_FILTER_OPERATORS.map((operator) => ({
+    value: operator,
+    label: {
+      equals: t('posAdmin.products.columnFilterEquals', '等于'),
+      between: t('posAdmin.products.columnFilterBetween', '范围'),
+      gte: t('posAdmin.products.columnFilterGreaterThanOrEqual', '大于等于'),
+      lte: t('posAdmin.products.columnFilterLessThanOrEqual', '小于等于'),
+    }[operator],
+  }))
+  const dateOperatorOptions = PRODUCT_DATE_FILTER_OPERATORS.map((operator) => ({
+    value: operator,
+    label: {
+      equals: t('posAdmin.products.columnFilterDateEquals', '等于某日'),
+      between: t('posAdmin.products.columnFilterBetween', '范围'),
+      gte: t('posAdmin.products.columnFilterDateGreaterThanOrEqual', '晚于/等于'),
+      lte: t('posAdmin.products.columnFilterDateLessThanOrEqual', '早于/等于'),
+    }[operator],
+  }))
+
+  const renderColumnFilterPanel = (
+    title: string,
+    content: ReactNode,
+    actions: { confirm: () => void; clear: () => void },
+    width: 280 | 320 = 280,
+  ) => (
+    <div
+      className={`pos-products-column-filter-panel${width === 320 ? ' pos-products-column-filter-panel-wide' : ''}`}
+      onKeyDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <div className="pos-products-column-filter-title">{title}</div>
+      <div className="pos-products-column-filter-body">{content}</div>
+      <div className="pos-products-column-filter-actions">
+        <Button size="small" onClick={actions.clear}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+        <Button size="small" type="primary" onClick={actions.confirm}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+      </div>
+    </div>
+  )
+
+  const buildTextFilterDropdown = (filterKey: string, placeholder: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+    const token = readProductColumnFilterToken(String(selectedKeys[0] ?? getProductFilterTokenValue(columnFilters, filterKey) ?? ''))
+    const operator = PRODUCT_TEXT_FILTER_OPERATORS.includes(token.operator as PosProductTextFilterOperator)
+      ? token.operator as PosProductTextFilterOperator
+      : 'contains'
+    const value = typeof token.value === 'string' ? token.value : ''
+    const updateToken = (nextOperator: PosProductTextFilterOperator, nextValue: string) => {
+      const nextToken = buildProductTextFilterToken(nextOperator, nextValue)
+      setSelectedKeys(nextToken ? [nextToken] : [])
+    }
+
+    return renderColumnFilterPanel(
+      t('posAdmin.products.columnFilterTitle', '{{name}}筛选', { name: placeholder }),
+      <>
+        <label className="pos-products-column-filter-label">{t('posAdmin.products.columnFilterMatchMode', '匹配方式')}</label>
+        <Select size="small" value={operator} options={textOperatorOptions} onChange={(nextOperator) => updateToken(nextOperator, value)} />
+        <label className="pos-products-column-filter-label">{t('posAdmin.products.columnFilterValue', '筛选值')}</label>
+        <Input
+          size="small"
+          allowClear
+          placeholder={placeholder}
+          value={value}
+          onChange={(event) => updateToken(operator, event.target.value)}
+          onPressEnter={() => confirm()}
+        />
+      </>,
+      {
+        confirm,
+        clear: () => {
+          setSelectedKeys([])
+          clearFilters?.()
+          confirm()
+        },
+      },
+    )
+  }
+
+  const buildNumberFilterDropdown = (filterKey: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+    const token = readProductColumnFilterToken(String(selectedKeys[0] ?? getProductFilterTokenValue(columnFilters, filterKey) ?? ''))
+    const operator = PRODUCT_NUMBER_FILTER_OPERATORS.includes(token.operator as PosProductNumberFilterOperator)
+      ? token.operator as PosProductNumberFilterOperator
+      : 'between'
+    const value = token.value !== undefined && token.value !== null && String(token.value) ? Number(token.value) : undefined
+    const min = token.min !== undefined && token.min !== null && String(token.min) ? Number(token.min) : undefined
+    const max = token.max !== undefined && token.max !== null && String(token.max) ? Number(token.max) : undefined
+    const updateToken = (nextOperator: PosProductNumberFilterOperator, nextValues: { value?: number | string | null; min?: number | string | null; max?: number | string | null }) => {
+      const nextToken = buildProductNumberFilterToken(nextOperator, nextValues)
+      setSelectedKeys(nextToken ? [nextToken] : [])
+    }
+
+    return renderColumnFilterPanel(
+      t('posAdmin.products.columnFilterNumberTitle', '数值筛选'),
+      <>
+        <label className="pos-products-column-filter-label">{t('posAdmin.products.columnFilterCondition', '条件')}</label>
+        <Select size="small" value={operator} options={numberOperatorOptions} onChange={(nextOperator) => updateToken(nextOperator, { value, min, max })} />
+        <label className="pos-products-column-filter-label">{t('posAdmin.products.columnFilterNumericValue', '数值')}</label>
+        {operator === 'between' ? (
+          <Space.Compact className="pos-products-column-filter-range">
+            <InputNumber size="small" controls={false} value={min} placeholder={t('containers.placeholders.minValue', '最小值')} onChange={(nextMin) => updateToken(operator, { min: nextMin, max })} />
+            <InputNumber size="small" controls={false} value={max} placeholder={t('containers.placeholders.maxValue', '最大值')} onChange={(nextMax) => updateToken(operator, { min, max: nextMax })} />
+          </Space.Compact>
+        ) : (
+          <InputNumber size="small" controls={false} value={value} placeholder={t('posAdmin.products.columnFilterValue', '筛选值')} onChange={(nextValue) => updateToken(operator, { value: nextValue })} />
+        )}
+      </>,
+      {
+        confirm,
+        clear: () => {
+          setSelectedKeys([])
+          clearFilters?.()
+          confirm()
+        },
+      },
+    )
+  }
+
+  const buildDateFilterDropdown = (filterKey: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+    const token = readProductColumnFilterToken(String(selectedKeys[0] ?? getProductFilterTokenValue(columnFilters, filterKey) ?? ''))
+    const operator = PRODUCT_DATE_FILTER_OPERATORS.includes(token.operator as PosProductDateFilterOperator)
+      ? token.operator as PosProductDateFilterOperator
+      : 'between'
+    const value = typeof token.value === 'string' ? token.value : ''
+    const start = typeof token.start === 'string' ? token.start : ''
+    const end = typeof token.end === 'string' ? token.end : ''
+    const updateToken = (nextOperator: PosProductDateFilterOperator, nextValues: { value?: string; start?: string; end?: string }) => {
+      const nextToken = buildProductDateFilterToken(nextOperator, nextValues)
+      setSelectedKeys(nextToken ? [nextToken] : [])
+    }
+
+    return renderColumnFilterPanel(
+      t('posAdmin.products.columnFilterDateTitle', '日期筛选'),
+      <>
+        <label className="pos-products-column-filter-label">{t('posAdmin.products.columnFilterCondition', '条件')}</label>
+        <Select size="small" value={operator} options={dateOperatorOptions} onChange={(nextOperator) => updateToken(nextOperator, { value, start, end })} />
+        <label className="pos-products-column-filter-label">{t('posAdmin.products.columnFilterDate', '日期')}</label>
+        {operator === 'between' ? (
+          <DatePicker.RangePicker
+            size="small"
+            value={start || end ? [start ? dayjs(start) : null, end ? dayjs(end) : null] : null}
+            onChange={(dates) => updateToken(operator, {
+              start: dates?.[0]?.format('YYYY-MM-DD') ?? '',
+              end: dates?.[1]?.format('YYYY-MM-DD') ?? '',
+            })}
+          />
+        ) : (
+          <DatePicker
+            size="small"
+            value={value ? dayjs(value) : null}
+            onChange={(date) => updateToken(operator, { value: date?.format('YYYY-MM-DD') ?? '' })}
+          />
+        )}
+      </>,
+      {
+        confirm,
+        clear: () => {
+          setSelectedKeys([])
+          clearFilters?.()
+          confirm()
+        },
+      },
+      320,
+    )
+  }
+
+  const textFilterProps = (filterKey: string, placeholder: string) => ({
+    filterDropdown: buildTextFilterDropdown(filterKey, placeholder),
+    filterIcon: productColumnFilterIcon,
+    filtered: productFilterActive(columnFilters, filterKey),
+    filteredValue: columnFilters[filterKey] ?? null,
+  })
+  const numberFilterProps = (filterKey: string) => ({
+    filterDropdown: buildNumberFilterDropdown(filterKey),
+    filterIcon: productColumnFilterIcon,
+    filtered: productFilterActive(columnFilters, filterKey),
+    filteredValue: columnFilters[filterKey] ?? null,
+  })
+  const dateFilterProps = (filterKey: string) => ({
+    filterDropdown: buildDateFilterDropdown(filterKey),
+    filterIcon: productColumnFilterIcon,
+    filtered: productFilterActive(columnFilters, filterKey),
+    filteredValue: columnFilters[filterKey] ?? null,
+  })
+  const enumFilterProps = (filterKey: string, options: Array<{ text: string; value: string }>) => ({
+    filters: options,
+    filterIcon: productColumnFilterIcon,
+    filtered: productFilterActive(columnFilters, filterKey),
+    filteredValue: columnFilters[filterKey] ?? null,
+    filterMultiple: true,
+  })
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
@@ -456,6 +800,7 @@ export default function ProductManagementPage() {
         storeRecordCountMax: storeRecordCountMax,
         sortBy: SORT_FIELD_MAP[sortBy] || sortBy,
         sortOrder,
+        columnFilters,
       }
       const result = await getProducts(params)
       const items = (result?.items ?? []).map((it) => ({ ...it, key: it.productCode }))
@@ -466,7 +811,7 @@ export default function ProductManagementPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, queryVersion])
+  }, [page, pageSize, keyword, supplierCode, categoryGuid, isActiveFilter, isSetFilter, storeRecordCountMin, storeRecordCountMax, sortBy, sortOrder, columnFilters, queryVersion])
 
   const stopHqSyncJobPolling = useCallback(() => {
     stopHqSyncPollingRef.current?.()
@@ -1099,6 +1444,7 @@ export default function ProductManagementPage() {
     setStoreRecordCountMaxInput(undefined)
     setStoreRecordCountMin(undefined)
     setStoreRecordCountMax(undefined)
+    setColumnFilters({})
     setSortBy('productCode')
     setSortOrder('ascend')
     setPage(1)
@@ -1156,13 +1502,6 @@ export default function ProductManagementPage() {
     if (values.syncIsSpecialProduct) fields.push('isSpecialProduct')
     return fields
   }
-
-  const getProductTypeLabel = useCallback((productType: unknown) => {
-    const normalizedType = normalizeProductType(productType)
-    if (normalizedType === 1) return t('posAdmin.products.setProduct', '套装')
-    if (normalizedType === 2) return t('posAdmin.products.multiCodeProductShort', '多码')
-    return t('posAdmin.products.normalProduct', '普通')
-  }, [t])
 
   const showPushToHqResult = useCallback((result: PushProductsToHqResult) => {
     const errors = result.errors ?? []
@@ -2219,10 +2558,11 @@ export default function ProductManagementPage() {
     try {
       const result = await checkIntegrity()
       setIntegrityResult(result)
-      if (!result.issues?.length) {
+      const summary = buildProductIntegritySummary(result)
+      if (summary.issueCount === 0) {
         message.success(t('posAdmin.products.integrityCheckPassed', '数据一致性检查通过，没有发现问题'))
       } else {
-        message.warning(t('posAdmin.products.foundIssues', '发现 {{count}} 个问题', { count: result.failedCount }))
+        message.warning(t('posAdmin.products.foundIssues', '发现 {{count}} 个问题', { count: summary.issueCount }))
       }
     } catch {
       message.error(t('posAdmin.products.integrityCheckFailed', '一致性检查失败'))
@@ -2235,12 +2575,22 @@ export default function ProductManagementPage() {
     if (!ensureCanManagePosProducts()) return
     setFixLoading(true)
     try {
-      const result: ProductIntegrityFixResultDto = await fixIntegrity({ fixAll: true })
-      message.success(t('posAdmin.products.fixComplete', '修复完成：成功 {{success}}，失败 {{failed}}', { success: result.fixedCount ?? 0, failed: result.failedCount ?? 0 }))
-      if (result.errors?.length) {
+      const result: ProductIntegrityFixResultDto = await fixIntegrity({
+        fixStoreRetailPrice: true,
+        fixStoreMultiCodeProduct: true,
+        fixProductSetCode: true,
+        dryRun: false,
+      })
+      const summary = buildProductIntegrityFixSummary(result)
+      message.success(t('posAdmin.products.fixComplete', '修复完成：删除 {{deleted}}，新增 {{added}}，错误 {{errors}}', {
+        deleted: summary.deletedCount,
+        added: summary.addedCount,
+        errors: summary.errorCount,
+      }))
+      if (summary.errors.length) {
         Modal.error({
           title: t('posAdmin.products.partialFixError', '部分修复错误'),
-          content: result.errors.join('\n'),
+          content: summary.errors.join('\n'),
         })
       }
       await handleCheckIntegrity()
@@ -2278,11 +2628,12 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.invoiceDetail.itemNumber', '货号'),
       dataIndex: 'itemNumber',
-      key: 'productCode',
+      key: 'itemNumber',
       width: 116,
       fixed: 'left',
       sorter: true,
-      sortOrder: sortBy === 'productCode' ? sortOrder : undefined,
+      sortOrder: sortBy === 'itemNumber' ? sortOrder : undefined,
+      ...textFilterProps('itemNumber', t('posAdmin.invoiceDetail.itemNumber', '货号')),
       render: (v: string, record) => (
         <Space size={4} className="pos-products-code-cell">
           <a onClick={() => copyTextToClipboard(v || record.productCode)}>{v || record.productCode}</a>
@@ -2307,7 +2658,11 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.invoiceDetail.barcode', '条码'),
       dataIndex: 'barcode',
+      key: 'barcode',
       width: 132,
+      sorter: true,
+      sortOrder: sortBy === 'barcode' ? sortOrder : undefined,
+      ...textFilterProps('barcode', t('posAdmin.invoiceDetail.barcode', '条码')),
       render: (v: string) => (
         <div className="pos-products-barcode-cell">
           <BarcodePreview
@@ -2326,9 +2681,11 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.invoiceDetail.productName', '商品名称'),
       dataIndex: 'productName',
+      key: 'productName',
       width: 180,
       sorter: true,
       sortOrder: sortBy === 'productName' ? sortOrder : undefined,
+      ...textFilterProps('productName', t('posAdmin.invoiceDetail.productName', '商品名称')),
       render: (v: string) => (
         <div className="pos-products-name-cell" title={v}>
           {v}
@@ -2338,8 +2695,12 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.products.productCode', '商品编码'),
       dataIndex: 'productCode',
-      width: 48,
+      key: 'productCode',
+      width: 86,
       align: 'center',
+      sorter: true,
+      sortOrder: sortBy === 'productCode' ? sortOrder : undefined,
+      ...textFilterProps('productCode', t('posAdmin.products.productCode', '商品编码')),
       render: (v: string) => (
         <Tooltip title={t('posAdmin.products.copyProductCode', '复制商品编码')}>
           <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => copyTextToClipboard(v)} />
@@ -2349,9 +2710,11 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.productPrice.supplier', '供应商'),
       dataIndex: 'localSupplierName',
+      key: 'localSupplierCode',
       width: 110,
       sorter: true,
       sortOrder: sortBy === 'localSupplierCode' ? sortOrder : undefined,
+      ...enumFilterProps('localSupplierCode', supplierColumnFilterOptions),
       render: (v: string, record) => {
         const supplierName = v || supplierNameMap.get(record.localSupplierCode || '') || record.localSupplierCode || '-'
 
@@ -2368,34 +2731,41 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.products.categoryGuid', '分类'),
       dataIndex: 'categoryName',
+      key: 'categoryGuid',
       width: 90,
       sorter: true,
-      sortOrder: sortBy === 'categoryName' ? sortOrder : undefined,
+      sortOrder: sortBy === 'categoryGuid' ? sortOrder : undefined,
+      ...enumFilterProps('categoryGuid', categoryColumnFilterOptions),
       render: (v: string) => v || '-',
     },
     {
       title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'),
       dataIndex: 'purchasePrice',
-      width: 76,
+      width: 84,
       align: 'right',
       sorter: true,
       sortOrder: sortBy === 'purchasePrice' ? sortOrder : undefined,
+      ...numberFilterProps('purchasePrice'),
       render: (v: number) => <span className="pos-products-numeric-cell">{v != null ? Number(v).toFixed(2) : '-'}</span>,
     },
     {
       title: t('posAdmin.invoiceDetail.retailPrice', '零售价'),
       dataIndex: 'retailPrice',
-      width: 76,
+      width: 84,
       align: 'right',
       sorter: true,
       sortOrder: sortBy === 'retailPrice' ? sortOrder : undefined,
+      ...numberFilterProps('retailPrice'),
       render: (v: number) => <span className="pos-products-numeric-cell">{v != null ? Number(v).toFixed(2) : '-'}</span>,
     },
     {
       title: t('posAdmin.products.autoPricing', '自动定价'),
       dataIndex: 'isAutoPricing',
-      width: 78,
+      width: 92,
       align: 'center',
+      sorter: true,
+      sortOrder: sortBy === 'isAutoPricing' ? sortOrder : undefined,
+      ...enumFilterProps('isAutoPricing', booleanColumnFilterOptions),
       // 主表展示商品主档的自动定价状态，便于和价格字段一起核对。
       render: (value: boolean | undefined) => (
         <Tag color={value ? 'green' : 'default'}>
@@ -2404,28 +2774,23 @@ export default function ProductManagementPage() {
       ),
     },
     {
-      title: t('posAdmin.products.unitWeight', '重量'),
-      dataIndex: 'unitWeight',
-      width: 64,
-      align: 'right',
-      render: (v: number) => <span className="pos-products-numeric-cell">{v ?? '-'}</span>,
-    },
-    {
       title: t('posAdmin.cashierUsers.status', '状态'),
       dataIndex: 'isActive',
-      width: 62,
+      width: 72,
       align: 'center',
       sorter: true,
       sortOrder: sortBy === 'isActive' ? sortOrder : undefined,
+      ...enumFilterProps('isActive', activeColumnFilterOptions),
       render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag>,
     },
     {
       title: t('posAdmin.products.productTypeLabel', '商品类型'),
       dataIndex: 'productType',
-      width: 74,
+      width: 88,
       align: 'center',
       sorter: true,
       sortOrder: sortBy === 'productType' ? sortOrder : undefined,
+      ...enumFilterProps('productType', productTypeColumnFilterOptions),
       render: (v: number | undefined) => (
         <Tag color={getProductTypeColor(v)}>
           {getProductTypeLabel(v)}
@@ -2462,10 +2827,11 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.products.storeRecords', '分店记录'),
       dataIndex: 'storeRecordCount',
-      width: 70,
+      width: 88,
       align: 'center',
       sorter: true,
       sortOrder: sortBy === 'storeRecordCount' ? sortOrder : undefined,
+      ...numberFilterProps('storeRecordCount'),
       render: (v: number | undefined, record) => {
         const count = Number(v ?? 0)
         return count > 0 && canManageStoreProducts ? (
@@ -2480,9 +2846,10 @@ export default function ProductManagementPage() {
     {
       title: t('column.createTime', '创建时间'),
       dataIndex: 'createdAt',
-      width: 92,
+      width: 108,
       sorter: true,
       sortOrder: sortBy === 'createdAt' ? sortOrder : undefined,
+      ...dateFilterProps('createdAt'),
       render: (v: string) => v ? (
         <span className="pos-products-date-cell">
           <span>{dayjs(v).format('YYYY-MM-DD')}</span>
@@ -2493,9 +2860,10 @@ export default function ProductManagementPage() {
     {
       title: t('posAdmin.productPrice.updatedAt', '更新时间'),
       dataIndex: 'updatedAt',
-      width: 92,
+      width: 108,
       sorter: true,
       sortOrder: sortBy === 'updatedAt' ? sortOrder : undefined,
+      ...dateFilterProps('updatedAt'),
       render: (v: string) => v ? (
         <span className="pos-products-date-cell">
           <span>{dayjs(v).format('YYYY-MM-DD')}</span>
@@ -2734,14 +3102,16 @@ export default function ProductManagementPage() {
             dataSource={data}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1500, y: tableScrollY }}
+            scroll={{ x: 1640, y: tableScrollY }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),
               columnWidth: 40,
             }}
             rowClassName={(_, index) => (index % 2 === 1 ? 'table-row-striped' : '')}
-            onChange={(_pagination, _filters, sorter) => {
+            onChange={(_pagination, filters, sorter) => {
+              const nextColumnFilters = normalizeProductTableFilters(filters as Record<string, FilterValue | null>)
+              setColumnFilters(nextColumnFilters)
               const s = Array.isArray(sorter) ? sorter[0] : sorter
               const field = String(s?.columnKey || s?.field || s?.column?.dataIndex || 'productCode')
               const order = s?.order as 'ascend' | 'descend' | undefined
@@ -2752,6 +3122,9 @@ export default function ProductManagementPage() {
                 setSortBy('productCode')
                 setSortOrder('ascend')
               }
+              // 列头筛选和排序都属于重新查询，必须回到第一页并清空跨条件选择。
+              setPage(1)
+              setSelectedRowKeys([])
             }}
           />
         </div>
@@ -3331,7 +3704,7 @@ export default function ProductManagementPage() {
             columnWidth: 40,
           }}
           columns={[
-            { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110 },
+            { title: t('common.storeCode', '分店代码'), dataIndex: 'storeCode', width: 110, sorter: compareProductStoreRecordsByStoreCode },
             {
               title: t('common.storeName', '分店名称'),
               dataIndex: 'storeName',
@@ -3339,21 +3712,22 @@ export default function ProductManagementPage() {
               sorter: compareProductStoreRecordsByName,
               render: (value: string) => value || '-',
             },
-            { title: t('posAdmin.products.storeProductCode', '分店商品编码'), dataIndex: 'storeProductCode', width: 160, render: (value: string) => value || '-' },
-            { title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), dataIndex: 'purchasePrice', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
-            { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'storeRetailPriceValue', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
-            { title: t('posAdmin.productPrice.discountRate', '折扣率'), dataIndex: 'discountRate', width: 100, align: 'right' as const, render: (value: number) => value != null ? Number(value).toFixed(4) : '-' },
-            { title: t('posAdmin.products.autoPricing', '自动定价'), dataIndex: 'isAutoPricing', width: 100, align: 'center' as const, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
-            { title: t('posAdmin.products.specialProduct', '特殊商品'), dataIndex: 'isSpecialProduct', width: 100, align: 'center' as const, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
+            { title: t('posAdmin.products.storeProductCode', '分店商品编码'), dataIndex: 'storeProductCode', width: 160, sorter: compareProductStoreRecordsByStoreProductCode, render: (value: string) => value || '-' },
+            { title: t('posAdmin.invoiceDetail.purchasePrice', '进货价'), dataIndex: 'purchasePrice', width: 100, align: 'right' as const, sorter: compareProductStoreRecordsByPurchasePrice, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
+            { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'storeRetailPriceValue', width: 100, align: 'right' as const, sorter: compareProductStoreRecordsByRetailPrice, render: (value: number) => value != null ? Number(value).toFixed(2) : '-' },
+            { title: t('posAdmin.productPrice.discountRate', '折扣率'), dataIndex: 'discountRate', width: 100, align: 'right' as const, sorter: compareProductStoreRecordsByDiscountRate, render: (value: number) => value != null ? Number(value).toFixed(4) : '-' },
+            { title: t('posAdmin.products.autoPricing', '自动定价'), dataIndex: 'isAutoPricing', width: 100, align: 'center' as const, sorter: compareProductStoreRecordsByAutoPricing, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
+            { title: t('posAdmin.products.specialProduct', '特殊商品'), dataIndex: 'isSpecialProduct', width: 100, align: 'center' as const, sorter: compareProductStoreRecordsBySpecialProduct, render: (value: boolean) => value ? t('common.yes', '是') : t('common.no', '否') },
             {
               title: t('posAdmin.cashierUsers.status', '状态'),
               dataIndex: 'isActive',
               width: 90,
               align: 'center' as const,
+              sorter: compareProductStoreRecordsByActive,
               render: (value: boolean) => <Tag color={value ? 'green' : 'red'}>{value ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag>,
             },
-            { title: t('posAdmin.productPrice.updatedAt', '更新时间'), dataIndex: 'updatedAt', width: 160, render: (value: string) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' },
-            { title: t('posAdmin.products.updatedBy', '更新人'), dataIndex: 'updatedBy', width: 120, render: (value: string) => value || '-' },
+            { title: t('posAdmin.productPrice.updatedAt', '更新时间'), dataIndex: 'updatedAt', width: 160, sorter: compareProductStoreRecordsByUpdatedAt, render: (value: string) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' },
+            { title: t('posAdmin.products.updatedBy', '更新人'), dataIndex: 'updatedBy', width: 120, sorter: compareProductStoreRecordsByUpdatedBy, render: (value: string) => value || '-' },
           ]}
         />
       </Modal>
@@ -3704,7 +4078,7 @@ export default function ProductManagementPage() {
           <Button key="check" type="primary" loading={integrityLoading} onClick={handleCheckIntegrity} icon={<SafetyCertificateOutlined />}>
             {t('posAdmin.products.check', '检查')}
           </Button>,
-          canManagePosProducts && integrityResult && integrityResult.issues?.length > 0 ? (
+          canManagePosProducts && integrityResult && integritySummary.issueCount > 0 ? (
             <Button key="fix" type="primary" danger loading={fixLoading} onClick={handleFixIntegrity} icon={<CloudSyncOutlined />}>
               {t('posAdmin.products.autoFix', '自动修复')}
             </Button>
@@ -3717,31 +4091,34 @@ export default function ProductManagementPage() {
           {integrityResult ? (
             <div>
               <Descriptions bordered size="small" column={3} style={{ marginBottom: 16 }}>
-                <Descriptions.Item label={t('posAdmin.products.totalProducts', '总商品数')}>{integrityResult.totalProducts}</Descriptions.Item>
-                <Descriptions.Item label={t('posAdmin.products.pass', '通过')}>
-                  <Tag color="green">{integrityResult.passedCount}</Tag>
+                <Descriptions.Item label={t('posAdmin.products.checkedStores', '检查分店数')}>{integritySummary.storeCount}</Descriptions.Item>
+                <Descriptions.Item label={t('posAdmin.products.checkedRecords', '检查记录数')}>
+                  {integritySummary.totalChecked}
                 </Descriptions.Item>
-                <Descriptions.Item label={t('posAdmin.products.issue', '问题')}>
-                  <Tag color="red">{integrityResult.failedCount}</Tag>
+                <Descriptions.Item label={t('posAdmin.products.issueRecords', '问题记录数')}>
+                  <Tag color={integritySummary.issueCount > 0 ? 'red' : 'green'}>{integritySummary.issueCount}</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label={t('posAdmin.products.durationSeconds', '耗时')}>
+                  {integritySummary.durationSeconds.toFixed(2)}s
                 </Descriptions.Item>
               </Descriptions>
-              {integrityResult.issues?.length > 0 ? (
-                <Table
-                  rowKey={(r, i) => `${r.productCode}_${r.issueType}_${i}`}
-                  dataSource={integrityResult.issues}
+              {integritySummary.issueRows.length > 0 ? (
+                <Table<ProductIntegrityIssueRow>
+                  rowKey="key"
+                  dataSource={integritySummary.issueRows}
                   pagination={false}
                   size="small"
                   scroll={{ y: 300 }}
                   columns={[
-                    { title: t('posAdmin.products.productCode', '商品代码'), dataIndex: 'productCode', width: 140 },
+                    { title: t('posAdmin.products.scope', '范围'), dataIndex: 'scope', width: 160 },
+                    { title: t('posAdmin.products.tableName', '数据表'), dataIndex: 'tableName', width: 170 },
                     { title: t('posAdmin.products.issueType', '问题类型'), dataIndex: 'issueType', width: 140 },
-                    { title: t('posAdmin.products.description', '描述'), dataIndex: 'description' },
+                    { title: t('posAdmin.products.issueCount', '数量'), dataIndex: 'count', width: 100 },
                     {
-                      title: t('posAdmin.products.severity', '严重程度'),
-                      dataIndex: 'severity',
-                      width: 100,
-                      render: (v: string) => (
-                        <Tag color={v === 'Error' ? 'red' : 'orange'}>{v === 'Error' ? t('posAdmin.products.error', '错误') : t('posAdmin.products.warning', '警告')}</Tag>
+                      title: t('posAdmin.products.sampleProductCodes', '样本商品代码'),
+                      dataIndex: 'sampleProductCodes',
+                      render: (codes: string[]) => (
+                        codes.length ? codes.join(', ') : '-'
                       ),
                     },
                   ]}

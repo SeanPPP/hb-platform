@@ -55,7 +55,9 @@ namespace BlazorApp.Api.Services.React
 
             if (queryParams.BranchCodes != null && queryParams.BranchCodes.Any())
             {
-                baseQuery = baseQuery.Where(o => queryParams.BranchCodes.Contains(o.BranchCode));
+                baseQuery = baseQuery.Where(o =>
+                    o.BranchCode != null && queryParams.BranchCodes.Contains(o.BranchCode)
+                );
             }
 
             if (!string.IsNullOrWhiteSpace(queryParams.DeviceCode))
@@ -72,9 +74,9 @@ namespace BlazorApp.Api.Services.React
             {
                 var keyword = queryParams.Keyword.Trim();
                 baseQuery = baseQuery.Where((o, d) =>
-                    o.OrderGuid.Contains(keyword)
-                    || d.ProductName.Contains(keyword)
-                    || d.Barcode.Contains(keyword)
+                    (o.OrderGuid != null && o.OrderGuid.Contains(keyword))
+                    || (d != null && d.ProductName != null && d.ProductName.Contains(keyword))
+                    || (d != null && d.Barcode != null && d.Barcode.Contains(keyword))
                 );
             }
 

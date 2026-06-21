@@ -30,7 +30,11 @@ import {
   filterBarcodeStatusColumn,
   filterBooleanColumn,
   filterProductStatusColumn,
+  matchesActionTypeColumnFilter,
+  matchesNumberColumnFilter,
   matchesTextColumnFilter,
+  serializeNumberColumnFilter,
+  serializeTextColumnFilter,
 } from './InvoiceEdit/tableColumnFilters'
 import { defaultPasteFieldOrder, parsePasteText } from './InvoiceEdit/pasteDetails'
 import {
@@ -105,12 +109,14 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 
 const pageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/index.tsx')
 const editPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
+const editCellsFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/EditableCells.tsx')
 const detailPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx')
 const serviceFile = path.resolve(process.cwd(), 'src/services/localSupplierInvoiceService.ts')
 const typeFile = path.resolve(process.cwd(), 'src/types/localSupplierInvoice.ts')
 const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
 const pageSource = readFileSync(pageFile, 'utf8')
 const editPageSource = readFileSync(editPageFile, 'utf8')
+const editCellsSource = readFileSync(editCellsFile, 'utf8')
 const detailPageSource = readFileSync(detailPageFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
@@ -273,12 +279,46 @@ async function main() {
   })
   if (editPageImportFailure) failures.push(editPageImportFailure)
 
+  const editPageDynamicTabTitleFailure = await runTest('编辑页 Tab 标题应在发票加载后显示业务标题', () => {
+    assert(
+      editPageSource.includes("import { useDynamicTabTitle } from '../../../../hooks/useDynamicTabTitle'"),
+      '编辑页必须 import useDynamicTabTitle',
+    )
+    assert(editPageSource.includes('useDynamicTabTitle(invoiceTabTitle)'), '编辑页必须在组件顶层调用 useDynamicTabTitle')
+    assert(editPageSource.includes('function buildInvoiceTabTitle('), '编辑页应提供本页专用标题格式函数')
+    assert(editPageSource.includes('invoice.storeName?.trim()'), '标题函数必须优先读取 storeName')
+    assert(editPageSource.includes('invoice.storeCode?.trim()'), '分店名称缺失时必须回退 storeCode')
+    assert(editPageSource.includes('invoice.supplierName?.trim().slice(0, 4).toUpperCase()'), '供应商名称必须 trim 后取前 4 位并转大写')
+    assert(editPageSource.includes('invoice.supplierCode?.trim().slice(0, 4).toUpperCase()'), '供应商名称缺失时必须回退 supplierCode 前 4 位')
+    assert(editPageSource.includes('invoice.invoiceNo?.trim()'), '标题函数必须读取 invoiceNo')
+    assert(editPageSource.includes('[storeSegment, supplierSegment, invoiceNoSegment].filter(Boolean).join'), '标题函数应过滤缺失字段后用空格拼接')
+    assert(
+      editPageSource.includes("t('menu.editInvoice', '编辑进货单')"),
+      '未加载发票前必须保留编辑进货单 fallback，避免 Tab 空白',
+    )
+    assert(
+      editPageSource.includes('这里只更新当前编辑页的 KeepAlive Tab 标题，不改变路由标题或面包屑。'),
+      '应用中文注释说明动态标题只影响当前编辑页 Tab',
+    )
+  })
+  if (editPageDynamicTabTitleFailure) failures.push(editPageDynamicTabTitleFailure)
+
   const batchEditPersistFailure = await runTest('编辑页批量编辑应通过批量更新接口持久化 editFields', () => {
     assert(editPageSource.includes('batchUpdateDetails,'), '编辑页应静态导入批量更新明细接口')
     assert(
-      editPageSource.includes('await batchUpdateDetails(invoiceGuid, items, editFields)'),
+      editPageSource.includes('await batchUpdateDetails(submittedInvoiceGuid, items, editFields)'),
       '批量编辑应把 editFields 发送到后端，避免自动定价只在本地临时变化',
     )
+    assert(editPageSource.includes('applyInvoiceDetailBatchEdit(prev, submittedDetailGuids, editFields)'), '批量编辑确认后应先乐观更新前端当前明细')
+    const batchEditStart = editPageSource.indexOf('const handleBatchEdit = async () => {')
+    const storePriceStart = editPageSource.indexOf('const openStorePriceModal', batchEditStart)
+    const batchEditSource = editPageSource.slice(batchEditStart, storePriceStart)
+    assert(batchEditSource.includes("setBatchEditVisible(false)") && batchEditSource.indexOf('setBatchEditVisible(false)') < batchEditSource.indexOf('await batchUpdateDetails(submittedInvoiceGuid, items, editFields)'), '批量编辑应先关闭弹窗，再后台提交后端')
+    assert(batchEditSource.includes('setSelectedRowKeys([])') && batchEditSource.indexOf('setSelectedRowKeys([])') < batchEditSource.indexOf('await batchUpdateDetails(submittedInvoiceGuid, items, editFields)'), '批量编辑应先清空选择，再后台提交后端')
+    assert(batchEditSource.includes("t('posAdmin.invoiceDetail.batchUpdateSubmitted', '批量更新已提交')"), '批量编辑应提示后台更新已提交')
+    assert(!batchEditSource.includes("message.success(t('posAdmin.invoiceDetail.batchUpdateSuccess', '批量更新成功'))\n        await loadDetails()"), '批量编辑成功路径不应等待全量刷新')
+    assert(batchEditSource.includes('if (canApplyInvoiceJobResult(currentInvoiceGuidRef.current, submittedInvoiceGuid))'), '批量编辑失败后应只刷新当前进货单')
+    assert(batchEditSource.includes('await loadDetails()'), '批量编辑后台失败时应刷新服务端明细')
     assert(
       !editPageSource.includes('await batchUpsertDetails(invoiceGuid, items)\n      // 使用 batchUpdateDetails 的替代方案'),
       '批量编辑不能用空 items 的 batchUpsertDetails 替代批量更新',
@@ -298,6 +338,7 @@ async function main() {
     assert(editPageSource.includes('hqUpdateForm.validateFields()'), '更新HQ商品应校验独立弹窗表单')
     assert(editPageSource.includes('startUpdateToStorePricesJob(request)'), '更新到分店应提交后台任务')
     assert(editPageSource.includes('getUpdateToStorePricesJob(jobId)'), '更新到分店应轮询后台任务')
+    assert(storeModalSource.includes('initialValues={{ updatePurchasePrice: true }}'), '更新到分店弹窗默认应勾选更新进货价')
     assert(storeModalSource.includes('name="updatePurchasePrice"'), '更新到分店弹窗应保留更新进货价字段开关')
     assert(storeModalSource.includes('name="updateRetailPrice"'), '更新到分店弹窗应保留更新零售价字段开关')
     assert(storeModalSource.includes('name="updateIsAutoPricing"'), '更新到分店弹窗应保留更新自动定价字段开关')
@@ -620,6 +661,7 @@ async function main() {
         productName: 'Birthday Card',
         purchasePrice: 1.2,
         amount: 7.2,
+        discountRate: 0.1,
         autoPricing: true,
         isSpecialProduct: false,
         existingProductCount: 1,
@@ -638,6 +680,7 @@ async function main() {
         existingProductCount: 0,
         barcodeStatus: 2,
         barcodeMatchCount: 0,
+        activityType: DetailAction.UpdatePurchasePrice,
       },
     ]
 
@@ -655,6 +698,61 @@ async function main() {
       details.filter((item) => matchesTextColumnFilter(item, 'productName', 'birthday')).map((item) => item.detailGUID),
       ['empty-price', 'cheap-card'],
       '列头文本过滤应只匹配指定列',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesTextColumnFilter(item, 'itemNumber', serializeTextColumnFilter({ mode: 'equals', value: 'BINE1001' }))).map((item) => item.detailGUID),
+      ['cheap-card'],
+      '文本列应支持等于匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesTextColumnFilter(item, 'itemNumber', serializeTextColumnFilter({ mode: 'startsWith', value: 'cap' }))).map((item) => item.detailGUID),
+      ['empty-price'],
+      '文本列应支持开头匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesTextColumnFilter(item, 'productName', serializeTextColumnFilter({ mode: 'endsWith', value: 'bag' }))).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '文本列应支持结尾匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesTextColumnFilter(item, 'barcode', serializeTextColumnFilter({ mode: 'empty' }))).map((item) => item.detailGUID),
+      [],
+      '文本列应支持为空匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesTextColumnFilter(item, 'barcode', serializeTextColumnFilter({ mode: 'notEmpty' }))).map((item) => item.detailGUID),
+      ['empty-price', 'cheap-card', 'gift-bag'],
+      '文本列应支持非空匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesNumberColumnFilter(item, 'purchasePrice', serializeNumberColumnFilter({ mode: 'gt', value: 1.5 }))).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '数字列应支持大于匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesNumberColumnFilter(item, 'purchasePrice', serializeNumberColumnFilter({ mode: 'lt', value: 1.5 }))).map((item) => item.detailGUID),
+      ['cheap-card'],
+      '数字列应支持小于匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesNumberColumnFilter(item, 'purchasePrice', serializeNumberColumnFilter({ mode: 'between', min: 1, max: 1.5 }))).map((item) => item.detailGUID),
+      ['cheap-card'],
+      '数字列应支持区间匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesNumberColumnFilter(item, 'purchasePrice', serializeNumberColumnFilter({ mode: 'empty' }))).map((item) => item.detailGUID),
+      ['empty-price'],
+      '数字列应支持为空匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesNumberColumnFilter(item, 'amount', serializeNumberColumnFilter({ mode: 'notEmpty' }))).map((item) => item.detailGUID),
+      ['cheap-card', 'gift-bag'],
+      '数字列应支持非空匹配',
+    )
+    assertDeepEqual(
+      details.filter((item) => matchesNumberColumnFilter(item, 'discountRate', serializeNumberColumnFilter({ mode: 'equals', value: 10 }))).map((item) => item.detailGUID),
+      ['cheap-card'],
+      '折扣率列过滤按页面展示百分比匹配',
     )
     assertDeepEqual(
       details.filter((item) => filterBooleanColumn(item.autoPricing, true)).map((item) => item.detailGUID),
@@ -686,6 +784,11 @@ async function main() {
       ['gift-bag'],
       '条码状态列过滤应复用条码状态规则',
     )
+    assertDeepEqual(
+      details.filter((item) => matchesActionTypeColumnFilter(item, DetailAction.UpdatePurchasePrice)).map((item) => item.detailGUID),
+      ['gift-bag'],
+      '操作类型列过滤应按当前明细操作类型匹配',
+    )
 
     const topFiltered = filterInvoiceDetails(details, {
       searchText: 'gift',
@@ -698,6 +801,37 @@ async function main() {
       ['gift-bag'],
       '列头过滤应能与顶部搜索和状态筛选按 AND 叠加',
     )
+
+    assert(editPageSource.includes('const [columnFilteredValues, setColumnFilteredValues]'), '编辑页应维护受控列过滤状态')
+    assert(editPageSource.includes('setColumnFilteredValues(filters as Record<string, (React.Key | boolean)[] | null>)'), '表格变化时应保存列头过滤状态')
+    assert(editPageSource.includes('setColumnFilteredValues({})'), '清空过滤应重置列头过滤')
+    assert(editPageSource.includes("t('posAdmin.invoiceDetail.activeColumnFilters', '列头过滤：{{count}}'"), '当前过滤栏应展示列头过滤摘要')
+    ;[
+      'quantity',
+      'lastPurchasePrice',
+      'purchasePrice',
+      'retailPrice',
+      'pricingFloatRate',
+      'newAutoRetailPrice',
+      'discountRate',
+      'amount',
+    ].forEach((field) => {
+      assert(editPageSource.includes(`...getNumberColumnFilterProps('${field}'`), `${field} 数字列应挂载列头过滤`)
+    })
+    ;['itemNumber', 'barcode', 'productName'].forEach((field) => {
+      assert(editPageSource.includes(`...getTextColumnSearchProps('${field}'`), `${field} 文本列应挂载列头过滤`)
+    })
+    assert(editPageSource.includes('matchesActionTypeColumnFilter(record, value, rowActions)'), '操作类型列应按 rowActions 覆盖值过滤')
+    const seqColumnSource = editPageSource.slice(
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.seqNo'"),
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.image'"),
+    )
+    const imageColumnSource = editPageSource.slice(
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.image'"),
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.itemNumber'"),
+    )
+    assert(!seqColumnSource.includes('onFilter') && !seqColumnSource.includes('filters:') && !seqColumnSource.includes('filteredValue'), '序号列不应挂载列过滤')
+    assert(!imageColumnSource.includes('onFilter') && !imageColumnSource.includes('filters:') && !imageColumnSource.includes('filteredValue'), '图片列不应挂载列过滤')
   })
   if (tableColumnFilterBehaviorFailure) failures.push(tableColumnFilterBehaviorFailure)
 
@@ -726,8 +860,9 @@ async function main() {
   if (compactTableDisplayFailure) failures.push(compactTableDisplayFailure)
 
   const inlineBooleanToggleFailure = await runTest('编辑页自动定价和特殊商品应双击本地编辑并随保存明细统一落库', () => {
-    assert(editPageSource.includes('function EditableBooleanCell'), '编辑页应使用行内布尔编辑单元格')
-    assert(editPageSource.includes('onDoubleClick={() => onSave(detailGuid, field, !actualValue)}'), '布尔字段应双击切换本地值')
+    assert(editPageSource.includes('EditableBooleanCell,'), '编辑页应导入行内布尔编辑单元格')
+    assert(editCellsSource.includes('function EditableBooleanCell'), '行内编辑组件文件应定义布尔编辑单元格')
+    assert(editCellsSource.includes('onDoubleClick={() => onSave(detailGuid, field, !actualValue)}'), '布尔字段应双击切换本地值')
     assert(editPageSource.includes('field="autoPricing"'), '自动定价应纳入可编辑字段')
     assert(editPageSource.includes('field="isSpecialProduct"'), '特殊商品应纳入可编辑字段')
     assert(editPageSource.includes('const handleInlineDetailSave = useCallback'), '行内编辑应先写入本地明细')

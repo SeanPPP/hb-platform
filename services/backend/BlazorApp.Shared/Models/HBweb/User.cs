@@ -44,6 +44,12 @@ namespace BlazorApp.Shared.Models
         public DateTime? LastLoginAt { get; set; }
 
         /// <summary>
+        /// 最后登录公网 IP
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? LastLoginIp { get; set; }
+
+        /// <summary>
         /// 是否激活状态
         /// </summary>
         [SugarColumn(IsNullable = false)]

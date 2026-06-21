@@ -91,8 +91,9 @@ namespace BlazorApp.Api.Services.React
 
             var total = await query.CountAsync();
             var take = request.PageSize > 0 ? request.PageSize : Math.Max(20, request.EndRow - request.StartRow);
-            var startRow = request.PageNumber.GetValueOrDefault() > 1
-                ? (request.PageNumber.Value - 1) * take
+            var pageNumber = request.PageNumber.GetValueOrDefault();
+            var startRow = pageNumber > 1
+                ? (pageNumber - 1) * take
                 : request.StartRow;
             var items = await query.Skip(Math.Max(0, startRow)).Take(take).ToListAsync();
             var storesByAdvertisementId = await GetStoresByAdvertisementIdsAsync(

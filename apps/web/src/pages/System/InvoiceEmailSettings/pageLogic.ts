@@ -71,3 +71,8 @@ export function buildInvoiceEmailSettingsTestPayload(
     testToEmail: values.testToEmail.trim(),
   }
 }
+
+export function resolveInvoiceEmailSettingsErrorMessage(error: unknown, fallback: string) {
+  // 请求层会把后端 ApiResponse.message 放入 Error.message，这里优先展示具体 SMTP/TLS 失败原因。
+  return error instanceof Error && error.message.trim() ? error.message : fallback
+}

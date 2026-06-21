@@ -34,6 +34,22 @@ namespace BlazorApp.Api.Services.React
             public decimal? AllocQuantity { get; set; }
         }
 
+        private sealed class UnmatchedStoreOrderGroupRow
+        {
+            public string SourceStoreCode { get; set; } = string.Empty;
+            public int OrderCount { get; set; }
+            public DateTime? LatestOrderDate { get; set; }
+        }
+
+        private sealed class StoreOrderDomesticSupplierCandidate
+        {
+            public string? ProductCode { get; set; }
+            public string? HBProductNo { get; set; }
+            public string? Barcode { get; set; }
+            public string? SupplierCode { get; set; }
+            public string? SupplierName { get; set; }
+        }
+
         private string GetScanTraceId()
         {
             // 同一次扫码的前后端日志使用同一个 traceId，方便按链路聚合耗时。
@@ -160,12 +176,20 @@ namespace BlazorApp.Api.Services.React
                 return await GetProductMasterRowsNotInWarehouseAsync(filter, normalizedGrades);
             }
 
+            if (!string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID))
+            {
+                return await GetWarehouseProductRowsForOrderPickerAsync(filter, normalizedGrades);
+            }
+
             if (IsDefaultHomePageProductFilter(filter, normalizedGrades))
             {
                 return await GetDefaultHomePageProductPageAsync(filter, normalizedGrades);
             }
 
-            var q = CreateDefaultWarehouseProductQuery(_db);
+            var includeInactiveForQuickAdd = ShouldIncludeInactiveWarehouseProductsForQuickAdd(
+                filter
+            );
+            var q = CreateDefaultWarehouseProductQuery(_db, includeInactiveForQuickAdd);
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
@@ -188,38 +212,50 @@ namespace BlazorApp.Api.Services.React
                 q = q.Where((p, wp, wc, ls) => p.LocalSupplierCode == supplierCode);
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID))
+            if (!string.IsNullOrWhiteSpace(filter.SupplierCode))
             {
-                var orderGuid = filter.ExcludeOrderGUID.Trim();
+                var supplierCode = filter.SupplierCode.Trim();
                 q = q.Where(
                     (p, wp, wc, ls) =>
-                        !SqlFunc.Subqueryable<WareHouseOrderDetails>()
-                            .Where(d =>
-                                d.OrderGUID == orderGuid
-                                && d.ProductCode == p.ProductCode
-                                && !d.IsDeleted
+                        SqlFunc.Subqueryable<DomesticProduct>()
+                            .Where(dp =>
+                                dp.ProductCode == p.ProductCode
+                                && dp.SupplierCode == supplierCode
+                                && !dp.IsDeleted
                             )
                             .Any()
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
             {
-                var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
                     (p, wp, wc, ls) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
                 );
             }
-
-            if (!string.IsNullOrWhiteSpace(filter.ProductName))
+            else
             {
-                var keyword = filter.ProductName.Trim().ToLower();
-                q = q.Where(
-                    (p, wp, wc, ls) =>
-                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                );
+                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+                {
+                    var keyword = filter.ItemNumber.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc, ls) =>
+                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(filter.ProductName))
+                {
+                    var keyword = filter.ProductName.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc, ls) =>
+                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    );
+                }
             }
 
             if (normalizedGrades.Count > 0)
@@ -479,23 +515,35 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
             {
-                var keyword = filter.ItemNumber.Trim().ToLower();
                 q = q.Where(
                     (p, wc, ls) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
                 );
             }
-
-            if (!string.IsNullOrWhiteSpace(filter.ProductName))
+            else
             {
-                var keyword = filter.ProductName.Trim().ToLower();
-                q = q.Where(
-                    (p, wc, ls) =>
-                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                );
+                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+                {
+                    var keyword = filter.ItemNumber.Trim().ToLower();
+                    q = q.Where(
+                        (p, wc, ls) =>
+                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(filter.ProductName))
+                {
+                    var keyword = filter.ProductName.Trim().ToLower();
+                    q = q.Where(
+                        (p, wc, ls) =>
+                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    );
+                }
             }
 
             if (normalizedGrades.Count > 0)
@@ -571,10 +619,313 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
-        private ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
-            CreateDefaultWarehouseProductQuery(ISqlSugarClient db)
+        private async Task<PagedListReactDto<StoreOrderProductDto>>
+            GetWarehouseProductRowsForOrderPickerAsync(
+                StoreOrderFilterDto filter,
+                List<string> normalizedGrades
+            )
         {
-            return CreateDefaultWarehouseProductBaseQuery(db)
+            var orderGuid = filter.ExcludeOrderGUID!.Trim();
+            // 后台“选择商品”弹窗需要看到已入仓但下架的商品；只排除删除记录和当前订单已有明细。
+            var q = _db.Queryable<Product>()
+                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                .LeftJoin<WarehouseCategory>(
+                    (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
+                )
+                .Where(
+                    (p, wp, wc) =>
+                        !p.IsDeleted
+                        && !wp.IsDeleted
+                        && p.ProductCode != null
+                        && !SqlFunc.Subqueryable<WareHouseOrderDetails>()
+                            .Where(d =>
+                                d.OrderGUID == orderGuid
+                                && d.ProductCode == p.ProductCode
+                                && !d.IsDeleted
+                            )
+                            .Any()
+                );
+
+            if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
+            {
+                var categoryIds = GetAllSubCategoryIds(filter.CategoryGUID);
+                q = q.Where(
+                    (p, wp, wc) =>
+                        p.WarehouseCategoryGUID != null
+                        && categoryIds.Contains(p.WarehouseCategoryGUID)
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.SupplierCode))
+            {
+                var supplierCode = filter.SupplierCode.Trim();
+                q = q.Where(
+                    (p, wp, wc) =>
+                        SqlFunc.Subqueryable<DomesticProduct>()
+                            .Where(dp =>
+                                dp.SupplierCode == supplierCode
+                                && !dp.IsDeleted
+                                && SqlFunc.Subqueryable<ChinaSupplier>()
+                                    .Where(cs =>
+                                        cs.SupplierCode == dp.SupplierCode && !cs.IsDeleted
+                                    )
+                                    .Any()
+                                && (
+                                    dp.ProductCode == p.ProductCode
+                                    || (
+                                        dp.HBProductNo != null
+                                        && p.ItemNumber != null
+                                        && dp.HBProductNo == p.ItemNumber
+                                    )
+                                    || (
+                                        dp.Barcode != null
+                                        && p.Barcode != null
+                                        && dp.Barcode == p.Barcode
+                                    )
+                                )
+                            )
+                            .Any()
+                );
+            }
+
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
+            {
+                q = q.Where(
+                    (p, wp, wc) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
+                );
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
+                {
+                    var keyword = filter.ItemNumber.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc) =>
+                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(filter.ProductName))
+                {
+                    var keyword = filter.ProductName.Trim().ToLower();
+                    q = q.Where(
+                        (p, wp, wc) =>
+                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                    );
+                }
+            }
+
+            if (normalizedGrades.Count > 0)
+            {
+                q = q.Where(
+                    (p, wp, wc) =>
+                        SqlFunc.Subqueryable<ProductGrade>()
+                            .Where(pg =>
+                                pg.ProductCode == p.ProductCode
+                                && !pg.IsDeleted
+                                && normalizedGrades.Contains(pg.Grade)
+                            )
+                            .Any()
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.SortBy))
+            {
+                switch (filter.SortBy.ToLower())
+                {
+                    case "priceasc":
+                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc);
+                        break;
+                    case "pricedesc":
+                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc);
+                        break;
+                    case "name":
+                        q = q.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc);
+                        break;
+                    default:
+                        q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
+                        break;
+                }
+            }
+            else
+            {
+                q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
+            }
+
+            var total = await q.CountAsync();
+            var items = await q.Select(
+                    (p, wp, wc) =>
+                        new StoreOrderProductDto
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            ProductImage = p.ProductImage,
+                            CategoryName = wc.CategoryName,
+                            WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            OEMPrice = wp.OEMPrice,
+                            MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                            StockQuantity = wp.StockQuantity ?? 0,
+                            PackQty = p.MiddlePackageQuantity,
+                            ImportPrice = wp.ImportPrice,
+                        }
+                )
+                .Skip((filter.PageNumber - 1) * filter.PageSize)
+                .Take(filter.PageSize)
+                .ToListAsync();
+
+            await PopulateDomesticSuppliersForOrderPickerAsync(items);
+            await PopulateGradesAsync(_db, items, normalizedGrades);
+
+            return new PagedListReactDto<StoreOrderProductDto>
+            {
+                Items = items,
+                Total = total,
+                PageNumber = filter.PageNumber,
+                PageSize = filter.PageSize,
+            };
+        }
+
+        private async Task PopulateDomesticSuppliersForOrderPickerAsync(
+            List<StoreOrderProductDto> items
+        )
+        {
+            if (items.Count == 0)
+            {
+                return;
+            }
+
+            var productCodes = items
+                .Select(item => NormalizeMatchKey(item.ProductCode))
+                .Where(key => key != null)
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var itemNumbers = items
+                .Select(item => NormalizeMatchKey(item.ItemNumber))
+                .Where(key => key != null)
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var barcodes = items
+                .Select(item => NormalizeMatchKey(item.Barcode))
+                .Where(key => key != null)
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count == 0 && itemNumbers.Count == 0 && barcodes.Count == 0)
+            {
+                return;
+            }
+
+            // 不要把 C# 布尔开关放进 SqlSugar 表达式；SQL Server 会生成裸布尔条件并报 4145。
+            var supplierMatchExpression = Expressionable.Create<DomesticProduct, ChinaSupplier>();
+            if (productCodes.Count > 0)
+            {
+                supplierMatchExpression = supplierMatchExpression.Or(
+                    (dp, cs) => dp.ProductCode != null && productCodes.Contains(dp.ProductCode)
+                );
+            }
+
+            if (itemNumbers.Count > 0)
+            {
+                supplierMatchExpression = supplierMatchExpression.Or(
+                    (dp, cs) => dp.HBProductNo != null && itemNumbers.Contains(dp.HBProductNo)
+                );
+            }
+
+            if (barcodes.Count > 0)
+            {
+                supplierMatchExpression = supplierMatchExpression.Or(
+                    (dp, cs) => dp.Barcode != null && barcodes.Contains(dp.Barcode)
+                );
+            }
+
+            var candidates = await _db.Queryable<DomesticProduct>()
+                .InnerJoin<ChinaSupplier>(
+                    (dp, cs) => dp.SupplierCode == cs.SupplierCode && !cs.IsDeleted
+                )
+                .Where((dp, cs) => !dp.IsDeleted)
+                .Where(supplierMatchExpression.ToExpression())
+                .Select(
+                    (dp, cs) =>
+                        new StoreOrderDomesticSupplierCandidate
+                        {
+                            ProductCode = dp.ProductCode,
+                            HBProductNo = dp.HBProductNo,
+                            Barcode = dp.Barcode,
+                            SupplierCode = dp.SupplierCode,
+                            SupplierName = cs.SupplierName,
+                        }
+                )
+                .ToListAsync();
+
+            var orderedCandidates = candidates
+                .Where(candidate =>
+                    !string.IsNullOrWhiteSpace(candidate.SupplierCode)
+                    || !string.IsNullOrWhiteSpace(candidate.SupplierName)
+                )
+                .OrderBy(candidate => candidate.SupplierCode ?? string.Empty)
+                .ThenBy(candidate => candidate.ProductCode ?? string.Empty)
+                .ToList();
+
+            foreach (var item in items)
+            {
+                // 真实 HBweb 数据里国内商品编码和仓库商品编码经常不一致，需按货号/条码兜底补齐供应商。
+                var candidate = FindDomesticSupplierCandidate(item, orderedCandidates);
+                if (candidate == null)
+                {
+                    continue;
+                }
+
+                item.DomesticSupplierCode = candidate.SupplierCode;
+                item.DomesticSupplierName = candidate.SupplierName;
+            }
+        }
+
+        private static StoreOrderDomesticSupplierCandidate? FindDomesticSupplierCandidate(
+            StoreOrderProductDto item,
+            List<StoreOrderDomesticSupplierCandidate> candidates
+        )
+        {
+            return candidates.FirstOrDefault(candidate =>
+                    MatchNonEmpty(candidate.ProductCode, item.ProductCode)
+                )
+                ?? candidates.FirstOrDefault(candidate =>
+                    MatchNonEmpty(candidate.HBProductNo, item.ItemNumber)
+                )
+                ?? candidates.FirstOrDefault(candidate => MatchNonEmpty(candidate.Barcode, item.Barcode));
+        }
+
+        private static string? NormalizeMatchKey(string? value)
+        {
+            var trimmed = value?.Trim();
+            return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+        }
+
+        private static bool MatchNonEmpty(string? left, string? right)
+        {
+            var normalizedLeft = NormalizeMatchKey(left);
+            var normalizedRight = NormalizeMatchKey(right);
+            return normalizedLeft != null
+                && normalizedRight != null
+                && string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
+            CreateDefaultWarehouseProductQuery(
+                ISqlSugarClient db,
+                bool includeInactiveWarehouseProducts = false
+            )
+        {
+            return CreateDefaultWarehouseProductBaseQuery(db, includeInactiveWarehouseProducts)
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
@@ -584,12 +935,21 @@ namespace BlazorApp.Api.Services.React
         }
 
         private ISugarQueryable<Product, WarehouseProduct> CreateDefaultWarehouseProductBaseQuery(
-            ISqlSugarClient db
+            ISqlSugarClient db,
+            bool includeInactiveWarehouseProducts = false
         )
         {
-            return db.Queryable<Product>()
+            var query = db.Queryable<Product>()
                 .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
-                .Where((p, wp) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive);
+                .Where((p, wp) => !p.IsDeleted && !wp.IsDeleted);
+
+            if (!includeInactiveWarehouseProducts)
+            {
+                // 默认列表仍只展示上架商品；快速加入会显式放开上下架限制。
+                query = query.Where((p, wp) => p.IsActive && wp.IsActive);
+            }
+
+            return query;
         }
 
         private async Task<PagedListReactDto<StoreOrderProductDto>> GetDefaultHomePageProductPageAsync(
@@ -727,14 +1087,58 @@ namespace BlazorApp.Api.Services.React
         {
             return string.IsNullOrWhiteSpace(filter.CategoryGUID)
                 && string.IsNullOrWhiteSpace(filter.LocalSupplierCode)
+                && string.IsNullOrWhiteSpace(filter.SupplierCode)
                 && string.IsNullOrWhiteSpace(filter.ItemNumber)
                 && string.IsNullOrWhiteSpace(filter.ProductName)
                 && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
+                && !filter.IncludeInactiveWarehouseProducts
                 && (
                     string.IsNullOrWhiteSpace(filter.SortBy)
                     || filter.SortBy.Equals("default", StringComparison.OrdinalIgnoreCase)
                 )
                 && normalizedGrades.Count == 0;
+        }
+
+        private static bool ShouldIncludeInactiveWarehouseProductsForQuickAdd(
+            StoreOrderFilterDto filter
+        )
+        {
+            // 下架商品只对后台订货“货号快速加入”放开，避免共享 DTO 被其它商品列表查询误用。
+            return filter.IncludeInactiveWarehouseProducts
+                && !string.IsNullOrWhiteSpace(filter.ItemNumber)
+                && string.IsNullOrWhiteSpace(filter.ProductName)
+                && string.IsNullOrWhiteSpace(filter.CategoryGUID)
+                && string.IsNullOrWhiteSpace(filter.LocalSupplierCode)
+                && string.IsNullOrWhiteSpace(filter.SupplierCode)
+                && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
+                && !filter.ExcludeExistingWarehouseProducts;
+        }
+
+        private static bool TryGetUnifiedProductSearchKeyword(
+            StoreOrderFilterDto filter,
+            out string keyword
+        )
+        {
+            keyword = string.Empty;
+            var itemNumberKeyword = filter.ItemNumber?.Trim();
+            var productNameKeyword = filter.ProductName?.Trim();
+
+            if (
+                string.IsNullOrWhiteSpace(itemNumberKeyword)
+                || string.IsNullOrWhiteSpace(productNameKeyword)
+                || !string.Equals(
+                    itemNumberKeyword,
+                    productNameKeyword,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return false;
+            }
+
+            // 前端商品弹窗的单搜索框会把同一关键词同时传给货号和商品名称，后端需保持 OR 语义。
+            keyword = itemNumberKeyword.ToLower();
+            return true;
         }
 
         private ISqlSugarClient CreateHomePageWarmUpQueryConnection()
@@ -2182,17 +2586,19 @@ namespace BlazorApp.Api.Services.React
                     q = q.Where(o => o.OrderDate <= end);
                 }
 
-                var total = await q.Clone().CountAsync();
-
                 // 动态排序处理
                 var sortBy = (filter.SortBy ?? "default").Trim().ToLower();
                 var orderType =
                     (filter.SortDescending ?? true) ? OrderByType.Desc : OrderByType.Asc;
 
-                if (IsAggregateOrderListSortField(sortBy))
+                q = ApplyOrderListMainColumnFilters(q, filter.ColumnFilters);
+
+                if (ShouldUseAggregateOrderListPipeline(filter.ColumnFilters, sortBy))
                 {
-                    return await BuildAggregateSortedOrderListAsync(q, filter, sortBy, orderType, total);
+                    return await BuildAggregateSortedOrderListAsync(q, filter, sortBy, orderType);
                 }
+
+                var total = await q.Clone().CountAsync();
 
                 ISugarQueryable<WareHouseOrder> orderedQuery = q;
 
@@ -2214,6 +2620,11 @@ namespace BlazorApp.Api.Services.React
                     case "flowstatus":
                         orderedQuery = q.OrderBy(o => o.FlowStatus, orderType)
                             .OrderByDescending(o => o.OrderDate)
+                            .OrderBy(o => o.OrderGUID, orderType);
+                        break;
+                    case "createdat":
+                        // 商品等级“加入仓库订单”下拉复用订单列表接口，必须先按创建时间排序再分页，避免首屏不是最新订单。
+                        orderedQuery = q.OrderBy(o => o.CreatedAt, orderType)
                             .OrderBy(o => o.OrderGUID, orderType);
                         break;
                     case "totalamount":
@@ -2359,6 +2770,19 @@ namespace BlazorApp.Api.Services.React
                                         .ThenBy(x => x.OrderGUID)
                                         .ToList();
                             break;
+                        case "createdat":
+                            // SQL Server 分页后这里再次按创建时间稳定排序，保证下拉翻页追加顺序一致。
+                            items =
+                                orderType == OrderByType.Desc
+                                    ? items
+                                        .OrderByDescending(x => x.CreatedAt)
+                                        .ThenByDescending(x => x.OrderGUID)
+                                        .ToList()
+                                    : items
+                                        .OrderBy(x => x.CreatedAt)
+                                        .ThenBy(x => x.OrderGUID)
+                                        .ToList();
+                            break;
                         case "totalamount":
                             items =
                                 orderType == OrderByType.Desc
@@ -2422,30 +2846,149 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private static ISugarQueryable<WareHouseOrder> ApplyOrderListMainColumnFilters(
+            ISugarQueryable<WareHouseOrder> q,
+            StoreOrderListColumnFilterDto? filters
+        )
+        {
+            if (filters == null)
+            {
+                return q;
+            }
+
+            if (!string.IsNullOrWhiteSpace(filters.OrderNo))
+            {
+                var keyword = filters.OrderNo.Trim();
+                q = q.Where(o => o.OrderNo != null && o.OrderNo.Contains(keyword));
+            }
+
+            if (filters.OutboundDateStart.HasValue)
+            {
+                var start = filters.OutboundDateStart.Value.Date;
+                q = q.Where(o => o.OutboundDate >= start);
+            }
+            if (filters.OutboundDateEnd.HasValue)
+            {
+                var end = filters.OutboundDateEnd.Value.Date.AddDays(1).AddMilliseconds(-1);
+                q = q.Where(o => o.OutboundDate <= end);
+            }
+
+            if (!string.IsNullOrWhiteSpace(filters.Remarks))
+            {
+                var keyword = filters.Remarks.Trim();
+                q = q.Where(o => o.Remarks != null && o.Remarks.Contains(keyword));
+            }
+
+            if (filters.CreatedAtStart.HasValue)
+            {
+                var start = filters.CreatedAtStart.Value.Date;
+                q = q.Where(o => o.CreatedAt >= start);
+            }
+            if (filters.CreatedAtEnd.HasValue)
+            {
+                var end = filters.CreatedAtEnd.Value.Date.AddDays(1).AddMilliseconds(-1);
+                q = q.Where(o => o.CreatedAt <= end);
+            }
+
+            if (!string.IsNullOrWhiteSpace(filters.UpdatedBy))
+            {
+                var keyword = filters.UpdatedBy.Trim();
+                q = q.Where(o => o.UpdatedBy != null && o.UpdatedBy.Contains(keyword));
+            }
+
+            if (filters.UpdatedAtStart.HasValue)
+            {
+                var start = filters.UpdatedAtStart.Value.Date;
+                q = q.Where(o => o.UpdatedAt >= start);
+            }
+            if (filters.UpdatedAtEnd.HasValue)
+            {
+                var end = filters.UpdatedAtEnd.Value.Date.AddDays(1).AddMilliseconds(-1);
+                q = q.Where(o => o.UpdatedAt <= end);
+            }
+
+            return q;
+        }
+
+        private static bool ShouldUseAggregateOrderListPipeline(
+            StoreOrderListColumnFilterDto? filters,
+            string sortBy
+        )
+        {
+            return IsAggregateOrderListSortField(sortBy) || HasAggregateOrderListColumnFilters(filters);
+        }
+
+        private static bool HasAggregateOrderListColumnFilters(StoreOrderListColumnFilterDto? filters)
+        {
+            if (filters == null)
+            {
+                return false;
+            }
+
+            return filters.TotalQuantityMin.HasValue
+                || filters.TotalQuantityMax.HasValue
+                || filters.TotalOrderAmountMin.HasValue
+                || filters.TotalOrderAmountMax.HasValue
+                || filters.TotalOrderVolumeMin.HasValue
+                || filters.TotalOrderVolumeMax.HasValue
+                || filters.TotalAllocVolumeMin.HasValue
+                || filters.TotalAllocVolumeMax.HasValue
+                || filters.TotalAllocQuantityMin.HasValue
+                || filters.TotalAllocQuantityMax.HasValue
+                || filters.ImportTotalAmountMin.HasValue
+                || filters.ImportTotalAmountMax.HasValue;
+        }
+
+        private static bool HasVolumeOrderListColumnFilters(StoreOrderListColumnFilterDto? filters)
+        {
+            if (filters == null)
+            {
+                return false;
+            }
+
+            return filters.TotalOrderVolumeMin.HasValue
+                || filters.TotalOrderVolumeMax.HasValue
+                || filters.TotalAllocVolumeMin.HasValue
+                || filters.TotalAllocVolumeMax.HasValue;
+        }
+
         private static bool IsAggregateOrderListSortField(string sortBy)
         {
-            return sortBy is "totalorderamount" or "totalquantity" or "totalallocquantity";
+            return sortBy
+                is "totalorderamount"
+                    or "totalquantity"
+                    or "totalallocquantity"
+                    or "importtotalamount";
         }
 
         private async Task<PagedListReactDto<StoreOrderListItemDto>> BuildAggregateSortedOrderListAsync(
             ISugarQueryable<WareHouseOrder> q,
             StoreOrderListFilterDto filter,
             string sortBy,
-            OrderByType orderType,
-            int total
+            OrderByType orderType
         )
         {
             var orders = await q.ToListAsync();
             var items = await BuildOrderListItemsFromOrdersAsync(orders);
+            var needsVolumeFilters = HasVolumeOrderListColumnFilters(filter.ColumnFilters);
+            if (needsVolumeFilters)
+            {
+                await FillOrderListVolumesAsync(items);
+            }
 
             // 这些排序字段来自订单明细汇总，不直接存在于主表。
             // 统一在 C# 内存中聚合和排序，避免手写 SQL 依赖数据库表名或别名。
+            items = ApplyAggregateOrderListColumnFilters(items, filter.ColumnFilters).ToList();
+            var total = items.Count;
             items = SortAggregateOrderListItems(items, sortBy, orderType)
                 .Skip((filter.PageNumber - 1) * filter.PageSize)
                 .Take(filter.PageSize)
                 .ToList();
 
-            await FillOrderListVolumesAsync(items);
+            if (!needsVolumeFilters)
+            {
+                await FillOrderListVolumesAsync(items);
+            }
 
             return new PagedListReactDto<StoreOrderListItemDto>
             {
@@ -2482,10 +3025,111 @@ namespace BlazorApp.Api.Services.React
                 ("totalallocquantity", _) => items
                     .OrderBy(x => x.TotalAllocQuantity)
                     .ThenBy(x => x.OrderGUID),
+                ("importtotalamount", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.ImportTotalAmount)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("importtotalamount", _) => items
+                    .OrderBy(x => x.ImportTotalAmount)
+                    .ThenBy(x => x.OrderGUID),
+                ("orderno", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.OrderNo)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("orderno", _) => items
+                    .OrderBy(x => x.OrderNo)
+                    .ThenBy(x => x.OrderGUID),
+                ("orderdate", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.OrderDate)
+                    .ThenByDescending(x => x.OrderNo)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("orderdate", _) => items
+                    .OrderBy(x => x.OrderDate)
+                    .ThenBy(x => x.OrderNo)
+                    .ThenBy(x => x.OrderGUID),
+                ("storecode", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.StoreCode)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("storecode", _) => items
+                    .OrderBy(x => x.StoreCode)
+                    .ThenBy(x => x.OrderGUID),
+                ("flowstatus", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.FlowStatus)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("flowstatus", _) => items
+                    .OrderBy(x => x.FlowStatus)
+                    .ThenBy(x => x.OrderGUID),
+                ("remarks", OrderByType.Desc) => items
+                    .OrderByDescending(x => x.Remarks)
+                    .ThenByDescending(x => x.OrderGUID),
+                ("remarks", _) => items
+                    .OrderBy(x => x.Remarks)
+                    .ThenBy(x => x.OrderGUID),
                 _ => items.OrderByDescending(x => x.OrderDate)
                     .ThenByDescending(x => x.OrderNo)
                     .ThenByDescending(x => x.OrderGUID),
             };
+        }
+
+        private static IEnumerable<StoreOrderListItemDto> ApplyAggregateOrderListColumnFilters(
+            IEnumerable<StoreOrderListItemDto> items,
+            StoreOrderListColumnFilterDto? filters
+        )
+        {
+            if (filters == null)
+            {
+                return items;
+            }
+
+            // 聚合字段来自订单明细或体积计算，必须在汇总后过滤，才能保证分页总数正确。
+            if (filters.TotalQuantityMin.HasValue)
+            {
+                items = items.Where(item => item.TotalQuantity >= filters.TotalQuantityMin.Value);
+            }
+            if (filters.TotalQuantityMax.HasValue)
+            {
+                items = items.Where(item => item.TotalQuantity <= filters.TotalQuantityMax.Value);
+            }
+            if (filters.TotalOrderAmountMin.HasValue)
+            {
+                items = items.Where(item => item.TotalOrderAmount >= filters.TotalOrderAmountMin.Value);
+            }
+            if (filters.TotalOrderAmountMax.HasValue)
+            {
+                items = items.Where(item => item.TotalOrderAmount <= filters.TotalOrderAmountMax.Value);
+            }
+            if (filters.TotalOrderVolumeMin.HasValue)
+            {
+                items = items.Where(item => item.TotalOrderVolume >= filters.TotalOrderVolumeMin.Value);
+            }
+            if (filters.TotalOrderVolumeMax.HasValue)
+            {
+                items = items.Where(item => item.TotalOrderVolume <= filters.TotalOrderVolumeMax.Value);
+            }
+            if (filters.TotalAllocVolumeMin.HasValue)
+            {
+                items = items.Where(item => item.TotalAllocVolume >= filters.TotalAllocVolumeMin.Value);
+            }
+            if (filters.TotalAllocVolumeMax.HasValue)
+            {
+                items = items.Where(item => item.TotalAllocVolume <= filters.TotalAllocVolumeMax.Value);
+            }
+            if (filters.TotalAllocQuantityMin.HasValue)
+            {
+                items = items.Where(item => item.TotalAllocQuantity >= filters.TotalAllocQuantityMin.Value);
+            }
+            if (filters.TotalAllocQuantityMax.HasValue)
+            {
+                items = items.Where(item => item.TotalAllocQuantity <= filters.TotalAllocQuantityMax.Value);
+            }
+            if (filters.ImportTotalAmountMin.HasValue)
+            {
+                items = items.Where(item => item.ImportTotalAmount >= filters.ImportTotalAmountMin.Value);
+            }
+            if (filters.ImportTotalAmountMax.HasValue)
+            {
+                items = items.Where(item => item.ImportTotalAmount <= filters.ImportTotalAmountMax.Value);
+            }
+
+            return items;
         }
 
         private async Task<List<StoreOrderListItemDto>> BuildOrderListItemsFromOrdersAsync(
@@ -2673,6 +3317,7 @@ namespace BlazorApp.Api.Services.React
                         OrderGUID = result.Data.OrderGUID,
                         OrderNo = result.Data.OrderNo,
                         StoreCode = result.Data.StoreCode,
+                        StoreName = result.Data.StoreName,
                         TotalAmount = result.Data.TotalAmount,
                         TotalQuantity = result.Data.TotalQuantity,
                         TotalImportAmount = result.Data.TotalImportAmount,
@@ -2820,7 +3465,17 @@ namespace BlazorApp.Api.Services.React
                     (o, s) => o.StoreCode == s.StoreCode || o.StoreCode == s.StoreGUID
                 )
                 .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
-                .Select((o, s) => new { Order = o, StoreAddress = s.Address, StoreContactEmail = s.ContactEmail })
+                .Select(
+                    (o, s) =>
+                        new
+                        {
+                            Order = o,
+                            // WarehouseStaff 不能加载完整分店列表，明细接口直接带出当前分店名称。
+                            StoreName = s.StoreName,
+                            StoreAddress = s.Address,
+                            StoreContactEmail = s.ContactEmail,
+                        }
+                )
                 .FirstAsync();
 
             if (order == null)
@@ -2882,11 +3537,12 @@ namespace BlazorApp.Api.Services.React
             }
             else if (statFilter is "active" or "1" or "true")
             {
-                detailQuery = detailQuery.Where((d, p, wp, dp) => p.IsActive);
+                // 订单明细状态展示仓库商品上下架口径，筛选必须和返回字段保持一致。
+                detailQuery = detailQuery.Where((d, p, wp, dp) => wp.IsActive);
             }
             else if (statFilter is "inactive" or "0" or "false")
             {
-                detailQuery = detailQuery.Where((d, p, wp, dp) => !p.IsActive);
+                detailQuery = detailQuery.Where((d, p, wp, dp) => !wp.IsActive);
             }
 
             var itemsTotal = await detailQuery.CountAsync();
@@ -2905,7 +3561,7 @@ namespace BlazorApp.Api.Services.React
                     orderType
                 ),
                 "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
-                "isactive" => detailQuery.OrderBy((d, p, wp, dp) => p.IsActive, orderType),
+                "isactive" => detailQuery.OrderBy((d, p, wp, dp) => wp.IsActive, orderType),
                 "locationcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
                 _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
             };
@@ -2942,7 +3598,8 @@ namespace BlazorApp.Api.Services.React
                                     ? (dp.UnitVolume / dp.PackingQuantity)
                                     : dp.UnitVolume,
                             MinOrderQuantity = wp.MinOrderQuantity ?? 1,
-                            IsActive = p.IsActive,
+                            // 前端“上架/下架”列对应仓库表 WarehouseProduct.IsActive。
+                            IsActive = wp.IsActive,
                             RRP = p.RetailPrice,
                         }
                 );
@@ -3018,6 +3675,7 @@ namespace BlazorApp.Api.Services.React
                 OrderGUID = order.Order.OrderGUID,
                 OrderNo = order.Order.OrderNo,
                 StoreCode = order.Order.StoreCode,
+                StoreName = order.StoreName,
                 OrderDate = order.Order.OrderDate,
                 OutboundDate = order.Order.OutboundDate,
                 TotalAmount = order.Order.OEMTotalAmount ?? 0,
@@ -3270,6 +3928,252 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<List<UnmatchedStoreOrderGroupDto>>> GetUnmatchedStoreOrderGroupsAsync()
+        {
+            try
+            {
+                var unmatchedCodes = await GetUnmatchedOrderStoreCodesAsync();
+                if (unmatchedCodes.Count == 0)
+                {
+                    return ApiResponse<List<UnmatchedStoreOrderGroupDto>>.OK(
+                        new List<UnmatchedStoreOrderGroupDto>()
+                    );
+                }
+
+                var groupRows = await _db.Queryable<WareHouseOrder>()
+                    .Where(o =>
+                        !o.IsDeleted
+                        && o.StoreCode != null
+                        && unmatchedCodes.Contains(o.StoreCode)
+                    )
+                    .GroupBy(o => o.StoreCode)
+                    .Select(o => new UnmatchedStoreOrderGroupRow
+                    {
+                        SourceStoreCode = o.StoreCode!,
+                        OrderCount = SqlFunc.AggregateCount(o.OrderGUID),
+                        LatestOrderDate = SqlFunc.AggregateMax(o.OrderDate),
+                    })
+                    .ToListAsync();
+
+                var sourceNameMap = await LoadExternalCustomerNameMapAsync(unmatchedCodes);
+                var result = groupRows
+                    .Where(item => !string.IsNullOrWhiteSpace(item.SourceStoreCode))
+                    .Select(item =>
+                    {
+                        sourceNameMap.TryGetValue(item.SourceStoreCode, out var sourceName);
+                        return new UnmatchedStoreOrderGroupDto
+                        {
+                            SourceStoreCode = item.SourceStoreCode,
+                            SourceStoreName = sourceName,
+                            OrderCount = item.OrderCount,
+                            LatestOrderDate = item.LatestOrderDate,
+                        };
+                    })
+                    .OrderByDescending(item => item.OrderCount)
+                    .ThenByDescending(item => item.LatestOrderDate)
+                    .ThenBy(item => item.SourceStoreCode, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                return ApiResponse<List<UnmatchedStoreOrderGroupDto>>.OK(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetUnmatchedStoreOrderGroupsAsync failed");
+                return ApiResponse<List<UnmatchedStoreOrderGroupDto>>.Error(ex.Message);
+            }
+        }
+
+        public async Task<ApiResponse<BatchMapStoreOrderStoreCodeResultDto>> BatchMapStoreOrderStoreCodeAsync(
+            BatchMapStoreOrderStoreCodeDto request
+        )
+        {
+            try
+            {
+                var mappings = (request?.Mappings ?? new List<StoreOrderStoreCodeMappingDto>())
+                    .Select(item => new StoreOrderStoreCodeMappingDto
+                    {
+                        SourceStoreCode = item.SourceStoreCode?.Trim() ?? string.Empty,
+                        TargetStoreCode = item.TargetStoreCode?.Trim() ?? string.Empty,
+                    })
+                    .Where(item =>
+                        !string.IsNullOrWhiteSpace(item.SourceStoreCode)
+                        && !string.IsNullOrWhiteSpace(item.TargetStoreCode)
+                    )
+                    .GroupBy(item => item.SourceStoreCode, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.Last())
+                    .ToList();
+
+                if (mappings.Count == 0)
+                {
+                    return ApiResponse<BatchMapStoreOrderStoreCodeResultDto>.Error(
+                        "请至少选择一个需要修复的分店标识"
+                    );
+                }
+
+                var targetCodes = mappings
+                    .Select(item => item.TargetStoreCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                // 历史订单 GUID 修复允许映射到停用但仍存在的本地分店，保存值仍统一写 StoreCode。
+                var targetStores = await _db.Queryable<Store>()
+                    .Where(store =>
+                        targetCodes.Contains(store.StoreCode)
+                        && !store.IsDeleted
+                    )
+                    .Select(store => store.StoreCode)
+                    .ToListAsync();
+                var targetStoreSet = targetStores.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var missingTargets = targetCodes
+                    .Where(code => !targetStoreSet.Contains(code))
+                    .ToList();
+                if (missingTargets.Count > 0)
+                {
+                    return ApiResponse<BatchMapStoreOrderStoreCodeResultDto>.Error(
+                        $"目标分店不存在：{string.Join(", ", missingTargets)}"
+                    );
+                }
+
+                var unmatchedSourceSet = await GetUnmatchedOrderStoreCodesAsync();
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var now = DateTime.Now;
+                var result = new BatchMapStoreOrderStoreCodeResultDto();
+
+                foreach (var mapping in mappings)
+                {
+                    var itemResult = new StoreOrderStoreCodeMappingResultItemDto
+                    {
+                        SourceStoreCode = mapping.SourceStoreCode,
+                        TargetStoreCode = mapping.TargetStoreCode,
+                    };
+
+                    var sourceCount = await _db.Queryable<WareHouseOrder>()
+                        .Where(order =>
+                            !order.IsDeleted
+                            && order.StoreCode == mapping.SourceStoreCode
+                        )
+                        .CountAsync();
+
+                    if (!unmatchedSourceSet.Contains(mapping.SourceStoreCode))
+                    {
+                        itemResult.SkippedCount = sourceCount;
+                        result.SkippedCount += itemResult.SkippedCount;
+                        result.Items.Add(itemResult);
+                        continue;
+                    }
+
+                    // 只修正订单主表 StoreCode，目标值统一写本地分店编码，避免继续保留 GUID 混用。
+                    itemResult.UpdatedCount = await _db.Updateable<WareHouseOrder>()
+                        .SetColumns(order => new WareHouseOrder
+                        {
+                            StoreCode = mapping.TargetStoreCode,
+                            UpdatedBy = currentUser,
+                            UpdatedAt = now,
+                        })
+                        .Where(order =>
+                            !order.IsDeleted
+                            && order.StoreCode == mapping.SourceStoreCode
+                        )
+                        .ExecuteCommandAsync();
+                    itemResult.SkippedCount = Math.Max(0, sourceCount - itemResult.UpdatedCount);
+
+                    result.UpdatedCount += itemResult.UpdatedCount;
+                    result.SkippedCount += itemResult.SkippedCount;
+                    result.Items.Add(itemResult);
+                }
+
+                return ApiResponse<BatchMapStoreOrderStoreCodeResultDto>.OK(
+                    result,
+                    $"已修复 {result.UpdatedCount} 张订单"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BatchMapStoreOrderStoreCodeAsync failed");
+                return ApiResponse<BatchMapStoreOrderStoreCodeResultDto>.Error(ex.Message);
+            }
+        }
+
+        private async Task<HashSet<string>> GetUnmatchedOrderStoreCodesAsync()
+        {
+            var usedStoreCodes = await _db.Queryable<WareHouseOrder>()
+                .Where(order => !order.IsDeleted && order.StoreCode != null && order.StoreCode != "")
+                .Select(order => order.StoreCode)
+                .Distinct()
+                .ToListAsync();
+
+            var normalizedUsedStoreCodes = usedStoreCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedUsedStoreCodes.Count == 0)
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var matchedStores = await _db.Queryable<Store>()
+                .Where(store =>
+                    (!string.IsNullOrEmpty(store.StoreCode) && normalizedUsedStoreCodes.Contains(store.StoreCode))
+                    || (!string.IsNullOrEmpty(store.StoreGUID) && normalizedUsedStoreCodes.Contains(store.StoreGUID))
+                )
+                .Select(store => new
+                {
+                    store.StoreCode,
+                    store.StoreGUID,
+                })
+                .ToListAsync();
+
+            var matchedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var store in matchedStores)
+            {
+                if (!string.IsNullOrWhiteSpace(store.StoreCode))
+                {
+                    matchedSet.Add(store.StoreCode);
+                }
+                if (!string.IsNullOrWhiteSpace(store.StoreGUID))
+                {
+                    matchedSet.Add(store.StoreGUID);
+                }
+            }
+
+            // 未匹配集合只保留订单旧值，不包含任何已能解析为本地分店编码/GUID 的标识。
+            return normalizedUsedStoreCodes
+                .Where(code => !matchedSet.Contains(code))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private async Task<Dictionary<string, string>> LoadExternalCustomerNameMapAsync(
+            HashSet<string> sourceCodes
+        )
+        {
+            var hqGuids = sourceCodes
+                .Where(code => Guid.TryParse(code, out _))
+                .ToList();
+            if (hqGuids.Count == 0)
+            {
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var hqDb = _createHqConnection();
+            var customers = await hqDb.Queryable<CPT_DIC_外购客户信息表>()
+                .Where(item => item.HGUID != null && hqGuids.Contains(item.HGUID))
+                .Select(item => new
+                {
+                    item.HGUID,
+                    item.客户名称,
+                })
+                .ToListAsync();
+
+            return customers
+                .Where(item => !string.IsNullOrWhiteSpace(item.HGUID))
+                .GroupBy(item => item.HGUID!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().客户名称 ?? group.Key,
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
+
         public async Task<ApiResponse<string>> CreateOrderAsync(CreateStoreOrderDto request)
         {
             try
@@ -3407,14 +4311,7 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                foreach (
-                    var item in request.Items.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
-                )
-                {
-                    await PasteReplaceDetailAsync(order, item, request.TargetField);
-                }
-
-                await UpdateOrderTotalAsync(order.OrderGUID);
+                await PasteReplaceDetailsBatchAsync(order, request.Items, request.TargetField);
                 return new ApiResponse<bool> { Success = true, Data = true };
             }
             catch (Exception ex)
@@ -3543,6 +4440,136 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<RefreshStoreOrderImportPricesResultDto>> RefreshOrderLineImportPricesAsync(
+            RefreshStoreOrderImportPricesDto request
+        )
+        {
+            try
+            {
+                var orderGuid = request.OrderGUID?.Trim();
+                if (string.IsNullOrWhiteSpace(orderGuid))
+                {
+                    return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                    {
+                        Success = false,
+                        Message = "OrderGUID is required",
+                    };
+                }
+
+                var orderExists = await _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
+                    .AnyAsync();
+                if (!orderExists)
+                {
+                    return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                    {
+                        Success = false,
+                        Message = "Order not found",
+                    };
+                }
+
+                var detailGuids = (request.DetailGUIDs ?? new List<string>())
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Select(item => item.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var detailQuery = _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted);
+                if (detailGuids.Count > 0)
+                {
+                    detailQuery = detailQuery.Where(d => detailGuids.Contains(d.DetailGUID));
+                }
+
+                var details = await detailQuery.ToListAsync();
+                if (details.Count == 0)
+                {
+                    return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                    {
+                        Success = true,
+                        Data = new RefreshStoreOrderImportPricesResultDto(),
+                    };
+                }
+
+                var productCodes = details
+                    .Select(item => item.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var warehousePrices = productCodes.Count == 0
+                    ? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                    : (await _db.Queryable<WarehouseProduct>()
+                        .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
+                        .Select(wp => new { wp.ProductCode, wp.ImportPrice })
+                        .ToListAsync())
+                    .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                    .ToDictionary(
+                        item => item.ProductCode,
+                        item => item.ImportPrice ?? 0,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                var now = DateTime.Now;
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var result = new RefreshStoreOrderImportPricesResultDto();
+                var changedDetails = new List<WareHouseOrderDetails>();
+
+                foreach (var detail in details)
+                {
+                    if (
+                        string.IsNullOrWhiteSpace(detail.ProductCode)
+                        || !warehousePrices.TryGetValue(detail.ProductCode, out var warehouseImportPrice)
+                        || warehouseImportPrice <= 0
+                    )
+                    {
+                        result.SkippedCount += 1;
+                        result.MissingWarehousePriceCount += 1;
+                        continue;
+                    }
+
+                    var expectedImportAmount = (detail.AllocQuantity ?? 0) * warehouseImportPrice;
+                    var importPriceMatches = detail.ImportPrice.HasValue && detail.ImportPrice.Value == warehouseImportPrice;
+                    var importAmountMatches = detail.ImportAmount.HasValue && detail.ImportAmount.Value == expectedImportAmount;
+                    if (importPriceMatches && importAmountMatches)
+                    {
+                        result.UnchangedCount += 1;
+                        continue;
+                    }
+
+                    // 受控地从仓库商品表回填订单明细进口价；即使价格相同，也要校正历史不准的进口金额。
+                    detail.ImportPrice = warehouseImportPrice;
+                    detail.ImportAmount = expectedImportAmount;
+                    detail.UpdatedAt = now;
+                    detail.UpdatedBy = currentUser;
+                    changedDetails.Add(detail);
+                }
+
+                if (changedDetails.Count > 0)
+                {
+                    await _db.Updateable(changedDetails).ExecuteCommandAsync();
+                    await UpdateOrderTotalAsync(orderGuid);
+                }
+
+                result.UpdatedCount = changedDetails.Count;
+                return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                {
+                    Success = true,
+                    Data = result,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RefreshOrderLineImportPricesAsync failed");
+                return new ApiResponse<RefreshStoreOrderImportPricesResultDto>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
         public async Task<ApiResponse<bool>> UpdateOrderHeaderAsync(UpdateOrderHeaderDto request)
         {
             try
@@ -3624,6 +4651,16 @@ namespace BlazorApp.Api.Services.React
                 order.OutboundDate = request.OutboundDate;
                 if (request.CompleteOrder)
                 {
+                    // 出库日期接口可同步完成订单，但仍必须遵守订单状态机，避免绕过完成订单专用接口校验。
+                    if (order.FlowStatus != 1 && order.FlowStatus != 3)
+                    {
+                        return new ApiResponse<bool>
+                        {
+                            Success = false,
+                            Message = "只有已提交或配货中状态的订单才能标记为完成",
+                        };
+                    }
+
                     order.FlowStatus = 2;
                 }
                 order.UpdatedAt = DateTime.Now;
@@ -4055,6 +5092,250 @@ namespace BlazorApp.Api.Services.React
             else
             {
                 await _db.Insertable(detail).ExecuteCommandAsync();
+            }
+        }
+
+        private async Task PasteReplaceDetailsBatchAsync(
+            WareHouseOrder order,
+            IReadOnlyCollection<ProductQuantityDto> items,
+            string targetField
+        )
+        {
+            var importableItems = items
+                .Where(item =>
+                    !string.IsNullOrWhiteSpace(item.ProductCode)
+                    && item.Quantity > 0
+                    && !string.Equals(
+                        NormalizePasteAction(item.Action),
+                        StoreOrderPasteActions.Skip,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                .Select(item => new ProductQuantityDto
+                {
+                    ProductCode = item.ProductCode.Trim(),
+                    Quantity = item.Quantity,
+                    ImportPrice = item.ImportPrice,
+                    Action = NormalizePasteAction(item.Action),
+                })
+                .ToList();
+
+            if (importableItems.Count == 0)
+            {
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                return;
+            }
+
+            var now = DateTime.Now;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            var productCodes = importableItems
+                .Select(item => item.ProductCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // Excel 粘贴常见 200+ 行，必须批量读取基础资料和现有明细，避免逐行查询拖慢后台任务。
+            var existingDetails = await _db.Queryable<WareHouseOrderDetails>()
+                .Where(detail =>
+                    detail.OrderGUID == order.OrderGUID
+                    && detail.ProductCode != null
+                    && productCodes.Contains(detail.ProductCode)
+                )
+                .ToListAsync();
+            var detailByProductCode = existingDetails
+                .Where(detail => !string.IsNullOrWhiteSpace(detail.ProductCode))
+                .GroupBy(detail => detail.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderBy(detail => detail.IsDeleted ? 1 : 0)
+                        .First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var warehouseProducts = await _db.Queryable<WarehouseProduct>()
+                .Where(product => productCodes.Contains(product.ProductCode))
+                .ToListAsync();
+            var warehouseProductByCode = warehouseProducts
+                .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var productCodesMissingWarehouse = productCodes
+                .Where(code => !warehouseProductByCode.ContainsKey(code))
+                .ToList();
+            var productMasterCodes = productCodesMissingWarehouse.Count == 0
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                : (await _db.Queryable<Product>()
+                    .Where(product =>
+                        product.ProductCode != null
+                        && productCodesMissingWarehouse.Contains(product.ProductCode)
+                    )
+                    .Select(product => product.ProductCode!)
+                    .ToListAsync())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var productCode in productCodesMissingWarehouse)
+            {
+                if (!productMasterCodes.Contains(productCode))
+                {
+                    throw new Exception($"Product {productCode} not found");
+                }
+            }
+
+            var insertedDetails = new List<WareHouseOrderDetails>();
+            var touchedDetails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var detailsToDelete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in importableItems)
+            {
+                var warehouseProduct = warehouseProductByCode.TryGetValue(
+                    item.ProductCode,
+                    out var existingWarehouseProduct
+                )
+                    ? existingWarehouseProduct
+                    : new WarehouseProduct
+                    {
+                        ProductCode = item.ProductCode,
+                        OEMPrice = 0,
+                        ImportPrice = 0,
+                        MinOrderQuantity = 1,
+                    };
+
+                var isNewDetail = false;
+                if (!detailByProductCode.TryGetValue(item.ProductCode, out var detail))
+                {
+                    isNewDetail = true;
+                    detail = new WareHouseOrderDetails
+                    {
+                        DetailGUID = UuidHelper.GenerateUuid7(),
+                        OrderGUID = order.OrderGUID,
+                        StoreCode = order.StoreCode,
+                        ProductCode = item.ProductCode,
+                        Quantity = 0,
+                        AllocQuantity = 0,
+                        OEMPrice = warehouseProduct.OEMPrice ?? 0,
+                        OEMAmount = 0,
+                        ImportPrice = item.ImportPrice ?? warehouseProduct.ImportPrice ?? 0,
+                        ImportAmount = 0,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = currentUser,
+                        UpdatedBy = currentUser,
+                    };
+                    detailByProductCode[item.ProductCode] = detail;
+                    insertedDetails.Add(detail);
+                }
+                else if (item.ImportPrice.HasValue)
+                {
+                    detail.ImportPrice = item.ImportPrice.Value;
+                }
+
+                // 删除明细是软删；再次粘贴同商品时应复活该行，否则任务成功但刷新后仍不可见。
+                detail.IsDeleted = false;
+
+                var nextQuantity = item.Quantity;
+                if (
+                    string.Equals(
+                        item.Action,
+                        StoreOrderPasteActions.Append,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    // 追加基于本轮已合并的明细值，兼容同一批 Excel 内重复货号的顺序叠加。
+                    nextQuantity =
+                        string.Equals(
+                            targetField,
+                            StoreOrderPasteTargetFields.Quantity,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                            ? (detail.Quantity ?? 0) + item.Quantity
+                            : (detail.AllocQuantity ?? 0) + item.Quantity;
+                }
+
+                if (
+                    string.Equals(
+                        targetField,
+                        StoreOrderPasteTargetFields.Quantity,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    detail.Quantity = nextQuantity;
+                }
+                else
+                {
+                    detail.AllocQuantity = nextQuantity;
+                }
+
+                var allocQuantity = detail.AllocQuantity ?? 0;
+                detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
+                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                detail.UpdatedAt = now;
+                detail.UpdatedBy = currentUser;
+
+                if ((detail.Quantity ?? 0) <= 0 && allocQuantity <= 0)
+                {
+                    if (!isNewDetail && !string.IsNullOrWhiteSpace(detail.DetailGUID))
+                    {
+                        detailsToDelete.Add(detail.DetailGUID);
+                    }
+                    continue;
+                }
+
+                if (!isNewDetail && !string.IsNullOrWhiteSpace(detail.DetailGUID))
+                {
+                    touchedDetails.Add(detail.DetailGUID);
+                }
+            }
+
+            var detailsToInsert = insertedDetails
+                .Where(detail =>
+                    (detail.Quantity ?? 0) > 0
+                    || (detail.AllocQuantity ?? 0) > 0
+                )
+                .ToList();
+            var detailsToUpdate = existingDetails
+                .Where(detail =>
+                    !string.IsNullOrWhiteSpace(detail.DetailGUID)
+                    && touchedDetails.Contains(detail.DetailGUID)
+                    && !detailsToDelete.Contains(detail.DetailGUID)
+                )
+                .ToList();
+
+            try
+            {
+                _db.Ado.BeginTran();
+
+                if (detailsToDelete.Count > 0)
+                {
+                    var detailGuids = detailsToDelete.ToList();
+                    await _db.Deleteable<WareHouseOrderDetails>()
+                        .Where(detail => detailGuids.Contains(detail.DetailGUID))
+                        .ExecuteCommandAsync();
+                }
+
+                if (detailsToUpdate.Count > 0)
+                {
+                    await _db.Updateable(detailsToUpdate).ExecuteCommandAsync();
+                }
+
+                if (detailsToInsert.Count > 0)
+                {
+                    await _db.Insertable(detailsToInsert).ExecuteCommandAsync();
+                }
+
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                _db.Ado.CommitTran();
+            }
+            catch
+            {
+                _db.Ado.RollbackTran();
+                throw;
             }
         }
 

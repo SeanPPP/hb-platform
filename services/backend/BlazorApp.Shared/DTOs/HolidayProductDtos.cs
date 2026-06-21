@@ -54,7 +54,7 @@ namespace BlazorApp.Shared.DTOs
 
     public class HolidayProductAnalysisItemDto
     {
-        public string Sequence { get; set; }
+        public string? Sequence { get; set; }
         public string ProductCode { get; set; } = string.Empty;
         public string ItemNumber { get; set; } = string.Empty;
         public string? ProductImage { get; set; }

@@ -8,6 +8,21 @@ namespace BlazorApp.Shared.DTOs
     public class UpdateContainerDto
     {
         /// <summary>
+        /// 货柜编号
+        /// </summary>
+        public string? 货柜编号 { get; set; }
+
+        /// <summary>
+        /// 装柜日期
+        /// </summary>
+        public DateTime? 装柜日期 { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期
+        /// </summary>
+        public DateTime? 预计到岸日期 { get; set; }
+
+        /// <summary>
         /// 实际到货日期
         /// </summary>
         public DateTime? 实际到货日期 { get; set; }
@@ -33,6 +48,5 @@ namespace BlazorApp.Shared.DTOs
         public int? 状态 { get; set; }
     }
 }
-
 
 

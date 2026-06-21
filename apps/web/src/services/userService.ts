@@ -5,6 +5,8 @@ import type {
   UpdateUserDto,
   UserPermissionAssignmentDto,
   UserPermissionStateDto,
+  UserLoginRecordDto,
+  UserLoginRecordQueryDto,
   UpdateUserPasswordDto,
   UserDetailDto,
   UserDto,
@@ -43,6 +45,7 @@ export async function createUser(payload: CreateUserDto): Promise<UserDto> {
     Username: payload.username,
     Email: payload.email,
     Password: payload.password,
+    PasswordFormat: payload.passwordFormat,
     FullName: payload.fullName ?? null,
     IsActive: payload.isActive ?? true,
     RoleGuids: payload.roleGuids ?? [],
@@ -54,6 +57,17 @@ export async function createUser(payload: CreateUserDto): Promise<UserDto> {
 export async function getUserByGuid(guid: string): Promise<UserDetailDto> {
   const response = await request.get<ApiResponse<UserDetailDto>>(`/api/Users/guid/${guid}`)
   return unwrapApiData(response)
+}
+
+export async function getUserLoginRecords(
+  guid: string,
+  params: UserLoginRecordQueryDto,
+): Promise<PagedResult<UserLoginRecordDto>> {
+  const response = await request.get<ApiResponse<PagedResult<UserLoginRecordDto>>>(
+    `/api/Users/guid/${guid}/login-records`,
+    { params: params as Record<string, unknown> },
+  )
+  return unwrapPagedResult(response)
 }
 
 export async function getUserStores(guid: string): Promise<UserStoreDto[]> {
@@ -111,7 +125,11 @@ export async function assignStoresToUser(guid: string, payload: UserStoreAssignm
 export async function updateUserPassword(guid: string, dto: UpdateUserPasswordDto): Promise<boolean> {
   const response = await request.put<ApiResponse<boolean>>(
     `/api/Users/guid/${guid}/password`,
-    dto,
+    {
+      NewPassword: dto.newPassword,
+      PasswordFormat: dto.passwordFormat,
+      ForcePasswordChange: dto.forcePasswordChange,
+    },
   )
   return unwrapApiData(response)
 }

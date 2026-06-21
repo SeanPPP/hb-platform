@@ -40,6 +40,7 @@ assert(
 )
 
 const mobileLayoutSource = readFileSync(path.join(root, 'src/layout/MobileLayout.tsx'), 'utf8')
+const adminLayoutSource = readFileSync(path.join(root, 'src/layout/AdminLayout.tsx'), 'utf8')
 const errorBoundarySource = readFileSync(path.join(root, 'src/components/GlobalErrorBoundary.tsx'), 'utf8')
 const containerDetailSource = readFileSync(path.join(root, 'src/pages/Warehouse/ContainerDetail/index.tsx'), 'utf8')
 
@@ -50,6 +51,16 @@ assert(
 assert(
   mobileLayoutSource.includes('<div className="mobile-content" key={location.pathname}>'),
   '移动端当前页面容器应按 pathname 设置 key，避免不同详情页复用同一组件实例',
+)
+assert(
+  !adminLayoutSource.includes('openKeys={collapsed ? [] : openKeys}'),
+  '桌面侧边栏折叠态不能受控传入空 openKeys，否则图标子菜单无法弹出',
+)
+assert(
+  adminLayoutSource.includes('{...(!collapsed') &&
+    adminLayoutSource.includes('openKeys,') &&
+    adminLayoutSource.includes('onOpenChange: (keys) => setOpenKeys(keys as string[])'),
+  '桌面侧边栏应只在展开态受控 openKeys，折叠态交给 AntD 管理弹出子菜单',
 )
 assert(
   errorBoundarySource.includes('window.location.reload()'),
@@ -68,8 +79,8 @@ assert(
   '货柜明细表头首次加载 effect 应只依赖 active 和 containerGuid，避免横竖屏切换重新加载',
 )
 assert(
-  /void loadDetailChunk\(1, 'reset'\)[\s\S]{0,520}\}, \[active, detailQueryKey\]\)/.test(containerDetailSource),
-  '货柜明细远程分页加载 effect 应只依赖 active 和 detailQueryKey，避免横竖屏切换重新加载',
+  /void loadDetailChunk\(1, 'reset'\)[\s\S]{0,520}\}, \[active, activeLoadQueryKey\]\)/.test(containerDetailSource),
+  '货柜明细远程分页加载 effect 应只依赖 active 和 activeLoadQueryKey，避免横竖屏切换重新加载',
 )
 
 console.log('noAutomaticReload.test: ok')

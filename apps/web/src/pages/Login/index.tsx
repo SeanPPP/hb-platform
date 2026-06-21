@@ -12,7 +12,6 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import LanguageSwitch from '../../components/LanguageSwitch'
 import { useAuthStore } from '../../store/auth'
 import type { LoginRequest } from '../../types/auth'
-import { hashPassword } from '../../utils/password'
 import type { RequestError } from '../../utils/request'
 import { getDefaultWebPath, resolveAuthorizedWebTarget } from '../../utils/webPortalAccess'
 
@@ -42,7 +41,8 @@ export default function LoginPage() {
     try {
       await login({
         username: values.username,
-        password: hashPassword(values.password),
+        password: values.password,
+        passwordFormat: 'raw',
       })
       if (rememberUsername && values.username) {
         localStorage.setItem(REMEMBERED_USERNAME_KEY, values.username)

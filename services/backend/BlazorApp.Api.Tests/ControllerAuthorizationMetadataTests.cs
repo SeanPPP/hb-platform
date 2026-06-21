@@ -1,8 +1,11 @@
 using System.Reflection;
+using System.Security.Claims;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -146,6 +149,14 @@ public class ControllerAuthorizationMetadataTests
         yield return Policy<ReactInvoiceEmailSettingsController>(
             nameof(ReactInvoiceEmailSettingsController.Test),
             Permissions.System.ManageSettings
+        );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.Latest),
+            Permissions.System.ViewAppDownloads
+        );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.History),
+            Permissions.System.ViewAppDownloads
         );
 
         yield return Policy<DomesticProductsController>(
@@ -509,7 +520,12 @@ public class ControllerAuthorizationMetadataTests
         foreach (var method in publicMethods)
         {
             if (controllerType == typeof(ReactLocalSupplierInvoicesController)
-                && method.Name == nameof(ReactLocalSupplierInvoicesController.SyncFromHq))
+                && (
+                    method.Name == nameof(ReactLocalSupplierInvoicesController.SyncFromHq)
+                    || method.Name == nameof(ReactLocalSupplierInvoicesController.ImportPreview)
+                    || method.Name == nameof(ReactLocalSupplierInvoicesController.ImportConfirm)
+                    || method.Name == nameof(ReactLocalSupplierInvoicesController.UpdateLastPurchasePrices)
+                ))
             {
                 continue;
             }
@@ -519,6 +535,59 @@ public class ControllerAuthorizationMetadataTests
                 $"{controllerType.Name}.{method.Name}"
             );
         }
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ImportPreview))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.ImportConfirm))]
+    [InlineData(nameof(ReactLocalSupplierInvoicesController.UpdateLastPurchasePrices))]
+    public void ReactLocalSupplierInvoicesController_AdminOnlyEditEndpointsRequireEditPolicyAndAdminRole(
+        string methodName
+    )
+    {
+        var method = GetDeclaredMethod(typeof(ReactLocalSupplierInvoicesController), methodName);
+        var authorizeAttributes = method
+            .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            .ToList();
+
+        Assert.Contains(authorizeAttributes, attribute => attribute.Policy == Permissions.LocalPurchase.Edit);
+        Assert.Contains(authorizeAttributes, attribute => attribute.Roles == "Admin,管理员");
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("管理员")]
+    [InlineData("WarehouseManager")]
+    public async Task ReactLocalSupplierInvoicesController_ImportConfirmStoreGateAllowsFullStoreRoles(
+        string roleName
+    )
+    {
+        var controller = new ReactLocalSupplierInvoicesController(null!, null!, null!, null!)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(
+                            new[] { new Claim(ClaimTypes.Role, roleName) },
+                            authenticationType: "test"
+                        )
+                    )
+                }
+            }
+        };
+
+        var canAccessStoreAsync = typeof(ReactLocalSupplierInvoicesController).GetMethod(
+            "CanAccessStoreAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+
+        var task = Assert.IsAssignableFrom<Task<bool>>(
+            canAccessStoreAsync!.Invoke(controller, new object?[] { "ANY-STORE" })
+        );
+
+        Assert.True(await task);
     }
 
     [Fact]

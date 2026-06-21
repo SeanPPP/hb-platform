@@ -38,6 +38,7 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var result = new ContainerProductCreationResultDto();
+            var isSubmitContainer = request.SubmitContainer;
             var normalizedDetailHguids = NormalizeDetailHguids(request.DetailHguids);
 
             if (string.IsNullOrWhiteSpace(request.ContainerGuid))
@@ -46,19 +47,36 @@ namespace BlazorApp.Api.Services.React
                 return FinalizeResult(result);
             }
 
-            if (normalizedDetailHguids.Count == 0)
+            if (!isSubmitContainer && normalizedDetailHguids.Count == 0)
             {
                 AddError(result, null, null, null, "MISSING_DETAIL_HGUIDS", "明细 GUID 不能为空");
                 return FinalizeResult(result);
             }
 
-            var rows = await LoadRowsAsync(request.ContainerGuid.Trim(), normalizedDetailHguids);
+            var containerGuid = request.ContainerGuid.Trim();
+            var rows = await LoadRowsAsync(containerGuid, normalizedDetailHguids, isSubmitContainer);
+            if (isSubmitContainer && rows.Count == 0)
+            {
+                AddError(result, null, null, null, "EMPTY_CONTAINER_DETAILS", "当前货柜没有可提交的明细");
+                return FinalizeResult(result);
+            }
+
+            var submitTransactionStarted = false;
+            try
+            {
+                if (isSubmitContainer)
+                {
+                    // 整柜提交是一个业务原子动作：创建、更新门店价、完成货柜必须一起提交或一起回滚。
+                    _context.Db.Ado.BeginTran();
+                    submitTransactionStarted = true;
+                }
+
             var rowsByDetail = rows
                 .Where(row => !string.IsNullOrWhiteSpace(row.DetailHguid))
                 .GroupBy(row => row.DetailHguid!)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-            foreach (var detailHguid in normalizedDetailHguids)
+            foreach (var detailHguid in isSubmitContainer ? new List<string>() : normalizedDetailHguids)
             {
                 if (!rowsByDetail.ContainsKey(detailHguid))
                 {
@@ -136,11 +154,48 @@ namespace BlazorApp.Api.Services.React
             var sourceRows = new Dictionary<string, ContainerProductCreationSourceRow>(
                 StringComparer.OrdinalIgnoreCase
             );
+            var updateItems = new Dictionary<string, ContainerProductUpdateSource>(
+                StringComparer.OrdinalIgnoreCase
+            );
             var batchProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var batchItemNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var row in rows)
             {
+                var productCode = row.ProductCode?.Trim();
+                if (
+                    isSubmitContainer
+                    && !string.IsNullOrWhiteSpace(productCode)
+                    && existingProductCodes.Contains(productCode)
+                )
+                {
+                    var productType = NormalizeContainerProductType(
+                        row.ContainerProductType,
+                        row.DomesticProductType
+                    );
+                    if (productType == ContainerProductCreationProductType.Set)
+                    {
+                        await TryCompleteExistingSetProductCodesAsync(
+                            row,
+                            existingProductCodes,
+                            setRelationsByProductCode,
+                            result,
+                            addResultItem: false
+                        );
+                    }
+
+                    if (TryBuildUpdateItem(row, result, out var updateItem))
+                    {
+                        // 同一商品多条明细时以后出现的价格为准，避免重复更新同一商品。
+                        updateItems[productCode] = new ContainerProductUpdateSource
+                        {
+                            Item = updateItem,
+                            Row = row,
+                        };
+                    }
+                    continue;
+                }
+
                 // 已存在的套装主商品不再按重复商品跳过；这里只补齐子码链路，不更新主商品主档或价格。
                 if (
                     await TryCompleteExistingSetProductCodesAsync(
@@ -177,84 +232,113 @@ namespace BlazorApp.Api.Services.React
                 }
             }
 
-            if (createItems.Count == 0)
+            if (createItems.Count > 0)
             {
-                return FinalizeResult(result);
-            }
-
-            try
-            {
-                var batchResult = await _productWarehouseService.BatchCreateAsync(createItems);
-                if (!batchResult.Success)
+                try
                 {
+                    var batchResult = await _productWarehouseService.BatchCreateAsync(
+                        createItems,
+                        useTransaction: !isSubmitContainer
+                    );
+                    if (!batchResult.Success)
+                    {
+                        foreach (var error in batchResult.Errors)
+                        {
+                            AddError(result, null, null, null, "WAREHOUSE_BATCH_FAILED", error);
+                        }
+                        AddError(result, null, null, null, "WAREHOUSE_BATCH_FAILED", batchResult.Message);
+                        return CompleteSubmitTransaction(
+                            await FinalizeSubmitResultAsync(containerGuid, isSubmitContainer, result),
+                            submitTransactionStarted
+                        );
+                    }
+
+                    var skippedItemNumbers = batchResult.SkippedItems
+                        .Where(item => !string.IsNullOrWhiteSpace(item))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var item in createItems)
+                    {
+                        if (string.IsNullOrWhiteSpace(item.ProductCode))
+                        {
+                            continue;
+                        }
+
+                        if (skippedItemNumbers.Contains(item.ItemNumber))
+                        {
+                            continue;
+                        }
+
+                        if (sourceRows.TryGetValue(item.ProductCode!, out var row))
+                        {
+                            result.Created.Add(new ContainerProductCreationResultItemDto
+                            {
+                                ProductCode = item.ProductCode,
+                                ItemNumber = item.ItemNumber,
+                                DetailHguid = row.DetailHguid,
+                                Message = "创建成功",
+                            });
+                        }
+                    }
+
+                    foreach (var skippedItem in batchResult.SkippedItems)
+                    {
+                        AddSkipped(result, null, skippedItem, null, "WAREHOUSE_SKIPPED", skippedItem);
+                    }
+
                     foreach (var error in batchResult.Errors)
                     {
                         AddError(result, null, null, null, "WAREHOUSE_BATCH_FAILED", error);
                     }
-                    AddError(result, null, null, null, "WAREHOUSE_BATCH_FAILED", batchResult.Message);
-                    return FinalizeResult(result);
                 }
-
-                var skippedItemNumbers = batchResult.SkippedItems
-                    .Where(item => !string.IsNullOrWhiteSpace(item))
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var item in createItems)
+                catch (Exception ex)
                 {
-                    if (string.IsNullOrWhiteSpace(item.ProductCode))
-                    {
-                        continue;
-                    }
-
-                    if (skippedItemNumbers.Contains(item.ItemNumber))
-                    {
-                        continue;
-                    }
-
-                    if (sourceRows.TryGetValue(item.ProductCode!, out var row))
-                    {
-                        result.Created.Add(new ContainerProductCreationResultItemDto
-                        {
-                            ProductCode = item.ProductCode,
-                            ItemNumber = item.ItemNumber,
-                            DetailHguid = row.DetailHguid,
-                            Message = "创建成功",
-                        });
-                    }
-                }
-
-                foreach (var skippedItem in batchResult.SkippedItems)
-                {
-                    AddSkipped(result, null, skippedItem, null, "WAREHOUSE_SKIPPED", skippedItem);
-                }
-
-                foreach (var error in batchResult.Errors)
-                {
-                    AddError(result, null, null, null, "WAREHOUSE_BATCH_FAILED", error);
+                    _logger.LogError(ex, "货柜创建新商品批量写入失败: {OperationId}", request.OperationId);
+                    AddError(result, null, null, null, "WAREHOUSE_BATCH_EXCEPTION", ex.Message);
                 }
             }
-            catch (Exception ex)
+
+            if (isSubmitContainer && updateItems.Count > 0)
             {
-                _logger.LogError(ex, "货柜创建新商品批量写入失败: {OperationId}", request.OperationId);
-                AddError(result, null, null, null, "WAREHOUSE_BATCH_EXCEPTION", ex.Message);
+                await UpdateExistingProductsForSubmitAsync(updateItems.Values.ToList(), result);
             }
 
-            return FinalizeResult(result);
+            return CompleteSubmitTransaction(
+                await FinalizeSubmitResultAsync(containerGuid, isSubmitContainer, result),
+                submitTransactionStarted
+            );
+            }
+            catch (Exception ex) when (isSubmitContainer)
+            {
+                RollbackSubmitTransaction(submitTransactionStarted);
+                _logger.LogError(ex, "整柜提交事务失败: {OperationId}", request.OperationId);
+                AddError(result, null, null, null, "SUBMIT_CONTAINER_EXCEPTION", ex.Message);
+                return FinalizeResult(result);
+            }
         }
 
         private async Task<List<ContainerProductCreationSourceRow>> LoadRowsAsync(
             string containerGuid,
-            List<string> detailHguids
+            List<string> detailHguids,
+            bool loadAllContainerDetails
         )
         {
-            return await _context.Db.Queryable<ContainerDetail>()
+            var query = _context.Db.Queryable<ContainerDetail>()
                 .LeftJoin<DomesticProduct>((detail, domestic) => detail.ProductCode == domestic.ProductCode)
-                .Where((detail, domestic) =>
+                .LeftJoin<Product>((detail, domestic, localProduct) => detail.ProductCode == localProduct.ProductCode)
+                .Where((detail, domestic, localProduct) =>
                     detail.ContainerCode == containerGuid
-                    && detailHguids.Contains(detail.DetailCode)
                     && !detail.IsDeleted
-                )
-                .Select((detail, domestic) => new ContainerProductCreationSourceRow
+                );
+
+            if (!loadAllContainerDetails)
+            {
+                query = query.Where((detail, domestic, localProduct) =>
+                    detailHguids.Contains(detail.DetailCode)
+                );
+            }
+
+            return await query.Select((detail, domestic, localProduct) => new ContainerProductCreationSourceRow
                 {
                     DetailHguid = detail.DetailCode,
                     ProductCode = detail.ProductCode,
@@ -271,6 +355,7 @@ namespace BlazorApp.Api.Services.React
                     Barcode = domestic.Barcode,
                     ImageUrl = domestic.ProductImage,
                     DomesticProductType = domestic.ProductType,
+                    WarehouseCategoryGUID = detail.TargetWarehouseCategoryGUID ?? localProduct.WarehouseCategoryGUID,
                 })
                 .ToListAsync();
         }
@@ -279,7 +364,8 @@ namespace BlazorApp.Api.Services.React
             ContainerProductCreationSourceRow row,
             HashSet<string> existingProductCodes,
             Dictionary<string, List<DomesticSetProduct>> setRelationsByProductCode,
-            ContainerProductCreationResultDto result
+            ContainerProductCreationResultDto result,
+            bool addResultItem = true
         )
         {
             var productCode = row.ProductCode?.Trim();
@@ -305,19 +391,25 @@ namespace BlazorApp.Api.Services.React
             );
             if (setRelations.Count == 0)
             {
-                AddSkipped(result, productCode, itemNumber, row.DetailHguid, "SET_CHILD_NOT_FOUND", "未找到套装子项，已跳过");
+                if (addResultItem)
+                {
+                    AddSkipped(result, productCode, itemNumber, row.DetailHguid, "SET_CHILD_NOT_FOUND", "未找到套装子项，已跳过");
+                }
                 return true;
             }
 
             // 按 DomesticSetProduct 检查子码三层完整性，缺 ProductSetCode 或分店多码时只补缺失层级。
             var changed = await EnsureProductSetCodesAndStoreMultiCodesAsync(productCode, setRelations);
-            result.Created.Add(new ContainerProductCreationResultItemDto
+            if (addResultItem)
             {
-                ProductCode = productCode,
-                ItemNumber = itemNumber,
-                DetailHguid = row.DetailHguid,
-                Message = changed || productTypeChanged ? "套装子码已补齐" : "套装子码已完整",
-            });
+                result.Created.Add(new ContainerProductCreationResultItemDto
+                {
+                    ProductCode = productCode,
+                    ItemNumber = itemNumber,
+                    DetailHguid = row.DetailHguid,
+                    Message = changed || productTypeChanged ? "套装子码已补齐" : "套装子码已完整",
+                });
+            }
             return true;
         }
 
@@ -1015,10 +1107,450 @@ namespace BlazorApp.Api.Services.React
                 ImportPrice = row.ImportPrice.Value,
                 Volume = row.Volume,
                 ImageUrl = row.ImageUrl,
+                WarehouseCategoryGUID = row.WarehouseCategoryGUID,
                 ProductType = productType == ContainerProductCreationProductType.Set ? 1 : 0,
                 IsSetProduct = productType == ContainerProductCreationProductType.Set,
             };
             return true;
+        }
+
+        private static bool TryBuildUpdateItem(
+            ContainerProductCreationSourceRow row,
+            ContainerProductCreationResultDto result,
+            out UpdateItemDto updateItem
+        )
+        {
+            updateItem = new UpdateItemDto();
+            var productCode = row.ProductCode?.Trim();
+            var itemNumber = row.ItemNumber?.Trim();
+
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                AddSkipped(result, null, itemNumber, row.DetailHguid, "MISSING_PRODUCT_CODE", "商品编码不能为空");
+                return false;
+            }
+
+            var hasPriceOrVolume =
+                row.DomesticPrice.HasValue
+                || (row.ImportPrice.HasValue && row.ImportPrice.Value > 0)
+                || (row.OEMPrice.HasValue && row.OEMPrice.Value > 0)
+                || row.Volume.HasValue;
+            if (!hasPriceOrVolume)
+            {
+                AddSkipped(result, productCode, itemNumber, row.DetailHguid, "NO_PRICE_FIELDS", "没有可更新的价格或体积字段");
+                return false;
+            }
+
+            updateItem = new UpdateItemDto
+            {
+                ProductCode = productCode,
+                ItemNumber = itemNumber,
+                DomesticPrice = row.DomesticPrice,
+                ImportPrice = row.ImportPrice.HasValue && row.ImportPrice.Value > 0 ? row.ImportPrice : null,
+                OEMPrice = row.OEMPrice.HasValue && row.OEMPrice.Value > 0 ? row.OEMPrice : null,
+                Volume = row.Volume,
+                IsActive = null,
+            };
+            return true;
+        }
+
+        private async Task UpdateExistingProductsForSubmitAsync(
+            List<ContainerProductUpdateSource> sources,
+            ContainerProductCreationResultDto result
+        )
+        {
+            if (sources.Count == 0)
+            {
+                return;
+            }
+
+            var now = DateTime.Now;
+            var productCodes = sources
+                .Select(source => source.Item.ProductCode?.Trim())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var products = await _context.Db.Queryable<Product>()
+                .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode) && !product.IsDeleted)
+                .ToListAsync();
+            var productMap = products.ToDictionary(
+                product => product.ProductCode!,
+                product => product,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            var warehouseProducts = await _context.Db.Queryable<WarehouseProduct>()
+                .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode) && !product.IsDeleted)
+                .ToListAsync();
+            var warehouseProductMap = warehouseProducts.ToDictionary(
+                product => product.ProductCode!,
+                product => product,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            var productsToUpdate = new List<Product>();
+            var warehouseProductsToUpdate = new List<WarehouseProduct>();
+            var updatedSources = new List<ContainerProductUpdateSource>();
+
+            foreach (var source in sources)
+            {
+                var item = source.Item;
+                var productCode = item.ProductCode?.Trim();
+                if (string.IsNullOrWhiteSpace(productCode))
+                {
+                    continue;
+                }
+
+                if (!productMap.TryGetValue(productCode, out var product))
+                {
+                    AddError(result, productCode, item.ItemNumber, source.Row.DetailHguid, "PRODUCT_NOT_FOUND", "本地商品不存在，无法更新价格");
+                    continue;
+                }
+
+                if (!warehouseProductMap.TryGetValue(productCode, out var warehouseProduct))
+                {
+                    AddError(result, productCode, item.ItemNumber, source.Row.DetailHguid, "WAREHOUSE_PRODUCT_NOT_FOUND", "仓库商品不存在，无法更新仓库价格");
+                    continue;
+                }
+
+                if (item.ImportPrice.HasValue)
+                {
+                    product.PurchasePrice = item.ImportPrice;
+                    product.UpdatedAt = now;
+                    productsToUpdate.Add(product);
+                }
+
+                // 整柜提交只同步价格和体积，不触碰商品上下架、名称、英文名、条码或分类。
+                if (item.DomesticPrice.HasValue)
+                {
+                    warehouseProduct.DomesticPrice = item.DomesticPrice;
+                }
+                if (item.ImportPrice.HasValue)
+                {
+                    warehouseProduct.ImportPrice = item.ImportPrice;
+                }
+                if (item.OEMPrice.HasValue)
+                {
+                    warehouseProduct.OEMPrice = item.OEMPrice;
+                }
+                if (item.Volume.HasValue)
+                {
+                    warehouseProduct.Volume = item.Volume;
+                }
+                warehouseProduct.UpdatedAt = now;
+                warehouseProductsToUpdate.Add(warehouseProduct);
+
+                updatedSources.Add(source);
+            }
+
+            try
+            {
+                if (productsToUpdate.Count > 0)
+                {
+                    await _context.Db.Updateable(productsToUpdate)
+                        .UpdateColumns(product => new { product.PurchasePrice, product.UpdatedAt })
+                        .ExecuteCommandAsync();
+                }
+
+                if (warehouseProductsToUpdate.Count > 0)
+                {
+                    await _context.Db.Updateable(warehouseProductsToUpdate)
+                        .UpdateColumns(product => new
+                        {
+                            product.DomesticPrice,
+                            product.OEMPrice,
+                            product.ImportPrice,
+                            product.Volume,
+                            product.UpdatedAt,
+                        })
+                        .ExecuteCommandAsync();
+                }
+
+                await UpsertActiveStoreRetailPricesAsync(updatedSources, now);
+                await UpsertActiveStoreMultiCodePricesAsync(updatedSources, now);
+
+                foreach (var source in updatedSources)
+                {
+                    result.Updated.Add(new ContainerProductCreationResultItemDto
+                    {
+                        ProductCode = source.Item.ProductCode,
+                        ItemNumber = source.Item.ItemNumber,
+                        DetailHguid = source.Row.DetailHguid,
+                        Message = "价格已更新",
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "整柜提交更新已有商品价格失败");
+                AddError(result, null, null, null, "UPDATE_EXISTING_PRODUCTS_FAILED", ex.Message);
+            }
+        }
+
+        private async Task UpsertActiveStoreRetailPricesAsync(
+            List<ContainerProductUpdateSource> sources,
+            DateTime now
+        )
+        {
+            var activeStoreCodes = await LoadActiveStoreCodesAsync();
+            if (activeStoreCodes.Count == 0 || sources.Count == 0)
+            {
+                return;
+            }
+
+            var productCodes = sources
+                .Select(source => source.Item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var existingRows = await _context.Db.Queryable<StoreRetailPrice>()
+                .Where(row =>
+                    row.StoreCode != null
+                    && activeStoreCodes.Contains(row.StoreCode)
+                    && row.ProductCode != null
+                    && productCodes.Contains(row.ProductCode)
+                    && !row.IsDeleted
+                )
+                .ToListAsync();
+            var existingMap = existingRows
+                .GroupBy(row => BuildStoreProductKey(row.StoreCode, row.ProductCode), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(row => row.UpdatedAt ?? row.CreatedAt).First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var rowsToInsert = new List<StoreRetailPrice>();
+            var rowsToUpdate = new List<StoreRetailPrice>();
+
+            foreach (var source in sources)
+            {
+                var item = source.Item;
+                if (string.IsNullOrWhiteSpace(item.ProductCode))
+                {
+                    continue;
+                }
+
+                foreach (var storeCode in activeStoreCodes)
+                {
+                    var key = BuildStoreProductKey(storeCode, item.ProductCode);
+                    if (existingMap.TryGetValue(key, out var existing))
+                    {
+                        if (ApplyStoreRetailPriceValues(existing, item, now, updateActiveFlag: false))
+                        {
+                            rowsToUpdate.Add(existing);
+                        }
+                        continue;
+                    }
+
+                    var row = new StoreRetailPrice
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = storeCode,
+                        ProductCode = item.ProductCode,
+                        StoreProductCode = storeCode + item.ProductCode,
+                        IsActive = true,
+                        IsAutoPricing = false,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                    ApplyStoreRetailPriceValues(row, item, now, updateActiveFlag: true);
+                    rowsToInsert.Add(row);
+                    existingMap[key] = row;
+                }
+            }
+
+            if (rowsToInsert.Count > 0)
+            {
+                await _context.Db.Insertable(rowsToInsert).ExecuteCommandAsync();
+            }
+
+            if (rowsToUpdate.Count > 0)
+            {
+                await _context.Db.Updateable(rowsToUpdate)
+                    .UpdateColumns(row => new
+                    {
+                        row.PurchasePrice,
+                        row.StoreRetailPriceValue,
+                        row.UpdatedAt,
+                    })
+                    .ExecuteCommandAsync();
+            }
+        }
+
+        private async Task UpsertActiveStoreMultiCodePricesAsync(
+            List<ContainerProductUpdateSource> sources,
+            DateTime now
+        )
+        {
+            var activeStoreCodes = await LoadActiveStoreCodesAsync();
+            if (activeStoreCodes.Count == 0 || sources.Count == 0)
+            {
+                return;
+            }
+
+            var productCodes = sources
+                .Select(source => source.Item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var existingRows = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                .Where(row =>
+                    row.StoreCode != null
+                    && activeStoreCodes.Contains(row.StoreCode)
+                    && row.ProductCode != null
+                    && productCodes.Contains(row.ProductCode)
+                    && !row.IsDeleted
+                )
+                .ToListAsync();
+            var existingMap = existingRows
+                .GroupBy(row => BuildStoreProductKey(row.StoreCode, row.ProductCode), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(row => row.UpdatedAt ?? row.CreatedAt).First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var rowsToInsert = new List<StoreMultiCodeProduct>();
+            var rowsToUpdate = new List<StoreMultiCodeProduct>();
+
+            foreach (var source in sources)
+            {
+                var item = source.Item;
+                if (string.IsNullOrWhiteSpace(item.ProductCode))
+                {
+                    continue;
+                }
+
+                foreach (var storeCode in activeStoreCodes)
+                {
+                    var key = BuildStoreProductKey(storeCode, item.ProductCode);
+                    if (existingMap.TryGetValue(key, out var existing))
+                    {
+                        if (ApplyStoreMultiCodeValues(existing, item, now, updateActiveFlag: false))
+                        {
+                            rowsToUpdate.Add(existing);
+                        }
+                        continue;
+                    }
+
+                    var row = new StoreMultiCodeProduct
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = storeCode,
+                        ProductCode = item.ProductCode,
+                        StoreMultiCodeProductCode = storeCode + item.ProductCode,
+                        IsActive = true,
+                        IsAutoPricing = false,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                    };
+                    ApplyStoreMultiCodeValues(row, item, now, updateActiveFlag: true);
+                    rowsToInsert.Add(row);
+                    existingMap[key] = row;
+                }
+            }
+
+            if (rowsToInsert.Count > 0)
+            {
+                await _context.Db.Insertable(rowsToInsert).ExecuteCommandAsync();
+            }
+
+            if (rowsToUpdate.Count > 0)
+            {
+                await _context.Db.Updateable(rowsToUpdate)
+                    .UpdateColumns(row => new
+                    {
+                        row.PurchasePrice,
+                        row.MultiCodeRetailPrice,
+                        row.UpdatedAt,
+                    })
+                    .ExecuteCommandAsync();
+            }
+        }
+
+        private async Task<List<string>> LoadActiveStoreCodesAsync()
+        {
+            return (await _context.Db.Queryable<Store>()
+                .Where(store => store.IsActive && !store.IsDeleted && store.StoreCode != null)
+                .Select(store => store.StoreCode!)
+                .ToListAsync())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool ApplyStoreRetailPriceValues(
+            StoreRetailPrice row,
+            UpdateItemDto item,
+            DateTime now,
+            bool updateActiveFlag
+        )
+        {
+            var changed = false;
+            if (item.ImportPrice.HasValue && row.PurchasePrice != item.ImportPrice)
+            {
+                row.PurchasePrice = item.ImportPrice;
+                changed = true;
+            }
+            if (item.OEMPrice.HasValue && row.StoreRetailPriceValue != item.OEMPrice)
+            {
+                row.StoreRetailPriceValue = item.OEMPrice;
+                changed = true;
+            }
+            if (updateActiveFlag)
+            {
+                row.IsActive = true;
+                row.IsAutoPricing = false;
+                changed = true;
+            }
+            if (changed)
+            {
+                row.UpdatedAt = now;
+            }
+            return changed;
+        }
+
+        private static bool ApplyStoreMultiCodeValues(
+            StoreMultiCodeProduct row,
+            UpdateItemDto item,
+            DateTime now,
+            bool updateActiveFlag
+        )
+        {
+            var changed = false;
+            if (item.ImportPrice.HasValue && row.PurchasePrice != item.ImportPrice)
+            {
+                row.PurchasePrice = item.ImportPrice;
+                changed = true;
+            }
+            if (item.OEMPrice.HasValue && row.MultiCodeRetailPrice != item.OEMPrice)
+            {
+                row.MultiCodeRetailPrice = item.OEMPrice;
+                changed = true;
+            }
+            if (updateActiveFlag)
+            {
+                row.IsActive = true;
+                row.IsAutoPricing = false;
+                changed = true;
+            }
+            if (changed)
+            {
+                row.UpdatedAt = now;
+            }
+            return changed;
+        }
+
+        private static string BuildStoreProductKey(string? storeCode, string? productCode)
+        {
+            return $"{storeCode?.Trim()}|{productCode?.Trim()}";
         }
 
         private static ContainerProductCreationProductType NormalizeContainerProductType(
@@ -1052,11 +1584,141 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
+        private ContainerProductCreationResultDto CompleteSubmitTransaction(
+            ContainerProductCreationResultDto result,
+            bool submitTransactionStarted
+        )
+        {
+            if (!submitTransactionStarted)
+            {
+                return result;
+            }
+
+            if (result.FailedCount > 0)
+            {
+                // 整柜提交有任何失败就回滚，避免创建/更新部分成功但货柜未完成造成数据半提交。
+                RollbackSubmitTransaction(submitTransactionStarted);
+                return result;
+            }
+
+            _context.Db.Ado.CommitTran();
+            return result;
+        }
+
+        private void RollbackSubmitTransaction(bool submitTransactionStarted)
+        {
+            if (!submitTransactionStarted)
+            {
+                return;
+            }
+
+            try
+            {
+                _context.Db.Ado.RollbackTran();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "整柜提交事务回滚失败");
+            }
+        }
+
+        private async Task<ContainerProductCreationResultDto> FinalizeSubmitResultAsync(
+            string containerGuid,
+            bool isSubmitContainer,
+            ContainerProductCreationResultDto result
+        )
+        {
+            if (isSubmitContainer)
+            {
+                PromoteBlockingSubmitSkipsToErrors(result);
+            }
+            FinalizeResult(result);
+            if (!isSubmitContainer)
+            {
+                return result;
+            }
+
+            if (result.FailedCount > 0)
+            {
+                return result;
+            }
+
+            try
+            {
+                // 整柜提交只有在创建/更新没有失败时才推进货柜状态，避免失败明细被误标为完成。
+                var container = await _context.Db.Queryable<Container>()
+                    .Where(item => item.ContainerCode == containerGuid && !item.IsDeleted)
+                    .FirstAsync();
+                if (container == null)
+                {
+                    AddError(result, null, null, null, "CONTAINER_NOT_FOUND", "货柜不存在，无法标记为已完成");
+                    return FinalizeResult(result);
+                }
+
+                container.Status = 2;
+                container.UpdatedAt = DateTime.Now;
+                await _context.Db.Updateable(container)
+                    .UpdateColumns(item => new { item.Status, item.UpdatedAt })
+                    .ExecuteCommandAsync();
+                result.ContainerCompleted = true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "整柜提交完成货柜状态失败: {ContainerGuid}", containerGuid);
+                AddError(result, null, null, null, "COMPLETE_CONTAINER_FAILED", ex.Message);
+            }
+
+            return FinalizeResult(result);
+        }
+
+        private static void PromoteBlockingSubmitSkipsToErrors(
+            ContainerProductCreationResultDto result
+        )
+        {
+            var blockingReasonCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "MISSING_PRODUCT_CODE",
+                "MISSING_ITEM_NUMBER",
+                "MISSING_CHINESE_NAME",
+                "MISSING_ENGLISH_NAME",
+                "INVALID_IMPORT_PRICE",
+                "INVALID_OEM_PRICE",
+                "DUPLICATE_PRODUCT_CODE",
+                "DUPLICATE_ITEM_NUMBER",
+                "DUPLICATE_WAREHOUSE_PRODUCT",
+            };
+
+            foreach (var skipped in result.Skipped)
+            {
+                if (
+                    string.IsNullOrWhiteSpace(skipped.ReasonCode)
+                    || !blockingReasonCodes.Contains(skipped.ReasonCode)
+                    || result.Errors.Any(error =>
+                        string.Equals(error.DetailHguid, skipped.DetailHguid, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(error.ReasonCode, skipped.ReasonCode, StringComparison.OrdinalIgnoreCase)
+                    )
+                )
+                {
+                    continue;
+                }
+
+                result.Errors.Add(new ContainerProductCreationResultItemDto
+                {
+                    ProductCode = skipped.ProductCode,
+                    ItemNumber = skipped.ItemNumber,
+                    DetailHguid = skipped.DetailHguid,
+                    ReasonCode = skipped.ReasonCode,
+                    Message = skipped.Message,
+                });
+            }
+        }
+
         private static ContainerProductCreationResultDto FinalizeResult(
             ContainerProductCreationResultDto result
         )
         {
             result.CreatedCount = result.Created.Count;
+            result.UpdatedCount = result.Updated.Count;
             result.SkippedCount = result.Skipped.Count;
             result.FailedCount = result.Errors.Count;
             return result;
@@ -1124,6 +1786,13 @@ namespace BlazorApp.Api.Services.React
             public string? Barcode { get; set; }
             public string? ImageUrl { get; set; }
             public int? DomesticProductType { get; set; }
+            public string? WarehouseCategoryGUID { get; set; }
+        }
+
+        private sealed class ContainerProductUpdateSource
+        {
+            public UpdateItemDto Item { get; set; } = new();
+            public ContainerProductCreationSourceRow Row { get; set; } = new();
         }
     }
 }

@@ -1,6 +1,7 @@
 import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   AddUserToStoreDto,
+  CreateStoreDto,
   StoreDetailDto,
   StoreDto,
   StoreQueryDto,
@@ -8,7 +9,7 @@ import type {
   StoreUserQueryDto,
   UpdateStoreDto,
 } from '../types/store'
-import request, { unwrapApiData, unwrapPagedResult } from '../utils/request'
+import request, { RequestError, unwrapApiData, unwrapPagedResult } from '../utils/request'
 import { sortStoreOptionsByName } from '../utils/managedStoreScope'
 
 export interface StoreOption {
@@ -63,6 +64,22 @@ export async function getActiveStores(): Promise<StoreOption[]> {
 
 export async function getStoreByGuid(guid: string): Promise<StoreDetailDto> {
   const response = await request.get<ApiResponse<StoreDetailApiDto>>(`/api/stores/guid/${guid}`)
+  return mapStoreDetail(unwrapApiData(response))
+}
+
+export async function getNextStoreCode(): Promise<string> {
+  const response = await request.get<ApiResponse<string>>('/api/stores/next-code')
+  if (response.success === false) {
+    throw new RequestError(response.message || '获取下一个分店编码失败', 400, response)
+  }
+  return unwrapApiData(response)
+}
+
+export async function createStore(payload: CreateStoreDto): Promise<StoreDetailDto> {
+  const response = await request.post<ApiResponse<StoreDetailApiDto>>('/api/stores', payload)
+  if (response.success === false) {
+    throw new RequestError(response.message || '创建分店失败', 400, response)
+  }
   return mapStoreDetail(unwrapApiData(response))
 }
 

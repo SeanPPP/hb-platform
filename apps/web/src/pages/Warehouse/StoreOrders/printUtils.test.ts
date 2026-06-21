@@ -2,8 +2,11 @@ import {
   PDF_IMAGE_FORMAT,
   PDF_IMAGE_MIME_TYPE,
   PDF_IMAGE_QUALITY,
+  buildDocumentFileName,
   buildPdfSlicePlan,
   collectElementBreakOffsets,
+  formatDocumentFileDate,
+  formatPrintDate,
   getPdfSliceImageData,
   paintPdfSlice,
 } from './printUtils'
@@ -102,6 +105,35 @@ runTest('PDF 图片输出应锁定 JPEG 格式，避免回退到 PNG', () => {
   assertEqual(PDF_IMAGE_QUALITY, 0.95, 'JPEG 质量应保持 0.95')
   assertEqual(imageData, 'data:image/jpeg;base64,abc', '应返回 canvas 输出的 JPEG data URL')
   assertDeepEqual(calls, [['image/jpeg', 0.95]], 'toDataURL 应按 JPEG 参数调用')
+})
+
+runTest('文件名日期应固定格式化为 yyyy-MM-dd', () => {
+  assertEqual(formatDocumentFileDate('2026-06-04T12:30:00'), '2026-06-04', 'ISO 日期应直接提取年月日')
+  assertEqual(formatDocumentFileDate('2026/6/4'), '2026-06-04', '斜杠日期也应补零')
+})
+
+runTest('date-only 发票日期显示不应受 UTC 负时区影响', () => {
+  const originalTimezone = process.env.TZ
+  process.env.TZ = 'America/Los_Angeles'
+  try {
+    assertEqual(formatPrintDate('2026-06-05', false, 'en-US'), '6/5/2026', 'date-only 字符串应按本地日期组件显示')
+  } finally {
+    process.env.TZ = originalTimezone
+  }
+})
+
+runTest('文档文件名只有传入日期时才追加日期后缀', () => {
+  const fallbackTexts = { unknownStore: 'UnknownStore', unknownOrder: 'UnknownOrder' }
+  assertEqual(
+    buildDocumentFileName('INVOICE', 'Bankstown', '2026-1049', 'xlsx', fallbackTexts, '2026-06-17'),
+    'INVOICE_Bankstown_2026-1049_2026-06-17.xlsx',
+    '发票文件名应追加 invoice 日期',
+  )
+  assertEqual(
+    buildDocumentFileName('PICKING', 'Bankstown', '2026-1049', 'xlsx', fallbackTexts),
+    'PICKING_Bankstown_2026-1049.xlsx',
+    '未传日期时应保持原文件名格式',
+  )
 })
 
 runTest('PDF 切片绘制应先铺白底再绘制原图切片', () => {

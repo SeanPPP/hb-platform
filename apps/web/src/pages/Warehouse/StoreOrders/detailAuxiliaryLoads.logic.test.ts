@@ -59,6 +59,28 @@ async function main() {
   })
   if (auxiliaryWarningFailure) failures.push(auxiliaryWarningFailure)
 
+  const warehouseStaffStoreSelectorFailure = await runTest('仓库员工明细页不应请求完整分店下拉', () => {
+    assert(
+      detailSource.includes('if (!canUseWarehouseManagerActions)') &&
+        detailSource.includes('setStores([])') &&
+        detailSource.includes('lastLoadedStoresQueryKeyRef.current = storesQueryKey') &&
+        detailSource.includes('return\n    }\n\n    setStoresLoading(true)'),
+      '非仓库管理员应跳过完整分店下拉接口，避免 WarehouseStaff 因 /api/stores 403 看到分店显示失败',
+    )
+    assert(
+      detailSource.includes('if (headerForm.storeCode && !options.some((item) => item.value === headerForm.storeCode))') &&
+        detailSource.includes('const currentStoreLabel = detail?.storeName') &&
+        detailSource.includes('`${detail.storeName} (${headerForm.storeCode})`') &&
+        detailSource.includes("`${headerForm.storeCode} (${t('column.currentStore')})`"),
+      '分店下拉跳过后应优先使用明细接口返回的 storeName 显示当前订单分店',
+    )
+    assert(
+      !detailSource.includes('userGUID: canViewAllStores ? undefined : currentUser?.userGUID'),
+      '详情页不应继续为仓库员工请求按用户过滤的完整分店下拉',
+    )
+  })
+  if (warehouseStaffStoreSelectorFailure) failures.push(warehouseStaffStoreSelectorFailure)
+
   const translationFailure = await runTest('分店下拉非阻断提示应有中英文文案', () => {
     assert(
       zhSource.includes('"loadStoreOptionsFailed": "分店下拉加载失败，订单明细可继续查看"'),
@@ -118,24 +140,60 @@ async function main() {
 
   const flowGuardFailure = await runTest('状态流转写入口应有函数内二次门禁', () => {
     assert(
-      detailSource.includes('if (!canStartPicking)') &&
-        detailSource.includes('if (!canCompleteOrder)') &&
+      detailSource.includes('if (!canUseWarehouseManagerActions || !canStartPicking)') &&
+        detailSource.includes('if (!canUseWarehouseManagerActions || !canCompleteOrder)') &&
         detailSource.includes("message.warning(t('storeOrders.detail.orderReadonlyRefresh'))"),
-      '开始配货/完成订单函数入口尚未按状态二次拦截',
+      '开始配货/完成订单函数入口尚未按仓库管理员权限和状态二次拦截',
     )
   })
   if (flowGuardFailure) failures.push(flowGuardFailure)
 
-  const disabledUiFailure = await runTest('不可编辑订单应禁用表头和明细写控件但保留只读动作', () => {
+  const completeOrderOutboundDateFailure = await runTest('详情页完成订单应只在出库日期为空时补当天', () => {
+    const completeOrderSource = detailSource.slice(
+      detailSource.indexOf('const handleCompleteOrder'),
+      detailSource.indexOf('const handleChangeOrderStatus'),
+    )
+
+    assert(detailSource.includes('function formatLocalDateForInput'), '详情页应提供本地日期格式化 helper，避免 UTC 日期偏移')
+    assert(!detailSource.includes('completeStoreOrder,'), '详情页完成订单不应再导入直接完成接口')
+    assert(!completeOrderSource.includes('completeStoreOrder(detail.orderGUID)'), '详情页完成订单不应直接调用完成接口')
     assert(
-      detailSource.includes('disabled={isReadonlyOrder}') &&
-        detailSource.includes('disabled={isReadonlyOrder || !selectedLineKeys.length}') &&
-        detailSource.includes('disabled={isReadonlyOrder || validPastePreviewCount === 0}') &&
+      completeOrderSource.includes('const currentOutboundDate = headerForm.outboundDate?.slice(0, 10)') &&
+        completeOrderSource.includes('const nextOutboundDate = currentOutboundDate || formatLocalDateForInput()') &&
+        completeOrderSource.includes('updateStoreOrderOutboundDate({') &&
+        completeOrderSource.includes('outboundDate: nextOutboundDate') &&
+        completeOrderSource.includes('completeOrder: true'),
+      '完成订单应复用出库日期接口：已有出库日期则保留，空出库日期才补当天并同步完成订单',
+    )
+  })
+  if (completeOrderOutboundDateFailure) failures.push(completeOrderOutboundDateFailure)
+
+  const disabledUiFailure = await runTest('非仓库管理员应禁用表头和明细写控件，仅保留 WarehouseStaff 只读配货单入口', () => {
+    const orderDetailSectionSource = detailSource.slice(
+      detailSource.indexOf("title={t('storeOrders.orderDetailSection')}"),
+      detailSource.indexOf('className="store-order-detail-filter-bar"'),
+    )
+    const pickingButtonSource = orderDetailSectionSource.slice(
+      orderDetailSectionSource.indexOf('icon={<PrinterOutlined />}'),
+      orderDetailSectionSource.indexOf("t('storeOrders.pickingList')"),
+    )
+    const pickingButtonPosition = orderDetailSectionSource.indexOf("t('storeOrders.pickingList')")
+    const managerGuardPosition = orderDetailSectionSource.lastIndexOf('{canUseWarehouseManagerActions ? (', pickingButtonPosition)
+    const managerGuardClosePosition = orderDetailSectionSource.lastIndexOf(') : null}', pickingButtonPosition)
+
+    assert(
+      detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder}') &&
+        detailSource.includes('disabled={!canUseWarehouseManagerActions || isReadonlyOrder || validPastePreviewCount === 0}') &&
         detailSource.includes('disabled={isReadonlyOrder || !canStartPicking}') &&
         detailSource.includes('disabled={!canCompleteOrder}') &&
-        detailSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
-        detailSource.includes('navigate(`/warehouse/store-order/invoice/${detail.orderGUID}`)'),
-      '详情页尚未禁用写控件或误影响配货单/发票只读动作',
+        detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? (') &&
+        detailSource.includes('const canUseStoreOrderDocumentActions = access.isWarehouseStaff') &&
+        detailSource.includes('const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions') &&
+        orderDetailSectionSource.includes('canUseStoreOrderDetailExtraActions ? (\n                  <Space wrap>') &&
+        pickingButtonSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
+        managerGuardPosition <= managerGuardClosePosition &&
+        detailSource.includes('rowSelection={\n                  canUseWarehouseManagerActions'),
+      '详情页尚未按仓库管理员权限禁用写控件，或未为 WarehouseStaff 保留只读配货单入口',
     )
   })
   if (disabledUiFailure) failures.push(disabledUiFailure)
@@ -311,6 +369,37 @@ async function main() {
   })
   if (storeOrderPrintPagesKeepAliveFailure) failures.push(storeOrderPrintPagesKeepAliveFailure)
 
+  const warehouseStaffPickingStoreLoadFailure = await runTest('配货单页 WarehouseStaff 不应请求完整分店下拉', () => {
+    assert(
+      pickingListSource.includes("import { useAuthStore } from '../../../store/auth'") &&
+        pickingListSource.includes('const { access } = useAuthStore()') &&
+        pickingListSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager') &&
+        pickingListSource.includes('if (detail.storeCode && canUseWarehouseManagerActions)') &&
+        pickingListSource.includes('WarehouseStaff 无需加载完整分店下拉') &&
+        pickingListSource.includes('store?.storeName || order.storeName || order.storeCode'),
+      '配货单页应跳过 WarehouseStaff 的完整分店接口请求，并使用订单详情中的 storeName/storeCode 展示',
+    )
+  })
+  if (warehouseStaffPickingStoreLoadFailure) failures.push(warehouseStaffPickingStoreLoadFailure)
+
+  const warehouseStaffPickingPrintFailure = await runTest('配货单页 WarehouseStaff 打印下载不应触发状态流转写接口', () => {
+    const beforePrintSource = pickingListSource.slice(
+      pickingListSource.indexOf('const handleBeforePrint = async () => {'),
+      pickingListSource.indexOf('const handlePrint = async () => {'),
+    )
+
+    assert(
+      beforePrintSource.includes('WarehouseStaff 可打印/下载配货单') &&
+        beforePrintSource.includes('if (canUseWarehouseManagerActions && order.flowStatus === StoreOrderFlowStatus.Submitted)') &&
+        beforePrintSource.includes('await startPickingStoreOrder(order.orderGUID)') &&
+        pickingListSource.includes('await handleBeforePrint()') &&
+        pickingListSource.includes('await printElementPagesAsPdf') &&
+        pickingListSource.includes('await downloadElementPagesAsPdf'),
+      '配货单打印/下载前只有仓库管理员可自动开始配货，WarehouseStaff 不能触发 start-picking 写接口',
+    )
+  })
+  if (warehouseStaffPickingPrintFailure) failures.push(warehouseStaffPickingPrintFailure)
+
   const lowRiskDetailPagesKeepAliveFailure = await runTest('低风险详情页 Tab 切回应保留已有内容并跳过自动刷新', () => {
     assert(
       containerDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
@@ -322,7 +411,8 @@ async function main() {
         containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
-        containerDetailSource.includes('requestedDetailQueryKey: detailQueryKey') &&
+        containerDetailSource.includes('const activeLoadQueryKey = detailQueryKey') &&
+        containerDetailSource.includes('requestedDetailQueryKey: activeLoadQueryKey') &&
         containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
         containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
         containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&

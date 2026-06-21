@@ -348,25 +348,32 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var query = _hqContext.Db.Queryable<DIC_商品零售价表>()
-                .Where(x =>
-                    x.H使用状态 == true
-                    && !string.IsNullOrEmpty(x.H分店代码)
-                    && !string.IsNullOrEmpty(x.H商品编码)
+                .Where(price =>
+                    price.H使用状态 == true
+                    && !string.IsNullOrEmpty(price.H分店代码)
+                    && !string.IsNullOrEmpty(price.H商品编码)
+                    // 用 EXISTS 过滤启用商品，避免商品字典同编码多行时把同一价格行 join 放大。
+                    && SqlFunc.Subqueryable<DIC_商品信息字典表>()
+                        .Where(product =>
+                            product.H商品编码 == price.H商品编码
+                            && product.H使用状态 == true
+                        )
+                        .Any()
                 );
 
             if (targetStoreCodes.Count > 0)
             {
-                query = query.Where(x => targetStoreCodes.Contains(x.H分店代码));
+                query = query.Where(price => targetStoreCodes.Contains(price.H分店代码));
             }
 
             if (startDate.HasValue)
             {
-                query = query.Where(x => x.FGC_LastModifyDate >= startDate.Value);
+                query = query.Where(price => price.FGC_LastModifyDate >= startDate.Value);
             }
 
             if (endDate.HasValue)
             {
-                query = query.Where(x => x.FGC_LastModifyDate <= endDate.Value);
+                query = query.Where(price => price.FGC_LastModifyDate <= endDate.Value);
             }
 
             return query;
@@ -482,14 +489,8 @@ namespace BlazorApp.Api.Services.React
 
                 while (true)
                 {
-                    var hqBatch = await _hqContext.Db.Queryable<DIC_商品零售价表>()
-                        .Where(x =>
-                            x.ID > lastId
-                            && x.H使用状态 == true
-                            && !string.IsNullOrEmpty(x.H分店代码)
-                            && !string.IsNullOrEmpty(x.H商品编码)
-                        )
-                        .WhereIF(storeChunk.Count > 0, x => storeChunk.Contains(x.H分店代码))
+                    var hqBatch = await BuildHqQuery(storeChunk, null, null)
+                        .Where(x => x.ID > lastId)
                         .OrderBy(x => x.ID)
                         .Take(_options.HqReadBatchSize)
                         .ToListAsync();

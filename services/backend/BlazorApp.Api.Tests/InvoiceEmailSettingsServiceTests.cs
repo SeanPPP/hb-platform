@@ -123,6 +123,51 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateSettingsAsync_WhenPasswordEmptyAndStoredPasswordInvalid_ReturnsClearFailure()
+    {
+        var service = CreateService();
+        await SeedInvalidEncryptedPasswordAsync();
+
+        var result = await service.UpdateSettingsAsync(
+            CreateRequest(
+                host: "smtp-updated.example.com",
+                password: "",
+                clearPassword: false
+            ),
+            "admin"
+        );
+        var row = await _db.Queryable<InvoiceEmailConfiguration>().FirstAsync();
+
+        Assert.False(result.Success);
+        Assert.Equal("INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED", result.ErrorCode);
+        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置", result.Message);
+        Assert.Equal("smtp.example.com", row!.Host);
+        Assert.Equal("invalid-protected-payload", row.EncryptedPassword);
+    }
+
+    [Fact]
+    public async Task UpdateSettingsAsync_WhenStoredPasswordInvalidAndNewPasswordProvided_ReplacesPassword()
+    {
+        var service = CreateService();
+        await SeedInvalidEncryptedPasswordAsync();
+
+        var result = await service.UpdateSettingsAsync(
+            CreateRequest(
+                host: "smtp-updated.example.com",
+                password: "new-secret",
+                clearPassword: false
+            ),
+            "admin"
+        );
+        var runtime = await service.GetEffectiveOptionsAsync();
+
+        Assert.True(result.Success);
+        Assert.True(result.Data!.HasPassword);
+        Assert.Equal("smtp-updated.example.com", runtime.Host);
+        Assert.Equal("new-secret", runtime.Password);
+    }
+
+    [Fact]
     public async Task UpdateSettingsAsync_WhenClearPassword_RemovesStoredPassword()
     {
         var service = CreateService();

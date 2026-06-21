@@ -107,9 +107,9 @@ namespace BlazorApp.Api.Services
                     .FirstAsync();
 
                 WareHouseOrder order;
-                bool isNewOrder = existingOrder == null;
+                var isNewOrder = existingOrder == null;
 
-                if (isNewOrder)
+                if (existingOrder == null)
                 {
                     var orderNo = await _orderNumberGenerator.GetNextOrderNoAsync();
                     _logger.LogInformation("创建新订单，订单号: {OrderNo}", orderNo);

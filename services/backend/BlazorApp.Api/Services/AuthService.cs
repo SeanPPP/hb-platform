@@ -72,8 +72,8 @@ namespace BlazorApp.Api.Services
                     .ToListAsync();
                 var user = list.FirstOrDefault();
 
-                // ❌ 用户不存在或密码验证失败
-                if (user == null || !VerifyPassword(request.Password, user.PasswordHash))
+                // ❌ 用户不存在或密码验证失败；旧客户端未传格式时按 clientSha256 兼容处理。
+                if (user == null || !VerifyPassword(request.Password, user.PasswordHash, request.PasswordFormat, out var needsPasswordRehash))
                 {
                     return new LoginResponse { Success = false, Message = "用户名或密码错误" };
                 }
@@ -99,21 +99,17 @@ namespace BlazorApp.Api.Services
                 // 记录用户活动，可用于安全审计和会话管理
                 user.LastLoginAt = DateTime.UtcNow;
                 user.UpdatedAt = DateTime.UtcNow;
+                if (needsPasswordRehash)
+                {
+                    // 登录时拿到了原始密码，旧 SHA256 哈希可安全迁移为 PBKDF2。
+                    user.PasswordHash = HashPassword(request.Password);
+                }
                 await _dbContext
                     .Db.Updateable(user)
-                    .UpdateColumns(u => new { u.LastLoginAt, u.UpdatedAt }) // 只更新指定字段，提高性能
+                    .UpdateColumns(u => new { u.LastLoginAt, u.UpdatedAt, u.PasswordHash }) // 只更新指定字段，提高性能
                     .ExecuteCommandAsync();
 
-                var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
-                var permissions = new List<string>();
-                if (roleGuids.Any())
-                {
-                    permissions = await _dbContext.Db.Queryable<SysRolePermission>()
-                        .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
-                        .Select(srp => srp.PermissionCode)
-                        .Distinct()
-                        .ToListAsync();
-                }
+                var permissions = await GetEffectivePermissionCodesAsync(user);
 
                 var token = GenerateJwtToken(user, permissions);
 
@@ -295,11 +291,18 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="password">用户输入的原始密码</param>
         /// <param name="storedHash">数据库中存储的密码哈希值</param>
+        /// <param name="passwordFormat">客户端提交密码的格式</param>
+        /// <param name="needsRehash">旧哈希使用原始密码验证成功时需要迁移</param>
         /// <returns>true表示密码正确，false表示密码错误</returns>
-        private static bool VerifyPassword(string password, string storedHash)
+        private static bool VerifyPassword(
+            string password,
+            string storedHash,
+            string? passwordFormat,
+            out bool needsRehash
+        )
         {
-            // 🔐 使用统一的密码验证工具类
-            return PasswordHasher.VerifyPassword(password, storedHash);
+            // 🔐 使用统一的密码验证工具类，并让登录流程负责旧哈希渐进迁移。
+            return PasswordHasher.VerifyPassword(password, storedHash, passwordFormat, out needsRehash);
         }
 
         /// <summary>
@@ -318,31 +321,24 @@ namespace BlazorApp.Api.Services
         {
             var jwtSettings = _configuration.GetSection("Jwt").Get<Models.JwtSettings>();
 
-            var roleGuids = user.Roles?.Select(r => r.RoleGUID).ToList() ?? new List<string>();
-            var permissions = new List<string>();
-            if (roleGuids.Any())
-            {
-                permissions = await _dbContext.Db.Queryable<SysRolePermission>()
-                    .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
-                    .Select(srp => srp.PermissionCode)
-                    .Distinct()
-                    .ToListAsync();
-            }
-
-            var accessToken = GenerateAccessToken(user, jwtSettings!, permissions);
+            var permissions = await GetEffectivePermissionCodesAsync(user);
 
             // 🔄 生成刷新令牌（长令牌，7天有效）
             // 刷新令牌用于获取新的访问令牌，有效期长以改善用户体验
             var refreshToken = GenerateRefreshToken();
+            var refreshTokenGuid = Guid.NewGuid().ToString();
+            var now = DateTime.UtcNow;
+
+            await RevokeOtherPublicIpSessionsAsync(user.UserGUID, ipAddress, now);
 
             // 💾 保存刷新令牌到数据库
             // 存储刷新令牌便于撤销和审计
             var refreshTokenEntity = new RefreshToken
             {
-                RefreshTokenGUID = Guid.NewGuid().ToString(), // 刷新令牌唯一标识
+                RefreshTokenGUID = refreshTokenGuid, // 刷新令牌唯一标识，也是 access token 的 sessionId
                 UserGUID = user.UserGUID, // 关联用户
                 Token = refreshToken, // 刷新令牌值
-                ExpiresAt = DateTime.UtcNow.AddDays(7), // 过期时间（7天）
+                ExpiresAt = now.AddDays(7), // 过期时间（7天）
                 IsRevoked = false, // 是否已撤销
                 IpAddress = ipAddress, // 客户端IP（安全审计）
                 UserAgent = userAgent, // 客户端信息（安全审计）
@@ -351,13 +347,15 @@ namespace BlazorApp.Api.Services
             // 📊 将刷新令牌实体保存到数据库
             await _dbContext.Db.Insertable(refreshTokenEntity).ExecuteCommandAsync();
 
+            var accessToken = GenerateAccessToken(user, jwtSettings!, permissions, refreshTokenGuid);
+
             // 📤 返回令牌响应对象
             return new TokenResponse
             {
                 AccessToken = accessToken, // 访问令牌
                 RefreshToken = refreshToken, // 刷新令牌
-                AccessTokenExpiry = DateTime.UtcNow.AddMinutes(30), // 访问令牌过期时间
-                RefreshTokenExpiry = DateTime.UtcNow.AddDays(7), // 刷新令牌过期时间
+                AccessTokenExpiry = now.AddMinutes(30), // 访问令牌过期时间
+                RefreshTokenExpiry = now.AddDays(7), // 刷新令牌过期时间
                 Success = true, // 操作成功标志
             };
         }
@@ -521,6 +519,50 @@ namespace BlazorApp.Api.Services
             return true;
         }
 
+        private async Task<List<string>> GetEffectivePermissionCodesAsync(User user)
+        {
+            var roleGuids = user.Roles?
+                .Select(r => r.RoleGUID)
+                .Where(roleGuid => !string.IsNullOrWhiteSpace(roleGuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? new List<string>();
+
+            var permissions = new List<string>();
+            if (roleGuids.Any())
+            {
+                var rolePermissions = await _dbContext.Db.Queryable<SysRolePermission>()
+                    .Where(srp => roleGuids.Contains(srp.RoleGuid) && !srp.IsDeleted)
+                    .Select(srp => srp.PermissionCode)
+                    .ToListAsync();
+                permissions.AddRange(rolePermissions);
+            }
+
+            // 直接授权是权限管理页的真实保存结果之一，登录和刷新令牌必须一起写入权限 claim。
+            if (HasUserPermissionTable())
+            {
+                var directPermissions = await _dbContext.Db.Queryable<SysUserPermission>()
+                    .Where(item => item.UserGuid == user.UserGUID && !item.IsDeleted)
+                    .Select(item => item.PermissionCode)
+                    .ToListAsync();
+                permissions.AddRange(directPermissions);
+            }
+
+            return permissions
+                .Where(permission => !string.IsNullOrWhiteSpace(permission))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private bool HasUserPermissionTable()
+        {
+            return _dbContext.Db.DbMaintenance.GetTableInfoList(false)
+                .Any(table => string.Equals(
+                    table.Name,
+                    "HBwebSysUserPermissions",
+                    StringComparison.OrdinalIgnoreCase
+                ));
+        }
+
         /// <summary>
         /// 修改用户密码
         /// </summary>
@@ -528,12 +570,11 @@ namespace BlazorApp.Api.Services
         {
             var user = await _dbContext.Db.Queryable<User>()
                 .FirstAsync(u => u.UserGUID == userGuid);
-            var pwcheck = HashPassword(dto.NewPassword);
 
             if (user == null) return false;
 
             // 验证旧密码
-            if (!VerifyPassword(dto.CurrentPassword, user.PasswordHash))
+            if (!VerifyPassword(dto.CurrentPassword, user.PasswordHash, PasswordHasher.PasswordFormatRaw, out _))
             {
                 throw new Exception("当前密码错误");
             }
@@ -554,8 +595,15 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="user">用户对象</param>
         /// <param name="jwtSettings">JWT配置设置</param>
+        /// <param name="permissions">用户权限代码列表</param>
+        /// <param name="sessionId">刷新令牌会话 ID，用于 JWT 中绑定当前会话</param>
         /// <returns>JWT访问令牌字符串</returns>
-        private string GenerateAccessToken(User user, Models.JwtSettings jwtSettings, List<string>? permissions = null)
+        private string GenerateAccessToken(
+            User user,
+            Models.JwtSettings jwtSettings,
+            List<string>? permissions = null,
+            string? sessionId = null
+        )
         {
             // 🔑 创建对称安全密钥
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.Key));
@@ -573,6 +621,12 @@ namespace BlazorApp.Api.Services
                 new Claim("userId", user.UserGUID.ToString()), // 用户GUID：统一标识符
                 new Claim("fullName", user.FullName ?? user.Username), // 用户全名：用于显示
             };
+
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                // sessionId 绑定 RefreshToken 记录，使被挤下线的 access token 下一次请求立即失效。
+                claims.Add(new Claim("sessionId", sessionId));
+            }
 
             // 👥 添加用户角色声明（与GenerateJwtToken保持一致）
             if (user.Roles != null && user.Roles.Any())
@@ -636,6 +690,53 @@ namespace BlazorApp.Api.Services
             await _dbContext
                 .Db.Updateable(refreshToken)
                 .UpdateColumns(rt => new { rt.IsRevoked, rt.UpdatedAt })
+                .ExecuteCommandAsync();
+        }
+
+        private async Task RevokeOtherPublicIpSessionsAsync(
+            string userGuid,
+            string ipAddress,
+            DateTime now
+        )
+        {
+            var newPublicIp = ClientIpResolver.NormalizeKnownPublicIpv4(ipAddress);
+            if (string.IsNullOrWhiteSpace(newPublicIp))
+            {
+                return;
+            }
+
+            var sessions = await _dbContext.Db.Queryable<RefreshToken>()
+                .Where(token =>
+                    token.UserGUID == userGuid
+                    && !token.IsRevoked
+                    && !token.IsDeleted
+                    && token.ExpiresAt >= now
+                )
+                .ToListAsync();
+
+            var sessionsToRevoke = sessions
+                .Where(token =>
+                {
+                    var existingPublicIp = ClientIpResolver.NormalizeKnownPublicIpv4(token.IpAddress);
+                    return !string.IsNullOrWhiteSpace(existingPublicIp)
+                        && !string.Equals(existingPublicIp, newPublicIp, StringComparison.OrdinalIgnoreCase);
+                })
+                .ToList();
+
+            if (sessionsToRevoke.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var session in sessionsToRevoke)
+            {
+                session.IsRevoked = true;
+                session.UpdatedAt = now;
+            }
+
+            // 不同公网 IP 的旧会话被新登录挤下线；同公网 IP 会话保留。
+            await _dbContext.Db.Updateable(sessionsToRevoke)
+                .UpdateColumns(token => new { token.IsRevoked, token.UpdatedAt })
                 .ExecuteCommandAsync();
         }
 

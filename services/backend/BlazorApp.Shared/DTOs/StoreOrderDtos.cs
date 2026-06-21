@@ -17,6 +17,8 @@ namespace BlazorApp.Shared.DTOs
     public string? WarehouseCategoryGUID { get; set; }
     public string? LocalSupplierCode { get; set; }
     public string? LocalSupplierName { get; set; }
+    public string? DomesticSupplierCode { get; set; }
+    public string? DomesticSupplierName { get; set; }
 
     /// <summary>
     /// 贴牌价格 (订货价格)
@@ -82,9 +84,19 @@ namespace BlazorApp.Shared.DTOs
     public string? LocalSupplierCode { get; set; }
 
     /// <summary>
+    /// 国内供应商代码过滤。
+    /// </summary>
+    public string? SupplierCode { get; set; }
+
+    /// <summary>
     /// 是否排除仓库库存表中已有未删除记录的商品。
     /// </summary>
     public bool ExcludeExistingWarehouseProducts { get; set; }
+
+    /// <summary>
+    /// 后台订货快速加入专用：允许查询上下架商品，但仍必须排除已删除商品。
+    /// </summary>
+    public bool IncludeInactiveWarehouseProducts { get; set; } = false;
 
     /// <summary>
     /// 排除指定订货单中已有未删除明细的商品。
@@ -148,6 +160,7 @@ namespace BlazorApp.Shared.DTOs
     public string OrderGUID { get; set; } = string.Empty;
     public string? OrderNo { get; set; }
     public string? StoreCode { get; set; }
+    public string? StoreName { get; set; }
     public decimal TotalAmount { get; set; }
     public int TotalQuantity { get; set; }
 
@@ -408,10 +421,39 @@ namespace BlazorApp.Shared.DTOs
     public DateTime? StartDate { get; set;}
     public DateTime? EndDate { get; set; }
     public List<int>? StatusList { get; set; }
+    public StoreOrderListColumnFilterDto? ColumnFilters { get; set; }
     public int PageNumber { get; set; } = 1;
     public int PageSize { get; set; } = 20;
     public string? SortBy { get; set; }
     public bool? SortDescending { get; set; }
+  }
+
+  /// <summary>
+  /// 分店订货列表列头过滤 DTO。
+  /// </summary>
+  public class StoreOrderListColumnFilterDto
+  {
+    public string? OrderNo { get; set; }
+    public DateTime? OutboundDateStart { get; set; }
+    public DateTime? OutboundDateEnd { get; set; }
+    public decimal? TotalQuantityMin { get; set; }
+    public decimal? TotalQuantityMax { get; set; }
+    public decimal? TotalOrderAmountMin { get; set; }
+    public decimal? TotalOrderAmountMax { get; set; }
+    public decimal? TotalOrderVolumeMin { get; set; }
+    public decimal? TotalOrderVolumeMax { get; set; }
+    public decimal? TotalAllocVolumeMin { get; set; }
+    public decimal? TotalAllocVolumeMax { get; set; }
+    public decimal? TotalAllocQuantityMin { get; set; }
+    public decimal? TotalAllocQuantityMax { get; set; }
+    public decimal? ImportTotalAmountMin { get; set; }
+    public decimal? ImportTotalAmountMax { get; set; }
+    public string? Remarks { get; set; }
+    public DateTime? CreatedAtStart { get; set; }
+    public DateTime? CreatedAtEnd { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedAtStart { get; set; }
+    public DateTime? UpdatedAtEnd { get; set; }
   }
 
   /// <summary>
@@ -496,6 +538,58 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 订单中未能匹配本地分店的分店标识聚合。
+  /// </summary>
+  public class UnmatchedStoreOrderGroupDto
+  {
+    public string SourceStoreCode { get; set; } = string.Empty;
+    public string? SourceStoreName { get; set; }
+    public int OrderCount { get; set; }
+    public DateTime? LatestOrderDate { get; set; }
+  }
+
+  /// <summary>
+  /// 将订单旧分店标识映射到目标本地分店编码。
+  /// </summary>
+  public class StoreOrderStoreCodeMappingDto
+  {
+    [Required]
+    public string SourceStoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string TargetStoreCode { get; set; } = string.Empty;
+  }
+
+  /// <summary>
+  /// 批量修复订单分店标识请求。
+  /// </summary>
+  public class BatchMapStoreOrderStoreCodeDto
+  {
+    public List<StoreOrderStoreCodeMappingDto> Mappings { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 单个旧分店标识修复结果。
+  /// </summary>
+  public class StoreOrderStoreCodeMappingResultItemDto
+  {
+    public string SourceStoreCode { get; set; } = string.Empty;
+    public string TargetStoreCode { get; set; } = string.Empty;
+    public int UpdatedCount { get; set; }
+    public int SkippedCount { get; set; }
+  }
+
+  /// <summary>
+  /// 批量修复订单分店标识结果。
+  /// </summary>
+  public class BatchMapStoreOrderStoreCodeResultDto
+  {
+    public int UpdatedCount { get; set; }
+    public int SkippedCount { get; set; }
+    public List<StoreOrderStoreCodeMappingResultItemDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
   /// 添加商品到指定订单请求
   /// </summary>
   public class AddOrderLineDto
@@ -536,6 +630,31 @@ namespace BlazorApp.Shared.DTOs
     public string ProductCode { get; set; } = string.Empty;
     public decimal? Quantity { get; set; }
     public decimal? ImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 从仓库商品表刷新订单明细进口价请求。
+  /// </summary>
+  public class RefreshStoreOrderImportPricesDto
+  {
+    [Required]
+    public string OrderGUID { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 为空表示刷新整单全部未删除明细。
+    /// </summary>
+    public List<string>? DetailGUIDs { get; set; }
+  }
+
+  /// <summary>
+  /// 从仓库商品表刷新订单明细进口价结果。
+  /// </summary>
+  public class RefreshStoreOrderImportPricesResultDto
+  {
+    public int UpdatedCount { get; set; }
+    public int UnchangedCount { get; set; }
+    public int SkippedCount { get; set; }
+    public int MissingWarehousePriceCount { get; set; }
   }
 
   public static class StoreOrderPasteTargetFields

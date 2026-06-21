@@ -132,6 +132,28 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取新建分店时建议使用的下一个编码
+        /// </summary>
+        [HttpGet("next-code")]
+        [Authorize(Policy = Permissions.Stores.Create)]
+        public async Task<IActionResult> GetNextStoreCode()
+        {
+            try
+            {
+                var result = await _storeService.GetNextStoreCodeAsync();
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取下一个分店编码失败");
+                return StatusCode(
+                    500,
+                    ApiResponse<string>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
         /// 创建新分店
         /// ➕ 只有Admin角色才能创建分店，确保数据安全
         /// </summary>

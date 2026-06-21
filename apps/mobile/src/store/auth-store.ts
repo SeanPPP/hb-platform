@@ -3,7 +3,6 @@ import type { CurrentUser, AccessControl } from "@/modules/auth/types";
 import { buildAccess } from "@/shared/utils/access";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { SecureStorage } from "@/shared/storage/secure";
-import { hashPassword } from "@/shared/utils/password";
 import { subscribeUnauthenticatedSession } from "@/modules/auth/auth-session-events";
 import {
   loginApi,
@@ -36,7 +35,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const tokenRes = await loginApi({
         username: payload.username,
-        password: hashPassword(payload.password),
+        password: payload.password,
+        passwordFormat: "raw",
       });
       await SecureStorage.setToken(tokenRes.accessToken);
       await SecureStorage.setRefreshToken(tokenRes.refreshToken);

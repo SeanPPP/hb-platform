@@ -14,6 +14,7 @@ export interface StoreUserListItem {
   gender?: string;
   employmentType?: string;
   lastLoginTime?: string;
+  lastLoginIp?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -44,6 +45,7 @@ export interface StoreUserMutationInput {
   email?: string;
   phone?: string;
   password?: string;
+  passwordFormat?: "raw" | "clientSha256";
   status: number;
 }
 
@@ -69,6 +71,7 @@ export interface StoreUserPasswordPayload {
   userGuid: string;
   storeCode: string;
   newPassword: string;
+  passwordFormat?: "raw" | "clientSha256";
 }
 
 export interface StoreUserFormValues {

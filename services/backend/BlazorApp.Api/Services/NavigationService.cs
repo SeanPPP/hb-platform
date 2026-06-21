@@ -19,6 +19,8 @@ namespace BlazorApp.Api.Services
         private sealed class NavigationPermissionContext
         {
             public bool IsAdmin { get; init; }
+            public HashSet<string> RoleNames { get; init; } =
+                new(StringComparer.OrdinalIgnoreCase);
             public HashSet<string> PermissionCodes { get; init; } =
                 new(StringComparer.OrdinalIgnoreCase);
         }
@@ -76,6 +78,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
                     new() { Path = "/system/invoice-email-settings", TitleKey = "menu.invoiceEmailSettings", Icon = "SettingOutlined", Permission = Permissions.System.ManageSettings },
                     new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.DeviceRegistration.View },
+                    new() { Path = "/system/app-downloads", TitleKey = "menu.appDownloads", Icon = "QrcodeOutlined", Permission = Permissions.System.ViewAppDownloads },
                 },
             },
             new()
@@ -320,6 +323,11 @@ namespace BlazorApp.Api.Services
                 return FullMenu;
             }
 
+            if (IsWarehouseStaffNavigationLimited(context))
+            {
+                return BuildWarehouseStaffMenu(context);
+            }
+
             var hasDashboardAccess = HasPermission(context, Permissions.Dashboard.View);
             if (!hasDashboardAccess)
             {
@@ -327,6 +335,41 @@ namespace BlazorApp.Api.Services
             }
 
             return FilterMenu(FullMenu, context);
+        }
+
+        private static List<NavigationMenuDto> BuildWarehouseStaffMenu(
+            NavigationPermissionContext context
+        )
+        {
+            if (!HasAnyPermission(
+                context,
+                Permissions.Warehouse.ManageOrders,
+                Permissions.Warehouse.Manage
+            ))
+            {
+                return new List<NavigationMenuDto>();
+            }
+
+            // 仓库员工桌面端只暴露分店订货列表，避免旧 Warehouse.Manage 权限把其它仓库/收银菜单带出来。
+            return new List<NavigationMenuDto>
+            {
+                new()
+                {
+                    Path = "/warehouse",
+                    TitleKey = "menu.warehouse",
+                    Icon = "DatabaseOutlined",
+                    Children = new List<NavigationMenuDto>
+                    {
+                        new()
+                        {
+                            Path = "/warehouse/store-orders",
+                            TitleKey = "menu.storeOrders",
+                            Icon = "ReconciliationOutlined",
+                            Permission = Permissions.Warehouse.ManageOrders,
+                        },
+                    },
+                },
+            };
         }
 
         public List<AppNavigationMenuDto> BuildAppMenu(ClaimsPrincipal user)
@@ -479,6 +522,10 @@ namespace BlazorApp.Api.Services
             return new NavigationPermissionContext
             {
                 IsAdmin = result.Data.IsSuperAdmin,
+                RoleNames = new HashSet<string>(
+                    result.Data.RoleNames,
+                    StringComparer.OrdinalIgnoreCase
+                ),
                 PermissionCodes = new HashSet<string>(
                     Permissions.ExpandPermissionCodes(result.Data.PermissionCodes),
                     StringComparer.OrdinalIgnoreCase
@@ -491,6 +538,23 @@ namespace BlazorApp.Api.Services
             return new NavigationPermissionContext
             {
                 IsAdmin = user.IsInRole("Admin") || user.IsInRole("管理员"),
+                RoleNames = new HashSet<string>(
+                    user.Claims
+                        .Where(claim =>
+                            string.Equals(
+                                claim.Type,
+                                ClaimTypes.Role,
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                            || string.Equals(
+                                claim.Type,
+                                "role",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                        .Select(claim => claim.Value),
+                    StringComparer.OrdinalIgnoreCase
+                ),
                 PermissionCodes = new HashSet<string>(
                     Permissions.ExpandPermissionCodes(
                         user.Claims
@@ -506,6 +570,21 @@ namespace BlazorApp.Api.Services
                     StringComparer.OrdinalIgnoreCase
                 ),
             };
+        }
+
+        private static bool IsWarehouseStaffNavigationLimited(NavigationPermissionContext context)
+        {
+            if (context.IsAdmin)
+            {
+                return false;
+            }
+
+            var isWarehouseStaff =
+                context.RoleNames.Contains("WarehouseStaff") || context.RoleNames.Contains("仓库员工");
+            var isWarehouseManager =
+                context.RoleNames.Contains("WarehouseManager") || context.RoleNames.Contains("仓库经理");
+
+            return isWarehouseStaff && !isWarehouseManager;
         }
 
         private static string? GetUserId(ClaimsPrincipal user)
@@ -527,6 +606,14 @@ namespace BlazorApp.Api.Services
 
             return Permissions.GetEquivalentPermissionCodes(permission)
                 .Any(code => context.PermissionCodes.Contains(code));
+        }
+
+        private static bool HasAnyPermission(
+            NavigationPermissionContext context,
+            params string[] permissions
+        )
+        {
+            return permissions.Any(permission => HasPermission(context, permission));
         }
 
         private static bool HasPermissionClaim(ClaimsPrincipal user, string? permission)

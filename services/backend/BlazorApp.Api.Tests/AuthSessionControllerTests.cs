@@ -7,6 +7,7 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -38,7 +39,8 @@ public sealed class AuthSessionControllerTests : IDisposable
             InitKeyType = InitKeyType.Attribute,
         });
 
-        _db.CodeFirst.InitTables<User, Role, UserRole>();
+        _db.CodeFirst.InitTables<User, Role, UserRole, SysRolePermission>();
+        _db.CodeFirst.InitTables<SysUserPermission>();
     }
 
     [Fact]
@@ -110,16 +112,97 @@ public sealed class AuthSessionControllerTests : IDisposable
         Assert.Contains(
             setCookieHeaders,
             header =>
-                header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
+                header != null
+                && header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
                 && header.Contains("httponly", StringComparison.OrdinalIgnoreCase)
         );
         Assert.Contains(
             setCookieHeaders,
             header =>
-                header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
+                header != null
+                && header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
                 && header.Contains("httponly", StringComparison.OrdinalIgnoreCase)
         );
     }
+
+    [Fact]
+    public async Task SessionLogin_RecordsResolvedLoginIpOnUser()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "ip-user-1",
+                Username = "ipuser",
+                Email = "ipuser@example.com",
+                PasswordHash = "hashed",
+                FullName = "IP User",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+
+        var authService = new Mock<IAuthService>();
+        authService
+            .Setup(service => service.LoginAsync(It.IsAny<LoginRequest>()))
+            .ReturnsAsync(
+                new LoginResponse
+                {
+                    Success = true,
+                    User = new LoginUserDto
+                    {
+                        UserGUID = "ip-user-1",
+                        Username = "ipuser",
+                        Email = "ipuser@example.com",
+                    },
+                }
+            );
+        authService
+            .Setup(service =>
+                service.GenerateTokensAsync(
+                    It.Is<User>(user => user.UserGUID == "ip-user-1"),
+                    "8.8.8.9",
+                    It.IsAny<string>()
+                )
+            )
+            .ReturnsAsync(
+                new TokenResponse
+                {
+                    AccessToken = "access-token",
+                    RefreshToken = "refresh-token",
+                    AccessTokenExpiry = DateTime.UtcNow.AddMinutes(15),
+                    RefreshTokenExpiry = DateTime.UtcNow.AddDays(7),
+                    Success = true,
+                }
+            );
+
+        var controller = CreateController(authService.Object);
+        controller.ControllerContext.HttpContext.Request.Headers["X-Forwarded-For"] =
+            "8.8.8.9, 10.0.0.1";
+
+        var result = await InvokeAsync(controller, "SessionLogin", new LoginRequest
+        {
+            Username = "ipuser",
+            Password = "Secret123",
+        });
+
+        Assert.NotNull(result);
+        Assert.True(GetBoolean(result!, "Success"));
+
+        var user = await _db.Queryable<User>().FirstAsync(item => item.UserGUID == "ip-user-1");
+        Assert.Equal("8.8.8.9", user!.LastLoginIp);
+        Assert.NotNull(user.LastLoginAt);
+        authService.Verify(
+            service => service.GenerateTokensAsync(
+                It.Is<User>(item => item.UserGUID == "ip-user-1"),
+                "8.8.8.9",
+                It.IsAny<string>()
+            ),
+            Times.Once
+        );
+    }
+
 
     [Fact]
     public async Task SessionRefresh_ReturnsCookieOnlySessionPayload()
@@ -180,11 +263,11 @@ public sealed class AuthSessionControllerTests : IDisposable
         var setCookieHeaders = controller.Response.Headers.SetCookie.ToArray();
         Assert.Contains(
             setCookieHeaders,
-            header => header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
+            header => header != null && header.Contains("access_token=", StringComparison.OrdinalIgnoreCase)
         );
         Assert.Contains(
             setCookieHeaders,
-            header => header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
+            header => header != null && header.Contains("refresh_token=", StringComparison.OrdinalIgnoreCase)
         );
     }
 
@@ -244,6 +327,56 @@ public sealed class AuthSessionControllerTests : IDisposable
         var store = Assert.Single(result.Data!.Stores!);
         Assert.Equal("Inactive Store", store.StoreName);
         Assert.False(store.IsActive);
+    }
+
+    [Fact]
+    public async Task GetCurrentUser_WhenUserHasDirectDashboardPermission_ReturnsDirectPermission()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "direct-permission-user",
+                Username = "whs2",
+                Email = "whs2@example.com",
+                PasswordHash = "hashed",
+                FullName = "WHS2",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new SysUserPermission
+            {
+                Id = "direct-permission-user-dashboard",
+                UserGuid = "direct-permission-user",
+                PermissionCode = Permissions.Dashboard.View,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var userService = new Mock<IUserService>();
+        userService
+            .Setup(service => service.GetUserStoresAsync("direct-permission-user"))
+            .ReturnsAsync(ApiResponse<List<UserStoreDto>>.OK(new List<UserStoreDto>(), "获取用户分店成功"));
+
+        var controller = CreateController(Mock.Of<IAuthService>(), userService: userService.Object);
+        controller.ControllerContext.HttpContext.User = new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim("userId", "direct-permission-user"),
+                    new Claim(ClaimTypes.NameIdentifier, "direct-permission-user"),
+                },
+                "TestAuthType"
+            )
+        );
+
+        var result = await controller.GetCurrentUser();
+
+        Assert.True(result.Success);
+        Assert.Contains(Permissions.Dashboard.View, result.Data!.Permissions);
     }
 
     public void Dispose()

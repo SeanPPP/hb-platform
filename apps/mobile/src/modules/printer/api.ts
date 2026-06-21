@@ -95,10 +95,14 @@ function normalizeWarehouseLocationLabelPayload(
   payload: WarehouseLocationLabelPrintPayload
 ): WarehouseLocationLabelPrintPayload {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const middlePackageQuantity = toNullableNumber(data.middlePackageQuantity ?? data.MiddlePackageQuantity);
   return {
     locationGuid: String(data.locationGuid ?? data.LocationGuid ?? ""),
     locationCode: toNullableString(data.locationCode ?? data.LocationCode),
     locationBarcode: toNullableString(data.locationBarcode ?? data.LocationBarcode),
+    itemNumber: toNullableString(data.itemNumber ?? data.ItemNumber),
+    productName: toNullableString(data.productName ?? data.ProductName),
+    middlePackageQuantity: middlePackageQuantity && middlePackageQuantity > 0 ? middlePackageQuantity : 1,
     productCount: toNullableNumber(data.productCount ?? data.ProductCount) ?? 0,
   };
 }

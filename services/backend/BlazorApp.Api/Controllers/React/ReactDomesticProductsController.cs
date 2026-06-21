@@ -434,6 +434,16 @@ namespace BlazorApp.Api.Controllers.React
 
                 if (result.Success)
                 {
+                    if (result.Data == null)
+                    {
+                        // 成功响应必须带业务结果；缺失 Data 代表 service 契约异常，避免伪装成成功 0 条。
+                        _logger.LogError("批量更新商品成功响应缺少 Data");
+                        return StatusCode(
+                            500,
+                            new { success = false, message = "批量更新结果异常，请稍后重试" }
+                        );
+                    }
+
                     var data = result.Data;
                     return Ok(
                         new

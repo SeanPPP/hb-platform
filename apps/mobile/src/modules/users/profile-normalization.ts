@@ -52,6 +52,7 @@ export function normalizeStoreUser(raw: ApiRecord): StoreUserListItem {
     gender: asString(raw.gender ?? raw.Gender),
     employmentType: asString(raw.employmentType ?? raw.EmploymentType),
     lastLoginTime: asString(raw.lastLoginTime ?? raw.LastLoginTime),
+    lastLoginIp: asString(raw.lastLoginIp ?? raw.LastLoginIp),
     createdAt: asString(raw.createdAt ?? raw.CreatedAt),
     updatedAt: asString(raw.updatedAt ?? raw.UpdatedAt),
   };

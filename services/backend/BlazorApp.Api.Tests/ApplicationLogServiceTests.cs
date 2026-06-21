@@ -324,7 +324,7 @@ public class ApplicationLogServiceTests : IDisposable
         );
 
         Assert.Equal(1, result.Total);
-        var item = Assert.Single(result.Items);
+        var item = Assert.Single(result.Items!);
         Assert.Equal("trace-1", item.TraceId);
         Assert.Equal("订单同步失败", item.Message);
     }
@@ -349,9 +349,9 @@ public class ApplicationLogServiceTests : IDisposable
         );
 
         Assert.Equal(2, result.Total);
-        Assert.DoesNotContain(result.Items, item => item.ProjectCode == "hbweb_rv");
-        Assert.Contains(result.Items, item => item.ProjectCode == "HBBBackend");
-        Assert.Contains(result.Items, item => item.ProjectCode == "HbwebExpo");
+        Assert.DoesNotContain(result.Items!, item => item.ProjectCode == "hbweb_rv");
+        Assert.Contains(result.Items!, item => item.ProjectCode == "HBBBackend");
+        Assert.Contains(result.Items!, item => item.ProjectCode == "HbwebExpo");
     }
 
     [Fact]
@@ -437,8 +437,8 @@ public class ApplicationLogServiceTests : IDisposable
         Assert.Equal(1, summary.Total);
         Assert.Single(summary.ByLevel);
         Assert.Equal(level, summary.ByLevel[0].Name);
-        Assert.Single(query.Items);
-        Assert.Equal(expectedTraceId, query.Items[0].TraceId);
+        Assert.Single(query.Items!);
+        Assert.Equal(expectedTraceId, query.Items![0].TraceId);
     }
 
     [Fact]

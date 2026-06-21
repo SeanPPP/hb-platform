@@ -88,7 +88,7 @@ namespace BlazorApp.Shared.DTOs
 
     public class CreatePDAWarehouseOrderRequestDto
     {
-        [Required(ErrorMessage = "分店代码不能为空")]
+        // PDA 创建订单的分店由设备绑定关系决定，客户端 StoreCode 仅保留兼容旧请求。
         public string StoreCode { get; set; } = string.Empty;
 
         public DateTime? OrderDate { get; set; }

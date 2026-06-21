@@ -19,6 +19,7 @@ export interface StoreUserListDto {
   storeName: string
   roleNames: string[]
   lastLoginTime?: string
+  lastLoginIp?: string
   createdAt?: string
   updatedAt?: string
 }
@@ -36,6 +37,7 @@ function normalizeStoreUser(raw: Record<string, unknown>): StoreUserListDto {
     storeName: String(raw.storeName ?? raw.StoreName ?? ''),
     roleNames: Array.isArray(raw.roleNames) ? raw.roleNames.map(String) : Array.isArray(raw.RoleNames) ? raw.RoleNames.map(String) : [],
     lastLoginTime: typeof (raw.lastLoginTime ?? raw.LastLoginTime) === 'string' ? String(raw.lastLoginTime ?? raw.LastLoginTime) : undefined,
+    lastLoginIp: typeof (raw.lastLoginIp ?? raw.LastLoginIp) === 'string' ? String(raw.lastLoginIp ?? raw.LastLoginIp) : undefined,
     createdAt: typeof (raw.createdAt ?? raw.CreatedAt) === 'string' ? String(raw.createdAt ?? raw.CreatedAt) : undefined,
     updatedAt: typeof (raw.updatedAt ?? raw.UpdatedAt) === 'string' ? String(raw.updatedAt ?? raw.UpdatedAt) : undefined,
   }

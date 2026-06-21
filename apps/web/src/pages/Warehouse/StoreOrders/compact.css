@@ -53,6 +53,41 @@
   user-select: none;
 }
 
+.store-order-unmatched-source {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.store-order-unmatched-target-popup .ant-select-item-option-content {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.store-order-list-column-filter {
+  display: flex;
+  min-width: 180px;
+  max-width: 280px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.store-order-list-column-filter .ant-picker,
+.store-order-list-column-filter .ant-select,
+.store-order-list-column-filter .ant-input,
+.store-order-list-column-filter .ant-input-number {
+  width: 100%;
+}
+
+.store-order-list-column-filter .ant-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .store-order-detail-table .ant-table-cell {
   padding: 2px 4px !important;
   vertical-align: middle;
@@ -218,4 +253,97 @@
   width: 22px;
   height: 22px;
   padding: 0;
+}
+
+.store-order-product-picker-table .ant-table-cell {
+  padding: 2px 4px !important;
+  vertical-align: middle;
+  line-height: 1.2;
+}
+
+.store-order-product-picker-table .ant-table-thead > tr > th {
+  padding: 3px 4px !important;
+  line-height: 1.15;
+  white-space: normal;
+}
+
+.store-order-product-picker-table .ant-table-thead > tr > th .ant-table-column-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.store-order-product-picker-table .ant-table-container,
+.store-order-product-picker-table .ant-table-content,
+.store-order-product-picker-table .ant-table-body {
+  overflow-x: hidden !important;
+}
+
+.store-order-product-picker-table .ant-image {
+  display: inline-flex;
+  align-items: center;
+}
+
+.store-order-product-picker-table .ant-image-img {
+  width: 32px !important;
+  height: 32px !important;
+}
+
+.store-order-product-picker-table .store-order-picker-inline-cell {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px !important;
+}
+
+.store-order-product-picker-table .store-order-picker-nowrap {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.store-order-product-picker-table .store-order-picker-two-line {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.2;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.store-order-product-picker-table .store-order-picker-copy-button {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 20px;
+  padding: 0;
+}
+
+.store-order-product-picker-table .store-order-picker-barcode-cell .ant-typography {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.store-order-product-picker-table .store-order-picker-number-input {
+  width: 58px !important;
+  max-width: 58px;
+}
+
+.store-order-product-picker-table .store-order-picker-price-input {
+  width: 70px !important;
+  max-width: 70px;
+}
+
+.store-order-product-picker-table .store-order-picker-number-input .ant-input-number-input {
+  padding-inline: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.store-order-product-picker-table .ant-pagination {
+  margin: 6px 0 0;
 }

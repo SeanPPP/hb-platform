@@ -67,6 +67,37 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 用户登录记录查询参数
+    /// </summary>
+    public class UserLoginRecordQueryDto
+    {
+        /// <summary>
+        /// 页码，从1开始
+        /// </summary>
+        public int Page { get; set; } = 1;
+
+        /// <summary>
+        /// 每页大小
+        /// </summary>
+        public int PageSize { get; set; } = 10;
+    }
+
+    /// <summary>
+    /// 用户登录记录DTO
+    /// </summary>
+    public class UserLoginRecordDto
+    {
+        public string SessionId { get; set; } = string.Empty;
+        public DateTime LoginAt { get; set; }
+        public string? IpAddress { get; set; }
+        public string? UserAgent { get; set; }
+        public DateTime ExpiresAt { get; set; }
+        public bool IsRevoked { get; set; }
+        public bool IsExpired { get; set; }
+        public string Status { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// 用户基础信息DTO
     /// </summary>
     public class UserDto
@@ -77,6 +108,7 @@ namespace BlazorApp.Shared.DTOs
         public string? FullName { get; set; }
         public string? Phone { get; set; } // 兼容性
         public DateTime? LastLoginAt { get; set; }
+        public string? LastLoginIp { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
@@ -102,6 +134,7 @@ namespace BlazorApp.Shared.DTOs
         public string? FullName { get; set; }
         public string? Phone { get; set; } // 兼容性
         public DateTime? LastLoginAt { get; set; }
+        public string? LastLoginIp { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
@@ -129,6 +162,11 @@ namespace BlazorApp.Shared.DTOs
         [Required(ErrorMessage = "密码不能为空")]
         [StringLength(100, MinimumLength = 6, ErrorMessage = "密码长度必须在6-100个字符之间")]
         public string Password { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 密码格式：raw 表示 HTTPS 原始密码；clientSha256 表示旧客户端 SHA256。
+        /// </summary>
+        public string PasswordFormat { get; set; } = string.Empty;
 
         [StringLength(100, ErrorMessage = "全名长度不能超过100个字符")]
         public string? FullName { get; set; }
@@ -221,6 +259,11 @@ namespace BlazorApp.Shared.DTOs
         [Required(ErrorMessage = "新密码不能为空")]
         [StringLength(100, MinimumLength = 6, ErrorMessage = "密码长度必须在6-100个字符之间")]
         public string NewPassword { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 新密码格式：raw 表示 HTTPS 原始密码；clientSha256 表示旧客户端 SHA256。
+        /// </summary>
+        public string PasswordFormat { get; set; } = string.Empty;
 
         /// <summary>
         /// 是否强制用户下次登录时更改密码
@@ -341,6 +384,7 @@ namespace BlazorApp.Shared.DTOs
         public string Email { get; set; } = string.Empty;
         public string? FullName { get; set; }
         public string Password { get; set; } = string.Empty;
+        public string PasswordFormat { get; set; } = string.Empty;
         public List<string> RoleNames { get; set; } = new();
         public List<string> StoreCodes { get; set; } = new();
     }

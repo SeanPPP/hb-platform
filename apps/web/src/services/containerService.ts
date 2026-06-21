@@ -123,6 +123,20 @@ export async function getContainerList(query: ContainerQueryRequest): Promise<Co
       Page: query.page || 1,
       PageSize: query.pageSize || 1000,
       ItemNumberFilter: query.itemNumberFilter,
+      ContainerNumberFilter: query.containerNumberFilter,
+      LoadingDateStart: query.loadingDateStart,
+      LoadingDateEnd: query.loadingDateEnd,
+      EstimatedArrivalDateStart: query.estimatedArrivalDateStart,
+      EstimatedArrivalDateEnd: query.estimatedArrivalDateEnd,
+      ActualArrivalDateStart: query.actualArrivalDateStart,
+      ActualArrivalDateEnd: query.actualArrivalDateEnd,
+      TotalPiecesMin: query.totalPiecesMin,
+      TotalPiecesMax: query.totalPiecesMax,
+      TotalAmountMin: query.totalAmountMin,
+      TotalAmountMax: query.totalAmountMax,
+      TotalVolumeMin: query.totalVolumeMin,
+      TotalVolumeMax: query.totalVolumeMax,
+      Statuses: query.statuses,
       SortBy: query.sortBy || '预计到岸日期',
       SortDirection: query.sortDirection || 'desc',
     },
@@ -268,6 +282,13 @@ export async function recalculateContainerCostsByScope(
   return postContainerDetailAction(containerGuid, 'recalculate-costs', scope, '重算成本失败')
 }
 
+export async function backfillContainerLastPricesByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'backfill-last-prices', scope, '回填上次价格失败')
+}
+
 export async function getContainerDetail(containerGuid: string): Promise<ContainerMain> {
   const response = await request<ApiResponse<ContainerMain> | { success?: boolean; isSuccess?: boolean; message?: string; data?: ContainerMain }>(
     `${API_BASE}/${encodeURIComponent(containerGuid)}`,
@@ -337,6 +358,7 @@ export async function batchUpdateDetails(
       商品名称: item.商品名称,
       英文名称: item.英文名称,
       ClearEnglishName: item.ClearEnglishName,
+      ProductCategoryGUID: item.ProductCategoryGUID,
       贴牌价格: item.贴牌价格,
       单件装箱数: item.单件装箱数,
       中包数: item.中包数,

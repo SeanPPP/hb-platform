@@ -34,71 +34,175 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                // 服务层也做分页兜底，确保导出/测试或其他内部调用不会绕过 Controller 校验。
+                query.Page = Math.Max(query.Page, 1);
+                query.PageSize = Math.Clamp(query.PageSize, 1, 1000);
+
                 var db = _context.Db;
 
                 var gradeQuery = db.Queryable<ProductGrade>()
                     .LeftJoin<DomesticProduct>((g, d) => g.ProductCode == d.ProductCode)
                     .LeftJoin<ChinaSupplier>((g, d, s) => d.SupplierCode == s.SupplierCode)
                     .LeftJoin<WarehouseProduct>((g, d, s, w) => g.ProductCode == w.ProductCode)
-                    .LeftJoin<Product>((g, d, s, w, p) => g.ProductCode == p.UUID)
-                    .Where((g, d, s, w, p) => !g.IsDeleted);
+                    // 仓库分类挂在本地 Product.ProductCode 对应的主档行上，不能用 Product.UUID 否则分类会全部为空。
+                    .LeftJoin<Product>((g, d, s, w, p) => g.ProductCode == p.ProductCode)
+                    .LeftJoin<WarehouseCategory>(
+                        (g, d, s, w, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                    )
+                    .Where((g, d, s, w, p, c) => !g.IsDeleted);
 
                 if (!string.IsNullOrWhiteSpace(query.Search))
                 {
                     gradeQuery = gradeQuery.Where(
-                        (g, d, s, w, p) =>
+                        (g, d, s, w, p, c) =>
                             (d.HBProductNo != null && d.HBProductNo.Contains(query.Search))
                             || (d.ProductName != null && d.ProductName.Contains(query.Search))
                             || (s.SupplierName != null && s.SupplierName.Contains(query.Search))
-                            || d.SupplierCode.Contains(query.Search)
+                            || (d.SupplierCode != null && d.SupplierCode.Contains(query.Search))
                     );
                 }
 
+                // 列头筛选必须在 Count/Skip/Take 之前进入数据库查询，避免只筛当前页导致总数和分页错误。
                 if (!string.IsNullOrWhiteSpace(query.Grade))
                 {
-                    gradeQuery = gradeQuery.Where((g, d, s, w, p) => g.Grade == query.Grade);
+                    gradeQuery = gradeQuery.Where((g, d, s, w, p, c) => g.Grade == query.Grade);
                 }
 
                 if (!string.IsNullOrWhiteSpace(query.SupplierCode))
                 {
                     gradeQuery = gradeQuery.Where(
-                        (g, d, s, w, p) => d.SupplierCode == query.SupplierCode
+                        (g, d, s, w, p, c) => d.SupplierCode == query.SupplierCode
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(query.HbProductNo))
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) =>
+                            d.HBProductNo != null && d.HBProductNo.Contains(query.HbProductNo)
+                    );
+                }
+
+                if (query.DomesticPriceMin.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => d.DomesticPrice >= query.DomesticPriceMin.Value
+                    );
+                }
+
+                if (query.DomesticPriceMax.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => d.DomesticPrice <= query.DomesticPriceMax.Value
+                    );
+                }
+
+                if (query.ImportPriceMin.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => w.ImportPrice >= query.ImportPriceMin.Value
+                    );
+                }
+
+                if (query.ImportPriceMax.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => w.ImportPrice <= query.ImportPriceMax.Value
+                    );
+                }
+
+                if (query.OemPriceMin.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => w.OEMPrice >= query.OemPriceMin.Value
+                    );
+                }
+
+                if (query.OemPriceMax.HasValue)
+                {
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => w.OEMPrice <= query.OemPriceMax.Value
+                    );
+                }
+
+                if (query.WarehouseIsActive.HasValue)
+                {
+                    // 仓库上下架过滤必须参与总数计算，并且先于分页执行，避免只过滤当前页。
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) => w.IsActive == query.WarehouseIsActive.Value
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(query.CategoryGuid))
+                {
+                    var categoryGuids = await GetCategoryAndDescendantGuidsAsync(
+                        db,
+                        query.CategoryGuid.Trim()
+                    );
+                    // 分类筛选包含子分类，并且必须先于 Count/Skip/Take，避免分页后才裁剪。
+                    gradeQuery = categoryGuids.Any()
+                        ? gradeQuery.Where(
+                            (g, d, s, w, p, c) =>
+                                p.WarehouseCategoryGUID != null
+                                && categoryGuids.Contains(p.WarehouseCategoryGUID)
+                        )
+                        : gradeQuery.Where((g, d, s, w, p, c) => g.ProductCode == "__NO_MATCH_CATEGORY__");
+                }
+                else if (query.UncategorizedOnly == true)
+                {
+                    // 未分类按 Product.WarehouseCategoryGUID 为空判断；已删除分类引用不额外归入未分类。
+                    gradeQuery = gradeQuery.Where(
+                        (g, d, s, w, p, c) =>
+                            p.WarehouseCategoryGUID == null || p.WarehouseCategoryGUID == string.Empty
                     );
                 }
 
                 if (!string.IsNullOrEmpty(query.SortField))
                 {
                     var isDesc = query.SortDirection?.ToLower() == "desc";
+                    // 列头排序同样走服务端，确保排序后的结果再分页。
                     gradeQuery = query.SortField.ToLower() switch
                     {
                         "grade" => isDesc
-                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => g.Grade)
-                            : gradeQuery.OrderBy((g, d, s, w, p) => g.Grade),
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => g.Grade)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => g.Grade),
+                        "suppliercode" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => d.SupplierCode)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => d.SupplierCode),
                         "hbproductno" => isDesc
-                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => d.HBProductNo)
-                            : gradeQuery.OrderBy((g, d, s, w, p) => d.HBProductNo),
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => d.HBProductNo)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => d.HBProductNo),
                         "suppliername" => isDesc
-                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => s.SupplierName)
-                            : gradeQuery.OrderBy((g, d, s, w, p) => s.SupplierName),
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => s.SupplierName)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => s.SupplierName),
                         "domesticprice" => isDesc
-                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => d.DomesticPrice)
-                            : gradeQuery.OrderBy((g, d, s, w, p) => d.DomesticPrice),
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => d.DomesticPrice)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => d.DomesticPrice),
+                        "importprice" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => w.ImportPrice)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => w.ImportPrice),
+                        "oemprice" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => w.OEMPrice)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => w.OEMPrice),
+                        "warehouseisactive" => isDesc
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => w.IsActive)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => w.IsActive),
                         "createdat" => isDesc
-                            ? gradeQuery.OrderByDescending((g, d, s, w, p) => g.CreatedAt)
-                            : gradeQuery.OrderBy((g, d, s, w, p) => g.CreatedAt),
-                        _ => gradeQuery.OrderByDescending((g, d, s, w, p) => g.CreatedAt),
+                            ? gradeQuery.OrderByDescending((g, d, s, w, p, c) => g.CreatedAt)
+                            : gradeQuery.OrderBy((g, d, s, w, p, c) => g.CreatedAt),
+                        _ => gradeQuery.OrderByDescending((g, d, s, w, p, c) => g.CreatedAt),
                     };
                 }
                 else
                 {
-                    gradeQuery = gradeQuery.OrderByDescending((g, d, s, w, p) => g.CreatedAt);
+                    gradeQuery = gradeQuery.OrderByDescending((g, d, s, w, p, c) => g.CreatedAt);
                 }
 
                 var totalCount = await gradeQuery.CountAsync();
 
                 var items = await gradeQuery
                     .Select(
-                        (g, d, s, w, p) =>
+                        (g, d, s, w, p, c) =>
                             new ProductGradeDto
                             {
                                 Id = g.Id,
@@ -113,6 +217,11 @@ namespace BlazorApp.Api.Services.React
                                 ImportPrice = w.ImportPrice,
                                 OemPrice = w.OEMPrice,
                                 RetailPrice = p.RetailPrice,
+                                WarehouseIsActive = w.IsActive,
+                                MinOrderQuantity = w.MinOrderQuantity,
+                                CategoryGuid = p.WarehouseCategoryGUID,
+                                CategoryName = c.CategoryName,
+                                CategoryChineseName = c.ChineseName,
                                 Barcode = d.Barcode,
                                 CreatedAt = g.CreatedAt,
                                 UpdatedAt = g.UpdatedAt,
@@ -423,7 +532,7 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<ApiResponse<List<ProductGradeBrief>>> GetProductGradesByProductCodesAsync(
+        public async Task<ApiResponse<List<ProductGradeDto>>> GetProductGradesByProductCodesAsync(
             List<string> productCodes
         )
         {
@@ -431,26 +540,72 @@ namespace BlazorApp.Api.Services.React
             {
                 if (productCodes == null || productCodes.Count == 0)
                 {
-                    return ApiResponse<List<ProductGradeBrief>>.OK(new List<ProductGradeBrief>());
+                    return ApiResponse<List<ProductGradeDto>>.OK(new List<ProductGradeDto>());
                 }
 
                 var db = _context.Db;
 
+                var normalizedProductCodes = productCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct()
+                    .ToList();
+
+                if (!normalizedProductCodes.Any())
+                {
+                    return ApiResponse<List<ProductGradeDto>>.OK(new List<ProductGradeDto>());
+                }
+
+                // 导出已选商品需要完整列表字段，保持 by-codes 端点一次性回齐图片、供应商和价格信息。
                 var grades = await db.Queryable<ProductGrade>()
-                    .Where(g => productCodes.Contains(g.ProductCode) && !g.IsDeleted)
-                    .Select(g => new ProductGradeBrief
-                    {
-                        ProductCode = g.ProductCode,
-                        Grade = g.Grade,
-                    })
+                    .LeftJoin<DomesticProduct>((g, d) => g.ProductCode == d.ProductCode)
+                    .LeftJoin<ChinaSupplier>((g, d, s) => d.SupplierCode == s.SupplierCode)
+                    .LeftJoin<WarehouseProduct>((g, d, s, w) => g.ProductCode == w.ProductCode)
+                    // by-codes 回查同样按本地商品编码关联，保证导出/加入订单能带回分类字段。
+                    .LeftJoin<Product>((g, d, s, w, p) => g.ProductCode == p.ProductCode)
+                    .LeftJoin<WarehouseCategory>(
+                        (g, d, s, w, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                    )
+                    .Where(
+                        (g, d, s, w, p, c) =>
+                            normalizedProductCodes.Contains(g.ProductCode) && !g.IsDeleted
+                    )
+                    .Select(
+                        (g, d, s, w, p, c) =>
+                            new ProductGradeDto
+                            {
+                                Id = g.Id,
+                                ProductCode = g.ProductCode,
+                                Grade = g.Grade,
+                                SupplierCode = d.SupplierCode,
+                                SupplierName = s.SupplierName,
+                                HbProductNo = d.HBProductNo,
+                                ProductName = d.ProductName,
+                                ProductImage = d.ProductImage,
+                                DomesticPrice = d.DomesticPrice,
+                                ImportPrice = w.ImportPrice,
+                                OemPrice = w.OEMPrice,
+                                RetailPrice = p.RetailPrice,
+                                WarehouseIsActive = w.IsActive,
+                                MinOrderQuantity = w.MinOrderQuantity,
+                                CategoryGuid = p.WarehouseCategoryGUID,
+                                CategoryName = c.CategoryName,
+                                CategoryChineseName = c.ChineseName,
+                                Barcode = d.Barcode,
+                                CreatedAt = g.CreatedAt,
+                                UpdatedAt = g.UpdatedAt,
+                                CreatedBy = g.CreatedBy,
+                                UpdatedBy = g.UpdatedBy,
+                            }
+                    )
                     .ToListAsync();
 
-                return ApiResponse<List<ProductGradeBrief>>.OK(grades);
+                return ApiResponse<List<ProductGradeDto>>.OK(grades);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量查询商品等级失败");
-                return ApiResponse<List<ProductGradeBrief>>.Error(
+                return ApiResponse<List<ProductGradeDto>>.Error(
                     "批量查询商品等级失败",
                     "GET_GRADES_BY_CODES_ERROR"
                 );
@@ -463,10 +618,14 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<DomesticProduct>((g, d) => g.ProductCode == d.ProductCode)
                 .LeftJoin<ChinaSupplier>((g, d, s) => d.SupplierCode == s.SupplierCode)
                 .LeftJoin<WarehouseProduct>((g, d, s, w) => g.ProductCode == w.ProductCode)
-                .LeftJoin<Product>((g, d, s, w, p) => g.ProductCode == p.UUID)
-                .Where((g, d, s, w, p) => g.Id == entity.Id)
+                // 创建/更新后回读要和列表保持同一关联键，避免返回 DTO 丢失分类。
+                .LeftJoin<Product>((g, d, s, w, p) => g.ProductCode == p.ProductCode)
+                .LeftJoin<WarehouseCategory>(
+                    (g, d, s, w, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
+                )
+                .Where((g, d, s, w, p, c) => g.Id == entity.Id)
                 .Select(
-                    (g, d, s, w, p) =>
+                    (g, d, s, w, p, c) =>
                         new ProductGradeDto
                         {
                             Id = g.Id,
@@ -481,6 +640,11 @@ namespace BlazorApp.Api.Services.React
                             ImportPrice = w.ImportPrice,
                             OemPrice = w.OEMPrice,
                             RetailPrice = p.RetailPrice,
+                            WarehouseIsActive = w.IsActive,
+                            MinOrderQuantity = w.MinOrderQuantity,
+                            CategoryGuid = p.WarehouseCategoryGUID,
+                            CategoryName = c.CategoryName,
+                            CategoryChineseName = c.ChineseName,
                             Barcode = d.Barcode,
                             CreatedAt = g.CreatedAt,
                             UpdatedAt = g.UpdatedAt,
@@ -491,6 +655,50 @@ namespace BlazorApp.Api.Services.React
                 .FirstAsync();
 
             return row ?? _mapper.Map<ProductGradeDto>(entity);
+        }
+
+        private static async Task<List<string>> GetCategoryAndDescendantGuidsAsync(
+            ISqlSugarClient db,
+            string categoryGuid
+        )
+        {
+            if (string.IsNullOrWhiteSpace(categoryGuid))
+            {
+                return new List<string>();
+            }
+
+            var categories = await db.Queryable<WarehouseCategory>()
+                .Where(c => !c.IsDeleted)
+                .Select(c => new WarehouseCategory
+                {
+                    CategoryGUID = c.CategoryGUID,
+                    ParentGUID = c.ParentGUID,
+                })
+                .ToListAsync();
+
+            if (!categories.Any(c => c.CategoryGUID == categoryGuid))
+            {
+                return new List<string>();
+            }
+
+            var result = new HashSet<string> { categoryGuid };
+            var pending = new Queue<string>();
+            pending.Enqueue(categoryGuid);
+
+            // 分类列头过滤沿用仓库分类语义：选择父分类时同时包含所有子分类商品。
+            while (pending.Count > 0)
+            {
+                var parentGuid = pending.Dequeue();
+                foreach (var child in categories.Where(c => c.ParentGUID == parentGuid))
+                {
+                    if (result.Add(child.CategoryGUID))
+                    {
+                        pending.Enqueue(child.CategoryGUID);
+                    }
+                }
+            }
+
+            return result.ToList();
         }
 
         public async Task<ApiResponse<BatchUpdateGradePriceResult>> BatchUpdateGradePriceAsync(
@@ -518,7 +726,7 @@ namespace BlazorApp.Api.Services.React
 
                     var hqInfoUpdate =
                         hqDb.Updateable<BlazorApp.Shared.Models.HqEntities.DIC_商品信息字典表>()
-                            .Where(p => productCodes.Contains(p.H商品编码))
+                            .Where(p => p.H商品编码 != null && productCodes.Contains(p.H商品编码))
                             .SetColumns(p => p.FGC_LastModifier == "HBweb")
                             .SetColumns(p => p.FGC_LastModifyDate == now);
                     if (dto.ImportPrice.HasValue)
@@ -533,7 +741,7 @@ namespace BlazorApp.Api.Services.React
 
                     var hqStockUpdate =
                         hqDb.Updateable<BlazorApp.Shared.Models.HqEntities.CBP_DIC_商品库存表>()
-                            .Where(p => productCodes.Contains(p.H商品编码))
+                            .Where(p => p.H商品编码 != null && productCodes.Contains(p.H商品编码))
                             .SetColumns(p => p.FGC_LastModifier == "HBweb")
                             .SetColumns(p => p.FGC_LastModifyDate == now);
                     if (dto.ImportPrice.HasValue)
@@ -627,7 +835,7 @@ namespace BlazorApp.Api.Services.React
                             }
 
                             var pUpdate = db.Updateable<Product>()
-                                .Where(p => productCodes.Contains(p.ProductCode));
+                                .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode));
                             if (dto.ImportPrice.HasValue)
                                 pUpdate = pUpdate.SetColumns(p =>
                                     p.PurchasePrice == dto.ImportPrice.Value
@@ -641,7 +849,9 @@ namespace BlazorApp.Api.Services.React
 
                             var srpUpdate = db.Updateable<StoreRetailPrice>()
                                 .Where(srp =>
-                                    productCodes.Contains(srp.ProductCode) && !srp.IsDeleted
+                                    srp.ProductCode != null
+                                    && productCodes.Contains(srp.ProductCode)
+                                    && !srp.IsDeleted
                                 );
                             if (dto.ImportPrice.HasValue)
                                 srpUpdate = srpUpdate.SetColumns(srp =>

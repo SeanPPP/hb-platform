@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Button, HelperText, Menu, Surface, Switch, Text } from "react-native-paper";
+import { Button, HelperText, Menu, Modal, Portal, Surface, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   clearSavedPrinter,
@@ -28,6 +28,13 @@ import {
   checkAndDownloadAppUpdate,
   getCurrentAppUpdateInfo,
 } from "@/modules/updates/app-update-runtime";
+import {
+  API_HOST_PRESETS,
+  getCurrentApiHost,
+  getStoredApiHost,
+  normalizeApiHost,
+  setStoredApiHost,
+} from "@/shared/api/config";
 
 function resolveDeviceStatusText(
   status: number | undefined,
@@ -78,6 +85,9 @@ export default function Settings() {
   const [filterXPOnly, setFilterXPOnly] = useState(true);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(() => getCurrentAppUpdateInfo());
+  const [apiHost, setApiHost] = useState(getCurrentApiHost());
+  const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
+  const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
 
   const canRegisterDevice = access.canManageDeviceRegistration;
   const settingsAuthMode = resolveSettingsAuthMode({
@@ -138,6 +148,15 @@ export default function Settings() {
 
   useEffect(() => {
     let cancelled = false;
+
+    void getStoredApiHost().then((host) => {
+      if (cancelled) {
+        return;
+      }
+
+      setApiHost(host);
+      setApiHostDraft(host);
+    });
 
     void syncPrinterStatus().catch((error) => {
       if (cancelled) {
@@ -242,6 +261,33 @@ export default function Settings() {
   const handleLanguageChange = async (nextLanguage: AppLanguage) => {
     setLanguageMenuVisible(false);
     await setAppLanguage(nextLanguage);
+  };
+
+  const openApiHostSettings = () => {
+    setApiHostDraft(apiHost);
+    setApiHostModalVisible(true);
+  };
+
+  const handleSaveApiHost = async () => {
+    const normalizedHost = normalizeApiHost(apiHostDraft);
+    if (!normalizedHost) {
+      Alert.alert(t("apiHost.emptyTitle"), t("apiHost.emptyMessage"));
+      return;
+    }
+
+    try {
+      // 保存后无需手动刷新客户端，API 拦截器会在后续请求前同步新的 baseURL。
+      const host = await setStoredApiHost(normalizedHost);
+      setApiHost(host);
+      setApiHostDraft(host);
+      setApiHostModalVisible(false);
+      Alert.alert(t("apiHost.savedTitle"), t("apiHost.savedMessage", { host }));
+    } catch (error) {
+      Alert.alert(
+        t("apiHost.saveFailedTitle"),
+        getErrorMessage(error, "apiHost.saveFailedMessage")
+      );
+    }
   };
 
   const handleCheckUpdates = async () => {
@@ -476,6 +522,24 @@ export default function Settings() {
             <Menu.Item title={t("common:language.zh")} onPress={() => void handleLanguageChange("zh")} />
             <Menu.Item title={t("common:language.en")} onPress={() => void handleLanguageChange("en")} />
           </Menu>
+        </Surface>
+
+        <Surface style={styles.card} elevation={1}>
+          <Text variant="titleMedium">{t("apiHost.title")}</Text>
+          <Text variant="bodyMedium" style={styles.meta}>
+            {t("apiHost.description")}
+          </Text>
+          <View style={styles.apiHostCurrentBox}>
+            <Text variant="labelMedium" style={styles.meta}>
+              {t("apiHost.current")}
+            </Text>
+            <Text variant="bodyLarge" style={styles.value} numberOfLines={1}>
+              {apiHost}
+            </Text>
+          </View>
+          <Button mode="outlined" icon="server-network" onPress={openApiHostSettings} style={styles.secondaryButton}>
+            {t("apiHost.change")}
+          </Button>
         </Surface>
 
         <Surface style={styles.card} elevation={1}>
@@ -749,6 +813,59 @@ export default function Settings() {
           </Button>
         ) : null}
       </ScrollView>
+      <Portal>
+        <Modal
+          visible={apiHostModalVisible}
+          onDismiss={() => setApiHostModalVisible(false)}
+          contentContainerStyle={styles.modal}
+        >
+          <Text variant="titleMedium">{t("apiHost.modalTitle")}</Text>
+          <Text variant="bodyMedium" style={styles.meta}>
+            {t("apiHost.modalDescription")}
+          </Text>
+          <View style={styles.apiHostCurrentBox}>
+            <Text variant="labelMedium" style={styles.meta}>
+              {t("apiHost.current")}
+            </Text>
+            <Text variant="bodyLarge" style={styles.value} numberOfLines={1}>
+              {apiHost}
+            </Text>
+          </View>
+          <Text variant="labelLarge">{t("apiHost.presetsLabel")}</Text>
+          <View style={styles.apiHostPresetList}>
+            {API_HOST_PRESETS.map((preset) => {
+              const selected = normalizeApiHost(apiHostDraft) === preset.host;
+              return (
+                <Button
+                  key={preset.key}
+                  compact
+                  mode={selected ? "contained" : "outlined"}
+                  style={styles.apiHostPresetButton}
+                  onPress={() => setApiHostDraft(preset.host)}
+                >
+                  {t(`apiHost.presets.${preset.key}`)}
+                </Button>
+              );
+            })}
+          </View>
+          <TextInput
+            label={t("apiHost.inputLabel")}
+            value={apiHostDraft}
+            onChangeText={setApiHostDraft}
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <View style={styles.modalActions}>
+            <Button mode="text" onPress={() => setApiHostModalVisible(false)}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button mode="contained" onPress={handleSaveApiHost}>
+              {t("common:actions.save")}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
     </SafeAreaView>
   );
 }
@@ -768,6 +885,21 @@ const styles = StyleSheet.create({
   },
   updateInfoLabel: { color: "#666", flexShrink: 0 },
   updateInfoValue: { flex: 1, textAlign: "right", fontWeight: "600" },
+  apiHostCurrentBox: {
+    gap: 4,
+    borderRadius: 12,
+    backgroundColor: "#F7F8FA",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  apiHostPresetList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  apiHostPresetButton: {
+    borderRadius: 999,
+  },
   statusBlock: { gap: 6, marginTop: 4 },
   storePickerWrap: {
     marginTop: 4,
@@ -829,6 +961,18 @@ const styles = StyleSheet.create({
   },
   deviceDangerButton: {
     alignSelf: "stretch",
+  },
+  modal: {
+    backgroundColor: "#FFFFFF",
+    margin: 18,
+    borderRadius: 18,
+    padding: 18,
+    gap: 12,
+  },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
   },
   secondaryButton: { marginTop: 8 },
   logoutButton: { marginTop: 2, marginBottom: 6 },

@@ -72,18 +72,42 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] string? search = null,
             [FromQuery] string? grade = null,
             [FromQuery] string? supplierCode = null,
+            [FromQuery] string? hbProductNo = null,
+            [FromQuery] decimal? domesticPriceMin = null,
+            [FromQuery] decimal? domesticPriceMax = null,
+            [FromQuery] decimal? importPriceMin = null,
+            [FromQuery] decimal? importPriceMax = null,
+            [FromQuery] decimal? oemPriceMin = null,
+            [FromQuery] decimal? oemPriceMax = null,
+            [FromQuery] bool? warehouseIsActive = null,
+            [FromQuery] string? categoryGuid = null,
+            [FromQuery] bool? uncategorizedOnly = null,
             [FromQuery] string? sortField = null,
             [FromQuery] string? sortDirection = null)
         {
             try
             {
+                // API 边界先收敛分页参数，避免无效 page/pageSize 传入服务层造成负数 Skip 或过大查询。
+                var normalizedPage = Math.Max(page, 1);
+                var normalizedPageSize = Math.Clamp(pageSize, 1, 1000);
+
                 var query = new ProductGradeListQueryDto
                 {
-                    Page = page,
-                    PageSize = pageSize,
+                    Page = normalizedPage,
+                    PageSize = normalizedPageSize,
                     Search = search,
                     Grade = grade,
                     SupplierCode = supplierCode,
+                    HbProductNo = hbProductNo,
+                    DomesticPriceMin = domesticPriceMin,
+                    DomesticPriceMax = domesticPriceMax,
+                    ImportPriceMin = importPriceMin,
+                    ImportPriceMax = importPriceMax,
+                    OemPriceMin = oemPriceMin,
+                    OemPriceMax = oemPriceMax,
+                    WarehouseIsActive = warehouseIsActive,
+                    CategoryGuid = categoryGuid,
+                    UncategorizedOnly = uncategorizedOnly,
                     SortField = sortField,
                     SortDirection = sortDirection,
                 };

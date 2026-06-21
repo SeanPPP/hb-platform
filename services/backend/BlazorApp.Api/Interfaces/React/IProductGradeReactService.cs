@@ -9,7 +9,7 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<bool>> BatchUpdateGradesAsync(BatchUpdateGradeDto dto);
         Task<ApiResponse<PasteImportResultDto>> PasteImportGradesAsync(PasteImportGradeDto dto);
         Task<ApiResponse<bool>> DeleteProductGradeAsync(string id);
-        Task<ApiResponse<List<ProductGradeBrief>>> GetProductGradesByProductCodesAsync(List<string> productCodes);
+        Task<ApiResponse<List<ProductGradeDto>>> GetProductGradesByProductCodesAsync(List<string> productCodes);
         Task<ApiResponse<BatchUpdateGradePriceResult>> BatchUpdateGradePriceAsync(BatchUpdateGradePriceDto dto);
     }
 

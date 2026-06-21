@@ -159,10 +159,21 @@ export function buildInvoiceDetailsGridRequest(query: InvoiceDetailsGridQuery): 
   const pageSize = normalizePageSize(query.pageSize, DETAIL_PAGE_SIZES, 50);
   const page = normalizePage(query.page);
   const startRow = (page - 1) * pageSize;
+  const filterModel: Record<string, GridFilterModel> = {};
+
+  if (query.priceChange === "up" || query.priceChange === "down") {
+    filterModel.priceChange = {
+      filterType: "text",
+      type: "equals",
+      filter: query.priceChange,
+    };
+  }
+
   return {
     startRow,
     endRow: startRow + pageSize,
     pageSize,
+    filterModel: Object.keys(filterModel).length ? filterModel : undefined,
   };
 }
 
@@ -179,6 +190,14 @@ export function normalizeInvoice(raw: unknown): LocalSupplierInvoice {
     inboundDate: asString(pick(item, "inboundDate", "InboundDate")),
     totalAmount: asNullableNumber(pick(item, "totalAmount", "TotalAmount")),
     receivedTotalAmount: asNullableNumber(pick(item, "receivedTotalAmount", "ReceivedTotalAmount")),
+    priceIncreaseItemCount: asNumber(
+      pick(item, "priceIncreaseItemCount", "PriceIncreaseItemCount"),
+      0
+    ),
+    priceDecreaseItemCount: asNumber(
+      pick(item, "priceDecreaseItemCount", "PriceDecreaseItemCount"),
+      0
+    ),
     flowStatus: asNullableInt(pick(item, "flowStatus", "FlowStatus")),
     inboundStatus: asNullableInt(pick(item, "inboundStatus", "InboundStatus")),
     remarks: asString(pick(item, "remarks", "Remarks")),
@@ -202,6 +221,7 @@ export function normalizeInvoiceItem(raw: unknown): LocalSupplierInvoiceItem {
     specification: asString(pick(item, "specification", "Specification")),
     unit: asString(pick(item, "unit", "Unit")),
     quantity: asNullableNumber(pick(item, "quantity", "Quantity")),
+    lastPurchasePrice: asNullableNumber(pick(item, "lastPurchasePrice", "LastPurchasePrice")),
     purchasePrice: asNullableNumber(pick(item, "purchasePrice", "PurchasePrice")),
     retailPrice: asNullableNumber(pick(item, "retailPrice", "RetailPrice")),
     amount: asNullableNumber(pick(item, "amount", "Amount")),

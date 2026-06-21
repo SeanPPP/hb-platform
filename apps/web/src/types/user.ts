@@ -11,6 +11,24 @@ export interface UserQueryDto {
   sortDirection?: string
 }
 
+export interface UserLoginRecordQueryDto {
+  page?: number
+  pageSize?: number
+}
+
+export type UserLoginRecordStatus = 'active' | 'revoked' | 'expired'
+
+export interface UserLoginRecordDto {
+  sessionId: string
+  loginAt: string
+  ipAddress?: string
+  userAgent?: string
+  expiresAt: string
+  isRevoked: boolean
+  isExpired: boolean
+  status: UserLoginRecordStatus
+}
+
 export interface UserStoreDto {
   storeGUID: string
   storeName: string
@@ -27,6 +45,7 @@ export interface UserDto {
   fullName?: string
   phone?: string
   lastLoginAt?: string
+  lastLoginIp?: string
   isActive: boolean
   createdAt: string
   updatedAt: string
@@ -77,6 +96,7 @@ export interface CreateUserDto {
   username: string
   email: string
   password: string
+  passwordFormat?: 'raw' | 'clientSha256'
   fullName?: string
   isActive?: boolean
   roleGuids?: string[]
@@ -85,5 +105,6 @@ export interface CreateUserDto {
 
 export interface UpdateUserPasswordDto {
   newPassword: string
+  passwordFormat?: 'raw' | 'clientSha256'
   forcePasswordChange?: boolean
 }

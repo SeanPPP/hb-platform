@@ -16,11 +16,16 @@ export interface ProductGradeListItem {
   hbProductNo?: string
   productName?: string
   productImage?: string
+  categoryGuid?: string
+  categoryName?: string
+  categoryChineseName?: string
   domesticPrice?: number
   importPrice?: number
   oemPrice?: number
   retailPrice?: number
   barcode?: string
+  warehouseIsActive?: boolean | null
+  minOrderQuantity?: number | null
   createdAt: string
   updatedAt?: string
   createdBy?: string
@@ -33,8 +38,19 @@ export interface ProductGradeListParams {
   search?: string
   grade?: string
   supplierCode?: string
+  hbProductNo?: string
+  categoryGuid?: string
+  uncategorizedOnly?: boolean
+  warehouseIsActive?: boolean
+  domesticPriceMin?: number
+  domesticPriceMax?: number
+  importPriceMin?: number
+  importPriceMax?: number
+  oemPriceMin?: number
+  oemPriceMax?: number
   sortField?: string
   sortDirection?: 'asc' | 'desc'
+  signal?: AbortSignal
 }
 
 export interface ProductGradeListResult {

@@ -116,6 +116,8 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
+                syncItems = await AttachDomesticSupplierCodesAsync(db, syncItems);
+
                 foreach (var item in syncItems)
                 {
                     try
@@ -252,6 +254,8 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
+                updateItems = await AttachDomesticSupplierCodesAsync(db, updateItems);
+
                 foreach (var item in updateItems)
                 {
                     try
@@ -335,11 +339,11 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var productCode = UuidHelper.GenerateUuid7();
+                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
-                    UUID = productCode,
-                    ProductCode = productCode,
+                    UUID = generatedProductCode,
+                    ProductCode = generatedProductCode,
                     ProductCategoryGUID = detail.ProductCategoryGUID,
                     LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
                     ItemNumber = detail.ItemNumber,
@@ -363,13 +367,10 @@ namespace BlazorApp.Api.Services.React
                 result.HbwebCreated++;
             }
 
-            // 已有商品只绑定明细；新建商品会在绑定后补齐所有启用分店价格。
+            // 更新HQ商品链路不回写本单明细，避免把“上次进货价”等明细字段改成本次操作值。
+            // 这里只在内存中补齐商品编码，供后续本地价格和HQ价格写入使用。
             detail.ProductCode = product.ProductCode;
             detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode!);
-            detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
-            detail.UpdatedAt = now;
-            detail.UpdatedBy = updatedBy;
-            await db.Updateable(detail).ExecuteCommandAsync();
 
             // 更新HQ商品时，只有新建本地商品才需要补齐所有启用分店价格。
             if (isNewProduct)
@@ -419,11 +420,11 @@ namespace BlazorApp.Api.Services.React
                     return null;
                 }
 
-                var productCode = UuidHelper.GenerateUuid7();
+                var generatedProductCode = UuidHelper.GenerateUuid7();
                 product = new Product
                 {
-                    UUID = productCode,
-                    ProductCode = productCode,
+                    UUID = generatedProductCode,
+                    ProductCode = generatedProductCode,
                     ProductCategoryGUID = detail.ProductCategoryGUID,
                     LocalSupplierCode = header.SupplierCode ?? detail.SupplierCode,
                     ItemNumber = detail.ItemNumber,
@@ -451,8 +452,14 @@ namespace BlazorApp.Api.Services.React
                 // 已有商品是全局主档，这里只绑定明细并更新目标分店价格，避免越过分店范围修改商品资料。
             }
 
-            detail.ProductCode = product.ProductCode;
-            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode);
+            if (string.IsNullOrWhiteSpace(product.ProductCode))
+            {
+                throw new InvalidOperationException("同步分店进货单时商品编码不能为空");
+            }
+
+            var productCode = product.ProductCode;
+            detail.ProductCode = productCode;
+            detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, productCode);
             detail.LastPurchasePrice = detail.PurchasePrice ?? product.PurchasePrice;
             detail.UpdatedAt = now;
             detail.UpdatedBy = updatedBy;
@@ -477,7 +484,8 @@ namespace BlazorApp.Api.Services.React
             var productCode = product.ProductCode!;
             var existingPrices = await db.Queryable<StoreRetailPrice>()
                 .Where(x =>
-                    storeCodes.Contains(x.StoreCode)
+                    x.StoreCode != null
+                    && storeCodes.Contains(x.StoreCode)
                     && x.ProductCode == productCode
                     && x.IsDeleted == false
                 )
@@ -537,6 +545,7 @@ namespace BlazorApp.Api.Services.React
             var product = item.Product;
             var productCode = product.ProductCode!;
             var now = DateTime.UtcNow;
+            var domesticSupplierCode = item.DomesticSupplierCode;
             var hqProduct = await hqDb.Queryable<DIC_商品信息字典表>()
                 .Where(x => x.H商品编码 == productCode)
                 .FirstAsync();
@@ -545,7 +554,14 @@ namespace BlazorApp.Api.Services.React
             if (hqProductExisted)
             {
                 result.HqExisting++;
-                // HQ商品字典是全局主档；已有商品只同步目标分店价格，不改主档字段。
+                // HQ 商品字典是全局主档；只在 CBP 供应商缺失或误写 200 时补国内供应商编码。
+                await PatchHqCbpSupplierCodeIfNeededAsync(
+                    hqDb,
+                    hqProduct!,
+                    domesticSupplierCode,
+                    updatedBy,
+                    now
+                );
                 result.HqSynced++;
             }
             else
@@ -575,7 +591,7 @@ namespace BlazorApp.Api.Services.React
                     H进货单主表GUID = detail.InvoiceGUID ?? string.Empty,
                     H进货单详情GUID = detail.DetailGUID,
                     CBP商品中文名称 = product.ProductName ?? string.Empty,
-                    CBP供应商编码 = product.LocalSupplierCode ?? string.Empty,
+                    CBP供应商编码 = domesticSupplierCode ?? string.Empty,
                     CBP商品分类码GUID = product.WarehouseCategoryGUID ?? string.Empty,
                     FGC_Creator = updatedBy,
                     FGC_CreateDate = now,
@@ -605,6 +621,7 @@ namespace BlazorApp.Api.Services.React
             var product = item.Product;
             var productCode = product.ProductCode!;
             var now = DateTime.UtcNow;
+            var domesticSupplierCode = item.DomesticSupplierCode;
 
             var hqProduct = await FindExistingHqProductAsync(
                 hqDb,
@@ -641,7 +658,7 @@ namespace BlazorApp.Api.Services.React
                     H进货单主表GUID = detail.InvoiceGUID ?? string.Empty,
                     H进货单详情GUID = detail.DetailGUID,
                     CBP商品中文名称 = product.ProductName ?? string.Empty,
-                    CBP供应商编码 = product.LocalSupplierCode ?? string.Empty,
+                    CBP供应商编码 = domesticSupplierCode ?? string.Empty,
                     CBP商品分类码GUID = product.WarehouseCategoryGUID ?? string.Empty,
                     FGC_Creator = updatedBy,
                     FGC_CreateDate = now,
@@ -653,6 +670,13 @@ namespace BlazorApp.Api.Services.React
             }
             else
             {
+                await PatchHqCbpSupplierCodeIfNeededAsync(
+                    hqDb,
+                    hqProduct,
+                    domesticSupplierCode,
+                    updatedBy,
+                    now
+                );
                 result.HqExisting++;
                 result.HqSynced++;
             }
@@ -1083,6 +1107,110 @@ namespace BlazorApp.Api.Services.React
             return value.Trim().ToUpperInvariant();
         }
 
+        private static string? NormalizeCode(string? value)
+        {
+            var normalized = value?.Trim();
+            return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+        }
+
+        private static async Task<List<PreparedSyncItem>> AttachDomesticSupplierCodesAsync(
+            ISqlSugarClient db,
+            List<PreparedSyncItem> items
+        )
+        {
+            if (items.Count == 0)
+                return items;
+
+            var supplierCodes = await ResolveDomesticSupplierCodesAsync(
+                db,
+                items.Select(item => item.Product.ProductCode)
+            );
+
+            return items
+                .Select(item =>
+                {
+                    var productCode = NormalizeCode(item.Product.ProductCode);
+                    // CBP 供应商编码只认国内商品主档供应商，批量预取避免明细循环内反复查库。
+                    string? domesticSupplierCode = null;
+                    if (productCode != null)
+                    {
+                        supplierCodes.TryGetValue(productCode, out domesticSupplierCode);
+                    }
+
+                    return item with { DomesticSupplierCode = domesticSupplierCode };
+                })
+                .ToList();
+        }
+
+        private static async Task<Dictionary<string, string>> ResolveDomesticSupplierCodesAsync(
+            ISqlSugarClient db,
+            IEnumerable<string?> productCodes
+        )
+        {
+            var normalizedProductCodes = productCodes
+                .Select(NormalizeCode)
+                .OfType<string>()
+                .Distinct()
+                .ToList();
+            if (normalizedProductCodes.Count == 0)
+                return new Dictionary<string, string>();
+
+            var products = await db.Queryable<DomesticProduct>()
+                .Where(product =>
+                    normalizedProductCodes.Contains(product.ProductCode)
+                    && product.IsDeleted == false
+                )
+                .Select(product => new { product.ProductCode, product.SupplierCode })
+                .ToListAsync();
+
+            return products
+                .Select(product => new
+                {
+                    ProductCode = NormalizeCode(product.ProductCode),
+                    SupplierCode = NormalizeCode(product.SupplierCode),
+                })
+                .Where(product => product.ProductCode != null && product.SupplierCode != null)
+                .GroupBy(product => product.ProductCode!)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().SupplierCode!
+                );
+        }
+
+        private static async Task PatchHqCbpSupplierCodeIfNeededAsync(
+            ISqlSugarClient hqDb,
+            DIC_商品信息字典表 hqProduct,
+            string? domesticSupplierCode,
+            string updatedBy,
+            DateTime now
+        )
+        {
+            if (
+                string.IsNullOrWhiteSpace(domesticSupplierCode)
+                || !ShouldPatchHqCbpSupplierCode(hqProduct.CBP供应商编码)
+            )
+            {
+                return;
+            }
+
+            await hqDb.Updateable<DIC_商品信息字典表>()
+                .SetColumns(row => new DIC_商品信息字典表
+                {
+                    // CBP 供应商编码对应国内供应商，不能沿用本地默认供应商 200。
+                    CBP供应商编码 = domesticSupplierCode,
+                    FGC_LastModifier = updatedBy,
+                    FGC_LastModifyDate = now,
+                })
+                .Where(row => row.ID == hqProduct.ID)
+                .ExecuteCommandAsync();
+        }
+
+        private static bool ShouldPatchHqCbpSupplierCode(string? value)
+        {
+            var normalized = NormalizeCode(value);
+            return normalized == null || normalized == "200";
+        }
+
         private static ISugarQueryable<Product> ApplySupplierFilter(
             ISugarQueryable<Product> query,
             string? supplierCode
@@ -1232,7 +1360,8 @@ namespace BlazorApp.Api.Services.React
         private sealed record PreparedSyncItem(
             StoreLocalSupplierInvoiceDetails Detail,
             Product Product,
-            bool IsNewProduct
+            bool IsNewProduct,
+            string? DomesticSupplierCode = null
         );
     }
 }

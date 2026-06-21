@@ -100,6 +100,7 @@ function createEmptyAccess(): AccessControl {
     canViewSystemLogs: false,
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
+    canViewAppDownloads: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
@@ -287,6 +288,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs)
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks)
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings)
+  // App 下载页只认独立系统权限，非 Admin 需要后台显式分配。
+  const canViewAppDownloads = isAdmin || hasPermission(P.System.ViewAppDownloads)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
@@ -366,6 +369,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canViewSystemLogs,
     canManageScheduledTasks,
     canManageSystemSettings,
+    canViewAppDownloads,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
     canViewPosProducts,

@@ -74,7 +74,12 @@ export interface ContainerDetail {
   商品信息?: ContainerProductInfo
   是否新商品?: boolean
   IsActive?: boolean
+  lastImportPrice?: number
+  LastImportPrice?: number
+  lastOEMPrice?: number
+  LastOEMPrice?: number
   warehouseImportPrice?: number
+  WarehouseImportPrice?: number
   warehouseOEMPrice?: number
   WarehouseOEMPrice?: number
   warehouseIsActive?: boolean
@@ -120,14 +125,22 @@ export interface ContainerDetailQuery {
   middlePackQuantityMax?: number
   containerQuantityMin?: number
   containerQuantityMax?: number
+  packingQuantityMin?: number
+  packingQuantityMax?: number
+  unitVolumeMin?: number
+  unitVolumeMax?: number
   domesticPriceMin?: number
   domesticPriceMax?: number
   floatRateMin?: number
   floatRateMax?: number
   transportCostMin?: number
   transportCostMax?: number
+  unitTransportCostMin?: number
+  unitTransportCostMax?: number
   warehouseImportPriceMin?: number
   warehouseImportPriceMax?: number
+  lastOEMPriceMin?: number
+  lastOEMPriceMax?: number
   importPriceMin?: number
   importPriceMax?: number
   oemPriceMin?: number
@@ -198,6 +211,20 @@ export interface ContainerQueryRequest {
   page?: number
   pageSize?: number
   itemNumberFilter?: string
+  containerNumberFilter?: string
+  loadingDateStart?: string
+  loadingDateEnd?: string
+  estimatedArrivalDateStart?: string
+  estimatedArrivalDateEnd?: string
+  actualArrivalDateStart?: string
+  actualArrivalDateEnd?: string
+  totalPiecesMin?: number
+  totalPiecesMax?: number
+  totalAmountMin?: number
+  totalAmountMax?: number
+  totalVolumeMin?: number
+  totalVolumeMax?: number
+  statuses?: number[]
   sortBy?: string
   sortDirection?: string
 }
@@ -216,6 +243,9 @@ export interface DateFilterOption {
 }
 
 export interface UpdateContainerRequest {
+  货柜编号?: string
+  装柜日期?: string
+  预计到岸日期?: string
   实际到货日期?: string
   汇率?: number
   运费?: number
@@ -232,6 +262,7 @@ export interface UpdateContainerDetailRequest {
   商品名称?: string
   英文名称?: string
   ClearEnglishName?: boolean
+  ProductCategoryGUID?: string
   贴牌价格?: number
   单件装箱数?: number
   中包数?: number

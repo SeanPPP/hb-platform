@@ -28,6 +28,11 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsActive { get; set; }
 
         /// <summary>
+        /// 品牌名称精确筛选
+        /// </summary>
+        public string? BrandName { get; set; }
+
+        /// <summary>
         /// 用户GUID过滤
         /// </summary>
         public string? UserGUID { get; set; }
@@ -100,9 +105,9 @@ namespace BlazorApp.Shared.DTOs
         public string? BrandName { get; set; }
 
         /// <summary>
-        /// 是否启用
+        /// 是否启用收银系统；新建分店默认不启用，避免误纳入 POS 相关流程。
         /// </summary>
-        public bool IsActive { get; set; } = true;
+        public bool IsActive { get; set; } = false;
     }
 
     /// <summary>

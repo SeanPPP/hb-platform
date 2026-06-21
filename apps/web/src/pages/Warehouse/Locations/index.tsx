@@ -23,7 +23,9 @@ import {
   Typography,
   message,
 } from 'antd'
+import type { TableProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { SorterResult, SortOrder } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -107,6 +109,38 @@ function formatSyncResult(result: LocationHqSyncResult, t: TFunction) {
 }
 
 type ProductTextField = 'itemNumber' | 'productName'
+type LocationSortBy =
+  | 'LocationCode'
+  | 'LocationType'
+  | 'LocationBarcode'
+  | 'Status'
+  | 'Usage'
+  | 'UpdatedAt'
+  | 'UpdatedBy'
+
+const DEFAULT_LOCATION_SORT_BY: LocationSortBy = 'LocationCode'
+const DEFAULT_LOCATION_SORT_ORDER: SortOrder = 'ascend'
+
+const LOCATION_SORT_FIELD_MAP: Record<string, LocationSortBy> = {
+  locationCode: 'LocationCode',
+  locationType: 'LocationType',
+  locationBarcode: 'LocationBarcode',
+  status: 'Status',
+  usage: 'Usage',
+  updatedAt: 'UpdatedAt',
+  updatedBy: 'UpdatedBy',
+}
+
+function toApiSortDirection(order: SortOrder): 'asc' | 'desc' {
+  return order === 'descend' ? 'desc' : 'asc'
+}
+
+function getSortField(sorter: SorterResult<LocationItem>) {
+  const field = Array.isArray(sorter.field) ? sorter.field.join('.') : sorter.field
+  const key = sorter.columnKey
+  const candidate = field || key
+  return candidate ? String(candidate) : undefined
+}
 
 function getProductFieldValues(products: LocationProduct[], field: ProductTextField | 'productBarcode') {
   if (!products?.length) {
@@ -259,6 +293,8 @@ export default function WarehouseLocationsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
+  const [sortBy, setSortBy] = useState<LocationSortBy>(DEFAULT_LOCATION_SORT_BY)
+  const [sortOrder, setSortOrder] = useState<SortOrder>(DEFAULT_LOCATION_SORT_ORDER)
   const { access } = useAuthStore()
   const locationTypeOptions = getLocationTypeOptions(t)
   const statusOptions = getStatusOptions(t)
@@ -273,8 +309,12 @@ export default function WarehouseLocationsPage() {
     nextLocationCode = locationCodeKeyword,
     nextLocationBarcode = locationBarcodeKeyword,
     nextUpdatedBy = updatedByKeyword,
+    nextSortBy = sortBy,
+    nextSortOrder = sortOrder,
   ) => {
     setLoading(true)
+    const effectiveSortBy = nextSortBy || DEFAULT_LOCATION_SORT_BY
+    const effectiveSortOrder = nextSortOrder || DEFAULT_LOCATION_SORT_ORDER
     try {
       const result = await getLocationList({
         locationType: nextLocationType,
@@ -284,13 +324,16 @@ export default function WarehouseLocationsPage() {
         updatedBy: nextUpdatedBy || undefined,
         pageNumber: nextPage,
         pageSize: nextPageSize,
-        sortBy: 'LocationCode',
+        sortBy: effectiveSortBy,
+        sortDirection: toApiSortDirection(effectiveSortOrder),
       })
 
       setData(result.items)
       setTotal(result.total)
       setPage(result.pageNumber)
       setPageSize(result.pageSize)
+      setSortBy(effectiveSortBy)
+      setSortOrder(effectiveSortOrder)
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouseLocations.loadFailed'))
@@ -395,6 +438,31 @@ export default function WarehouseLocationsPage() {
     })
   }
 
+  const handleTableChange: TableProps<LocationItem>['onChange'] = (pagination, _filters, sorter, extra) => {
+    if (extra.action === 'sort') {
+      const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
+      const field = getSortField(currentSorter)
+      const nextSortBy = field ? LOCATION_SORT_FIELD_MAP[field] : DEFAULT_LOCATION_SORT_BY
+      const nextSortOrder = currentSorter?.order || DEFAULT_LOCATION_SORT_ORDER
+      void loadData(
+        1,
+        pagination.pageSize || pageSize,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        nextSortBy,
+        nextSortOrder,
+      )
+      return
+    }
+
+    if (extra.action === 'paginate') {
+      void loadData(pagination.current || page, pagination.pageSize || pageSize)
+    }
+  }
+
   const columns: ColumnsType<LocationItem> = [
     {
       title: t('column.index'),
@@ -405,6 +473,8 @@ export default function WarehouseLocationsPage() {
     {
       title: t('column.locationCode'),
       dataIndex: 'locationCode',
+      sorter: true,
+      sortOrder: sortBy === 'LocationCode' ? sortOrder : null,
       width: 150,
       render: (value: string | undefined) => (
         <BarcodePreview value={value} align="left" compactCopy textNoWrap />
@@ -413,12 +483,16 @@ export default function WarehouseLocationsPage() {
     {
       title: t('column.locationType'),
       dataIndex: 'locationType',
+      sorter: true,
+      sortOrder: sortBy === 'LocationType' ? sortOrder : null,
       width: 86,
       render: (value: number | null | undefined) => formatLocationType(value, locationTypeOptions),
     },
     {
       title: t('column.locationBarcode'),
       dataIndex: 'locationBarcode',
+      sorter: true,
+      sortOrder: sortBy === 'LocationBarcode' ? sortOrder : null,
       width: 150,
       render: (value: string | undefined) => (
         <BarcodePreview value={value} align="left" compactCopy textNoWrap />
@@ -427,12 +501,16 @@ export default function WarehouseLocationsPage() {
     {
       title: t('column.locationStatus'),
       dataIndex: 'status',
+      sorter: true,
+      sortOrder: sortBy === 'Status' ? sortOrder : null,
       width: 76,
       render: (value: number | null | undefined) => formatStatus(value, t),
     },
     {
       title: t('column.usageStatus'),
       key: 'usage',
+      sorter: true,
+      sortOrder: sortBy === 'Usage' ? sortOrder : null,
       width: 86,
       render: (_, record) =>
         record.products?.length ? <Tag color="processing">{t('common.used')}</Tag> : <Tag>{t('common.unused')}</Tag>,
@@ -464,6 +542,8 @@ export default function WarehouseLocationsPage() {
     {
       title: t('column.updateTime'),
       dataIndex: 'updatedAt',
+      sorter: true,
+      sortOrder: sortBy === 'UpdatedAt' ? sortOrder : null,
       width: 150,
       render: (value: string | undefined) => (
         <span className="warehouse-locations-nowrap">{formatDateTime(value)}</span>
@@ -472,6 +552,8 @@ export default function WarehouseLocationsPage() {
     {
       title: t('column.updater'),
       dataIndex: 'updatedBy',
+      sorter: true,
+      sortOrder: sortBy === 'UpdatedBy' ? sortOrder : null,
       width: 100,
       render: (value: string | undefined) => (
         <span className="warehouse-locations-nowrap">{value || '--'}</span>
@@ -585,7 +667,19 @@ export default function WarehouseLocationsPage() {
               setUpdatedByKeyword('')
               setLocationTypeFilter(undefined)
               setUsageFilter(undefined)
-              void loadData(1, pageSize, undefined, undefined, '', '', '')
+              setSortBy(DEFAULT_LOCATION_SORT_BY)
+              setSortOrder(DEFAULT_LOCATION_SORT_ORDER)
+              void loadData(
+                1,
+                pageSize,
+                undefined,
+                undefined,
+                '',
+                '',
+                '',
+                DEFAULT_LOCATION_SORT_BY,
+                DEFAULT_LOCATION_SORT_ORDER,
+              )
             }}
           >
             {t('common.reset')}
@@ -601,14 +695,12 @@ export default function WarehouseLocationsPage() {
           dataSource={data}
           size="small"
           scroll={{ x: 1480, y: 600 }}
+          onChange={handleTableChange}
           pagination={{
             current: page,
             pageSize,
             total,
             showSizeChanger: true,
-            onChange: (nextPage, nextPageSize) => {
-              void loadData(nextPage, nextPageSize)
-            },
           }}
         />
       </Card>

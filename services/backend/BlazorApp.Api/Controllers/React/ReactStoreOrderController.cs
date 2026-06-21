@@ -41,32 +41,44 @@ namespace BlazorApp.Api.Controllers.React
             Permissions.OrderFront.View,
             Permissions.Orders.View,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] OrderCreatePermissions =
         {
             Permissions.Orders.Create,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] CartWritePermissions =
         {
             Permissions.OrderFront.View,
             Permissions.Orders.Create,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] OrderEditPermissions =
         {
             Permissions.Orders.Edit,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] OrderDeletePermissions =
         {
             Permissions.Orders.Delete,
             Permissions.Warehouse.ManageOrders,
+            Permissions.Warehouse.Manage,
         };
         private static readonly string[] WarehouseOrderSyncPermissions =
         {
             Permissions.Warehouse.ManageOrders,
             Permissions.Warehouse.Manage,
+        };
+        private static readonly string[] ImportPriceRefreshRoles =
+        {
+            "Admin",
+            "管理员",
+            "WarehouseManager",
+            "仓库经理",
         };
         private static readonly string[] GlobalStoreScopeRoles =
         {
@@ -228,6 +240,17 @@ namespace BlazorApp.Api.Controllers.React
             return HasAnyRole("Admin", "管理员");
         }
 
+        private async Task<bool> HasGlobalWarehouseOrderScopeAsync()
+        {
+            // 仓库总权限或订货管理权限用户可查看全部分店订货；普通订货前台用户仍走分店范围限制。
+            return HasAnyRole(GlobalStoreScopeRoles)
+                || await HasAnyPermissionAsync(new[]
+                {
+                    Permissions.Warehouse.ManageOrders,
+                    Permissions.Warehouse.Manage
+                });
+        }
+
         private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
         {
             if (string.IsNullOrWhiteSpace(storeCode))
@@ -273,7 +296,7 @@ namespace BlazorApp.Api.Controllers.React
                 return isAllowed ? null : Forbid();
             }
 
-            return HasAnyRole(GlobalStoreScopeRoles) ? null : Forbid();
+            return await HasGlobalWarehouseOrderScopeAsync() ? null : Forbid();
         }
 
         private static string NormalizeAuthorizationStoreCode(string? storeCode)
@@ -550,7 +573,8 @@ namespace BlazorApp.Api.Controllers.React
 
                 var shouldUseProductCache =
                     !filter.ExcludeExistingWarehouseProducts
-                    && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID);
+                    && string.IsNullOrWhiteSpace(filter.ExcludeOrderGUID)
+                    && string.IsNullOrWhiteSpace(filter.SupplierCode);
 
                 string? cacheKey = null;
                 if (shouldUseProductCache)
@@ -1605,6 +1629,41 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 从仓库商品表刷新订单明细进口价，允许管理员/仓库管理员修正已完成订单成本。
+        /// </summary>
+        [HttpPost("line/refresh-import-prices")]
+        public async Task<IActionResult> RefreshOrderLineImportPrices(
+            [FromBody] RefreshStoreOrderImportPricesDto request
+        )
+        {
+            try
+            {
+                if (!HasAnyRole(ImportPriceRefreshRoles))
+                {
+                    return Forbid();
+                }
+
+                var forbidden = await RequireOrderScopeAsync(request.OrderGUID);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.RefreshOrderLineImportPricesAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RefreshOrderLineImportPrices failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 更新商品状态 (单个)
         /// </summary>
         [HttpPost("product/status")]
@@ -1754,6 +1813,80 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetUsedBranches failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取订单中未能匹配本地分店的分店标识聚合。
+        /// </summary>
+        [HttpGet("unmatched-store-groups")]
+        public async Task<IActionResult> GetUnmatchedStoreGroups()
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetUnmatchedStoreOrderGroupsAsync();
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetUnmatchedStoreGroups failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 批量将订单旧分店 GUID/标识修复为本地分店编码。
+        /// </summary>
+        [HttpPost("batch-map-store-code")]
+        public async Task<IActionResult> BatchMapStoreCode(
+            [FromBody] BatchMapStoreOrderStoreCodeDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(OrderEditPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                request ??= new BatchMapStoreOrderStoreCodeDto();
+                var targetStoreCodes = request.Mappings
+                    .Select(item => item.TargetStoreCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                foreach (var targetStoreCode in targetStoreCodes)
+                {
+                    var storeForbidden = await RequireStoreScopeAsync(targetStoreCode);
+                    if (storeForbidden != null)
+                    {
+                        return storeForbidden;
+                    }
+                }
+
+                var result = await _service.BatchMapStoreOrderStoreCodeAsync(request);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data, message = result.Message });
+                }
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BatchMapStoreCode failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

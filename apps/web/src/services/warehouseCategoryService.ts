@@ -100,6 +100,20 @@ function ensureReactSuccess(payload: ReactApiResponse<unknown> | unknown, fallba
   }
 }
 
+function extractAffectedCount(payload: ReactApiResponse<unknown> | unknown) {
+  if (!payload || typeof payload !== 'object') {
+    return 0
+  }
+
+  const data = 'data' in payload ? (payload as ReactApiResponse<unknown>).data : payload
+  if (!data || typeof data !== 'object') {
+    return 0
+  }
+
+  const affected = (data as Record<string, unknown>).affected ?? (data as Record<string, unknown>).Affected
+  return typeof affected === 'number' && Number.isFinite(affected) ? affected : 0
+}
+
 function transformCategory(raw: WarehouseCategoryApiItem): WarehouseCategoryNode {
   const childrenRaw = raw.children ?? raw.Children
 
@@ -203,7 +217,7 @@ export async function deleteWarehouseCategory(categoryGuid: string): Promise<boo
   return unwrapReactData(response, '删除分类失败')
 }
 
-export async function batchAssignProducts(categoryGuid: string, productCodes: string[]): Promise<void> {
+export async function batchAssignProducts(categoryGuid: string, productCodes: string[]): Promise<number> {
   const response = await request.post<ReactApiResponse<unknown> | unknown>(
     `/api/react/v1/warehouse-categories/${categoryGuid}/products/batch-assign`,
     {
@@ -213,6 +227,8 @@ export async function batchAssignProducts(categoryGuid: string, productCodes: st
   )
   // 批量更新属于强业务操作，HTTP 200 但 success/isSuccess=false 也必须阻断成功提示。
   ensureReactSuccess(response, '批量更新商品分类失败')
+  // 后端返回实际影响行数，调用方可据此避免“接口成功但没有商品被更新”的假成功。
+  return extractAffectedCount(response)
 }
 
 export async function getWarehouseCategoryProducts(

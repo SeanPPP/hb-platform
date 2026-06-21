@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
+import { useAuthStore } from '../../../store/auth'
 import { getStores } from '../../../services/storeService'
 import { getStoreOrderDetail, startPickingStoreOrder } from '../../../services/storeOrderService'
 import { StoreOrderFlowStatus } from '../../../types/storeOrder'
@@ -14,22 +15,16 @@ import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
 import { buildDocumentFileName, downloadElementPagesAsPdf, formatCurrency, formatPrintDate, printElementPagesAsPdf } from './printUtils'
-import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount } from './pickingListLogic'
+import { buildPickingListExcelData, buildPickingListPdfPages, formatInnerPackCount, formatPickingOrderQuantity } from './pickingListLogic'
+import { formatStoreOrderVolume } from './volumeFormat'
 import './print.css'
-
-function formatVolume(value?: number) {
-  if (value === undefined || value === null) {
-    return '--'
-  }
-
-  return value.toFixed(4)
-}
 
 export default function PickingListPage() {
   const { t, i18n } = useTranslation()
   const route = useStableRouteContext()
   const id = route?.params.id || ''
   const navigate = useNavigate()
+  const { access } = useAuthStore()
   const printRootRef = useRef<HTMLDivElement | null>(null)
   const pdfRootRef = useRef<HTMLDivElement | null>(null)
   // 记录当前配货单已完成首次加载，保活 Tab 恢复时避免同订单自动刷新。
@@ -41,12 +36,13 @@ export default function PickingListPage() {
   const [exportingExcel, setExportingExcel] = useState(false)
   const [order, setOrder] = useState<StoreOrderDetail | null>(null)
   const [store, setStore] = useState<StoreDto | null>(null)
+  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
   // 打印页日期格式跟随当前语言，但只限定本次需求中的中英文区域设置。
   const printLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
 
   useDynamicTabTitle(
     order?.orderNo
-      ? t('warehouse.pickingList.titleWithStore', { storeName: store?.storeName || order.storeCode || t('warehouse.pickingList.unknownStore'), orderNo: order.orderNo })
+      ? t('warehouse.pickingList.titleWithStore', { storeName: store?.storeName || order.storeName || order.storeCode || t('warehouse.pickingList.unknownStore'), orderNo: order.orderNo })
       : t('warehouse.pickingList.title'),
   )
 
@@ -76,7 +72,8 @@ export default function PickingListPage() {
         visibleOrderIdRef.current = detail.orderGUID || id
         setOrder(detail)
 
-        if (detail.storeCode) {
+        // WarehouseStaff 无需加载完整分店下拉；配货单只读展示直接使用订单详情里的分店名称。
+        if (detail.storeCode && canUseWarehouseManagerActions) {
           const storeResult = await getStores({
             search: detail.storeCode,
             page: 1,
@@ -169,7 +166,8 @@ export default function PickingListPage() {
       return true
     }
 
-    if (order.flowStatus === StoreOrderFlowStatus.Submitted) {
+    // WarehouseStaff 可打印/下载配货单，但不能借打印动作触发订单状态流转。
+    if (canUseWarehouseManagerActions && order.flowStatus === StoreOrderFlowStatus.Submitted) {
       await startPickingStoreOrder(order.orderGUID)
       setOrder((current) =>
         current
@@ -215,7 +213,7 @@ export default function PickingListPage() {
         pdfRootRef.current,
         buildDocumentFileName(
           t('warehouse.pickingList.fileName'),
-          store?.storeName || order.storeCode,
+          store?.storeName || order.storeName || order.storeCode,
           order.orderNo || order.orderGUID,
           'pdf',
           {
@@ -264,9 +262,8 @@ export default function PickingListPage() {
             productName: t('column.productName'),
             importPrice: t('column.importPrice'),
             rrp: t('column.rrp'),
-            innerPackCount: t('column.innerPackCount'),
+            innerPackCount: t('warehouse.pickingList.innerPackShort'),
             orderQuantity: t('column.orderQuantity'),
-            allocQuantity: t('column.allocQuantity'),
           },
         },
         {
@@ -274,7 +271,7 @@ export default function PickingListPage() {
           storeText: displayStoreText,
           orderDateText: formatPrintDate(order.orderDate, false, printLocale),
           printTimeText: formatPrintDate(undefined, true, printLocale),
-          totalOrderVolumeText: formatVolume(totalOrderVolume),
+          totalOrderVolumeText: formatStoreOrderVolume(totalOrderVolume),
         },
       )
 
@@ -331,7 +328,7 @@ export default function PickingListPage() {
       link.href = url
       link.download = buildDocumentFileName(
         t('warehouse.pickingList.fileName'),
-        store?.storeName || order.storeCode,
+        store?.storeName || order.storeName || order.storeCode,
         order.orderNo || order.orderGUID,
         'xlsx',
         {
@@ -359,11 +356,35 @@ export default function PickingListPage() {
     return <Empty description={t('storeOrders.detail.orderDataNotFound')} style={{ marginTop: 120 }} />
   }
 
-  const displayStoreName = store?.storeName || order.storeCode || t('warehouse.pickingList.unknownStore')
+  const displayStoreName = store?.storeName || order.storeName || order.storeCode || t('warehouse.pickingList.unknownStore')
   const displayStoreText = store?.storeCode && store.storeCode !== displayStoreName
     ? `${displayStoreName} (${store.storeCode})`
     : displayStoreName
   const orderNoText = order.orderNo || order.orderGUID || t('warehouse.pickingList.unknownOrder')
+  const renderPickingHeader = () => (
+    <div className="store-order-picking-header">
+      <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
+      <div className="store-order-picking-primary">
+        {/* 店名和单号放在同一视觉主线，方便仓库打印后快速识别单据归属。 */}
+        <div className="store-order-picking-primary-line">
+          <span className="store-order-picking-store">{displayStoreText}</span>
+          <span className="store-order-picking-order-no">
+            #{orderNoText}
+          </span>
+        </div>
+      </div>
+      <div className="store-order-picking-meta">
+        <div>
+          <strong>{t('warehouse.pickingList.printTime')}</strong>
+          {formatPrintDate(undefined, true, printLocale)}
+        </div>
+        <div>
+          <strong>{t('warehouse.pickingList.orderDate')}</strong>
+          {formatPrintDate(order.orderDate, false, printLocale)}
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className="store-order-print-page">
@@ -395,32 +416,11 @@ export default function PickingListPage() {
             <col className="col-price" />
             <col className="col-inner-pack" />
             <col className="col-qty" />
-            <col className="col-send-qty" />
           </colgroup>
           <thead>
             <tr>
-              <td colSpan={9} className="store-order-picking-header-cell">
-                <div className="store-order-picking-header">
-                  <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
-                  <div className="store-order-picking-meta">
-                    <div>
-                      <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                      {orderNoText}
-                    </div>
-                    <div>
-                      <strong>{t('warehouse.pickingList.printTime')}</strong>
-                      {formatPrintDate(undefined, true, printLocale)}
-                    </div>
-                    <div>
-                      <strong>{t('warehouse.pickingList.storeLabel')}</strong>
-                      {displayStoreText}
-                    </div>
-                    <div>
-                      <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                      {formatPrintDate(order.orderDate, false, printLocale)}
-                    </div>
-                  </div>
-                </div>
+              <td colSpan={8} className="store-order-picking-header-cell">
+                {renderPickingHeader()}
               </td>
             </tr>
             <tr>
@@ -432,7 +432,6 @@ export default function PickingListPage() {
               <th className="col-price">{t('column.rrp')}</th>
               <th className="col-inner-pack">{t('warehouse.pickingList.innerPackShort')}</th>
               <th className="col-qty">{t('warehouse.pickingList.orderQtyShort')}</th>
-              <th className="col-send-qty">{t('column.allocQuantity')}</th>
             </tr>
           </thead>
           <tbody>
@@ -450,8 +449,7 @@ export default function PickingListPage() {
                   {/* 内包装数量严格使用订货数量计算，不再回退发货数。 */}
                   {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
                 </td>
-                <td className="col-qty">{item.quantity}</td>
-                <td className="col-send-qty">{item.allocQuantity || ''}</td>
+                <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
               </tr>
             ))}
           </tbody>
@@ -467,7 +465,7 @@ export default function PickingListPage() {
             <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
             <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
             <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>
-            <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
+            <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatStoreOrderVolume(totalOrderVolume) })}</div>
           </div>
         </div>
       </div>
@@ -486,32 +484,11 @@ export default function PickingListPage() {
                   <col className="col-price" />
                   <col className="col-inner-pack" />
                   <col className="col-qty" />
-                  <col className="col-send-qty" />
                 </colgroup>
                 <thead>
                   <tr>
-                    <td colSpan={9} className="store-order-picking-header-cell">
-                      <div className="store-order-picking-header">
-                        <div className="store-order-picking-title">{t('warehouse.pickingList.title')}</div>
-                        <div className="store-order-picking-meta">
-                          <div>
-                            <strong>{t('warehouse.pickingList.orderNoLabel')}</strong>
-                            {orderNoText}
-                          </div>
-                          <div>
-                            <strong>{t('warehouse.pickingList.printTime')}</strong>
-                            {formatPrintDate(undefined, true, printLocale)}
-                          </div>
-                          <div>
-                            <strong>{t('warehouse.pickingList.storeLabel')}</strong>
-                            {displayStoreText}
-                          </div>
-                          <div>
-                            <strong>{t('warehouse.pickingList.orderDate')}</strong>
-                            {formatPrintDate(order.orderDate, false, printLocale)}
-                          </div>
-                        </div>
-                      </div>
+                    <td colSpan={8} className="store-order-picking-header-cell">
+                      {renderPickingHeader()}
                     </td>
                   </tr>
                   <tr>
@@ -523,7 +500,6 @@ export default function PickingListPage() {
                     <th className="col-price">{t('column.rrp')}</th>
                     <th className="col-inner-pack">{t('warehouse.pickingList.innerPackShort')}</th>
                     <th className="col-qty">{t('warehouse.pickingList.orderQtyShort')}</th>
-                    <th className="col-send-qty">{t('column.allocQuantity')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -541,8 +517,7 @@ export default function PickingListPage() {
                         {/* PDF 分页复用同一套包数计算，避免屏幕和 PDF 内容不一致。 */}
                         {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
                       </td>
-                      <td className="col-qty">{item.quantity}</td>
-                      <td className="col-send-qty">{item.allocQuantity || ''}</td>
+                      <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -559,14 +534,14 @@ export default function PickingListPage() {
                     <div>{t('warehouse.pickingList.totalSKU', { count: order.totalSKU ?? order.items.length })}</div>
                     <div>{t('warehouse.pickingList.totalOrderQty', { count: order.totalQuantity })}</div>
                     <div>{t('warehouse.pickingList.totalShipQty', { count: order.totalAllocQuantity ?? 0 })}</div>
-                    <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatVolume(totalOrderVolume) })}</div>
+                    <div>{t('warehouse.pickingList.totalOrderVolume', { volume: formatStoreOrderVolume(totalOrderVolume) })}</div>
                   </div>
                 </div>
               ) : null}
             </div>
 
             <div className="store-order-pdf-page-number">
-              {`第 ${pageIndex + 1} / ${pdfPages.length} 页`}
+              {t('warehouse.pickingList.pageNumber', { current: pageIndex + 1, total: pdfPages.length })}
             </div>
           </div>
         ))}

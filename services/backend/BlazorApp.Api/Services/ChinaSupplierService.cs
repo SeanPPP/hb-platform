@@ -654,7 +654,7 @@ namespace BlazorApp.Api.Services
 
                 var suppliers = await _context
                     .Db.Queryable<ChinaSupplier>()
-                    .Where(s => guids.Contains(s.Guid))
+                    .Where(s => s.Guid != null && guids.Contains(s.Guid))
                     .ToListAsync();
 
                 if (suppliers.Count == 0)

@@ -14,5 +14,10 @@ namespace BlazorApp.Shared.DTOs
         /// 密码
         /// </summary>
         public string Password { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 密码格式：raw 表示 HTTPS 传输的原始密码；clientSha256 表示旧客户端传来的 SHA256。
+        /// </summary>
+        public string PasswordFormat { get; set; } = string.Empty;
     }
 }

@@ -138,6 +138,34 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 获取用户登录记录
+        /// </summary>
+        [HttpGet("guid/{guid}/login-records")]
+        [Authorize(Policy = Permissions.Users.View)]
+        public async Task<IActionResult> GetUserLoginRecords(
+            string guid,
+            [FromQuery] UserLoginRecordQueryDto query
+        )
+        {
+            try
+            {
+                var result = await _userService.GetUserLoginRecordsAsync(guid, query);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取用户登录记录失败，UserGUID: {UserGUID}", guid);
+                return StatusCode(
+                    500,
+                    ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
+                        "服务器内部错误",
+                        "INTERNAL_SERVER_ERROR"
+                    )
+                );
+            }
+        }
+
+        /// <summary>
         /// 根据用户名获取用户
         /// </summary>
         [HttpGet("username/{username}")]

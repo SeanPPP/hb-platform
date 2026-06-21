@@ -19,6 +19,7 @@ using BlazorApp.Api.Services.Logging;
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.AspNetCore.DataProtection;
@@ -188,45 +189,35 @@ builder.Services.AddHostedService<ScheduledTaskService>();
 // 🌐 配置跨域资源共享策略，支持 Cookie 认证方案
 // ⚠️ 重要：AllowCredentials() 必须与 WithOrigins() 一起使用，不能与 AllowAnyOrigin() 一起使用
 // 原因：当使用凭据时，必须明确指定允许的源，不能使用通配符 "*"
+var configuredCorsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+var corsOrigins =
+    configuredCorsOrigins?.Length > 0
+        ? configuredCorsOrigins
+        : new[]
+        {
+            // 🔧 开发环境默认域名
+            "http://localhost:8000", // 前端开发服务器
+            "http://localhost:3000", // 备用前端端口
+            "http://localhost:5002", // 后端 API 端口
+            "https://localhost", // 支持 HTTPS localhost（宝塔面板）
+            // 🌐 生产环境域名
+            "https://www.dats.com.au",
+            "https://www.malmar.com.au",
+            "https://www.yatstal.com.au",
+            "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
+            "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
+            "http://hotbargain.vip",
+        };
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(
         "AllowSpecific",
         policy =>
         {
-            // 🔍 从配置文件读取允许的域名列表
-            var allowedOriginsSection = builder.Configuration.GetSection("Cors:AllowedOrigins");
-            var allowedOrigins = allowedOriginsSection.Get<string[]>();
-
-            // 📝 如果配置文件中没有指定，则使用默认列表
-            var origins =
-                allowedOrigins?.Length > 0
-                    ? allowedOrigins
-                    : new[]
-                    {
-                        // 🔧 开发环境默认域名
-                        "http://localhost:8000", // 前端开发服务器
-                        "http://localhost:3000", // 备用前端端口
-                        "http://localhost:5002", // 后端 API 端口
-                        "https://localhost", // 支持 HTTPS localhost（宝塔面板）
-                        // 🌐 生产环境域名
-                        "https://www.dats.com.au",
-                        "https://www.malmar.com.au",
-                        "https://www.yatstal.com.au",
-                        "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
-                        "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com",
-                        "http://hotbargain.vip",
-                    };
-
-            // 📋 记录允许的域名列表到日志
-            var logger = builder
-                .Services.BuildServiceProvider()
-                .GetRequiredService<ILogger<Program>>();
-            logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", origins));
-
             // ✅ 配置 CORS 策略
             policy
-                .WithOrigins(origins) // 📍 指定允许的源（域名列表）
+                .WithOrigins(corsOrigins) // 📍 指定允许的源（域名列表）
                 .AllowAnyMethod() // 🔓 允许所有 HTTP 方法（GET, POST, PUT, DELETE 等）
                 .AllowAnyHeader() // 🔓 允许所有请求头
                 .AllowCredentials(); // 🍪 允许发送凭据（Cookie、Authorization 头等）
@@ -345,6 +336,14 @@ builder
                     return;
                 }
 
+                var authSessionValidator = context.HttpContext.RequestServices
+                    .GetRequiredService<IAuthSessionValidator>();
+                if (!await authSessionValidator.IsAccessSessionActiveAsync(userGuid, principal))
+                {
+                    context.Fail("登录会话已失效");
+                    return;
+                }
+
                 var activeRoleNames = await dbContext.Db.Queryable<UserRole>()
                     .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
                     .Where((userRole, role) =>
@@ -452,6 +451,8 @@ builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 // 作用域：每个HTTP请求创建一次实例，请求结束时销毁
 // 适合包含状态或需要事务管理的业务服务
 builder.Services.AddScoped<IAuthService, AuthService>(); // 认证服务
+builder.Services.AddScoped<IAuthSessionValidator, AuthSessionValidator>(); // access token 会话有效性校验
+builder.Services.AddSingleton<IClientIpResolver, ClientIpResolver>(); // 登录公网 IP 解析
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
 builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
 builder.Services.AddScoped<IRoleService, RoleService>(); // 角色管理服务
@@ -460,6 +461,7 @@ builder.Services.AddScoped<StoreSyncService>(); // 分店数据同步服务
 builder.Services.AddScoped<SeedDataService>(); // 种子数据初始化服务
 builder.Services.AddScoped<IDataInitializationService, DataInitializationService>(); // 数据初始化服务
 builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection("InvoiceEmail"));
+builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
 builder.Services.AddScoped<IChinaSupplierService, ChinaSupplierService>(); // 国内供应商管理服务
@@ -484,6 +486,13 @@ builder.Services.AddScoped<ItemBarcodeService>(); // 货号条码生成服务
 builder.Services.AddScoped<IDomesticProductCreationService, DomesticProductCreationService>(); // 国内商品货号条码批量创建服务
 builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
+builder.Services.AddScoped<IMobileAppBuildService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<EasWebhookOptions>>();
+    var logger = sp.GetRequiredService<ILogger<MobileAppBuildService>>();
+    return new MobileAppBuildService(context.Db, options, logger);
+}); // Expo EAS APK 构建记录服务
 builder.Services.AddScoped<INavigationService, NavigationService>(); // 动态导航菜单服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务
@@ -559,6 +568,8 @@ builder.Services.AddScoped<
     ILocalSupplierInvoiceHqProductSyncService,
     LocalSupplierInvoiceHqProductSyncService
 >();
+builder.Services.AddScoped<ILocalSupplierInvoiceOcrService, NoopLocalSupplierInvoiceOcrService>();
+builder.Services.AddScoped<ILocalSupplierInvoiceImportService, LocalSupplierInvoiceImportService>();
 builder.Services.AddSingleton<
     ILocalSupplierInvoiceBatchUpdateJobService,
     LocalSupplierInvoiceBatchUpdateJobService
@@ -610,6 +621,9 @@ builder.Services.AddSingleton<
 // 🏗️ 构建WebApplication实例
 // 此时所有服务配置完成，开始构建实际的Web应用程序
 var app = builder.Build();
+
+// 📋 在应用构建完成后记录实际启用的 CORS 域名，避免在服务注册阶段提前创建容器。
+app.Logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", corsOrigins));
 
 // 📝 初始化缓存键日志记录器
 using (var scope = app.Services.CreateScope())
@@ -679,7 +693,8 @@ try
         // 🔄 智能模式：增量更新数据库结构
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-       // dbContext.CreateTable();
+        dbContext.EnsureLoginSessionSchema();
+        // dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 
@@ -709,7 +724,7 @@ try
         // 🔗 验证HQ总部数据库连接
         Console.WriteLine("🔍 检查HQ数据库连接...");
         // hqDbContext.CheckConnection();      // 测试连接是否正常
-        // hqDbContext.CheckTables();          // 检查必要的表是否存在
+        hqDbContext.CheckTables();          // 检查必要的表是否存在
         Console.WriteLine("✅ HQ数据库连接检查完成");
 
         // 🌱 初始化种子数据

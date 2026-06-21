@@ -141,6 +141,32 @@ assertEqual(
   'System.ViewLogs should unlock center log page visibility',
 )
 
+const appDownloadAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.System.ViewAppDownloads],
+  }),
+)
+
+assertEqual(
+  appDownloadAccess.canViewAppDownloads,
+  true,
+  'System.ViewAppDownloads should unlock App download page visibility',
+)
+
+const appDownloadDeniedAccess = buildAccess(createCurrentUser())
+
+assertEqual(
+  appDownloadDeniedAccess.canViewAppDownloads,
+  false,
+  'Missing System.ViewAppDownloads should not unlock App download page visibility',
+)
+
+assertEqual(
+  adminAccess.canViewAppDownloads,
+  true,
+  'Admin should continue to satisfy App download page visibility',
+)
+
 const scheduledTaskManagerAccess = buildAccess(
   createCurrentUser({
     permissions: [P.System.ManageScheduledTasks],
@@ -480,6 +506,12 @@ assertEqual(
 )
 
 assertEqual(
+  getAccessKeyPermissionCodes('canViewAppDownloads').join(','),
+  P.System.ViewAppDownloads,
+  'Web menu preview should map App download access to System.ViewAppDownloads',
+)
+
+assertEqual(
   invoiceEmailSettingsMenu?.accessKey,
   'canManageSystemSettings',
   '发票邮箱配置 Web 菜单应由 System.ManageSettings 控制',
@@ -555,11 +587,68 @@ const warehouseLegacyWebPreview = buildWebRoleMenuPreview(
 const warehouseProductsMenu = warehouseLegacyWebPreview
   .find((node) => node.path === '/warehouse')
   ?.children?.find((node) => node.path === '/warehouse/products')
+const warehouseLegacyPosAdminMenu = warehouseLegacyWebPreview.find((node) => node.path === '/pos-admin')
+const warehouseLegacySalesOrdersMenu = findWebMenuNode(warehouseLegacyWebPreview, '/pos-admin/sales-orders')
 
 assertEqual(
   warehouseProductsMenu?.permissionCodes.join(','),
   `${P.Warehouse.ManageProducts},${P.Warehouse.Manage}`,
   'Warehouse.Manage role preview should show the warehouse products Web menu with both accepted permissions',
+)
+
+assertEqual(
+  Boolean(warehouseLegacyPosAdminMenu),
+  false,
+  'Warehouse.Manage role preview should not show POS admin parent menu without visible POS children',
+)
+
+assertEqual(
+  Boolean(warehouseLegacySalesOrdersMenu),
+  false,
+  'Warehouse.Manage role preview should not show cashier records without Orders.View',
+)
+
+const warehouseStaffWebPreview = buildWebRoleMenuPreview(
+  buildRolePreviewAccess({
+    roleGuid: 'warehouse-staff-role',
+    roleName: 'WarehouseStaff',
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
+    explicitPermissionCodes: [P.Dashboard.View, P.Warehouse.Manage, P.Orders.View],
+    effectivePermissionCodes: [P.Dashboard.View, P.Warehouse.Manage, P.Orders.View],
+  }),
+  translate,
+)
+const warehouseStaffMenu = warehouseStaffWebPreview.find((node) => node.path === '/warehouse')
+
+assertEqual(
+  warehouseStaffWebPreview.map((node) => node.path).join(','),
+  '/warehouse',
+  'WarehouseStaff desktop preview should only show the warehouse parent menu',
+)
+
+assertEqual(
+  warehouseStaffMenu?.children?.map((node) => node.path).join(','),
+  '/warehouse/store-orders',
+  'WarehouseStaff desktop preview should only show store order list under warehouse',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(warehouseStaffWebPreview, '/dashboard')),
+  false,
+  'WarehouseStaff desktop preview should not show dashboard navigation',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(warehouseStaffWebPreview, '/warehouse/products')),
+  false,
+  'WarehouseStaff desktop preview should not show warehouse products navigation',
+)
+
+assertEqual(
+  Boolean(findWebMenuNode(warehouseStaffWebPreview, '/pos-admin/sales-orders')),
+  false,
+  'WarehouseStaff desktop preview should not show cashier records navigation',
 )
 
 const superAdminWebPreview = buildWebRoleMenuPreview(superAdminPreviewAccess, translate)

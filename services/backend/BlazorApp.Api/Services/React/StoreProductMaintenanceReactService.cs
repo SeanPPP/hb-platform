@@ -1576,7 +1576,11 @@ namespace BlazorApp.Api.Services.React
 
             var snapshots = await _db.Queryable<Product>()
                 .LeftJoin<ProductGrade>((p, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted)
-                .Where((p, pg) => !p.IsDeleted && productCodes.Contains(p.ProductCode))
+                .Where((p, pg) =>
+                    !p.IsDeleted
+                    && p.ProductCode != null
+                    && productCodes.Contains(p.ProductCode)
+                )
                 .Select((p, pg) => new LookupProductSnapshot
                 {
                     ProductCode = p.ProductCode ?? string.Empty,
@@ -1663,7 +1667,11 @@ namespace BlazorApp.Api.Services.React
             return rows
                 .Where(x => !string.IsNullOrWhiteSpace(x.StoreCode))
                 .GroupBy(x => x.StoreCode!, StringComparer.Ordinal)
-                .ToDictionary(group => group.Key, group => group.First().StoreName, StringComparer.Ordinal);
+                .ToDictionary(
+                    group => group.Key,
+                    group => (string?)group.First().StoreName,
+                    StringComparer.Ordinal
+                );
         }
 
         private async Task<StoreProductStorePriceDto> BuildStorePriceDtoAsync(

@@ -336,6 +336,8 @@ namespace BlazorApp.Api.Data
 
         // 多端中心应用日志实体
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
+        public SimpleClient<MobileAppBuild> MobileAppBuildDb =>
+            new SimpleClient<MobileAppBuild>(_db);
 
         // 节日商品相关实体
         public SimpleClient<HolidayProduct> HolidayProductDb =>
@@ -365,10 +367,13 @@ namespace BlazorApp.Api.Data
                 // 智能初始化：只在需要时创建或更新表
                 InitializeTablesIfNeeded();
                 EnsureEmployeeProfilePhoneColumn();
+                EnsureUserLastLoginIpColumn();
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
+                EnsureContainerDetailSchemaColumns();
                 CreateNormalIndexes();
+                EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
 
                 Console.WriteLine("数据库表检查完成！");
             }
@@ -378,6 +383,13 @@ namespace BlazorApp.Api.Data
                 Console.WriteLine($"错误详情: {ex.StackTrace}");
                 throw;
             }
+        }
+
+        public void EnsureLoginSessionSchema()
+        {
+            EnsureUserLastLoginIpColumn();
+            EnsureRefreshTokenUserIpAddressIndex();
+            EnsureContainerDetailSchemaColumns();
         }
 
         public void ForceRecreateAllTables()
@@ -462,6 +474,7 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskInstanceState),
                 typeof(InvoiceEmailConfiguration),
                 typeof(ApplicationLog),
+                typeof(MobileAppBuild),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
@@ -550,7 +563,7 @@ namespace BlazorApp.Api.Data
         private void EnsureEmployeeProfilePhoneColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(EmployeeProfile));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -586,10 +599,74 @@ namespace BlazorApp.Api.Data
             }
         }
 
+        private void EnsureUserLastLoginIpColumn()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(User));
+            if (!IsKnownTable(tableName))
+            {
+                // 兼容早期手工建表/SQLite 测试库：User 实体未显式标注表名时，实体映射名可能与旧表名不同。
+                tableName = "User";
+            }
+
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            // 最近登录 IP 是后台安全审计字段，老库启动时需要无损补列。
+            EnsureColumn(tableName, "LastLoginIp", "nvarchar(50)", "varchar(50)", "varchar(50)");
+        }
+
+        private bool IsKnownTable(string tableName)
+        {
+            if (_db.DbMaintenance.IsAnyTable(tableName))
+            {
+                return true;
+            }
+
+            // SQLite 测试库和部分旧库由手写 SQL 建表，逐表清单比 IsAnyTable 更能反映真实状态。
+            return _db.DbMaintenance
+                .GetTableInfoList(false)
+                .Any(table => string.Equals(table.Name, tableName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void EnsureRefreshTokenUserIpAddressIndex()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(RefreshToken));
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            const string indexName = "IX_RefreshToken_UserGUID_IpAddress";
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}')) CREATE INDEX {indexName} ON [{tableName}](UserGUID, IpAddress)"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"UserGUID\", \"IpAddress\")"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] ([UserGUID], [IpAddress])"
+                );
+            }
+        }
+
         private void EnsureLocalSupplierImageBaseUrlColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(HBLocalSupplier));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -628,7 +705,7 @@ namespace BlazorApp.Api.Data
         private void EnsureStoreContactEmailColumn()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(Store));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -667,7 +744,7 @@ namespace BlazorApp.Api.Data
         private void EnsureSalesStatisticRefreshStateJobColumns()
         {
             var tableName = _db.EntityMaintenance.GetTableName(typeof(SalesStatisticRefreshState));
-            if (!_db.DbMaintenance.IsAnyTable(tableName))
+            if (!IsKnownTable(tableName))
             {
                 return;
             }
@@ -677,6 +754,21 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "RequestedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "StartedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
+        }
+
+        private void EnsureContainerDetailSchemaColumns()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(ContainerDetail));
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            // 老库无损补列：货柜明细阶段先保存目标分类，新商品创建时再继承到 Product。
+            EnsureColumn(tableName, "TargetWarehouseCategoryGUID", "nvarchar(50)", "varchar(50)", "varchar(50)");
+            // 老库无损补列：上次价格是货柜明细快照，只在新建明细或显式回填时写入。
+            EnsureColumn(tableName, "LastImportPrice", "decimal(18,2)", "numeric(18,2)", "decimal(18,2)");
+            EnsureColumn(tableName, "LastOEMPrice", "decimal(18,2)", "numeric(18,2)", "decimal(18,2)");
         }
 
         private void EnsureColumn(
@@ -1051,6 +1143,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_LocalSupplier_Code_Unique\" ON \"LocalSupplier\" (\"LocalSupplierCode\")",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_WareHouseOrder_OrderNo_Unique\" ON \"WareHouseOrder\" (\"OrderNo\") WHERE \"OrderNo\" IS NOT NULL",
+                ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''",
 
                 // 普通索引
                 ["IX_User_IsActive"] =
@@ -1079,6 +1173,8 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_SysUserPermission_UserGuid\" ON \"HBwebSysUserPermissions\" (\"UserGuid\")",
                 ["IX_RefreshToken_UserGUID"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_RefreshToken_UserGUID\" ON \"RefreshToken\" (\"UserGUID\")",
+                ["IX_RefreshToken_UserGUID_IpAddress"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_RefreshToken_UserGUID_IpAddress\" ON \"RefreshToken\" (\"UserGUID\", \"IpAddress\")",
                 ["IX_RefreshToken_ExpiresAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_RefreshToken_ExpiresAt\" ON \"RefreshToken\" (\"ExpiresAt\")",
                 ["IX_Cart_CartStatus"] =
@@ -1135,6 +1231,10 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_ApplicationLog_TraceId\" ON \"ApplicationLog\" (\"TraceId\")",
                 ["IX_ApplicationLog_RequestPath"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ApplicationLog_RequestPath\" ON \"ApplicationLog\" (\"RequestPath\")",
+                ["IX_MobileAppBuild_EasBuildId"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppBuild_EasBuildId\" ON \"MobileAppBuild\" (\"EasBuildId\")",
+                ["IX_MobileAppBuild_Profile_CompletedAt"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppBuild_Profile_CompletedAt\" ON \"MobileAppBuild\" (\"BuildProfile\", \"Platform\", \"Status\", \"CompletedAt\")",
             };
 
             foreach (var indexCheck in indexStatements)
@@ -1185,6 +1285,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Code_Unique' AND object_id = OBJECT_ID('LocalSupplier')) CREATE UNIQUE INDEX IX_LocalSupplier_Code_Unique ON [LocalSupplier](LocalSupplierCode)",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_OrderNo_Unique' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE UNIQUE INDEX IX_WareHouseOrder_OrderNo_Unique ON [WareHouseOrder]([OrderNo]) WHERE [OrderNo] IS NOT NULL",
+                ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreLocalSupplierInvoice_Business_Unique' AND object_id = OBJECT_ID('StoreLocalSupplierInvoice')) CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique ON [StoreLocalSupplierInvoice]([StoreCode], [SupplierCode], [InvoiceNo]) WHERE [IsDeleted] = 0 AND [StoreCode] IS NOT NULL AND [SupplierCode] IS NOT NULL AND [InvoiceNo] IS NOT NULL AND [InvoiceNo] <> ''",
             };
 
             foreach (var indexCheck in uniqueIndexChecks)
@@ -1234,6 +1336,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SysUserPermission_UserGuid' AND object_id = OBJECT_ID('HBwebSysUserPermissions')) CREATE INDEX IX_SysUserPermission_UserGuid ON [HBwebSysUserPermissions](UserGuid)",
                 ["IX_RefreshToken_UserGUID"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID ON [RefreshToken](UserGUID)",
+                ["IX_RefreshToken_UserGUID_IpAddress"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID_IpAddress' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID_IpAddress ON [RefreshToken](UserGUID, IpAddress)",
                 ["IX_RefreshToken_ExpiresAt"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_ExpiresAt' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_ExpiresAt ON [RefreshToken](ExpiresAt)",
                 ["IX_Cart_CartStatus"] =
@@ -1260,6 +1364,16 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber_Lookup ON [Product]([ItemNumber]) INCLUDE([ProductCode], [Barcode]) WHERE [ItemNumber] IS NOT NULL AND [IsDeleted] = 0",
                 ["IX_Product_Barcode_Lookup"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode_Lookup ON [Product]([Barcode]) INCLUDE([ProductCode], [ItemNumber]) WHERE [Barcode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_Location_List_Code"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Code' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Code ON [Location]([IsDeleted], [LocationCode]) INCLUDE([LocationGuid], [LocationType], [LocationBarcode], [Status], [UpdatedAt], [UpdatedBy])",
+                ["IX_Location_List_Barcode"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Barcode' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Barcode ON [Location]([IsDeleted], [LocationBarcode]) INCLUDE([LocationGuid], [LocationCode], [LocationType], [Status], [UpdatedAt], [UpdatedBy]) WHERE [LocationBarcode] IS NOT NULL",
+                ["IX_Location_List_Type_Status"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Type_Status' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Type_Status ON [Location]([IsDeleted], [LocationType], [Status]) INCLUDE([LocationGuid], [LocationCode], [LocationBarcode], [UpdatedAt], [UpdatedBy])",
+                ["IX_Location_List_UpdatedAt"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_UpdatedAt' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_UpdatedAt ON [Location]([IsDeleted], [UpdatedAt]) INCLUDE([LocationGuid], [LocationCode], [LocationBarcode], [LocationType], [Status], [UpdatedBy])",
+                ["IX_Location_List_UpdatedBy"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_UpdatedBy' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_UpdatedBy ON [Location]([IsDeleted], [UpdatedBy]) INCLUDE([LocationGuid], [LocationCode], [LocationBarcode], [LocationType], [Status], [UpdatedAt]) WHERE [UpdatedBy] IS NOT NULL",
                 ["IX_ProductSetCode_ProductCode_SetBarcode_Active"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductSetCode_ProductCode_SetBarcode_Active' AND object_id = OBJECT_ID('ProductSetCode')) CREATE INDEX IX_ProductSetCode_ProductCode_SetBarcode_Active ON [ProductSetCode]([ProductCode], [SetBarcode]) WHERE [SetBarcode] IS NOT NULL AND [IsDeleted] = 0",
                 ["IX_ProductSetCode_SetBarcode_Lookup"] =
@@ -1301,6 +1415,7 @@ namespace BlazorApp.Api.Data
                     // 创建普通索引
                     CreateNormalIndexes();
                     CreateWareHouseOrderOrderNoUniqueIndex();
+                    EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
                 }
                 else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
                 {
@@ -1376,6 +1491,35 @@ namespace BlazorApp.Api.Data
             }
         }
 
+        private void EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex()
+        {
+            try
+            {
+                if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    const string sql =
+                        "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreLocalSupplierInvoice_Business_Unique' AND object_id = OBJECT_ID('StoreLocalSupplierInvoice')) "
+                        + "CREATE UNIQUE INDEX IX_StoreLocalSupplierInvoice_Business_Unique ON [StoreLocalSupplierInvoice]([StoreCode], [SupplierCode], [InvoiceNo]) "
+                        + "WHERE [IsDeleted] = 0 AND [StoreCode] IS NOT NULL AND [SupplierCode] IS NOT NULL AND [InvoiceNo] IS NOT NULL AND [InvoiceNo] <> ''";
+                    _db.Ado.ExecuteCommand(sql);
+                    Console.WriteLine("✓ StoreLocalSupplierInvoice 业务唯一索引检查完成");
+                }
+                else if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+                {
+                    const string sql =
+                        "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" "
+                        + "ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") "
+                        + "WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''";
+                    _db.Ado.ExecuteCommand(sql);
+                    Console.WriteLine("✓ StoreLocalSupplierInvoice 业务唯一索引检查完成");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ 创建 StoreLocalSupplierInvoice 业务唯一索引失败: {ex.Message}");
+            }
+        }
+
         private void CreateNormalIndexes()
         {
             Console.WriteLine("创建普通索引...");
@@ -1407,6 +1551,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_SysUserPermission_UserGuid' AND object_id = OBJECT_ID('HBwebSysUserPermissions')) CREATE INDEX IX_SysUserPermission_UserGuid ON [HBwebSysUserPermissions](UserGuid)",
                 // RefreshToken表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID ON [RefreshToken](UserGUID)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_UserGUID_IpAddress' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_UserGUID_IpAddress ON [RefreshToken](UserGUID, IpAddress)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_ExpiresAt' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_ExpiresAt ON [RefreshToken](ExpiresAt)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_RefreshToken_CreatedAt' AND object_id = OBJECT_ID('RefreshToken')) CREATE INDEX IX_RefreshToken_CreatedAt ON [RefreshToken](CreatedAt)",
                 // Cart表的普通索引
@@ -1463,6 +1608,12 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_UpdatedAt' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_UpdatedAt ON [Product](UpdatedAt DESC)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_LocalSupplierCode' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_LocalSupplierCode ON [Product](LocalSupplierCode)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Search' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Search ON [Product](ProductName, ProductCode, ItemNumber, Barcode)",
+                // Location 列表过滤和远程排序索引，支撑仓库标签管理页快速分页查询。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Code' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Code ON [Location]([IsDeleted], [LocationCode]) INCLUDE([LocationGuid], [LocationType], [LocationBarcode], [Status], [UpdatedAt], [UpdatedBy])",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Barcode' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Barcode ON [Location]([IsDeleted], [LocationBarcode]) INCLUDE([LocationGuid], [LocationCode], [LocationType], [Status], [UpdatedAt], [UpdatedBy]) WHERE [LocationBarcode] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Type_Status' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Type_Status ON [Location]([IsDeleted], [LocationType], [Status]) INCLUDE([LocationGuid], [LocationCode], [LocationBarcode], [UpdatedAt], [UpdatedBy])",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_UpdatedAt' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_UpdatedAt ON [Location]([IsDeleted], [UpdatedAt]) INCLUDE([LocationGuid], [LocationCode], [LocationBarcode], [LocationType], [Status], [UpdatedBy])",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_UpdatedBy' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_UpdatedBy ON [Location]([IsDeleted], [UpdatedBy]) INCLUDE([LocationGuid], [LocationCode], [LocationBarcode], [LocationType], [Status], [UpdatedAt]) WHERE [UpdatedBy] IS NOT NULL",
                 // WarehouseProduct表的普通索引
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE UNIQUE INDEX IX_WarehouseProduct_ProductCode ON [WarehouseProduct]([ProductCode])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WarehouseProduct_ProductCode_NotDeleted' AND object_id = OBJECT_ID('WarehouseProduct')) CREATE INDEX IX_WarehouseProduct_ProductCode_NotDeleted ON [WarehouseProduct]([ProductCode]) WHERE [IsDeleted] = 0",
@@ -1496,6 +1647,9 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_Project_Level_Time' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_Project_Level_Time ON [ApplicationLog](ProjectCode, Level, TimestampUtc)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_TraceId' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_TraceId ON [ApplicationLog](TraceId)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_RequestPath' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_RequestPath ON [ApplicationLog](RequestPath)",
+                // MobileAppBuild表的索引，支撑 EAS buildId 幂等和最新 APK 查询。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_EasBuildId' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE UNIQUE INDEX IX_MobileAppBuild_EasBuildId ON [MobileAppBuild](EasBuildId)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE INDEX IX_MobileAppBuild_Profile_CompletedAt ON [MobileAppBuild](BuildProfile, Platform, Status, CompletedAt)",
             };
 
             foreach (var sql in normalIndexStatements)
@@ -1680,7 +1834,58 @@ namespace BlazorApp.Api.Data
             {
                 return DbType.PostgreSQL;
             }
+
+            if (IsSqliteConnectionString(connectionString))
+            {
+                return DbType.Sqlite;
+            }
+
             return DbType.SqlServer;
+        }
+
+        private static bool IsSqliteConnectionString(string connectionString)
+        {
+            var builder = new System.Data.Common.DbConnectionStringBuilder
+            {
+                ConnectionString = connectionString,
+            };
+
+            if (
+                builder.ContainsKey("Server")
+                || builder.ContainsKey("Database")
+                || builder.ContainsKey("Initial Catalog")
+            )
+            {
+                return false;
+            }
+
+            var mode = GetConnectionValue(builder, "Mode");
+            if (string.Equals(mode, "Memory", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var dataSource = GetConnectionValue(builder, "Data Source")
+                ?? GetConnectionValue(builder, "DataSource")
+                ?? GetConnectionValue(builder, "Filename");
+            if (string.IsNullOrWhiteSpace(dataSource))
+            {
+                return false;
+            }
+
+            var value = dataSource.Trim();
+            return string.Equals(value, ":memory:", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".db", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".sqlite", StringComparison.OrdinalIgnoreCase)
+                || value.EndsWith(".sqlite3", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string? GetConnectionValue(
+            System.Data.Common.DbConnectionStringBuilder builder,
+            string key
+        )
+        {
+            return builder.TryGetValue(key, out var value) ? Convert.ToString(value) : null;
         }
 
         /// <summary>

@@ -12,7 +12,10 @@ namespace BlazorApp.Api.Interfaces.React
     {
         Task<List<DetectionResultDto>> DetectAsync(List<DetectionItemDto> items);
         Task<BatchOperationResultDto> BatchUpdateAsync(List<UpdateItemDto> items);
-        Task<BatchOperationResultDto> BatchCreateAsync(List<CreateItemDto> items);
+        Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction = true
+        );
         Task<ReactTableResponseDto<WarehouseProductReactListDto>> GetAntdTableDataAsync(
             ReactTableRequestDto request
         );

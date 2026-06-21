@@ -96,6 +96,18 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<List<BranchDto>>> GetUsedBranchesAsync();
 
         /// <summary>
+        /// 获取订单中未能匹配本地分店的旧分店标识聚合。
+        /// </summary>
+        Task<ApiResponse<List<UnmatchedStoreOrderGroupDto>>> GetUnmatchedStoreOrderGroupsAsync();
+
+        /// <summary>
+        /// 批量将订单旧分店标识映射为本地分店编码。
+        /// </summary>
+        Task<ApiResponse<BatchMapStoreOrderStoreCodeResultDto>> BatchMapStoreOrderStoreCodeAsync(
+            BatchMapStoreOrderStoreCodeDto request
+        );
+
+        /// <summary>
         /// 创建新订单 (FlowStatus=1)
         /// </summary>
         Task<ApiResponse<string>> CreateOrderAsync(CreateStoreOrderDto request);
@@ -129,6 +141,13 @@ namespace BlazorApp.Api.Interfaces.React
         /// 批量更新订单行 (数量或价格)
         /// </summary>
         Task<ApiResponse<bool>> BatchUpdateOrderLineAsync(BatchUpdateOrderLineDto request);
+
+        /// <summary>
+        /// 从仓库商品表刷新订单明细进口价。
+        /// </summary>
+        Task<ApiResponse<RefreshStoreOrderImportPricesResultDto>> RefreshOrderLineImportPricesAsync(
+            RefreshStoreOrderImportPricesDto request
+        );
 
         /// <summary>
         /// 更新订单头信息

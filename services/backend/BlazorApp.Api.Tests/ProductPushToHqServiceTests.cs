@@ -180,7 +180,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         Assert.Equal(4.99m, product.H零售价);
         Assert.Equal("cargo-image.jpg", product.H商品图片);
         Assert.True(product.H使用状态);
-        Assert.Equal("CARGO-SUP", product.CBP供应商编码);
+        Assert.Equal("SUP01", product.CBP供应商编码);
 
         var prices = await _hqDb.Queryable<DIC_商品零售价表>()
             .Where(row => row.H商品编码 == "HB001")
@@ -489,7 +489,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task PushToHqAsync_Item带供应商且本地商品为空_写入Item供应商编码()
+    public async Task PushToHqAsync_Item带供应商且本地商品为空_仍写入国内供应商编码()
     {
         await SeedProductGraphAsync();
         await _localDb.Updateable<Product>()
@@ -509,11 +509,11 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         Assert.Equal(1, response.Data?.ProductsAdded);
         var product = await _hqDb.Queryable<DIC_商品信息字典表>()
             .SingleAsync(row => row.H商品编码 == "HB001");
-        Assert.Equal("SUP-ITEM", product.CBP供应商编码);
+        Assert.Equal("SUP01", product.CBP供应商编码);
     }
 
     [Fact]
-    public async Task PushToHqAsync_Hq已有商品时_Item供应商覆盖旧Cbp供应商编码()
+    public async Task PushToHqAsync_Hq已有商品时_Item供应商不覆盖Cbp国内供应商编码()
     {
         await SeedProductGraphAsync();
         var service = CreateService();
@@ -543,11 +543,11 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         Assert.Equal(1, second.Data?.ProductsUpdated);
         var product = await _hqDb.Queryable<DIC_商品信息字典表>()
             .SingleAsync(row => row.H商品编码 == "HB001");
-        Assert.Equal("SUP-ITEM", product.CBP供应商编码);
+        Assert.Equal("SUP01", product.CBP供应商编码);
     }
 
     [Fact]
-    public async Task PushToHqAsync_旧ProductCodes入口_仍回退本地商品供应商编码()
+    public async Task PushToHqAsync_旧ProductCodes入口_写入国内供应商编码()
     {
         await SeedProductGraphAsync();
 
@@ -560,6 +560,74 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         var product = await _hqDb.Queryable<DIC_商品信息字典表>()
             .SingleAsync(row => row.H商品编码 == "HB001");
         Assert.Equal("SUP01", product.CBP供应商编码);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_本地供应商为200时_Cbp写入国内供应商编码()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { LocalSupplierCode = "200" })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<DomesticProduct>()
+            .SetColumns(row => new DomesticProduct { SupplierCode = "SUP-CN" })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("SUP-CN", product.CBP供应商编码);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.All(prices, row =>
+        {
+            Assert.Equal("200", row.H供应商编码);
+            Assert.EndsWith("200", row.H分店供应商编码);
+        });
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_Hq已有Cbp为200时_纠正为国内供应商编码()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { LocalSupplierCode = "200" })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<DomesticProduct>()
+            .SetColumns(row => new DomesticProduct { SupplierCode = "SUP-CN" })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var service = CreateService();
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+        await _hqDb.Updateable<DIC_商品信息字典表>()
+            .SetColumns(row => new DIC_商品信息字典表 { CBP供应商编码 = "200" })
+            .Where(row => row.H商品编码 == "HB001")
+            .ExecuteCommandAsync();
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(second.Success, second.Message);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("SUP-CN", product.CBP供应商编码);
     }
 
     [Fact]
@@ -1005,6 +1073,37 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_新商品页面状态且缺商品编码时_按供应商和货号唯一命中成功()
+    {
+        await SeedProductGraphAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                new()
+                {
+                    LocalSupplierCode = " SUP01 ",
+                    ItemNumber = " HB001-ITEM ",
+                    DomesticPrice = 16.5m,
+                    ImportPrice = 26.5m,
+                    OemPrice = 36.5m,
+                    IsNewProduct = true,
+                },
+            },
+        });
+
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(1, response.Data?.SuccessCount);
+        Assert.Equal(0, response.Data?.FailedCount);
+        Assert.Equal(1, response.Data?.WarehouseInventoriesCreated);
+
+        var inventory = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal(16.5m, inventory.H国内价格);
+    }
+
+    [Fact]
     public async Task PushToHqAsync_Items混合有效和无效候选_整体失败且不写Hq()
     {
         await SeedProductGraphAsync();
@@ -1155,7 +1254,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task PushToHqAsync_新商品候选_不会发送()
+    public async Task PushToHqAsync_新商品页面状态但本地商品存在_允许发送()
     {
         await SeedProductGraphAsync();
 
@@ -1172,14 +1271,39 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             },
         });
 
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(1, response.Data?.SuccessCount);
+        Assert.Equal(0, response.Data?.FailedCount);
+        Assert.Equal(1, response.Data?.TotalCount);
+        Assert.Equal(1, await _hqDb.Queryable<DIC_商品信息字典表>().Where(row => row.H商品编码 == "HB001").CountAsync());
+        Assert.Equal(1, await _hqDb.Queryable<CBP_DIC_商品库存表>().Where(row => row.H商品编码 == "HB001").CountAsync());
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_新商品页面状态且本地商品不存在_后端兜底拒绝()
+    {
+        await SeedProductGraphAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            Items = new List<PushProductsToHqItem>
+            {
+                new()
+                {
+                    ProductCode = "HB404",
+                    DomesticPrice = 8.8m,
+                    IsNewProduct = true,
+                },
+            },
+        });
+
         Assert.False(response.Success);
         Assert.Equal("PRODUCT_HQ_PUSH_NO_PRODUCTS", response.ErrorCode);
         Assert.Equal(0, response.Data?.SuccessCount);
         Assert.Equal(1, response.Data?.FailedCount);
+        Assert.Contains(response.Data?.Errors ?? new List<string>(), item => item.Contains("HB404"));
         Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
         Assert.Equal(0, await _hqDb.Queryable<CBP_DIC_商品库存表>().CountAsync());
-        Assert.Equal(0, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
-        Assert.Equal(0, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
     }
 
     [Fact]
@@ -1440,6 +1564,7 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             HBProductNo = "HB001-ITEM",
             ProductName = "测试国内商品中文",
             EnglishProductName = "测试国内商品英文",
+            SupplierCode = "SUP01",
             ProductImage = "HB001-domestic.jpg",
             Barcode = "952700000001",
             IsDeleted = false,

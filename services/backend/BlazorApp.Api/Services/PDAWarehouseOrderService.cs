@@ -784,6 +784,11 @@ namespace BlazorApp.Api.Services
 
                 await db.Updateable(detail).ExecuteCommandAsync();
 
+                if (string.IsNullOrWhiteSpace(detail.OrderGUID))
+                {
+                    throw new InvalidOperationException("订单明细缺少订单GUID，无法重算订单汇总");
+                }
+
                 await RecalculateOrderTotalsAsync(detail.OrderGUID);
 
                 return new PDAWarehouseOrderDetailResponseDto
@@ -858,6 +863,11 @@ namespace BlazorApp.Api.Services
                 await db.Deleteable<WareHouseOrderDetails>()
                     .Where(d => d.DetailGUID == detailGuid)
                     .ExecuteCommandAsync();
+
+                if (string.IsNullOrWhiteSpace(detail.OrderGUID))
+                {
+                    throw new InvalidOperationException("订单明细缺少订单GUID，无法重算订单汇总");
+                }
 
                 await RecalculateOrderTotalsAsync(detail.OrderGUID);
 
@@ -1038,10 +1048,10 @@ namespace BlazorApp.Api.Services
                     MaxStockQuantity = filter.MaxStockQuantity,
                     MinPrice = filter.MinPrice,
                     MaxPrice = filter.MaxPrice,
-                    PriceType = filter.PriceType,
+                    PriceType = filter.PriceType ?? "DomesticPrice",
                     PageNumber = filter.PageNumber,
                     PageSize = filter.PageSize,
-                    SortBy = filter.SortBy,
+                    SortBy = filter.SortBy ?? "ItemNumber",
                     SortDescending = filter.SortDescending,
                 };
 

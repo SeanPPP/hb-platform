@@ -28,6 +28,7 @@ import {
   buildDocumentFileName,
   collectElementBreakOffsets,
   downloadElementAsPdf,
+  formatDocumentFileDate,
   formatCurrency,
   formatPrintDate,
 } from './printUtils'
@@ -36,6 +37,14 @@ import './print.css'
 const TRANSPARENT_IMAGE_FALLBACK = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
 const EMAIL_REGEXP = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 type InvoiceEmailModalLanguage = 'zh' | 'en'
+
+interface InvoiceExcelHeaderInfo {
+  storeName: string
+  storeContact: string
+  storeAddress: string
+  invoiceDateText: string
+  invoiceFileDate: string
+}
 
 function normalizeInvoiceEmailModalLanguage(language?: string): InvoiceEmailModalLanguage {
   return language === 'en' || language?.startsWith('en-') ? 'en' : 'zh'
@@ -67,22 +76,56 @@ function sortInvoiceItems(items: StoreOrderDetailLine[]) {
   })
 }
 
-async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDetailLine[], storeName: string | undefined, t: TFunction) {
+async function downloadInvoiceExcel(
+  order: StoreOrderDetail,
+  items: StoreOrderDetailLine[],
+  headerInfo: InvoiceExcelHeaderInfo,
+  t: TFunction,
+) {
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet(t('warehouse.invoice.excel.sheetName'))
 
   worksheet.columns = [
-    { header: '#', key: 'index', width: 8 },
-    { header: t('warehouse.invoice.excel.itemNo'), key: 'itemNumber', width: 18 },
-    { header: t('warehouse.invoice.excel.name'), key: 'productName', width: 28 },
-    { header: t('warehouse.invoice.excel.barcode'), key: 'barcode', width: 20 },
-    { header: t('warehouse.invoice.excel.cost'), key: 'importPrice', width: 14 },
-    { header: t('warehouse.invoice.excel.orderQty'), key: 'orderQuantity', width: 12 },
-    { header: t('warehouse.invoice.excel.shipQty'), key: 'allocQuantity', width: 12 },
-    { header: t('warehouse.invoice.excel.subtotal'), key: 'subtotal', width: 16 },
+    { key: 'index', width: 8 },
+    { key: 'itemNumber', width: 18 },
+    { key: 'productName', width: 28 },
+    { key: 'barcode', width: 20 },
+    { key: 'importPrice', width: 14 },
+    { key: 'orderQuantity', width: 12 },
+    { key: 'allocQuantity', width: 12 },
+    { key: 'subtotal', width: 16 },
   ]
 
-  worksheet.getRow(1).font = { bold: true }
+  const titleRow = worksheet.addRow(['INVOICE'])
+  titleRow.font = { bold: true, size: 14 }
+  worksheet.mergeCells(titleRow.number, 1, titleRow.number, 8)
+
+  worksheet.addRow([
+    t('warehouse.invoice.invoiceNo', { orderNo: order.orderNo || order.orderGUID }),
+    '',
+    '',
+    '',
+    t('warehouse.invoice.invoiceDate', { date: headerInfo.invoiceDateText }),
+  ])
+  worksheet.mergeCells(2, 1, 2, 4)
+  worksheet.mergeCells(2, 5, 2, 8)
+  worksheet.addRow([t('warehouse.invoice.customer'), headerInfo.storeName])
+  worksheet.addRow([t('warehouse.invoice.customerContact'), headerInfo.storeContact])
+  worksheet.addRow([t('warehouse.invoice.address'), headerInfo.storeAddress])
+  worksheet.addRow([])
+
+  // Excel 页头固定写在明细前，方便邮件附件和手动导出的核对口径一致。
+  const tableHeaderRow = worksheet.addRow([
+    '#',
+    t('warehouse.invoice.excel.itemNo'),
+    t('warehouse.invoice.excel.name'),
+    t('warehouse.invoice.excel.barcode'),
+    t('warehouse.invoice.excel.cost'),
+    t('warehouse.invoice.excel.orderQty'),
+    t('warehouse.invoice.excel.shipQty'),
+    t('warehouse.invoice.excel.subtotal'),
+  ])
+  tableHeaderRow.font = { bold: true }
 
   items.forEach((item, index) => {
     const orderQuantity = Number(item.quantity || 0)
@@ -123,14 +166,15 @@ async function downloadInvoiceExcel(order: StoreOrderDetail, items: StoreOrderDe
   const link = document.createElement('a')
   link.href = url
   link.download = buildDocumentFileName(
-    t('warehouse.invoice.fileName'),
-    storeName || order.storeCode,
+    'INVOICE',
+    headerInfo.storeName || order.storeCode,
     order.orderNo || order.orderGUID,
     'xlsx',
     {
       unknownStore: t('warehouse.invoice.unknownStore'),
       unknownOrder: t('warehouse.invoice.unknownOrder'),
     },
+    headerInfo.invoiceFileDate,
   )
   document.body.appendChild(link)
   link.click()
@@ -278,6 +322,9 @@ export default function StoreOrderInvoicePage() {
           orderNo: order.orderNo || order.orderGUID,
         })
       : ''
+  const invoiceDateSource = order?.outboundDate || order?.orderDate
+  const invoiceDateText = formatPrintDate(invoiceDateSource, false, i18n.language)
+  const invoiceFileDate = formatDocumentFileDate(invoiceDateSource)
 
   const resolveInvoicePdfFileName = () =>
     buildDocumentFileName(
@@ -289,6 +336,7 @@ export default function StoreOrderInvoicePage() {
         unknownStore: t('warehouse.invoice.unknownStore'),
         unknownOrder: t('warehouse.invoice.unknownOrder'),
       },
+      invoiceFileDate,
     )
 
   const getInvoicePdfBreakOffsets = () => {
@@ -465,7 +513,18 @@ export default function StoreOrderInvoicePage() {
 
     setExportingExcel(true)
     try {
-      await downloadInvoiceExcel(order, sortedItems, store?.storeName || order.storeCode, t)
+      await downloadInvoiceExcel(
+        order,
+        sortedItems,
+        {
+          storeName: store?.storeName || order.storeCode || t('warehouse.invoice.unknownStore'),
+          storeContact: order.storeContactEmail || store?.contactEmail || '-',
+          storeAddress: order.storeAddress || store?.address || '--',
+          invoiceDateText,
+          invoiceFileDate,
+        },
+        t,
+      )
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouse.invoice.exportExcelFailed'))
@@ -526,7 +585,7 @@ export default function StoreOrderInvoicePage() {
 
         <div className="store-order-invoice-bar">
           <div>{t('warehouse.invoice.invoiceNo', { orderNo: order.orderNo || order.orderGUID })}</div>
-          <div>{t('warehouse.invoice.invoiceDate', { date: formatPrintDate(undefined, false) })}</div>
+          <div>{t('warehouse.invoice.invoiceDate', { date: invoiceDateText })}</div>
         </div>
 
         <div className="store-order-invoice-customer">

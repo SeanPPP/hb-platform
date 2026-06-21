@@ -46,6 +46,13 @@ namespace BlazorApp.Shared.Models
         public string? ProductCode { get; set; }
 
         /// <summary>
+        /// 目标仓库分类GUID
+        /// 说明：货柜明细可先保存目标分类，后续创建新商品时写入本地商品仓库分类。
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? TargetWarehouseCategoryGUID { get; set; }
+
+        /// <summary>
         /// 装柜类型
         /// 说明：商品在货柜中的装载方式
         /// 枚举值：
@@ -156,6 +163,24 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
         [Display(Name = "贴牌价格")]
         public decimal? OEMPrice { get; set; }
+
+        /// <summary>
+        /// 上次进货价格
+        /// 说明：商品加入货柜或手动回填时，从仓库商品表快照下来的进货价。
+        /// 注意：已有快照不随仓库商品价格变化自动覆盖。
+        /// </summary>
+        [SugarColumn(IsNullable = true, DecimalDigits = 2)]
+        [Display(Name = "上次进货价格")]
+        public decimal? LastImportPrice { get; set; }
+
+        /// <summary>
+        /// 上次贴牌价格
+        /// 说明：商品加入货柜或手动回填时，从仓库商品表快照下来的贴牌价。
+        /// 注意：已有快照不随仓库商品价格变化自动覆盖。
+        /// </summary>
+        [SugarColumn(IsNullable = true, DecimalDigits = 2)]
+        [Display(Name = "上次贴牌价格")]
+        public decimal? LastOEMPrice { get; set; }
 
         /// <summary>
         /// 单件装箱数

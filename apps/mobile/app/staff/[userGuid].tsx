@@ -180,6 +180,7 @@ export default function StaffDetailScreen() {
         userGuid,
         storeCode,
         newPassword: resetPasswordValue.trim(),
+        passwordFormat: "raw",
       });
       setResetPasswordVisible(false);
       setResetPasswordValue("");

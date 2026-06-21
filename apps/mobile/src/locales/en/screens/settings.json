@@ -13,6 +13,26 @@
   "language": {
     "description": "Change the app display language and apply it immediately."
   },
+  "apiHost": {
+    "title": "Server address",
+    "description": "View and change the backend server address used by this app.",
+    "current": "Current server address",
+    "change": "Change server address",
+    "modalTitle": "Server address settings",
+    "modalDescription": "After saving, future API requests will use the new server address.",
+    "presetsLabel": "Preset addresses",
+    "inputLabel": "Server address",
+    "emptyTitle": "Enter a server address",
+    "emptyMessage": "Server address cannot be empty.",
+    "savedTitle": "Server address saved",
+    "savedMessage": "Future requests will use: {{host}}",
+    "saveFailedTitle": "Save failed",
+    "saveFailedMessage": "Failed to save the server address. Please try again later.",
+    "presets": {
+      "production": "Production server",
+      "local": "Local server"
+    }
+  },
   "updates": {
     "title": "App updates",
     "description": "The app downloads available updates silently and applies them the next time it opens.",

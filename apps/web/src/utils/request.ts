@@ -1,10 +1,11 @@
 import type { ApiResponse, PagedResult } from '../types/api'
+import { getClientPublicIpHeaders } from './clientPublicIp'
 import { isCenterLogIngestRequest, reportRequestError } from './centerLogClient'
 
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
   params?: Record<string, unknown>
-  data?: unknown
+  data?: unknown | FormData
   headers?: Record<string, string>
   signal?: AbortSignal
   skipAuthRedirect?: boolean
@@ -82,7 +83,10 @@ async function tryRefreshToken(): Promise<boolean> {
       const response = await fetch(refreshUrl, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getClientPublicIpHeaders()),
+        },
         body: JSON.stringify({}),
       })
 
@@ -131,14 +135,16 @@ async function parseResponse<T>(response: Response): Promise<T> {
 async function rawFetch<T>(url: string, options: RequestOptions = {}): Promise<{ response: Response; payload: T }> {
   const { method = 'GET', params, data, headers, signal } = options
   const requestUrl = buildRequestUrl(url, params)
+  const isFormDataBody = typeof FormData !== 'undefined' && data instanceof FormData
   const response = await fetch(requestUrl, {
     method,
     credentials: 'include',
     headers: {
-      ...(data ? { 'Content-Type': 'application/json' } : {}),
+      // FormData 必须交给浏览器/运行时自动补 multipart boundary，不能手动写 JSON 头。
+      ...(data && !isFormDataBody ? { 'Content-Type': 'application/json' } : {}),
       ...headers,
     },
-    body: data ? JSON.stringify(data) : undefined,
+    body: data ? (isFormDataBody ? data : JSON.stringify(data)) : undefined,
     signal,
   })
 

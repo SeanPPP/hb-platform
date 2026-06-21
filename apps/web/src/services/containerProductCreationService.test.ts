@@ -1,6 +1,8 @@
 import {
   buildContainerCreateProductsOperationId,
+  buildContainerSubmitOperationId,
   createContainerProductCreationJob,
+  createContainerSubmitJob,
   getContainerProductCreationJob,
 } from './containerProductCreationService'
 import { RequestError } from '../utils/request'
@@ -93,6 +95,77 @@ async function main() {
   })
   if (operationIdFailure) failures.push(operationIdFailure)
 
+  const submitOperationIdFailure = await runTest('整柜提交 operationId 应只由货柜稳定生成', () => {
+    assertEqual(
+      buildContainerSubmitOperationId(' container-1 '),
+      'submit-container:container-1',
+      '整柜提交 operationId 应去除货柜 GUID 前后空格',
+    )
+  })
+  if (submitOperationIdFailure) failures.push(submitOperationIdFailure)
+
+  const submitJobFailure = await runTest('整柜提交应创建后台 job 并只携带当前货柜 GUID', async () => {
+    const captured = await captureFetch(
+      {
+        success: true,
+        data: {
+          jobId: 'container-submit-job-1',
+          status: 'Queued',
+          operationId: 'submit-container:container-1',
+          result: {
+            createdCount: 0,
+            updatedCount: 0,
+            skippedCount: 0,
+            failedCount: 0,
+            containerCompleted: false,
+          },
+        },
+      },
+      () =>
+        createContainerSubmitJob({
+          operationId: 'submit-container:container-1',
+          containerGuid: 'container-1',
+        }),
+    )
+
+    assertDeepEqual(
+      {
+        url: captured.capturedUrl,
+        method: captured.capturedMethod,
+        body: captured.capturedBody,
+        job: captured.result,
+      },
+      {
+        url: '/api/react/v1/container-products/submit-container/jobs',
+        method: 'POST',
+        body: {
+          operationId: 'submit-container:container-1',
+          containerGuid: 'container-1',
+          detailHguids: [],
+          submitContainer: true,
+        },
+        job: {
+          jobId: 'container-submit-job-1',
+          status: 'Queued',
+          operationId: 'submit-container:container-1',
+          result: {
+            createdCount: 0,
+            updatedCount: 0,
+            skippedCount: 0,
+            failedCount: 0,
+            containerCompleted: false,
+            created: [],
+            updated: [],
+            skipped: [],
+            errors: [],
+          },
+        },
+      },
+      '整柜提交 job 请求和归一化结果不符合预期',
+    )
+  })
+  if (submitJobFailure) failures.push(submitJobFailure)
+
   const createJobFailure = await runTest('货柜创建新商品应创建后台 job 并携带 operationId 和明细 GUID', async () => {
     const captured = await captureFetch(
       {
@@ -137,9 +210,12 @@ async function main() {
           operationId: 'op-1',
           result: {
             createdCount: 0,
+            updatedCount: 0,
             skippedCount: 0,
             failedCount: 0,
+            containerCompleted: false,
             created: [],
+            updated: [],
             skipped: [],
             errors: [],
           },
@@ -175,9 +251,12 @@ async function main() {
       captured.result.result,
       {
         createdCount: 2,
+        updatedCount: 0,
         skippedCount: 1,
         failedCount: 1,
+        containerCompleted: false,
         created: [],
+        updated: [],
         skipped: [],
         errors: [{ productCode: 'P-3', reasonCode: 'PRICE_INVALID', message: '价格异常' }],
       },
@@ -211,9 +290,12 @@ async function main() {
       captured.result.result,
       {
         createdCount: 1,
+        updatedCount: 0,
         skippedCount: 0,
         failedCount: 1,
+        containerCompleted: false,
         created: [{ productCode: 'P-1' }],
+        updated: [],
         skipped: [],
         errors: [{ productCode: 'P-2', reasonCode: 'DUPLICATE_CODE', message: '商品已存在' }],
       },
@@ -221,6 +303,44 @@ async function main() {
     )
   })
   if (pascalCaseResultFailure) failures.push(pascalCaseResultFailure)
+
+  const submitPascalCaseResultFailure = await runTest('整柜提交 job 应兼容 PascalCase 更新统计和完成状态', async () => {
+    const captured = await captureFetch(
+      {
+        success: true,
+        data: {
+          JobId: 'container-submit-job-pascal',
+          Status: 'Succeeded',
+          Result: {
+            CreatedCount: 2,
+            UpdatedCount: 3,
+            SkippedCount: 1,
+            FailedCount: 0,
+            ContainerCompleted: true,
+            Updated: [{ productCode: 'P-UPDATED', message: '价格已更新' }],
+          },
+        },
+      },
+      () => getContainerProductCreationJob('container-submit-job-pascal'),
+    )
+
+    assertDeepEqual(
+      captured.result.result,
+      {
+        createdCount: 2,
+        updatedCount: 3,
+        skippedCount: 1,
+        failedCount: 0,
+        containerCompleted: true,
+        created: [],
+        updated: [{ productCode: 'P-UPDATED', message: '价格已更新' }],
+        skipped: [],
+        errors: [],
+      },
+      '整柜提交 PascalCase 结果应归一化到统一字段',
+    )
+  })
+  if (submitPascalCaseResultFailure) failures.push(submitPascalCaseResultFailure)
 
   const missingStatusFailure = await runTest('创建 job 响应缺少 status 时不得归一为成功', async () => {
     const captured = await captureFetch(

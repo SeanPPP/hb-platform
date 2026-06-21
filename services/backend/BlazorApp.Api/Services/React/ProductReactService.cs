@@ -169,28 +169,28 @@ namespace BlazorApp.Api.Services.React
             switch (filterType)
             {
                 case NumberFilterType.equals when minValue.HasValue:
-                    query = query.Where($"{fieldName} = @0", minValue.Value);
+                    query = query.Where($"{fieldName} = @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.notEquals when minValue.HasValue:
-                    query = query.Where($"{fieldName} != @0", minValue.Value);
+                    query = query.Where($"{fieldName} != @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.greaterThan when minValue.HasValue:
-                    query = query.Where($"{fieldName} > @0", minValue.Value);
+                    query = query.Where($"{fieldName} > @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.greaterThanOrEqual when minValue.HasValue:
-                    query = query.Where($"{fieldName} >= @0", minValue.Value);
+                    query = query.Where($"{fieldName} >= @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.lessThan when minValue.HasValue:
-                    query = query.Where($"{fieldName} < @0", minValue.Value);
+                    query = query.Where($"{fieldName} < @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.lessThanOrEqual when minValue.HasValue:
-                    query = query.Where($"{fieldName} <= @0", minValue.Value);
+                    query = query.Where($"{fieldName} <= @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.between:
                     if (minValue.HasValue)
-                        query = query.Where($"{fieldName} >= @0", minValue.Value);
+                        query = query.Where($"{fieldName} >= @minValue", new Dictionary<string, object> { { "minValue", minValue.Value } });
                     if (maxValue.HasValue)
-                        query = query.Where($"{fieldName} <= @0", maxValue.Value);
+                        query = query.Where($"{fieldName} <= @maxValue", new Dictionary<string, object> { { "maxValue", maxValue.Value } });
                     break;
             }
         }
@@ -212,30 +212,54 @@ namespace BlazorApp.Api.Services.React
             switch (filterType)
             {
                 case NumberFilterType.equals when minValue.HasValue:
-                    query = query.Where($"{fieldName} = @0", minValue.Value);
+                    query = query.Where($"{fieldName} = @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.notEquals when minValue.HasValue:
-                    query = query.Where($"{fieldName} != @0", minValue.Value);
+                    query = query.Where($"{fieldName} != @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.greaterThan when minValue.HasValue:
-                    query = query.Where($"{fieldName} > @0", minValue.Value);
+                    query = query.Where($"{fieldName} > @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.greaterThanOrEqual when minValue.HasValue:
-                    query = query.Where($"{fieldName} >= @0", minValue.Value);
+                    query = query.Where($"{fieldName} >= @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.lessThan when minValue.HasValue:
-                    query = query.Where($"{fieldName} < @0", minValue.Value);
+                    query = query.Where($"{fieldName} < @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.lessThanOrEqual when minValue.HasValue:
-                    query = query.Where($"{fieldName} <= @0", minValue.Value);
+                    query = query.Where($"{fieldName} <= @value", new Dictionary<string, object> { { "value", minValue.Value } });
                     break;
                 case NumberFilterType.between:
                     if (minValue.HasValue)
-                        query = query.Where($"{fieldName} >= @0", minValue.Value);
+                        query = query.Where($"{fieldName} >= @minValue", new Dictionary<string, object> { { "minValue", minValue.Value } });
                     if (maxValue.HasValue)
-                        query = query.Where($"{fieldName} <= @0", maxValue.Value);
+                        query = query.Where($"{fieldName} <= @maxValue", new Dictionary<string, object> { { "maxValue", maxValue.Value } });
                     break;
             }
+        }
+
+        /// <summary>
+        /// 应用日期范围筛选；结束时间按“不包含”处理，前端传入次日零点即可覆盖整天。
+        /// </summary>
+        private void ApplyDateRangeFilter(
+            ref ISugarQueryable<Product> query,
+            DateTime? from,
+            DateTime? toExclusive,
+            string fieldName
+        )
+        {
+            if (!from.HasValue && !toExclusive.HasValue)
+                return;
+
+            if (from.HasValue)
+                query = query.Where($"{fieldName} >= @from", new Dictionary<string, object> { { "from", from.Value } });
+            if (toExclusive.HasValue)
+                query = query.Where($"{fieldName} < @toExclusive", new Dictionary<string, object> { { "toExclusive", toExclusive.Value } });
+        }
+
+        private static List<T> NormalizeColumnFilterValues<T>(IEnumerable<T>? values)
+        {
+            return values?.Distinct().ToList() ?? new List<T>();
         }
 
         #endregion
@@ -267,10 +291,35 @@ namespace BlazorApp.Api.Services.React
                 {
                     q = q.Where(p => p.LocalSupplierCode == query.LocalSupplierCode);
                 }
+                else
+                {
+                    var supplierCodes = NormalizeColumnFilterValues(query.LocalSupplierCodes)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code.Trim())
+                        .ToList();
+                    if (supplierCodes.Count > 0)
+                    {
+                        q = q.Where(p => p.LocalSupplierCode != null && supplierCodes.Contains(p.LocalSupplierCode));
+                    }
+                }
 
                 if (query.IsActive.HasValue)
                 {
                     q = q.Where(p => p.IsActive == query.IsActive.Value);
+                }
+                else
+                {
+                    var isActiveValues = NormalizeColumnFilterValues(query.IsActiveValues);
+                    if (isActiveValues.Count == 1)
+                    {
+                        q = q.Where(p => p.IsActive == isActiveValues[0]);
+                    }
+                }
+
+                var isAutoPricingValues = NormalizeColumnFilterValues(query.IsAutoPricingValues);
+                if (isAutoPricingValues.Count == 1)
+                {
+                    q = q.Where(p => p.IsAutoPricing == isAutoPricingValues[0]);
                 }
 
                 if (query.IsSpecialProduct.HasValue)
@@ -285,16 +334,39 @@ namespace BlazorApp.Api.Services.React
 
                 if (query.ProductCategoryGUIDs != null && query.ProductCategoryGUIDs.Count > 0)
                 {
-                    q = q.Where(p => query.ProductCategoryGUIDs.Contains(p.ProductCategoryGUID));
+                    q = q.Where(p =>
+                        p.ProductCategoryGUID != null
+                        && query.ProductCategoryGUIDs.Contains(p.ProductCategoryGUID)
+                    );
                 }
 
                 if (query.ProductType.HasValue)
                 {
-                    q = q.Where(p => p.ProductType == query.ProductType.Value);
+                    if (query.ProductType.Value == 0)
+                    {
+                        // 顶部“单品”筛选需要与列头“普通商品”保持一致：历史空值也视为普通商品。
+                        q = q.Where(p => SqlFunc.IsNull(p.ProductType, 0) == 0);
+                    }
+                    else
+                    {
+                        q = q.Where(p => p.ProductType == query.ProductType.Value);
+                    }
+                }
+                else
+                {
+                    var productTypeValues = NormalizeColumnFilterValues(query.ProductTypeValues)
+                        .Select(value => (int?)value)
+                        .ToList();
+                    if (productTypeValues.Count > 0)
+                    {
+                        // ProductType 为空时页面按“普通商品”展示，筛选普通商品时必须一并纳入。
+                        q = q.Where(p => productTypeValues.Contains(SqlFunc.IsNull(p.ProductType, 0)));
+                    }
                 }
 
                 #region 文本字段高级筛选
 
+                ApplyTextFilter(ref q, query.ProductCode, query.ProductCodeFilterType, "ProductCode");
                 ApplyTextFilter(ref q, query.ItemNumber, query.ItemNumberFilterType, "ItemNumber");
                 ApplyTextFilter(ref q, query.Barcode, query.BarcodeFilterType, "Barcode");
                 ApplyTextFilter(
@@ -304,6 +376,13 @@ namespace BlazorApp.Api.Services.React
                     "ProductName"
                 );
                 ApplyTextFilter(ref q, query.UpdatedBy, query.UpdatedByFilterType, "UpdatedBy");
+
+                #endregion
+
+                #region 日期字段高级筛选
+
+                ApplyDateRangeFilter(ref q, query.CreatedAtFrom, query.CreatedAtToExclusive, "CreatedAt");
+                ApplyDateRangeFilter(ref q, query.UpdatedAtFrom, query.UpdatedAtToExclusive, "UpdatedAt");
 
                 #endregion
 
@@ -353,7 +432,7 @@ namespace BlazorApp.Api.Services.React
                         LocalSupplierCode = p.LocalSupplierCode,
                         ItemNumber = p.ItemNumber,
                         Barcode = p.Barcode,
-                        ProductName = p.ProductName,
+                        ProductName = p.ProductName ?? string.Empty,
                         ProductType = p.ProductType,
                         MiddlePackageQuantity = p.MiddlePackageQuantity,
                         PurchasePrice = p.PurchasePrice,
@@ -392,6 +471,11 @@ namespace BlazorApp.Api.Services.React
 
                     switch (sortField)
                     {
+                        case "productcode":
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.ProductCode, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.ProductCode, OrderByType.Asc);
+                            break;
                         case "productname":
                             projectedQuery = isDesc
                                 ? projectedQuery.OrderBy(p => p.ProductName, OrderByType.Desc)
@@ -401,6 +485,21 @@ namespace BlazorApp.Api.Services.React
                             projectedQuery = isDesc
                                 ? projectedQuery.OrderBy(p => p.ItemNumber, OrderByType.Desc)
                                 : projectedQuery.OrderBy(p => p.ItemNumber, OrderByType.Asc);
+                            break;
+                        case "barcode":
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.Barcode, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.Barcode, OrderByType.Asc);
+                            break;
+                        case "localsuppliercode":
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.LocalSupplierCode, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.LocalSupplierCode, OrderByType.Asc);
+                            break;
+                        case "productcategoryguid":
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.ProductCategoryGUID, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.ProductCategoryGUID, OrderByType.Asc);
                             break;
                         case "retailprice":
                             projectedQuery = isDesc
@@ -416,6 +515,16 @@ namespace BlazorApp.Api.Services.React
                             projectedQuery = isDesc
                                 ? projectedQuery.OrderBy(p => p.ProductType, OrderByType.Desc)
                                 : projectedQuery.OrderBy(p => p.ProductType, OrderByType.Asc);
+                            break;
+                        case "isautopricing":
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.IsAutoPricing, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.IsAutoPricing, OrderByType.Asc);
+                            break;
+                        case "isactive":
+                            projectedQuery = isDesc
+                                ? projectedQuery.OrderBy(p => p.IsActive, OrderByType.Desc)
+                                : projectedQuery.OrderBy(p => p.IsActive, OrderByType.Asc);
                             break;
                         case "storerecordcount":
                             projectedQuery = isDesc
@@ -462,7 +571,7 @@ namespace BlazorApp.Api.Services.React
                         LocalSupplierCode = p.LocalSupplierCode,
                         ItemNumber = p.ItemNumber,
                         Barcode = p.Barcode,
-                        ProductName = p.ProductName,
+                        ProductName = p.ProductName ?? string.Empty,
                         ProductType = p.ProductType,
                         MiddlePackageQuantity = p.MiddlePackageQuantity,
                         PurchasePrice = p.PurchasePrice,
@@ -472,6 +581,7 @@ namespace BlazorApp.Api.Services.React
                         IsActive = p.IsActive,
                         IsSpecialProduct = p.IsSpecialProduct,
                         WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                        CreatedAt = p.CreatedAt,
                         UpdatedAt = p.UpdatedAt,
                         UpdatedBy = p.UpdatedBy,
                         StoreRecordCount = p.StoreRecordCount,
@@ -539,7 +649,9 @@ namespace BlazorApp.Api.Services.React
                         };
                     }
 
-                    query = query.Where((price, store) => storeCodes.Contains(price.StoreCode));
+                    query = query.Where((price, store) =>
+                        price.StoreCode != null && storeCodes.Contains(price.StoreCode)
+                    );
                 }
 
                 var records = await query
@@ -1414,6 +1526,13 @@ namespace BlazorApp.Api.Services.React
 
                         foreach (var item in batchList)
                         {
+                            if (string.IsNullOrWhiteSpace(item.Product.ProductCode))
+                            {
+                                result.HqFailedCount++;
+                                AddBatchImageError(result, "存在缺少商品编码的商品，未更新图片");
+                                continue;
+                            }
+
                             if (!hqRowsByProductCode.TryGetValue(item.Product.ProductCode, out var matchedRows))
                             {
                                 result.HqFailedCount++;
@@ -1616,7 +1735,9 @@ namespace BlazorApp.Api.Services.React
                 // 应用分店过滤条件(优化:先过滤StoreCode)
                 if (filter.StoreCodes != null && filter.StoreCodes.Any())
                 {
-                    query = query.Where((p, sp, s, ls) => filter.StoreCodes.Contains(sp.StoreCode));
+                    query = query.Where((p, sp, s, ls) =>
+                        sp.StoreCode != null && filter.StoreCodes.Contains(sp.StoreCode)
+                    );
                 }
 
                 // 应用商品主表过滤条件

@@ -188,6 +188,201 @@ public sealed class ProductStoreRecordsTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_文本列头筛选支持包含等于开头和结尾()
+    {
+        await SeedProductAsync("P-TEXT-1", "ABC-001", productName: "Blue Cup", barcode: "930000000001");
+        await SeedProductAsync("P-TEXT-2", "XYZ-002", productName: "Red Bowl", barcode: "930000000002");
+        await SeedProductAsync("P-TEXT-3", "ABC-003", productName: "Green Plate", barcode: "940000000003");
+
+        var contains = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ProductName = "cup",
+            ProductNameFilterType = TextFilterType.contains,
+        });
+        var equals = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            Barcode = "930000000002",
+            BarcodeFilterType = TextFilterType.equals,
+        });
+        var startsWith = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ItemNumber = "ABC",
+            ItemNumberFilterType = TextFilterType.startsWith,
+            SortBy = "itemnumber",
+            SortOrder = "asc",
+        });
+        var endsWith = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ProductCode = "TEXT-3",
+            ProductCodeFilterType = TextFilterType.endsWith,
+        });
+
+        Assert.Equal(new[] { "P-TEXT-1" }, contains.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-TEXT-2" }, equals.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-TEXT-1", "P-TEXT-3" }, startsWith.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-TEXT-3" }, endsWith.Items.Select(item => item.ProductCode).ToArray());
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_数字列头筛选支持等于范围大于等于和小于等于()
+    {
+        await SeedProductAsync("P-NUM-1", "N001", purchasePrice: 1.25m, retailPrice: 2.50m);
+        await SeedProductAsync("P-NUM-2", "N002", purchasePrice: 5.00m, retailPrice: 8.00m);
+        await SeedProductAsync("P-NUM-3", "N003", purchasePrice: 9.99m, retailPrice: 12.00m);
+
+        var equals = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            PurchasePriceMin = 5.00m,
+            PurchasePriceFilterType = NumberFilterType.equals,
+        });
+        var between = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            RetailPriceMin = 2.50m,
+            RetailPriceMax = 8.00m,
+            RetailPriceFilterType = NumberFilterType.between,
+            SortBy = "retailprice",
+            SortOrder = "asc",
+        });
+        var greaterThanOrEqual = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            PurchasePriceMin = 5.00m,
+            PurchasePriceFilterType = NumberFilterType.greaterThanOrEqual,
+        });
+        var lessThanOrEqual = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            RetailPriceMin = 8.00m,
+            RetailPriceFilterType = NumberFilterType.lessThanOrEqual,
+        });
+
+        Assert.Equal(new[] { "P-NUM-2" }, equals.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-NUM-1", "P-NUM-2" }, between.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-NUM-2", "P-NUM-3" }, greaterThanOrEqual.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray());
+        Assert.Equal(new[] { "P-NUM-1", "P-NUM-2" }, lessThanOrEqual.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray());
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_日期列头筛选按自然日和范围生效()
+    {
+        await SeedProductAsync("P-DATE-1", "D001", createdAt: new DateTime(2026, 6, 14, 23, 30, 0), updatedAt: new DateTime(2026, 6, 15, 8, 0, 0));
+        await SeedProductAsync("P-DATE-2", "D002", createdAt: new DateTime(2026, 6, 15, 9, 0, 0), updatedAt: new DateTime(2026, 6, 16, 12, 0, 0));
+        await SeedProductAsync("P-DATE-3", "D003", createdAt: new DateTime(2026, 6, 16, 10, 0, 0), updatedAt: new DateTime(2026, 6, 17, 18, 0, 0));
+
+        var createdOnJune15 = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            CreatedAtFrom = new DateTime(2026, 6, 15),
+            CreatedAtToExclusive = new DateTime(2026, 6, 16),
+        });
+        var updatedRange = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            UpdatedAtFrom = new DateTime(2026, 6, 16),
+            UpdatedAtToExclusive = new DateTime(2026, 6, 18),
+            SortBy = "updatedat",
+            SortOrder = "asc",
+        });
+
+        Assert.Equal(new[] { "P-DATE-2" }, createdOnJune15.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-DATE-2", "P-DATE-3" }, updatedRange.Items.Select(item => item.ProductCode).ToArray());
+        Assert.All(createdOnJune15.Items, item => Assert.NotNull(item.CreatedAt));
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_枚举和布尔列头筛选使用多选精确匹配()
+    {
+        await SeedProductAsync("P-ENUM-1", "E001", localSupplierCode: "SUP-A", isActive: true, isAutoPricing: true, productType: null);
+        await SeedProductAsync("P-ENUM-2", "E002", localSupplierCode: "SUP-B", isActive: false, isAutoPricing: false, productType: 1);
+        await SeedProductAsync("P-ENUM-3", "E003", localSupplierCode: "SUP-C", isActive: true, isAutoPricing: true, productType: 2);
+
+        var suppliers = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            LocalSupplierCodes = new List<string> { "SUP-A", "SUP-C" },
+        });
+        var activeAndAutoPricing = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            IsActiveValues = new List<bool> { true },
+            IsAutoPricingValues = new List<bool> { true },
+        });
+        var normalAndMultiCode = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ProductTypeValues = new List<int> { 0, 2 },
+        });
+
+        Assert.Equal(new[] { "P-ENUM-1", "P-ENUM-3" }, suppliers.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray());
+        Assert.Equal(new[] { "P-ENUM-1", "P-ENUM-3" }, activeAndAutoPricing.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray());
+        Assert.Equal(new[] { "P-ENUM-1", "P-ENUM-3" }, normalAndMultiCode.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray());
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_顶部单品筛选应包含历史空商品类型()
+    {
+        await SeedProductAsync("P-TYPE-NULL", "T001", productType: null);
+        await SeedProductAsync("P-TYPE-ZERO", "T002", productType: 0);
+        await SeedProductAsync("P-TYPE-SET", "T003", productType: 1);
+
+        var normalProducts = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            ProductType = 0,
+        });
+
+        Assert.Equal(
+            new[] { "P-TYPE-NULL", "P-TYPE-ZERO" },
+            normalProducts.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_新增排序字段不会落回默认更新时间排序()
+    {
+        await SeedProductAsync("P-SORT-2", "S002", barcode: "222", updatedAt: new DateTime(2026, 6, 16));
+        await SeedProductAsync("P-SORT-1", "S001", barcode: "111", updatedAt: new DateTime(2026, 6, 17));
+
+        var byBarcode = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            SortBy = "barcode",
+            SortOrder = "asc",
+        });
+        var byProductCode = await CreateService().GetPagedListAsync(new ProductReactFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 20,
+            SortBy = "productcode",
+            SortOrder = "asc",
+        });
+
+        Assert.Equal(new[] { "P-SORT-1", "P-SORT-2" }, byBarcode.Items.Select(item => item.ProductCode).ToArray());
+        Assert.Equal(new[] { "P-SORT-1", "P-SORT-2" }, byProductCode.Items.Select(item => item.ProductCode).ToArray());
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_分店记录数量使用预聚合查询避免逐行相关计数()
     {
         await SeedProductAsync("P001", "A001");
@@ -705,21 +900,38 @@ public sealed class ProductStoreRecordsTests : IDisposable
         );
     }
 
-    private async Task SeedProductAsync(string productCode, string itemNumber, string? localSupplierCode = null)
+    private async Task SeedProductAsync(
+        string productCode,
+        string itemNumber,
+        string? localSupplierCode = null,
+        string? productName = null,
+        string? barcode = null,
+        decimal purchasePrice = 1,
+        decimal retailPrice = 2,
+        bool isActive = true,
+        bool isAutoPricing = false,
+        int? productType = null,
+        string? categoryGuid = null,
+        DateTime? createdAt = null,
+        DateTime? updatedAt = null)
     {
+        var now = DateTime.UtcNow;
         await _localDb.Insertable(new Product
         {
             UUID = $"product-{productCode}",
             ProductCode = productCode,
+            ProductCategoryGUID = categoryGuid,
             LocalSupplierCode = localSupplierCode,
             ItemNumber = itemNumber,
-            Barcode = $"barcode-{productCode}",
-            ProductName = $"商品{productCode}",
-            PurchasePrice = 1,
-            RetailPrice = 2,
-            IsActive = true,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow,
+            Barcode = barcode ?? $"barcode-{productCode}",
+            ProductName = productName ?? $"商品{productCode}",
+            ProductType = productType,
+            PurchasePrice = purchasePrice,
+            RetailPrice = retailPrice,
+            IsAutoPricing = isAutoPricing,
+            IsActive = isActive,
+            CreatedAt = createdAt ?? now,
+            UpdatedAt = updatedAt ?? now,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }

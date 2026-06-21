@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading.Tasks;
 using AutoMapper;
 using BlazorApp.Api.Data;
@@ -181,7 +183,8 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
 
             var byCode = wpList
-                .GroupBy(x => x.ProductCode)
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .GroupBy(x => x.ProductCode!)
                 .ToDictionary(g => g.Key, g => g.First());
             var byItem = wpList
                 .Where(x => !string.IsNullOrWhiteSpace(x.ItemNumber))
@@ -802,8 +805,12 @@ namespace BlazorApp.Api.Services.React
         /// 支持普通商品和套装商品，自动跳过已存在的商品
         /// </summary>
         /// <param name="items">待创建的商品列表</param>
+        /// <param name="useTransaction">是否由本方法自行开启事务；整柜提交会关闭它，交给外层事务统一控制</param>
         /// <returns>批量操作结果</returns>
-        public async Task<BatchOperationResultDto> BatchCreateAsync(List<CreateItemDto> items)
+        public async Task<BatchOperationResultDto> BatchCreateAsync(
+            List<CreateItemDto> items,
+            bool useTransaction = true
+        )
         {
             var result = new BatchOperationResultDto { Success = true, Message = "创建完成" };
             if (items == null || items.Count == 0)
@@ -811,8 +818,11 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
-                // 开启事务
-                _context.Db.Ado.BeginTran();
+                if (useTransaction)
+                {
+                    // 默认入口自行开事务；整柜提交会传 false，由外层统一提交/回滚，避免嵌套事务提前落库。
+                    _context.Db.Ado.BeginTran();
+                }
                 var now = DateTime.Now;
 
                 // 收集所有需要查询的 ProductCode 和 ItemNumber
@@ -1079,6 +1089,9 @@ namespace BlazorApp.Api.Services.React
                                 item.ImageUrl,
                                 item.ItemNumber ?? code
                             ),
+                            WarehouseCategoryGUID = string.IsNullOrWhiteSpace(item.WarehouseCategoryGUID)
+                                ? null
+                                : item.WarehouseCategoryGUID.Trim(),
                             // 货柜创建套装时必须同步写 POS 商品类型，否则 POS 商品管理会把空值显示为单品。
                             ProductType = item.ProductType ?? (item.IsSetProduct ? 1 : 0),
                             IsAutoPricing = false,
@@ -1166,18 +1179,27 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // 同步到门店零售价和多码商品表
-                var activeStores = await _context
-                    .Db.Queryable<Store>()
-                    .Where(s => s.IsActive == true && s.IsDeleted == false)
-                    .Select(s => s.StoreCode)
-                    .ToListAsync();
+                var activeStores = (
+                    await _context
+                        .Db.Queryable<Store>()
+                        .Where(s => s.IsActive == true && s.IsDeleted == false)
+                        .Select(s => s.StoreCode)
+                        .ToListAsync()
+                )
+                    .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                    .Select(storeCode => storeCode!)
+                    .Distinct()
+                    .ToList();
 
                 if (activeStores.Any() && toCreateProducts.Any())
                 {
                     var toCreateStoreRetailPrices = new List<StoreRetailPrice>();
                     var toCreateStoreMultiCodeProducts = new List<StoreMultiCodeProduct>();
 
-                    var createdProductsDict = toCreateProducts.ToDictionary(p => p.ProductCode);
+                    var createdProductsDict = toCreateProducts
+                        .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                        .GroupBy(p => p.ProductCode!)
+                        .ToDictionary(g => g.Key, g => g.First());
 
                     foreach (var product in toCreateProducts)
                     {
@@ -1255,11 +1277,17 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                _context.Db.Ado.CommitTran();
+                if (useTransaction)
+                {
+                    _context.Db.Ado.CommitTran();
+                }
             }
             catch (Exception ex)
             {
-                _context.Db.Ado.RollbackTran();
+                if (useTransaction)
+                {
+                    _context.Db.Ado.RollbackTran();
+                }
                 _logger.LogError(ex, "批量创建失败");
                 return new BatchOperationResultDto
                 {
@@ -1297,6 +1325,10 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<WarehouseCategory>(
                     (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
                 )
+                .LeftJoin<HBLocalSupplier>(
+                    (w, dp, s, p, c, ls) =>
+                        p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                )
                 .Where(w => !w.IsDeleted);
 
             // 分类筛选互斥处理：先清洗具体分类，具体分类优先，未分类只在未选择具体分类时生效。
@@ -1311,14 +1343,14 @@ namespace BlazorApp.Api.Services.React
                     ? GetCategoryAndSubCategories(requestedCategoryGuids)
                     : requestedCategoryGuids;
                 query = query.Where(
-                    (w, dp, s, p, c) =>
+                    (w, dp, s, p, c, ls) =>
                         p.WarehouseCategoryGUID != null && guids.Contains(p.WarehouseCategoryGUID)
                 );
             }
             else if (request.UncategorizedOnly)
             {
                 query = query.Where(
-                    (w, dp, s, p, c) =>
+                    (w, dp, s, p, c, ls) =>
                         p.WarehouseCategoryGUID == null || p.WarehouseCategoryGUID == string.Empty
                 );
             }
@@ -1328,7 +1360,7 @@ namespace BlazorApp.Api.Services.React
                 var keyword = request.GlobalSearch.Trim();
                 var keywordLower = keyword.ToLower();
                 query = query.Where(
-                    (w, dp, s, p, c) =>
+                    (w, dp, s, p, c, ls) =>
                         (p.ProductName != null && p.ProductName.ToLower().Contains(keywordLower))
                         || (p.EnglishName != null && p.EnglishName.ToLower().Contains(keywordLower))
                         || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keywordLower))
@@ -1345,6 +1377,7 @@ namespace BlazorApp.Api.Services.React
                             p.LocalSupplierCode != null
                             && p.LocalSupplierCode.ToLower().Contains(keywordLower)
                         )
+                        || (ls.Name != null && ls.Name.ToLower().Contains(keywordLower))
                 );
             }
 
@@ -1358,151 +1391,326 @@ namespace BlazorApp.Api.Services.React
                         ?? new List<string>();
                     if (!values.Any())
                         continue;
+
+                    // 列头筛选 token 约定：旧裸文本保持 contains；新匹配模式使用 __filter: 前缀，避免误伤旧值。
                     switch (key)
                     {
                         case "productname":
                         case "name":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
                                         p.ProductName != null
-                                        && lowers.Any(v => p.ProductName.ToLower().Contains(v))
-                                );
-                            }
+                                        && p.ProductName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null && p.ProductName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null
+                                        && p.ProductName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null
+                                        && p.ProductName.ToLower().EndsWith(value)
+                            );
                             break;
                         case "nameen":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
                                         p.EnglishName != null
-                                        && lowers.Any(v => p.EnglishName.ToLower().Contains(v))
-                                );
-                            }
+                                        && p.EnglishName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null && p.EnglishName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null
+                                        && p.EnglishName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null
+                                        && p.EnglishName.ToLower().EndsWith(value)
+                            );
                             break;
                         case "itemnumber":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
                                         p.ItemNumber != null
-                                        && lowers.Any(v => p.ItemNumber.ToLower().Contains(v))
-                                );
-                            }
+                                        && p.ItemNumber.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null && p.ItemNumber.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null
+                                        && p.ItemNumber.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null
+                                        && p.ItemNumber.ToLower().EndsWith(value)
+                            );
                             break;
                         case "barcode":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
-                                        p.Barcode != null
-                                        && lowers.Any(v => p.Barcode.ToLower().Contains(v))
-                                );
-                            }
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.Barcode != null && p.Barcode.ToLower().EndsWith(value)
+                            );
                             break;
                         case "categoryname":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
+                            // 兼容旧客户端的分类名称文本筛选；新仓库商品页分类筛选走顶层 CategoryGuids/UncategorizedOnly。
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
                                         c.CategoryName != null
-                                        && lowers.Any(v => c.CategoryName.ToLower().Contains(v))
-                                );
-                            }
+                                        && c.CategoryName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null && c.CategoryName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null
+                                        && c.CategoryName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null
+                                        && c.CategoryName.ToLower().EndsWith(value)
+                            );
                             break;
                         case "suppliername":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
+                        case "domesticsuppliername":
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
                                         s.SupplierName != null
-                                        && lowers.Any(v => s.SupplierName.ToLower().Contains(v))
-                                );
-                            }
+                                        && s.SupplierName.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null && s.SupplierName.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null
+                                        && s.SupplierName.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null
+                                        && s.SupplierName.ToLower().EndsWith(value)
+                            );
                             break;
                         case "suppliercode":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
-                                        s.SupplierCode != null
-                                        && lowers.Any(v => s.SupplierCode.ToLower().Contains(v))
-                                );
-                            }
-                            break;
-                        case "domesticsuppliername":
-                            {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(
-                                    (w, dp, s, p, c) =>
-                                        s.SupplierName != null
-                                        && lowers.Any(v => s.SupplierName.ToLower().Contains(v))
-                                );
-                            }
-                            break;
                         case "domesticsuppliercode":
+                            var supplierCodes = NormalizeWarehouseExactTextFilterValues(values);
+                            if (supplierCodes.Any())
                             {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
                                 query = query.Where(
-                                    (w, dp, s, p, c) =>
-                                        s.SupplierCode != null
-                                        && lowers.Any(v => s.SupplierCode.ToLower().Contains(v))
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierCode != null && supplierCodes.Contains(s.SupplierCode)
                                 );
                             }
                             break;
                         case "localsuppliercode":
+                            var localSupplierCodes = NormalizeWarehouseExactTextFilterValues(values);
+                            if (localSupplierCodes.Any())
                             {
-                                var lowers = values.Select(v => v.ToLower()).ToList();
                                 query = query.Where(
-                                    (w, dp, s, p, c) =>
+                                    (w, dp, s, p, c, ls) =>
                                         p.LocalSupplierCode != null
-                                        && lowers.Any(v =>
-                                            p.LocalSupplierCode.ToLower().Contains(v)
-                                        )
+                                        && localSupplierCodes.Contains(p.LocalSupplierCode)
                                 );
                             }
                             break;
+                        case "localsuppliername":
+                            query = ApplyWarehouseTextMatchFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower().Contains(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower() == value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower().StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        ls.Name != null && ls.Name.ToLower().EndsWith(value)
+                            );
+                            break;
                         case "domesticprice":
-                            query = query.Where(w =>
-                                w.DomesticPrice.HasValue
-                                && values.Contains(w.DomesticPrice.Value.ToString())
+                            query = ApplyWarehouseDecimalRangeFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.DomesticPrice.HasValue && w.DomesticPrice.Value >= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.DomesticPrice.HasValue && w.DomesticPrice.Value <= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.DomesticPrice.HasValue && w.DomesticPrice.Value == value
                             );
                             break;
                         case "oemprice":
-                            query = query.Where(w =>
-                                w.OEMPrice.HasValue && values.Contains(w.OEMPrice.Value.ToString())
+                        case "labelprice":
+                            query = ApplyWarehouseDecimalRangeFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.OEMPrice.HasValue && w.OEMPrice.Value >= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.OEMPrice.HasValue && w.OEMPrice.Value <= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.OEMPrice.HasValue && w.OEMPrice.Value == value
                             );
                             break;
                         case "importprice":
-                            query = query.Where(w =>
-                                w.ImportPrice.HasValue
-                                && values.Contains(w.ImportPrice.Value.ToString())
+                            query = ApplyWarehouseDecimalRangeFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.ImportPrice.HasValue && w.ImportPrice.Value >= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.ImportPrice.HasValue && w.ImportPrice.Value <= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.ImportPrice.HasValue && w.ImportPrice.Value == value
+                            );
+                            break;
+                        case "packingqty":
+                        case "packingquantity":
+                            query = ApplyWarehouseIntRangeFilter(
+                                query,
+                                values,
+                                // 表格当前展示的是国内商品装箱数，列头过滤必须与可见值保持一致。
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        dp.PackingQuantity != null
+                                        && dp.PackingQuantity.Value >= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        dp.PackingQuantity != null
+                                        && dp.PackingQuantity.Value <= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        dp.PackingQuantity != null
+                                        && dp.PackingQuantity.Value == value
                             );
                             break;
                         case "volume":
-                            query = query.Where(w =>
-                                w.Volume.HasValue && values.Contains(w.Volume.Value.ToString())
+                            query = ApplyWarehouseDecimalRangeFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        (w.Volume.HasValue && w.Volume.Value >= value)
+                                        || (
+                                            w.Volume == null
+                                            && dp.UnitVolume != null
+                                            && dp.UnitVolume.Value >= value
+                                        ),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        (w.Volume.HasValue && w.Volume.Value <= value)
+                                        || (
+                                            w.Volume == null
+                                            && dp.UnitVolume != null
+                                            && dp.UnitVolume.Value <= value
+                                        ),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        (w.Volume.HasValue && w.Volume.Value == value)
+                                        || (
+                                            w.Volume == null
+                                            && dp.UnitVolume != null
+                                            && dp.UnitVolume.Value == value
+                                        )
+                            );
+                            break;
+                        case "minorderquantity":
+                            query = ApplyWarehouseIntRangeFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.MinOrderQuantity.HasValue
+                                        && w.MinOrderQuantity.Value >= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.MinOrderQuantity.HasValue
+                                        && w.MinOrderQuantity.Value <= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.MinOrderQuantity.HasValue
+                                        && w.MinOrderQuantity.Value == value
                             );
                             break;
                         case "isactive":
-                            var flags = values.Select(v => v.Trim().ToLower()).ToList();
-                            if (!flags.Contains("all"))
+                            var flags = ParseBooleanFilterValues(values);
+                            if (flags.Count == 1)
                             {
-                                query = query.Where(w =>
-                                    (w.IsActive && (flags.Contains("1") || flags.Contains("true")))
-                                    || (
-                                        !w.IsActive
-                                        && (flags.Contains("0") || flags.Contains("false"))
-                                    )
-                                );
+                                var isActive = flags[0];
+                                query = query.Where(w => w.IsActive == isActive);
                             }
                             break;
                         case "producttype":
-                            query = query.Where(
-                                (w, dp, s, p, c) =>
-                                    p.ProductType.HasValue
-                                    && values.Contains(p.ProductType.Value.ToString())
+                            var productTypes = ParseIntFilterValues(values);
+                            if (productTypes.Any())
+                            {
+                                query = query.Where(
+                                    (w, dp, s, p, c, ls) =>
+                                        productTypes.Contains(p.ProductType ?? dp.ProductType)
+                                );
+                            }
+                            break;
+                        case "updatedat":
+                            query = ApplyWarehouseDateRangeFilter(
+                                query,
+                                values,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.UpdatedAt.HasValue && w.UpdatedAt.Value >= value,
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        w.UpdatedAt.HasValue && w.UpdatedAt.Value <= value
+                            );
+                            break;
+                        case "createdat":
+                            query = ApplyWarehouseDateRangeFilter(
+                                query,
+                                values,
+                                value => (w, dp, s, p, c, ls) => w.CreatedAt >= value,
+                                value => (w, dp, s, p, c, ls) => w.CreatedAt <= value
                             );
                             break;
                     }
@@ -1519,44 +1727,54 @@ namespace BlazorApp.Api.Services.React
                 var sort = request.SortBy.ToLower();
                 if (sort == "productname" || sort == "name")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => p.ProductName, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => dp.ProductName, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => p.ProductName, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => dp.ProductName, OrderByType.Asc);
                 else if (sort == "nameen")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => p.EnglishName, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => p.EnglishName, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => p.EnglishName, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => p.EnglishName, OrderByType.Asc);
                 else if (sort == "itemnumber")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => p.ItemNumber, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => p.ItemNumber, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => p.ItemNumber, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => p.ItemNumber, OrderByType.Asc);
                 else if (sort == "barcode")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => p.Barcode, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => p.Barcode, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => p.Barcode, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => p.Barcode, OrderByType.Asc);
                 else if (sort == "categoryname")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => c.CategoryName, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => c.CategoryName, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => c.CategoryName, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => c.CategoryName, OrderByType.Asc);
                 else if (sort == "suppliername")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => s.SupplierName, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => s.SupplierName, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => s.SupplierName, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => s.SupplierName, OrderByType.Asc);
                 else if (sort == "suppliercode")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => s.SupplierCode, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => s.SupplierCode, OrderByType.Asc);
                 else if (sort == "domesticsuppliername")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => s.SupplierName, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => s.SupplierName, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => s.SupplierName, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => s.SupplierName, OrderByType.Asc);
                 else if (sort == "domesticsuppliercode")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => s.SupplierCode, OrderByType.Asc);
+                        ? query.OrderBy((w, dp, s, p, c, ls) => s.SupplierCode, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => s.SupplierCode, OrderByType.Asc);
                 else if (sort == "localsuppliercode")
                     query = orderDesc
-                        ? query.OrderBy((w, dp, s, p, c) => p.LocalSupplierCode, OrderByType.Desc)
-                        : query.OrderBy((w, dp, s, p, c) => p.LocalSupplierCode, OrderByType.Asc);
+                        ? query.OrderBy(
+                            (w, dp, s, p, c, ls) => p.LocalSupplierCode,
+                            OrderByType.Desc
+                        )
+                        : query.OrderBy(
+                            (w, dp, s, p, c, ls) => p.LocalSupplierCode,
+                            OrderByType.Asc
+                        );
+                else if (sort == "localsuppliername")
+                    query = orderDesc
+                        ? query.OrderBy((w, dp, s, p, c, ls) => ls.Name, OrderByType.Desc)
+                        : query.OrderBy((w, dp, s, p, c, ls) => ls.Name, OrderByType.Asc);
                 else if (sort == "domesticprice")
                     query = orderDesc
                         ? query.OrderBy(w => w.DomesticPrice, OrderByType.Desc)
@@ -1597,7 +1815,7 @@ namespace BlazorApp.Api.Services.React
 
             var pageProductCodes = await query
                 .Clone()
-                .Select((w, dp, s, p, c) => w.ProductCode)
+                .Select((w, dp, s, p, c, ls) => w.ProductCode)
                 .Skip((request.Page - 1) * request.PageSize)
                 .Take(request.PageSize)
                 .ToListAsync();
@@ -1625,9 +1843,13 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<WarehouseCategory>(
                     (w, dp, s, p, c) => p.WarehouseCategoryGUID == c.CategoryGUID && !c.IsDeleted
                 )
+                .LeftJoin<HBLocalSupplier>(
+                    (w, dp, s, p, c, ls) =>
+                        p.LocalSupplierCode == ls.LocalSupplierCode && !ls.IsDeleted
+                )
                 .Where(w => !w.IsDeleted && pageProductCodes.Contains(w.ProductCode))
                 .Select(
-                    (w, dp, s, p, c) =>
+                    (w, dp, s, p, c, ls) =>
                         new
                         {
                             ProductCode = w.ProductCode,
@@ -1641,7 +1863,7 @@ namespace BlazorApp.Api.Services.React
                             DomesticSupplierName = s.SupplierName,
                             DomesticSupplierCode = s.SupplierCode,
                             LocalSupplierCode = p.LocalSupplierCode,
-                            LocalSupplierName = p.LocalSupplierCode,
+                            LocalSupplierName = ls.Name ?? p.LocalSupplierCode,
                             DomesticPrice = w.DomesticPrice,
                             OEMPrice = w.OEMPrice,
                             ImportPrice = w.ImportPrice,
@@ -1704,6 +1926,730 @@ namespace BlazorApp.Api.Services.React
             resp.Items = items;
             resp.Total = total;
             return resp;
+        }
+
+        private static ISugarQueryable<
+            WarehouseProduct,
+            DomesticProduct,
+            ChinaSupplier,
+            Product,
+            WarehouseCategory,
+            HBLocalSupplier
+        > ApplyWarehouseTextMatchFilter(
+            ISugarQueryable<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            > query,
+            IEnumerable<string> values,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > containsFactory,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > equalsFactory,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > startsFactory,
+            Func<
+                string,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > endsFactory
+        )
+        {
+            var tokens = ParseTextMatchFilterTokens(values);
+            if (!tokens.Any())
+            {
+                return query;
+            }
+
+            var expression = Expressionable.Create<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            >();
+            foreach (var token in tokens)
+            {
+                var currentValue = token.Value;
+                expression = token.Mode switch
+                {
+                    "eq" => expression.Or(equalsFactory(currentValue)),
+                    "starts" => expression.Or(startsFactory(currentValue)),
+                    "ends" => expression.Or(endsFactory(currentValue)),
+                    _ => expression.Or(containsFactory(currentValue)),
+                };
+            }
+
+            return query.Where(expression.ToExpression());
+        }
+
+        private static List<(string Mode, string Value)> ParseTextMatchFilterTokens(
+            IEnumerable<string> values
+        )
+        {
+            var tokens = new List<(string Mode, string Value)>();
+            foreach (var rawValue in values)
+            {
+                var value = rawValue?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "contains", out var containsToken, requireNamespace: true))
+                {
+                    tokens.Add(("contains", containsToken.ToLowerInvariant()));
+                    continue;
+                }
+                if (TryParseFilterToken(value, "eq", out var equalsToken, requireNamespace: true))
+                {
+                    tokens.Add(("eq", equalsToken.ToLowerInvariant()));
+                    continue;
+                }
+                if (TryParseFilterToken(value, "starts", out var startsToken, requireNamespace: true))
+                {
+                    tokens.Add(("starts", startsToken.ToLowerInvariant()));
+                    continue;
+                }
+                if (TryParseFilterToken(value, "ends", out var endsToken, requireNamespace: true))
+                {
+                    tokens.Add(("ends", endsToken.ToLowerInvariant()));
+                    continue;
+                }
+
+                // 兼容旧调用方：无模式前缀的文本值按 contains 处理。
+                tokens.Add(("contains", value.ToLowerInvariant()));
+            }
+
+            return tokens.Distinct().ToList();
+        }
+
+        private static List<string> NormalizeWarehouseExactTextFilterValues(IEnumerable<string> values)
+        {
+            // 精确 code 筛选保持列侧原值，避免 ToLower/Contains 包列导致索引不可用。
+            return values
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(v => v.Trim())
+                .Distinct()
+                .ToList();
+        }
+
+        private static ISugarQueryable<
+            WarehouseProduct,
+            DomesticProduct,
+            ChinaSupplier,
+            Product,
+            WarehouseCategory,
+            HBLocalSupplier
+        > ApplyWarehouseDecimalRangeFilter(
+            ISugarQueryable<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            > query,
+            IEnumerable<string> values,
+            Func<
+                decimal,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > minimumFactory,
+            Func<
+                decimal,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > maximumFactory,
+            Func<
+                decimal,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > equalsFactory
+        )
+        {
+            var (minimum, maximum, equals) = ParseDecimalRangeTokens(values);
+            var expression = Expressionable.Create<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            >();
+            var hasCondition = false;
+
+            if (minimum.HasValue || maximum.HasValue)
+            {
+                var rangeExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >();
+                if (minimum.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(minimumFactory(minimum.Value));
+                }
+                if (maximum.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(maximumFactory(maximum.Value));
+                }
+
+                expression = expression.Or(rangeExpression.ToExpression());
+                hasCondition = true;
+            }
+
+            foreach (var value in equals)
+            {
+                var currentValue = value;
+                expression = expression.Or(equalsFactory(currentValue));
+                hasCondition = true;
+            }
+
+            return hasCondition ? query.Where(expression.ToExpression()) : query;
+        }
+
+        private static ISugarQueryable<
+            WarehouseProduct,
+            DomesticProduct,
+            ChinaSupplier,
+            Product,
+            WarehouseCategory,
+            HBLocalSupplier
+        > ApplyWarehouseIntRangeFilter(
+            ISugarQueryable<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            > query,
+            IEnumerable<string> values,
+            Func<
+                int,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > minimumFactory,
+            Func<
+                int,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > maximumFactory,
+            Func<
+                int,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > equalsFactory
+        )
+        {
+            var (minimum, maximum, equals) = ParseIntRangeTokens(values);
+            var expression = Expressionable.Create<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            >();
+            var hasCondition = false;
+
+            if (minimum.HasValue || maximum.HasValue)
+            {
+                var rangeExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >();
+                if (minimum.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(minimumFactory(minimum.Value));
+                }
+                if (maximum.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(maximumFactory(maximum.Value));
+                }
+
+                expression = expression.Or(rangeExpression.ToExpression());
+                hasCondition = true;
+            }
+
+            foreach (var value in equals)
+            {
+                var currentValue = value;
+                expression = expression.Or(equalsFactory(currentValue));
+                hasCondition = true;
+            }
+
+            return hasCondition ? query.Where(expression.ToExpression()) : query;
+        }
+
+        private static ISugarQueryable<
+            WarehouseProduct,
+            DomesticProduct,
+            ChinaSupplier,
+            Product,
+            WarehouseCategory,
+            HBLocalSupplier
+        > ApplyWarehouseDateRangeFilter(
+            ISugarQueryable<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            > query,
+            IEnumerable<string> values,
+            Func<
+                DateTime,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > startFactory,
+            Func<
+                DateTime,
+                Expression<
+                    Func<
+                        WarehouseProduct,
+                        DomesticProduct,
+                        ChinaSupplier,
+                        Product,
+                        WarehouseCategory,
+                        HBLocalSupplier,
+                        bool
+                    >
+                >
+            > endFactory
+        )
+        {
+            var (startAt, endAt, equalRanges) = ParseDateRangeTokens(values);
+            var expression = Expressionable.Create<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            >();
+            var hasCondition = false;
+
+            if (startAt.HasValue || endAt.HasValue)
+            {
+                var rangeExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >();
+                if (startAt.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(startFactory(startAt.Value));
+                }
+                if (endAt.HasValue)
+                {
+                    rangeExpression = rangeExpression.And(endFactory(endAt.Value));
+                }
+
+                expression = expression.Or(rangeExpression.ToExpression());
+                hasCondition = true;
+            }
+
+            foreach (var (start, end) in equalRanges)
+            {
+                var currentStart = start;
+                var currentEnd = end;
+                var equalExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >()
+                    .And(startFactory(currentStart))
+                    .And(endFactory(currentEnd));
+                expression = expression.Or(equalExpression.ToExpression());
+                hasCondition = true;
+            }
+
+            return hasCondition ? query.Where(expression.ToExpression()) : query;
+        }
+
+        private static (decimal? Minimum, decimal? Maximum, List<decimal> ExactValues) ParseDecimalRangeTokens(
+            IEnumerable<string> values
+        )
+        {
+            decimal? minimum = null;
+            decimal? maximum = null;
+            var equals = new List<decimal>();
+            foreach (var rawValue in values)
+            {
+                var value = rawValue?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "gte", out var minimumToken)
+                    && decimal.TryParse(
+                        minimumToken,
+                        NumberStyles.Number,
+                        CultureInfo.InvariantCulture,
+                        out var parsedMinimum
+                    ))
+                {
+                    minimum = parsedMinimum;
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "lte", out var maximumToken)
+                    && decimal.TryParse(
+                        maximumToken,
+                        NumberStyles.Number,
+                        CultureInfo.InvariantCulture,
+                        out var parsedMaximum
+                    ))
+                {
+                    maximum = parsedMaximum;
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "eq", out var equalToken, requireNamespace: true)
+                    && decimal.TryParse(
+                        equalToken,
+                        NumberStyles.Number,
+                        CultureInfo.InvariantCulture,
+                        out var parsedTokenEqual
+                    ))
+                {
+                    equals.Add(parsedTokenEqual);
+                    continue;
+                }
+
+                if (
+                    decimal.TryParse(
+                        value,
+                        NumberStyles.Number,
+                        CultureInfo.InvariantCulture,
+                        out var parsedEqual
+                    )
+                )
+                {
+                    equals.Add(parsedEqual);
+                }
+            }
+
+            return (minimum, maximum, equals.Distinct().ToList());
+        }
+
+        private static (int? Minimum, int? Maximum, List<int> ExactValues) ParseIntRangeTokens(
+            IEnumerable<string> values
+        )
+        {
+            int? minimum = null;
+            int? maximum = null;
+            var equals = new List<int>();
+            foreach (var rawValue in values)
+            {
+                var value = rawValue?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "gte", out var minimumToken)
+                    && int.TryParse(
+                        minimumToken,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var parsedMinimum
+                    ))
+                {
+                    minimum = parsedMinimum;
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "lte", out var maximumToken)
+                    && int.TryParse(
+                        maximumToken,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var parsedMaximum
+                    ))
+                {
+                    maximum = parsedMaximum;
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "eq", out var equalToken, requireNamespace: true)
+                    && int.TryParse(
+                        equalToken,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var parsedTokenEqual
+                    ))
+                {
+                    equals.Add(parsedTokenEqual);
+                    continue;
+                }
+
+                if (
+                    int.TryParse(
+                        value,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out var parsedEqual
+                    )
+                )
+                {
+                    equals.Add(parsedEqual);
+                }
+            }
+
+            return (minimum, maximum, equals.Distinct().ToList());
+        }
+
+        private static (DateTime? StartAt, DateTime? EndAt, List<(DateTime StartAt, DateTime EndAt)> EqualRanges) ParseDateRangeTokens(
+            IEnumerable<string> values
+        )
+        {
+            DateTime? startAt = null;
+            DateTime? endAt = null;
+            var equalRanges = new List<(DateTime StartAt, DateTime EndAt)>();
+            foreach (var rawValue in values)
+            {
+                var value = rawValue?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "gte", out var startToken)
+                    && TryParseFilterDate(startToken, out var parsedStart))
+                {
+                    startAt = parsedStart;
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "lte", out var endToken)
+                    && TryParseFilterDate(endToken, out var parsedEnd))
+                {
+                    endAt = NormalizeFilterEndDate(endToken, parsedEnd);
+                    continue;
+                }
+
+                if (TryParseFilterToken(value, "eq", out var equalToken, requireNamespace: true)
+                    && TryParseFilterDate(equalToken, out var parsedEqual))
+                {
+                    // 日期等于始终按自然日匹配，避免带时间值时只命中一个瞬间。
+                    equalRanges.Add((
+                        parsedEqual.Date,
+                        parsedEqual.Date.AddDays(1).AddTicks(-1)
+                    ));
+                }
+            }
+
+            return (startAt, endAt, equalRanges.Distinct().ToList());
+        }
+
+        private static List<bool> ParseBooleanFilterValues(IEnumerable<string> values)
+        {
+            return values
+                .Select(v => v?.Trim().ToLowerInvariant())
+                .Where(v => !string.IsNullOrWhiteSpace(v) && v != "all")
+                .Select(
+                    v =>
+                        v switch
+                        {
+                            "1" => (bool?)true,
+                            "true" => true,
+                            "0" => false,
+                            "false" => false,
+                            _ => null,
+                        }
+                )
+                .Where(v => v.HasValue)
+                .Select(v => v!.Value)
+                .Distinct()
+                .ToList();
+        }
+
+        private static List<int> ParseIntFilterValues(IEnumerable<string> values)
+        {
+            return values
+                .Select(v => v?.Trim())
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(
+                    v =>
+                        int.TryParse(
+                            v,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out var parsed
+                        )
+                            ? (int?)parsed
+                            : null
+                )
+                .Where(v => v.HasValue)
+                .Select(v => v!.Value)
+                .Distinct()
+                .ToList();
+        }
+
+        private static bool TryParseFilterToken(
+            string value,
+            string token,
+            out string parsedValue,
+            bool requireNamespace = false
+        )
+        {
+            var prefix = requireNamespace ? $"__filter:{token}:" : $"{token}:";
+            if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                parsedValue = value.Substring(prefix.Length).Trim();
+                return !string.IsNullOrWhiteSpace(parsedValue);
+            }
+
+            parsedValue = string.Empty;
+            return false;
+        }
+
+        private static bool TryParseFilterDate(string value, out DateTime parsedValue)
+        {
+            return DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out parsedValue
+            ) || DateTime.TryParse(value, out parsedValue);
+        }
+
+        private static DateTime NormalizeFilterEndDate(string rawValue, DateTime parsedValue)
+        {
+            // 纯日期的 lte 视为当天结束，避免前端只传日期时漏掉当天更新的数据。
+            return rawValue.Contains('T') || rawValue.Contains(' ')
+                ? parsedValue
+                : parsedValue.Date.AddDays(1).AddTicks(-1);
         }
 
         private List<string> GetCategoryAndSubCategories(List<string> categoryGuids)
@@ -2441,8 +3387,8 @@ namespace BlazorApp.Api.Services.React
                     new DomesticProductNotInWarehouseDto
                     {
                         ProductCode = item.ProductCode,
-                        ItemNumber = item.ItemNumber,
-                        Barcode = item.Barcode,
+                        ItemNumber = item.ItemNumber ?? string.Empty,
+                        Barcode = item.Barcode ?? string.Empty,
                         // 国内导入弹窗需要图片；原始图片为空时按货号生成默认图片地址。
                         ProductImage = ProductImageUrlHelper.EnsureImageUrl(
                             item.ProductImage,
@@ -2453,7 +3399,7 @@ namespace BlazorApp.Api.Services.React
                             out var nameResolution
                         )
                             ? nameResolution.DisplayName
-                            : item.ProductName,
+                            : item.ProductName ?? string.Empty,
                         EnglishName = nameResolutions.TryGetValue(
                             item.ProductCode,
                             out var englishResolution
@@ -2483,7 +3429,11 @@ namespace BlazorApp.Api.Services.React
                     .ToListAsync();
                 var multiCodes = await _context
                     .Db.Queryable<StoreMultiCodeProduct>()
-                    .Where(mcp => productCodes.Contains(mcp.ProductCode) && !mcp.IsDeleted)
+                    .Where(mcp =>
+                        mcp.ProductCode != null
+                        && productCodes.Contains(mcp.ProductCode)
+                        && !mcp.IsDeleted
+                    )
                     .Select(mcp => mcp.ProductCode)
                     .ToListAsync();
 
@@ -2553,9 +3503,13 @@ namespace BlazorApp.Api.Services.React
                 var productsDict = (
                     await _context
                         .Db.Queryable<Product>()
-                        .Where(p => codes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && codes.Contains(p.ProductCode))
                         .ToListAsync()
-                ).ToDictionary(p => p.ProductCode);
+                )
+                    // 商品编码为空时不能参与字典键匹配，避免放大查询范围。
+                    .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                    .GroupBy(p => p.ProductCode!)
+                    .ToDictionary(g => g.Key, g => g.First());
 
                 // 4. 批量查询套装商品关联数据
                 var allSetProducts = await _context
@@ -2563,13 +3517,15 @@ namespace BlazorApp.Api.Services.React
                     .Where(sp => codes.Contains(sp.ProductCode) && !sp.IsDeleted)
                     .ToListAsync();
                 var setProductsByCode = allSetProducts
-                    .GroupBy(sp => sp.ProductCode)
+                    .Where(sp => !string.IsNullOrWhiteSpace(sp.ProductCode))
+                    .GroupBy(sp => sp.ProductCode!)
                     .ToDictionary(g => g.Key, g => g.ToList());
 
                 // 5. 批量查询已存在的套装编码
                 var allSetCodeIds = allSetProducts
                     .Select(sp => sp.SetProductCode)
-                    .Where(x => x != null)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!)
                     .Distinct()
                     .ToList();
                 var existingProductSetCodes = allSetCodeIds.Any()
@@ -2583,16 +3539,29 @@ namespace BlazorApp.Api.Services.React
                             .Select(psc => new { psc.ProductCode, psc.SetCodeId })
                             .ToListAsync()
                     )
-                        .GroupBy(x => x.ProductCode)
-                        .ToDictionary(g => g.Key, g => g.Select(x => x.SetCodeId).ToHashSet())
-                    : new Dictionary<string, HashSet<string?>>();
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.SetCodeId)
+                        )
+                        .GroupBy(x => x.ProductCode!)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.Select(x => x.SetCodeId!).ToHashSet()
+                        )
+                    : new Dictionary<string, HashSet<string>>();
 
                 // 6. 批量查询活跃门店
-                var activeStores = await _context
+                var activeStores = (
+                    await _context
                     .Db.Queryable<Store>()
                     .Where(s => s.IsActive == true && s.IsDeleted == false)
                     .Select(s => s.StoreCode)
-                    .ToListAsync();
+                    .ToListAsync()
+                )
+                    .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                    .Select(storeCode => storeCode!)
+                    .Distinct()
+                    .ToList();
 
                 // 7. 批量查询已存在的多码商品
                 var allSetBarcodes = allSetProducts
@@ -2604,9 +3573,11 @@ namespace BlazorApp.Api.Services.React
                         await _context
                             .Db.Queryable<StoreMultiCodeProduct>()
                             .Where(smc =>
-                                codes.Contains(smc.ProductCode)
+                                smc.ProductCode != null
+                                && codes.Contains(smc.ProductCode)
                                 && !smc.IsDeleted
-                                && allSetBarcodes.Contains(smc.MultiBarcode!)
+                                && smc.MultiBarcode != null
+                                && allSetBarcodes.Contains(smc.MultiBarcode)
                             )
                             .Select(smc => new
                             {
@@ -2615,16 +3586,27 @@ namespace BlazorApp.Api.Services.React
                                 smc.StoreCode,
                             })
                             .ToListAsync()
-                    ).GroupBy(x => x.ProductCode).ToDictionary(g => g.Key, g => g.Select(x => (x.MultiBarcode, x.StoreCode)).ToHashSet()) : new Dictionary<string, HashSet<(string?, string?)>>();
+                    )
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.MultiBarcode)
+                            && !string.IsNullOrWhiteSpace(x.StoreCode)
+                        )
+                        .GroupBy(x => x.ProductCode!)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.Select(x => (x.MultiBarcode!, x.StoreCode!)).ToHashSet()
+                        ) : new Dictionary<string, HashSet<(string MultiBarcode, string StoreCode)>>();
 
                 // 8. 批量查询门店零售价
                 var storeRetailPricesByCode = (
                     await _context
                         .Db.Queryable<StoreRetailPrice>()
-                        .Where(srp => codes.Contains(srp.ProductCode) && !srp.IsDeleted)
+                        .Where(srp => srp.ProductCode != null && codes.Contains(srp.ProductCode) && !srp.IsDeleted)
                         .ToListAsync()
                 )
-                    .GroupBy(srp => srp.ProductCode)
+                    .Where(srp => !string.IsNullOrWhiteSpace(srp.ProductCode))
+                    .GroupBy(srp => srp.ProductCode!)
                     .ToDictionary(g => g.Key, g => g.ToList());
 
                 // 待操作的列表（批量插入/更新）
@@ -2783,10 +3765,14 @@ namespace BlazorApp.Api.Services.React
                         )
                     )
                     {
-                        existingProduct.ProductName = nameResolution.EnglishName;
-                        existingProduct.EnglishName = nameResolution.EnglishName;
-                        existingProduct.UpdatedAt = now;
-                        toUpdateProducts.Add(existingProduct);
+                        var translatedEnglishName = nameResolution.EnglishName;
+                        if (!string.IsNullOrWhiteSpace(translatedEnglishName))
+                        {
+                            existingProduct.ProductName = translatedEnglishName;
+                            existingProduct.EnglishName = translatedEnglishName;
+                            existingProduct.UpdatedAt = now;
+                            toUpdateProducts.Add(existingProduct);
+                        }
                     }
 
                     // 处理套装商品（使用内存查找，避免 N+1）
@@ -2797,7 +3783,7 @@ namespace BlazorApp.Api.Services.React
                     if (isSetProduct && setProducts.Count > 0)
                     {
                         existingProductSetCodes.TryGetValue(productCode, out var existingSet);
-                        existingSet ??= new HashSet<string?>();
+                        existingSet ??= new HashSet<string>();
                         // 国内导入补套装子码时同样按零售价比例分摊主进货价，保持和货柜创建路径一致。
                         var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
                             setProducts,
@@ -2808,20 +3794,22 @@ namespace BlazorApp.Api.Services.React
 
                         foreach (var sp in setProducts)
                         {
-                            if (existingSet.Contains(sp.SetProductCode))
+                            if (string.IsNullOrWhiteSpace(sp.SetProductCode))
                                 continue;
-                            existingSet.Add(sp.SetProductCode);
+                            var setProductCode = sp.SetProductCode;
+                            if (existingSet.Contains(setProductCode))
+                                continue;
+                            existingSet.Add(setProductCode);
                             var setPurchasePrice =
-                                sp.SetProductCode != null
-                                && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
+                                allocatedPurchasePrices.TryGetValue(setProductCode, out var allocatedPurchasePrice)
                                     ? allocatedPurchasePrice
                                     : sp.ImportPrice ?? wp.ImportPrice;
                             toInsertProductSetCodes.Add(
                                 new ProductSetCode
                                 {
-                                    SetCodeId = sp.SetProductCode,
+                                    SetCodeId = setProductCode,
                                     ProductCode = productCode,
-                                    SetProductCode = sp.SetProductCode,
+                                    SetProductCode = setProductCode,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
                                     SetPurchasePrice = setPurchasePrice,
@@ -2841,7 +3829,7 @@ namespace BlazorApp.Api.Services.React
                     if (request.SyncMultiCodes)
                     {
                         existingMultiCodeKeys.TryGetValue(productCode, out var existingKeys);
-                        existingKeys ??= new HashSet<(string?, string?)>();
+                        existingKeys ??= new HashSet<(string MultiBarcode, string StoreCode)>();
                         var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
                             setProducts,
                             wp.ImportPrice,
@@ -2851,13 +3839,14 @@ namespace BlazorApp.Api.Services.React
 
                         foreach (var sp in setProducts)
                         {
-                            if (sp.SetBarcode == null)
+                            if (string.IsNullOrWhiteSpace(sp.SetBarcode))
                                 continue;
+                            var setBarcode = sp.SetBarcode;
                             foreach (var storeCode in activeStores)
                             {
-                                if (existingKeys.Contains((sp.SetBarcode, storeCode)))
+                                if (existingKeys.Contains((setBarcode, storeCode)))
                                     continue;
-                                existingKeys.Add((sp.SetBarcode, storeCode));
+                                existingKeys.Add((setBarcode, storeCode));
                                 var setPurchasePrice =
                                     sp.SetProductCode != null
                                     && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
@@ -2871,7 +3860,7 @@ namespace BlazorApp.Api.Services.React
                                         StoreCode = storeCode,
                                         MultiCodeProductCode = sp.SetProductCode,
                                         StoreMultiCodeProductCode = storeCode + sp.SetProductCode,
-                                        MultiBarcode = sp.SetBarcode,
+                                        MultiBarcode = setBarcode,
                                         PurchasePrice = setPurchasePrice,
                                         MultiCodeRetailPrice = sp.OEMPrice,
                                         DiscountRate = 0,
@@ -3127,7 +4116,7 @@ namespace BlazorApp.Api.Services.React
                 {
                     product.ProductImage = ProductImageUrlHelper.EnsureImageUrl(
                         dto.ProductImage,
-                        product.ItemNumber ?? product.ProductCode
+                        product.ItemNumber ?? product.ProductCode ?? string.Empty
                     );
                 }
                 product.IsActive = dto.IsActive;
@@ -3533,9 +4522,12 @@ namespace BlazorApp.Api.Services.React
                 var productsDict = (
                     await _context
                         .Db.Queryable<Product>()
-                        .Where(p => codes.Contains(p.ProductCode))
+                        .Where(p => p.ProductCode != null && codes.Contains(p.ProductCode))
                         .ToListAsync()
-                ).ToDictionary(p => p.ProductCode);
+                )
+                    .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
+                    .GroupBy(p => p.ProductCode!)
+                    .ToDictionary(g => g.Key, g => g.First());
 
                 // 批量查询已存在的仓库商品编码（避免 N+1 问题）
                 var existingWpCodes = (
@@ -4510,6 +5502,7 @@ namespace BlazorApp.Api.Services.React
                 DomesticPrice = item.DomesticPrice,
                 OEMPrice = item.OEMPrice,
                 ImportPrice = item.ImportPrice,
+                MiddlePackageQuantity = item.MiddlePackageQuantity,
                 LocationCode = item.LocationCode,
                 LocationBarcode = item.LocationBarcode,
             };
@@ -4533,6 +5526,9 @@ namespace BlazorApp.Api.Services.React
                 LocationGuid = item.LocationGuid,
                 LocationCode = item.LocationCode,
                 LocationBarcode = item.LocationBarcode,
+                ItemNumber = item.ItemNumber,
+                ProductName = item.ProductName,
+                MiddlePackageQuantity = item.MiddlePackageQuantity,
                 ProductCount = productCount,
             };
         }

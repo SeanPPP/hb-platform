@@ -36,13 +36,13 @@ import {
 } from "@/modules/local-supplier-invoices/date-range";
 import type {
   InvoiceDetailPageSize,
+  InvoiceDetailPriceChangeFilter,
   InvoiceGridFilters,
   InvoiceGridSort,
   InvoiceListPageSize,
   LocalSupplierInvoice,
   LocalSupplierInvoiceItem,
 } from "@/modules/local-supplier-invoices/types";
-import { printWarehouseProductLabel } from "@/modules/printer/api";
 import type { Store } from "@/modules/shop/types";
 import { bindDeviceStoreFilter, getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
 import { useStores } from "@/modules/shop/use-stores";
@@ -50,9 +50,11 @@ import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type SortOption = InvoiceGridSort & { labelKey: string };
+type DetailPriceChangeOption = { value: InvoiceDetailPriceChangeFilter; labelKey: string };
 type SupplierOption = { supplierCode: string; supplierName: string };
 type CalendarCell = { date: Date; dateString: string; isCurrentMonth: boolean };
 type EntityTagTone = "store" | "supplier" | "neutral";
+type DetailPriceChange = "up" | "down" | null;
 
 const LIST_PAGE_SIZES: InvoiceListPageSize[] = [20, 50, 100];
 const DETAIL_PAGE_SIZES: InvoiceDetailPageSize[] = [50, 100, 200];
@@ -64,6 +66,11 @@ const SORT_OPTIONS: SortOption[] = [
   { colId: "InvoiceNo", direction: "asc", labelKey: "filters.invoiceNoAsc" },
   { colId: "StoreName", direction: "asc", labelKey: "filters.storeNameAsc" },
   { colId: "SupplierName", direction: "asc", labelKey: "filters.supplierNameAsc" },
+];
+const DETAIL_PRICE_CHANGE_OPTIONS: DetailPriceChangeOption[] = [
+  { value: "all", labelKey: "filters.allPriceChanges" },
+  { value: "up", labelKey: "filters.priceUp" },
+  { value: "down", labelKey: "filters.priceDown" },
 ];
 
 function formatDate(value?: string | null) {
@@ -83,6 +90,29 @@ function formatMoney(value?: number | null) {
 
 function formatNumber(value?: number | null) {
   return value == null || Number.isNaN(value) ? "--" : String(value);
+}
+
+function getDetailPriceChange(detail: LocalSupplierInvoiceItem): DetailPriceChange {
+  const lastPurchasePrice = detail.lastPurchasePrice;
+  const purchasePrice = detail.purchasePrice;
+
+  if (
+    lastPurchasePrice == null
+    || Number.isNaN(lastPurchasePrice)
+    || lastPurchasePrice <= 0
+    || purchasePrice == null
+    || Number.isNaN(purchasePrice)
+  ) {
+    return null;
+  }
+
+  if (purchasePrice > lastPurchasePrice) {
+    return "up";
+  }
+  if (purchasePrice < lastPurchasePrice) {
+    return "down";
+  }
+  return null;
 }
 
 function EntityTag({
@@ -339,11 +369,13 @@ export default function LocalSupplierInvoicesScreen() {
   const [detailsTotal, setDetailsTotal] = useState(0);
   const [detailsPage, setDetailsPage] = useState(1);
   const [detailsPageSize, setDetailsPageSize] = useState<InvoiceDetailPageSize>(50);
+  const [detailPriceChangeFilter, setDetailPriceChangeFilter] =
+    useState<InvoiceDetailPriceChangeFilter>("all");
   const [detailsLoading, setDetailsLoading] = useState(false);
-  const [printingDetailGuid, setPrintingDetailGuid] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState("");
   const pendingRestoreRef = useRef<ReturnType<typeof decodeLocalSupplierInvoicesReturnParams>>(null);
   const handledRestoreKeyRef = useRef<string | null>(null);
+  const suppliersLoadingRef = useRef(false);
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
 
   const restoreState = useMemo(
@@ -461,6 +493,7 @@ export default function LocalSupplierInvoicesScreen() {
       const result = await fetchInvoiceDetailsGrid(selectedInvoice.invoiceGuid, {
         page: detailsPage,
         pageSize: detailsPageSize,
+        priceChange: detailPriceChangeFilter,
       });
       setDetails(result.items);
       setDetailsTotal(result.total);
@@ -469,14 +502,15 @@ export default function LocalSupplierInvoicesScreen() {
     } finally {
       setDetailsLoading(false);
     }
-  }, [detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
+  }, [detailPriceChangeFilter, detailsPage, detailsPageSize, getErrorMessage, selectedInvoice?.invoiceGuid]);
 
   const loadSuppliers = useCallback(async () => {
-    if (suppliersLoading) {
+    if (suppliersLoadingRef.current) {
       return;
     }
 
     setSuppliersLoading(true);
+    suppliersLoadingRef.current = true;
     try {
       const module = (await import("@/modules/local-supplier-invoices/api")) as {
         fetchActiveLocalSuppliers?: () => Promise<unknown>;
@@ -492,9 +526,10 @@ export default function LocalSupplierInvoicesScreen() {
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.suppliersLoadFailed"));
     } finally {
+      suppliersLoadingRef.current = false;
       setSuppliersLoading(false);
     }
-  }, [getErrorMessage, suppliersLoading, t]);
+  }, [getErrorMessage, t]);
 
   useEffect(() => {
     void loadInvoices();
@@ -581,6 +616,7 @@ export default function LocalSupplierInvoicesScreen() {
       return;
     }
 
+    setDetailPriceChangeFilter("all");
     setSelectedInvoice(matchedInvoice);
   }, [filters, items, loading, page, pageSize, sort, t]);
 
@@ -602,6 +638,7 @@ export default function LocalSupplierInvoicesScreen() {
     setDetailsTotal(0);
     setDetailsPage(1);
     setDetailsPageSize(50);
+    setDetailPriceChangeFilter("all");
   }, []);
 
   const copyValue = useCallback(
@@ -618,29 +655,6 @@ export default function LocalSupplierInvoicesScreen() {
       }
     },
     [t]
-  );
-
-  const printDetail = useCallback(
-    async (detail: LocalSupplierInvoiceItem) => {
-      setPrintingDetailGuid(detail.detailGuid);
-      try {
-        await printWarehouseProductLabel({
-          productCode: detail.productCode || detail.storeProductCode || detail.itemNumber,
-          productName: detail.productName,
-          itemNumber: detail.itemNumber || null,
-          barcode: detail.barcode || null,
-          supplierName: selectedInvoice?.supplierName || selectedInvoice?.supplierCode || null,
-          purchasePrice: detail.purchasePrice,
-          retailPrice: detail.retailPrice,
-        });
-        setSnackbar(t("messages.printSuccess"));
-      } catch (error) {
-        setSnackbar(getErrorMessage(error, "messages.printFailed"));
-      } finally {
-        setPrintingDetailGuid(null);
-      }
-    },
-    [getErrorMessage, selectedInvoice?.supplierCode, selectedInvoice?.supplierName, t]
   );
 
   const openProduct = useCallback(
@@ -950,6 +964,16 @@ export default function LocalSupplierInvoicesScreen() {
                     <Text variant="bodyMedium">{t("labels.orderDate")}: {formatDate(invoice.orderDate)}</Text>
                     <Text variant="bodyMedium">{t("labels.amount")}: {formatMoney(invoice.totalAmount)}</Text>
                     <Text variant="bodyMedium">{t("labels.receivedAmount")}: {formatMoney(invoice.receivedTotalAmount)}</Text>
+                    {invoice.priceIncreaseItemCount > 0 ? (
+                      <Text variant="bodyMedium" style={styles.priceIncreaseText}>
+                        {t("labels.priceIncreaseItemCount")}: {formatNumber(invoice.priceIncreaseItemCount)}
+                      </Text>
+                    ) : null}
+                    {invoice.priceDecreaseItemCount > 0 ? (
+                      <Text variant="bodyMedium" style={styles.priceDecreaseText}>
+                        {t("labels.priceDecreaseItemCount")}: {formatNumber(invoice.priceDecreaseItemCount)}
+                      </Text>
+                    ) : null}
                   </View>
                 </Card.Content>
                 <Card.Actions>
@@ -1001,6 +1025,21 @@ export default function LocalSupplierInvoicesScreen() {
                 setDetailsPage(1);
               }}
             />
+            <View style={styles.detailFilterGroup}>
+              {DETAIL_PRICE_CHANGE_OPTIONS.map((option) => (
+                <Button
+                  key={option.value}
+                  compact
+                  mode={detailPriceChangeFilter === option.value ? "contained-tonal" : "outlined"}
+                  onPress={() => {
+                    setDetailPriceChangeFilter(option.value);
+                    setDetailsPage(1);
+                  }}
+                >
+                  {t(option.labelKey)}
+                </Button>
+              ))}
+            </View>
             <Text variant="bodyMedium">
               {t("labels.detailsCount", { count: detailsTotal })}
             </Text>
@@ -1013,61 +1052,65 @@ export default function LocalSupplierInvoicesScreen() {
             </View>
           ) : details.length ? (
             <ScrollView contentContainerStyle={styles.detailList}>
-              {details.map((detail) => (
-                <View key={detail.detailGuid} style={styles.detailRow}>
-                  {detail.productImage ? (
-                    <Image source={{ uri: detail.productImage }} style={styles.productImage} />
-                  ) : (
-                    <View style={styles.productImagePlaceholder}>
-                      <Text variant="labelSmall">{t("labels.noImage")}</Text>
-                    </View>
-                  )}
-                  <View style={styles.detailBody}>
-                    <Text variant="titleSmall" numberOfLines={2}>
-                      {detail.productName || "--"}
-                    </Text>
-                    <View style={styles.copyLine}>
-                      <Button
-                        compact
-                        icon="content-copy"
-                        mode="text"
-                        onPress={() => void copyValue(t("labels.itemNumber"), detail.itemNumber)}
-                      >
-                        {t("labels.itemNumber")}: {detail.itemNumber || "--"}
-                      </Button>
-                    </View>
-                    <View style={styles.copyLine}>
-                      <Button
-                        compact
-                        icon="content-copy"
-                        mode="text"
-                        onPress={() => void copyValue(t("labels.barcode"), detail.barcode)}
-                      >
-                        {t("labels.barcode")}: {detail.barcode || "--"}
-                      </Button>
-                    </View>
-                    <View style={styles.priceLine}>
-                      <Text variant="bodySmall">{t("labels.purchasePrice")}: {formatMoney(detail.purchasePrice)}</Text>
-                      <Text variant="bodySmall">{t("labels.quantity")}: {formatNumber(detail.quantity)}</Text>
-                    </View>
-                    <View style={styles.detailActions}>
-                      <Button
-                        compact
-                        disabled={printingDetailGuid === detail.detailGuid}
-                        icon="printer"
-                        loading={printingDetailGuid === detail.detailGuid}
-                        mode="contained-tonal"
-                        onPress={() => void printDetail(detail)}
-                      >
-                        {t("actions.printLabel")}
-                      </Button>
-                      <Button compact icon="pencil-box-outline" mode="outlined" onPress={() => openProduct(detail)}>
-                        {t("actions.openProduct")}
-                      </Button>
+              {details.map((detail) => {
+                const priceChange = getDetailPriceChange(detail);
+                return (
+                  <View key={detail.detailGuid} style={styles.detailRow}>
+                    {detail.productImage ? (
+                      <Image source={{ uri: detail.productImage }} style={styles.productImage} />
+                    ) : (
+                      <View style={styles.productImagePlaceholder}>
+                        <Text variant="labelSmall">{t("labels.noImage")}</Text>
+                      </View>
+                    )}
+                    <View style={styles.detailBody}>
+                      <Text variant="titleSmall" numberOfLines={2}>
+                        {detail.productName || "--"}
+                      </Text>
+                      <View style={styles.copyLine}>
+                        <Button
+                          compact
+                          icon="content-copy"
+                          mode="text"
+                          onPress={() => void copyValue(t("labels.itemNumber"), detail.itemNumber)}
+                        >
+                          {t("labels.itemNumber")}: {detail.itemNumber || "--"}
+                        </Button>
+                      </View>
+                      <View style={styles.copyLine}>
+                        <Button
+                          compact
+                          icon="content-copy"
+                          mode="text"
+                          onPress={() => void copyValue(t("labels.barcode"), detail.barcode)}
+                        >
+                          {t("labels.barcode")}: {detail.barcode || "--"}
+                        </Button>
+                      </View>
+                      <View style={styles.priceLine}>
+                        <Text variant="bodySmall">{t("labels.lastPurchasePrice")}: {formatMoney(detail.lastPurchasePrice)}</Text>
+                        <Text variant="bodySmall">{t("labels.purchasePrice")}: {formatMoney(detail.purchasePrice)}</Text>
+                        <Text variant="bodySmall">{t("labels.quantity")}: {formatNumber(detail.quantity)}</Text>
+                        {priceChange === "up" ? (
+                          <Text variant="labelMedium" style={[styles.priceChangeBadge, styles.priceIncreaseBadge]}>
+                            {t("labels.priceIncrease")}
+                          </Text>
+                        ) : null}
+                        {priceChange === "down" ? (
+                          <Text variant="labelMedium" style={[styles.priceChangeBadge, styles.priceDecreaseBadge]}>
+                            {t("labels.priceDecrease")}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <View style={styles.detailActions}>
+                        <Button compact icon="pencil-box-outline" mode="outlined" onPress={() => openProduct(detail)}>
+                          {t("actions.openProduct")}
+                        </Button>
+                      </View>
                     </View>
                   </View>
-                </View>
-              ))}
+                );
+              })}
             </ScrollView>
           ) : (
             <EmptyState title={t("messages.detailsEmpty")} />
@@ -1350,6 +1393,14 @@ const styles = StyleSheet.create({
   invoiceMeta: {
     gap: 4,
   },
+  priceIncreaseText: {
+    color: "#B42318",
+    fontWeight: "700",
+  },
+  priceDecreaseText: {
+    color: "#027A48",
+    fontWeight: "700",
+  },
   entityTagRow: {
     alignItems: "center",
     flexDirection: "row",
@@ -1424,6 +1475,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingVertical: 8,
   },
+  detailFilterGroup: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
   detailList: {
     gap: 10,
     paddingBottom: 8,
@@ -1461,9 +1517,28 @@ const styles = StyleSheet.create({
     minHeight: 30,
   },
   priceLine: {
+    alignItems: "center",
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 12,
+  },
+  priceChangeBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    fontWeight: "700",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  priceIncreaseBadge: {
+    backgroundColor: "#FEF3F2",
+    borderColor: "#FDA29B",
+    color: "#B42318",
+  },
+  priceDecreaseBadge: {
+    backgroundColor: "#ECFDF3",
+    borderColor: "#75E0A7",
+    color: "#027A48",
   },
   detailActions: {
     flexDirection: "row",

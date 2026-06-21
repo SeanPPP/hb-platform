@@ -56,7 +56,8 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             typeof(ChinaSupplier),
             typeof(ProductLocation),
             typeof(Location),
-            typeof(ProductGrade)
+            typeof(ProductGrade),
+            typeof(WarehouseCategory)
         );
 
         _hbSalesDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
@@ -704,6 +705,36 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_UsesTargetCategoryWrittenByBatchUpdateDetails()
+    {
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-CATEGORY-SAVED", "C001", "P-CATEGORY-SAVED", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-CATEGORY-SAVED", "HB-CATEGORY-SAVED", "分类商品", "Category Product", 0);
+        await InsertWarehouseCategoryAsync("CAT-CREATED");
+        var containerReactService = CreateContainerReactService();
+        await containerReactService.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-CATEGORY-SAVED", ProductCategoryGUID = "CAT-CREATED" },
+            }
+        );
+        var service = CreateService();
+
+        var result = await service.ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-category-saved",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-CATEGORY-SAVED" },
+            }
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        var product = await _db.Queryable<Product>().SingleAsync(p => p.ProductCode == "P-CATEGORY-SAVED");
+        Assert.Equal("CAT-CREATED", product.WarehouseCategoryGUID);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SkipsRowsWithInvalidRetailPrice()
     {
         await InsertActiveStoreAsync("S001");
@@ -791,6 +822,190 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(1, result.SkippedCount);
         Assert.Contains(result.Skipped, item => item.DetailHguid == "D-DUP-ITEM" && item.ReasonCode == "DUPLICATE_ITEM_NUMBER");
         Assert.Equal(0, await _db.Queryable<WarehouseProduct>().Where(p => p.ProductCode == "P-DUP-ITEM").CountAsync());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitContainer_CreatesNewProductsUpdatesExistingPricesAndCompletesContainer()
+    {
+        await InsertContainerAsync("C-SUBMIT", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-NEW", "C-SUBMIT", "P-NEW", "普通商品", 1.2m, 3.4m, domesticPrice: 9.9m);
+        await InsertDomesticProductAsync("P-NEW", "HB-NEW", "新商品", "New Product", 0);
+        await InsertContainerDetailAsync("D-EXISTING", "C-SUBMIT", "P-EXISTING", "普通商品", 5.6m, 7.8m, domesticPrice: 11.2m);
+        await InsertDomesticProductAsync("P-EXISTING", "HB-EXISTING", "已有商品来源", "Existing Source", 0);
+        await InsertExistingProductAsync("P-EXISTING", "HB-EXISTING", 1.1m, 2.2m);
+        await InsertExistingWarehouseProductAsync("P-EXISTING", domesticPrice: 3.3m, importPrice: 4.4m, oemPrice: 5.5m);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-SUBMIT",
+                ContainerGuid = "C-SUBMIT",
+                SubmitContainer = true,
+            }
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Equal(1, result.UpdatedCount);
+        Assert.Equal(0, result.FailedCount);
+        Assert.True(result.ContainerCompleted);
+        Assert.Contains(result.Created, item => item.ProductCode == "P-NEW" && item.DetailHguid == "D-NEW");
+        Assert.Contains(result.Updated, item => item.ProductCode == "P-EXISTING" && item.DetailHguid == "D-EXISTING");
+
+        var container = await _db.Queryable<Container>().SingleAsync(item => item.ContainerCode == "C-SUBMIT");
+        Assert.Equal(2, container.Status);
+
+        var existingProduct = await _db.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-EXISTING");
+        var existingWarehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(item => item.ProductCode == "P-EXISTING");
+        var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(item => item.ProductCode == "P-EXISTING");
+        var storeMultiCode = await _db.Queryable<StoreMultiCodeProduct>().SingleAsync(item => item.ProductCode == "P-EXISTING");
+
+        Assert.Equal(5.6m, existingProduct.PurchasePrice);
+        Assert.Equal(11.2m, existingWarehouseProduct.DomesticPrice);
+        Assert.Equal(5.6m, existingWarehouseProduct.ImportPrice);
+        Assert.Equal(7.8m, existingWarehouseProduct.OEMPrice);
+        Assert.Equal(0.12m, existingWarehouseProduct.Volume);
+        Assert.Equal(5.6m, storeRetailPrice.PurchasePrice);
+        Assert.Equal(7.8m, storeRetailPrice.StoreRetailPriceValue);
+        Assert.Equal(5.6m, storeMultiCode.PurchasePrice);
+        Assert.Equal(7.8m, storeMultiCode.MultiCodeRetailPrice);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitContainer_UpdatesOnlyPricesForExistingProducts()
+    {
+        await InsertContainerAsync("C-PRICE-ONLY", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-PRICE-ONLY", "C-PRICE-ONLY", "P-PRICE-ONLY", "普通商品", 8.8m, 9.9m, domesticPrice: 10.1m);
+        await InsertDomesticProductAsync("P-PRICE-ONLY", "HB-PRICE-ONLY", "国内名称", "Domestic Name", 0);
+        await InsertExistingProductAsync("P-PRICE-ONLY", "HB-PRICE-ONLY", 1.1m, 2.2m);
+        await InsertExistingWarehouseProductAsync("P-PRICE-ONLY", domesticPrice: 3.3m, importPrice: 4.4m, oemPrice: 5.5m);
+        await _db.Updateable<Product>()
+            .SetColumns(item => new Product
+            {
+                ProductName = "保留名称",
+                EnglishName = "Keep Name",
+                ProductType = 0,
+                WarehouseCategoryGUID = "KEEP-CAT",
+                IsActive = false,
+            })
+            .Where(item => item.ProductCode == "P-PRICE-ONLY")
+            .ExecuteCommandAsync();
+        await _db.Updateable<WarehouseProduct>()
+            .SetColumns(item => new WarehouseProduct
+            {
+                IsActive = false,
+            })
+            .Where(item => item.ProductCode == "P-PRICE-ONLY")
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-PRICE-ONLY",
+                ContainerGuid = "C-PRICE-ONLY",
+                SubmitContainer = true,
+            }
+        );
+
+        Assert.Equal(1, result.UpdatedCount);
+        Assert.Equal(0, result.FailedCount);
+        Assert.True(result.ContainerCompleted);
+
+        var product = await _db.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-PRICE-ONLY");
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(item => item.ProductCode == "P-PRICE-ONLY");
+
+        Assert.Equal(8.8m, product.PurchasePrice);
+        Assert.Equal("保留名称", product.ProductName);
+        Assert.Equal("Keep Name", product.EnglishName);
+        Assert.Equal("KEEP-CAT", product.WarehouseCategoryGUID);
+        Assert.False(product.IsActive);
+        Assert.Equal(10.1m, warehouseProduct.DomesticPrice);
+        Assert.Equal(8.8m, warehouseProduct.ImportPrice);
+        Assert.Equal(9.9m, warehouseProduct.OEMPrice);
+        Assert.False(warehouseProduct.IsActive);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitContainer_DoesNotCompleteContainerWhenFailureExists()
+    {
+        await InsertContainerAsync("C-FAIL", status: 1);
+        await InsertContainerDetailAsync("D-FAIL", "C-FAIL", "P-FAIL", "普通商品", 1.2m, 3.4m);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-FAIL",
+                ContainerGuid = "C-FAIL",
+                SubmitContainer = true,
+            }
+        );
+
+        Assert.False(result.ContainerCompleted);
+        Assert.True(result.FailedCount > 0);
+        var container = await _db.Queryable<Container>().SingleAsync(item => item.ContainerCode == "C-FAIL");
+        Assert.Equal(1, container.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitContainer_RollsBackCreatedProductsWhenLaterUpdateFails()
+    {
+        await InsertContainerAsync("C-ROLLBACK", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-ROLLBACK-NEW", "C-ROLLBACK", "P-ROLLBACK-NEW", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-ROLLBACK-NEW", "HB-ROLLBACK-NEW", "回滚新商品", "Rollback Product", 0);
+        await InsertContainerDetailAsync("D-ROLLBACK-EXISTING", "C-ROLLBACK", "P-ROLLBACK-EXISTING", "普通商品", 5.6m, 7.8m);
+        await InsertDomesticProductAsync("P-ROLLBACK-EXISTING", "HB-ROLLBACK-EXISTING", "已有商品来源", "Existing Source", 0);
+        await InsertExistingProductAsync("P-ROLLBACK-EXISTING", "HB-ROLLBACK-EXISTING", 1.1m, 2.2m);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-ROLLBACK",
+                ContainerGuid = "C-ROLLBACK",
+                SubmitContainer = true,
+            }
+        );
+
+        Assert.False(result.ContainerCompleted);
+        Assert.Contains(result.Errors, item => item.ReasonCode == "WAREHOUSE_PRODUCT_NOT_FOUND");
+        // 整柜提交是原子动作：已有商品更新失败时，前面创建的新商品和分店价格也必须回滚。
+        Assert.Null(await _db.Queryable<Product>().FirstAsync(item => item.ProductCode == "P-ROLLBACK-NEW"));
+        Assert.Null(await _db.Queryable<WarehouseProduct>().FirstAsync(item => item.ProductCode == "P-ROLLBACK-NEW"));
+        Assert.Equal(0, await _db.Queryable<StoreRetailPrice>().Where(item => item.ProductCode == "P-ROLLBACK-NEW").CountAsync());
+        var container = await _db.Queryable<Container>().SingleAsync(item => item.ContainerCode == "C-ROLLBACK");
+        Assert.Equal(1, container.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitContainer_LoadsOnlyCurrentContainerDetails()
+    {
+        await InsertContainerAsync("C-SCOPE", status: 1);
+        await InsertContainerAsync("C-OTHER", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync("D-SCOPE", "C-SCOPE", "P-SCOPE", "普通商品", 1.2m, 3.4m);
+        await InsertDomesticProductAsync("P-SCOPE", "HB-SCOPE", "范围商品", "Scope Product", 0);
+        await InsertContainerDetailAsync("D-OTHER", "C-OTHER", "P-OTHER", "普通商品", 2.2m, 4.4m);
+        await InsertDomesticProductAsync("P-OTHER", "HB-OTHER", "其他商品", "Other Product", 0);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-SCOPE",
+                ContainerGuid = "C-SCOPE",
+                SubmitContainer = true,
+            }
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Contains(result.Created, item => item.ProductCode == "P-SCOPE");
+        Assert.DoesNotContain(result.Created, item => item.ProductCode == "P-OTHER");
+        Assert.NotNull(await _db.Queryable<Product>().FirstAsync(item => item.ProductCode == "P-SCOPE"));
+        Assert.Null(await _db.Queryable<Product>().FirstAsync(item => item.ProductCode == "P-OTHER"));
+        var currentContainer = await _db.Queryable<Container>().SingleAsync(item => item.ContainerCode == "C-SCOPE");
+        var otherContainer = await _db.Queryable<Container>().SingleAsync(item => item.ContainerCode == "C-OTHER");
+        Assert.Equal(2, currentContainer.Status);
+        Assert.Equal(1, otherContainer.Status);
     }
 
     [Fact]
@@ -929,6 +1144,17 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             StoreCode = storeCode,
             StoreName = storeCode,
             IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task InsertContainerAsync(string containerCode, int status)
+    {
+        await _db.Insertable(new Container
+        {
+            ContainerCode = containerCode,
+            ContainerNumber = containerCode,
+            Status = status,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -1141,6 +1367,17 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             warehouseService,
             NullLogger<ContainerProductCreationExecutorService>.Instance
         );
+    }
+
+    private async Task InsertWarehouseCategoryAsync(string categoryGuid)
+    {
+        await _db.Insertable(new WarehouseCategory
+        {
+            CategoryGUID = categoryGuid,
+            CategoryName = $"分类 {categoryGuid}",
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
     }
 
     private ContainerReactService CreateContainerReactService()

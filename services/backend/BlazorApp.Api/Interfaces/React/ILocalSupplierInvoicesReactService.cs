@@ -37,6 +37,11 @@ namespace BlazorApp.Api.Interfaces.React
             UpdateToStorePricesRequest dto,
             string updatedBy
         );
+        Task<ApiResponse<UpdateLastPurchasePricesResultDto>> UpdateLastPurchasePricesAsync(
+            string invoiceGuid,
+            UpdateLastPurchasePricesRequest request,
+            string updatedBy
+        );
         Task<ApiResponse<CheckProductsResponseDto>> CheckProductsAsync(CheckProductsRequest dto);
         Task<ApiResponse<BatchResultDto>> PasteDetailsAsync(
             PasteDetailsRequest dto,

@@ -122,6 +122,42 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        [HttpGet("mobile/unused")]
+        [AllowAnonymous]
+        public async Task<IActionResult> GetMobileUnusedLocations()
+        {
+            var access = await ResolveReadAccessAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(new { success = false, message = access.Message });
+            }
+
+            try
+            {
+                // 移动端首页只需要最近维护的空货位，固定 50 条避免一次拉取过多。
+                var result = await _locationService.GetPagedListAsync(new LocationReactFilterDto
+                {
+                    PageNumber = 1,
+                    PageSize = 50,
+                    IsUsed = false,
+                    SortBy = "UpdatedAt",
+                    SortDirection = "desc",
+                });
+
+                return Ok(new
+                {
+                    success = true,
+                    data = result.Items,
+                    message = "获取未使用货位成功",
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取移动端未使用货位失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
         [HttpPost]
         [Authorize(Roles = "Admin,WarehouseManager,WarehouseStaff")]
         public async Task<IActionResult> Create([FromBody] CreateLocationReactDto dto)

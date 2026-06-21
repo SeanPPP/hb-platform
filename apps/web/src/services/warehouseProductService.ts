@@ -150,6 +150,7 @@ export interface WarehouseProductsTableQuery {
   pageSize: number
   searchText?: string
   supplierCode?: string
+  filters?: Record<string, string[]>
   categoryFilter?: 'all' | 'uncategorized'
   categoryGuid?: string
   uncategorizedOnly?: boolean
@@ -683,13 +684,26 @@ export async function batchUpdateWarehouseProducts(items: WarehouseProductBatchU
 export async function getWarehouseProductsTable(
   query: WarehouseProductsTableQuery,
 ): Promise<WarehouseProductsTableResult> {
-  const filters: Record<string, string[]> = {
+  const sanitizeFilters = (filters?: Record<string, unknown>): Record<string, string[]> | undefined => {
+    const sanitizedEntries = Object.entries(filters ?? {}).flatMap(([field, values]) => {
+      const validValues = Array.isArray(values)
+        ? values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        : []
+
+      return validValues.length > 0 ? [[field, validValues] as const] : []
+    })
+
+    return sanitizedEntries.length > 0 ? Object.fromEntries(sanitizedEntries) : undefined
+  }
+
+  const filters = sanitizeFilters({
+    ...(query.filters ?? {}),
     ...(query.supplierCode ? { domesticSupplierCode: [query.supplierCode] } : {}),
     ...(query.productType !== undefined ? { productType: [String(query.productType)] } : {}),
     ...(query.isActive !== undefined ? { isActive: [String(query.isActive)] } : {}),
-  }
+  })
 
-  // 分类过滤走后端顶层字段；保留 categoryFilter 仅作为旧调用兼容入口。
+  // 分类过滤继续走顶层字段，列头业务筛选统一进 Filters；保留 categoryFilter 兼容旧调用。
   const uncategorizedOnly = query.uncategorizedOnly === true || query.categoryFilter === 'uncategorized'
 
   const response = await request<unknown>(`${API_BASE}/table`, {

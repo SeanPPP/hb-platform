@@ -217,12 +217,22 @@ namespace BlazorApp.Shared.DTOs
         public bool 是否新商品 { get; set; }
 
         /// <summary>
-        /// 仓库当前进货价
+        /// 上次进货价格（货柜明细快照）
+        /// </summary>
+        public decimal? LastImportPrice { get; set; }
+
+        /// <summary>
+        /// 上次贴牌价格（货柜明细快照）
+        /// </summary>
+        public decimal? LastOEMPrice { get; set; }
+
+        /// <summary>
+        /// 上次进货价格（兼容旧前端字段名）
         /// </summary>
         public decimal? WarehouseImportPrice { get; set; }
 
         /// <summary>
-        /// 仓库当前贴牌价格
+        /// 上次贴牌价格（兼容旧前端字段名）
         /// </summary>
         public decimal? WarehouseOEMPrice { get; set; }
 
@@ -380,6 +390,12 @@ namespace BlazorApp.Shared.DTOs
         public ContainerDetailNumberRangeDto? ContainerQuantity { get; set; }
         public decimal? ContainerQuantityMin { get; set; }
         public decimal? ContainerQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? PackingQuantity { get; set; }
+        public decimal? PackingQuantityMin { get; set; }
+        public decimal? PackingQuantityMax { get; set; }
+        public ContainerDetailNumberRangeDto? UnitVolume { get; set; }
+        public decimal? UnitVolumeMin { get; set; }
+        public decimal? UnitVolumeMax { get; set; }
         public ContainerDetailNumberRangeDto? DomesticPrice { get; set; }
         public decimal? DomesticPriceMin { get; set; }
         public decimal? DomesticPriceMax { get; set; }
@@ -389,9 +405,15 @@ namespace BlazorApp.Shared.DTOs
         public ContainerDetailNumberRangeDto? TransportCost { get; set; }
         public decimal? TransportCostMin { get; set; }
         public decimal? TransportCostMax { get; set; }
+        public ContainerDetailNumberRangeDto? UnitTransportCost { get; set; }
+        public decimal? UnitTransportCostMin { get; set; }
+        public decimal? UnitTransportCostMax { get; set; }
         public ContainerDetailNumberRangeDto? WarehouseImportPrice { get; set; }
         public decimal? WarehouseImportPriceMin { get; set; }
         public decimal? WarehouseImportPriceMax { get; set; }
+        public ContainerDetailNumberRangeDto? LastOEMPrice { get; set; }
+        public decimal? LastOEMPriceMin { get; set; }
+        public decimal? LastOEMPriceMax { get; set; }
         public ContainerDetailNumberRangeDto? ImportPrice { get; set; }
         public decimal? ImportPriceMin { get; set; }
         public decimal? ImportPriceMax { get; set; }
@@ -500,6 +522,11 @@ namespace BlazorApp.Shared.DTOs
         /// 清空英文名称（商品信息）
         /// </summary>
         public bool? ClearEnglishName { get; set; }
+
+        /// <summary>
+        /// 目标仓库分类GUID
+        /// </summary>
+        public string? ProductCategoryGUID { get; set; }
 
         /// <summary>
         /// 贴牌价格
@@ -617,6 +644,76 @@ namespace BlazorApp.Shared.DTOs
         /// 货号过滤
         /// </summary>
         public string? ItemNumberFilter { get; set; }
+
+        /// <summary>
+        /// 货柜编号列头过滤
+        /// </summary>
+        public string? ContainerNumberFilter { get; set; }
+
+        /// <summary>
+        /// 装柜日期列头过滤开始日期
+        /// </summary>
+        public DateTime? LoadingDateStart { get; set; }
+
+        /// <summary>
+        /// 装柜日期列头过滤结束日期
+        /// </summary>
+        public DateTime? LoadingDateEnd { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期列头过滤开始日期
+        /// </summary>
+        public DateTime? EstimatedArrivalDateStart { get; set; }
+
+        /// <summary>
+        /// 预计到岸日期列头过滤结束日期
+        /// </summary>
+        public DateTime? EstimatedArrivalDateEnd { get; set; }
+
+        /// <summary>
+        /// 实际到货日期列头过滤开始日期
+        /// </summary>
+        public DateTime? ActualArrivalDateStart { get; set; }
+
+        /// <summary>
+        /// 实际到货日期列头过滤结束日期
+        /// </summary>
+        public DateTime? ActualArrivalDateEnd { get; set; }
+
+        /// <summary>
+        /// 合计件数列头过滤最小值
+        /// </summary>
+        public decimal? TotalPiecesMin { get; set; }
+
+        /// <summary>
+        /// 合计件数列头过滤最大值
+        /// </summary>
+        public decimal? TotalPiecesMax { get; set; }
+
+        /// <summary>
+        /// 合计金额列头过滤最小值
+        /// </summary>
+        public decimal? TotalAmountMin { get; set; }
+
+        /// <summary>
+        /// 合计金额列头过滤最大值
+        /// </summary>
+        public decimal? TotalAmountMax { get; set; }
+
+        /// <summary>
+        /// 总体积列头过滤最小值
+        /// </summary>
+        public decimal? TotalVolumeMin { get; set; }
+
+        /// <summary>
+        /// 总体积列头过滤最大值
+        /// </summary>
+        public decimal? TotalVolumeMax { get; set; }
+
+        /// <summary>
+        /// 状态列头过滤
+        /// </summary>
+        public List<int>? Statuses { get; set; }
 
         /// <summary>
         /// 排序字段

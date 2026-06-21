@@ -62,6 +62,17 @@ function parsePastedBarcode(value?: string) {
   return normalized || undefined
 }
 
+function parsePastedItemNumber(value?: string) {
+  if (!value?.trim()) return undefined
+
+  // 关键位置：Excel 文本格式会把前导单引号一起带入货号，只清理开头，避免误删货号中间的合法字符。
+  const normalized = value
+    .trim()
+    .replace(/^'+/, '')
+
+  return normalized || undefined
+}
+
 export function normalizePastedRetailPrice(price: number) {
   if (!Number.isFinite(price) || price < 3) return price
 
@@ -107,6 +118,11 @@ export function parsePasteText(
 
       if (field === 'barcode') {
         row[field] = parsePastedBarcode(value)
+        return
+      }
+
+      if (field === 'itemNumber') {
+        row[field] = parsePastedItemNumber(value)
         return
       }
 

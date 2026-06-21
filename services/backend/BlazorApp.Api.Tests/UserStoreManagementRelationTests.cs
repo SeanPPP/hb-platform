@@ -9,8 +9,10 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -42,6 +44,7 @@ namespace BlazorApp.Api.Tests
             });
 
             _db.CodeFirst.InitTables<User, Store, UserStore, Role, UserRole>();
+            _db.CodeFirst.InitTables<RefreshToken>();
         }
 
         [Fact]
@@ -50,6 +53,94 @@ namespace BlazorApp.Api.Tests
             var constructors = typeof(UsersController).GetConstructors();
 
             Assert.Single(constructors);
+        }
+
+        [Fact]
+        public void UsersController_GetUserLoginRecords_UsesUsersViewPermission()
+        {
+            var method = typeof(UsersController).GetMethod(nameof(UsersController.GetUserLoginRecords));
+
+            var authorize = method?.GetCustomAttribute<AuthorizeAttribute>();
+
+            Assert.NotNull(authorize);
+            Assert.Equal(Permissions.Users.View, authorize!.Policy);
+        }
+
+        [Fact]
+        public async Task GetUserLoginRecordsAsync_ReturnsSelectedUserRecordsInCreatedAtDescendingOrder()
+        {
+            await SeedLoginRecordUsersAsync();
+            await SeedRefreshTokenAsync(
+                "session-old",
+                "login-user",
+                DateTime.UtcNow.AddHours(-3),
+                "203.0.113.1"
+            );
+            await SeedRefreshTokenAsync(
+                "session-new",
+                "login-user",
+                DateTime.UtcNow.AddHours(-1),
+                "203.0.113.2"
+            );
+            await SeedRefreshTokenAsync(
+                "session-other-user",
+                "other-user",
+                DateTime.UtcNow,
+                "198.51.100.9"
+            );
+            var service = CreateUserService();
+
+            var result = await service.GetUserLoginRecordsAsync(
+                "login-user",
+                new UserLoginRecordQueryDto { Page = 1, PageSize = 1 }
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(2, result.Data!.Total);
+            var item = Assert.Single(result.Data.Items!);
+            Assert.Equal("session-new", item.SessionId);
+            Assert.Equal("203.0.113.2", item.IpAddress);
+        }
+
+        [Fact]
+        public async Task GetUserLoginRecordsAsync_ComputesActiveRevokedAndExpiredStatuses()
+        {
+            await SeedLoginRecordUsersAsync();
+            await SeedRefreshTokenAsync(
+                "session-active",
+                "login-user",
+                DateTime.UtcNow.AddMinutes(-3),
+                "203.0.113.1"
+            );
+            await SeedRefreshTokenAsync(
+                "session-revoked",
+                "login-user",
+                DateTime.UtcNow.AddMinutes(-2),
+                "203.0.113.2",
+                isRevoked: true
+            );
+            await SeedRefreshTokenAsync(
+                "session-expired",
+                "login-user",
+                DateTime.UtcNow.AddMinutes(-1),
+                "203.0.113.3",
+                expiresAt: DateTime.UtcNow.AddMinutes(-1)
+            );
+            var service = CreateUserService();
+
+            var result = await service.GetUserLoginRecordsAsync(
+                "login-user",
+                new UserLoginRecordQueryDto { Page = 1, PageSize = 10 }
+            );
+
+            Assert.True(result.Success);
+            var items = result.Data!.Items!.ToDictionary(item => item.SessionId);
+            Assert.Equal("active", items["session-active"].Status);
+            Assert.Equal("revoked", items["session-revoked"].Status);
+            Assert.Equal("expired", items["session-expired"].Status);
+            Assert.False(items["session-active"].IsExpired);
+            Assert.True(items["session-revoked"].IsRevoked);
+            Assert.True(items["session-expired"].IsExpired);
         }
 
         [Fact]
@@ -88,6 +179,153 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success);
             var userStore = await FindUserStoreAsync("user-1", "store-1");
             Assert.True(userStore.IsPrimary);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_WhenIsActiveOmitted_DefaultsCashRegisterDisabled()
+        {
+            var service = CreateStoreService();
+
+            var result = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "New Store",
+                StoreCode = "1999",
+            });
+
+            Assert.True(result.Success);
+            Assert.False(result.Data!.IsActive);
+            var createdStore = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreCode == "1999");
+            Assert.NotNull(createdStore);
+            Assert.False(createdStore!.IsActive);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_WhenIsActiveTrue_PersistsCashRegisterEnabled()
+        {
+            var service = CreateStoreService();
+
+            var result = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Cash Store",
+                StoreCode = "1888",
+                IsActive = true,
+            });
+
+            Assert.True(result.Success);
+            Assert.True(result.Data!.IsActive);
+            var createdStore = await _db.Queryable<Store>()
+                .FirstAsync(store => store.StoreCode == "1888");
+            Assert.NotNull(createdStore);
+            Assert.True(createdStore!.IsActive);
+        }
+
+        [Fact]
+        public async Task GetNextStoreCodeAsync_WhenNoNumericCodes_ReturnsDefaultStartCode()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-alpha",
+                StoreName = "Alpha Store",
+                StoreCode = "S001",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var result = await service.GetNextStoreCodeAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal("1001", result.Data);
+        }
+
+        [Fact]
+        public async Task GetNextStoreCodeAsync_UsesMaxNumericCodePlusOne()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-1001",
+                    StoreName = "Store 1001",
+                    StoreCode = "1001",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-1042",
+                    StoreName = "Store 1042",
+                    StoreCode = "1042",
+                    IsActive = false,
+                    IsDeleted = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-s001",
+                    StoreName = "Store S001",
+                    StoreCode = "S001",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var result = await service.GetNextStoreCodeAsync();
+
+            Assert.True(result.Success);
+            Assert.Equal("1043", result.Data);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_WhenStoreCodeExists_ReturnsDuplicateAndDoesNotInsert()
+        {
+            var service = CreateStoreService();
+            var first = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "First Store",
+                StoreCode = "1043",
+            });
+
+            var duplicate = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Duplicate Store",
+                StoreCode = "1043",
+            });
+
+            Assert.True(first.Success);
+            Assert.False(duplicate.Success);
+            Assert.Equal("DUPLICATE_STORE_CODE", duplicate.ErrorCode);
+            var count = await _db.Queryable<Store>()
+                .Where(store => store.StoreCode == "1043")
+                .CountAsync();
+            Assert.Equal(1, count);
+        }
+
+        [Fact]
+        public async Task CreateStoreAsync_TrimsStoreCodeBeforeDuplicateCheckAndInsert()
+        {
+            var service = CreateStoreService();
+            var first = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Trimmed Store",
+                StoreCode = " 1044 ",
+            });
+
+            var duplicate = await service.CreateStoreAsync(new CreateStoreDto
+            {
+                StoreName = "Duplicate Trimmed Store",
+                StoreCode = "1044",
+            });
+
+            Assert.True(first.Success);
+            Assert.Equal("1044", first.Data!.StoreCode);
+            Assert.False(duplicate.Success);
+            Assert.Equal("DUPLICATE_STORE_CODE", duplicate.ErrorCode);
+            var count = await _db.Queryable<Store>()
+                .Where(store => store.StoreCode == "1044")
+                .CountAsync();
+            Assert.Equal(1, count);
         }
 
         [Fact]
@@ -144,6 +382,61 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success);
             Assert.Single(result.Data!.Users!);
             Assert.True(result.Data.Users[0].IsPrimary);
+        }
+
+        [Fact]
+        public async Task GetStoresAsync_FiltersByBrandNameAndSortsStoreColumns()
+        {
+            await SeedStoresForListQueryAsync();
+            await _db.Insertable(new[]
+            {
+                CreateUserStore("user-a", "store-hot-a", false),
+                CreateUserStore("user-b", "store-hot-b", false),
+                CreateUserStore("user-c", "store-hot-b", false),
+            }).ExecuteCommandAsync();
+            var service = CreateStoreService();
+
+            var filtered = await service.GetStoresAsync(
+                new StoreQueryDto { BrandName = "Hot Bargain", Page = 1, PageSize = 20 }
+            );
+
+            Assert.True(filtered.Success);
+            var filteredData = filtered.Data!;
+            var filteredItems = filteredData.Items!;
+            Assert.Equal(2, filteredData.Total);
+            Assert.All(filteredItems, item => Assert.Equal("Hot Bargain", item.BrandName));
+
+            var brandSorted = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    SortField = "BrandName",
+                    SortOrder = "desc",
+                }
+            );
+
+            Assert.True(brandSorted.Success);
+            var brandSortedItems = brandSorted.Data!.Items!;
+            Assert.Equal("Other Brand", brandSortedItems[0].BrandName);
+
+            var userCountSorted = await service.GetStoresAsync(
+                new StoreQueryDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    SortField = "totalUsers",
+                    SortOrder = "desc",
+                }
+            );
+
+            Assert.True(userCountSorted.Success);
+            var userCountSortedItems = userCountSorted.Data!.Items!;
+            Assert.Equal(
+                new[] { "store-hot-b", "store-hot-a", "store-other" },
+                userCountSortedItems.Select(item => item.StoreGUID).ToArray()
+            );
+            Assert.Equal(new[] { 2, 1, 0 }, userCountSortedItems.Select(item => item.TotalUsers).ToArray());
         }
 
         [Fact]
@@ -342,7 +635,7 @@ namespace BlazorApp.Api.Tests
                 item => item.UserGUID == "soft-deleted-scoped-user"
             );
 
-            var dualUser = Assert.Single(result.Data.Items, item => item.UserGUID == "dual-user");
+            var dualUser = Assert.Single(result.Data.Items!, item => item.UserGUID == "dual-user");
             Assert.Equal(new[] { "Store 1" }, dualUser.StoreNames);
         }
 
@@ -625,6 +918,40 @@ namespace BlazorApp.Api.Tests
             }).ExecuteCommandAsync();
         }
 
+        private async Task SeedStoresForListQueryAsync()
+        {
+            await _db.Insertable(new[]
+            {
+                new Store
+                {
+                    StoreGUID = "store-hot-a",
+                    StoreCode = "S001",
+                    StoreName = "Hot Store A",
+                    BrandName = "Hot Bargain",
+                    Phone = "0731000001",
+                    IsActive = true,
+                },
+                new Store
+                {
+                    StoreGUID = "store-hot-b",
+                    StoreCode = "S002",
+                    StoreName = "Hot Store B",
+                    BrandName = "Hot Bargain",
+                    Phone = "0731000002",
+                    IsActive = false,
+                },
+                new Store
+                {
+                    StoreGUID = "store-other",
+                    StoreCode = "S003",
+                    StoreName = "Other Store",
+                    BrandName = "Other Brand",
+                    Phone = "0731000003",
+                    IsActive = true,
+                },
+            }).ExecuteCommandAsync();
+        }
+
         private async Task SeedInactiveStoreUserAsync()
         {
             await _db.Insertable(CreateUser("inactive-store-user", "inactive-store-user@example.com"))
@@ -810,6 +1137,55 @@ namespace BlazorApp.Api.Tests
                 AssignedAt = DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedLoginRecordUsersAsync()
+        {
+            await _db.Insertable(new[]
+            {
+                new User
+                {
+                    UserGUID = "login-user",
+                    Username = "login-user",
+                    Email = "login-user@example.com",
+                    PasswordHash = "hashed",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new User
+                {
+                    UserGUID = "other-user",
+                    Username = "other-user",
+                    Email = "other-user@example.com",
+                    PasswordHash = "hashed",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+        }
+
+        private Task SeedRefreshTokenAsync(
+            string sessionId,
+            string userGuid,
+            DateTime createdAt,
+            string ipAddress,
+            bool isRevoked = false,
+            DateTime? expiresAt = null
+        )
+        {
+            return _db.Insertable(new RefreshToken
+            {
+                RefreshTokenGUID = sessionId,
+                UserGUID = userGuid,
+                Token = $"{sessionId}-token",
+                IpAddress = ipAddress,
+                UserAgent = $"{sessionId}-agent",
+                ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(1),
+                IsRevoked = isRevoked,
+                IsDeleted = false,
+                CreatedAt = createdAt,
+                UpdatedAt = createdAt,
             }).ExecuteCommandAsync();
         }
 

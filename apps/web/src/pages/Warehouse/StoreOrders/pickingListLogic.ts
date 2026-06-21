@@ -1,4 +1,5 @@
 import type { StoreOrderDetail, StoreOrderDetailLine } from '../../../types/storeOrder'
+import { formatStoreOrderVolume } from './volumeFormat'
 
 export interface PickingListExcelTexts {
   sheetName: string
@@ -20,7 +21,6 @@ export interface PickingListExcelTexts {
     rrp: string
     innerPackCount: string
     orderQuantity: string
-    allocQuantity: string
   }
 }
 
@@ -67,8 +67,8 @@ const DEFAULT_PDF_PAGINATION_OPTIONS: Required<PickingListPdfPaginationOptions> 
   headerHeightMm: 20,
   tableHeaderHeightMm: 10,
   footerHeightMm: 12,
-  // 默认行高按实际打印预览校准，让普通明细页容纳 29 行，减少页尾空白。
-  rowHeightMm: 8.17,
+  // 默认行高与打印 CSS 的 9mm 明细行保持一致，避免 PDF 预分页后在行中间切断。
+  rowHeightMm: 9,
   finalSummaryHeightMm: 22,
 }
 
@@ -123,6 +123,17 @@ export function formatInnerPackCount(orderQuantity: number, minOrderQuantity?: n
   return Number.isInteger(innerPackCount) ? String(innerPackCount) : innerPackCount.toFixed(1)
 }
 
+export function formatPickingOrderQuantity(quantity: unknown, allocQuantity?: unknown) {
+  const numericQuantity = Number(quantity)
+  if (Number.isFinite(numericQuantity) && numericQuantity > 0) {
+    return numericQuantity
+  }
+
+  // 订货数为空或为 0 时，用发货数兜底显示；兜底值也为空时保持空白。
+  const numericAllocQuantity = Number(allocQuantity)
+  return Number.isFinite(numericAllocQuantity) && numericAllocQuantity > 0 ? numericAllocQuantity : ''
+}
+
 export function buildPickingListExcelData(
   order: StoreOrderDetail,
   items: StoreOrderDetailLine[],
@@ -134,9 +145,9 @@ export function buildPickingListExcelData(
     printTimeText: '',
     totalOrderVolumeText:
       typeof order.totalOrderVolume === 'number'
-        ? order.totalOrderVolume.toFixed(4)
+        ? formatStoreOrderVolume(order.totalOrderVolume)
         : typeof order.totalVolume === 'number'
-          ? order.totalVolume.toFixed(4)
+          ? formatStoreOrderVolume(order.totalVolume)
           : '--',
   },
 ): PickingListExcelData {
@@ -157,7 +168,6 @@ export function buildPickingListExcelData(
       texts.detailHeaders.rrp,
       texts.detailHeaders.innerPackCount,
       texts.detailHeaders.orderQuantity,
-      texts.detailHeaders.allocQuantity,
     ],
     detailRows: items.map((item, index) => [
       index + 1,
@@ -167,8 +177,7 @@ export function buildPickingListExcelData(
       formatExcelCurrency(item.importPrice),
       item.rrp === undefined || item.rrp === null ? '' : formatExcelCurrency(item.rrp),
       formatInnerPackCount(item.quantity, item.minOrderQuantity),
-      Number(item.quantity || 0),
-      Number(item.allocQuantity ?? 0),
+      formatPickingOrderQuantity(item.quantity, item.allocQuantity),
     ]),
     remarksRow: order.remarks ? [texts.remarksLabel, order.remarks] : undefined,
     totalRows: [

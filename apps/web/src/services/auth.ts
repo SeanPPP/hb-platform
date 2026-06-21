@@ -1,6 +1,7 @@
 import type { ApiResponse } from '../types/api'
 import type { CurrentUser, LoginRequest, SessionResponse } from '../types/auth'
 import type { UserStoreDto } from '../types/user'
+import { getClientPublicIpHeaders } from '../utils/clientPublicIp'
 import request, { unwrapApiData } from '../utils/request'
 
 type CurrentUserStoreApiDto = Partial<UserStoreDto> & {
@@ -20,7 +21,9 @@ type CurrentUserApiDto = Omit<CurrentUser, 'stores'> & {
 }
 
 export async function login(payload: LoginRequest) {
-  return request.post<ApiResponse<SessionResponse>>('/api/Auth/session/login', payload)
+  return request.post<ApiResponse<SessionResponse>>('/api/Auth/session/login', payload, {
+    headers: await getClientPublicIpHeaders(),
+  })
 }
 
 export async function logout() {
@@ -32,7 +35,10 @@ export async function refreshSession() {
     const response = await request.post<ApiResponse<SessionResponse>>(
       '/api/Auth/session/refresh',
       {},
-      { skipAuthRedirect: true },
+      {
+        headers: await getClientPublicIpHeaders(),
+        skipAuthRedirect: true,
+      },
     )
     return !!(response?.success ?? response?.data)
   } catch {

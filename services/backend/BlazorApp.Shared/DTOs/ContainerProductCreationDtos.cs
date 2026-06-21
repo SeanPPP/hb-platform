@@ -22,6 +22,10 @@ namespace BlazorApp.Shared.DTOs
         public string OperationId { get; set; } = string.Empty;
         public string ContainerGuid { get; set; } = string.Empty;
         public List<string> DetailHguids { get; set; } = new();
+        /// <summary>
+        /// 是否提交当前货柜全部明细；true 时后端按货柜范围加载全部未删除明细。
+        /// </summary>
+        public bool SubmitContainer { get; set; }
     }
 
     /// <summary>
@@ -42,9 +46,12 @@ namespace BlazorApp.Shared.DTOs
     public class ContainerProductCreationResultDto
     {
         public int CreatedCount { get; set; }
+        public int UpdatedCount { get; set; }
         public int SkippedCount { get; set; }
         public int FailedCount { get; set; }
+        public bool ContainerCompleted { get; set; }
         public List<ContainerProductCreationResultItemDto> Created { get; set; } = new();
+        public List<ContainerProductCreationResultItemDto> Updated { get; set; } = new();
         public List<ContainerProductCreationResultItemDto> Skipped { get; set; } = new();
         public List<ContainerProductCreationResultItemDto> Errors { get; set; } = new();
     }

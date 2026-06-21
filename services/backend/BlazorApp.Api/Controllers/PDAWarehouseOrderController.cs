@@ -59,7 +59,7 @@ namespace BlazorApp.Api.Controllers
             }
         }
 
-        private string GetDeviceHardwareId()
+        private string? GetDeviceHardwareId()
         {
             return Request.Headers["X-Device-Id"].FirstOrDefault();
         }
@@ -77,6 +77,27 @@ namespace BlazorApp.Api.Controllers
             return null;
         }
 
+        private async Task<string?> GetBoundStoreCodeAsync()
+        {
+            var storeCode = await GetStoreCodeFromDeviceAsync();
+            if (!string.IsNullOrWhiteSpace(storeCode))
+            {
+                return storeCode;
+            }
+
+            // 设备已认证但未绑定分店时，必须在控制器层拦截，避免把空分店传给 service。
+            _logger.LogWarning(
+                "设备已认证但未绑定分店，HardwareId: {HardwareId}",
+                GetDeviceHardwareId()
+            );
+            return null;
+        }
+
+        private IActionResult DeviceStoreNotBound()
+        {
+            return StatusCode(403, new { success = false, message = "设备未绑定分店" });
+        }
+
         #region 订单管理
 
         [HttpGet("list")]
@@ -89,7 +110,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.GetOrderListAsync(filter, storeCode);
 
                 return Ok(new { success = true, data = result });
@@ -111,7 +137,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.GetOrderDetailAsync(orderGuid, storeCode);
 
                 if (result == null)
@@ -140,7 +171,15 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var hardwareId = Request.Headers["X-Device-Id"].FirstOrDefault() ?? string.Empty;
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
+                // 创建订单必须使用设备绑定分店，不能信任客户端传入的 StoreCode。
+                request.StoreCode = storeCode;
+                var hardwareId = GetDeviceHardwareId() ?? string.Empty;
                 var result = await _warehouseOrderService.CreateOrderAsync(request, hardwareId);
 
                 if (!result.Success)
@@ -169,8 +208,13 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
-                var hardwareId = Request.Headers["X-Device-Id"].FirstOrDefault() ?? string.Empty;
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
+                var hardwareId = GetDeviceHardwareId() ?? string.Empty;
                 var result = await _warehouseOrderService.UpdateOrderAsync(
                     request,
                     storeCode,
@@ -203,8 +247,13 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
-                var hardwareId = Request.Headers["X-Device-Id"].FirstOrDefault() ?? string.Empty;
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
+                var hardwareId = GetDeviceHardwareId() ?? string.Empty;
                 var result = await _warehouseOrderService.SubmitOrderAsync(
                     request,
                     storeCode,
@@ -235,8 +284,13 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
-                var hardwareId = Request.Headers["X-Device-Id"].FirstOrDefault() ?? string.Empty;
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
+                var hardwareId = GetDeviceHardwareId() ?? string.Empty;
                 var result = await _warehouseOrderService.DeleteOrderAsync(
                     orderGuid,
                     storeCode,
@@ -273,7 +327,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.AddOrderLineAsync(request, storeCode);
 
                 if (!result.Success)
@@ -302,7 +361,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.UpdateOrderLineAsync(request, storeCode);
 
                 if (!result.Success)
@@ -329,7 +393,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.DeleteOrderLineAsync(
                     detailGuid,
                     storeCode
@@ -361,7 +430,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
-                var storeCode = await GetStoreCodeFromDeviceAsync();
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.BatchAddOrderLinesAsync(
                     request,
                     storeCode
@@ -397,6 +471,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.GetProductsAsync(filter);
 
                 return Ok(new { success = true, data = result });
@@ -416,6 +496,12 @@ namespace BlazorApp.Api.Controllers
                 if (!await ValidateDeviceAuthAsync())
                 {
                     return Unauthorized(new { success = false, message = "设备未授权" });
+                }
+
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
                 }
 
                 var result = await _warehouseOrderService.GetProductByCodeAsync(productCode);
@@ -444,6 +530,12 @@ namespace BlazorApp.Api.Controllers
                     return Unauthorized(new { success = false, message = "设备未授权" });
                 }
 
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
+                }
+
                 var result = await _warehouseOrderService.ScanProductAsync(request);
 
                 if (result == null)
@@ -470,6 +562,12 @@ namespace BlazorApp.Api.Controllers
                 if (!await ValidateDeviceAuthAsync())
                 {
                     return Unauthorized(new { success = false, message = "设备未授权" });
+                }
+
+                var storeCode = await GetBoundStoreCodeAsync();
+                if (storeCode == null)
+                {
+                    return DeviceStoreNotBound();
                 }
 
                 var result = await _warehouseOrderService.BatchGetProductsByItemNumbersAsync(

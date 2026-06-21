@@ -96,6 +96,7 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         public int StoreRecordCount { get; set; }
 
+        public DateTime? CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
     }

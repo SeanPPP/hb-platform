@@ -15,6 +15,12 @@ export interface StoreOrderPasteColumnMapping {
   price: number
 }
 
+export type StoreOrderPasteQuantityMode = 'direct' | 'inner'
+
+export interface BuildPasteSubmitItemsOptions {
+  quantityMode?: StoreOrderPasteQuantityMode
+}
+
 export interface ParsedStoreOrderPasteItem {
   rowIndex: number
   itemNumber: string
@@ -51,6 +57,11 @@ function parseQuantity(rawQuantity: string | undefined, quantityColumnEnabled: b
   }
 
   const normalized = rawQuantity?.trim() ?? ''
+  if (!normalized) {
+    // 数量列存在但为空时按 1 处理，方便只粘贴货号或漏填数量的常见导入场景。
+    return { quantity: 1, quantityValid: true }
+  }
+
   const quantity = /^[1-9]\d*$/.test(normalized) ? Number.parseInt(normalized, 10) : 0
 
   return {
@@ -164,20 +175,45 @@ export function setExistingPastePreviewAction(
   return items.map((item) => (item.status === 'existing' && item.valid ? { ...item, action } : item))
 }
 
-export function buildPasteSubmitItems(items: StoreOrderPastePreviewItem[]): StoreOrderPasteSubmitItem[] {
+function resolveInnerQuantityMultiplier(item: StoreOrderPastePreviewItem) {
+  const minOrderQuantity = item.product?.minOrderQuantity
+  // inner 数量按商品中包数/最小订货量换算；异常配置回退为 1，避免提交 0 或 NaN。
+  return typeof minOrderQuantity === 'number' && Number.isFinite(minOrderQuantity) && minOrderQuantity > 1
+    ? minOrderQuantity
+    : 1
+}
+
+export function getPasteSubmitQuantity(
+  item: StoreOrderPastePreviewItem,
+  quantityMode: StoreOrderPasteQuantityMode = 'direct',
+) {
+  return quantityMode === 'inner'
+    ? item.quantity * resolveInnerQuantityMultiplier(item)
+    : item.quantity
+}
+
+export function buildPasteSubmitItems(
+  items: StoreOrderPastePreviewItem[],
+  options: BuildPasteSubmitItemsOptions = {},
+): StoreOrderPasteSubmitItem[] {
+  const quantityMode = options.quantityMode ?? 'direct'
+
   return items
     .filter((item) => item.valid && item.action !== 'skip' && item.product?.productCode)
     .map((item) => ({
       productCode: item.product!.productCode,
-      quantity: item.quantity,
+      quantity: getPasteSubmitQuantity(item, quantityMode),
       importPrice: item.price,
       action: item.action,
     }))
 }
 
-export function formatPastePreviewQuantity(item: StoreOrderPastePreviewItem) {
+export function formatPastePreviewQuantity(
+  item: StoreOrderPastePreviewItem,
+  quantityMode: StoreOrderPasteQuantityMode = 'direct',
+) {
   if (item.quantityValid) {
-    return item.quantity
+    return getPasteSubmitQuantity(item, quantityMode)
   }
 
   const rawQuantity = item.quantityRaw?.trim()

@@ -739,24 +739,49 @@ class HbPrinterModule(
     val locationCode = payload.getNullableString("locationCode")
     val locationBarcode = payload.getNullableString("locationBarcode")
     val locationGuid = payload.getNullableString("locationGuid")
+    val itemNumber = payload.getNullableString("itemNumber").ifBlank { "--" }
+    val productName = payload.getNullableString("productName").ifBlank { "--" }
+    val middlePackageQuantity = payload
+      .getNullableDouble("middlePackageQuantity")
+      ?.roundToInt()
+      ?.takeIf { it > 0 }
+      ?: 1
     val displayCode = locationCode.ifBlank { locationBarcode.ifBlank { locationGuid } }
     val barcode = locationBarcode.ifBlank { displayCode }
 
-    val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(9f), true, "sans-serif-black", true, 2)
-    val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(18f), true, "sans-serif-black", 1, w - 30)
+    val titleBitmap = textToBitmap("LOCATION", fontSizeToPixels(8f), true, "sans-serif-black", true, 2)
+    val codeBitmap = longTextToBitmap(displayCode, fontSizeToPixels(15f), true, "sans-serif-black", 1, w - 30)
+    // 货位标签补充商品信息，空货位保持占位，避免打印布局跳动。
+    val rightAreaLeft = w - 178
+    val leftTextWidth = rightAreaLeft - 28
+    val itemBitmap = longTextToBitmap("ITEM $itemNumber", fontSizeToPixels(9f), true, "sans-serif-black", 1, leftTextWidth)
+    val nameBitmap = longTextToBitmap("DESC $productName", fontSizeToPixels(7f), true, "Arial", 1, leftTextWidth)
+    val innerBitmap = textToBitmap("INNER", fontSizeToPixels(8f), true, "sans-serif-black")
+    val innerQuantityBitmap = textToBitmap(middlePackageQuantity.toString(), fontSizeToPixels(16f), true, "sans-serif-black")
     val dateBitmap = textToBitmap(todayString(), fontSizeToPixels(7f), true, "sans-serif-black", true, 2)
     fun centerX(bitmap: Bitmap) = max(0, (w - bitmap.width) / 2)
+    val rightPadding = 20
+    val quantityX = w - rightPadding - innerQuantityBitmap.width
+    val innerX = max(rightAreaLeft, quantityX - innerBitmap.width - 8)
+    val quantityY = 72
+    val innerY = quantityY + max(0, innerQuantityBitmap.height - innerBitmap.height - 3)
+    val dateX = w - rightPadding - dateBitmap.width
+    val dateY = h - dateBitmap.height - 10
 
     val commands = mutableListOf(
       "! 0 200 200 $h 1",
       "PAGE-WIDTH $w",
-      bitmapCommand(centerX(titleBitmap), 12, titleBitmap),
-      bitmapCommand(centerX(codeBitmap), 48, codeBitmap),
-      bitmapCommand(w - dateBitmap.width - 20, 104, dateBitmap),
+      bitmapCommand(centerX(titleBitmap), 8, titleBitmap),
+      bitmapCommand(centerX(codeBitmap), 28, codeBitmap),
+      bitmapCommand(18, 78, itemBitmap),
+      bitmapCommand(18, 108, nameBitmap),
+      bitmapCommand(innerX, innerY, innerBitmap),
+      bitmapCommand(quantityX, quantityY, innerQuantityBitmap),
+      bitmapCommand(dateX, dateY, dateBitmap),
     )
 
     if (barcode.isNotBlank()) {
-      commands += "BARCODE 128 1 1 56 60 132 ${cpclText(barcode)}"
+      commands += "BARCODE 128 1 1 44 24 150 ${cpclText(barcode)}"
     }
 
     commands += "PRINT"

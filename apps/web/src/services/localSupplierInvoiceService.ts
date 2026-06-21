@@ -15,6 +15,9 @@ import type {
   InvoiceDetailUpsertItemDto,
   LocalSupplierInvoiceHqSyncRequest,
   LocalSupplierInvoiceHqSyncResult,
+  LocalSupplierInvoiceImportConfirmRequest,
+  LocalSupplierInvoiceImportConfirmResponse,
+  LocalSupplierInvoiceImportPreviewResponse,
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
@@ -24,6 +27,8 @@ import type {
   UpdateHqProductsJobResult,
   UpdateHqProductsRequest,
   UpdateHqProductsResult,
+  UpdateLastPurchasePricesRequest,
+  UpdateLastPurchasePricesResult,
   UpdateInvoiceRequest,
   UpdateToStorePricesJobResult,
   UpdateToStorePricesResult,
@@ -238,6 +243,18 @@ export async function batchUpdateDetails(
   return unwrapApiData(response)
 }
 
+export async function updateLastPurchasePrices(
+  invoiceGuid: string,
+  data: UpdateLastPurchasePricesRequest,
+): Promise<UpdateLastPurchasePricesResult> {
+  const response = await request.post<ApiResponse<UpdateLastPurchasePricesResult>>(
+    `${API_BASE}/${invoiceGuid}/details/update-last-purchase-prices`,
+    data,
+  )
+  assertApiSuccess(response, '更新上次进货价失败')
+  return unwrapApiData(response)
+}
+
 export async function getBarcodeAbnormalDetails(invoiceGuid: string) {
   const response = await request.get<ApiResponse<{ details: any[] }>>(`${API_BASE}/${invoiceGuid}/barcode-abnormal-details`)
   return unwrapApiData(response)
@@ -278,6 +295,29 @@ export async function batchExecuteActions(data: BatchExecuteActionsRequest): Pro
     confirmedAt: data.confirmedAt,
   })
   assertApiSuccess(response, '批量执行操作失败')
+  return unwrapApiData(response)
+}
+
+export async function previewInvoiceImport(file: File): Promise<LocalSupplierInvoiceImportPreviewResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await request.post<ApiResponse<LocalSupplierInvoiceImportPreviewResponse>>(
+    `${API_BASE}/import/preview`,
+    formData,
+  )
+  // 上传走统一 request 认证链路后，仍要保留 200 + success=false 的业务失败判断。
+  assertApiSuccess(response, '预览导入文件失败')
+  return unwrapApiData(response)
+}
+
+export async function confirmInvoiceImport(
+  payload: LocalSupplierInvoiceImportConfirmRequest,
+): Promise<LocalSupplierInvoiceImportConfirmResponse> {
+  const response = await request.post<ApiResponse<LocalSupplierInvoiceImportConfirmResponse>>(
+    `${API_BASE}/import/confirm`,
+    payload,
+  )
+  assertApiSuccess(response, '确认创建导入进货单失败')
   return unwrapApiData(response)
 }
 

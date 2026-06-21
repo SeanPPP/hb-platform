@@ -21,8 +21,10 @@ namespace BlazorApp.Shared.DTOs
         public int TotalChecked { get; set; }
         public int OrphanedCount { get; set; }
         public int MissingCount { get; set; }
+        public int InvalidKeyCount { get; set; }
         public List<string> OrphanedProductCodes { get; set; } = new();
         public List<string> MissingProductCodes { get; set; } = new();
+        public List<string> Errors { get; set; } = new();
     }
 
     public class ProductIntegrityFixRequestDto

@@ -169,6 +169,7 @@ namespace BlazorApp.Api.Services
                         Email = user.Email,
                         FullName = user.FullName,
                         LastLoginAt = user.LastLoginAt,
+                        LastLoginIp = user.LastLoginIp,
                         IsActive = user.IsActive,
                         CreatedAt = user.CreatedAt,
                         UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
@@ -323,6 +324,7 @@ namespace BlazorApp.Api.Services
                                     Email = u.Email,
                                     FullName = u.FullName,
                                     LastLoginAt = u.LastLoginAt,
+                                    LastLoginIp = u.LastLoginIp,
                                     IsActive = u.IsActive,
                                     CreatedAt = u.CreatedAt,
                                     UpdatedAt = u.UpdatedAt ?? u.CreatedAt,
@@ -688,6 +690,7 @@ namespace BlazorApp.Api.Services
                     Email = user.Email,
                     FullName = user.FullName,
                     LastLoginAt = user.LastLoginAt,
+                    LastLoginIp = user.LastLoginIp,
                     IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt,
                     UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
@@ -761,6 +764,88 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 获取用户登录记录
+        /// </summary>
+        public async Task<ApiResponse<PagedResult<UserLoginRecordDto>>> GetUserLoginRecordsAsync(
+            string userGuid,
+            UserLoginRecordQueryDto query
+        )
+        {
+            try
+            {
+                var db = _context.Db;
+                var page = Math.Max(query.Page, 1);
+                var pageSize = Math.Clamp(query.PageSize, 1, 100);
+
+                var userExists = await db.Queryable<User>()
+                    .AnyAsync(user => user.UserGUID == userGuid && !user.IsDeleted);
+                if (!userExists)
+                {
+                    return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
+                        "用户不存在",
+                        "USER_NOT_FOUND"
+                    );
+                }
+
+                var tokenQuery = db.Queryable<RefreshToken>()
+                    .Where(token => token.UserGUID == userGuid && !token.IsDeleted)
+                    .OrderByDescending(token => token.CreatedAt);
+
+                var total = await tokenQuery.CountAsync();
+                var tokens = await tokenQuery
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToListAsync();
+                var now = DateTime.UtcNow;
+
+                var items = tokens
+                    .Select(token =>
+                    {
+                        var isExpired = token.ExpiresAt < now;
+                        var status = token.IsRevoked
+                            ? "revoked"
+                            : isExpired
+                                ? "expired"
+                                : "active";
+
+                        return new UserLoginRecordDto
+                        {
+                            SessionId = token.RefreshTokenGUID,
+                            LoginAt = token.CreatedAt,
+                            IpAddress = token.IpAddress,
+                            UserAgent = token.UserAgent,
+                            ExpiresAt = token.ExpiresAt,
+                            IsRevoked = token.IsRevoked,
+                            IsExpired = isExpired,
+                            Status = status,
+                        };
+                    })
+                    .ToList();
+
+                var result = new PagedResult<UserLoginRecordDto>
+                {
+                    Items = items,
+                    Total = total,
+                    Page = page,
+                    PageSize = pageSize,
+                };
+
+                return ApiResponse<PagedResult<UserLoginRecordDto>>.OK(
+                    result,
+                    "获取用户登录记录成功"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取用户登录记录失败，UserGUID: {UserGUID}", userGuid);
+                return ApiResponse<PagedResult<UserLoginRecordDto>>.Error(
+                    "获取用户登录记录失败",
+                    "GET_USER_LOGIN_RECORDS_FAILED"
+                );
+            }
+        }
+
+        /// <summary>
         /// 根据用户名获取用户
         /// </summary>
         public async Task<ApiResponse<UserDto>> GetUserByUsernameAsync(string username)
@@ -778,6 +863,7 @@ namespace BlazorApp.Api.Services
                         Email = u.Email,
                         FullName = u.FullName,
                         LastLoginAt = u.LastLoginAt,
+                        LastLoginIp = u.LastLoginIp,
                         IsActive = u.IsActive,
                         CreatedAt = u.CreatedAt,
                         UpdatedAt = u.UpdatedAt ?? u.CreatedAt,
@@ -815,6 +901,7 @@ namespace BlazorApp.Api.Services
                         Email = u.Email,
                         FullName = u.FullName,
                         LastLoginAt = u.LastLoginAt,
+                        LastLoginIp = u.LastLoginIp,
                         IsActive = u.IsActive,
                         CreatedAt = u.CreatedAt,
                         UpdatedAt = u.UpdatedAt ?? u.CreatedAt,
@@ -885,7 +972,7 @@ namespace BlazorApp.Api.Services
                     UserGUID = Guid.NewGuid().ToString(),
                     Username = usernameLower,
                     Email = dto.Email,
-                    PasswordHash = PasswordHasher.HashPassword(dto.Password),
+                    PasswordHash = PasswordHasher.HashSubmittedPassword(dto.Password, dto.PasswordFormat),
                     FullName = dto.FullName,
                     IsActive = dto.IsActive,
                     CreatedAt = DateTime.UtcNow,
@@ -944,6 +1031,7 @@ namespace BlazorApp.Api.Services
                         Email = user.Email,
                         FullName = user.FullName,
                         LastLoginAt = user.LastLoginAt,
+                        LastLoginIp = user.LastLoginIp,
                         IsActive = user.IsActive,
                         CreatedAt = user.CreatedAt,
                         UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
@@ -1152,6 +1240,7 @@ namespace BlazorApp.Api.Services
                     Email = user.Email,
                     FullName = user.FullName,
                     LastLoginAt = user.LastLoginAt,
+                    LastLoginIp = user.LastLoginIp,
                     IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt,
                     UpdatedAt = user.UpdatedAt ?? user.CreatedAt,
@@ -1280,7 +1369,7 @@ namespace BlazorApp.Api.Services
             {
                 var db = _context.Db;
 
-                var hashedPassword = PasswordHasher.HashPassword(dto.NewPassword);
+                var hashedPassword = PasswordHasher.HashSubmittedPassword(dto.NewPassword, dto.PasswordFormat);
 
                 var result = await db.Updateable<User>()
                     .SetColumns(u => new User
@@ -1803,8 +1892,9 @@ namespace BlazorApp.Api.Services
                             Username = importUser.Username,
                             Email = importUser.Email,
                             FullName = importUser.FullName,
-                            // 先计算SHA256（模拟前端哈希）
-                            Password = PasswordHasher.ComputeSha256(importUser.Password),
+                            // 导入密码按原始密码交给后端统一慢哈希，保持与新登录协议一致。
+                            Password = importUser.Password,
+                            PasswordFormat = PasswordHasher.PasswordFormatRaw,
                             IsActive = true,
                         };
 

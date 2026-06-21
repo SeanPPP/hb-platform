@@ -1,4 +1,4 @@
-import { EditOutlined, EyeOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
+import { EditOutlined, EyeOutlined, HistoryOutlined, LockOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -35,6 +35,7 @@ import {
   assignPermissionsToUser,
   createUser,
   getUserByGuid,
+  getUserLoginRecords,
   getUserPermissionState,
   getUserRoles,
   getUserStores,
@@ -45,11 +46,10 @@ import {
 import { getActiveRoles } from '../../../services/roleService'
 import { getPermissions } from '../../../services/roleService'
 import { getStores } from '../../../services/storeService'
-import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserPermissionStateDto, UserStoreDto } from '../../../types/user'
+import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserLoginRecordDto, UserPermissionStateDto, UserStoreDto } from '../../../types/user'
 import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
 import type { StoreDto } from '../../../types/store'
 import { getRoleColor, getStoreColor } from '../../../utils/userTableColors'
-import { hashPassword } from '../../../utils/password'
 import { useAuthStore } from '../../../store/auth'
 import {
   areRoleGuidsAllowedForScopedManager,
@@ -71,6 +71,7 @@ import {
   deriveDirectPermissionKeysFromChecked,
   uniquePermissionCodes,
 } from './userPermissions'
+import { formatUserLocalDateTime } from './time'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
@@ -96,6 +97,14 @@ export default function SystemUsersPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailUser, setDetailUser] = useState<UserDetailDto | null>(null)
   const [detailStores, setDetailStores] = useState<UserStoreDto[]>([])
+
+  const [loginRecordsOpen, setLoginRecordsOpen] = useState(false)
+  const [loginRecordsLoading, setLoginRecordsLoading] = useState(false)
+  const [loginRecordsUser, setLoginRecordsUser] = useState<UserDto | null>(null)
+  const [loginRecords, setLoginRecords] = useState<UserLoginRecordDto[]>([])
+  const [loginRecordsPage, setLoginRecordsPage] = useState(1)
+  const [loginRecordsPageSize, setLoginRecordsPageSize] = useState(10)
+  const [loginRecordsTotal, setLoginRecordsTotal] = useState(0)
 
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
@@ -354,6 +363,39 @@ export default function SystemUsersPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const loadLoginRecords = async (
+    user: UserDto,
+    nextPage = loginRecordsPage,
+    nextPageSize = loginRecordsPageSize,
+  ) => {
+    setLoginRecordsLoading(true)
+    try {
+      const result = await getUserLoginRecords(user.userGUID, {
+        page: nextPage,
+        pageSize: nextPageSize,
+      })
+      setLoginRecords(result.items)
+      setLoginRecordsTotal(result.total)
+      setLoginRecordsPage(result.page)
+      setLoginRecordsPageSize(result.pageSize)
+    } catch (error) {
+      console.error(error)
+      message.error(t('system.users.loadLoginRecordsFailed', '加载登录记录失败'))
+    } finally {
+      setLoginRecordsLoading(false)
+    }
+  }
+
+  const handleOpenLoginRecords = async (record: UserDto) => {
+    setLoginRecordsUser(record)
+    setLoginRecordsOpen(true)
+    setLoginRecords([])
+    setLoginRecordsTotal(0)
+    setLoginRecordsPage(1)
+    setLoginRecordsPageSize(10)
+    await loadLoginRecords(record, 1, 10)
   }
 
   useEffect(() => {
@@ -670,7 +712,10 @@ export default function SystemUsersPage() {
     try {
       const values = await resetPwdForm.validateFields()
       setResetPwdLoading(true)
-      await updateUserPassword(editingUser.userGUID, { newPassword: hashPassword(values.newPassword) })
+      await updateUserPassword(editingUser.userGUID, {
+        newPassword: values.newPassword,
+        passwordFormat: 'raw',
+      })
       message.success(t('system.users.resetPasswordSuccess', '密码重置成功'))
       setResetPwdOpen(false)
       resetPwdForm.resetFields()
@@ -720,7 +765,8 @@ export default function SystemUsersPage() {
       const payload: CreateUserDto = {
         username: values.username,
         email: values.email,
-        password: hashPassword(values.password),
+        password: values.password,
+        passwordFormat: 'raw',
         fullName: values.fullName,
         isActive: values.isActive ?? true,
         roleGuids: createRoleTargetKeys,
@@ -839,6 +885,49 @@ export default function SystemUsersPage() {
     )
   }
 
+  const renderLoginRecordStatus = (record: UserLoginRecordDto) => {
+    if (record.status === 'revoked' || record.isRevoked) {
+      return <Tag color="warning">{t('system.users.loginRecordRevoked', '已撤销')}</Tag>
+    }
+    if (record.status === 'expired' || record.isExpired) {
+      return <Tag>{t('system.users.loginRecordExpired', '已过期')}</Tag>
+    }
+    return <Tag color="success">{t('system.users.loginRecordActive', '有效')}</Tag>
+  }
+
+  const loginRecordColumns: ColumnsType<UserLoginRecordDto> = [
+    {
+      title: t('system.users.loginAt', '登录时间'),
+      dataIndex: 'loginAt',
+      width: 180,
+      render: (value: string) => formatUserLocalDateTime(value, t('common.emptyValue')),
+    },
+    {
+      title: t('system.users.loginIp', '登录 IP'),
+      dataIndex: 'ipAddress',
+      width: 150,
+      render: (value: string | undefined) => value || t('common.emptyValue'),
+    },
+    {
+      title: t('common.status', '状态'),
+      dataIndex: 'status',
+      width: 110,
+      render: (_value: string, record) => renderLoginRecordStatus(record),
+    },
+    {
+      title: t('system.users.expiresAt', '过期时间'),
+      dataIndex: 'expiresAt',
+      width: 180,
+      render: (value: string) => formatUserLocalDateTime(value, t('common.emptyValue')),
+    },
+    {
+      title: 'UserAgent',
+      dataIndex: 'userAgent',
+      ellipsis: true,
+      render: (value: string | undefined) => value || t('common.emptyValue'),
+    },
+  ]
+
   const columns: ColumnsType<UserDto> = [
     {
       title: t('system.users.rowIndex', '#'),
@@ -887,14 +976,34 @@ export default function SystemUsersPage() {
       ),
     },
     {
+      title: t('system.users.lastLogin', '最近登录'),
+      dataIndex: 'lastLoginAt',
+      width: 190,
+      sorter: true,
+      sortOrder: sortBy === 'lastLoginAt' ? sortOrder : null,
+      render: (_value: string | undefined, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{formatUserLocalDateTime(record.lastLoginAt, t('common.emptyValue'))}</Typography.Text>
+          {record.lastLoginIp ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {record.lastLoginIp}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
+    },
+    {
       title: t('common.action', '操作'),
       key: 'action',
-      width: 160,
+      width: 260,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             {t('common.view', '详情')}
+          </Button>
+          <Button type="link" icon={<HistoryOutlined />} onClick={() => void handleOpenLoginRecords(record)}>
+            {t('system.users.loginRecords', '登录记录')}
           </Button>
           <HasPermission code={P.Users.Edit}>
             <Button type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
@@ -1134,7 +1243,7 @@ export default function SystemUsersPage() {
           loading={loading}
           columns={columns}
           dataSource={data}
-          scroll={{ x: 1060 }}
+          scroll={{ x: 1360 }}
           onChange={(_pagination, _filters, sorter) => {
             const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
             const field = currentSorter?.field || currentSorter?.column?.dataIndex
@@ -1188,6 +1297,8 @@ export default function SystemUsersPage() {
                   {detailUser.isActive ? t('common.active', '启用') : t('common.inactive', '停用')}
                 </Tag>
               </Descriptions.Item>
+              <Descriptions.Item label={t('system.users.lastLogin', '最近登录')}>{formatUserLocalDateTime(detailUser.lastLoginAt, t('common.emptyValue'))}</Descriptions.Item>
+              <Descriptions.Item label={t('system.users.lastLoginIp', '最近登录 IP')}>{detailUser.lastLoginIp || t('common.emptyValue')}</Descriptions.Item>
               <Descriptions.Item label={t('system.users.roles', '角色')} span={2}>
                 <Space wrap>
                   {detailUser.roleNames?.length ? detailUser.roleNames.map((item) => <Tag key={item}>{item}</Tag>) : t('common.emptyValue')}
@@ -1222,6 +1333,66 @@ export default function SystemUsersPage() {
           </Space>
         )}
       </Drawer>
+
+      <Modal
+        title={
+          loginRecordsUser
+            ? t('system.users.loginRecordsTitle', '登录记录 - {{name}}', { name: loginRecordsUser.username })
+            : t('system.users.loginRecords', '登录记录')
+        }
+        width={960}
+        open={loginRecordsOpen}
+        footer={[
+          <Button
+            key="refresh"
+            icon={<ReloadOutlined />}
+            loading={loginRecordsLoading}
+            onClick={() => {
+              if (loginRecordsUser) {
+                void loadLoginRecords(loginRecordsUser, loginRecordsPage, loginRecordsPageSize)
+              }
+            }}
+          >
+            {t('common.refresh', '刷新')}
+          </Button>,
+          <Button
+            key="close"
+            onClick={() => {
+              setLoginRecordsOpen(false)
+              setLoginRecordsUser(null)
+              setLoginRecords([])
+            }}
+          >
+            {t('common.close', '关闭')}
+          </Button>,
+        ]}
+        onCancel={() => {
+          setLoginRecordsOpen(false)
+          setLoginRecordsUser(null)
+          setLoginRecords([])
+        }}
+        destroyOnHidden
+      >
+        <Table<UserLoginRecordDto>
+          rowKey="sessionId"
+          size="small"
+          loading={loginRecordsLoading}
+          columns={loginRecordColumns}
+          dataSource={loginRecords}
+          scroll={{ x: 860 }}
+          pagination={{
+            current: loginRecordsPage,
+            pageSize: loginRecordsPageSize,
+            total: loginRecordsTotal,
+            showSizeChanger: true,
+            onChange: (nextPage, nextPageSize) => {
+              if (loginRecordsUser) {
+                void loadLoginRecords(loginRecordsUser, nextPage, nextPageSize)
+              }
+            },
+          }}
+        />
+      </Modal>
 
       <Drawer
         title={editingUser ? t('system.users.editUserTitle', '编辑用户 - {{name}}', { name: editingUser.username }) : t('system.users.editUser', '编辑用户')}

@@ -45,6 +45,7 @@ function toNumber(value: unknown): number | null {
 
 function normalizeWarehouseLocation(payload: unknown): WarehouseLocation {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const productsRaw = data.products ?? data.Products;
   return {
     locationGuid: String(data.locationGuid ?? data.LocationGuid ?? ""),
     locationCode: (data.locationCode ?? data.LocationCode ?? null) as string | null,
@@ -52,6 +53,20 @@ function normalizeWarehouseLocation(payload: unknown): WarehouseLocation {
     status: toNumber(data.status ?? data.Status),
     locationType: toNumber(data.locationType ?? data.LocationType),
     productCount: Number(data.productCount ?? data.ProductCount ?? 0),
+    updatedAt: (data.updatedAt ?? data.UpdatedAt ?? null) as string | null,
+    updatedBy: (data.updatedBy ?? data.UpdatedBy ?? null) as string | null,
+    products: Array.isArray(productsRaw) ? productsRaw.map(normalizeWarehouseLocationProduct) : [],
+  };
+}
+
+function normalizeWarehouseLocationProduct(payload: unknown) {
+  const product = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  return {
+    productCode: (product.productCode ?? product.ProductCode ?? null) as string | null,
+    itemNumber: (product.itemNumber ?? product.ItemNumber ?? null) as string | null,
+    productName: (product.productName ?? product.ProductName ?? null) as string | null,
+    productImage: (product.productImage ?? product.ProductImage ?? null) as string | null,
+    middlePackageQuantity: toNumber(product.middlePackageQuantity ?? product.MiddlePackageQuantity),
   };
 }
 
@@ -67,15 +82,7 @@ function normalizeWarehouseLocationDetail(payload: unknown): WarehouseLocationDe
     updatedAt: (data.updatedAt ?? data.UpdatedAt ?? null) as string | null,
     updatedBy: (data.updatedBy ?? data.UpdatedBy ?? null) as string | null,
     products: Array.isArray(productsRaw)
-      ? productsRaw.map((item) => {
-          const product = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-          return {
-            productCode: (product.productCode ?? product.ProductCode ?? null) as string | null,
-            itemNumber: (product.itemNumber ?? product.ItemNumber ?? null) as string | null,
-            productName: (product.productName ?? product.ProductName ?? null) as string | null,
-            productImage: (product.productImage ?? product.ProductImage ?? null) as string | null,
-          };
-        })
+      ? productsRaw.map(normalizeWarehouseLocationProduct)
       : [],
   };
 }
@@ -200,6 +207,28 @@ export async function lookupLocations(keyword: string) {
     params: { keyword },
   });
   return Array.isArray(response.data) ? response.data.map(normalizeWarehouseLocation) : [];
+}
+
+export async function getDefaultUnusedLocations() {
+  let response;
+  try {
+    response = await apiClient.get(`${LOCATION_BASE_PATH}/mobile/unused`, buildReadRequestConfig());
+  } catch (error) {
+    // 兼容尚未部署 mobile/unused 的旧后端：默认列表降级为空，搜索和新建货位仍可继续使用。
+    if (error instanceof Error && error.message.includes("404")) {
+      return [];
+    }
+    throw error;
+  }
+  const data = response.data as unknown;
+  if (Array.isArray(data)) {
+    return data.map(normalizeWarehouseLocation);
+  }
+  if (data && typeof data === "object") {
+    const items = (data as Record<string, unknown>).items ?? (data as Record<string, unknown>).Items;
+    return Array.isArray(items) ? items.map(normalizeWarehouseLocation) : [];
+  }
+  return [];
 }
 
 export async function getLocationDetail(locationGuid: string) {

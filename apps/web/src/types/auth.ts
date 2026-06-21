@@ -3,6 +3,7 @@ import type { UserStoreDto } from './user'
 export interface LoginRequest {
   username: string
   password: string
+  passwordFormat?: 'raw' | 'clientSha256'
 }
 
 export interface SessionResponse {
@@ -92,6 +93,7 @@ export interface AccessControl {
   canViewSystemLogs: boolean
   canManageScheduledTasks: boolean
   canManageSystemSettings: boolean
+  canViewAppDownloads: boolean
   canViewDeviceRegistration: boolean
   canManageDeviceRegistration: boolean
   canViewPosProducts: boolean

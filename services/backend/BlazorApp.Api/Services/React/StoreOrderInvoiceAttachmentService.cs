@@ -103,24 +103,46 @@ namespace BlazorApp.Api.Services.React
         {
             using var workbook = new XLWorkbook();
             var worksheet = workbook.Worksheets.Add("Invoice");
-            worksheet.Cell(1, 1).Value = "#";
-            worksheet.Cell(1, 2).Value = "Item No";
-            worksheet.Cell(1, 3).Value = "Name";
-            worksheet.Cell(1, 4).Value = "Barcode";
-            worksheet.Cell(1, 5).Value = "Cost";
-            worksheet.Cell(1, 6).Value = "Order Qty";
-            worksheet.Cell(1, 7).Value = "Ship Qty";
-            worksheet.Cell(1, 8).Value = "Subtotal";
-            worksheet.Range(1, 1, 1, 8).Style.Font.Bold = true;
+            var invoiceDate = FormatInvoiceDate(order);
 
-            var rowIndex = 2;
+            worksheet.Cell(1, 1).Value = "INVOICE";
+            var titleRange = worksheet.Range(1, 1, 1, 8).Merge();
+            titleRange.Style.Font.Bold = true;
+            titleRange.Style.Font.FontSize = 14;
+
+            worksheet.Cell(2, 1).Value = $"INVOICE NO. {order.OrderNo ?? order.OrderGUID}";
+            worksheet.Range(2, 1, 2, 4).Merge();
+            worksheet.Cell(2, 5).Value = $"INVOICE DATE: {invoiceDate}";
+            worksheet.Range(2, 5, 2, 8).Merge();
+            worksheet.Cell(3, 1).Value = "CUSTOMER:";
+            worksheet.Cell(3, 2).Value = order.StoreName ?? order.StoreCode ?? "--";
+            worksheet.Cell(4, 1).Value = "CUSTOMER CONTACT:";
+            worksheet.Cell(4, 2).Value = order.StoreContactEmail ?? "--";
+            worksheet.Cell(5, 1).Value = "ADDRESS:";
+            worksheet.Cell(5, 2).Value = order.StoreAddress ?? "--";
+            worksheet.Range(3, 1, 5, 1).Style.Font.Bold = true;
+
+            // Excel 附件页头与前端导出保持同一核对口径，明细表从基础信息后开始。
+            var headerRowIndex = 7;
+            worksheet.Cell(headerRowIndex, 1).Value = "#";
+            worksheet.Cell(headerRowIndex, 2).Value = "Item No";
+            worksheet.Cell(headerRowIndex, 3).Value = "Name";
+            worksheet.Cell(headerRowIndex, 4).Value = "Barcode";
+            worksheet.Cell(headerRowIndex, 5).Value = "Cost";
+            worksheet.Cell(headerRowIndex, 6).Value = "Order Qty";
+            worksheet.Cell(headerRowIndex, 7).Value = "Ship Qty";
+            worksheet.Cell(headerRowIndex, 8).Value = "Subtotal";
+            worksheet.Range(headerRowIndex, 1, headerRowIndex, 8).Style.Font.Bold = true;
+
+            var rowIndex = headerRowIndex + 1;
+            var itemIndex = 1;
             foreach (var item in SortItems(order.Items))
             {
                 var orderQuantity = item.Quantity;
                 var allocQuantity = item.AllocQuantity ?? 0m;
                 var subtotal = decimal.Round(allocQuantity * item.ImportPrice, 2);
 
-                worksheet.Cell(rowIndex, 1).Value = rowIndex - 1;
+                worksheet.Cell(rowIndex, 1).Value = itemIndex;
                 worksheet.Cell(rowIndex, 2).Value = item.ItemNumber ?? string.Empty;
                 worksheet.Cell(rowIndex, 3).Value = item.ProductName ?? string.Empty;
                 worksheet.Cell(rowIndex, 4).Value = item.Barcode ?? item.ProductCode;
@@ -129,6 +151,7 @@ namespace BlazorApp.Api.Services.React
                 worksheet.Cell(rowIndex, 7).Value = allocQuantity;
                 worksheet.Cell(rowIndex, 8).Value = subtotal;
                 rowIndex += 1;
+                itemIndex += 1;
             }
 
             var subTotal = order.TotalImportAmount;
@@ -394,7 +417,7 @@ namespace BlazorApp.Api.Services.React
                 }
             );
             summaryTable.AddCell(
-                new PdfPCell(new Phrase($"INVOICE DATE: {DateTime.Now:yyyy/M/d}", font))
+                new PdfPCell(new Phrase($"INVOICE DATE: {FormatInvoiceDate(order)}", font))
                 {
                     Border = Rectangle.BOTTOM_BORDER,
                     BorderColorBottom = new BaseColor(130, 130, 130),
@@ -477,7 +500,24 @@ namespace BlazorApp.Api.Services.React
         {
             var storePart = SanitizeFileNamePart(order.StoreCode ?? "UnknownStore");
             var orderPart = SanitizeFileNamePart(order.OrderNo ?? order.OrderGUID);
-            return $"Invoice_{storePart}_{orderPart}";
+            var datePart = SanitizeFileNamePart(FormatInvoiceFileDate(order));
+            return $"Invoice_{storePart}_{orderPart}_{datePart}";
+        }
+
+        private static DateTime ResolveInvoiceDate(StoreOrderCartDto order)
+        {
+            // 发票日期优先使用出库日期；历史数据没有出库日期时才回退订单日期。
+            return (order.OutboundDate ?? order.OrderDate ?? DateTime.Now).Date;
+        }
+
+        private static string FormatInvoiceDate(StoreOrderCartDto order)
+        {
+            return $"{ResolveInvoiceDate(order):yyyy/M/d}";
+        }
+
+        private static string FormatInvoiceFileDate(StoreOrderCartDto order)
+        {
+            return $"{ResolveInvoiceDate(order):yyyy-MM-dd}";
         }
 
         private static string SanitizeFileNamePart(string value)

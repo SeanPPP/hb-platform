@@ -597,6 +597,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围批量调浮率失败");
@@ -667,9 +671,46 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围重算成本失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 按当前筛选范围回填上次价格快照（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/actions/backfill-last-prices")]
+        [Authorize(Roles = "Admin,WarehouseManager")]
+        public async Task<IActionResult> BackfillLastPricesByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailBatchScopeDto request
+        )
+        {
+            try
+            {
+                request ??= new ContainerDetailBatchScopeDto();
+                var totalUpdated = await _containerReactService.BackfillLastPricesByScopeAsync(
+                    containerGuid,
+                    request
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {totalUpdated} 条明细",
+                        data = new { totalUpdated },
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围回填上次价格失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

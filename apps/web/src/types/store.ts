@@ -20,9 +20,22 @@ export interface StoreQueryDto {
   pageSize?: number
   search?: string
   isActive?: boolean
+  brandName?: string
   userGUID?: string
   sortField?: string
   sortOrder?: string
+}
+
+export interface CreateStoreDto {
+  storeName: string
+  storeCode: string
+  description?: string
+  address?: string
+  contactPhone?: string
+  contactEmail?: string
+  abn?: string
+  brandName?: string
+  isActive?: boolean
 }
 
 export interface UpdateStoreDto {
