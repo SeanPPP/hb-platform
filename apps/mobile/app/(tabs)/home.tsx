@@ -111,6 +111,7 @@ export default function Home() {
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
   const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
+  const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   selectedStoreCodeRef.current = normalizeStoreCode(selectedStoreCode);
 
@@ -182,6 +183,26 @@ export default function Home() {
       await scanResult.handleBarcode(barcode, "hid");
     },
   });
+  const handleSearchFocus = useCallback(() => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+      resumeHiddenScannerFocusTimerRef.current = null;
+    }
+
+    // 手动输入搜索时暂停隐藏扫码输入，避免它定时抢走搜索框焦点。
+    hidScanner.pauseHiddenInputFocus();
+  }, [hidScanner.pauseHiddenInputFocus]);
+  const handleSearchBlur = useCallback(() => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+    }
+
+    // 给 iOS 输入收尾留出短暂时间，再恢复扫码隐藏输入焦点。
+    resumeHiddenScannerFocusTimerRef.current = setTimeout(() => {
+      resumeHiddenScannerFocusTimerRef.current = null;
+      hidScanner.resumeHiddenInputFocus();
+    }, 250);
+  }, [hidScanner.resumeHiddenInputFocus]);
 
   useFocusEffect(
     useCallback(() => {
@@ -190,6 +211,12 @@ export default function Home() {
       }
     }, [hidScanner.focusHiddenInput]),
   );
+
+  useEffect(() => () => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+    }
+  }, []);
 
   const categoriesQuery = useQuery({
     queryKey: ["shopCategories"],
@@ -475,6 +502,8 @@ export default function Home() {
             }}
             onSubmitEditing={handleApplySearch}
             onIconPress={handleApplySearch}
+            onFocus={handleSearchFocus}
+            onBlur={handleSearchBlur}
             style={styles.searchInput}
             inputStyle={styles.searchInputText}
           />
