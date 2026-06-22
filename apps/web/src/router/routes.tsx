@@ -44,6 +44,7 @@ import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagemen
 import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
+import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -427,7 +428,7 @@ export const appRoutes: AppRouteItem[] = [
     meta: {
       title: 'menu.executiveSalesIntelligence',
       icon: 'BarChartOutlined',
-      accessKey: 'canViewReports',
+      accessKey: 'canViewSalesIntelligence',
     },
     children: [
       {
@@ -449,6 +450,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewReports',
         },
         element: <SalesDetailAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/product-movement-report',
+        meta: {
+          title: 'menu.productMovementReport',
+          icon: 'ReconciliationOutlined',
+          keepAlive: true,
+          accessKey: 'canViewProductMovementReport',
+        },
+        element: <ProductMovementReportPage />,
       },
     ],
   },

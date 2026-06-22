@@ -74,6 +74,7 @@
     "executiveSalesIntelligence": "Sales Dashboard",
     "salesData": "Sales Data",
     "salesDetail": "Sales Detail",
+    "productMovementReport": "Product Movement Report",
     "pageNotFound": "Page Not Found"
   },
   "containers": {
@@ -3134,6 +3135,7 @@
       "historyTitle": "Build History",
       "empty": "No APK build records",
       "loadFailed": "Failed to load APK build records",
+      "loadFailedDescription": "Confirm the database migration is applied and the backend is reachable, then refresh.",
       "copySuccess": "Download link copied",
       "copyFailed": "Failed to copy download link",
       "copyLink": "Copy Link",
@@ -3148,7 +3150,11 @@
       "status": "Status",
       "completedAt": "Completed At",
       "expirationDate": "Expiration Date",
-      "commit": "Commit"
+      "commit": "Commit",
+      "profiles": {
+        "production": "Production",
+        "preview": "Preview"
+      }
     }
   },
   "mobileTab": {

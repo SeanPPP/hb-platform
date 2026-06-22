@@ -141,7 +141,17 @@
     "autoUpdateReadyTitle": "发现新版本",
     "autoUpdateReadyMessage": "新版本已下载完成，重启 App 后生效。",
     "autoUpdateRestartAction": "立即重启",
-    "autoUpdateLaterAction": "稍后"
+    "autoUpdateLaterAction": "稍后",
+    "nativeUpdateReadyTitle": "安装包已下载",
+    "nativeUpdateReadyMessage": "新版安装包 {{version}} 已下载完成，请重新安装后使用。",
+    "nativeUpdateInstallAction": "立即安装",
+    "nativeUpdateLaterAction": "稍后",
+    "nativeUpdateInstallFailedTitle": "无法打开安装器",
+    "nativeUpdateInstallFailedMessage": "请允许本应用安装未知来源应用后，再重新点击安装。",
+    "nativeUpdateOpenSettingsAction": "打开设置",
+    "legacyNativeUpdateReadyTitle": "需要下载安装新版",
+    "legacyNativeUpdateReadyMessage": "当前安装包需要升级到 {{version}}。请下载新版 APK 并重新安装。",
+    "legacyNativeUpdateDownloadAction": "打开下载"
   },
   "messages": {
     "profileLoginRequired": "请先使用账号登录，再打开个人信息。"

@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  Alert,
   Button,
   Card,
   Descriptions,
   Empty,
   Modal,
   QRCode,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -25,8 +27,14 @@ import {
   getMobileAppBuilds,
 } from '../../../services/mobileAppBuildService'
 import type { MobileAppBuild } from '../../../types/mobileAppBuild'
-
-const PROFILE = 'production'
+import {
+  APP_DOWNLOAD_PROFILES,
+  DEFAULT_APP_DOWNLOAD_PROFILE,
+  buildAppDownloadQuery,
+  normalizeAppDownloadProfile,
+  resolveAppDownloadContentState,
+  type AppDownloadProfile,
+} from './logic'
 
 function formatDateTime(value?: string | null) {
   if (!value) {
@@ -82,7 +90,10 @@ export default function AppDownloadsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const [profile, setProfile] = useState<AppDownloadProfile>(DEFAULT_APP_DOWNLOAD_PROFILE)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [qrBuild, setQrBuild] = useState<MobileAppBuild | null>(null)
+  const loadRequestIdRef = useRef(0)
 
   async function copyLink(url?: string | null) {
     if (!url) {
@@ -105,29 +116,67 @@ export default function AppDownloadsPage() {
     window.open(url, '_blank', 'noopener,noreferrer')
   }
 
-  async function loadData(nextPage = page, nextPageSize = pageSize) {
+  async function loadData(
+    nextPage = page,
+    nextPageSize = pageSize,
+    nextProfile: AppDownloadProfile = profile,
+  ) {
+    const query = buildAppDownloadQuery(nextProfile, nextPage, nextPageSize)
+    const requestId = loadRequestIdRef.current + 1
+    loadRequestIdRef.current = requestId
     setLoading(true)
+    setLoadFailed(false)
     try {
       const [latestBuild, history] = await Promise.all([
-        getLatestMobileAppBuild(PROFILE),
-        getMobileAppBuilds({ page: nextPage, pageSize: nextPageSize, profile: PROFILE }),
+        getLatestMobileAppBuild(query.profile),
+        getMobileAppBuilds(query),
       ])
+      if (requestId !== loadRequestIdRef.current) {
+        return
+      }
       setLatest(latestBuild)
       setItems(history.items)
       setTotal(history.total)
       setPage(history.page)
       setPageSize(history.pageSize)
+      setProfile(query.profile)
     } catch (error) {
+      if (requestId !== loadRequestIdRef.current) {
+        return
+      }
       console.error(t('system.appDownloads.loadFailed'), error)
+      setLatest(null)
+      setItems([])
+      setTotal(0)
+      setPage(1)
+      setLoadFailed(true)
       message.error(t('system.appDownloads.loadFailed'))
     } finally {
-      setLoading(false)
+      // 只允许最后一次请求收尾，避免旧请求晚返回时关闭新请求的 loading 或覆盖状态。
+      if (requestId === loadRequestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 
+  function handleProfileChange(value: string | number) {
+    const nextProfile = normalizeAppDownloadProfile(value)
+    setProfile(nextProfile)
+    void loadData(1, pageSize, nextProfile)
+  }
+
   useEffect(() => {
-    void loadData(1, pageSize)
+    void loadData(1, pageSize, DEFAULT_APP_DOWNLOAD_PROFILE)
   }, [])
+
+  const profileOptions = useMemo(
+    () =>
+      APP_DOWNLOAD_PROFILES.map((value) => ({
+        label: t(`system.appDownloads.profiles.${value}`),
+        value,
+      })),
+    [t],
+  )
 
   const columns = useMemo<ColumnsType<MobileAppBuild>>(
     () => [
@@ -213,6 +262,11 @@ export default function AppDownloadsPage() {
 
   const latestActions = (
     <Space wrap>
+      <Segmented
+        value={profile}
+        options={profileOptions}
+        onChange={handleProfileChange}
+      />
       <Button
         icon={<CopyOutlined />}
         disabled={!latest?.artifactUrl}
@@ -240,10 +294,23 @@ export default function AppDownloadsPage() {
     </Space>
   )
 
+  const contentState = resolveAppDownloadContentState(
+    loadFailed,
+    Boolean(latest?.artifactUrl),
+    items.length,
+  )
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card title={t('system.appDownloads.latestTitle')} extra={latestActions} loading={loading}>
-        {latest?.artifactUrl ? (
+        {contentState === 'error' ? (
+          <Alert
+            type="error"
+            showIcon
+            message={t('system.appDownloads.loadFailed')}
+            description={t('system.appDownloads.loadFailedDescription')}
+          />
+        ) : latest?.artifactUrl ? (
           <Space align="start" size={24} wrap>
             <QRCode value={latest.artifactUrl} size={180} />
             <Descriptions column={2} bordered size="small" style={{ minWidth: 520 }}>
@@ -251,7 +318,7 @@ export default function AppDownloadsPage() {
                 {formatVersion(latest)}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.appDownloads.profile')}>
-                {latest.buildProfile || PROFILE}
+                {latest.buildProfile || profile}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.appDownloads.channel')}>
                 {latest.channel || '--'}
@@ -279,12 +346,23 @@ export default function AppDownloadsPage() {
           columns={columns}
           dataSource={items}
           scroll={{ x: 1240 }}
+          locale={{
+            emptyText: (
+              <Empty
+                description={
+                  loadFailed
+                    ? t('system.appDownloads.loadFailed')
+                    : t('system.appDownloads.empty')
+                }
+              />
+            ),
+          }}
           pagination={{
             current: page,
             pageSize,
             total,
             showSizeChanger: true,
-            onChange: (nextPage, nextPageSize) => void loadData(nextPage, nextPageSize),
+            onChange: (nextPage, nextPageSize) => void loadData(nextPage, nextPageSize, profile),
           }}
         />
       </Card>

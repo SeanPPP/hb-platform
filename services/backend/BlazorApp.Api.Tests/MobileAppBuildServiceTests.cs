@@ -4,6 +4,7 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -249,6 +250,212 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         Assert.Equal("https://expo.dev/newer.apk", latest.Data.ArtifactUrl);
     }
 
+    [Fact]
+    public async Task AndroidLatest_允许未登录读取最新Apk元数据()
+    {
+        var method = typeof(MobileAppBuildsController).GetMethod(nameof(MobileAppBuildsController.AndroidLatest));
+        Assert.NotNull(method);
+        Assert.Contains(
+            method!.GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: true),
+            attribute => attribute is AllowAnonymousAttribute
+        );
+
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "anonymous-latest",
+                artifactUrl: "https://expo.dev/anonymous-latest.apk"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "anonymous-preview",
+                profile: "preview",
+                artifactUrl: "https://expo.dev/anonymous-preview.apk",
+                completedAt: "2026-06-15T03:00:00Z"
+            )
+        );
+        var controller = CreateController("{}", CreateSignature("{}"));
+
+        var result = await controller.AndroidLatest("production");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Equal("anonymous-latest", response.Data!.EasBuildId);
+
+        var publicFields = typeof(MobileAppBuildPublicDto)
+            .GetProperties()
+            .Select(property => property.Name)
+            .OrderBy(name => name)
+            .ToArray();
+        Assert.Equal(
+            [
+                nameof(MobileAppBuildPublicDto.AppBuildVersion),
+                nameof(MobileAppBuildPublicDto.AppVersion),
+                nameof(MobileAppBuildPublicDto.ArtifactUrl),
+                nameof(MobileAppBuildPublicDto.BuildProfile),
+                nameof(MobileAppBuildPublicDto.EasBuildId),
+            ],
+            publicFields
+        );
+
+        var previewResult = await controller.AndroidLatest("preview");
+        var previewOk = Assert.IsType<OkObjectResult>(previewResult);
+        var previewResponse = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(previewOk.Value);
+        Assert.True(previewResponse.Success);
+        Assert.Equal("anonymous-preview", previewResponse.Data!.EasBuildId);
+        Assert.Equal("preview", previewResponse.Data.BuildProfile);
+
+        var internalResult = await controller.AndroidLatest("development");
+        var internalOk = Assert.IsType<OkObjectResult>(internalResult);
+        var internalResponse = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(internalOk.Value);
+        Assert.True(internalResponse.Success);
+        Assert.Null(internalResponse.Data);
+    }
+
+    [Fact]
+    public async Task AndroidLatestDownload_跳转到最新未过期Apk地址()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "download-prod",
+                artifactUrl: "https://expo.dev/download-prod.apk"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "download-preview",
+                profile: "preview",
+                artifactUrl: "https://expo.dev/download-preview.apk",
+                completedAt: "2026-06-15T03:00:00Z"
+            )
+        );
+        var controller = CreateController("{}", CreateSignature("{}"));
+
+        var productionResult = await controller.AndroidLatestDownload("production");
+        var previewResult = await controller.AndroidLatestDownload("preview");
+        var internalResult = await controller.AndroidLatestDownload("development");
+
+        var productionRedirect = Assert.IsType<RedirectResult>(productionResult);
+        Assert.Equal("https://expo.dev/download-prod.apk", productionRedirect.Url);
+
+        var previewRedirect = Assert.IsType<RedirectResult>(previewResult);
+        Assert.Equal("https://expo.dev/download-preview.apk", previewRedirect.Url);
+
+        Assert.IsType<NotFoundObjectResult>(internalResult);
+    }
+
+    [Fact]
+    public async Task AndroidLatestDownload_没有可用Apk时返回NotFound()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "expired-download",
+                artifactUrl: "https://expo.dev/expired-download.apk",
+                expirationDate: "2000-01-01T00:00:00Z"
+            )
+        );
+        var controller = CreateController("{}", CreateSignature("{}"));
+
+        var result = await controller.AndroidLatestDownload("production");
+
+        Assert.IsType<NotFoundObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task GetLatestAsync_忽略已过期Apk地址()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "expired",
+                artifactUrl: "https://expo.dev/expired.apk",
+                completedAt: "2026-06-15T03:00:00Z",
+                expirationDate: "2000-01-01T00:00:00Z"
+            )
+        );
+
+        var latest = await service.GetLatestAsync("production");
+
+        Assert.True(latest.Success);
+        Assert.Null(latest.Data);
+    }
+
+    [Fact]
+    public async Task GetHistoryAsync_按Profile筛选并返回分页()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "prod-old",
+                artifactUrl: "https://expo.dev/prod-old.apk",
+                completedAt: "2026-06-15T01:00:00Z"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "prod-new",
+                artifactUrl: "https://expo.dev/prod-new.apk",
+                completedAt: "2026-06-15T02:00:00Z"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "preview-new",
+                profile: "preview",
+                artifactUrl: "https://expo.dev/preview-new.apk",
+                completedAt: "2026-06-15T03:00:00Z"
+            )
+        );
+
+        var firstPage = await service.GetHistoryAsync(
+            new MobileAppBuildQueryDto
+            {
+                Profile = "production",
+                Page = 1,
+                PageSize = 1,
+            }
+        );
+        var secondPage = await service.GetHistoryAsync(
+            new MobileAppBuildQueryDto
+            {
+                Profile = "production",
+                Page = 2,
+                PageSize = 1,
+            }
+        );
+        var defaultProfilePage = await service.GetHistoryAsync(
+            new MobileAppBuildQueryDto
+            {
+                Page = 1,
+                PageSize = 10,
+            }
+        );
+
+        Assert.True(firstPage.Success);
+        Assert.NotNull(firstPage.Data);
+        Assert.Equal(2, firstPage.Data!.Total);
+        Assert.Equal(1, firstPage.Data.Page);
+        Assert.Equal(1, firstPage.Data.PageSize);
+        Assert.Single(firstPage.Data.Items!);
+        Assert.Equal("prod-new", firstPage.Data.Items![0].EasBuildId);
+        Assert.DoesNotContain(firstPage.Data.Items!, item => item.BuildProfile == "preview");
+
+        Assert.True(secondPage.Success);
+        Assert.NotNull(secondPage.Data);
+        Assert.Equal(2, secondPage.Data!.Total);
+        Assert.Single(secondPage.Data.Items!);
+        Assert.Equal("prod-old", secondPage.Data.Items![0].EasBuildId);
+
+        Assert.True(defaultProfilePage.Success);
+        Assert.NotNull(defaultProfilePage.Data);
+        Assert.Equal(2, defaultProfilePage.Data!.Total);
+        Assert.DoesNotContain(defaultProfilePage.Data.Items!, item => item.BuildProfile == "preview");
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -303,7 +510,8 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         string status = "finished",
         string profile = "production",
         string artifactUrl = "https://expo.dev/artifacts/eas/build-1.apk",
-        string completedAt = "2026-06-15T01:00:00Z"
+        string completedAt = "2026-06-15T01:00:00Z",
+        string expirationDate = "2099-07-15T00:00:00Z"
     )
     {
         return $$"""
@@ -328,7 +536,7 @@ public sealed class MobileAppBuildServiceTests : IDisposable
           "gitCommitMessage": "发布 Android APK",
           "createdAt": "2026-06-15T00:50:00Z",
           "completedAt": "{{completedAt}}",
-          "expirationDate": "2026-07-15T00:00:00Z"
+          "expirationDate": "{{expirationDate}}"
         }
         """;
     }

@@ -20,6 +20,22 @@ eas webhook:create --event BUILD --url https://<backend-domain>/api/mobile-app-b
 - `<secret>` 必须使用部署环境中的私密值，不能提交到 Git、README、脚本或前端产物。
 - 当前 `eas.json` 的 `preview` 和 `production` profile 都配置为 Android APK 构建，适合用于二维码下载页。
 
+### 给旧 APK 发布 OTA 下载提醒
+
+新增原生依赖或安装权限后，旧 APK 不能通过 OTA 获得新原生能力。旧 runtime 只能发布兼容 OTA，提醒用户下载并重新安装新版 APK。当前项目约定：
+
+- 新 APK 使用 `runtimeVersion=1.0.2`，并启用 App 内后台下载和打开安装器。
+- 旧 APK 过渡提醒使用 `runtimeVersion=1.0.1`，并关闭原生安装器，只用系统浏览器打开后端稳定下载入口，由后端实时跳转到最新未过期 APK。
+
+在 `apps/mobile` 目录下发布旧 APK 过渡 OTA：
+
+```bash
+npm run ota:legacy-apk-notice:preview
+npm run ota:legacy-apk-notice:production
+```
+
+发布前需确认后端已通过 EAS Webhook 收到对应 profile 的最新 APK 记录，否则旧 APK 不会弹出下载提示。
+
 ### 后端配置项
 
 后端 webhook 接口读取以下配置：
@@ -43,6 +59,18 @@ eas webhook:create --event BUILD --url https://<backend-domain>/api/mobile-app-b
   }
 }
 ```
+
+部署到容器或服务器环境时，使用 ASP.NET Core 的双下划线环境变量写法注入，不要把真实值提交到仓库：
+
+```bash
+EasWebhook__Secret=<secret>
+EasWebhook__AllowedAccountName=<expo-account>
+EasWebhook__AllowedProjectName=<expo-project>
+EasWebhook__AcceptedProfiles__0=preview
+EasWebhook__AcceptedProfiles__1=production
+```
+
+数据库需先执行 `services/backend/BlazorApp.Api/Data/Migrations/20260615_CreateMobileAppBuild.sql`，确认 `MobileAppBuild` 表和两个 `IX_MobileAppBuild_*` 索引存在后，后台 App 下载页才会从空态或最新构建记录开始正常展示。
 
 ### 本地 mock 验证
 

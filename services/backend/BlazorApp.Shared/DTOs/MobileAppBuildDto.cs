@@ -56,6 +56,19 @@ namespace BlazorApp.Shared.DTOs
         public DateTime ReceivedAt { get; set; }
     }
 
+    public class MobileAppBuildPublicDto
+    {
+        public string EasBuildId { get; set; } = string.Empty;
+
+        public string BuildProfile { get; set; } = string.Empty;
+
+        public string? AppVersion { get; set; }
+
+        public string? AppBuildVersion { get; set; }
+
+        public string ArtifactUrl { get; set; } = string.Empty;
+    }
+
     public class MobileAppBuildQueryDto
     {
         public int Page { get; set; } = 1;

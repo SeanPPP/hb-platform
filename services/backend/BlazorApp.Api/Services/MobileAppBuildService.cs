@@ -124,6 +124,7 @@ namespace BlazorApp.Api.Services
                     && x.Status == "finished"
                     && x.BuildProfile == normalizedProfile
                     && !string.IsNullOrEmpty(x.ArtifactUrl)
+                    && (x.ExpirationDate == null || x.ExpirationDate > DateTime.UtcNow)
                 )
                 .OrderByDescending(x => x.CompletedAt)
                 .OrderByDescending(x => x.ReceivedAt)
@@ -138,12 +139,11 @@ namespace BlazorApp.Api.Services
         {
             var page = Math.Max(query.Page, 1);
             var pageSize = Math.Clamp(query.PageSize, 1, 100);
-            var queryable = _db.Queryable<MobileAppBuild>();
-            if (!string.IsNullOrWhiteSpace(query.Profile))
-            {
-                var profile = NormalizeProfile(query.Profile);
-                queryable = queryable.Where(x => x.BuildProfile == profile);
-            }
+            var profile = NormalizeProfile(query.Profile);
+            // 历史记录默认也按 production 过滤，避免漏传 profile 时把 preview 和 production 混在一起。
+            var queryable = _db
+                .Queryable<MobileAppBuild>()
+                .Where(x => x.BuildProfile == profile);
 
             var total = await queryable.CountAsync();
             var items = await queryable

@@ -139,6 +139,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Prices.Modify, "修改价格", "价格管理", "价格管理 - 修改价格"),
                 new(Permissions.Prices.Delete, "删除价格", "价格管理", "价格管理 - 删除价格"),
                 new(Permissions.Reports.View, "查看报表", "报表", "页面 /executive-sales-intelligence - 查看销售看板和销售明细"),
+                new(Permissions.Reports.ProductMovementView, "查看商品经营分析", "报表", "页面 /executive-sales-intelligence/product-movement-report - 查看商品经营分析和店长动作建议"),
                 new(Permissions.Reports.Export, "导出数据", "报表", "页面 /executive-sales-intelligence - 导出销售报表数据"),
                 new(Permissions.StoreProducts.View, "查看分店商品", "分店商品管理", "页面 /pos-admin/store-product-price - 查看分店商品价格"),
                 new(Permissions.StoreProducts.Create, "创建分店商品", "分店商品管理", "页面 /pos-admin/store-product-price - 创建分店商品价格"),

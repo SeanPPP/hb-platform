@@ -116,6 +116,30 @@ assertEqual(
   'StoreManager visible store scope should include all linked stores',
 )
 
+const productMovementReportOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.Reports.ProductMovementView],
+  }),
+)
+
+assertEqual(
+  productMovementReportOnlyAccess.canViewReports,
+  false,
+  'Reports.ProductMovement.View should not unlock legacy sales reports',
+)
+
+assertEqual(
+  productMovementReportOnlyAccess.canViewProductMovementReport,
+  true,
+  'Reports.ProductMovement.View should unlock product movement report',
+)
+
+assertEqual(
+  productMovementReportOnlyAccess.canViewSalesIntelligence,
+  true,
+  'Product movement report permission should keep sales dashboard parent visible',
+)
+
 const adminAccess = buildAccess(
   createCurrentUser({
     roleNames: ['Admin'],
@@ -431,6 +455,18 @@ const adminWebMenuPreview = buildWebRoleMenuPreview(adminAccess, translate, {
   includeHidden: true,
 })
 const productStatisticMenu = findWebMenuNode(adminWebMenuPreview, '/executive-sales-intelligence/product-statistics')
+const productMovementReportOnlyWebPreview = buildWebRoleMenuPreview(productMovementReportOnlyAccess, translate, {
+  includeHidden: true,
+})
+const productMovementParentMenu = findWebMenuNode(productMovementReportOnlyWebPreview, '/executive-sales-intelligence')
+const productMovementReportMenu = findWebMenuNode(
+  productMovementReportOnlyWebPreview,
+  '/executive-sales-intelligence/product-movement-report',
+)
+const hiddenSalesDetailForProductMovementOnly = findWebMenuNode(
+  productMovementReportOnlyWebPreview,
+  '/executive-sales-intelligence/sales-detail-v2',
+)
 const roleReaderCompleteWebPreview = buildWebRoleMenuPreview(
   buildRolePreviewAccess({
     roleGuid: 'role-reader-role',
@@ -527,6 +563,24 @@ assertEqual(
   Boolean(productStatisticMenu),
   false,
   '销售看板 Web 菜单不应再显示旧商品统计状态入口',
+)
+
+assertEqual(
+  productMovementParentMenu?.visible,
+  true,
+  '只有商品经营分析权限时销售看板父菜单应可见',
+)
+
+assertEqual(
+  productMovementReportMenu?.visible,
+  true,
+  '只有商品经营分析权限时商品经营分析菜单应可见',
+)
+
+assertEqual(
+  hiddenSalesDetailForProductMovementOnly?.visible,
+  false,
+  '只有商品经营分析权限时不应打开销售明细菜单',
 )
 
 assertEqual(

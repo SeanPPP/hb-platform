@@ -141,7 +141,17 @@
     "autoUpdateReadyTitle": "Update ready",
     "autoUpdateReadyMessage": "A new update has been downloaded. Restart the app to apply it.",
     "autoUpdateRestartAction": "Restart now",
-    "autoUpdateLaterAction": "Later"
+    "autoUpdateLaterAction": "Later",
+    "nativeUpdateReadyTitle": "APK downloaded",
+    "nativeUpdateReadyMessage": "Version {{version}} has been downloaded. Install it to continue with the latest app.",
+    "nativeUpdateInstallAction": "Install now",
+    "nativeUpdateLaterAction": "Later",
+    "nativeUpdateInstallFailedTitle": "Cannot open installer",
+    "nativeUpdateInstallFailedMessage": "Allow this app to install unknown apps, then tap install again.",
+    "nativeUpdateOpenSettingsAction": "Open settings",
+    "legacyNativeUpdateReadyTitle": "New APK required",
+    "legacyNativeUpdateReadyMessage": "This installed APK must be upgraded to {{version}}. Download and reinstall the latest APK.",
+    "legacyNativeUpdateDownloadAction": "Open download"
   },
   "messages": {
     "profileLoginRequired": "Sign in with an account before opening your profile."

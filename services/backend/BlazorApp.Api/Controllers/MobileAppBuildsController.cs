@@ -57,6 +57,64 @@ namespace BlazorApp.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("android-latest")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AndroidLatest([FromQuery] string profile = "production")
+        {
+            var normalizedProfile = NormalizePublicProfile(profile);
+            if (normalizedProfile == null)
+            {
+                // 匿名自更新只开放已知发布轨道，避免 development/internal 等 APK URL 被公网枚举。
+                return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(null));
+            }
+
+            // 移动端未登录时也要能检查是否存在新安装包，但这里只返回当前轨道最新 APK 元数据，不开放历史列表。
+            var result = await _service.GetLatestAsync(normalizedProfile);
+            if (!result.Success)
+            {
+                return Ok(ApiResponse<MobileAppBuildPublicDto?>.Error(result.Message, result.ErrorCode, result.Details));
+            }
+
+            var latest = result.Data == null
+                ? null
+                : new MobileAppBuildPublicDto
+                {
+                    EasBuildId = result.Data.EasBuildId,
+                    BuildProfile = result.Data.BuildProfile,
+                    AppVersion = result.Data.AppVersion,
+                    AppBuildVersion = result.Data.AppBuildVersion,
+                    ArtifactUrl = result.Data.ArtifactUrl,
+                };
+
+            return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(latest));
+        }
+
+        [HttpGet("android-latest/download")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AndroidLatestDownload([FromQuery] string profile = "production")
+        {
+            var normalizedProfile = NormalizePublicProfile(profile);
+            if (normalizedProfile == null)
+            {
+                // 匿名下载入口同样只开放公开发布轨道，不允许探测 development/internal 包。
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            var result = await _service.GetLatestAsync(normalizedProfile);
+            if (!result.Success)
+            {
+                return BadRequest(ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details));
+            }
+
+            if (string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl))
+            {
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            // 每次点击都重新解析最新未过期地址，避免旧 OTA 弹窗里持有的 EAS artifact URL 过期。
+            return Redirect(result.Data.ArtifactUrl);
+        }
+
         [HttpGet]
         [Authorize(Policy = Permissions.System.ViewAppDownloads)]
         public async Task<IActionResult> History([FromQuery] MobileAppBuildQueryDto query)
@@ -84,6 +142,15 @@ namespace BlazorApp.Api.Controllers
             // 固定时间比较，避免签名逐字符比较带来的时间侧信道。
             return computedBytes.Length == providedBytes.Length
                 && CryptographicOperations.FixedTimeEquals(computedBytes, providedBytes);
+        }
+
+        private static string? NormalizePublicProfile(string? profile)
+        {
+            var normalized = string.IsNullOrWhiteSpace(profile)
+                ? "production"
+                : profile.Trim().ToLowerInvariant();
+
+            return normalized is "production" or "preview" ? normalized : null;
         }
     }
 }

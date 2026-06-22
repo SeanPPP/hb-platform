@@ -60,6 +60,8 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canManageWarehouseCategories: [P.Warehouse.ManageCategories, P.Warehouse.Manage],
   canManageWarehouseLocations: [P.Warehouse.ManageLocations, P.Warehouse.Manage],
   canViewReports: [P.Reports.View],
+  canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView],
+  canViewProductMovementReport: [P.Reports.ProductMovementView, P.Reports.View],
   canViewAustralianSuppliers: [P.AustralianSuppliers.View],
   canViewPosProducts: [P.PosProducts.View, P.PosProducts.Manage],
   canManageStoreProducts: [P.StoreProducts.View],
@@ -117,10 +119,11 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
   {
     path: '/executive-sales-intelligence',
     title: 'menu.executiveSalesIntelligence',
-    accessKey: 'canViewReports',
+    accessKey: 'canViewSalesIntelligence',
     children: [
       { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewReports' },
       { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewReports' },
+      { path: '/executive-sales-intelligence/product-movement-report', title: 'menu.productMovementReport', accessKey: 'canViewProductMovementReport' },
     ],
   },
   {

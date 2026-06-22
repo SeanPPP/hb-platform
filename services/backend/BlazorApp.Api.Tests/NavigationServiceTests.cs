@@ -40,6 +40,24 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsProductMovementReportWithoutDashboardPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+
+        var menu = _service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(menu, item => item.Path == "/executive-sales-intelligence");
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/product-movement-report"
+        );
+        Assert.DoesNotContain(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/sales-detail-v2"
+        );
+    }
+
+    [Fact]
     public async Task BuildMenu_UsesDatabasePermissionsInsteadOfStalePermissionClaims()
     {
         using var harness = new NavigationTestHarness();

@@ -59,6 +59,8 @@ function createEmptyAccess(): AccessControl {
     canManageWarehouse: false,
     canManageStore: false,
     canViewReports: false,
+    canViewSalesIntelligence: false,
+    canViewProductMovementReport: false,
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
@@ -203,6 +205,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete)
 
   const canViewReports = isAdmin || hasPermission(P.Reports.View)
+  const canViewProductMovementReport =
+    isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View)
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport
   const canExportData = isAdmin || hasPermission(P.Reports.Export)
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
@@ -328,6 +333,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageWarehouse,
     canManageStore,
     canViewReports,
+    canViewSalesIntelligence,
+    canViewProductMovementReport,
     canExportData,
     canModifyPrice,
     canDeletePrice,
