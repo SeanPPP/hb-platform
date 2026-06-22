@@ -446,8 +446,8 @@ export default function PickingListPage() {
                 <td className="col-price">{formatCurrency(item.importPrice)}</td>
                 <td className="col-price">{item.rrp !== undefined && item.rrp !== null ? formatCurrency(item.rrp) : ''}</td>
                 <td className="col-inner-pack">
-                  {/* 内包装数量严格使用订货数量计算，不再回退发货数。 */}
-                  {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
+                  {/* 包数分子与订货数列一致：订货数为空时使用发货数兜底。 */}
+                  {formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity)}
                 </td>
                 <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
               </tr>
@@ -515,7 +515,7 @@ export default function PickingListPage() {
                       <td className="col-price">{item.rrp !== undefined && item.rrp !== null ? formatCurrency(item.rrp) : ''}</td>
                       <td className="col-inner-pack">
                         {/* PDF 分页复用同一套包数计算，避免屏幕和 PDF 内容不一致。 */}
-                        {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
+                        {formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity)}
                       </td>
                       <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
                     </tr>
