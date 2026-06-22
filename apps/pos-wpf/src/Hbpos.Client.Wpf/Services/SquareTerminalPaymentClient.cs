@@ -1,6 +1,7 @@
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Text.Json;
+using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -31,9 +32,7 @@ public interface ISquareTerminalPaymentClient
         CancellationToken cancellationToken = default);
 }
 
-public sealed class SquareTerminalPaymentClient(
-    HttpClient httpClient,
-    ISquareAccessTokenProvider? squareAccessTokenProvider = null) : ISquareTerminalPaymentClient
+public sealed class SquareTerminalPaymentClient(HttpClient httpClient) : ISquareTerminalPaymentClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -42,25 +41,33 @@ public sealed class SquareTerminalPaymentClient(
         string checkoutId,
         CancellationToken cancellationToken = default)
     {
-        var body = await SendSquareAsync(
-            settings,
+        var checkout = await SendApiAsync<SquareCheckoutStatusResponse?>(
             HttpMethod.Get,
-            $"terminals/checkouts/{Uri.EscapeDataString(checkoutId)}",
+            $"api/v1/square/checkouts/{Uri.EscapeDataString(checkoutId)}?environment={Uri.EscapeDataString(settings.Environment.ToString())}",
+            operationName: "checkout",
             cancellationToken);
-        using var document = JsonDocument.Parse(body);
-        if (!document.RootElement.TryGetProperty("checkout", out var checkout) ||
-            checkout.ValueKind != JsonValueKind.Object)
+
+        if (checkout is null)
         {
-            throw new JsonException("Square response is missing required object 'checkout'.");
+            throw new JsonException("Square checkout API returned no checkout.");
         }
 
+        // 后端会直接返回 checkout.payment_ids；内嵌 payment id 仅作为兼容补充。
+        var paymentIds = new List<string>();
+        foreach (var paymentId in checkout.PaymentIds ?? [])
+        {
+            AddPaymentId(paymentIds, paymentId);
+        }
+
+        AddPaymentId(paymentIds, checkout.Payment?.PaymentId);
+
         return new SquareCheckoutStatusResult(
-            ReadRequiredString(checkout, "id"),
-            ReadRequiredString(checkout, "status"),
-            TryReadMoney(checkout, "amount_money", out var amountCents, out var currency) ? amountCents : null,
-            currency,
-            ReadPaymentIds(checkout),
-            ReadOptionalString(checkout, "cancel_reason"));
+            checkout.CheckoutId,
+            checkout.Status ?? string.Empty,
+            checkout.AmountMoney?.Amount,
+            checkout.AmountMoney?.Currency,
+            paymentIds,
+            checkout.CancelReason);
     }
 
     public async Task<SquarePaymentStatusResult> GetPaymentAsync(
@@ -68,163 +75,88 @@ public sealed class SquareTerminalPaymentClient(
         string paymentId,
         CancellationToken cancellationToken = default)
     {
-        var body = await SendSquareAsync(
-            settings,
+        var payment = await SendApiAsync<SquarePaymentStatusDto?>(
             HttpMethod.Get,
-            $"payments/{Uri.EscapeDataString(paymentId)}",
+            $"api/v1/square/payments/{Uri.EscapeDataString(paymentId)}?environment={Uri.EscapeDataString(settings.Environment.ToString())}",
+            operationName: "payment",
             cancellationToken);
-        using var document = JsonDocument.Parse(body);
-        if (!document.RootElement.TryGetProperty("payment", out var payment) ||
-            payment.ValueKind != JsonValueKind.Object)
+
+        if (payment is null)
         {
-            throw new JsonException("Square response is missing required object 'payment'.");
+            throw new JsonException("Square payment API returned no payment.");
         }
 
-        if (!TryReadMoney(payment, "amount_money", out var amountCents, out var currency))
+        // 后端优先返回 approved_money；若上游仅有 total_money，则退回 total_money 保持恢复验证可用。
+        var amount = payment.ApprovedMoney ?? payment.TotalMoney;
+        if (amount is null || string.IsNullOrWhiteSpace(amount.Currency))
         {
-            throw new JsonException("Square payment is missing amount_money.");
+            throw new JsonException("Square payment API returned no approved amount.");
         }
 
         return new SquarePaymentStatusResult(
-            ReadRequiredString(payment, "id"),
-            ReadRequiredString(payment, "status"),
-            amountCents,
-            currency!);
+            payment.PaymentId,
+            payment.Status ?? string.Empty,
+            amount.Amount,
+            amount.Currency);
     }
 
-    private async Task<string> SendSquareAsync(
-        CardTerminalSettings settings,
+    private async Task<T> SendApiAsync<T>(
         HttpMethod method,
         string relativeUrl,
+        string operationName,
         CancellationToken cancellationToken)
     {
-        var response = await SendSquareOnceAsync(settings, method, relativeUrl, cancellationToken);
-        if (IsSquareAuthenticationFailure(response) && squareAccessTokenProvider is not null)
+        using var request = new HttpRequestMessage(method, relativeUrl);
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var content = response.Content is null
+            ? string.Empty
+            : await response.Content.ReadAsStringAsync(cancellationToken);
+
+        ApiResult<T>? result = null;
+        if (!string.IsNullOrWhiteSpace(content))
         {
-            response.Dispose();
-            var refreshedToken = await squareAccessTokenProvider.GetSquareAccessTokenAsync(
-                settings.Environment,
-                forceRefresh: true,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(refreshedToken))
+            try
             {
-                response = await SendSquareOnceAsync(settings with { SquareAccessToken = refreshedToken }, method, relativeUrl, cancellationToken);
+                result = JsonSerializer.Deserialize<ApiResult<T>>(content, JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new JsonException($"Square {operationName} API returned invalid JSON.", ex);
             }
         }
 
-        using (response)
+        if (!response.IsSuccessStatusCode)
         {
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException(ReadSquareErrorMessage(body) ?? $"Square request failed with HTTP {(int)response.StatusCode}.");
-            }
-
-            return body;
-        }
-    }
-
-    private async Task<HttpResponseMessage> SendSquareOnceAsync(
-        CardTerminalSettings settings,
-        HttpMethod method,
-        string relativeUrl,
-        CancellationToken cancellationToken)
-    {
-        var baseUri = settings.SquareApiBaseUrl.EndsWith("/")
-            ? new Uri(settings.SquareApiBaseUrl, UriKind.Absolute)
-            : new Uri(settings.SquareApiBaseUrl + "/", UriKind.Absolute);
-        // SquareApiBaseUrl 已统一规范到 /v2/，这里仅追加资源路径，避免恢复链路请求 /v2/v2。
-        using var request = new HttpRequestMessage(method, new Uri(baseUri, relativeUrl));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.SquareAccessToken);
-        request.Headers.Add("Square-Version", CardTerminalSettings.SquareVersion);
-        return await httpClient.SendAsync(request, cancellationToken);
-    }
-
-    private static IReadOnlyList<string> ReadPaymentIds(JsonElement checkout)
-    {
-        if (!checkout.TryGetProperty("payment_ids", out var paymentIds) ||
-            paymentIds.ValueKind != JsonValueKind.Array)
-        {
-            return [];
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(result?.Message)
+                    ? $"Square {operationName} request failed with HTTP {(int)response.StatusCode}."
+                    : $"Square {operationName} request failed with HTTP {(int)response.StatusCode}: {result.Message}");
         }
 
-        return paymentIds
-            .EnumerateArray()
-            .Where(element => element.ValueKind == JsonValueKind.String)
-            .Select(element => element.GetString())
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value!)
-            .ToArray();
-    }
-
-    private static bool TryReadMoney(JsonElement element, string propertyName, out long amountCents, out string? currency)
-    {
-        amountCents = 0;
-        currency = null;
-        if (!element.TryGetProperty(propertyName, out var money) || money.ValueKind != JsonValueKind.Object)
+        if (result is null)
         {
-            return false;
+            throw new JsonException($"Square {operationName} API returned an empty response.");
         }
 
-        if (!money.TryGetProperty("amount", out var amount) || !amount.TryGetInt64(out amountCents))
+        if (!result.Success)
         {
-            return false;
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Square {operationName} API returned a failure response."
+                    : result.Message);
         }
 
-        currency = ReadOptionalString(money, "currency");
-        return !string.IsNullOrWhiteSpace(currency);
+        return result.Data!;
     }
 
-    private static string ReadRequiredString(JsonElement element, string propertyName)
+    private static void AddPaymentId(List<string> paymentIds, string? paymentId)
     {
-        var value = ReadOptionalString(element, propertyName);
-        return string.IsNullOrWhiteSpace(value)
-            ? throw new JsonException($"Square response is missing required property '{propertyName}'.")
-            : value;
-    }
-
-    private static string? ReadOptionalString(JsonElement element, string propertyName)
-    {
-        return element.TryGetProperty(propertyName, out var propertyElement) &&
-            propertyElement.ValueKind == JsonValueKind.String
-                ? propertyElement.GetString()
-                : null;
-    }
-
-    private static string? ReadSquareErrorMessage(string? responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
+        if (string.IsNullOrWhiteSpace(paymentId) ||
+            paymentIds.Any(existing => string.Equals(existing, paymentId, StringComparison.Ordinal)))
         {
-            return null;
+            return;
         }
 
-        try
-        {
-            var response = JsonSerializer.Deserialize<SquareErrorResponse>(responseBody, JsonOptions);
-            var error = response?.Errors?.FirstOrDefault();
-            if (error is null)
-            {
-                return null;
-            }
-
-            return string.IsNullOrWhiteSpace(error.Code)
-                ? error.Detail
-                : string.IsNullOrWhiteSpace(error.Detail)
-                    ? error.Code
-                    : $"{error.Code}: {error.Detail}";
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
+        paymentIds.Add(paymentId.Trim());
     }
-
-    private static bool IsSquareAuthenticationFailure(HttpResponseMessage response)
-    {
-        return response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
-    }
-
-    private sealed record SquareErrorResponse(IReadOnlyList<SquareError>? Errors);
-
-    private sealed record SquareError(string? Code, string? Detail);
 }

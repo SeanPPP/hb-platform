@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Text;
 using Hbpos.Client.Wpf.Services;
 
@@ -8,6 +7,7 @@ namespace Hbpos.Client.Tests;
 public sealed class SquareTerminalSetupClientTests
 {
     private const string TestAccessToken = "opaque-square-setup-token";
+    private static readonly Uri HbposApiBaseAddress = new("http://localhost:5159/");
 
     [Fact]
     public async Task ListLocationsAsync_UsesProductionEndpointAndParsesLocations()
@@ -21,7 +21,8 @@ public sealed class SquareTerminalSetupClientTests
                 Content = new StringContent(
                     """
                     {
-                      "locations": [
+                      "success": true,
+                      "data": [
                         { "id": "LOC-1", "name": "Main Store", "status": "ACTIVE" },
                         { "id": "LOC-2", "name": "Outlet", "status": "INACTIVE" }
                       ]
@@ -32,15 +33,14 @@ public sealed class SquareTerminalSetupClientTests
             });
         });
 
-        var client = new SquareTerminalSetupClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.ListLocationsAsync(TestAccessToken, CardTerminalEnvironment.Production);
 
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Get, capturedRequest!.Method);
-        Assert.Equal("https://connect.squareup.com/v2/locations", capturedRequest.RequestUri!.AbsoluteUri);
-        Assert.True(HasBearerToken(capturedRequest, TestAccessToken), "locations request should include a Square bearer token");
-        Assert.Equal([CardTerminalSettings.SquareVersion], capturedRequest.Headers.GetValues("Square-Version"));
+        AssertHbposApiRequest(capturedRequest, "api/v1/square/locations?environment=Production");
+        AssertNoSquareHeaders(capturedRequest);
         Assert.Collection(
             result,
             location =>
@@ -67,30 +67,17 @@ public sealed class SquareTerminalSetupClientTests
                 Content = new StringContent(
                     """
                     {
-                      "devices": [
+                      "success": true,
+                      "data": [
                         {
                           "id": "device:123",
-                          "attributes": {
-                            "name": "Counter Terminal",
-                            "manufacturer": "Square",
-                            "model": "T2",
-                            "type": "TERMINAL"
-                          },
-                          "status": {
-                            "category": "AVAILABLE"
-                          }
+                          "name": "Counter Terminal",
+                          "status": "AVAILABLE"
                         },
                         {
                           "id": "device:456",
-                          "attributes": {
-                            "name": "Spare Terminal",
-                            "manufacturer": "Square",
-                            "model": "Handheld",
-                            "type": "HANDHELD"
-                          },
-                          "status": {
-                            "category": "OFFLINE"
-                          }
+                          "name": "Spare Terminal",
+                          "status": "OFFLINE"
                         }
                       ]
                     }
@@ -100,15 +87,14 @@ public sealed class SquareTerminalSetupClientTests
             });
         });
 
-        var client = new SquareTerminalSetupClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.ListDevicesAsync(TestAccessToken, CardTerminalEnvironment.Sandbox, "LOC/ 01");
 
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Get, capturedRequest!.Method);
-        Assert.Equal("https://connect.squareupsandbox.com/v2/devices?location_id=LOC%2F%2001", capturedRequest.RequestUri!.AbsoluteUri);
-        Assert.True(HasBearerToken(capturedRequest, TestAccessToken), "devices request should include a Square bearer token");
-        Assert.Equal([CardTerminalSettings.SquareVersion], capturedRequest.Headers.GetValues("Square-Version"));
+        AssertHbposApiRequest(capturedRequest, "api/v1/square/devices?environment=Sandbox&locationId=LOC%2F%2001");
+        AssertNoSquareHeaders(capturedRequest);
         Assert.Collection(
             result,
             device =>
@@ -136,7 +122,7 @@ public sealed class SquareTerminalSetupClientTests
                 Content = new StringContent("{ \"errors\": [{ \"detail\": \"bad token " + accessToken + "\" }] }", Encoding.UTF8, "application/json")
             }));
 
-        var client = new SquareTerminalSetupClient(new HttpClient(handler));
+        var client = CreateClient(handler);
         var exception = await Assert.ThrowsAsync<SquareApiException>(() =>
             client.ListLocationsAsync(accessToken, CardTerminalEnvironment.Production));
 
@@ -158,15 +144,15 @@ public sealed class SquareTerminalSetupClientTests
                 Content = new StringContent(
                     """
                     {
-                      "device_codes": [
+                      "success": true,
+                      "data": [
                         {
                           "id": "DC-1",
                           "name": "Counter 2",
                           "code": "ABC123",
                           "status": "UNPAIRED",
-                          "location_id": "LOC-1",
-                          "pair_by": "2026-05-27T10:05:00Z",
-                          "created_at": "2026-05-27T10:00:00Z"
+                          "locationId": "LOC-1",
+                          "deviceId": null
                         }
                       ]
                     }
@@ -176,14 +162,14 @@ public sealed class SquareTerminalSetupClientTests
             });
         });
 
-        var client = new SquareTerminalSetupClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.ListDeviceCodesAsync(TestAccessToken, CardTerminalEnvironment.Production, "LOC-1");
 
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Get, capturedRequest!.Method);
-        Assert.Equal("https://connect.squareup.com/v2/devices/codes?location_id=LOC-1&product_type=TERMINAL_API", capturedRequest.RequestUri!.AbsoluteUri);
-        Assert.True(HasBearerToken(capturedRequest, TestAccessToken));
+        AssertHbposApiRequest(capturedRequest, "api/v1/square/device-codes?environment=Production&locationId=LOC-1");
+        AssertNoSquareHeaders(capturedRequest);
         var deviceCode = Assert.Single(result);
         Assert.Equal("DC-1", deviceCode.Id);
         Assert.Equal("Counter 2", deviceCode.Name);
@@ -210,14 +196,14 @@ public sealed class SquareTerminalSetupClientTests
                     Content = new StringContent(
                         """
                         {
-                          "device_code": {
+                          "success": true,
+                          "data": {
                             "id": "DC-1",
                             "name": "Counter 2",
                             "code": "ABC123",
                             "status": "UNPAIRED",
-                            "location_id": "LOC-1",
-                            "pair_by": "2026-05-27T10:05:00Z",
-                            "created_at": "2026-05-27T10:00:00Z"
+                            "locationId": "LOC-1",
+                            "deviceId": null
                           }
                         }
                         """,
@@ -227,53 +213,68 @@ public sealed class SquareTerminalSetupClientTests
             }
         });
 
-        var client = new SquareTerminalSetupClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.CreateDeviceCodeAsync(TestAccessToken, CardTerminalEnvironment.Production, "LOC-1", "Counter 2");
 
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Post, capturedRequest!.Method);
-        Assert.Equal("https://connect.squareup.com/v2/devices/codes", capturedRequest.RequestUri!.AbsoluteUri);
-        Assert.True(HasBearerToken(capturedRequest, TestAccessToken));
+        AssertHbposApiRequest(capturedRequest, "api/v1/square/device-codes");
+        AssertNoSquareHeaders(capturedRequest);
         Assert.NotNull(requestBody);
-        Assert.Contains("\"location_id\":\"LOC-1\"", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"environment\":\"Production\"", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"locationId\":\"LOC-1\"", requestBody, StringComparison.Ordinal);
         Assert.Contains("\"name\":\"Counter 2\"", requestBody, StringComparison.Ordinal);
-        Assert.Contains("\"product_type\":\"TERMINAL_API\"", requestBody, StringComparison.Ordinal);
-        Assert.Contains("\"idempotency_key\":", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"idempotencyKey\":\"", requestBody, StringComparison.Ordinal);
         Assert.Equal("ABC123", result.Code);
     }
 
     [Fact]
-    public async Task GetDeviceCodeAsync_ParsesPairedDeviceId()
+    public async Task GetDeviceCodeAsync_UsesHbposApiAndParsesPairedDeviceId()
     {
-        var handler = new StubHttpMessageHandler((_, _) => Task.FromResult(
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequest = request;
+            return Task.FromResult(
             new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
                     """
                     {
-                      "device_code": {
+                      "success": true,
+                      "data": {
                         "id": "DC-1",
                         "name": "Counter 2",
                         "code": "ABC123",
                         "status": "PAIRED",
-                        "location_id": "LOC-1",
-                        "device_id": "DEV-2",
-                        "pair_by": "2026-05-27T10:05:00Z",
-                        "created_at": "2026-05-27T10:00:00Z"
+                        "locationId": "LOC-1",
+                        "deviceId": "DEV-2"
                       }
                     }
                     """,
                     Encoding.UTF8,
                     "application/json")
-            }));
+            });
+        });
 
-        var client = new SquareTerminalSetupClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.GetDeviceCodeAsync(TestAccessToken, CardTerminalEnvironment.Production, "DC-1");
 
+        Assert.NotNull(capturedRequest);
+        AssertHbposApiRequest(capturedRequest!, "api/v1/square/device-codes/DC-1?environment=Production");
+        AssertNoSquareHeaders(capturedRequest!);
         Assert.Equal("PAIRED", result.Status);
         Assert.Equal("DEV-2", result.DeviceId);
+    }
+
+    private static SquareTerminalSetupClient CreateClient(HttpMessageHandler handler)
+    {
+        return new SquareTerminalSetupClient(new HttpClient(handler)
+        {
+            BaseAddress = HbposApiBaseAddress
+        });
     }
 
     private sealed class StubHttpMessageHandler(
@@ -287,9 +288,17 @@ public sealed class SquareTerminalSetupClientTests
         }
     }
 
-    private static bool HasBearerToken(HttpRequestMessage request, string expectedToken)
+    private static void AssertHbposApiRequest(HttpRequestMessage request, string relativePathAndQuery)
     {
-        return request.Headers.Authorization?.Scheme == "Bearer" &&
-            string.Equals(request.Headers.Authorization.Parameter, expectedToken, StringComparison.Ordinal);
+        Assert.Equal(new Uri(HbposApiBaseAddress, relativePathAndQuery), request.RequestUri);
+        var absoluteUri = request.RequestUri!.AbsoluteUri;
+        Assert.DoesNotContain("connect.squareup.com", absoluteUri, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("connect.squareupsandbox.com", absoluteUri, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertNoSquareHeaders(HttpRequestMessage request)
+    {
+        Assert.Null(request.Headers.Authorization);
+        Assert.False(request.Headers.Contains("Square-Version"));
     }
 }

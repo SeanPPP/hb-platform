@@ -576,6 +576,50 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(0, attempts.MarkFailedCount);
     }
 
+    [Fact]
+    public async Task RecoverLatestAsync_square_payment_amount_mismatch_requires_supervisor_review()
+    {
+        var attempt = CreateSquareAttempt(LocalSquarePaymentAttemptStatus.CheckoutCreated, checkoutId: "CHECKOUT-001");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult("CHECKOUT-001", "COMPLETED", 1000, "AUD", ["PAYMENT-001"], null),
+            Payment = new SquarePaymentStatusResult("PAYMENT-001", "COMPLETED", 999, "AUD")
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Contains("order amount", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(1, attempts.MarkFailedCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, attempts.Status);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_payment_currency_mismatch_returns_unknown_without_saving()
+    {
+        var attempt = CreateSquareAttempt(LocalSquarePaymentAttemptStatus.CheckoutCreated, checkoutId: "CHECKOUT-001");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult("CHECKOUT-001", "COMPLETED", 1000, "AUD", ["PAYMENT-001"], null),
+            Payment = new SquarePaymentStatusResult("PAYMENT-001", "COMPLETED", 1000, "USD")
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Contains("cannot be confirmed", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(1, attempts.MarkFailedCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, attempts.Status);
+    }
+
     private static CardPaymentRecoveryService CreateService(
         FakeCardPaymentAttemptRepository attempts,
         FakeLocalOrderRepository orders,

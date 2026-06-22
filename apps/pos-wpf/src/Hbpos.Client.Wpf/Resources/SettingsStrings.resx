@@ -27,9 +27,9 @@
   <data name="settings.square.description" xml:space="preserve"><value>Configure the Square location and terminal used when Square is the card provider.</value></data>
   <data name="settings.square.switchHelp" xml:space="preserve"><value>Save Square to make the next card payment use this Square terminal.</value></data>
   <data name="settings.square.tokenSource" xml:space="preserve"><value>Token Source</value></data>
-  <data name="settings.square.tokenStatus.cached" xml:space="preserve"><value>Local encrypted token cached. HBPOS refreshes it when Square rejects it.</value></data>
-  <data name="settings.square.tokenStatus.missing" xml:space="preserve"><value>No local token cached. The next Square request will fetch one from HBPOS.</value></data>
-  <data name="settings.square.tokenHelp" xml:space="preserve"><value>Square token is stored encrypted on this device and fetched from HBPOS when missing or rejected.</value></data>
+  <data name="settings.square.tokenStatus.cached" xml:space="preserve"><value>Square token is configured in HBPOS for this environment.</value></data>
+  <data name="settings.square.tokenStatus.missing" xml:space="preserve"><value>Square token is not configured in HBPOS for this environment.</value></data>
+  <data name="settings.square.tokenHelp" xml:space="preserve"><value>Square setup and payment requests now use the token configured in HBPOS. Local cached tokens remain for compatibility only.</value></data>
   <data name="settings.payment.environment" xml:space="preserve"><value>Environment</value></data>
   <data name="settings.payment.sandbox.toggle" xml:space="preserve"><value>Use Sandbox test environment</value></data>
   <data name="settings.payment.activeProvider.title" xml:space="preserve"><value>Current card provider</value></data>

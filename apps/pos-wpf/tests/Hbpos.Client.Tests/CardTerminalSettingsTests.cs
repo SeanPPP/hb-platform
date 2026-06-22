@@ -152,7 +152,7 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
-    public async Task SaveAsync_protects_square_access_token_before_persisting()
+    public async Task SaveAsync_ignores_square_access_token_without_persisting_new_local_token()
     {
         var repository = new InMemorySettingsRepository();
         var protector = new FakeAuthorizationProtector();
@@ -165,15 +165,12 @@ public sealed class CardTerminalSettingsTests
             },
             SaveToken);
 
-        AssertSecretEquals(SaveToken, protector.LastProtectedValue, "token should be passed to the protector");
-        AssertProtectedTokenEquals(SaveToken, repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
-        Assert.True(
-            !string.Equals(SaveToken, repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)), StringComparison.Ordinal),
-            "stored Square token should not be plaintext");
+        Assert.Null(protector.LastProtectedValue);
+        Assert.Null(repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
     }
 
     [Fact]
-    public async Task GetSettingsAsync_unprotects_square_access_token_from_local_store()
+    public async Task GetSettingsAsync_does_not_expose_legacy_local_square_access_token()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
         {
@@ -183,14 +180,19 @@ public sealed class CardTerminalSettingsTests
             ["CardTerminal:SquareLocationId"] = "LOC-STORED",
             ["CardTerminal:SquareDeviceId"] = "DEV-STORED"
         });
-        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector());
+        var apiClient = new FakeSquareTokenApiClient
+        {
+            StatusResponse = new SquareTokenStatusResponse("Production", Configured: true, Enabled: true, DateTimeOffset.UtcNow)
+        };
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
 
         var settings = await store.GetSettingsAsync();
 
         Assert.Equal(CardProcessorKind.Square, settings.Processor);
-        AssertSecretEquals(StoredToken, settings.SquareAccessToken, "local protected token should be unprotected");
+        Assert.Null(settings.SquareAccessToken);
         Assert.Equal("LOC-STORED", settings.SquareLocationId);
         Assert.Equal("DEV-STORED", settings.SquareDeviceId);
+        Assert.Equal(0, apiClient.CallCount);
     }
 
     [Fact]
@@ -204,7 +206,7 @@ public sealed class CardTerminalSettingsTests
         });
         var apiClient = new FakeSquareTokenApiClient
         {
-            Response = new SquareTokenResponse("Sandbox", RemoteToken, DateTimeOffset.UtcNow)
+            StatusResponse = new SquareTokenStatusResponse("Sandbox", Configured: true, Enabled: true, DateTimeOffset.UtcNow)
         };
         var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
 
@@ -217,7 +219,7 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
-    public async Task GetSettingsAsync_refreshes_square_token_when_square_is_active_and_cache_is_missing()
+    public async Task GetSettingsAsync_does_not_call_backend_token_api_when_square_is_active_and_cache_is_missing()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
         {
@@ -226,19 +228,19 @@ public sealed class CardTerminalSettingsTests
         });
         var apiClient = new FakeSquareTokenApiClient
         {
-            Response = new SquareTokenResponse("Production", RemoteToken, DateTimeOffset.UtcNow)
+            StatusResponse = new SquareTokenStatusResponse("Production", Configured: true, Enabled: true, DateTimeOffset.UtcNow)
         };
         var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
 
         var settings = await store.GetSettingsAsync();
 
         Assert.Equal(CardProcessorKind.Square, settings.Processor);
-        AssertSecretEquals(RemoteToken, settings.SquareAccessToken, "Square should still fetch a backend token when active");
-        Assert.Equal(1, apiClient.CallCount);
+        Assert.Null(settings.SquareAccessToken);
+        Assert.Equal(0, apiClient.CallCount);
     }
 
     [Fact]
-    public async Task GetSquareAccessTokenAsync_uses_local_token_without_calling_backend()
+    public async Task GetSquareAccessTokenAsync_returns_null_even_when_legacy_local_token_exists()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
         {
@@ -246,7 +248,7 @@ public sealed class CardTerminalSettingsTests
         });
         var apiClient = new FakeSquareTokenApiClient
         {
-            Response = new SquareTokenResponse("Production", RemoteToken, DateTimeOffset.UtcNow)
+            StatusResponse = new SquareTokenStatusResponse("Production", Configured: true, Enabled: true, DateTimeOffset.UtcNow)
         };
         var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
 
@@ -254,17 +256,17 @@ public sealed class CardTerminalSettingsTests
             CardTerminalEnvironment.Production,
             forceRefresh: false);
 
-        AssertSecretEquals(LocalToken, token, "local token should be used without backend call");
+        Assert.Null(token);
         Assert.Equal(0, apiClient.CallCount);
     }
 
     [Fact]
-    public async Task GetSquareAccessTokenAsync_fetches_backend_token_when_local_token_is_missing()
+    public async Task GetSquareAccessTokenAsync_returns_null_when_local_token_is_missing()
     {
         var repository = new InMemorySettingsRepository();
         var apiClient = new FakeSquareTokenApiClient
         {
-            Response = new SquareTokenResponse("Production", RemoteToken, DateTimeOffset.UtcNow)
+            StatusResponse = new SquareTokenStatusResponse("Production", Configured: true, Enabled: true, DateTimeOffset.UtcNow)
         };
         var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
 
@@ -272,13 +274,13 @@ public sealed class CardTerminalSettingsTests
             CardTerminalEnvironment.Production,
             forceRefresh: false);
 
-        AssertSecretEquals(RemoteToken, token, "backend token should be returned");
-        AssertProtectedTokenEquals(RemoteToken, repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
-        Assert.Equal(1, apiClient.CallCount);
+        Assert.Null(token);
+        Assert.Null(repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
+        Assert.Equal(0, apiClient.CallCount);
     }
 
     [Fact]
-    public async Task GetSquareAccessTokenAsync_keeps_environment_token_caches_separate()
+    public async Task GetSquareAccessTokenAsync_does_not_expose_environment_token_caches()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
         {
@@ -294,12 +296,14 @@ public sealed class CardTerminalSettingsTests
             CardTerminalEnvironment.Sandbox,
             forceRefresh: false);
 
-        AssertSecretEquals(LocalToken, productionToken, "production token cache should be used");
-        AssertSecretEquals(SandboxToken, sandboxToken, "sandbox token cache should be used");
+        Assert.Null(productionToken);
+        Assert.Null(sandboxToken);
+        AssertProtectedTokenEquals(LocalToken, repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
+        AssertProtectedTokenEquals(SandboxToken, repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Sandbox)));
     }
 
     [Fact]
-    public async Task GetSquareAccessTokenAsync_keeps_local_token_when_forced_backend_refresh_fails()
+    public async Task GetSquareAccessTokenAsync_force_refresh_returns_null_without_backend_call()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
         {
@@ -319,6 +323,26 @@ public sealed class CardTerminalSettingsTests
     }
 
     [Fact]
+    public async Task LoadAsync_uses_backend_token_status_for_square_configuration()
+    {
+        var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
+        {
+            ["CardTerminal:Processor"] = nameof(CardProcessorKind.Square),
+            ["CardTerminal:Environment"] = nameof(CardTerminalEnvironment.Sandbox)
+        });
+        var apiClient = new FakeSquareTokenApiClient
+        {
+            StatusResponse = new SquareTokenStatusResponse("Sandbox", Configured: true, Enabled: false, DateTimeOffset.UtcNow)
+        };
+        var store = new CardTerminalSettingsStore(repository, new FakeAuthorizationProtector(), apiClient);
+
+        var configuration = await store.LoadAsync();
+
+        Assert.True(configuration.HasProtectedSquareAccessToken);
+        Assert.Equal(1, apiClient.CallCount);
+    }
+
+    [Fact]
     public async Task SaveAsync_with_empty_square_access_token_keeps_existing_protected_token()
     {
         var repository = new InMemorySettingsRepository(new Dictionary<string, string?>
@@ -335,7 +359,7 @@ public sealed class CardTerminalSettingsTests
             "   ");
 
         AssertProtectedTokenEquals(ExistingToken, repository.GetStoredValue(TokenKey(CardTerminalEnvironment.Production)));
-        AssertSecretEquals(ExistingToken, await store.GetSquareAccessTokenAsync(), "existing local token should remain readable");
+        Assert.Null(await store.GetSquareAccessTokenAsync());
     }
 
     [Fact]
@@ -498,7 +522,7 @@ public sealed class CardTerminalSettingsTests
         Assert.Equal(CardTerminalEnvironment.Sandbox, settings.Environment);
         Assert.Equal("local-host", settings.LinklyHost);
         Assert.Equal(5444, settings.LinklyPort);
-        AssertSecretEquals(LocalToken, settings.SquareAccessToken, "local token should override environment token");
+        Assert.Null(settings.SquareAccessToken);
         Assert.Equal("LOCAL-LOC", settings.SquareLocationId);
         Assert.Equal("LOCAL-DEV", settings.SquareDeviceId);
         Assert.Equal(TimeSpan.FromSeconds(120), settings.TerminalTimeout);
@@ -835,13 +859,13 @@ public sealed class CardTerminalSettingsTests
 
     private sealed class FakeSquareTokenApiClient : ISquareTokenApiClient
     {
-        public SquareTokenResponse? Response { get; init; }
+        public SquareTokenStatusResponse? StatusResponse { get; init; }
 
         public Exception? Exception { get; init; }
 
         public int CallCount { get; private set; }
 
-        public Task<SquareTokenResponse> GetTokenAsync(
+        public Task<SquareTokenStatusResponse> GetStatusAsync(
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken = default)
         {
@@ -851,7 +875,7 @@ public sealed class CardTerminalSettingsTests
                 throw Exception;
             }
 
-            return Task.FromResult(Response!);
+            return Task.FromResult(StatusResponse!);
         }
     }
 }

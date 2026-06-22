@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Text;
+using System.Text.Json;
 using System.Text.Encodings.Web;
 using Hbpos.Api;
 using Hbpos.Api.Controllers;
@@ -13,7 +15,9 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -40,6 +44,41 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
+    public void SquareTerminalEndpoints_KeepExpectedRouteTemplates()
+    {
+        AssertHttpTemplate("GetLocations", typeof(HttpGetAttribute), "locations");
+        AssertHttpTemplate("GetDevices", typeof(HttpGetAttribute), "devices");
+        AssertHttpTemplate("GetDeviceCodes", typeof(HttpGetAttribute), "device-codes");
+        AssertHttpTemplate("CreateDeviceCode", typeof(HttpPostAttribute), "device-codes");
+        AssertHttpTemplate("GetDeviceCode", typeof(HttpGetAttribute), "device-codes/{deviceCodeId}");
+        AssertHttpTemplate("CreateCheckout", typeof(HttpPostAttribute), "checkouts");
+        AssertHttpTemplate("GetCheckout", typeof(HttpGetAttribute), "checkouts/{checkoutId}");
+        AssertHttpTemplate("GetPayment", typeof(HttpGetAttribute), "payments/{paymentId}");
+        AssertHttpTemplate("CancelCheckout", typeof(HttpPostAttribute), "checkouts/{checkoutId}/cancel");
+        AssertHttpTemplate("DismissCheckout", typeof(HttpPostAttribute), "checkouts/{checkoutId}/dismiss");
+        AssertHttpTemplate("CreateRefund", typeof(HttpPostAttribute), "refunds");
+        AssertHttpTemplate("ReceiveWebhook", typeof(HttpPostAttribute), "webhooks");
+
+        Assert.NotNull(typeof(SquareController)
+            .GetMethod("ReceiveWebhook")?
+            .GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: false)
+            .SingleOrDefault());
+    }
+
+    [Fact]
+    public void SquareCreateCheckoutRequest_RequiresLocationId()
+    {
+        var request = new SquareCreateCheckoutRequest(
+            "Production",
+            "idem-001",
+            "device-001",
+            "location-001",
+            new SquareMoneyDto(1299, "AUD"));
+
+        Assert.Equal("location-001", request.LocationId);
+    }
+
+    [Fact]
     public async Task GetToken_RequiresAuthentication()
     {
         await using var factory = new SquareApiFactory();
@@ -51,7 +90,18 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
-    public async Task GetToken_ReturnsWrappedTokenForEnvironment()
+    public async Task GetLocations_RequiresAuthentication()
+    {
+        await using var factory = new SquareApiFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/api/v1/square/locations?environment=Production");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetToken_ReturnsStatusWithoutAccessToken()
     {
         var expected = new SquareTokenResponse(
             "Production",
@@ -71,14 +121,15 @@ public sealed class SquareControllerTests
         using var response = await client.GetAsync("/api/v1/square/token?environment=production");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenResponse>>();
+        var rawContent = await response.Content.ReadAsStringAsync();
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenStatusResponse>>();
         Assert.NotNull(apiResult);
         Assert.True(apiResult.Success);
         Assert.Equal(expected.Environment, apiResult.Data?.Environment);
         Assert.Equal(expected.UpdatedAt, apiResult.Data?.UpdatedAt);
-        Assert.True(
-            string.Equals(BackendToken, apiResult.Data?.AccessToken, StringComparison.Ordinal),
-            "successful token response should include the configured token");
+        Assert.True(apiResult.Data?.Configured);
+        Assert.True(apiResult.Data?.Enabled);
+        Assert.DoesNotContain(BackendToken, rawContent, StringComparison.Ordinal);
         Assert.Equal("Production", requestedEnvironment);
     }
 
@@ -92,7 +143,23 @@ public sealed class SquareControllerTests
         using var response = await client.GetAsync("/api/v1/square/token?environment=staging");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenResponse>>();
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenStatusResponse>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_ENVIRONMENT_INVALID", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetLocations_ReturnsBadRequestForInvalidEnvironment()
+    {
+        await using var factory = new SquareApiFactory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.GetAsync("/api/v1/square/locations?environment=staging");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
         Assert.NotNull(apiResult);
         Assert.False(apiResult.Success);
         Assert.Equal("SQUARE_ENVIRONMENT_INVALID", apiResult.ErrorCode);
@@ -109,11 +176,53 @@ public sealed class SquareControllerTests
         using var response = await client.GetAsync("/api/v1/square/token?environment=Sandbox");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenResponse>>();
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenStatusResponse>>();
         Assert.NotNull(apiResult);
         Assert.False(apiResult.Success);
         Assert.Equal("SQUARE_TOKEN_NOT_CONFIGURED", apiResult.ErrorCode);
         Assert.Equal("Square token is not configured for this environment.", apiResult.Message);
+    }
+
+    [Fact]
+    public async Task GetLocations_ReturnsStableNotFoundWhenTokenIsMissing()
+    {
+        await using var factory = new SquareApiFactory(new StubSquareTokenService(
+            responseFactory: _ => Task.FromResult<SquareTokenResponse?>(null)));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.GetAsync("/api/v1/square/locations?environment=Sandbox");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_TOKEN_NOT_CONFIGURED", apiResult.ErrorCode);
+        Assert.Equal("Square token is not configured for this environment.", apiResult.Message);
+        Assert.DoesNotContain(BackendToken, await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetLocations_ReturnsServiceUnavailableWithoutLeakingToken()
+    {
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
+
+        await using var factory = new SquareApiFactory(new StubSquareTokenService(
+            responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.GetAsync("/api/v1/square/locations?environment=Production");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_BACKEND_NOT_IMPLEMENTED", apiResult.ErrorCode);
+        Assert.DoesNotContain(BackendToken, await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -127,7 +236,7 @@ public sealed class SquareControllerTests
         using var response = await client.GetAsync("/api/v1/square/token?environment=Production");
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
-        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenResponse>>();
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareTokenStatusResponse>>();
         Assert.NotNull(apiResult);
         var result = apiResult!;
         Assert.False(result.Success);
@@ -143,6 +252,252 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
+    public async Task GetLocations_ReturnsStableBackendFailureWithoutLeakingToken()
+    {
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
+
+        await using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)),
+            backendService: new ThrowingSquareTerminalBackendService(
+                () => new SquareTerminalBackendException(
+                    "SQUARE_BACKEND_REQUEST_FAILED",
+                    "token opaque-api-square-token should never leak",
+                    HttpStatusCode.ServiceUnavailable)));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.GetAsync("/api/v1/square/locations?environment=Production");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var rawContent = await response.Content.ReadAsStringAsync();
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_BACKEND_REQUEST_FAILED", apiResult.ErrorCode);
+        Assert.Equal("Square backend request failed.", apiResult.Message);
+        Assert.DoesNotContain(BackendToken, rawContent, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetLocations_ReturnsStableUpstreamFailureWithoutLeakingToken()
+    {
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
+
+        await using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)),
+            backendService: new ThrowingSquareTerminalBackendService(
+                () => new SquareTerminalRestException(
+                    HttpStatusCode.BadGateway,
+                    $"Square upstream exploded with token {BackendToken}")));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.GetAsync("/api/v1/square/locations?environment=Production");
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        var rawContent = await response.Content.ReadAsStringAsync();
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_UPSTREAM_REQUEST_FAILED", apiResult.ErrorCode);
+        Assert.Equal("Square upstream request failed.", apiResult.Message);
+        Assert.DoesNotContain(BackendToken, rawContent, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreateDeviceCode_ReturnsBadRequestWhenIdempotencyKeyIsMissing()
+    {
+        var tokenRequested = false;
+        var backendService = new CapturingSquareTerminalBackendService();
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
+
+        await using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ =>
+            {
+                tokenRequested = true;
+                return Task.FromResult<SquareTokenResponse?>(expected);
+            }),
+            backendService: backendService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/square/device-codes",
+            new SquareCreateDeviceCodeRequest(
+                "Production",
+                IdempotencyKey: "",
+                LocationId: "location-001",
+                Name: "Front Counter"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareDeviceCodeDto>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_IDEMPOTENCY_KEY_REQUIRED", apiResult.ErrorCode);
+        Assert.Equal("idempotencyKey is required.", apiResult.Message);
+        Assert.False(tokenRequested);
+        Assert.Equal(0, backendService.CreateDeviceCodeCalls);
+    }
+
+    [Fact]
+    public async Task CreateCheckout_ReturnsBadRequestBeforeReadingTokenWhenIdempotencyKeyIsMissing()
+    {
+        var tokenRequested = false;
+        var backendService = new CapturingSquareTerminalBackendService();
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
+
+        await using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ =>
+            {
+                tokenRequested = true;
+                return Task.FromResult<SquareTokenResponse?>(expected);
+            }),
+            backendService: backendService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/square/checkouts",
+            new SquareCreateCheckoutRequest(
+                "Production",
+                IdempotencyKey: " ",
+                DeviceId: "device-001",
+                LocationId: "location-001",
+                AmountMoney: new SquareMoneyDto(1299, "AUD")));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareCheckoutStatusResponse>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_IDEMPOTENCY_KEY_REQUIRED", apiResult.ErrorCode);
+        Assert.Equal("idempotencyKey is required.", apiResult.Message);
+        Assert.False(tokenRequested);
+        Assert.Equal(0, backendService.CreateCheckoutCalls);
+    }
+
+    [Fact]
+    public async Task CreateRefund_ReturnsBadRequestBeforeReadingTokenWhenIdempotencyKeyIsMissing()
+    {
+        var tokenRequested = false;
+        var backendService = new CapturingSquareTerminalBackendService();
+        var expected = new SquareTokenResponse(
+            "Production",
+            BackendToken,
+            new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
+
+        await using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ =>
+            {
+                tokenRequested = true;
+                return Task.FromResult<SquareTokenResponse?>(expected);
+            }),
+            backendService: backendService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/square/refunds",
+            new SquareRefundRequest(
+                "Production",
+                IdempotencyKey: "",
+                PaymentId: "payment-001",
+                AmountMoney: new SquareMoneyDto(500, "AUD")));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareRefundResponse>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_IDEMPOTENCY_KEY_REQUIRED", apiResult.ErrorCode);
+        Assert.Equal("idempotencyKey is required.", apiResult.Message);
+        Assert.False(tokenRequested);
+        Assert.Equal(0, backendService.CreateRefundCalls);
+    }
+
+    [Fact]
+    public async Task ReceiveWebhook_PassesRawBodyHeadersAndNotificationUrlToBackendService()
+    {
+        const string signature = "test-signature";
+        const string squareEnvironment = "sandbox";
+        const string rawBody = "{\"merchant_id\":\"merchant-123\",\"type\":\"terminal.checkout.updated\"}";
+        var backendService = new CapturingSquareTerminalBackendService();
+
+        await using var factory = new SquareApiFactory(backendService: backendService);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/square/webhooks");
+        request.Headers.TryAddWithoutValidation("x-square-hmacsha256-signature", signature);
+        request.Headers.TryAddWithoutValidation("square-environment", squareEnvironment);
+        request.Content = new StringContent(rawBody, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(backendService.LastWebhookRequest);
+        Assert.Equal(signature, backendService.LastWebhookRequest!.SignatureHeader);
+        Assert.Equal(squareEnvironment, backendService.LastWebhookRequest.SquareEnvironmentHeader);
+        Assert.Equal(rawBody, backendService.LastWebhookRequest.RawBody);
+        Assert.Equal("http://localhost/api/v1/square/webhooks", backendService.LastWebhookRequest.NotificationUrl);
+    }
+
+    [Fact]
+    public async Task ReceiveWebhook_ReturnsStableServiceUnavailableWhenBackendServiceIsMissing()
+    {
+        const string rawBody = "{\"type\":\"terminal.checkout.updated\"}";
+
+        await using var factory = new SquareApiFactory();
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/square/webhooks");
+        request.Headers.TryAddWithoutValidation("x-square-hmacsha256-signature", "missing-service-signature");
+        request.Content = new StringContent(rawBody, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareWebhookAcceptedResponse>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_WEBHOOK_NOT_IMPLEMENTED", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ReceiveWebhook_ReturnsStableForbiddenWhenSignatureIsInvalid()
+    {
+        const string rawBody = "{\"event_id\":\"event-001\",\"type\":\"terminal.checkout.updated\"}";
+
+        await using var factory = new SquareApiFactory(
+            backendService: new ThrowingSquareTerminalBackendService(
+                () => new SquareTerminalBackendException(
+                    "SQUARE_WEBHOOK_SIGNATURE_INVALID",
+                    "Square webhook signature is invalid.",
+                    HttpStatusCode.Forbidden)));
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/square/webhooks");
+        request.Headers.TryAddWithoutValidation("x-square-hmacsha256-signature", "invalid-signature");
+        request.Content = new StringContent(rawBody, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareWebhookAcceptedResponse>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult.Success);
+        Assert.Equal("SQUARE_WEBHOOK_SIGNATURE_INVALID", apiResult.ErrorCode);
+        Assert.Equal("Square webhook signature is invalid.", apiResult.Message);
+    }
+
+    [Fact]
     public void Startup_FailsWhenSquareTokenSchemaInitializerThrows()
     {
         using var factory = new SquareApiFactory(
@@ -155,14 +510,55 @@ public sealed class SquareControllerTests
         Assert.DoesNotContain(BackendToken, exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Startup_FailsWhenSquareWebhookSchemaInitializerThrows()
+    {
+        using var factory = new SquareApiFactory(
+            webhookSchemaInitializer: new ThrowingSquareWebhookSchemaInitializer(
+                new InvalidOperationException("square webhook schema bootstrap failed without secret leakage")),
+            posmConnectionString: "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-test;Trusted_Connection=True;");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
+
+        Assert.Contains("square webhook schema bootstrap failed", exception.Message);
+        Assert.DoesNotContain(BackendToken, exception.Message, StringComparison.Ordinal);
+    }
+
+    private static void AssertHttpTemplate(string methodName, Type attributeType, string expectedTemplate)
+    {
+        var attribute = typeof(SquareController)
+            .GetMethod(methodName)?
+            .GetCustomAttributes(attributeType, inherit: false)
+            .OfType<HttpMethodAttribute>()
+            .SingleOrDefault();
+
+        Assert.NotNull(attribute);
+        Assert.Equal(expectedTemplate, attribute!.Template);
+    }
+
     private sealed class SquareApiFactory(
         ISquareTokenService? squareTokenService = null,
-        ISquareTokenSchemaInitializer? schemaInitializer = null)
+        ISquareTokenSchemaInitializer? schemaInitializer = null,
+        ISquareWebhookSchemaInitializer? webhookSchemaInitializer = null,
+        ISquareTerminalBackendService? backendService = null,
+        string? posmConnectionString = null)
         : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
         {
             builder.UseEnvironment("Production");
+            if (!string.IsNullOrWhiteSpace(posmConnectionString))
+            {
+                builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+                {
+                    configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:MainConnection"] = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-main-test;Trusted_Connection=True;",
+                        ["ConnectionStrings:PosmConnection"] = posmConnectionString
+                    });
+                });
+            }
+
             builder.ConfigureServices(services =>
             {
                 services.PostConfigure<AuthenticationOptions>(options =>
@@ -190,8 +586,21 @@ public sealed class SquareControllerTests
                 services.AddSingleton<ILinklyCloudCredentialSchemaInitializer>(
                     new NoOpLinklyCloudCredentialSchemaInitializer());
 
+                services.RemoveAll<ILinklyCloudBackendAsyncSchemaInitializer>();
+                services.AddSingleton<ILinklyCloudBackendAsyncSchemaInitializer>(
+                    new NoOpLinklyCloudBackendAsyncSchemaInitializer());
+
                 services.RemoveAll<IAdvertisementSchemaInitializer>();
                 services.AddSingleton<IAdvertisementSchemaInitializer>(new NoOpAdvertisementSchemaInitializer());
+
+                services.RemoveAll<ISquareWebhookSchemaInitializer>();
+                services.AddSingleton(webhookSchemaInitializer ?? new NoOpSquareWebhookSchemaInitializer());
+
+                services.RemoveAll<ISquareTerminalBackendService>();
+                if (backendService is not null)
+                {
+                    services.AddSingleton(backendService);
+                }
             });
         }
     }
@@ -212,6 +621,22 @@ public sealed class SquareControllerTests
         }
     }
 
+    private sealed class NoOpSquareWebhookSchemaInitializer : ISquareWebhookSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingSquareWebhookSchemaInitializer(Exception exception) : ISquareWebhookSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            throw exception;
+        }
+    }
+
     private sealed class NoOpStoreSchemaInitializer : IStoreSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -221,6 +646,14 @@ public sealed class SquareControllerTests
     }
 
     private sealed class NoOpLinklyCloudCredentialSchemaInitializer : ILinklyCloudCredentialSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpLinklyCloudBackendAsyncSchemaInitializer : ILinklyCloudBackendAsyncSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {
@@ -284,6 +717,160 @@ public sealed class SquareControllerTests
             }
 
             return Task.FromResult<SquareTokenResponse?>(null);
+        }
+    }
+
+    private sealed class ThrowingSquareTerminalBackendService(Func<Exception> exceptionFactory) : ISquareTerminalBackendService
+    {
+        public Task<IReadOnlyList<SquareLocationDto>> GetLocationsAsync(string environment, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<IReadOnlyList<SquareDeviceDto>> GetDevicesAsync(string environment, string locationId, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<IReadOnlyList<SquareDeviceCodeDto>> GetDeviceCodesAsync(string environment, string locationId, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareDeviceCodeDto> CreateDeviceCodeAsync(SquareCreateDeviceCodeRequest request, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareDeviceCodeDto?> GetDeviceCodeAsync(string environment, string deviceCodeId, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareCheckoutStatusResponse> CreateCheckoutAsync(SquareCreateCheckoutRequest request, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareCheckoutStatusResponse?> GetCheckoutAsync(string environment, string checkoutId, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquarePaymentStatusDto?> GetPaymentAsync(string environment, string paymentId, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareCheckoutStatusResponse> CancelCheckoutAsync(string checkoutId, SquareCheckoutActionRequest request, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareCheckoutStatusResponse> DismissCheckoutAsync(string checkoutId, SquareCheckoutActionRequest request, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareRefundResponse> CreateRefundAsync(SquareRefundRequest request, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+
+        public Task<SquareWebhookAcceptedResponse> AcceptWebhookAsync(SquareWebhookRequest request, CancellationToken cancellationToken)
+        {
+            throw exceptionFactory();
+        }
+    }
+
+    private sealed class CapturingSquareTerminalBackendService : ISquareTerminalBackendService
+    {
+        public SquareWebhookRequest? LastWebhookRequest { get; private set; }
+
+        public int CreateDeviceCodeCalls { get; private set; }
+
+        public int CreateCheckoutCalls { get; private set; }
+
+        public int CreateRefundCalls { get; private set; }
+
+        public Task<IReadOnlyList<SquareLocationDto>> GetLocationsAsync(string environment, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<IReadOnlyList<SquareDeviceDto>> GetDevicesAsync(string environment, string locationId, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<IReadOnlyList<SquareDeviceCodeDto>> GetDeviceCodesAsync(string environment, string locationId, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<SquareDeviceCodeDto> CreateDeviceCodeAsync(SquareCreateDeviceCodeRequest request, CancellationToken cancellationToken)
+        {
+            CreateDeviceCodeCalls++;
+            return Task.FromResult(new SquareDeviceCodeDto(
+                "device-code-001",
+                Code: "ABCDEF",
+                Status: "UNPAIRED",
+                LocationId: request.LocationId,
+                Name: request.Name));
+        }
+
+        public Task<SquareDeviceCodeDto?> GetDeviceCodeAsync(string environment, string deviceCodeId, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<SquareCheckoutStatusResponse> CreateCheckoutAsync(SquareCreateCheckoutRequest request, CancellationToken cancellationToken)
+        {
+            CreateCheckoutCalls++;
+            return Task.FromResult(new SquareCheckoutStatusResponse(
+                "checkout-001",
+                request.Environment,
+                Status: "PENDING",
+                DeviceId: request.DeviceId,
+                LocationId: request.LocationId,
+                AmountMoney: request.AmountMoney));
+        }
+
+        public Task<SquareCheckoutStatusResponse?> GetCheckoutAsync(string environment, string checkoutId, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<SquarePaymentStatusDto?> GetPaymentAsync(string environment, string paymentId, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<SquareCheckoutStatusResponse> CancelCheckoutAsync(string checkoutId, SquareCheckoutActionRequest request, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<SquareCheckoutStatusResponse> DismissCheckoutAsync(string checkoutId, SquareCheckoutActionRequest request, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<SquareRefundResponse> CreateRefundAsync(SquareRefundRequest request, CancellationToken cancellationToken)
+        {
+            CreateRefundCalls++;
+            return Task.FromResult(new SquareRefundResponse(
+                "refund-001",
+                request.Environment,
+                Status: "PENDING",
+                PaymentId: request.PaymentId,
+                AmountMoney: request.AmountMoney));
+        }
+
+        public Task<SquareWebhookAcceptedResponse> AcceptWebhookAsync(SquareWebhookRequest request, CancellationToken cancellationToken)
+        {
+            LastWebhookRequest = request;
+            return Task.FromResult(new SquareWebhookAcceptedResponse("accepted", Message: "captured"));
         }
     }
 }

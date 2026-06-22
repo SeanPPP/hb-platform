@@ -9,7 +9,7 @@ public sealed class SquareTokenApiClientTests
     private const string BackendToken = "opaque-backend-square-token";
 
     [Fact]
-    public async Task GetTokenAsync_reads_wrapped_backend_token()
+    public async Task GetStatusAsync_reads_wrapped_backend_status()
     {
         HttpRequestMessage? capturedRequest = null;
         var handler = new StubHttpMessageHandler((request, _) =>
@@ -23,7 +23,8 @@ public sealed class SquareTokenApiClientTests
                       "success": true,
                       "data": {
                         "environment": "Production",
-                        "accessToken": "opaque-backend-square-token",
+                        "configured": true,
+                        "enabled": true,
                         "updatedAt": "2026-05-26T00:00:00Z"
                       }
                     }
@@ -37,17 +38,18 @@ public sealed class SquareTokenApiClientTests
             BaseAddress = new Uri("https://hbpos.example/")
         });
 
-        var token = await client.GetTokenAsync(CardTerminalEnvironment.Production);
+        var status = await client.GetStatusAsync(CardTerminalEnvironment.Production);
 
-        Assert.True(
-            string.Equals(BackendToken, token.AccessToken, StringComparison.Ordinal),
-            "Square token API client should return the backend token");
+        Assert.Equal("Production", status.Environment);
+        Assert.True(status.Configured);
+        Assert.True(status.Enabled);
+        Assert.Equal(DateTimeOffset.Parse("2026-05-26T00:00:00Z"), status.UpdatedAt);
         Assert.NotNull(capturedRequest);
         Assert.Equal("https://hbpos.example/api/v1/square/token?environment=Production", capturedRequest!.RequestUri!.AbsoluteUri);
     }
 
     [Fact]
-    public async Task GetTokenAsync_throws_catalog_exception_for_failure_response()
+    public async Task GetStatusAsync_throws_catalog_exception_for_failure_response()
     {
         var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.NotFound)
         {
@@ -68,7 +70,7 @@ public sealed class SquareTokenApiClientTests
         });
 
         var exception = await Assert.ThrowsAsync<CatalogApiException>(() =>
-            client.GetTokenAsync(CardTerminalEnvironment.Sandbox));
+            client.GetStatusAsync(CardTerminalEnvironment.Sandbox));
 
         Assert.Equal(HttpStatusCode.NotFound, exception.StatusCode);
         Assert.Equal("SQUARE_TOKEN_NOT_CONFIGURED", exception.ErrorCode);
@@ -78,7 +80,7 @@ public sealed class SquareTokenApiClientTests
     }
 
     [Fact]
-    public async Task GetTokenAsync_sanitizes_success_false_message()
+    public async Task GetStatusAsync_sanitizes_success_false_message()
     {
         var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -99,7 +101,7 @@ public sealed class SquareTokenApiClientTests
         });
 
         var exception = await Assert.ThrowsAsync<CatalogApiException>(() =>
-            client.GetTokenAsync(CardTerminalEnvironment.Production));
+            client.GetStatusAsync(CardTerminalEnvironment.Production));
 
         Assert.Equal("SQUARE_TOKEN_READ_FAILED", exception.ErrorCode);
         Assert.True(

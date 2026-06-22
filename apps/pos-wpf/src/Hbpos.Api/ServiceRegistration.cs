@@ -9,6 +9,7 @@ public static class ServiceRegistration
         this IServiceCollection services,
         IConfiguration? configuration = null)
     {
+        services.AddOptions<SquareWebhookOptions>();
         if (configuration is not null)
         {
             services.Configure<LinklyCloudBackendAsyncOptions>(options =>
@@ -21,6 +22,7 @@ public static class ServiceRegistration
                     options,
                     configuration.GetSection("LinklyCloudBackendAsync"));
             });
+            services.Configure<SquareWebhookOptions>(configuration.GetSection("Square"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -66,6 +68,15 @@ public static class ServiceRegistration
         services.AddScoped<ISquareTokenService, SquareTokenService>();
         services.AddScoped<ISquareTokenSchemaSqlExecutor, SqlSugarSquareTokenSchemaSqlExecutor>();
         services.AddScoped<ISquareTokenSchemaInitializer, SqlSugarSquareTokenSchemaInitializer>();
+        services.AddScoped<ISquareWebhookVerifier, SquareWebhookVerifier>();
+        services.AddScoped<ISquareCheckoutSessionRepository, SqlSugarSquareCheckoutSessionRepository>();
+        services.AddScoped<ISquareWebhookSchemaSqlExecutor, SqlSugarSquareWebhookSchemaSqlExecutor>();
+        services.AddScoped<ISquareWebhookSchemaInitializer, SqlSugarSquareWebhookSchemaInitializer>();
+        services.AddHttpClient<ISquareTerminalRestClient, HttpSquareTerminalRestClient>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddScoped<ISquareTerminalBackendService, SquareTerminalBackendService>();
         services.AddSingleton<ICatalogIndexCache, CatalogIndexCache>();
         services.AddSingleton<IPriceIndexBuilder, PriceIndexBuilder>();
         services.AddSingleton<IOrderSyncPlanner, OrderSyncPlanner>();

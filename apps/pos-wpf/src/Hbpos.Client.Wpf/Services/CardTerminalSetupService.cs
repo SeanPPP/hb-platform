@@ -112,8 +112,9 @@ public sealed class CardTerminalSetupService(
 
     public Task<string?> GetSquareAccessTokenAsync(CancellationToken cancellationToken = default)
     {
-        LogSquareSetup("get cached square token requested");
-        return settingsStore.GetSquareAccessTokenAsync(cancellationToken);
+        LogSquareSetup("get cached square token requested but client-side square token access is disabled");
+        // Square token 已后端化，客户端 setup service 不再读取本地 store 或返回 access token。
+        return Task.FromResult<string?>(null);
     }
 
     public async Task<IReadOnlyList<SquareLocationOption>> ListSquareLocationsAsync(
@@ -122,30 +123,10 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         LogSquareSetup($"list locations requested environment={environment} tokenSource={DescribeTokenSource(accessToken)}");
-        var resolvedToken = await ResolveSquareAccessTokenAsync(accessToken, environment, cancellationToken);
-        try
-        {
-            var locations = await squareSetupClient.ListLocationsAsync(resolvedToken, environment, cancellationToken);
-            LogSquareSetup($"list locations succeeded environment={environment} count={locations.Count}");
-            return locations;
-        }
-        catch (SquareApiException ex) when (ex.IsAuthenticationFailure && string.IsNullOrWhiteSpace(accessToken))
-        {
-            LogSquareSetup($"list locations authentication failure environment={environment}; refreshing token");
-            var refreshedToken = await settingsStore.GetSquareAccessTokenAsync(
-                environment,
-                forceRefresh: true,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(refreshedToken))
-            {
-                LogSquareSetup($"list locations token refresh failed environment={environment}");
-                throw new InvalidOperationException("Square token refresh failed.", ex);
-            }
-
-            var locations = await squareSetupClient.ListLocationsAsync(refreshedToken, environment, cancellationToken);
-            LogSquareSetup($"list locations succeeded after refresh environment={environment} count={locations.Count}");
-            return locations;
-        }
+        var setupAccessToken = ResolveSetupAccessToken(accessToken, environment);
+        var locations = await squareSetupClient.ListLocationsAsync(setupAccessToken, environment, cancellationToken);
+        LogSquareSetup($"list locations succeeded environment={environment} count={locations.Count}");
+        return locations;
     }
 
     public async Task<IReadOnlyList<SquareDeviceOption>> ListSquareDevicesAsync(
@@ -155,30 +136,10 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         LogSquareSetup($"list devices requested environment={environment} locationId={LogValue(locationId)} tokenSource={DescribeTokenSource(accessToken)}");
-        var resolvedToken = await ResolveSquareAccessTokenAsync(accessToken, environment, cancellationToken);
-        try
-        {
-            var devices = await squareSetupClient.ListDevicesAsync(resolvedToken, environment, locationId, cancellationToken);
-            LogSquareSetup($"list devices succeeded environment={environment} locationId={LogValue(locationId)} count={devices.Count}");
-            return devices;
-        }
-        catch (SquareApiException ex) when (ex.IsAuthenticationFailure && string.IsNullOrWhiteSpace(accessToken))
-        {
-            LogSquareSetup($"list devices authentication failure environment={environment} locationId={LogValue(locationId)}; refreshing token");
-            var refreshedToken = await settingsStore.GetSquareAccessTokenAsync(
-                environment,
-                forceRefresh: true,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(refreshedToken))
-            {
-                LogSquareSetup($"list devices token refresh failed environment={environment} locationId={LogValue(locationId)}");
-                throw new InvalidOperationException("Square token refresh failed.", ex);
-            }
-
-            var devices = await squareSetupClient.ListDevicesAsync(refreshedToken, environment, locationId, cancellationToken);
-            LogSquareSetup($"list devices succeeded after refresh environment={environment} locationId={LogValue(locationId)} count={devices.Count}");
-            return devices;
-        }
+        var setupAccessToken = ResolveSetupAccessToken(accessToken, environment);
+        var devices = await squareSetupClient.ListDevicesAsync(setupAccessToken, environment, locationId, cancellationToken);
+        LogSquareSetup($"list devices succeeded environment={environment} locationId={LogValue(locationId)} count={devices.Count}");
+        return devices;
     }
 
     public Task<IReadOnlyList<SquareDeviceCodeOption>> ListSquareDeviceCodesAsync(
@@ -188,11 +149,10 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         EnsureDeviceCodesSupported(environment);
-        return ExecuteSquareWithRetryAsync(
+        return ExecuteSquareSetupAsync(
             accessToken,
             environment,
-            token => squareSetupClient.ListDeviceCodesAsync(token, environment, locationId, cancellationToken),
-            cancellationToken);
+            token => squareSetupClient.ListDeviceCodesAsync(token, environment, locationId, cancellationToken));
     }
 
     public Task<SquareDeviceCodeOption> CreateSquareDeviceCodeAsync(
@@ -203,11 +163,10 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         EnsureDeviceCodesSupported(environment);
-        return ExecuteSquareWithRetryAsync(
+        return ExecuteSquareSetupAsync(
             accessToken,
             environment,
-            token => squareSetupClient.CreateDeviceCodeAsync(token, environment, locationId, name, cancellationToken),
-            cancellationToken);
+            token => squareSetupClient.CreateDeviceCodeAsync(token, environment, locationId, name, cancellationToken));
     }
 
     public Task<SquareDeviceCodeOption> GetSquareDeviceCodeAsync(
@@ -217,11 +176,10 @@ public sealed class CardTerminalSetupService(
         CancellationToken cancellationToken = default)
     {
         EnsureDeviceCodesSupported(environment);
-        return ExecuteSquareWithRetryAsync(
+        return ExecuteSquareSetupAsync(
             accessToken,
             environment,
-            token => squareSetupClient.GetDeviceCodeAsync(token, environment, deviceCodeId, cancellationToken),
-            cancellationToken);
+            token => squareSetupClient.GetDeviceCodeAsync(token, environment, deviceCodeId, cancellationToken));
     }
 
     public async Task SaveSquareAsync(
@@ -471,63 +429,26 @@ public sealed class CardTerminalSetupService(
         return settingsStore.SaveAsync(configuration with { LinklyConnectionMode = cloudMode }, squareAccessToken: null, cancellationToken);
     }
 
-    private async Task<string> ResolveSquareAccessTokenAsync(
+    private static string ResolveSetupAccessToken(
         string? accessToken,
-        CardTerminalEnvironment environment,
-        CancellationToken cancellationToken)
+        CardTerminalEnvironment environment)
     {
-        if (!string.IsNullOrWhiteSpace(accessToken))
-        {
-            LogSquareSetup($"resolve token using provided token environment={environment}");
-            return accessToken.Trim();
-        }
-
-        LogSquareSetup($"resolve token using stored token environment={environment}");
-        var storedToken = await settingsStore.GetSquareAccessTokenAsync(
-            environment,
-            forceRefresh: false,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(storedToken))
-        {
-            LogSquareSetup($"resolve token failed environment={environment} reason=missing");
-            throw new InvalidOperationException("Square access token is unavailable.");
-        }
-
-        LogSquareSetup($"resolve token succeeded environment={environment} source=stored");
-        return storedToken;
+        // setup API 已后移到 Hbpos API；客户端保留旧签名兼容调用方，但这里不再读取或刷新本地 Square token。
+        _ = accessToken;
+        LogSquareSetup($"setup api uses backend-managed square token environment={environment}");
+        return string.Empty;
     }
 
-    private async Task<T> ExecuteSquareWithRetryAsync<T>(
+    private async Task<T> ExecuteSquareSetupAsync<T>(
         string? accessToken,
         CardTerminalEnvironment environment,
-        Func<string, Task<T>> operation,
-        CancellationToken cancellationToken)
+        Func<string, Task<T>> operation)
     {
         LogSquareSetup($"execute square operation requested environment={environment} tokenSource={DescribeTokenSource(accessToken)}");
-        var resolvedToken = await ResolveSquareAccessTokenAsync(accessToken, environment, cancellationToken);
-        try
-        {
-            var result = await operation(resolvedToken);
-            LogSquareSetup($"execute square operation succeeded environment={environment}");
-            return result;
-        }
-        catch (SquareApiException ex) when (ex.IsAuthenticationFailure && string.IsNullOrWhiteSpace(accessToken))
-        {
-            LogSquareSetup($"execute square operation authentication failure environment={environment}; refreshing token");
-            var refreshedToken = await settingsStore.GetSquareAccessTokenAsync(
-                environment,
-                forceRefresh: true,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(refreshedToken))
-            {
-                LogSquareSetup($"execute square operation token refresh failed environment={environment}");
-                throw new InvalidOperationException("Square token refresh failed.", ex);
-            }
-
-            var result = await operation(refreshedToken);
-            LogSquareSetup($"execute square operation succeeded after refresh environment={environment}");
-            return result;
-        }
+        var setupAccessToken = ResolveSetupAccessToken(accessToken, environment);
+        var result = await operation(setupAccessToken);
+        LogSquareSetup($"execute square operation succeeded environment={environment}");
+        return result;
     }
 
     private static void EnsureDeviceCodesSupported(CardTerminalEnvironment environment)

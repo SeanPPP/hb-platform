@@ -1,7 +1,8 @@
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Hbpos.Contracts.Common;
+using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -62,18 +63,17 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default)
     {
-        ValidateAccessToken(accessToken);
+        // 兼容旧接口签名；Square token 改由 Hbpos API 在服务端读取，客户端不再发送 token。
+        _ = accessToken;
 
         using var response = await SendAsync(
-            accessToken,
-            environment,
             HttpMethod.Get,
-            "locations",
+            $"api/v1/square/locations?environment={Uri.EscapeDataString(environment.ToString())}",
             body: null,
             cancellationToken);
 
-        using var document = await ReadSuccessDocumentAsync(response, "locations", cancellationToken);
-        return ReadLocations(document.RootElement);
+        var result = await ReadApiResultAsync<List<SquareLocationDto>>(response, "locations", cancellationToken);
+        return result.Select(location => new SquareLocationOption(location.Id, location.Name)).ToArray();
     }
 
     public async Task<IReadOnlyList<SquareDeviceOption>> ListDevicesAsync(
@@ -82,23 +82,27 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         string locationId,
         CancellationToken cancellationToken = default)
     {
-        ValidateAccessToken(accessToken);
+        _ = accessToken;
         if (string.IsNullOrWhiteSpace(locationId))
         {
             throw new ArgumentException("Location id is required.", nameof(locationId));
         }
 
-        var relativeUrl = $"devices?location_id={Uri.EscapeDataString(locationId.Trim())}";
+        var relativeUrl =
+            $"api/v1/square/devices?environment={Uri.EscapeDataString(environment.ToString())}&locationId={Uri.EscapeDataString(locationId.Trim())}";
         using var response = await SendAsync(
-            accessToken,
-            environment,
             HttpMethod.Get,
             relativeUrl,
             body: null,
             cancellationToken);
 
-        using var document = await ReadSuccessDocumentAsync(response, "devices", cancellationToken);
-        return ReadDevices(document.RootElement);
+        var result = await ReadApiResultAsync<List<SquareDeviceDto>>(response, "devices", cancellationToken);
+        return result
+            .Select(device => new SquareDeviceOption(
+                device.Id,
+                string.IsNullOrWhiteSpace(device.Name) ? device.Id : device.Name,
+                device.Status))
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<SquareDeviceCodeOption>> ListDeviceCodesAsync(
@@ -107,23 +111,22 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         string locationId,
         CancellationToken cancellationToken = default)
     {
-        ValidateAccessToken(accessToken);
+        _ = accessToken;
         if (string.IsNullOrWhiteSpace(locationId))
         {
             throw new ArgumentException("Location id is required.", nameof(locationId));
         }
 
-        var relativeUrl = $"devices/codes?location_id={Uri.EscapeDataString(locationId.Trim())}&product_type=TERMINAL_API";
+        var relativeUrl =
+            $"api/v1/square/device-codes?environment={Uri.EscapeDataString(environment.ToString())}&locationId={Uri.EscapeDataString(locationId.Trim())}";
         using var response = await SendAsync(
-            accessToken,
-            environment,
             HttpMethod.Get,
             relativeUrl,
             body: null,
             cancellationToken);
 
-        using var document = await ReadSuccessDocumentAsync(response, "device codes", cancellationToken);
-        return ReadDeviceCodes(document.RootElement);
+        var result = await ReadApiResultAsync<List<SquareDeviceCodeDto>>(response, "device codes", cancellationToken);
+        return result.Select(MapDeviceCode).ToArray();
     }
 
     public async Task<SquareDeviceCodeOption> CreateDeviceCodeAsync(
@@ -133,7 +136,7 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         string name,
         CancellationToken cancellationToken = default)
     {
-        ValidateAccessToken(accessToken);
+        _ = accessToken;
         if (string.IsNullOrWhiteSpace(locationId))
         {
             throw new ArgumentException("Location id is required.", nameof(locationId));
@@ -145,24 +148,17 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         }
 
         using var response = await SendAsync(
-            accessToken,
-            environment,
             HttpMethod.Post,
-            "devices/codes",
-            new
-            {
-                idempotency_key = Guid.NewGuid().ToString("N"),
-                device_code = new
-                {
-                    name = name.Trim(),
-                    location_id = locationId.Trim(),
-                    product_type = "TERMINAL_API"
-                }
-            },
+            "api/v1/square/device-codes",
+            new SquareCreateDeviceCodeRequest(
+                environment.ToString(),
+                Guid.NewGuid().ToString("N"),
+                locationId.Trim(),
+                name.Trim()),
             cancellationToken);
 
-        using var document = await ReadSuccessDocumentAsync(response, "create device code", cancellationToken);
-        return ReadSingleDeviceCode(document.RootElement);
+        var result = await ReadApiResultAsync<SquareDeviceCodeDto>(response, "create device code", cancellationToken);
+        return MapDeviceCode(result);
     }
 
     public async Task<SquareDeviceCodeOption> GetDeviceCodeAsync(
@@ -171,36 +167,29 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         string deviceCodeId,
         CancellationToken cancellationToken = default)
     {
-        ValidateAccessToken(accessToken);
+        _ = accessToken;
         if (string.IsNullOrWhiteSpace(deviceCodeId))
         {
             throw new ArgumentException("Device code id is required.", nameof(deviceCodeId));
         }
 
         using var response = await SendAsync(
-            accessToken,
-            environment,
             HttpMethod.Get,
-            $"devices/codes/{Uri.EscapeDataString(deviceCodeId.Trim())}",
+            $"api/v1/square/device-codes/{Uri.EscapeDataString(deviceCodeId.Trim())}?environment={Uri.EscapeDataString(environment.ToString())}",
             body: null,
             cancellationToken);
 
-        using var document = await ReadSuccessDocumentAsync(response, "device code", cancellationToken);
-        return ReadSingleDeviceCode(document.RootElement);
+        var result = await ReadApiResultAsync<SquareDeviceCodeDto>(response, "device code", cancellationToken);
+        return MapDeviceCode(result);
     }
 
     private async Task<HttpResponseMessage> SendAsync(
-        string accessToken,
-        CardTerminalEnvironment environment,
         HttpMethod method,
         string relativeUrl,
         object? body,
         CancellationToken cancellationToken)
     {
-        var baseUri = new Uri(CardTerminalSettings.GetSquareApiBaseUrl(environment), UriKind.Absolute);
-        using var request = new HttpRequestMessage(method, new Uri(baseUri, relativeUrl));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Trim());
-        request.Headers.Add("Square-Version", CardTerminalSettings.SquareVersion);
+        using var request = new HttpRequestMessage(method, relativeUrl);
         if (body is not null)
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);
@@ -209,139 +198,70 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
         return await _httpClient.SendAsync(request, cancellationToken);
     }
 
-    private static async Task<JsonDocument> ReadSuccessDocumentAsync(
+    private static async Task<T> ReadApiResultAsync<T>(
         HttpResponseMessage response,
         string operationName,
         CancellationToken cancellationToken)
     {
+        var content = response.Content is null
+            ? string.Empty
+            : await response.Content.ReadAsStringAsync(cancellationToken);
+
+        ApiResult<T>? result = null;
+        if (!string.IsNullOrWhiteSpace(content))
+        {
+            try
+            {
+                result = JsonSerializer.Deserialize<ApiResult<T>>(content, JsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException($"Square {operationName} API returned invalid JSON.", ex);
+            }
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             throw new SquareApiException(
-                $"Square {operationName} request failed with HTTP {(int)response.StatusCode}.",
+                string.IsNullOrWhiteSpace(result?.Message)
+                    ? $"Square {operationName} request failed with HTTP {(int)response.StatusCode}."
+                    : $"Square {operationName} request failed with HTTP {(int)response.StatusCode}: {result.Message}",
                 response.StatusCode);
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-    }
-
-    private static IReadOnlyList<SquareLocationOption> ReadLocations(JsonElement root)
-    {
-        if (!root.TryGetProperty("locations", out var locationsElement) ||
-            locationsElement.ValueKind != JsonValueKind.Array)
+        if (result is null)
         {
-            return [];
+            throw new InvalidOperationException($"Square {operationName} API returned an empty response.");
         }
 
-        var locations = new List<SquareLocationOption>(locationsElement.GetArrayLength());
-        foreach (var locationElement in locationsElement.EnumerateArray())
+        if (!result.Success)
         {
-            var id = ReadRequiredString(locationElement, "id");
-            var name = ReadRequiredString(locationElement, "name");
-            locations.Add(new SquareLocationOption(id, name));
+            throw new SquareApiException(
+                string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Square {operationName} API returned a failure response."
+                    : result.Message,
+                response.StatusCode);
         }
 
-        return locations;
-    }
-
-    private static IReadOnlyList<SquareDeviceOption> ReadDevices(JsonElement root)
-    {
-        if (!root.TryGetProperty("devices", out var devicesElement) ||
-            devicesElement.ValueKind != JsonValueKind.Array)
+        if (result.Data is null)
         {
-            return [];
+            throw new InvalidOperationException($"Square {operationName} API returned no data.");
         }
 
-        var devices = new List<SquareDeviceOption>(devicesElement.GetArrayLength());
-        foreach (var deviceElement in devicesElement.EnumerateArray())
-        {
-            var id = ReadRequiredString(deviceElement, "id");
-            var name = deviceElement.TryGetProperty("attributes", out var attributesElement)
-                ? ReadOptionalString(attributesElement, "name")
-                : null;
-            var status = deviceElement.TryGetProperty("status", out var statusElement)
-                ? ReadOptionalString(statusElement, "category")
-                : null;
-
-            devices.Add(new SquareDeviceOption(id, name ?? id, status));
-        }
-
-        return devices;
+        return result.Data;
     }
 
-    private static IReadOnlyList<SquareDeviceCodeOption> ReadDeviceCodes(JsonElement root)
+    private static SquareDeviceCodeOption MapDeviceCode(SquareDeviceCodeDto deviceCode)
     {
-        if (!root.TryGetProperty("device_codes", out var deviceCodesElement) ||
-            deviceCodesElement.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
-
-        var deviceCodes = new List<SquareDeviceCodeOption>(deviceCodesElement.GetArrayLength());
-        foreach (var deviceCodeElement in deviceCodesElement.EnumerateArray())
-        {
-            deviceCodes.Add(ReadDeviceCode(deviceCodeElement));
-        }
-
-        return deviceCodes;
-    }
-
-    private static SquareDeviceCodeOption ReadSingleDeviceCode(JsonElement root)
-    {
-        if (!root.TryGetProperty("device_code", out var deviceCodeElement) ||
-            deviceCodeElement.ValueKind != JsonValueKind.Object)
-        {
-            throw new InvalidOperationException("Square response is missing required property 'device_code'.");
-        }
-
-        return ReadDeviceCode(deviceCodeElement);
-    }
-
-    private static SquareDeviceCodeOption ReadDeviceCode(JsonElement element)
-    {
-        var id = ReadRequiredString(element, "id");
-        var name = ReadRequiredString(element, "name");
-        var code = ReadRequiredString(element, "code");
-        var status = ReadRequiredString(element, "status");
-        var locationId = ReadOptionalString(element, "location_id");
-        var deviceId = ReadOptionalString(element, "device_id");
-        var pairBy = ReadOptionalDateTimeOffset(element, "pair_by");
-        var createdAt = ReadOptionalDateTimeOffset(element, "created_at");
-
-        return new SquareDeviceCodeOption(id, name, code, status, locationId, deviceId, pairBy, createdAt);
-    }
-
-    private static string ReadRequiredString(JsonElement element, string propertyName)
-    {
-        var value = ReadOptionalString(element, propertyName);
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new InvalidOperationException($"Square response is missing required property '{propertyName}'.");
-        }
-
-        return value;
-    }
-
-    private static string? ReadOptionalString(JsonElement element, string propertyName)
-    {
-        return element.TryGetProperty(propertyName, out var propertyElement) &&
-            propertyElement.ValueKind == JsonValueKind.String
-                ? propertyElement.GetString()
-                : null;
-    }
-
-    private static DateTimeOffset? ReadOptionalDateTimeOffset(JsonElement element, string propertyName)
-    {
-        var text = ReadOptionalString(element, propertyName);
-        return DateTimeOffset.TryParse(text, out var value) ? value : null;
-    }
-
-    private static void ValidateAccessToken(string accessToken)
-    {
-        if (string.IsNullOrWhiteSpace(accessToken))
-        {
-            throw new ArgumentException("Access token is required.", nameof(accessToken));
-        }
+        return new SquareDeviceCodeOption(
+            deviceCode.Id,
+            deviceCode.Name ?? deviceCode.Id,
+            deviceCode.Code ?? string.Empty,
+            deviceCode.Status ?? string.Empty,
+            deviceCode.LocationId,
+            deviceCode.DeviceId,
+            PairBy: null,
+            CreatedAt: null);
     }
 }
 

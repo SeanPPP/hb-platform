@@ -135,8 +135,6 @@ public static class ServiceRegistration
             sp.GetRequiredService<IDeviceAuthorizationProtector>(),
             sp.GetRequiredService<ISquareTokenApiClient>()));
         services.AddSingleton<ICardTerminalSettingsProvider>(sp => sp.GetRequiredService<ICardTerminalSettingsStore>());
-        services.AddSingleton<ISquareTokenResolver>(sp => sp.GetRequiredService<ICardTerminalSettingsStore>());
-        services.AddSingleton<ISquareAccessTokenProvider>(sp => sp.GetRequiredService<ICardTerminalSettingsStore>());
         services.AddSingleton<ILinklyCloudSecretStore>(sp => sp.GetRequiredService<ICardTerminalSettingsStore>());
         services.AddSingleton<ILinklyEftClientFactory, LinklyEftClientFactory>();
         services.AddSingleton<LinklyTerminalClient>();
@@ -164,12 +162,16 @@ public static class ServiceRegistration
         services.AddSingleton<ILinklyTerminalClient, ConfiguredLinklyTerminalClient>();
         services.AddHttpClient<ISquareTerminalSetupClient, SquareTerminalSetupClient>(client =>
         {
+            client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(15);
-        });
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ISquareTerminalPaymentClient, SquareTerminalPaymentClient>(client =>
         {
+            client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(30);
-        });
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ICardTerminalSetupService>(sp => new CardTerminalSetupService(
             sp.GetRequiredService<ICardTerminalSettingsStore>(),
             sp.GetRequiredService<ISquareTerminalSetupClient>(),
@@ -181,8 +183,10 @@ public static class ServiceRegistration
             sp.GetRequiredService<DeviceAuthorizationState>()));
         services.AddHttpClient<ICardTerminalClient, ConfiguredCardTerminalClient>(client =>
         {
+            client.BaseAddress = GetApiBaseAddress();
             client.Timeout = LinklyTimeoutPolicy.HttpTimeout;
-        });
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<IVoucherTenderClient>(sp => sp.GetRequiredService<IVoucherApiClient>());
         services.AddSingleton<IDeviceRegistrationWorkflowService, DeviceRegistrationWorkflowService>();
         services.AddSingleton<ISpecialProductsWorkflowService, SpecialProductsWorkflowService>();

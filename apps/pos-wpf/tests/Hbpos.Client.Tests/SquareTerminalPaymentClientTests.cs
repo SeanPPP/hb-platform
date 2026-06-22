@@ -7,9 +7,10 @@ namespace Hbpos.Client.Tests;
 public sealed class SquareTerminalPaymentClientTests
 {
     private const string TestAccessToken = "opaque-square-payment-token";
+    private static readonly Uri HbposApiBaseAddress = new("http://localhost:5159/");
 
     [Fact]
-    public async Task GetCheckoutAsync_UsesConfiguredSquareV2BaseWithoutDoublePrefix()
+    public async Task GetCheckoutAsync_UsesHbposApiCheckoutEndpoint()
     {
         HttpRequestMessage? capturedRequest = null;
         var handler = new StubHttpMessageHandler((request, _) =>
@@ -18,26 +19,32 @@ public sealed class SquareTerminalPaymentClientTests
             return Task.FromResult(JsonResponse(
                 """
                 {
-                  "checkout": {
-                    "id": "checkout-1",
-                    "status": "COMPLETED",
-                    "amount_money": { "amount": 1000, "currency": "AUD" },
-                    "payment_ids": ["payment-1"]
+                  "success": true,
+                  "data": {
+                    "checkoutId": "checkout-1",
+                    "environment": "Production",
+                    "status": "CANCELED",
+                    "amountMoney": { "amount": 1000, "currency": "AUD" },
+                    "paymentIds": [ "payment-1", "payment-2" ],
+                    "cancelReason": "SELLER_CANCELED"
                   }
                 }
                 """));
         });
-        var client = new SquareTerminalPaymentClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.GetCheckoutAsync(CreateSettings(), "checkout-1");
 
-        Assert.Equal("COMPLETED", result.Status);
+        Assert.Equal("CANCELED", result.Status);
+        Assert.Equal(["payment-1", "payment-2"], result.PaymentIds);
+        Assert.Equal("SELLER_CANCELED", result.CancelReason);
         Assert.NotNull(capturedRequest);
-        Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-1", capturedRequest!.RequestUri!.AbsoluteUri);
+        AssertHbposApiRequest(capturedRequest!, "api/v1/square/checkouts/checkout-1?environment=Production");
+        AssertNoSquareHeaders(capturedRequest!);
     }
 
     [Fact]
-    public async Task GetPaymentAsync_UsesConfiguredSquareV2BaseWithoutDoublePrefix()
+    public async Task GetPaymentAsync_UsesHbposApiPaymentEndpoint()
     {
         HttpRequestMessage? capturedRequest = null;
         var handler = new StubHttpMessageHandler((request, _) =>
@@ -46,21 +53,23 @@ public sealed class SquareTerminalPaymentClientTests
             return Task.FromResult(JsonResponse(
                 """
                 {
-                  "payment": {
-                    "id": "payment-1",
+                  "success": true,
+                  "data": {
+                    "paymentId": "payment-1",
                     "status": "COMPLETED",
-                    "amount_money": { "amount": 1000, "currency": "AUD" }
+                    "approvedMoney": { "amount": 1000, "currency": "AUD" }
                   }
                 }
                 """));
         });
-        var client = new SquareTerminalPaymentClient(new HttpClient(handler));
+        var client = CreateClient(handler);
 
         var result = await client.GetPaymentAsync(CreateSettings(), "payment-1");
 
         Assert.Equal("COMPLETED", result.Status);
         Assert.NotNull(capturedRequest);
-        Assert.Equal("https://connect.squareup.com/v2/payments/payment-1", capturedRequest!.RequestUri!.AbsoluteUri);
+        AssertHbposApiRequest(capturedRequest!, "api/v1/square/payments/payment-1?environment=Production");
+        AssertNoSquareHeaders(capturedRequest!);
     }
 
     private static CardTerminalSettings CreateSettings()
@@ -83,6 +92,28 @@ public sealed class SquareTerminalPaymentClientTests
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
+    }
+
+    private static SquareTerminalPaymentClient CreateClient(HttpMessageHandler handler)
+    {
+        return new SquareTerminalPaymentClient(new HttpClient(handler)
+        {
+            BaseAddress = HbposApiBaseAddress
+        });
+    }
+
+    private static void AssertHbposApiRequest(HttpRequestMessage request, string relativePathAndQuery)
+    {
+        Assert.Equal(new Uri(HbposApiBaseAddress, relativePathAndQuery), request.RequestUri);
+        var absoluteUri = request.RequestUri!.AbsoluteUri;
+        Assert.DoesNotContain("connect.squareup.com", absoluteUri, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("connect.squareupsandbox.com", absoluteUri, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertNoSquareHeaders(HttpRequestMessage request)
+    {
+        Assert.Null(request.Headers.Authorization);
+        Assert.False(request.Headers.Contains("Square-Version"));
     }
 
     private sealed class StubHttpMessageHandler(

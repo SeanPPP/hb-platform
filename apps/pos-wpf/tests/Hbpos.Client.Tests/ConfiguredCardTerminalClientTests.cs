@@ -12,6 +12,7 @@ public sealed class ConfiguredCardTerminalClientTests
 {
     private const string InitialToken = "opaque-initial-square-token";
     private const string RefreshedToken = "opaque-refreshed-square-token";
+    private static readonly Uri HbposApiBaseAddress = new("http://localhost:5159/");
 
     [Fact]
     public async Task AuthorizeAsync_fails_when_card_terminal_is_not_configured()
@@ -124,16 +125,17 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var result = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
 
         Assert.True(result.Approved);
         Assert.Equal("SQRF:refund-1", result.Reference);
         Assert.NotNull(capturedRequest);
-        Assert.Equal("https://connect.squareup.com/v2/refunds", capturedRequest!.RequestUri!.AbsoluteUri);
+        AssertHbposApiRequest(capturedRequest!, "api/v1/square/refunds");
+        AssertNoSquareHeaders(capturedRequest!);
         var body = await capturedRequest.Content!.ReadAsStringAsync();
-        Assert.Contains("\"payment_id\":\"payment-1\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"paymentId\":\"payment-1\"", body, StringComparison.Ordinal);
         Assert.Contains("\"amount\":1234", body, StringComparison.Ordinal);
     }
 
@@ -163,7 +165,7 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var first = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
         var second = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
@@ -171,8 +173,55 @@ public sealed class ConfiguredCardTerminalClientTests
         Assert.False(first.Approved);
         Assert.True(second.Approved);
         Assert.Equal(2, capturedRequests.Count);
-        var firstKey = ReadJsonString(await capturedRequests[0].Content!.ReadAsStringAsync(), "idempotency_key");
-        var secondKey = ReadJsonString(await capturedRequests[1].Content!.ReadAsStringAsync(), "idempotency_key");
+        var firstKey = ReadJsonString(await capturedRequests[0].Content!.ReadAsStringAsync(), "idempotencyKey");
+        var secondKey = ReadJsonString(await capturedRequests[1].Content!.ReadAsStringAsync(), "idempotencyKey");
+        Assert.Equal(firstKey, secondKey);
+    }
+
+    [Fact]
+    public async Task RefundAsync_reuses_square_refund_idempotency_key_after_backend_gateway_failure()
+    {
+        var capturedRequests = new List<HttpRequestMessage>();
+        var callCount = 0;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequests.Add(CloneRequestWithBody(request));
+            callCount++;
+            if (callCount == 1)
+            {
+                return JsonResponse(
+                    HttpStatusCode.BadGateway,
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "SQUARE_UPSTREAM_REQUEST_FAILED",
+                      "message": "Square upstream request failed."
+                    }
+                    """);
+            }
+
+            return JsonResponse(
+                """
+                {
+                  "refund": {
+                    "id": "refund-retry-1",
+                    "status": "PENDING"
+                  }
+                }
+                """);
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler));
+
+        var first = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
+        var second = await client.RefundAsync(12.34m, CreateSession(), "SQ:payment-1");
+
+        Assert.False(first.Approved);
+        Assert.True(second.Approved);
+        Assert.Equal(2, capturedRequests.Count);
+        var firstKey = ReadJsonString(await capturedRequests[0].Content!.ReadAsStringAsync(), "idempotencyKey");
+        var secondKey = ReadJsonString(await capturedRequests[1].Content!.ReadAsStringAsync(), "idempotencyKey");
         Assert.Equal(firstKey, secondKey);
     }
 
@@ -181,7 +230,7 @@ public sealed class ConfiguredCardTerminalClientTests
     {
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(new StubHttpMessageHandler((_, _) =>
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
                 Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))));
 
         var result = await client.RefundAsync(5m, CreateSession(), null);
@@ -214,7 +263,7 @@ public sealed class ConfiguredCardTerminalClientTests
             }
 
             if (request.Method == HttpMethod.Get &&
-                request.RequestUri!.AbsolutePath.Contains("/v2/payments/", StringComparison.Ordinal))
+                request.RequestUri!.AbsolutePath.Contains("/api/v1/square/payments/", StringComparison.Ordinal))
             {
                 return JsonResponse(
                     """
@@ -251,7 +300,7 @@ public sealed class ConfiguredCardTerminalClientTests
                       """);
         });
         var settings = CreateSquareSettings();
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(settings), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(settings), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(10.99m, CreateSession());
 
@@ -266,24 +315,27 @@ public sealed class ConfiguredCardTerminalClientTests
             create =>
             {
                 Assert.Equal(HttpMethod.Post, create.Method);
-                Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts", create.RequestUri!.AbsoluteUri);
-                Assert.True(HasBearerToken(create, InitialToken), "create request should use the configured Square token");
+                AssertHbposApiRequest(create, "api/v1/square/checkouts");
+                AssertNoSquareHeaders(create);
                 Assert.Equal("DEV-1", ReadCheckoutDeviceId(create));
             },
             firstStatus =>
             {
                 Assert.Equal(HttpMethod.Get, firstStatus.Method);
-                Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-1", firstStatus.RequestUri!.AbsoluteUri);
+                AssertHbposApiRequest(firstStatus, "api/v1/square/checkouts/checkout-1?environment=Production");
+                AssertNoSquareHeaders(firstStatus);
             },
             secondStatus =>
             {
                 Assert.Equal(HttpMethod.Get, secondStatus.Method);
-                Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-1", secondStatus.RequestUri!.AbsoluteUri);
+                AssertHbposApiRequest(secondStatus, "api/v1/square/checkouts/checkout-1?environment=Production");
+                AssertNoSquareHeaders(secondStatus);
             },
             payment =>
             {
                 Assert.Equal(HttpMethod.Get, payment.Method);
-                Assert.Equal("https://connect.squareup.com/v2/payments/payment-1", payment.RequestUri!.AbsoluteUri);
+                AssertHbposApiRequest(payment, "api/v1/square/payments/payment-1?environment=Production");
+                AssertNoSquareHeaders(payment);
             });
         AssertContainsLogLine(logs.Lines, "authorize start");
         AssertContainsLogLine(logs.Lines, "storedSquareDeviceId=DEV-1 checkoutDeviceId=DEV-1");
@@ -325,7 +377,7 @@ public sealed class ConfiguredCardTerminalClientTests
                 }
                 """);
         });
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -350,7 +402,7 @@ public sealed class ConfiguredCardTerminalClientTests
               }
             }
             """.Replace("%STATUS%", paymentStatus, StringComparison.Ordinal));
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -371,7 +423,7 @@ public sealed class ConfiguredCardTerminalClientTests
               }
             }
             """);
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -392,7 +444,7 @@ public sealed class ConfiguredCardTerminalClientTests
               }
             }
             """);
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -415,7 +467,7 @@ public sealed class ConfiguredCardTerminalClientTests
               ]
             }
             """);
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -434,7 +486,7 @@ public sealed class ConfiguredCardTerminalClientTests
               }
             }
             """);
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -454,7 +506,7 @@ public sealed class ConfiguredCardTerminalClientTests
               }
             }
             """);
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(CreateSquareSettings()), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -463,7 +515,7 @@ public sealed class ConfiguredCardTerminalClientTests
     }
 
     [Fact]
-    public async Task AuthorizeAsync_refreshes_square_token_once_when_payment_lookup_is_unauthorized()
+    public async Task AuthorizeAsync_does_not_refresh_square_token_when_payment_lookup_is_unauthorized()
     {
         var requests = new List<HttpRequestMessage>();
         var paymentLookupCount = 0;
@@ -484,7 +536,7 @@ public sealed class ConfiguredCardTerminalClientTests
             }
 
             if (request.Method == HttpMethod.Get &&
-                request.RequestUri!.AbsolutePath.Contains("/v2/payments/", StringComparison.Ordinal))
+                request.RequestUri!.AbsolutePath.Contains("/api/v1/square/payments/", StringComparison.Ordinal))
             {
                 paymentLookupCount++;
                 if (paymentLookupCount == 1)
@@ -522,19 +574,30 @@ public sealed class ConfiguredCardTerminalClientTests
         var tokenProvider = new FakeSquareAccessTokenProvider(RefreshedToken);
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler),
+            CreateApiClient(handler),
             squareAccessTokenProvider: tokenProvider);
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
-        Assert.True(result.Approved);
-        Assert.Equal(1, tokenProvider.ForceRefreshCount);
+        Assert.False(result.Approved);
+        Assert.Equal(0, tokenProvider.ForceRefreshCount);
         Assert.Collection(
             requests,
-            create => Assert.True(HasBearerToken(create, InitialToken), "create request should use the cached Square token"),
-            status => Assert.True(HasBearerToken(status, InitialToken), "checkout status request should use the cached Square token"),
-            failedPayment => Assert.True(HasBearerToken(failedPayment, InitialToken), "first payment request should use the cached Square token"),
-            retriedPayment => Assert.True(HasBearerToken(retriedPayment, RefreshedToken), "retried payment request should use the refreshed Square token"));
+            create =>
+            {
+                AssertHbposApiRequest(create, "api/v1/square/checkouts");
+                AssertNoSquareHeaders(create);
+            },
+            status =>
+            {
+                AssertHbposApiRequest(status, "api/v1/square/checkouts/checkout-payment-refresh?environment=Production");
+                AssertNoSquareHeaders(status);
+            },
+            failedPayment =>
+            {
+                AssertHbposApiRequest(failedPayment, "api/v1/square/payments/payment-1?environment=Production");
+                AssertNoSquareHeaders(failedPayment);
+            });
     }
 
     [Fact]
@@ -559,7 +622,7 @@ public sealed class ConfiguredCardTerminalClientTests
             }
 
             if (request.Method == HttpMethod.Get &&
-                request.RequestUri!.AbsolutePath.Contains("/v2/payments/", StringComparison.Ordinal))
+                request.RequestUri!.AbsolutePath.Contains("/api/v1/square/payments/", StringComparison.Ordinal))
             {
                 return JsonResponse(
                     """
@@ -586,7 +649,7 @@ public sealed class ConfiguredCardTerminalClientTests
                 """);
         });
         var settings = CreateSquareSettings() with { SquareDeviceId = "device:533CS145C3000413" };
-        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(settings), new HttpClient(handler));
+        var client = new ConfiguredCardTerminalClient(new StaticCardTerminalSettingsProvider(settings), CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
@@ -598,7 +661,7 @@ public sealed class ConfiguredCardTerminalClientTests
     }
 
     [Fact]
-    public async Task AuthorizeAsync_refreshes_square_token_once_when_checkout_is_unauthorized()
+    public async Task AuthorizeAsync_does_not_refresh_square_token_when_checkout_is_unauthorized()
     {
         using var logs = new ConsoleLogCapture();
         var requests = new List<HttpRequestMessage>();
@@ -627,7 +690,7 @@ public sealed class ConfiguredCardTerminalClientTests
             }
 
             if (request.Method == HttpMethod.Get &&
-                request.RequestUri!.AbsolutePath.Contains("/v2/payments/", StringComparison.Ordinal))
+                request.RequestUri!.AbsolutePath.Contains("/api/v1/square/payments/", StringComparison.Ordinal))
             {
                 return JsonResponse(
                     """
@@ -657,21 +720,16 @@ public sealed class ConfiguredCardTerminalClientTests
         var tokenProvider = new FakeSquareAccessTokenProvider(RefreshedToken);
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(settings),
-            new HttpClient(handler),
+            CreateApiClient(handler),
             squareAccessTokenProvider: tokenProvider);
 
         var result = await client.AuthorizeAsync(5m, CreateSession());
 
-        Assert.True(result.Approved);
-        Assert.Equal(1, tokenProvider.ForceRefreshCount);
-        Assert.Collection(
-            requests,
-            first => Assert.True(HasBearerToken(first, InitialToken), "first checkout request should use the cached Square token"),
-            retry => Assert.True(HasBearerToken(retry, RefreshedToken), "retry checkout request should use the refreshed Square token"),
-            status => Assert.True(HasBearerToken(status, RefreshedToken), "status request should use the refreshed Square token"),
-            payment => Assert.True(HasBearerToken(payment, RefreshedToken), "payment request should use the refreshed Square token"));
-        AssertContainsLogLine(logs.Lines, "auth refresh requested method=POST path=terminals/checkouts environment=Production");
-        AssertContainsLogLine(logs.Lines, "auth refresh succeeded method=POST path=terminals/checkouts");
+        Assert.False(result.Approved);
+        Assert.Equal(0, tokenProvider.ForceRefreshCount);
+        var request = Assert.Single(requests);
+        AssertHbposApiRequest(request, "api/v1/square/checkouts");
+        AssertNoSquareHeaders(request);
         AssertNoSensitiveTokenLogged(logs.Lines);
     }
 
@@ -718,7 +776,7 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
@@ -749,7 +807,7 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
@@ -789,7 +847,7 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
@@ -814,7 +872,7 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
@@ -882,7 +940,7 @@ public sealed class ConfiguredCardTerminalClientTests
         });
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler));
+            CreateApiClient(handler));
         using var cancellationTokenSource = new CancellationTokenSource();
         var authorizeTask = client.AuthorizeAsync(10m, CreateSession(), cancellationTokenSource.Token);
 
@@ -892,10 +950,26 @@ public sealed class ConfiguredCardTerminalClientTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authorizeTask);
         Assert.Collection(
             requests,
-            create => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts", create.RequestUri!.AbsoluteUri),
-            status => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-cancel", status.RequestUri!.AbsoluteUri),
-            cancel => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-cancel/cancel", cancel.RequestUri!.AbsoluteUri),
-            dismiss => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-cancel/dismiss", dismiss.RequestUri!.AbsoluteUri));
+            create =>
+            {
+                AssertHbposApiRequest(create, "api/v1/square/checkouts");
+                AssertNoSquareHeaders(create);
+            },
+            status =>
+            {
+                AssertHbposApiRequest(status, "api/v1/square/checkouts/checkout-cancel?environment=Production");
+                AssertNoSquareHeaders(status);
+            },
+            cancel =>
+            {
+                AssertHbposApiRequest(cancel, "api/v1/square/checkouts/checkout-cancel/cancel");
+                AssertNoSquareHeaders(cancel);
+            },
+            dismiss =>
+            {
+                AssertHbposApiRequest(dismiss, "api/v1/square/checkouts/checkout-cancel/dismiss");
+                AssertNoSquareHeaders(dismiss);
+            });
         AssertContainsLogLine(logs.Lines, "authorize canceled checkoutId=checkout-cancel reason=caller-cancelled; starting cleanup");
         AssertContainsLogLine(logs.Lines, "cleanup start checkoutId=checkout-cancel allowRefresh=True");
         AssertContainsLogLine(logs.Lines, "checkout cancel result checkoutId=checkout-cancel status=CANCEL_REQUESTED shouldDismiss=True");
@@ -964,7 +1038,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var settings = CreateSquareSettings(terminalTimeout: TimeSpan.FromMilliseconds(50));
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(settings),
-            new HttpClient(handler));
+            CreateApiClient(handler));
 
         var authorizeTask = client.AuthorizeAsync(10m, CreateSession());
         await getStarted.Task;
@@ -972,14 +1046,30 @@ public sealed class ConfiguredCardTerminalClientTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authorizeTask);
         Assert.Collection(
             requests,
-            create => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts", create.RequestUri!.AbsoluteUri),
-            status => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-timeout", status.RequestUri!.AbsoluteUri),
-            cancel => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-timeout/cancel", cancel.RequestUri!.AbsoluteUri),
-            dismiss => Assert.Equal("https://connect.squareup.com/v2/terminals/checkouts/checkout-timeout/dismiss", dismiss.RequestUri!.AbsoluteUri));
+            create =>
+            {
+                AssertHbposApiRequest(create, "api/v1/square/checkouts");
+                AssertNoSquareHeaders(create);
+            },
+            status =>
+            {
+                AssertHbposApiRequest(status, "api/v1/square/checkouts/checkout-timeout?environment=Production");
+                AssertNoSquareHeaders(status);
+            },
+            cancel =>
+            {
+                AssertHbposApiRequest(cancel, "api/v1/square/checkouts/checkout-timeout/cancel");
+                AssertNoSquareHeaders(cancel);
+            },
+            dismiss =>
+            {
+                AssertHbposApiRequest(dismiss, "api/v1/square/checkouts/checkout-timeout/dismiss");
+                AssertNoSquareHeaders(dismiss);
+            });
     }
 
     [Fact]
-    public async Task AuthorizeAsync_refreshes_square_token_once_when_cancel_cleanup_is_unauthorized()
+    public async Task AuthorizeAsync_does_not_refresh_square_token_when_cancel_cleanup_is_unauthorized()
     {
         using var logs = new ConsoleLogCapture();
         var requests = new List<HttpRequestMessage>();
@@ -1008,7 +1098,7 @@ public sealed class ConfiguredCardTerminalClientTests
             if (request.Method == HttpMethod.Post &&
                 request.RequestUri!.AbsolutePath.EndsWith("/cancel", StringComparison.Ordinal))
             {
-                if (HasBearerToken(request, InitialToken))
+                if (requests.Count == 3)
                 {
                     return new HttpResponseMessage(HttpStatusCode.Unauthorized);
                 }
@@ -1044,7 +1134,7 @@ public sealed class ConfiguredCardTerminalClientTests
         var tokenProvider = new FakeSquareAccessTokenProvider(RefreshedToken);
         var client = new ConfiguredCardTerminalClient(
             new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
-            new HttpClient(handler),
+            CreateApiClient(handler),
             squareAccessTokenProvider: tokenProvider);
         using var cancellationTokenSource = new CancellationTokenSource();
         var authorizeTask = client.AuthorizeAsync(10m, CreateSession(), cancellationTokenSource.Token);
@@ -1053,17 +1143,30 @@ public sealed class ConfiguredCardTerminalClientTests
         cancellationTokenSource.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authorizeTask);
-        Assert.Equal(1, tokenProvider.ForceRefreshCount);
+        Assert.Equal(0, tokenProvider.ForceRefreshCount);
         Assert.Collection(
             requests,
-            create => Assert.True(HasBearerToken(create, InitialToken)),
-            status => Assert.True(HasBearerToken(status, InitialToken)),
-            cancel => Assert.True(HasBearerToken(cancel, InitialToken)),
-            cancelRetry => Assert.True(HasBearerToken(cancelRetry, RefreshedToken)),
-            dismiss => Assert.True(HasBearerToken(dismiss, RefreshedToken)));
-        AssertContainsLogLine(logs.Lines, "auth refresh requested method=POST path=terminals/checkouts/checkout-refresh-cancel/cancel environment=Production");
-        AssertContainsLogLine(logs.Lines, "auth refresh succeeded method=POST path=terminals/checkouts/checkout-refresh-cancel/cancel");
-        AssertContainsLogLine(logs.Lines, "checkout cancel result checkoutId=checkout-refresh-cancel status=CANCEL_REQUESTED shouldDismiss=True");
+            create =>
+            {
+                AssertHbposApiRequest(create, "api/v1/square/checkouts");
+                AssertNoSquareHeaders(create);
+            },
+            status =>
+            {
+                AssertHbposApiRequest(status, "api/v1/square/checkouts/checkout-refresh-cancel?environment=Production");
+                AssertNoSquareHeaders(status);
+            },
+            cancel =>
+            {
+                AssertHbposApiRequest(cancel, "api/v1/square/checkouts/checkout-refresh-cancel/cancel");
+                AssertNoSquareHeaders(cancel);
+            },
+            dismiss =>
+            {
+                AssertHbposApiRequest(dismiss, "api/v1/square/checkouts/checkout-refresh-cancel/dismiss");
+                AssertNoSquareHeaders(dismiss);
+            });
+        AssertContainsLogLine(logs.Lines, "checkout cancel failed checkoutId=checkout-refresh-cancel http=401");
         AssertContainsLogLine(logs.Lines, "checkout dismiss result checkoutId=checkout-refresh-cancel http=200");
         AssertNoSensitiveTokenLogged(logs.Lines);
     }
@@ -1131,7 +1234,7 @@ public sealed class ConfiguredCardTerminalClientTests
             }
 
             if (request.Method == HttpMethod.Get &&
-                request.RequestUri!.AbsolutePath.Contains("/v2/payments/", StringComparison.Ordinal))
+                request.RequestUri!.AbsolutePath.Contains("/api/v1/square/payments/", StringComparison.Ordinal))
             {
                 return JsonResponse(paymentStatusCode, paymentJson);
             }
@@ -1153,8 +1256,7 @@ public sealed class ConfiguredCardTerminalClientTests
     private static HttpRequestMessage CloneRequest(HttpRequestMessage request)
     {
         var clone = new HttpRequestMessage(request.Method, request.RequestUri);
-        clone.Headers.Authorization = request.Headers.Authorization;
-        foreach (var header in request.Headers.Where(header => header.Key != "Authorization"))
+        foreach (var header in request.Headers)
         {
             clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
@@ -1179,16 +1281,30 @@ public sealed class ConfiguredCardTerminalClientTests
         var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
         using var document = System.Text.Json.JsonDocument.Parse(body);
         return document.RootElement
-            .GetProperty("checkout")
-            .GetProperty("device_options")
-            .GetProperty("device_id")
+            .GetProperty("deviceId")
             .GetString();
     }
 
-    private static bool HasBearerToken(HttpRequestMessage request, string expectedToken)
+    private static HttpClient CreateApiClient(HttpMessageHandler handler)
     {
-        return request.Headers.Authorization?.Scheme == "Bearer" &&
-            string.Equals(request.Headers.Authorization.Parameter, expectedToken, StringComparison.Ordinal);
+        return new HttpClient(handler)
+        {
+            BaseAddress = HbposApiBaseAddress
+        };
+    }
+
+    private static void AssertHbposApiRequest(HttpRequestMessage request, string relativePathAndQuery)
+    {
+        Assert.Equal(new Uri(HbposApiBaseAddress, relativePathAndQuery), request.RequestUri);
+        var absoluteUri = request.RequestUri!.AbsoluteUri;
+        Assert.DoesNotContain("connect.squareup.com", absoluteUri, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("connect.squareupsandbox.com", absoluteUri, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AssertNoSquareHeaders(HttpRequestMessage request)
+    {
+        Assert.Null(request.Headers.Authorization);
+        Assert.False(request.Headers.Contains("Square-Version"));
     }
 
     private static string ReadJsonString(string json, string propertyName)
