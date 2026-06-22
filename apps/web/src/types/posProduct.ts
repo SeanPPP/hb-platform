@@ -167,9 +167,28 @@ export interface PushProductsToHqItem {
   warehouseIsActive?: boolean
 }
 
+export type PushProductsToHqUpdateField =
+  | 'itemNumber'
+  | 'barcode'
+  | 'productName'
+  | 'englishName'
+  | 'image'
+  | 'purchasePrice'
+  | 'retailPrice'
+  | 'middlePackQuantity'
+  | 'supplierCode'
+  | 'storePurchasePrice'
+  | 'storeRetailPrice'
+  | 'inventoryDomesticPrice'
+  | 'inventoryImportPrice'
+  | 'inventoryOemPrice'
+  | 'productSetCodes'
+  | 'storeMultiCodes'
+
 export interface PushProductsToHqRequest {
   productCodes: string[]
   items?: PushProductsToHqItem[]
+  updateFields?: PushProductsToHqUpdateField[]
 }
 
 export interface SyncSelectedProductsFromHqRequest {

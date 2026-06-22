@@ -112,6 +112,31 @@ export interface ContainerDetailExportColumnDefinition {
 
 export type ContainerDetailExportRow = Record<ContainerDetailExportColumnKey, string | number>
 
+export interface UpdateFieldSelectionState {
+  isAllSelected: boolean
+  isPartiallySelected: boolean
+}
+
+export function getUpdateFieldSelectionState<T extends string>(
+  selectedFields: readonly T[],
+  allFields: readonly T[],
+): UpdateFieldSelectionState {
+  const fieldSet = new Set(allFields)
+  const selectedCount = selectedFields.filter((field) => fieldSet.has(field)).length
+
+  return {
+    isAllSelected: allFields.length > 0 && selectedCount === allFields.length,
+    isPartiallySelected: selectedCount > 0 && selectedCount < allFields.length,
+  }
+}
+
+export function getNextUpdateFieldSelection<T extends string>(
+  checked: boolean,
+  allFields: readonly T[],
+): T[] {
+  return checked ? [...allFields] : []
+}
+
 // 默认导出列固定为业务核对模板，避免用户误导出旧字段顺序。
 export const DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS: ContainerDetailExportColumnKey[] = [
   'index',
@@ -703,16 +728,6 @@ function isContainerDetailProductTypeTag(tag: ContainerDetailTagFilter): tag is 
   return containerDetailProductTypeTags.includes(tag as ContainerDetailProductTypeFilter)
 }
 
-function mergeProductTypeFilters(
-  columnFilters: ContainerDetailProductTypeFilter[] | undefined,
-  selectedTags: ContainerDetailTagFilter[],
-) {
-  const tagFilters = selectedTags.filter(isContainerDetailProductTypeTag)
-  if (!tagFilters.length) return columnFilters
-  // 商品类型统计 tag 和列头筛选共用 productTypes 参数；去重后交给后端做远程过滤。
-  return Array.from(new Set([...(columnFilters ?? []), ...tagFilters]))
-}
-
 export function matchesContainerDetailSelectedTags(row: ContainerDetail, selectedTags: ContainerDetailTagFilter[]) {
   const selected = selectedTags.filter((tag): tag is ContainerDetailSelectableTagFilter => tag !== 'all')
   if (!selected.length) return true
@@ -947,7 +962,6 @@ export function applyContainerDetailColumnState(
 export interface BuildContainerDetailQueryOptions {
   containerGuid: string
   filters: ContainerDetailColumnFilters
-  selectedTags: ContainerDetailTagFilter[]
   sortState?: ContainerDetailSortState
   pageNumber: number
   pageSize: number
@@ -1000,7 +1014,6 @@ function assignNumberRange(
 export function buildContainerDetailQuery({
   containerGuid,
   filters,
-  selectedTags,
   sortState,
   pageNumber,
   pageSize,
@@ -1016,7 +1029,7 @@ export function buildContainerDetailQuery({
   assignTrimmedText(query, 'productName', filters.productName)
   assignTrimmedText(query, 'englishName', filters.englishName)
   assignTrimmedText(query, 'remark', filters.remark)
-  assignNonEmptyArray(query, 'productTypes', mergeProductTypeFilters(filters.productTypes, selectedTags))
+  assignNonEmptyArray(query, 'productTypes', filters.productTypes)
   assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
   assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
   assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
@@ -1034,9 +1047,6 @@ export function buildContainerDetailQuery({
   assignNumberRange(query, 'lastOEMPriceMin', 'lastOEMPriceMax', filters.lastOEMPrice)
   assignNumberRange(query, 'importPriceMin', 'importPriceMax', filters.importPrice)
   assignNumberRange(query, 'oemPriceMin', 'oemPriceMax', filters.oemPrice)
-
-  const remoteTags = selectedTags.filter((tag) => tag !== 'all' && !isContainerDetailProductTypeTag(tag))
-  assignNonEmptyArray(query, 'selectedTags', remoteTags)
 
   if (sortState) {
     query.sortBy = sortState.field

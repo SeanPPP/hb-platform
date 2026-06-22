@@ -665,9 +665,15 @@ export async function pushProductsToHq(data: PushProductsToHqRequest): Promise<P
   return normalizePushProductsToHqResult(unwrapApiData(response))
 }
 
-export function buildPushProductsToHqOperationId(containerGuid: string, productCodes: string[], itemCount: number) {
+export function buildPushProductsToHqOperationId(
+  containerGuid: string,
+  productCodes: string[],
+  itemCount: number,
+  updateFields: PushProductsToHqRequest['updateFields'] = [],
+) {
   const stableCodes = productCodes.map((item) => item.trim()).filter(Boolean).sort().join(',')
-  return `container-push-hq:${containerGuid || 'unknown'}:${stableCodes || 'items'}:${itemCount}`
+  const stableFields = updateFields.map((item) => item.trim()).filter(Boolean).sort().join(',')
+  return `container-push-hq:${containerGuid || 'unknown'}:${stableCodes || 'items'}:${itemCount}:${stableFields || 'all'}`
 }
 
 export async function createPushProductsToHqJob(data: PushProductsToHqJobRequest): Promise<PushProductsToHqJobResult> {

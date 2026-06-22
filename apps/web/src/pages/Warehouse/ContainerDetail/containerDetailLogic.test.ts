@@ -63,6 +63,7 @@ import {
   getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
   getNextContainerDetailEditableCell,
+  getNextUpdateFieldSelection,
   isContainerDetailSortField,
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
@@ -72,6 +73,7 @@ import {
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   getContainerDetailCostMissingFields,
+  getUpdateFieldSelectionState,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
   type ContainerDetailExportColumnKey,
@@ -136,6 +138,33 @@ assertEqual(
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.some((key) => key === 'barcodeImage' || key === 'productImage'),
   false,
   '货柜明细默认导出列不应包含图片列，避免默认导出变慢',
+)
+
+const updateFieldOptions = ['importPrice', 'oemPrice', 'storeRetailPrice'] as const
+assertDeepEqual(
+  getUpdateFieldSelectionState(['importPrice'], updateFieldOptions),
+  { isAllSelected: false, isPartiallySelected: true },
+  '字段选择器部分勾选时应显示半选态',
+)
+assertDeepEqual(
+  getUpdateFieldSelectionState([...updateFieldOptions], updateFieldOptions),
+  { isAllSelected: true, isPartiallySelected: false },
+  '字段选择器全部勾选时应显示全选态',
+)
+assertDeepEqual(
+  getUpdateFieldSelectionState([], updateFieldOptions),
+  { isAllSelected: false, isPartiallySelected: false },
+  '字段选择器未勾选时不应显示全选或半选态',
+)
+assertDeepEqual(
+  getNextUpdateFieldSelection(true, updateFieldOptions),
+  [...updateFieldOptions],
+  '字段选择器点击全选时应选中全部字段',
+)
+assertDeepEqual(
+  getNextUpdateFieldSelection(false, updateFieldOptions),
+  [],
+  '字段选择器取消全选时应清空字段',
 )
 assertDeepEqual(
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
@@ -976,7 +1005,6 @@ assertDeepEqual(
       importPrice: { min: 1.11, max: 3.33 },
       oemPrice: { min: 4.44, max: 5.55 },
     },
-    selectedTags: ['all', 'new', 'inactive'],
     sortState: { field: 'itemNumber', order: 'ascend' },
     pageNumber: 3,
     pageSize: 80,
@@ -1007,18 +1035,16 @@ assertDeepEqual(
     importPriceMax: 3.33,
     oemPriceMin: 4.44,
     oemPriceMax: 5.55,
-    selectedTags: ['new', 'inactive'],
     sortBy: 'itemNumber',
     sortOrder: 'ascend',
   },
-  '远程查询参数应由列筛选、tag、排序和分页状态生成，并裁剪空文本与 all tag',
+  '远程查询参数应由列筛选、排序和分页状态生成，并且不再提交标签字段',
 )
 
 assertDeepEqual(
   buildContainerDetailQuery({
     containerGuid: 'CONTAINER-NO-SORT',
     filters: { barcode: ' 9300 ' },
-    selectedTags: [],
     pageNumber: 1,
     pageSize: 50,
   }),
@@ -1035,7 +1061,6 @@ assertDeepEqual(
   buildContainerDetailQuery({
     containerGuid: 'CONTAINER-TYPE-TAGS',
     filters: { productTypes: ['normal'] },
-    selectedTags: ['multi', 'setChild', 'inactive'],
     pageNumber: 1,
     pageSize: 50,
   }),
@@ -1043,10 +1068,9 @@ assertDeepEqual(
     containerGuid: 'CONTAINER-TYPE-TAGS',
     pageNumber: 1,
     pageSize: 50,
-    productTypes: ['normal', 'multi', 'setChild'],
-    selectedTags: ['inactive'],
+    productTypes: ['normal'],
   },
-  '商品类型统计 tag 应转换为 productTypes 参数，且不混入 selectedTags',
+  '商品类型统计 tag 不再合并到远程 productTypes，只有列头商品类型筛选进入后端',
 )
 
 assertEqual(
@@ -1340,6 +1364,14 @@ assertEqual(
     pageSource.includes(': baseSummaryRows'),
   true,
   '货柜明细 PDF 基础信息不应展示汇率和运费金额，Excel 应保留完整摘要',
+)
+assertEqual(
+  pageSource.includes("const containerDetailTabKey = containerGuid ? `/warehouse/container/detail/${containerGuid}` : undefined") &&
+    pageSource.includes('if (!active || !containerDetailTabKey || !containerDetailTabTitle)') &&
+    pageSource.includes('updateTabTitle(containerDetailTabKey, containerDetailTabTitle)') &&
+    !pageSource.includes('useDynamicTabTitle(container?.货柜编号'),
+  true,
+  '货柜明细 Tab 标题只应由当前 active 的 KeepAlive 实例更新，避免旧实例跟随全局 URL 改错标签',
 )
 
 function getLocaleValue(source: Record<string, unknown>, key: string) {
@@ -1889,7 +1921,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)') &&
-    pageSource.includes('return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()'),
+    pageSource.includes("const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))") &&
+    pageSource.includes('return await fetchAllRowsForCurrentQuery()'),
   true,
   '页面应调用匹配国内数据 helper，未勾选时按当前筛选结果全量处理',
 )
@@ -1964,9 +1997,9 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('[active, activeLoadQueryKey]') &&
-    pageSource.includes('detailQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤'),
+    pageSource.includes('标签不进入 detailQueryKey；只有非标签远程筛选变化才重置懒加载结果。'),
   true,
-  '远程重载 effect 应监听 active 和当前加载查询 key，全量加载后标签切换不应触发远程重载',
+  '远程重载 effect 应监听 active 和 base 查询 key，标签切换不应触发 reset reload',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -2385,25 +2418,49 @@ assertEqual(
   '发送到 HQ 应导入后台 job 创建和查询接口',
 )
 assertEqual(
+  pageSource.includes('const updateFields = await confirmPushToHqUpdateFields(selection.items.length)') &&
+    pageSource.includes('buildPushProductsToHqOperationId(containerGuid, selection.productCodes, selection.items.length, updateFields)') &&
+    pageSource.includes('updateFields,'),
+  true,
+  '货柜发送到 HQ 应先勾选更新字段，并把字段选择传入 job 与 operationId',
+)
+assertEqual(
+  pageSource.includes('function UpdateFieldSelector') &&
+    pageSource.includes('indeterminate={isPartiallySelected}') &&
+    pageSource.includes("t('common.selectAll', '全选')") &&
+    pageSource.includes('getNextUpdateFieldSelection(event.target.checked, allValues)') &&
+    pageSource.includes('getUpdateFieldSelectionState(selectedFields, allValues)') &&
+    pageSource.includes('value={selectedFields}'),
+  true,
+  '字段选择弹窗应提供全选复选框，并用受控勾选状态同步字段列表',
+)
+assertEqual(
+  pageSource.includes('type MissingPushToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushToHqUpdateFieldOptionValue>') &&
+    pageSource.includes('const assertAllPushToHqUpdateFieldsCovered: Record<MissingPushToHqUpdateFieldOption, never> = {}'),
+  true,
+  '发送 HQ 字段清单应有编译期覆盖检查，避免类型新增字段但弹窗漏列',
+)
+assertEqual(
   pageSource.includes('updateProduct(code, { purchasePrice: row.进口价格 ?? 0 })'),
   false,
   '更新已有商品价格不应调用普通 POS 商品整对象更新接口，避免清空名称、条码和上下架状态',
 )
 assertEqual(
-  pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertRetailForActiveStores(updates.map'),
+  pageSource.indexOf('await batchUpdateWarehouseProducts(warehouseUpdates') < pageSource.indexOf('await upsertRetailForActiveStores(retailUpdates)'),
   true,
   '更新已有商品价格应先确认仓库商品批量更新成功，再继续分店价格 upsert',
 )
 assertEqual(
-  pageSource.includes('OEMPrice: oemPrice') &&
-    pageSource.includes('StoreRetailPriceValue: oemPrice') &&
-    pageSource.includes('MultiCodeRetailPrice: oemPrice'),
+  pageSource.includes('item.OEMPrice = oemPrice') &&
+    pageSource.includes('item.StoreRetailPriceValue = oemPrice') &&
+    pageSource.includes('item.MultiCodeRetailPrice = oemPrice'),
   true,
   '更新已有商品价格应同时提交有效贴牌价格，补齐商品主表和分店零售价',
 )
 assertEqual(
   pageSource.includes('const oemPrice = resolveContainerDetailOemPrice(row)') &&
-    pageSource.includes('((row.进口价格 ?? 0) > 0 || (oemPrice ?? 0) > 0)') &&
+    pageSource.includes('const hasPositiveOemPrice = (row: ContainerDetail) => (resolveContainerDetailOemPrice(row) ?? 0) > 0') &&
+    pageSource.includes("shouldUpdate('oemPrice') && hasPositiveOemPrice(row)") &&
     !pageSource.includes('hasImportDiff || hasOemDiff'),
   true,
   '更新已有商品价格应以有效贴牌价为准提交价格，不应因检测到的仓库价格相同而跳过',
@@ -2419,14 +2476,20 @@ const updateExistingPurchaseHandlerSource = pageSource.slice(
 )
 assertEqual(
   updateExistingPurchaseHandlerSource.includes('if (!ensureNoPendingPriceDetails()) return') &&
-    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const scopedRows = await confirmBatchRows'),
+    updateExistingPurchaseHandlerSource.indexOf('if (!ensureNoPendingPriceDetails()) return') < updateExistingPurchaseHandlerSource.indexOf('const confirmed = await confirmBatchRowsWithUpdateFields'),
   true,
   '更新已有商品价格前应阻止未保存的手动价格直接写入商品和分店价格',
 )
 assertEqual(
-  pageSource.indexOf('await batchUpdateWarehouseProducts(updates.map') < pageSource.indexOf('await upsertMultiCodeForActiveStores(updates.map'),
+  pageSource.indexOf('await batchUpdateWarehouseProducts(warehouseUpdates') < pageSource.indexOf('await upsertMultiCodeForActiveStores(multiCodeUpdates)'),
   true,
   '更新已有商品价格应先确认仓库商品批量更新成功，再继续多码价格 upsert',
+)
+assertEqual(
+  pageSource.includes('syncStorePurchasePrice: shouldUpdate') &&
+    !updateExistingPurchaseHandlerSource.includes('IsActive: true'),
+  true,
+  '更新已有商品应按字段勾选控制分店进货价同步且不再强制改上下架状态',
 )
 assertEqual(
   warehouseProductServiceSource.includes("ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, '仓库批量更新失败')"),
@@ -2746,9 +2809,9 @@ assertEqual(
 assertEqual(
   pageSource.includes('const buildWholeContainerDetailBatchScope = (): ContainerDetailBatchScope => ({') &&
     pageSource.includes('filters: {},') &&
-    pageSource.includes('selectedTags: [],'),
+    !pageSource.includes('selectedTags: [],'),
   true,
-  '货柜头部自动重算应使用不带筛选条件的整柜 scope',
+  '货柜头部自动重算应使用不带筛选条件和标签条件的整柜 scope',
 )
 assertEqual(
   pageSource.includes('Modal.warning') &&
@@ -2768,9 +2831,10 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('setBatchFloatRate(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE)') &&
-    pageSource.includes('applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(), batchFloatRate)'),
+    pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
+    pageSource.includes('applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)'),
   true,
-  '批量修改浮率弹窗打开时应默认填入 1.30，确认后按当前批量 scope 重算成本',
+  '批量修改浮率弹窗打开时应默认填入 1.30，确认后按弹窗解析出的批量 scope 重算成本',
 )
 assertEqual(pageSource.includes("t('containers.formulas.transportCost'"), true, '表格页脚运输成本公式应使用 i18n key')
 assertEqual(pageSource.includes("t('containers.formulas.importPrice'"), true, '表格页脚进口价格公式应使用 i18n key')
@@ -2838,27 +2902,20 @@ assertEqual(
 assertEqual(
   (() => {
     const baseQueryStart = pageSource.indexOf('const baseDetailQuery = useMemo(() => buildContainerDetailQuery({')
-    const scopedQueryStart = pageSource.indexOf('const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({')
-    const fullQueryStart = pageSource.indexOf('const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({')
-    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', fullQueryStart)
-    const baseQuerySource = pageSource.slice(baseQueryStart, scopedQueryStart)
-    const scopedQuerySource = pageSource.slice(scopedQueryStart, fullQueryStart)
-    const fullQuerySource = pageSource.slice(fullQueryStart, queryEnd)
+    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', baseQueryStart)
+    const baseQuerySource = pageSource.slice(baseQueryStart, queryEnd)
     return baseQueryStart >= 0 &&
-      scopedQueryStart > baseQueryStart &&
-      fullQueryStart > scopedQueryStart &&
-      baseQuerySource.includes('selectedTags: []') &&
+      queryEnd > baseQueryStart &&
+      !pageSource.includes('const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({') &&
+      !pageSource.includes('const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({') &&
+      !baseQuerySource.includes('selectedTags') &&
       baseQuerySource.includes('filters: remoteColumnFilters') &&
-      scopedQuerySource.includes('selectedTags: selectedTagFilters') &&
-      scopedQuerySource.includes('filters: remoteColumnFilters') &&
-      fullQuerySource.includes('selectedTags: selectedTagFilters') &&
-      fullQuerySource.includes('filters: columnFilters') &&
-      pageSource.includes('const detailQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery') &&
-      pageSource.includes('const detailQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey') &&
-      !scopedQuerySource.includes('sortState')
+      pageSource.includes('const detailQuery = baseDetailQuery') &&
+      pageSource.includes('const detailQueryKey = baseDetailQueryKey') &&
+      pageSource.includes('const activeLoadQueryKey = detailQueryKey')
   })(),
   true,
-  '明细加载查询应拆分为无标签 base 查询和带标签 scoped 查询，列头排序不应进入远程查询',
+  '明细加载查询应只保留无标签 base 查询，标签切换不应进入远程查询 key',
 )
 assertEqual(
   !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
@@ -2869,11 +2926,13 @@ assertEqual(
 assertEqual(
   pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
     pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
-    pageSource.includes('canUseLocalTagFilters ? localTagStats : remoteTagStats') &&
-    pageSource.includes(': { query: scopedFullDetailQuery }') &&
-    pageSource.includes('...scopedFullDetailQuery,'),
+    pageSource.includes('hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats') &&
+    pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
+    pageSource.includes('return confirmed ? buildDetailBatchScope(scopedRows) : null') &&
+    pageSource.includes('selectedHguids: getRowsHguids(scopeRows)') &&
+    pageSource.includes('...baseDetailQuery,'),
   true,
-  '标签全量加载时应进入前端过滤链路，批量作用域和全量拉取仍必须使用包含文本筛选的完整 scoped 查询',
+  '标签应始终进入前端过滤链路，批量作用域和全量拉取应使用 base 查询后在前端收敛 HGUID',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -3049,11 +3108,12 @@ assertEqual(
   '批量和行内仓库状态更新都应复用同商品编码本地更新 helper',
 )
 assertEqual(
-  pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope()') &&
-    pageSource.includes('return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
+  pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows)') &&
+    pageSource.includes("const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))") &&
+    pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
     pageSource.includes('const productCodes = eligibleRows'),
   true,
-  '批量修改价格应使用服务端 scope，批量上下架未选择时应提示后作用于当前筛选结果全量中的已有商品',
+  '批量修改价格应使用 HGUID scope，批量上下架未选择时应提示后作用于当前筛选结果全量中的已有商品',
 )
 assertEqual(
   pageSource.includes('className="container-detail-bulk-input"') ||
@@ -3082,7 +3142,7 @@ assertDeepEqual(
     "const scopedRows = await confirmBatchRows(t('containers.actions.batchTranslate'))",
     "const scopedRows = await confirmBatchRows(t('containers.actions.clearEnglishNames'), { danger: true })",
     "const scopedRows = await confirmBatchRows(t('containers.actions.createNewProducts'))",
-    "const scopedRows = await confirmBatchRows(t('containers.actions.updateExistingPurchase'))",
+    "const confirmed = await confirmBatchRowsWithUpdateFields(",
     "title={t('containers.modals.batchUpdateFloatRateTitle'",
     "title={t('containers.modals.batchUpdatePricesTitle'",
   ].filter((snippet) => !pageSource.includes(snippet)),
@@ -3090,17 +3150,17 @@ assertDeepEqual(
   '写入类批量操作应统一经过确认弹窗或输入确认弹窗',
 )
 assertEqual(
-  pageSource.includes('const getBatchActionTargetCount = async () => {') &&
-    pageSource.includes('...scopedFullDetailQuery,') &&
-    pageSource.includes('pageSize: 1,') &&
-    pageSource.includes('return result.itemsTotal') &&
-    pageSource.includes('const count = await getBatchActionTargetCount()') &&
+  pageSource.includes('const resolveBatchActionTargetRows = async () => {') &&
+    pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
+    pageSource.includes('const scopedRows = await resolveBatchActionTargetRows()') &&
     pageSource.includes('renderBatchActionContent(batchModalTargetCount)') &&
-    pageSource.includes('return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()') &&
-    pageSource.includes('selectedRowKeys.length\n      ? { selectedHguids: selectedRowKeys.map(String) }\n      : { query: scopedFullDetailQuery }') &&
+    pageSource.includes('const [batchModalScopeRows, setBatchModalScopeRows] = useState<ContainerDetail[]>([])') &&
+    pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
+    pageSource.includes('buildDetailBatchScope(batchModalScopeRows)') &&
+    pageSource.includes('selectedHguids: getRowsHguids(scopeRows)') &&
     pageSource.includes("t('containers.modals.batchActionAllHint'"),
   true,
-  '未选择商品时应按完整筛选条件取真实数量弹出提示，确认后按当前筛选范围执行全部明细',
+  '未选择商品时应先解析前端完整可见行，弹窗和提交都使用同一批 HGUID 范围',
 )
 assertEqual(
   pageSource.includes('data-column-key="image"') || pageSource.includes('data-column-key="index"'),

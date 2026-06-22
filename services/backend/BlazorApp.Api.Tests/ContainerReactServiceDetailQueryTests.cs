@@ -247,6 +247,69 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryContainerDetailsAsync_已有商品英文名称应优先读取本地主档商品名称()
+    {
+        await SeedContainerAsync("C-LOCAL-ENGLISH", "CBHU8299137");
+        await SeedDetailAsync(
+            "D-LOCAL-ENGLISH",
+            "C-LOCAL-ENGLISH",
+            "P-LOCAL-ENGLISH",
+            "8107779",
+            localExists: true
+        );
+        await SeedDetailAsync(
+            "D-DOMESTIC-ENGLISH",
+            "C-LOCAL-ENGLISH",
+            "P-DOMESTIC-ENGLISH",
+            "8107780",
+            localExists: false
+        );
+        await _localDb.Updateable<DomesticProduct>()
+            .SetColumns(x => x.EnglishProductName == null)
+            .Where(x => x.ProductCode == "P-LOCAL-ENGLISH")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<Product>()
+            .SetColumns(x => x.ProductName == "Alpha Local Master Name")
+            .Where(x => x.ProductCode == "P-LOCAL-ENGLISH")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<DomesticProduct>()
+            .SetColumns(x => x.EnglishProductName == "Zulu Domestic English Name")
+            .Where(x => x.ProductCode == "P-DOMESTIC-ENGLISH")
+            .ExecuteCommandAsync();
+        var service = CreateService();
+
+        var sorted = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-LOCAL-ENGLISH",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "englishName",
+                SortOrder = "ascend",
+            }
+        );
+        var filtered = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-LOCAL-ENGLISH",
+                PageNumber = 1,
+                PageSize = 50,
+                EnglishName = "Alpha Local",
+            }
+        );
+        var legacyList = await service.GetContainerProductsAsync("C-LOCAL-ENGLISH");
+
+        Assert.Equal(new[] { "D-LOCAL-ENGLISH", "D-DOMESTIC-ENGLISH" }, sorted.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal("Alpha Local Master Name", sorted.Items[0].商品信息?.英文名称);
+        Assert.Equal("Zulu Domestic English Name", sorted.Items[1].商品信息?.英文名称);
+        Assert.Equal("D-LOCAL-ENGLISH", Assert.Single(filtered.Items).HGUID);
+        Assert.Equal(
+            "Alpha Local Master Name",
+            legacyList.Single(item => item.HGUID == "D-LOCAL-ENGLISH").商品信息?.英文名称
+        );
+    }
+
+    [Fact]
     public async Task BackfillLastPricesByScopeAsync_只填空快照且不覆盖已有值()
     {
         await SeedContainerAsync("C-BACKFILL", "CSLU6099502");

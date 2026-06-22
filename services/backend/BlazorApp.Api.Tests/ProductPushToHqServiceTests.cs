@@ -203,6 +203,133 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_只选分店零售价_不改商品字典和库存价格()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(
+                    productCode: "HB001",
+                    itemNumber: "CARGO-ITEM",
+                    productName: "首次商品名",
+                    englishName: "First English",
+                    barcode: "FIRST-BARCODE",
+                    domesticPrice: 8.88m,
+                    importPrice: 1.23m,
+                    oemPrice: 4.99m
+                ),
+            },
+        });
+        Assert.True(first.Success, first.Message);
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            UpdateFields = new List<string> { "storeRetailPrice" },
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(
+                    productCode: "HB001",
+                    itemNumber: "NEW-ITEM",
+                    productName: "不应写入商品名",
+                    englishName: "Should Not Update",
+                    barcode: "NEW-BARCODE",
+                    domesticPrice: 6.66m,
+                    importPrice: 9.99m,
+                    oemPrice: 7.77m
+                ),
+            },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(0, second.Data?.ProductsUpdated);
+        Assert.Equal(2, second.Data?.StoreRetailPricesUpdated);
+        Assert.Equal(0, second.Data?.WarehouseInventoriesUpdated);
+
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("CARGO-ITEM", product.H货号);
+        Assert.Equal("FIRST-BARCODE", product.H主条形码);
+        Assert.Equal("First English", product.H商品名称);
+        Assert.Equal(1.23m, product.H进货价);
+        Assert.Equal(4.99m, product.H零售价);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.All(prices, row =>
+        {
+            Assert.Equal(1.23m, row.H进货价);
+            Assert.Equal(7.77m, row.H分店零售价);
+        });
+
+        var inventory = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal(8.88m, inventory.H国内价格);
+        Assert.Equal(1.23m, inventory.H进口价格);
+        Assert.Equal(4.99m, inventory.H贴牌价格);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_只选库存进口价_不改分店价格()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(
+                    productCode: "HB001",
+                    domesticPrice: 8.88m,
+                    importPrice: 1.23m,
+                    oemPrice: 4.99m
+                ),
+            },
+        });
+        Assert.True(first.Success, first.Message);
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            UpdateFields = new List<string> { "inventoryImportPrice" },
+            Items = new List<PushProductsToHqItem>
+            {
+                CreatePushItem(
+                    productCode: "HB001",
+                    domesticPrice: 6.66m,
+                    importPrice: 9.99m,
+                    oemPrice: 7.77m
+                ),
+            },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(0, second.Data?.StoreRetailPricesUpdated);
+        Assert.Equal(1, second.Data?.WarehouseInventoriesUpdated);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.All(prices, row =>
+        {
+            Assert.Equal(1.23m, row.H进货价);
+            Assert.Equal(4.99m, row.H分店零售价);
+        });
+
+        var inventory = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal(8.88m, inventory.H国内价格);
+        Assert.Equal(9.99m, inventory.H进口价格);
+        Assert.Equal(4.99m, inventory.H贴牌价格);
+    }
+
+    [Fact]
     public async Task PushToHqAsync_货柜候选无图且商品主档无图_回退国内商品图片()
     {
         await SeedProductGraphAsync();

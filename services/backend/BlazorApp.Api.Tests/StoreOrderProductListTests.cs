@@ -1072,8 +1072,10 @@ public sealed class StoreOrderProductListTests : IDisposable
         await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-A1", "ITEM-A-001", quantity: 1m, allocQuantity: 1m);
         await SeedLocationAsync("P-B", "L-B", "B-01");
         await SeedLocationAsync("P-A2", "L-A2", "A-01");
+        await SeedLocationAsync("P-A2", "L-A2-Z", "Z-99");
         await SeedLocationAsync("P-A1", "L-A1", "A-01");
 
+        _sqlLogs.Clear();
         var sorted = await CreateService().GetOrderDetailAsync(
             "ORDER-LOCATION-SORT",
             new StoreOrderDetailQueryDto
@@ -1094,25 +1096,59 @@ public sealed class StoreOrderProductListTests : IDisposable
             sorted.Data.Items.Select(item => item.ProductCode)
         );
         Assert.Equal(
-            new[] { null, "A-01", "A-01", "B-01" },
+            new[] { null, "A-01", "A-01, Z-99", "B-01" },
             sorted.Data.Items.Select(item => item.LocationCode)
         );
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("ProductLocation", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("Location", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("MIN", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                && !log.Contains("COUNT(1)", StringComparison.OrdinalIgnoreCase)
+        );
 
+        _sqlLogs.Clear();
         var paged = await CreateService().GetOrderDetailAsync(
             "ORDER-LOCATION-SORT",
             new StoreOrderDetailQueryDto
             {
-                PageNumber = 2,
-                PageSize = 2,
+                PageNumber = 3,
+                PageSize = 1,
                 SortBy = "locationCode",
             }
         );
 
         Assert.NotNull(paged.Data);
         Assert.Equal(4, paged.Data.ItemsTotal);
-        Assert.Equal(2, paged.Data.PageNumber);
-        Assert.Equal(2, paged.Data.PageSize);
-        Assert.Equal(new[] { "P-A2", "P-B" }, paged.Data.Items.Select(item => item.ProductCode));
+        Assert.Equal(3, paged.Data.PageNumber);
+        Assert.Equal(1, paged.Data.PageSize);
+        Assert.Equal("P-A2", Assert.Single(paged.Data.Items).ProductCode);
+        Assert.Equal("A-01, Z-99", paged.Data.Items.Single().LocationCode);
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("ProductLocation", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("MIN", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                && !log.Contains("COUNT(1)", StringComparison.OrdinalIgnoreCase)
+        );
+
+        var descending = await CreateService().GetOrderDetailAsync(
+            "ORDER-LOCATION-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 2,
+                PageSize = 1,
+                SortBy = "locationCode",
+                SortDescending = true,
+            }
+        );
+
+        Assert.NotNull(descending.Data);
+        Assert.Equal("P-B", Assert.Single(descending.Data.Items).ProductCode);
     }
 
     [Fact]

@@ -221,7 +221,10 @@ namespace BlazorApp.Api.Services.React
             }
             if (englishName != null)
             {
-                query = query.Where((cd, wp, dp, lp) => dp.EnglishProductName != null && dp.EnglishProductName.Contains(englishName));
+                query = query.Where((cd, wp, dp, lp) =>
+                    (lp.ProductName != null && lp.ProductName.Contains(englishName))
+                    || (lp.ProductName == null && dp.EnglishProductName != null && dp.EnglishProductName.Contains(englishName))
+                );
             }
             if (remark != null)
             {
@@ -401,7 +404,7 @@ namespace BlazorApp.Api.Services.React
             {
                 "barcode" => query.OrderBy((cd, wp, dp, lp) => dp.Barcode, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "productName" => query.OrderBy((cd, wp, dp, lp) => dp.ProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "englishName" => query.OrderBy((cd, wp, dp, lp) => dp.EnglishProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "englishName" => query.OrderBy((cd, wp, dp, lp) => lp.ProductName ?? dp.EnglishProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "productType" => query.OrderBy((cd, wp, dp, lp) => dp.ProductType, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerPieces" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingPieces, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "middlePackQuantity" => query.OrderBy((cd, wp, dp, lp) => wp.MinOrderQuantity ?? dp.MiddlePackQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
@@ -811,7 +814,8 @@ namespace BlazorApp.Api.Services.React
                                     ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
-                                    英文名称 = dp.EnglishProductName,
+                                    // 已有商品按本地主档商品名称展示英文列；未建主档时才回退国内英文名。
+                                    英文名称 = lp.ProductName ?? dp.EnglishProductName,
                                     商品图片 = dp.ProductImage,
                                     条形码 = dp.Barcode,
                                     // SqlSugar 投影内不能调用 C# helper，这里映射需与 MapDomesticProductTypeLabel 保持一致。
@@ -916,7 +920,8 @@ namespace BlazorApp.Api.Services.React
                                     ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
                                     货号 = dp.HBProductNo,
                                     商品名称 = dp.ProductName,
-                                    英文名称 = dp.EnglishProductName,
+                                    // 已有商品按本地主档商品名称展示英文列；未建主档时才回退国内英文名。
+                                    英文名称 = lp.ProductName ?? dp.EnglishProductName,
                                     商品图片 = dp.ProductImage,
                                     条形码 = dp.Barcode,
                                     商品规格 = dp.ProductSpecification,

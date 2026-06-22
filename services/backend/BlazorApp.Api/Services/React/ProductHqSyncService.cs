@@ -18,6 +18,22 @@ namespace BlazorApp.Api.Services.React
         private const string ShadowTableName = "Product_Shadow";
         private const int HqReadBatchSize = 5000;
         private const int WriteBatchSize = 1000;
+        private const string HqFieldItemNumber = "itemNumber";
+        private const string HqFieldBarcode = "barcode";
+        private const string HqFieldProductName = "productName";
+        private const string HqFieldEnglishName = "englishName";
+        private const string HqFieldImage = "image";
+        private const string HqFieldPurchasePrice = "purchasePrice";
+        private const string HqFieldRetailPrice = "retailPrice";
+        private const string HqFieldMiddlePackQuantity = "middlePackQuantity";
+        private const string HqFieldSupplierCode = "supplierCode";
+        private const string HqFieldStorePurchasePrice = "storePurchasePrice";
+        private const string HqFieldStoreRetailPrice = "storeRetailPrice";
+        private const string HqFieldInventoryDomesticPrice = "inventoryDomesticPrice";
+        private const string HqFieldInventoryImportPrice = "inventoryImportPrice";
+        private const string HqFieldInventoryOemPrice = "inventoryOemPrice";
+        private const string HqFieldProductSetCodes = "productSetCodes";
+        private const string HqFieldStoreMultiCodes = "storeMultiCodes";
         private static readonly SemaphoreSlim SyncLock = new(1, 1);
 
         private readonly SqlSugarContext _localContext;
@@ -36,6 +52,27 @@ namespace BlazorApp.Api.Services.React
             _hqContext = hqContext;
             _mapper = mapper;
             _logger = logger;
+        }
+
+        private sealed class PushToHqUpdateFieldSelection
+        {
+            private readonly HashSet<string>? _fields;
+
+            public PushToHqUpdateFieldSelection(List<string>? fields)
+            {
+                var normalized = (fields ?? new List<string>())
+                    .Select(NormalizeCode)
+                    .Where(field => !string.IsNullOrWhiteSpace(field))
+                    .Select(field => field!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _fields = normalized.Count == 0 ? null : normalized;
+            }
+
+            public bool IsAll => _fields == null;
+
+            public bool Has(string field) => IsAll || _fields!.Contains(field);
+
+            public bool HasAny(params string[] fields) => IsAll || fields.Any(field => _fields!.Contains(field));
         }
 
         public async Task<ApiResponse<HqProductSyncResult>> SyncFullAsync()
@@ -684,6 +721,7 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
+                var updateFields = new PushToHqUpdateFieldSelection(request.UpdateFields);
                 var resolvedSelection = await ResolvePushSelectionAsync(localDb, request, result);
                 var products = resolvedSelection.Products;
                 var inventoryCandidates = resolvedSelection.InventoryCandidates;
@@ -794,30 +832,45 @@ namespace BlazorApp.Api.Services.React
                         inventoryCandidates,
                         domesticProductImages,
                         domesticSupplierCodes,
+                        updateFields,
                         result
                     );
-                    await UpsertHqRetailPricesAsync(
-                        hqDb,
-                        products,
-                        inventoryCandidates,
-                        activeStoreCodes,
-                        result
-                    );
-                    await UpsertHqProductSetCodesAsync(hqDb, products, productSetCodes, result);
-                    await UpsertHqStoreMultiCodesAsync(
-                        hqDb,
-                        products,
-                        productSetCodes,
-                        storeMultiCodes,
-                        activeStoreCodes,
-                        result
-                    );
-                    await UpsertHqWarehouseInventoriesAsync(
-                        hqDb,
-                        products,
-                        inventoryCandidates,
-                        result
-                    );
+                    if (updateFields.HasAny(HqFieldStorePurchasePrice, HqFieldStoreRetailPrice, HqFieldSupplierCode))
+                    {
+                        await UpsertHqRetailPricesAsync(
+                            hqDb,
+                            products,
+                            inventoryCandidates,
+                            activeStoreCodes,
+                            updateFields,
+                            result
+                        );
+                    }
+                    if (updateFields.Has(HqFieldProductSetCodes))
+                    {
+                        await UpsertHqProductSetCodesAsync(hqDb, products, productSetCodes, result);
+                    }
+                    if (updateFields.Has(HqFieldStoreMultiCodes))
+                    {
+                        await UpsertHqStoreMultiCodesAsync(
+                            hqDb,
+                            products,
+                            productSetCodes,
+                            storeMultiCodes,
+                            activeStoreCodes,
+                            result
+                        );
+                    }
+                    if (updateFields.HasAny(HqFieldInventoryDomesticPrice, HqFieldInventoryImportPrice, HqFieldInventoryOemPrice))
+                    {
+                        await UpsertHqWarehouseInventoriesAsync(
+                            hqDb,
+                            products,
+                            inventoryCandidates,
+                            updateFields,
+                            result
+                        );
+                    }
                     hqDb.Ado.CommitTran();
                 }
                 catch
@@ -1215,6 +1268,7 @@ namespace BlazorApp.Api.Services.React
             IReadOnlyDictionary<string, PushProductsToHqItem> pushCandidates,
             IReadOnlyDictionary<string, string> domesticProductImages,
             IReadOnlyDictionary<string, string> domesticSupplierCodes,
+            PushToHqUpdateFieldSelection updateFields,
             HqProductSyncResult result
         )
         {
@@ -1249,6 +1303,78 @@ namespace BlazorApp.Api.Services.React
                 {
                     inserts.Add(hqProduct);
                     existingCodes.Add(code);
+                    continue;
+                }
+
+                if (!updateFields.IsAll)
+                {
+                    if (!updateFields.HasAny(
+                        HqFieldItemNumber,
+                        HqFieldBarcode,
+                        HqFieldProductName,
+                        HqFieldEnglishName,
+                        HqFieldImage,
+                        HqFieldPurchasePrice,
+                        HqFieldRetailPrice,
+                        HqFieldMiddlePackQuantity,
+                        HqFieldSupplierCode
+                    ))
+                    {
+                        continue;
+                    }
+
+                    var partialUpdate = hqDb.Updateable<DIC_商品信息字典表>()
+                        .SetColumns(row => new DIC_商品信息字典表
+                        {
+                            FGC_LastModifier = hqProduct.FGC_LastModifier,
+                            FGC_LastModifyDate = hqProduct.FGC_LastModifyDate,
+                        });
+                    if (updateFields.Has(HqFieldItemNumber))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H货号 = hqProduct.H货号 });
+                    }
+                    if (updateFields.Has(HqFieldBarcode))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H主条形码 = hqProduct.H主条形码 });
+                    }
+                    if (updateFields.Has(HqFieldEnglishName))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H商品名称 = hqProduct.H商品名称 });
+                    }
+                    if (updateFields.Has(HqFieldProductName))
+                    {
+                        // 中文名只更新 HQ 大写名称；英文显示名由 englishName 字段单独控制。
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H大写名称 = hqProduct.H大写名称 });
+                    }
+                    if (updateFields.Has(HqFieldPurchasePrice))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H进货价 = hqProduct.H进货价 });
+                    }
+                    if (updateFields.Has(HqFieldRetailPrice))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H零售价 = hqProduct.H零售价 });
+                    }
+                    if (updateFields.Has(HqFieldImage))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H商品图片 = hqProduct.H商品图片 });
+                    }
+                    if (updateFields.Has(HqFieldMiddlePackQuantity))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { 中包数量 = hqProduct.中包数量 });
+                    }
+                    if (updateFields.Has(HqFieldSupplierCode))
+                    {
+                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H供货商编码 = hqProduct.H供货商编码 });
+                        if (!string.IsNullOrWhiteSpace(hqProduct.CBP供应商编码))
+                        {
+                            partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { CBP供应商编码 = hqProduct.CBP供应商编码 });
+                        }
+                    }
+
+                    await partialUpdate
+                        .Where(row => row.H商品编码 == code)
+                        .ExecuteCommandAsync();
+                    result.ProductsUpdated++;
                     continue;
                 }
 
@@ -1300,6 +1426,7 @@ namespace BlazorApp.Api.Services.React
             ISqlSugarClient hqDb,
             List<Product> products,
             IReadOnlyDictionary<string, PushProductsToHqItem> inventoryCandidates,
+            PushToHqUpdateFieldSelection updateFields,
             PushProductsToHqResult result
         )
         {
@@ -1336,15 +1463,34 @@ namespace BlazorApp.Api.Services.React
 
                 if (existingInventoryByCode.TryGetValue(productCode, out var existingInventory))
                 {
-                    await hqDb.Updateable<CBP_DIC_商品库存表>()
+                    var update = hqDb.Updateable<CBP_DIC_商品库存表>()
                         .SetColumns(row => new CBP_DIC_商品库存表
                         {
-                            H国内价格 = candidate.DomesticPrice ?? existingInventory.H国内价格,
-                            H进口价格 = candidate.ImportPrice ?? existingInventory.H进口价格,
-                            H贴牌价格 = candidate.OemPrice ?? existingInventory.H贴牌价格,
                             FGC_LastModifier = "HBweb",
                             FGC_LastModifyDate = now,
-                        })
+                        });
+                    if (updateFields.IsAll || updateFields.Has(HqFieldInventoryDomesticPrice))
+                    {
+                        update = update.SetColumns(row => new CBP_DIC_商品库存表
+                        {
+                            H国内价格 = candidate.DomesticPrice ?? existingInventory.H国内价格,
+                        });
+                    }
+                    if (updateFields.IsAll || updateFields.Has(HqFieldInventoryImportPrice))
+                    {
+                        update = update.SetColumns(row => new CBP_DIC_商品库存表
+                        {
+                            H进口价格 = candidate.ImportPrice ?? existingInventory.H进口价格,
+                        });
+                    }
+                    if (updateFields.IsAll || updateFields.Has(HqFieldInventoryOemPrice))
+                    {
+                        update = update.SetColumns(row => new CBP_DIC_商品库存表
+                        {
+                            H贴牌价格 = candidate.OemPrice ?? existingInventory.H贴牌价格,
+                        });
+                    }
+                    await update
                         .Where(row => row.H商品编码 == productCode)
                         .ExecuteCommandAsync();
                     result.WarehouseInventoriesUpdated++;
@@ -1385,6 +1531,7 @@ namespace BlazorApp.Api.Services.React
             List<Product> products,
             IReadOnlyDictionary<string, PushProductsToHqItem> pushCandidates,
             List<string> activeStoreCodes,
+            PushToHqUpdateFieldSelection updateFields,
             HqProductSyncResult result
         )
         {
@@ -1436,6 +1583,39 @@ namespace BlazorApp.Api.Services.React
                     {
                         inserts.Add(hqPrice);
                         existingKeys.Add(key);
+                        continue;
+                    }
+
+                    if (!updateFields.IsAll)
+                    {
+                        var update = hqDb.Updateable<DIC_商品零售价表>()
+                            .SetColumns(row => new DIC_商品零售价表
+                            {
+                                FGC_LastModifier = hqPrice.FGC_LastModifier,
+                                FGC_LastModifyDate = hqPrice.FGC_LastModifyDate,
+                            });
+                        if (updateFields.Has(HqFieldStorePurchasePrice))
+                        {
+                            update = update.SetColumns(row => new DIC_商品零售价表 { H进货价 = hqPrice.H进货价 });
+                        }
+                        if (updateFields.Has(HqFieldStoreRetailPrice))
+                        {
+                            update = update.SetColumns(row => new DIC_商品零售价表 { H分店零售价 = hqPrice.H分店零售价 });
+                        }
+                        if (updateFields.Has(HqFieldSupplierCode))
+                        {
+                            update = update.SetColumns(row => new DIC_商品零售价表
+                            {
+                                H分店商品编码 = hqPrice.H分店商品编码,
+                                H供应商编码 = hqPrice.H供应商编码,
+                                H分店供应商编码 = hqPrice.H分店供应商编码,
+                            });
+                        }
+
+                        await update
+                            .Where(row => row.H分店代码 == storeCode && row.H商品编码 == productCode)
+                            .ExecuteCommandAsync();
+                        result.StoreRetailPricesUpdated++;
                         continue;
                     }
 

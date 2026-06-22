@@ -6,7 +6,6 @@ using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using System.Diagnostics;
-using System.Globalization;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
@@ -49,6 +48,12 @@ namespace BlazorApp.Api.Services.React
             public string? Barcode { get; set; }
             public string? SupplierCode { get; set; }
             public string? SupplierName { get; set; }
+        }
+
+        private sealed class StoreOrderDetailLocationSortRow
+        {
+            public string ProductCode { get; set; } = string.Empty;
+            public string? LocationSortCode { get; set; }
         }
 
         private string GetScanTraceId()
@@ -3612,19 +3617,94 @@ namespace BlazorApp.Api.Services.React
             List<StoreOrderCartItemDto> pageDetails;
             if (isLocationCodeSort)
             {
-                // 货位来自 ProductLocation + Location 后补；直接 Join 会让多货位商品重复行，所以这里先补齐货位再做受控排序和分页。
-                var allDetails = await pageQuery.ToListAsync();
-                await FillLocationCodesAsync(allDetails);
-                var sortedDetails = SortStoreOrderDetailsByLocationCode(
-                    allDetails,
-                    normalizedQuery.SortDescending
-                );
-                pageDetails = loadAllItems
-                    ? sortedDetails
-                    : sortedDetails
+                var locationSortQuery = _db.Queryable<ProductLocation>()
+                    .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
+                    .Where(
+                        (pl, l) =>
+                            pl.ProductCode != null
+                            && !pl.IsDeleted
+                            && !l.IsDeleted
+                            && l.LocationType == 1
+                            && l.LocationCode != null
+                    )
+                    .GroupBy((pl, l) => pl.ProductCode)
+                    .Select(
+                        (pl, l) =>
+                            new StoreOrderDetailLocationSortRow
+                            {
+                                ProductCode = pl.ProductCode ?? string.Empty,
+                                // 多货位商品以最小货位编码参与排序，页内展示仍由 FillLocationCodesAsync 补完整列表。
+                                LocationSortCode = SqlFunc.AggregateMin(l.LocationCode),
+                            }
+                    )
+                    .MergeTable();
+
+                var locationPageQuery = detailQuery
+                    .LeftJoin<StoreOrderDetailLocationSortRow>(
+                        locationSortQuery,
+                        (d, p, wp, dp, ls) => d.ProductCode == ls.ProductCode
+                    )
+                    // 空货位固定排在前面；非空货位按请求方向排序，保证分页发生在数据库端。
+                    .OrderBy(
+                        (d, p, wp, dp, ls) =>
+                            SqlFunc.IIF(
+                                ls.LocationSortCode == null || ls.LocationSortCode == string.Empty,
+                                0,
+                                1
+                            ),
+                        OrderByType.Asc
+                    )
+                    .OrderBy(
+                        (d, p, wp, dp, ls) => ls.LocationSortCode,
+                        normalizedQuery.SortDescending ? OrderByType.Desc : OrderByType.Asc
+                    )
+                    .OrderBy((d, p, wp, dp, ls) => p.ItemNumber, OrderByType.Asc)
+                    .OrderBy((d, p, wp, dp, ls) => d.DetailGUID, OrderByType.Asc)
+                    .Select(
+                        (d, p, wp, dp, ls) =>
+                            new StoreOrderCartItemDto
+                            {
+                                DetailGUID = d.DetailGUID,
+                                ProductCode = d.ProductCode ?? string.Empty,
+                                ItemNumber = p.ItemNumber,
+                                Barcode = p.Barcode,
+                                Grade = SqlFunc.Subqueryable<ProductGrade>()
+                                    .Where(pg => pg.ProductCode == d.ProductCode && !pg.IsDeleted)
+                                    .OrderBy(pg => pg.Grade)
+                                    .Select(pg => pg.Grade),
+                                ProductName = p.ProductName,
+                                ProductImage = p.ProductImage,
+                                Price = d.OEMPrice ?? 0,
+                                Quantity = d.Quantity ?? 0,
+                                AllocQuantity = d.AllocQuantity,
+                                Amount = d.OEMAmount ?? 0,
+                                ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
+                                ImportAmount =
+                                    d.ImportAmount
+                                    ?? (
+                                        (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                        * (d.AllocQuantity ?? d.Quantity ?? 0)
+                                    ),
+                                Volume =
+                                    (dp.PackingQuantity > 0)
+                                        ? (dp.UnitVolume / dp.PackingQuantity)
+                                        : dp.UnitVolume,
+                                MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                                // 前端“上架/下架”列对应仓库表 WarehouseProduct.IsActive。
+                                IsActive = wp.IsActive,
+                                RRP = p.RetailPrice,
+                            }
+                    );
+
+                if (!loadAllItems)
+                {
+                    locationPageQuery = locationPageQuery
                         .Skip((normalizedQuery.PageNumber - 1) * normalizedQuery.PageSize)
-                        .Take(normalizedQuery.PageSize)
-                        .ToList();
+                        .Take(normalizedQuery.PageSize);
+                }
+
+                pageDetails = await locationPageQuery.ToListAsync();
+                await FillLocationCodesAsync(pageDetails);
             }
             else
             {
@@ -3754,48 +3834,6 @@ namespace BlazorApp.Api.Services.React
                 SortBy = query?.SortBy,
                 SortDescending = query?.SortDescending ?? false,
             };
-        }
-
-        private static List<StoreOrderCartItemDto> SortStoreOrderDetailsByLocationCode(
-            List<StoreOrderCartItemDto> items,
-            bool sortDescending
-        )
-        {
-            var compareInfo = CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
-            return items
-                .OrderBy(item => string.IsNullOrWhiteSpace(item.LocationCode) ? 0 : 1)
-                .ThenBy(
-                    item => item,
-                    Comparer<StoreOrderCartItemDto>.Create((left, right) =>
-                    {
-                        var locationCompare = compareInfo.Compare(
-                            left.LocationCode ?? string.Empty,
-                            right.LocationCode ?? string.Empty,
-                            CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace
-                        );
-                        if (locationCompare != 0)
-                        {
-                            return sortDescending ? -locationCompare : locationCompare;
-                        }
-
-                        var itemNumberCompare = compareInfo.Compare(
-                            left.ItemNumber ?? string.Empty,
-                            right.ItemNumber ?? string.Empty,
-                            CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace
-                        );
-                        if (itemNumberCompare != 0)
-                        {
-                            return itemNumberCompare;
-                        }
-
-                        return string.Compare(
-                            left.DetailGUID,
-                            right.DetailGUID,
-                            StringComparison.OrdinalIgnoreCase
-                        );
-                    })
-                )
-                .ToList();
         }
 
         private async Task FillLocationCodesAsync(List<StoreOrderCartItemDto> items)
