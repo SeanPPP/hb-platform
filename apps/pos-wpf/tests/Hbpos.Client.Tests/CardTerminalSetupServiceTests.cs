@@ -8,44 +8,74 @@ namespace Hbpos.Client.Tests;
 public sealed class CardTerminalSetupServiceTests
 {
     private const string LocalToken = "opaque-local-setup-token";
-    private const string RemoteToken = "opaque-remote-setup-token";
 
     [Fact]
-    public async Task ListSquareLocationsAsync_refreshes_token_once_after_auth_failure()
+    public async Task GetSquareAccessTokenAsync_returns_null_without_reading_local_store()
     {
         var store = new FakeCardTerminalSettingsStore();
-        var squareClient = new FakeSquareTerminalSetupClient
-        {
-            FailFirstRequestWithAuthError = true
-        };
+        var service = new CardTerminalSetupService(store, new FakeSquareTerminalSetupClient(), new FakeLinklyTerminalClient());
+
+        var token = await service.GetSquareAccessTokenAsync();
+
+        Assert.Null(token);
+        Assert.Equal(0, store.CachedTokenReadCount);
+        Assert.Equal(0, store.EnvironmentTokenReadCount);
+        Assert.Equal(0, store.ForceRefreshCount);
+    }
+
+    [Fact]
+    public async Task ListSquareLocationsAsync_without_local_square_token_still_calls_backend_setup_client()
+    {
+        var store = new FakeCardTerminalSettingsStore();
+        var squareClient = new FakeSquareTerminalSetupClient();
         var service = new CardTerminalSetupService(store, squareClient, new FakeLinklyTerminalClient());
 
         var locations = await service.ListSquareLocationsAsync(null, CardTerminalEnvironment.Production);
 
         Assert.Single(locations);
-        Assert.True(
-            squareClient.UsedTokenSequence(LocalToken, RemoteToken),
-            "setup service should retry with refreshed token after Square auth failure");
-        Assert.Equal(1, store.ForceRefreshCount);
+        Assert.Equal(string.Empty, Assert.Single(squareClient.Tokens));
+        Assert.Equal(0, store.CachedTokenReadCount);
+        Assert.Equal(0, store.EnvironmentTokenReadCount);
+        Assert.Equal(0, store.ForceRefreshCount);
     }
 
     [Fact]
-    public async Task CreateSquareDeviceCodeAsync_refreshes_token_once_after_auth_failure()
+    public async Task CreateSquareDeviceCodeAsync_without_local_square_token_still_calls_backend_setup_client()
     {
         var store = new FakeCardTerminalSettingsStore();
-        var squareClient = new FakeSquareTerminalSetupClient
-        {
-            FailFirstRequestWithAuthError = true
-        };
+        var squareClient = new FakeSquareTerminalSetupClient();
         var service = new CardTerminalSetupService(store, squareClient, new FakeLinklyTerminalClient());
 
         var result = await service.CreateSquareDeviceCodeAsync(null, CardTerminalEnvironment.Production, "LOC-1", "Counter 2");
 
         Assert.Equal("PAIR123", result.Code);
-        Assert.True(
-            squareClient.UsedTokenSequence(LocalToken, RemoteToken),
-            "setup service should retry device code creation with refreshed token after Square auth failure");
-        Assert.Equal(1, store.ForceRefreshCount);
+        Assert.Equal(string.Empty, Assert.Single(squareClient.Tokens));
+        Assert.Equal(0, store.CachedTokenReadCount);
+        Assert.Equal(0, store.EnvironmentTokenReadCount);
+        Assert.Equal(0, store.ForceRefreshCount);
+    }
+
+    [Fact]
+    public async Task ListSquareLocationsAsync_propagates_setup_client_failure_without_refresh()
+    {
+        var store = new FakeCardTerminalSettingsStore();
+        var expected = new SquareApiException(
+            "Square locations request failed with status 401 (Unauthorized).",
+            HttpStatusCode.Unauthorized);
+        var squareClient = new FakeSquareTerminalSetupClient
+        {
+            ListLocationsException = expected
+        };
+        var service = new CardTerminalSetupService(store, squareClient, new FakeLinklyTerminalClient());
+
+        var exception = await Assert.ThrowsAsync<SquareApiException>(() =>
+            service.ListSquareLocationsAsync(null, CardTerminalEnvironment.Production));
+
+        Assert.Same(expected, exception);
+        Assert.Equal(string.Empty, Assert.Single(squareClient.Tokens));
+        Assert.Equal(0, store.CachedTokenReadCount);
+        Assert.Equal(0, store.EnvironmentTokenReadCount);
+        Assert.Equal(0, store.ForceRefreshCount);
     }
 
     [Fact]
@@ -453,6 +483,10 @@ public sealed class CardTerminalSetupServiceTests
 
     private sealed class FakeCardTerminalSettingsStore : ICardTerminalSettingsStore
     {
+        public int CachedTokenReadCount { get; private set; }
+
+        public int EnvironmentTokenReadCount { get; private set; }
+
         public int ForceRefreshCount { get; private set; }
 
         public CardTerminalConfiguration? SavedConfiguration { get; private set; }
@@ -489,6 +523,7 @@ public sealed class CardTerminalSetupServiceTests
 
         public Task<string?> GetSquareAccessTokenAsync(CancellationToken cancellationToken = default)
         {
+            CachedTokenReadCount++;
             return Task.FromResult<string?>(LocalToken);
         }
 
@@ -497,10 +532,10 @@ public sealed class CardTerminalSetupServiceTests
             bool forceRefresh,
             CancellationToken cancellationToken = default)
         {
+            EnvironmentTokenReadCount++;
             if (forceRefresh)
             {
                 ForceRefreshCount++;
-                return Task.FromResult<string?>(RemoteToken);
             }
 
             return Task.FromResult<string?>(LocalToken);
@@ -731,7 +766,7 @@ public sealed class CardTerminalSetupServiceTests
 
     private sealed class FakeSquareTerminalSetupClient : ISquareTerminalSetupClient
     {
-        public bool FailFirstRequestWithAuthError { get; init; }
+        public Exception? ListLocationsException { get; init; }
 
         public List<string> Tokens { get; } = [];
 
@@ -741,20 +776,13 @@ public sealed class CardTerminalSetupServiceTests
             CancellationToken cancellationToken = default)
         {
             Tokens.Add(accessToken);
-            if (FailFirstRequestWithAuthError && Tokens.Count == 1)
+            if (ListLocationsException is not null)
             {
-                throw new SquareApiException("Square locations request failed with status 401 (Unauthorized).", HttpStatusCode.Unauthorized);
+                throw ListLocationsException;
             }
 
             IReadOnlyList<SquareLocationOption> locations = [new("LOC-1", "Main")];
             return Task.FromResult(locations);
-        }
-
-        public bool UsedTokenSequence(string firstToken, string secondToken)
-        {
-            return Tokens.Count == 2 &&
-                string.Equals(Tokens[0], firstToken, StringComparison.Ordinal) &&
-                string.Equals(Tokens[1], secondToken, StringComparison.Ordinal);
         }
 
         public Task<IReadOnlyList<SquareDeviceOption>> ListDevicesAsync(
@@ -783,11 +811,6 @@ public sealed class CardTerminalSetupServiceTests
             CancellationToken cancellationToken = default)
         {
             Tokens.Add(accessToken);
-            if (FailFirstRequestWithAuthError && Tokens.Count == 1)
-            {
-                throw new SquareApiException("Square create device code request failed with status 401 (Unauthorized).", HttpStatusCode.Unauthorized);
-            }
-
             return Task.FromResult(new SquareDeviceCodeOption(
                 "DC-1",
                 name,

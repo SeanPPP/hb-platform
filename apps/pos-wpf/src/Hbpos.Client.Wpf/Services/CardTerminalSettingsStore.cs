@@ -23,7 +23,14 @@ public sealed class CardTerminalSettingsStore(
     private const string SquareDeviceIdKey = "CardTerminal:SquareDeviceId";
     private const string TimeoutSecondsKey = "CardTerminal:TimeoutSeconds";
 
-    public async Task<CardTerminalConfiguration> LoadAsync(CancellationToken cancellationToken = default)
+    public Task<CardTerminalConfiguration> LoadAsync(CancellationToken cancellationToken = default)
+    {
+        return LoadConfigurationAsync(includeSquareTokenStatus: true, cancellationToken);
+    }
+
+    private async Task<CardTerminalConfiguration> LoadConfigurationAsync(
+        bool includeSquareTokenStatus,
+        CancellationToken cancellationToken)
     {
         var environmentSettings = CardTerminalSettings.FromEnvironment();
 
@@ -57,6 +64,14 @@ public sealed class CardTerminalSettingsStore(
             (int)Math.Max(1, environmentSettings.TerminalTimeout.TotalSeconds));
         var protectedToken = await ReadProtectedSquareAccessTokenAsync(terminalEnvironment, cancellationToken);
         var protectedLinklySecret = await ReadProtectedLinklyCloudSecretAsync(terminalEnvironment, cancellationToken);
+        var hasLegacyProtectedToken = !string.IsNullOrWhiteSpace(protectedToken);
+        var hasSquareTokenConfigured = includeSquareTokenStatus
+            ? await ResolveSquareTokenConfiguredAsync(
+                processor,
+                terminalEnvironment,
+                hasLegacyProtectedToken,
+                cancellationToken)
+            : hasLegacyProtectedToken;
 
         return new CardTerminalConfiguration(
             processor,
@@ -65,7 +80,7 @@ public sealed class CardTerminalSettingsStore(
             linklyPort,
             squareLocationId,
             squareDeviceId,
-            !string.IsNullOrWhiteSpace(protectedToken),
+            hasSquareTokenConfigured,
             timeoutSeconds,
             linklyConnectionMode,
             !string.IsNullOrWhiteSpace(protectedLinklySecret),
@@ -100,22 +115,15 @@ public sealed class CardTerminalSettingsStore(
         await settingsRepository.SetValueAsync(SquareDeviceIdKey, configuration.SquareDeviceId?.Trim() ?? string.Empty, cancellationToken);
         await settingsRepository.SetValueAsync(TimeoutSecondsKey, NormalizeTimeoutSeconds(configuration.TerminalTimeoutSeconds).ToString(), cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(squareAccessToken))
-        {
-            await SaveProtectedSquareAccessTokenAsync(
-                configuration.Environment,
-                squareAccessToken,
-                cancellationToken);
-        }
+        // Square token 已移到 Hbpos API；保存设置时不再把新 access token 写入本机缓存。
+        _ = squareAccessToken;
     }
 
-    public async Task<string?> GetSquareAccessTokenAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetSquareAccessTokenAsync(CancellationToken cancellationToken = default)
     {
-        var configuration = await LoadAsync(cancellationToken);
-        return await GetSquareAccessTokenAsync(
-            configuration.Environment,
-            forceRefresh: false,
-            cancellationToken);
+        // 兼容旧接口签名，但运行时不再向 WPF 暴露 Square bearer token。
+        _ = cancellationToken;
+        return Task.FromResult<string?>(null);
     }
 
     public Task<string?> GetTokenAsync(
@@ -132,45 +140,16 @@ public sealed class CardTerminalSettingsStore(
         return GetSquareAccessTokenAsync(environment, forceRefresh: true, cancellationToken);
     }
 
-    public async Task<string?> GetSquareAccessTokenAsync(
+    public Task<string?> GetSquareAccessTokenAsync(
         CardTerminalEnvironment environment,
         bool forceRefresh,
         CancellationToken cancellationToken = default)
     {
-        var localToken = await ReadLocalSquareAccessTokenAsync(environment, cancellationToken);
-        if (!forceRefresh && !string.IsNullOrWhiteSpace(localToken))
-        {
-            return localToken;
-        }
-
-        if (squareTokenApiClient is not null)
-        {
-            try
-            {
-                var remoteToken = await squareTokenApiClient.GetTokenAsync(environment, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(remoteToken.AccessToken))
-                {
-                    await SaveProtectedSquareAccessTokenAsync(
-                        environment,
-                        remoteToken.AccessToken,
-                        cancellationToken);
-                    return remoteToken.AccessToken.Trim();
-                }
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
-            {
-                ConsoleLog.WriteError(
-                    "CardTerminalSettings",
-                    $"square token refresh failed environment={environment} forceRefresh={forceRefresh} error={ex.GetType().Name} message={ex.Message}",
-                    exception: ex);
-                if (forceRefresh)
-                {
-                    return null;
-                }
-            }
-        }
-
-        return null;
+        _ = forceRefresh;
+        _ = environment;
+        _ = cancellationToken;
+        // 兼容旧接口签名，但运行时不再向 WPF 暴露 Square bearer token。
+        return Task.FromResult<string?>(null);
     }
 
     public async Task<string?> GetLinklyCloudSecretAsync(
@@ -288,33 +267,6 @@ public sealed class CardTerminalSettingsStore(
         LogLinklyCloud($"protected cloud api credential saved environment={environment} hasUsername=true");
     }
 
-    private async Task<string?> ReadLocalSquareAccessTokenAsync(
-        CardTerminalEnvironment environment,
-        CancellationToken cancellationToken)
-    {
-        var protectedToken = await ReadProtectedSquareAccessTokenAsync(environment, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(protectedToken))
-        {
-            return protector.Unprotect(protectedToken);
-        }
-
-        return null;
-    }
-
-    private async Task SaveProtectedSquareAccessTokenAsync(
-        CardTerminalEnvironment environment,
-        string squareAccessToken,
-        CancellationToken cancellationToken)
-    {
-        var protectedToken = protector.Protect(squareAccessToken.Trim());
-        if (string.IsNullOrWhiteSpace(protectedToken))
-        {
-            throw new InvalidOperationException("Square access token could not be protected.");
-        }
-
-        await settingsRepository.SetValueAsync(GetSquareTokenKey(environment), protectedToken, cancellationToken);
-    }
-
     private async Task<string?> ReadProtectedSquareAccessTokenAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken)
@@ -372,11 +324,9 @@ public sealed class CardTerminalSettingsStore(
 
     public async Task<CardTerminalSettings> GetSettingsAsync(CancellationToken cancellationToken = default)
     {
-        var configuration = await LoadAsync(cancellationToken);
-        // Linkly 付款不依赖 Square token，读取设置时不能触发 Square 后端刷新。
-        var squareAccessToken = configuration.Processor == CardProcessorKind.Square
-            ? await GetSquareAccessTokenAsync(cancellationToken)
-            : null;
+        var configuration = await LoadConfigurationAsync(includeSquareTokenStatus: false, cancellationToken);
+        // 付款运行时只需要知道 Square 是否由后端配置；不再把旧本地 bearer 放入 settings。
+        string? squareAccessToken = null;
         var linklyCloudSecret = await GetLinklyCloudSecretAsync(configuration.Environment, cancellationToken);
         var environmentSettings = CardTerminalSettings.FromEnvironment();
 
@@ -402,6 +352,37 @@ public sealed class CardTerminalSettingsStore(
             CardTerminalSettings.NormalizeLinklyConnectionModePriority(
                 configuration.LinklyConnectionModePriority,
                 configuration.LinklyConnectionMode));
+    }
+
+    private async Task<bool> ResolveSquareTokenConfiguredAsync(
+        CardProcessorKind processor,
+        CardTerminalEnvironment environment,
+        bool hasLegacyProtectedToken,
+        CancellationToken cancellationToken)
+    {
+        if (processor != CardProcessorKind.Square || squareTokenApiClient is null)
+        {
+            return hasLegacyProtectedToken;
+        }
+
+        try
+        {
+            // 设置页状态以“后端是否已配置 token”为准；本地缓存仅作为兼容回退。
+            var status = await squareTokenApiClient.GetStatusAsync(environment, cancellationToken);
+            return status.Configured;
+        }
+        catch (CatalogApiException ex) when (string.Equals(ex.ErrorCode, "SQUARE_TOKEN_NOT_CONFIGURED", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or CatalogApiException)
+        {
+            ConsoleLog.WriteError(
+                "CardTerminalSettings",
+                $"square token status lookup failed environment={environment} error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+            return hasLegacyProtectedToken;
+        }
     }
 
     private static CardProcessorKind ParseProcessor(string? value, CardProcessorKind fallback)

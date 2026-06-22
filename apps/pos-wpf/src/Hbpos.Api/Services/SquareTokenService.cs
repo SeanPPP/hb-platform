@@ -24,12 +24,16 @@ public sealed class SquareTokenService(ISquareTokenRepository repository) : ISqu
         }
 
         var token = await repository.GetActiveTokenAsync(normalizedEnvironment, cancellationToken);
-        return token is null
-            ? null
-            : new SquareTokenResponse(
-                normalizedEnvironment,
-                token.AccessToken ?? string.Empty,
-                new DateTimeOffset(DateTime.SpecifyKind(token.UpdatedAt ?? DateTime.UtcNow, DateTimeKind.Utc)));
+        if (token is null || string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            // 空 token 等同于未配置，不把 AccessToken="" 的内部对象继续向后传。
+            return null;
+        }
+
+        return new SquareTokenResponse(
+            normalizedEnvironment,
+            token.AccessToken,
+            new DateTimeOffset(DateTime.SpecifyKind(token.UpdatedAt ?? DateTime.UtcNow, DateTimeKind.Utc)));
     }
 
     internal static string? NormalizeEnvironment(string? environment)

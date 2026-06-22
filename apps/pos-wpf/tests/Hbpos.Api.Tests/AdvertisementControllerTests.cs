@@ -118,6 +118,19 @@ public sealed class AdvertisementControllerTests
         Assert.Contains("advertisement schema bootstrap failed", exception.Message);
     }
 
+    [Fact]
+    public void Startup_DoesNotInitializeSquareWebhookSchemaWithoutPosmConnectionString()
+    {
+        using var factory = new AdvertisementApiFactory(
+            new RecordingAdvertisementSchemaInitializer(),
+            new ThrowingSquareWebhookSchemaInitializer(
+                new InvalidOperationException("square webhook schema bootstrap should stay behind posm gate")));
+
+        using var client = factory.CreateClient();
+
+        Assert.NotNull(client);
+    }
+
     private static string? GetHttpGetTemplate(string methodName)
     {
         return typeof(AdvertisementsController)
@@ -166,7 +179,9 @@ public sealed class AdvertisementControllerTests
         }
     }
 
-    private sealed class AdvertisementApiFactory(IAdvertisementSchemaInitializer advertisementSchemaInitializer)
+    private sealed class AdvertisementApiFactory(
+        IAdvertisementSchemaInitializer advertisementSchemaInitializer,
+        ISquareWebhookSchemaInitializer? squareWebhookSchemaInitializer = null)
         : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -190,6 +205,9 @@ public sealed class AdvertisementControllerTests
 
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton<ISquareTokenSchemaInitializer>(new NoOpSquareTokenSchemaInitializer());
+
+                services.RemoveAll<ISquareWebhookSchemaInitializer>();
+                services.AddSingleton(squareWebhookSchemaInitializer ?? new NoOpSquareWebhookSchemaInitializer());
             });
         }
     }
@@ -242,6 +260,22 @@ public sealed class AdvertisementControllerTests
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpSquareWebhookSchemaInitializer : ISquareWebhookSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingSquareWebhookSchemaInitializer(Exception exception) : ISquareWebhookSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            throw exception;
         }
     }
 }

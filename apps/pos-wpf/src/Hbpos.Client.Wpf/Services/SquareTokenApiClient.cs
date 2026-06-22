@@ -7,7 +7,7 @@ namespace Hbpos.Client.Wpf.Services;
 
 public interface ISquareTokenApiClient
 {
-    Task<SquareTokenResponse> GetTokenAsync(
+    Task<SquareTokenStatusResponse> GetStatusAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default);
 }
@@ -16,28 +16,28 @@ public sealed class SquareTokenApiClient(HttpClient httpClient) : ISquareTokenAp
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public async Task<SquareTokenResponse> GetTokenAsync(
+    public async Task<SquareTokenStatusResponse> GetStatusAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default)
     {
-        LogSquareToken($"token request start environment={environment}");
+        LogSquareToken($"token status request start environment={environment}");
         using var response = await httpClient.GetAsync(
             $"api/v1/square/token?environment={Uri.EscapeDataString(environment.ToString())}",
             cancellationToken);
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        ApiResult<SquareTokenResponse>? result = null;
+        ApiResult<SquareTokenStatusResponse>? result = null;
         if (!string.IsNullOrWhiteSpace(content))
         {
             try
             {
-                result = JsonSerializer.Deserialize<ApiResult<SquareTokenResponse>>(content, JsonOptions);
+                result = JsonSerializer.Deserialize<ApiResult<SquareTokenStatusResponse>>(content, JsonOptions);
             }
             catch (JsonException ex)
             {
-                LogSquareToken($"token request invalid json environment={environment} http={(int)response.StatusCode}");
+                LogSquareToken($"token status request invalid json environment={environment} http={(int)response.StatusCode}");
                 throw new CatalogApiException(
-                    "Square token API returned invalid JSON.",
+                    "Square token status API returned invalid JSON.",
                     response.StatusCode,
                     errorCode: null,
                     ex);
@@ -46,38 +46,39 @@ public sealed class SquareTokenApiClient(HttpClient httpClient) : ISquareTokenAp
 
         if (!response.IsSuccessStatusCode)
         {
-            LogSquareToken($"token request failed environment={environment} http={(int)response.StatusCode} errorCode={LogValue(result?.ErrorCode)}");
+            LogSquareToken($"token status request failed environment={environment} http={(int)response.StatusCode} errorCode={LogValue(result?.ErrorCode)}");
             throw new CatalogApiException(
-                $"Square token API request failed with HTTP {(int)response.StatusCode}.",
+                $"Square token status API request failed with HTTP {(int)response.StatusCode}.",
                 response.StatusCode,
                 result?.ErrorCode);
         }
 
         if (result is null)
         {
-            LogSquareToken($"token request failed environment={environment} reason=empty-response");
-            throw new CatalogApiException("Square token API returned an empty response.", response.StatusCode);
+            LogSquareToken($"token status request failed environment={environment} reason=empty-response");
+            throw new CatalogApiException("Square token status API returned an empty response.", response.StatusCode);
         }
 
         if (!result.Success)
         {
-            LogSquareToken($"token request failed environment={environment} reason=api-failure errorCode={LogValue(result.ErrorCode)}");
+            LogSquareToken($"token status request failed environment={environment} reason=api-failure errorCode={LogValue(result.ErrorCode)}");
             throw new CatalogApiException(
-                "Square token API returned a failure response.",
+                "Square token status API returned a failure response.",
                 response.StatusCode,
                 result.ErrorCode);
         }
 
-        if (result.Data is null || string.IsNullOrWhiteSpace(result.Data.AccessToken))
+        if (result.Data is null)
         {
-            LogSquareToken($"token request failed environment={environment} reason=missing-token errorCode={LogValue(result.ErrorCode)}");
+            LogSquareToken($"token status request failed environment={environment} reason=missing-status errorCode={LogValue(result.ErrorCode)}");
             throw new CatalogApiException(
-                "Square token API returned no token.",
+                "Square token status API returned no status.",
                 response.StatusCode,
                 result.ErrorCode);
         }
 
-        LogSquareToken($"token request succeeded environment={environment}");
+        LogSquareToken(
+            $"token status request succeeded environment={environment} configured={result.Data.Configured} enabled={result.Data.Enabled}");
         return result.Data;
     }
 

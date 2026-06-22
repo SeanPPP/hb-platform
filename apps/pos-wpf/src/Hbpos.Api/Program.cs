@@ -32,11 +32,13 @@ using (var scope = app.Services.CreateScope())
     var linklyCloudCredentialSchemaInitializer = scope.ServiceProvider.GetRequiredService<ILinklyCloudCredentialSchemaInitializer>();
     await linklyCloudCredentialSchemaInitializer.InitializeAsync();
 
-    // WebApplicationFactory 测试会替换特定 initializer；没有 POSM 连接串时避免新表初始化触发真实数据库依赖。
     if (HasConnectionString(app.Configuration, "PosmConnection", "HBPOSMConnection"))
     {
         var linklyCloudBackendAsyncSchemaInitializer = scope.ServiceProvider.GetRequiredService<ILinklyCloudBackendAsyncSchemaInitializer>();
         await linklyCloudBackendAsyncSchemaInitializer.InitializeAsync();
+
+        var squareWebhookSchemaInitializer = scope.ServiceProvider.GetRequiredService<ISquareWebhookSchemaInitializer>();
+        await squareWebhookSchemaInitializer.InitializeAsync();
     }
 
     var squareTokenSchemaInitializer = scope.ServiceProvider.GetRequiredService<ISquareTokenSchemaInitializer>();

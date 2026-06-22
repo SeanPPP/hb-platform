@@ -220,9 +220,32 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public async Task LoadAsync_uses_backend_square_token_status_text()
+    {
+        var configuredViewModel = new SettingsViewModel(new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with
+            {
+                Processor = CardProcessorKind.Square,
+                HasProtectedSquareAccessToken = true
+            }));
+        var missingViewModel = new SettingsViewModel(new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with
+            {
+                Processor = CardProcessorKind.Square,
+                HasProtectedSquareAccessToken = false
+            }));
+
+        await configuredViewModel.LoadAsync();
+        await missingViewModel.LoadAsync();
+
+        Assert.Equal("Square token is configured in HBPOS for this environment.", configuredViewModel.SquareTokenStatusText);
+        Assert.Equal("Square token is not configured in HBPOS for this environment.", missingViewModel.SquareTokenStatusText);
+    }
+
+    [Fact]
     public async Task SaveSquareCommand_requires_device_loaded_from_square_api()
     {
-        var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(squareAccessToken: CachedToken))
+        var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService())
         {
             SelectedSquareLocation = new SquareLocationOption("LOC-1", "Main"),
             SelectedSquareDevice = new SquareDeviceOption("DEV-1", "Counter", "AVAILABLE")
@@ -238,7 +261,7 @@ public sealed class SettingsViewModelTests
     [Fact]
     public async Task SaveSquareCommand_saves_selected_square_terminal_after_remote_lists_are_loaded()
     {
-        var service = new FakeCardTerminalSetupService(squareAccessToken: CachedToken);
+        var service = new FakeCardTerminalSetupService();
         var viewModel = new SettingsViewModel(service)
         {
             IsSquareSandbox = true,
@@ -425,7 +448,7 @@ public sealed class SettingsViewModelTests
     [Fact]
     public async Task CreateDeviceCodeCommand_creates_and_selects_new_code()
     {
-        var service = new FakeCardTerminalSetupService(squareAccessToken: CachedToken)
+        var service = new FakeCardTerminalSetupService()
         {
             CreateDeviceCodeResult = new("DC-1", "Counter 3", "PAIR123", "UNPAIRED", "LOC-1", null, DateTimeOffset.UtcNow.AddMinutes(5), DateTimeOffset.UtcNow)
         };
@@ -1526,11 +1549,6 @@ public sealed class SettingsViewModelTests
             CancellationToken cancellationToken = default)
         {
             LastListSquareLocationsEnvironment = environment;
-            if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
-            {
-                throw new InvalidOperationException("Enter a Square Access Token first.");
-            }
-
             return Task.FromResult(SquareLocationsResult);
         }
 
@@ -1541,11 +1559,6 @@ public sealed class SettingsViewModelTests
             CancellationToken cancellationToken = default)
         {
             LastListSquareDevicesEnvironment = environment;
-            if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
-            {
-                throw new InvalidOperationException("Enter a Square Access Token first.");
-            }
-
             Assert.Equal("LOC-1", locationId);
             return Task.FromResult(SquareDevicesResult);
         }
@@ -1556,11 +1569,6 @@ public sealed class SettingsViewModelTests
             string locationId,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
-            {
-                throw new InvalidOperationException("Enter a Square Access Token first.");
-            }
-
             Assert.Equal("LOC-1", locationId);
             return Task.FromResult(SquareDeviceCodesResult);
         }
@@ -1572,11 +1580,6 @@ public sealed class SettingsViewModelTests
             string name,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
-            {
-                throw new InvalidOperationException("Enter a Square Access Token first.");
-            }
-
             LastCreatedDeviceCodeRequest = (locationId, name);
             SquareDeviceCodesResult = [CreateDeviceCodeResult, .. SquareDeviceCodesResult];
             return Task.FromResult(CreateDeviceCodeResult);
@@ -1588,11 +1591,6 @@ public sealed class SettingsViewModelTests
             string deviceCodeId,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(accessToken) && string.IsNullOrWhiteSpace(_squareAccessToken))
-            {
-                throw new InvalidOperationException("Enter a Square Access Token first.");
-            }
-
             Assert.Equal("DC-1", deviceCodeId);
             return Task.FromResult(GetDeviceCodeResult);
         }
@@ -1605,10 +1603,8 @@ public sealed class SettingsViewModelTests
             LastSaveSquareEnvironment = configuration.Environment;
             SavedConfiguration = configuration;
             SavedSquareAccessToken = squareAccessToken;
-            _configuration = configuration with
-            {
-                HasProtectedSquareAccessToken = _configuration.HasProtectedSquareAccessToken || !string.IsNullOrWhiteSpace(squareAccessToken)
-            };
+            // 设置页现在以“后端 token 是否已配置”为状态来源，保存配置时沿用调用方传入的状态即可。
+            _configuration = configuration;
 
             if (!string.IsNullOrWhiteSpace(squareAccessToken))
             {

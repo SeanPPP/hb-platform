@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using Hbpos.Client.Wpf.Services;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ConsoleLogGlobalStateTestCollection.Name)]
 public sealed class CentralLoggingTests
 {
     [Fact]
@@ -60,18 +62,22 @@ public sealed class CentralLoggingTests
         {
             ConsoleLog.Write("OrderSync", "upload completed orderGuid=abc");
 
-            var entry = Assert.Single(sink.Entries);
+            var entry = Assert.Single(sink.Entries.Where(item =>
+                item.Category == "OrderSync" &&
+                item.Message == "upload completed orderGuid=abc"));
             Assert.Equal("Information", entry.Level);
             Assert.Equal("upload completed orderGuid=abc", entry.Message);
             Assert.Equal("hbpos_win", entry.ProjectCode);
             Assert.Equal("POS", entry.SourceType);
             Assert.Equal("OrderSync", entry.Category);
             Assert.Equal("OrderSync", entry.ServiceName);
-            Assert.Equal("OrderSync", entry.Properties["category"]);
+            Assert.NotNull(entry.Properties);
+            Assert.Equal("OrderSync", entry.Properties!["category"]);
         }
         finally
         {
             ConsoleLog.ConfigureCenterSink(null);
+            ConsoleLog.ConfigureCenterDefaults(ApplicationLogDefaults.Default);
         }
     }
 
@@ -110,29 +116,36 @@ public sealed class CentralLoggingTests
 
             await Assert.ThrowsAsync<CatalogApiException>(() => client.SyncAsync(request));
 
-            var entry = Assert.Single(sink.Entries.Where(item => item.Level == "Error"));
+            var entry = Assert.Single(sink.Entries.Where(item =>
+                item.Level == "Error" &&
+                item.ServiceName == "OrderSync" &&
+                item.Message == "Order sync request failed."));
             Assert.Equal("Order sync request failed.", entry.Message);
             Assert.Equal("OrderSync", entry.ServiceName);
             Assert.Equal("POST", entry.RequestMethod);
             Assert.Equal("/api/v1/orders/sync", entry.RequestPath);
             Assert.Equal(500, entry.StatusCode);
-            Assert.Equal("S001", entry.Properties["storeCode"]);
+            Assert.NotNull(entry.Properties);
+            Assert.Equal("S001", entry.Properties!["storeCode"]);
             Assert.Equal("POS-01", entry.Properties["deviceCode"]);
             Assert.Equal("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", entry.TraceId);
         }
         finally
         {
             ConsoleLog.ConfigureCenterSink(null);
+            ConsoleLog.ConfigureCenterDefaults(ApplicationLogDefaults.Default);
         }
     }
 
     private sealed class FakeApplicationLogSink : IApplicationLogSink
     {
-        public List<ApplicationLogEntry> Entries { get; } = [];
+        private readonly ConcurrentQueue<ApplicationLogEntry> _entries = new();
+
+        public IReadOnlyList<ApplicationLogEntry> Entries => _entries.ToArray();
 
         public void Enqueue(ApplicationLogEntry entry)
         {
-            Entries.Add(entry);
+            _entries.Enqueue(entry);
         }
     }
 
