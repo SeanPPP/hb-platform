@@ -241,6 +241,7 @@ namespace BlazorApp.Shared.Constants
             public const string ManageScheduledTasks = "System.ManageScheduledTasks";
             public const string ManageSettings = "System.ManageSettings";
             public const string ViewAppDownloads = "System.ViewAppDownloads";
+            public const string ManageAppDownloads = "System.ManageAppDownloads";
         }
 
         public static class Dashboard

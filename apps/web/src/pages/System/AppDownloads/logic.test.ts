@@ -4,7 +4,9 @@ import {
   APP_DOWNLOAD_PROFILES,
   DEFAULT_APP_DOWNLOAD_PROFILE,
   buildAppDownloadQuery,
+  buildAppDownloadOtaQuery,
   normalizeAppDownloadProfile,
+  normalizeRuntimeVersionFilter,
   resolveAppDownloadContentState,
 } from './logic'
 
@@ -56,6 +58,21 @@ assertDeepEqual(
   { profile: 'production', page: 1, pageSize: 10 },
   '空 profile 和无效分页应使用安全默认值',
 )
+assertDeepEqual(
+  buildAppDownloadOtaQuery('PREVIEW', 2.8, 20.2, ' 1.0.1 '),
+  { channel: 'preview', page: 2, pageSize: 20, runtimeVersion: '1.0.1' },
+  'OTA 查询应复用 profile/channel 并清理 runtimeVersion 空白',
+)
+assertDeepEqual(
+  buildAppDownloadOtaQuery('preview', 1, 10, '   '),
+  { channel: 'preview', page: 1, pageSize: 10 },
+  '空 runtimeVersion 应从 OTA 查询参数中省略，表示查询全部 runtime',
+)
+assertEqual(
+  normalizeRuntimeVersionFilter(' 1.0.1 '),
+  '1.0.1',
+  'runtimeVersion 筛选值应去除首尾空白',
+)
 
 assertEqual(
   resolveAppDownloadContentState(true, true, 1),
@@ -97,6 +114,21 @@ assertEqual(
   enLocale.system.appDownloads.profiles.production,
   'Production',
   '英文 production profile 文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.runtime,
+  'Runtime',
+  '中文 Runtime 描述项文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.ota.rollbackLatestOnly,
+  '只能回撤当前最新 OTA',
+  '中文 OTA 回撤限制提示应存在',
+)
+assertEqual(
+  enLocale.system.appDownloads.ota.runtimePlaceholder,
+  'Runtime version (all)',
+  '英文 OTA runtime 筛选占位文案应存在',
 )
 
 console.log('AppDownloads logic tests: ok')

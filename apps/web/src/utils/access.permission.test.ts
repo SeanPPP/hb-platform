@@ -177,6 +177,24 @@ assertEqual(
   'System.ViewAppDownloads should unlock App download page visibility',
 )
 
+assertEqual(
+  appDownloadAccess.canManageAppDownloads,
+  false,
+  'System.ViewAppDownloads should not unlock OTA management actions',
+)
+
+const appDownloadManagerAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.System.ManageAppDownloads],
+  }),
+)
+
+assertEqual(
+  appDownloadManagerAccess.canManageAppDownloads,
+  true,
+  'System.ManageAppDownloads should unlock OTA management actions',
+)
+
 const appDownloadDeniedAccess = buildAccess(createCurrentUser())
 
 assertEqual(
@@ -189,6 +207,12 @@ assertEqual(
   adminAccess.canViewAppDownloads,
   true,
   'Admin should continue to satisfy App download page visibility',
+)
+
+assertEqual(
+  adminAccess.canManageAppDownloads,
+  true,
+  'Admin should continue to satisfy App download management actions',
 )
 
 const scheduledTaskManagerAccess = buildAccess(

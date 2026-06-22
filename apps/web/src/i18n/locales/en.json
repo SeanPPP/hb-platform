@@ -3147,6 +3147,7 @@
       "versionBuild": "Version / Build",
       "profile": "Profile",
       "channel": "Channel",
+      "runtime": "Runtime",
       "status": "Status",
       "completedAt": "Completed At",
       "expirationDate": "Expiration Date",
@@ -3154,6 +3155,35 @@
       "profiles": {
         "production": "Production",
         "preview": "Preview"
+      },
+      "ota": {
+        "title": "OTA Updates",
+        "empty": "No OTA update records",
+        "loadFailed": "Failed to load OTA update records",
+        "loadFailedDescription": "Confirm the OTA update API is deployed and the backend is reachable. This error does not affect APK build history.",
+        "runtimePlaceholder": "Runtime version (all)",
+        "platform": "Platform",
+        "message": "Message",
+        "updateGroupId": "Update Group ID",
+        "androidUpdateId": "Android Update ID",
+        "publishedAt": "Published At",
+        "type": "Type",
+        "types": {
+          "normal": "Normal",
+          "rollback": "Rollback"
+        },
+        "copyGroupId": "Copy Group ID",
+        "groupIdCopySuccess": "Update Group ID copied",
+        "copyTextFailed": "Failed to copy text",
+        "openDashboard": "Open Dashboard",
+        "createRollbackCommand": "Generate Rollback Command",
+        "rollbackLatestOnly": "Only the current latest OTA can be rolled back",
+        "rollbackCommandTitle": "OTA Rollback Command",
+        "rollbackCommand": "Command",
+        "rollbackCommandWarning": "Rollback Warning",
+        "rollbackCommandGenerated": "Rollback command generated",
+        "rollbackCommandFailed": "Failed to generate rollback command",
+        "rollbackCommandCopySuccess": "Rollback command copied"
       }
     }
   },

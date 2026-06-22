@@ -34,6 +34,25 @@ npm run ota:legacy-apk-notice:preview
 npm run ota:legacy-apk-notice:production
 ```
 
+这两个 npm script 会通过 `scripts/publish-ota-update.mjs` 调用 `npx eas-cli@latest update --platform android`，并固定注入以下 OTA 环境变量：
+
+```bash
+EXPO_PUBLIC_APP_BUILD_PROFILE=<preview|production>
+EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false
+EXPO_PUBLIC_RUNTIME_VERSION=1.0.1
+```
+
+只有通过这个新脚本发布 OTA，脚本才会在 EAS 发布成功后解析输出并尝试登记 OTA 数据库记录。通过 Expo 控制台发布，或直接裸跑 `eas update` / `npx eas-cli@latest update`，不会自动入库。
+
+自动登记需要在发布命令所在 shell 中配置后台私密环境变量：
+
+```bash
+HBWEB_API_BASE_URL=https://<backend-domain>
+HBWEB_API_TOKEN=<backend-bearer-token>
+```
+
+`HBWEB_API_BASE_URL` 可以是站点根地址，也可以是带 `/api` 的 API base URL。脚本会 POST 到 `/api/mobile-app-builds/ota-updates`，请求头使用 `Authorization: Bearer <token>`。如果未配置 base URL/token，或后台登记失败，OTA 发布结果不会被回滚；脚本会输出 warning 和可手动补录的 JSON。
+
 发布前需确认后端已通过 EAS Webhook 收到对应 profile 的最新 APK 记录，否则旧 APK 不会弹出下载提示。
 
 ### 后端配置项

@@ -83,6 +83,7 @@ export const P = {
     ManageScheduledTasks: 'System.ManageScheduledTasks',
     ManageSettings: 'System.ManageSettings',
     ViewAppDownloads: 'System.ViewAppDownloads',
+    ManageAppDownloads: 'System.ManageAppDownloads',
   },
   DeviceRegistration: {
     View: 'DeviceRegistration.View',

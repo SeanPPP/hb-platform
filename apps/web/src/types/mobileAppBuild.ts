@@ -26,3 +26,34 @@ export interface MobileAppBuildPagedResult {
   page: number
   pageSize: number
 }
+
+export interface MobileAppOtaUpdate {
+  id: string
+  updateGroupId?: string | null
+  androidUpdateId?: string | null
+  channel?: string | null
+  branch?: string | null
+  platform?: string | null
+  runtimeVersion?: string | null
+  message?: string | null
+  gitCommitHash?: string | null
+  dashboardUrl?: string | null
+  publishedAt?: string | null
+  isRollback: boolean
+  rollbackOfGroupId?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface MobileAppOtaUpdatePagedResult {
+  items: MobileAppOtaUpdate[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface MobileAppOtaRollbackCommand {
+  updateGroupId: string
+  command: string
+  warning?: string | null
+}

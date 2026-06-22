@@ -17,6 +17,15 @@ namespace BlazorApp.Api.Tests;
 public sealed class MobileAppBuildServiceTests : IDisposable
 {
     private const string Secret = "test-eas-secret";
+    private const string OtaGroup1 = "11111111-1111-1111-8111-111111111111";
+    private const string OtaGroupRepeat = "22222222-2222-2222-8222-222222222222";
+    private const string OtaGroupBefore = "33333333-3333-3333-8333-333333333333";
+    private const string OtaProdOld = "44444444-4444-4444-8444-444444444444";
+    private const string OtaProdNew = "55555555-5555-5555-8555-555555555555";
+    private const string OtaProdRuntime2 = "66666666-6666-6666-8666-666666666666";
+    private const string OtaPreviewNew = "77777777-7777-7777-8777-777777777777";
+    private const string OtaGroupRollback = "88888888-8888-8888-8888-888888888888";
+    private const string OtaNewerThanApk = "99999999-9999-9999-8999-999999999999";
     private readonly string _dbPath;
     private readonly ISqlSugarClient _db;
 
@@ -32,7 +41,7 @@ public sealed class MobileAppBuildServiceTests : IDisposable
                 InitKeyType = InitKeyType.Attribute,
             }
         );
-        _db.CodeFirst.InitTables<MobileAppBuild>();
+        _db.CodeFirst.InitTables<MobileAppBuild, MobileAppOtaUpdate>();
     }
 
     [Fact]
@@ -456,6 +465,296 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         Assert.DoesNotContain(defaultProfilePage.Data.Items!, item => item.BuildProfile == "preview");
     }
 
+    [Fact]
+    public async Task UpsertOtaUpdateAsync_新增Ota记录并归一化字段()
+    {
+        var service = CreateService();
+        var publishedAt = new DateTime(2026, 6, 22, 1, 2, 3, DateTimeKind.Utc);
+
+        var result = await service.UpsertOtaUpdateAsync(
+            new MobileAppOtaUpdateUpsertDto
+            {
+                UpdateGroupId = OtaGroup1,
+                AndroidUpdateId = "android-update-1",
+                Channel = " production ",
+                Branch = " main ",
+                Platform = " ANDROID ",
+                RuntimeVersion = " 3.0.0 ",
+                Message = "发布 OTA",
+                GitCommitHash = "abc123",
+                DashboardUrl = $"https://expo.dev/updates/{OtaGroup1}",
+                PublishedAt = publishedAt,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(OtaGroup1, result.Data!.UpdateGroupId);
+        Assert.Equal("android", result.Data.Platform);
+        Assert.Equal("production", result.Data.Channel);
+        Assert.Equal("main", result.Data.Branch);
+        Assert.Equal("3.0.0", result.Data.RuntimeVersion);
+        Assert.Equal($"https://expo.dev/updates/{OtaGroup1}", result.Data.DashboardUrl);
+        Assert.Equal(publishedAt, result.Data.PublishedAt);
+
+        var saved = await _db.Queryable<MobileAppOtaUpdate>().SingleAsync();
+        Assert.Equal(OtaGroup1, saved.UpdateGroupId);
+        Assert.Equal("android-update-1", saved.AndroidUpdateId);
+        Assert.Equal("android", saved.Platform);
+        Assert.Equal($"https://expo.dev/updates/{OtaGroup1}", saved.DashboardUrl);
+        Assert.False(saved.IsRollback);
+    }
+
+    [Theory]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("data:text/html;base64,PHNjcmlwdA==")]
+    [InlineData("http://expo.dev/updates/insecure")]
+    public async Task UpsertOtaUpdateAsync_非HttpsDashboardUrl_清空链接但保留记录(string dashboardUrl)
+    {
+        var service = CreateService();
+
+        var result = await service.UpsertOtaUpdateAsync(
+            new MobileAppOtaUpdateUpsertDto
+            {
+                UpdateGroupId = OtaGroupBefore,
+                AndroidUpdateId = "android-update-unsafe-url",
+                Channel = "production",
+                Platform = "android",
+                RuntimeVersion = "3.0.0",
+                DashboardUrl = dashboardUrl,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data!.DashboardUrl);
+        var saved = await _db.Queryable<MobileAppOtaUpdate>().SingleAsync();
+        Assert.Equal(OtaGroupBefore, saved.UpdateGroupId);
+        Assert.Null(saved.DashboardUrl);
+    }
+
+    [Fact]
+    public async Task UpsertOtaUpdateAsync_UpdateGroupId不是Uuid_返回错误且不入库()
+    {
+        var service = CreateService();
+
+        var result = await service.UpsertOtaUpdateAsync(
+            new MobileAppOtaUpdateUpsertDto
+            {
+                UpdateGroupId = "bad-group-id",
+                Channel = "production",
+                RuntimeVersion = "3.0.0",
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_UPDATE_GROUP_ID", result.Code);
+        Assert.Equal(0, await _db.Queryable<MobileAppOtaUpdate>().CountAsync());
+    }
+
+    [Fact]
+    public async Task UpsertOtaUpdateAsync_相同Group和Platform幂等更新()
+    {
+        var service = CreateService();
+        await service.UpsertOtaUpdateAsync(
+            new MobileAppOtaUpdateUpsertDto
+            {
+                UpdateGroupId = OtaGroupRepeat,
+                AndroidUpdateId = "android-old",
+                Channel = "production",
+                Branch = "main",
+                Platform = "android",
+                RuntimeVersion = "3.0.0",
+                Message = "旧 OTA",
+                PublishedAt = new DateTime(2026, 6, 22, 1, 0, 0, DateTimeKind.Utc),
+            }
+        );
+        var first = await _db.Queryable<MobileAppOtaUpdate>().SingleAsync();
+
+        var result = await service.UpsertOtaUpdateAsync(
+            new MobileAppOtaUpdateUpsertDto
+            {
+                UpdateGroupId = OtaGroupRepeat,
+                AndroidUpdateId = "android-new",
+                Channel = "production",
+                Branch = "release",
+                Platform = "ANDROID",
+                RuntimeVersion = "3.0.1",
+                Message = "回撤 OTA",
+                GitCommitHash = "def456",
+                PublishedAt = new DateTime(2026, 6, 22, 2, 0, 0, DateTimeKind.Utc),
+                IsRollback = true,
+                RollbackOfGroupId = OtaGroupBefore,
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal(1, await _db.Queryable<MobileAppOtaUpdate>().CountAsync());
+        var saved = await _db.Queryable<MobileAppOtaUpdate>().SingleAsync();
+        Assert.Equal(first.Id, saved.Id);
+        Assert.Equal("android-new", saved.AndroidUpdateId);
+        Assert.Equal("release", saved.Branch);
+        Assert.Equal("3.0.1", saved.RuntimeVersion);
+        Assert.True(saved.IsRollback);
+        Assert.Equal(OtaGroupBefore, saved.RollbackOfGroupId);
+    }
+
+    [Fact]
+    public async Task GetOtaUpdatesAsync_按Channel和Runtime分页过滤()
+    {
+        var service = CreateService();
+        await service.UpsertOtaUpdateAsync(
+            CreateOtaUpdate(
+                OtaProdOld,
+                channel: "production",
+                runtimeVersion: "3.0.0",
+                publishedAt: new DateTime(2026, 6, 22, 1, 0, 0, DateTimeKind.Utc)
+            )
+        );
+        await service.UpsertOtaUpdateAsync(
+            CreateOtaUpdate(
+                OtaProdNew,
+                channel: "production",
+                runtimeVersion: "3.0.0",
+                publishedAt: new DateTime(2026, 6, 22, 2, 0, 0, DateTimeKind.Utc)
+            )
+        );
+        await service.UpsertOtaUpdateAsync(
+            CreateOtaUpdate(
+                OtaProdRuntime2,
+                channel: "production",
+                runtimeVersion: "4.0.0",
+                publishedAt: new DateTime(2026, 6, 22, 3, 0, 0, DateTimeKind.Utc)
+            )
+        );
+        await service.UpsertOtaUpdateAsync(
+            CreateOtaUpdate(
+                OtaPreviewNew,
+                channel: "preview",
+                runtimeVersion: "3.0.0",
+                publishedAt: new DateTime(2026, 6, 22, 4, 0, 0, DateTimeKind.Utc)
+            )
+        );
+
+        var firstPage = await service.GetOtaUpdatesAsync(
+            new MobileAppOtaUpdateQueryDto
+            {
+                Channel = " production ",
+                RuntimeVersion = " 3.0.0 ",
+                Page = 1,
+                PageSize = 1,
+            }
+        );
+        var secondPage = await service.GetOtaUpdatesAsync(
+            new MobileAppOtaUpdateQueryDto
+            {
+                Channel = "production",
+                RuntimeVersion = "3.0.0",
+                Page = 2,
+                PageSize = 1,
+            }
+        );
+        var defaultChannel = await service.GetOtaUpdatesAsync(
+            new MobileAppOtaUpdateQueryDto { Page = 1, PageSize = 1000 }
+        );
+
+        Assert.True(firstPage.Success);
+        Assert.Equal(2, firstPage.Data!.Total);
+        Assert.Equal(1, firstPage.Data.PageSize);
+        Assert.Single(firstPage.Data.Items!);
+        Assert.Equal(OtaProdNew, firstPage.Data.Items![0].UpdateGroupId);
+
+        Assert.True(secondPage.Success);
+        Assert.Equal(OtaProdOld, Assert.Single(secondPage.Data!.Items!).UpdateGroupId);
+
+        Assert.True(defaultChannel.Success);
+        Assert.Equal(3, defaultChannel.Data!.Total);
+        Assert.Equal(100, defaultChannel.Data.PageSize);
+        Assert.DoesNotContain(defaultChannel.Data.Items!, item => item.Channel == "preview");
+    }
+
+    [Fact]
+    public async Task CreateOtaRollbackCommandAsync_只生成回退命令不执行外部命令()
+    {
+        var service = CreateService();
+
+        var result = await service.CreateOtaRollbackCommandAsync(
+            OtaGroupRollback,
+            new MobileAppOtaRollbackCommandDto { Message = "版本有问题" }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(OtaGroupRollback, result.Data!.UpdateGroupId);
+        Assert.Equal("android", result.Data.Platform);
+        Assert.Equal(
+            $"npx eas-cli@latest update:rollback '{OtaGroupRollback}' -p 'android' -m '回退 OTA：版本有问题' --non-interactive",
+            result.Data.Command
+        );
+        Assert.Equal(0, await _db.Queryable<MobileAppOtaUpdate>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateOtaRollbackCommandAsync_拒绝恶意GroupId()
+    {
+        var service = CreateService();
+
+        var result = await service.CreateOtaRollbackCommandAsync(
+            "not-a-uuid$(touch /tmp/pwn)",
+            new MobileAppOtaRollbackCommandDto { Message = "版本有问题" }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_UPDATE_GROUP_ID", result.Code);
+        Assert.Equal(0, await _db.Queryable<MobileAppOtaUpdate>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateOtaRollbackCommandAsync_命令参数使用单引号避免Shell展开()
+    {
+        var service = CreateService();
+
+        var result = await service.CreateOtaRollbackCommandAsync(
+            OtaGroupRollback,
+            new MobileAppOtaRollbackCommandDto
+            {
+                Message = "坏版本 $(touch /tmp/pwn) 'quote'",
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("$(touch /tmp/pwn)", result.Data!.Command);
+        Assert.Contains("'\"'\"'", result.Data.Command);
+        Assert.DoesNotContain("--message \"", result.Data.Command);
+    }
+
+    [Fact]
+    public async Task OtaUpdates_不影响ApkLatest查询()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "apk-latest",
+                artifactUrl: "https://expo.dev/apk-latest.apk",
+                completedAt: "2026-06-15T01:00:00Z"
+            )
+        );
+        await service.UpsertOtaUpdateAsync(
+            CreateOtaUpdate(
+                OtaNewerThanApk,
+                channel: "production",
+                runtimeVersion: "3.0.0",
+                publishedAt: new DateTime(2026, 6, 22, 2, 0, 0, DateTimeKind.Utc)
+            )
+        );
+
+        var latest = await service.GetLatestAsync("production");
+
+        Assert.True(latest.Success);
+        Assert.Equal("apk-latest", latest.Data!.EasBuildId);
+        Assert.Equal("https://expo.dev/apk-latest.apk", latest.Data.ArtifactUrl);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -539,6 +838,28 @@ public sealed class MobileAppBuildServiceTests : IDisposable
           "expirationDate": "{{expirationDate}}"
         }
         """;
+    }
+
+    private static MobileAppOtaUpdateUpsertDto CreateOtaUpdate(
+        string updateGroupId,
+        string channel,
+        string runtimeVersion,
+        DateTime publishedAt
+    )
+    {
+        return new MobileAppOtaUpdateUpsertDto
+        {
+            UpdateGroupId = updateGroupId,
+            AndroidUpdateId = $"{updateGroupId}-android",
+            Channel = channel,
+            Branch = "main",
+            Platform = "android",
+            RuntimeVersion = runtimeVersion,
+            Message = $"发布 {updateGroupId}",
+            GitCommitHash = "abc123",
+            DashboardUrl = $"https://expo.dev/updates/{updateGroupId}",
+            PublishedAt = publishedAt,
+        };
     }
 
     private static string CreateSignature(string body)

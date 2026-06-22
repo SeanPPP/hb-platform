@@ -86,4 +86,86 @@ namespace BlazorApp.Shared.DTOs
 
         public string? EasBuildId { get; set; }
     }
+
+    public class MobileAppOtaUpdateDto
+    {
+        public Guid Id { get; set; }
+
+        public string UpdateGroupId { get; set; } = string.Empty;
+
+        public string? AndroidUpdateId { get; set; }
+
+        public string Channel { get; set; } = string.Empty;
+
+        public string? Branch { get; set; }
+
+        public string Platform { get; set; } = string.Empty;
+
+        public string? RuntimeVersion { get; set; }
+
+        public string? Message { get; set; }
+
+        public string? GitCommitHash { get; set; }
+
+        public string? DashboardUrl { get; set; }
+
+        public DateTime PublishedAt { get; set; }
+
+        public bool IsRollback { get; set; }
+
+        public string? RollbackOfGroupId { get; set; }
+
+        public DateTime CreatedAt { get; set; }
+
+        public DateTime? UpdatedAt { get; set; }
+    }
+
+    public class MobileAppOtaUpdateQueryDto
+    {
+        public int Page { get; set; } = 1;
+
+        public int PageSize { get; set; } = 20;
+
+        public string? Channel { get; set; } = "production";
+
+        public string? RuntimeVersion { get; set; }
+    }
+
+    public class MobileAppOtaUpdateUpsertDto
+    {
+        public string UpdateGroupId { get; set; } = string.Empty;
+
+        public string? AndroidUpdateId { get; set; }
+
+        public string? Channel { get; set; } = "production";
+
+        public string? Branch { get; set; }
+
+        public string? Platform { get; set; } = "android";
+
+        public string? RuntimeVersion { get; set; }
+
+        public string? Message { get; set; }
+
+        public string? GitCommitHash { get; set; }
+
+        public string? DashboardUrl { get; set; }
+
+        public DateTime? PublishedAt { get; set; }
+
+        public bool IsRollback { get; set; }
+
+        public string? RollbackOfGroupId { get; set; }
+    }
+
+    public class MobileAppOtaRollbackCommandDto
+    {
+        public string UpdateGroupId { get; set; } = string.Empty;
+
+        public string? Platform { get; set; } = "android";
+
+        public string? Message { get; set; }
+
+        public string Command { get; set; } = string.Empty;
+    }
 }

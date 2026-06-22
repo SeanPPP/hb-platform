@@ -11,5 +11,18 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<PagedResult<MobileAppBuildDto>>> GetHistoryAsync(
             MobileAppBuildQueryDto query
         );
+
+        Task<ApiResponse<MobileAppOtaUpdateDto>> UpsertOtaUpdateAsync(
+            MobileAppOtaUpdateUpsertDto dto
+        );
+
+        Task<ApiResponse<PagedResult<MobileAppOtaUpdateDto>>> GetOtaUpdatesAsync(
+            MobileAppOtaUpdateQueryDto query
+        );
+
+        Task<ApiResponse<MobileAppOtaRollbackCommandDto>> CreateOtaRollbackCommandAsync(
+            string updateGroupId,
+            MobileAppOtaRollbackCommandDto dto
+        );
     }
 }

@@ -123,6 +123,36 @@ namespace BlazorApp.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("ota-updates")]
+        [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+        public async Task<IActionResult> GetOtaUpdates([FromQuery] MobileAppOtaUpdateQueryDto query)
+        {
+            var result = await _service.GetOtaUpdatesAsync(query);
+            return Ok(result);
+        }
+
+        [HttpPost("ota-updates")]
+        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        public async Task<IActionResult> UpsertOtaUpdate([FromBody] MobileAppOtaUpdateUpsertDto dto)
+        {
+            var result = await _service.UpsertOtaUpdateAsync(dto);
+            return Ok(result);
+        }
+
+        [HttpPost("ota-updates/{updateGroupId}/rollback-command")]
+        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        public async Task<IActionResult> CreateOtaRollbackCommand(
+            string updateGroupId,
+            [FromBody] MobileAppOtaRollbackCommandDto? dto
+        )
+        {
+            var result = await _service.CreateOtaRollbackCommandAsync(
+                updateGroupId,
+                dto ?? new MobileAppOtaRollbackCommandDto()
+            );
+            return Ok(result);
+        }
+
         private bool IsValidSignature(byte[] bodyBytes, string? signatureHeader)
         {
             if (string.IsNullOrWhiteSpace(_options.Secret) || string.IsNullOrWhiteSpace(signatureHeader))

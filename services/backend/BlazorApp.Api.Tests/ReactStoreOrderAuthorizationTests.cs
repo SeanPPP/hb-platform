@@ -1242,7 +1242,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                 item.GetOrderDetailAsync(
                     "order-1",
                     It.Is<StoreOrderDetailQueryDto>(query =>
-                        query.PageNumber == 1 && query.PageSize == 50
+                        query.PageNumber == 1
+                        && query.PageSize == StoreOrderDetailQueryDto.DefaultPageSize
                     )
                 )
             )
@@ -1269,13 +1270,15 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         var result = await controller.GetOrderDetail("order-1", new StoreOrderDetailQueryDto());
 
-        Assert.IsType<OkObjectResult>(result);
+        var okResult = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.True(okResult.StatusCode is null or Microsoft.AspNetCore.Http.StatusCodes.Status200OK);
         service.Verify(
             item =>
                 item.GetOrderDetailAsync(
                     "order-1",
                     It.Is<StoreOrderDetailQueryDto>(query =>
-                        query.PageNumber == 1 && query.PageSize == 50
+                        query.PageNumber == 1
+                        && query.PageSize == StoreOrderDetailQueryDto.DefaultPageSize
                     )
                 ),
             Times.Once
@@ -1321,7 +1324,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                 item.GetOrderDetailAsync(
                     "order-assigned",
                     It.Is<StoreOrderDetailQueryDto>(query =>
-                        query.PageNumber == 1 && query.PageSize == 50
+                        query.PageNumber == 1
+                        && query.PageSize == StoreOrderDetailQueryDto.DefaultPageSize
                     )
                 )
             )
@@ -1354,7 +1358,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             new StoreOrderDetailQueryDto()
         );
 
-        Assert.IsType<OkObjectResult>(result);
+        var okResult = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.True(okResult.StatusCode is null or Microsoft.AspNetCore.Http.StatusCodes.Status200OK);
         service.VerifyAll();
         userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
     }

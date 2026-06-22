@@ -3147,6 +3147,7 @@
       "versionBuild": "版本/构建号",
       "profile": "Profile",
       "channel": "Channel",
+      "runtime": "Runtime",
       "status": "状态",
       "completedAt": "完成时间",
       "expirationDate": "过期时间",
@@ -3154,6 +3155,35 @@
       "profiles": {
         "production": "正式版",
         "preview": "预览版"
+      },
+      "ota": {
+        "title": "OTA 更新记录",
+        "empty": "暂无 OTA 更新记录",
+        "loadFailed": "加载 OTA 更新记录失败",
+        "loadFailedDescription": "请确认 OTA 更新接口已发布且后端服务可访问；该错误不会影响 APK 构建历史。",
+        "runtimePlaceholder": "Runtime 版本（全部）",
+        "platform": "Platform",
+        "message": "Message",
+        "updateGroupId": "Update Group ID",
+        "androidUpdateId": "Android Update ID",
+        "publishedAt": "发布时间",
+        "type": "类型",
+        "types": {
+          "normal": "正常",
+          "rollback": "回撤"
+        },
+        "copyGroupId": "复制 Group ID",
+        "groupIdCopySuccess": "Update Group ID 已复制",
+        "copyTextFailed": "复制文本失败",
+        "openDashboard": "打开 Dashboard",
+        "createRollbackCommand": "生成回撤命令",
+        "rollbackLatestOnly": "只能回撤当前最新 OTA",
+        "rollbackCommandTitle": "OTA 回撤命令",
+        "rollbackCommand": "命令",
+        "rollbackCommandWarning": "回撤提示",
+        "rollbackCommandGenerated": "回撤命令已生成",
+        "rollbackCommandFailed": "生成回撤命令失败",
+        "rollbackCommandCopySuccess": "回撤命令已复制"
       }
     }
   },

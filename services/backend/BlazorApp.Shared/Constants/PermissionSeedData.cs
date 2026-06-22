@@ -166,6 +166,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "系统管理 - 管理设置"),
                 // 仅注册权限，不写入角色模板，避免默认扩大 App 下载入口访问面。
                 new(Permissions.System.ViewAppDownloads, "查看 App 下载", "系统管理", "系统管理 - 查看 App 下载页"),
+                new(Permissions.System.ManageAppDownloads, "管理 App 下载", "系统管理", "系统管理 - 登记 OTA 更新和生成回撤命令"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
                 new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
             };

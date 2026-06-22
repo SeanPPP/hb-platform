@@ -96,6 +96,7 @@ export interface AccessControl {
   canManageScheduledTasks: boolean
   canManageSystemSettings: boolean
   canViewAppDownloads: boolean
+  canManageAppDownloads: boolean
   canViewDeviceRegistration: boolean
   canManageDeviceRegistration: boolean
   canViewPosProducts: boolean

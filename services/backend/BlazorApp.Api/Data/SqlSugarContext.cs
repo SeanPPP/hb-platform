@@ -338,6 +338,8 @@ namespace BlazorApp.Api.Data
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
         public SimpleClient<MobileAppBuild> MobileAppBuildDb =>
             new SimpleClient<MobileAppBuild>(_db);
+        public SimpleClient<MobileAppOtaUpdate> MobileAppOtaUpdateDb =>
+            new SimpleClient<MobileAppOtaUpdate>(_db);
 
         // 节日商品相关实体
         public SimpleClient<HolidayProduct> HolidayProductDb =>
@@ -475,6 +477,7 @@ namespace BlazorApp.Api.Data
                 typeof(InvoiceEmailConfiguration),
                 typeof(ApplicationLog),
                 typeof(MobileAppBuild),
+                typeof(MobileAppOtaUpdate),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
@@ -1235,6 +1238,10 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppBuild_EasBuildId\" ON \"MobileAppBuild\" (\"EasBuildId\")",
                 ["IX_MobileAppBuild_Profile_CompletedAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_MobileAppBuild_Profile_CompletedAt\" ON \"MobileAppBuild\" (\"BuildProfile\", \"Platform\", \"Status\", \"CompletedAt\")",
+                ["IX_MobileAppOtaUpdate_Group_Platform"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Group_Platform\" ON \"MobileAppOtaUpdate\" (\"UpdateGroupId\", \"Platform\")",
+                ["IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt\" ON \"MobileAppOtaUpdate\" (\"Channel\", \"RuntimeVersion\", \"PublishedAt\")",
             };
 
             foreach (var indexCheck in indexStatements)
@@ -1650,6 +1657,9 @@ namespace BlazorApp.Api.Data
                 // MobileAppBuild表的索引，支撑 EAS buildId 幂等和最新 APK 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_EasBuildId' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE UNIQUE INDEX IX_MobileAppBuild_EasBuildId ON [MobileAppBuild](EasBuildId)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE INDEX IX_MobileAppBuild_Profile_CompletedAt ON [MobileAppBuild](BuildProfile, Platform, Status, CompletedAt)",
+                // MobileAppOtaUpdate表的索引，支撑 OTA group 幂等登记和渠道/runtime 查询。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE UNIQUE INDEX IX_MobileAppOtaUpdate_Group_Platform ON [MobileAppOtaUpdate](UpdateGroupId, Platform)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE INDEX IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt ON [MobileAppOtaUpdate](Channel, RuntimeVersion, PublishedAt)",
             };
 
             foreach (var sql in normalIndexStatements)

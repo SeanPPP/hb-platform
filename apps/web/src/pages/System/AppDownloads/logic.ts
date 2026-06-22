@@ -10,6 +10,13 @@ export interface AppDownloadQuery {
   profile: AppDownloadProfile
 }
 
+export interface AppDownloadOtaQuery {
+  page: number
+  pageSize: number
+  channel: AppDownloadProfile
+  runtimeVersion?: string
+}
+
 export type AppDownloadContentState = 'error' | 'empty' | 'ready'
 
 export function normalizeAppDownloadProfile(value?: string | number | null): AppDownloadProfile {
@@ -29,6 +36,26 @@ export function buildAppDownloadQuery(
     profile: normalizeAppDownloadProfile(profile),
     page: Math.max(1, Math.trunc(page || 1)),
     pageSize: Math.max(1, Math.trunc(pageSize || 10)),
+  }
+}
+
+export function normalizeRuntimeVersionFilter(value?: string | number | null) {
+  return String(value ?? '').trim()
+}
+
+export function buildAppDownloadOtaQuery(
+  channel: string | number | null | undefined,
+  page: number,
+  pageSize: number,
+  runtimeVersion?: string | number | null,
+): AppDownloadOtaQuery {
+  const normalizedRuntimeVersion = normalizeRuntimeVersionFilter(runtimeVersion)
+  return {
+    // APK profile 与 OTA channel 使用同一个切换值，避免两个列表在不同环境之间漂移。
+    channel: normalizeAppDownloadProfile(channel),
+    page: Math.max(1, Math.trunc(page || 1)),
+    pageSize: Math.max(1, Math.trunc(pageSize || 10)),
+    ...(normalizedRuntimeVersion ? { runtimeVersion: normalizedRuntimeVersion } : {}),
   }
 }
 

@@ -9,12 +9,13 @@ import { assignProductsToContainer, checkContainerConflicts, getContainerList } 
 import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales } from '../../../services/domesticProductImportService'
 import { batchTranslate } from '../../../services/translationService'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
-import { applyProductImportNameTranslations, buildAssignContainerItems, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
+import { applyProductImportNameTranslations, buildAssignContainerItems, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, parseProductImportPasteText, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
 import { DuplicateDialog } from './DuplicateDialog'
 import './styles.css'
 
 const EDITABLE_COLUMNS = ['quantity', 'productCode', 'barcode', 'productName', 'englishName', 'domesticPrice', 'oemPrice', 'midPackQuantity', 'casePackQuantity', 'volume'] as const
+const NUMERIC_EDITABLE_COLUMNS = ['quantity', 'domesticPrice', 'oemPrice', 'midPackQuantity', 'casePackQuantity', 'volume'] as const
 
 const ALL_COLUMN_KEYS = ['selection', 'quantity', 'newImage', 'productCode', 'barcode', 'productName', 'englishName', 'domesticPrice', 'oemPrice', 'midPackQuantity', 'casePackQuantity', 'volume'] as const
 
@@ -576,8 +577,8 @@ export default function ProductImportPage() {
     const target = e.target as HTMLElement
     const tableContainer = target.closest('.ant-table-wrapper')
     if (!tableContainer) return
-    const rows = text.split('\n').filter((row) => row.trim())
-    const data = rows.map((row) => row.split('\t'))
+    const data = parseProductImportPasteText(text)
+    if (data.length === 0) return
     const isSingleCell = data.length === 1 && data[0].length === 1
     const isInInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
     if (isInInput && isSingleCell) return
@@ -631,11 +632,22 @@ export default function ProductImportPage() {
         const currentColIndex = startEditableIndex + colOffset
         if (currentColIndex < 0 || currentColIndex >= EDITABLE_COLUMNS.length) return
         const columnKey = EDITABLE_COLUMNS[currentColIndex]
+        const editableProduct = currentRow.newProduct as Record<string, unknown>
         let cleanedValue: any = cellValue.trim()
-        if (!cleanedValue) return
-        if (['quantity', 'midPackQuantity', 'casePackQuantity'].includes(columnKey)) cleanedValue = parseInt(cleanedValue) || undefined
-        else if (['domesticPrice', 'oemPrice', 'volume'].includes(columnKey)) { cleanedValue = cleanedValue.replace(/[¥￥€£$₩₹,，]/g, ''); cleanedValue = parseFloat(cleanedValue) || undefined }
-        if (cleanedValue !== undefined && cleanedValue !== '') (currentRow.newProduct as any)[columnKey] = cleanedValue
+        // Excel 粘贴里的空单元格也要覆盖目标格，才能保持整列数据和原表行号一致。
+        if (!cleanedValue) {
+          editableProduct[columnKey] = NUMERIC_EDITABLE_COLUMNS.includes(columnKey as any)
+            ? undefined
+            : ''
+          return
+        }
+        if (['quantity', 'midPackQuantity', 'casePackQuantity'].includes(columnKey)) {
+          cleanedValue = parseInt(cleanedValue) || undefined
+        } else if (['domesticPrice', 'oemPrice', 'volume'].includes(columnKey)) {
+          cleanedValue = cleanedValue.replace(/[¥￥€£$₩₹,，]/g, '')
+          cleanedValue = parseFloat(cleanedValue) || undefined
+        }
+        editableProduct[columnKey] = cleanedValue
       })
       if (currentRow.newProduct.productCode) { currentRow.imageUrl = generateImageUrl(currentRow.newProduct.productCode); currentRow.imageLoadStatus = 'loading' }
       newProducts[currentRowIndex] = updateCalculatedFields(currentRow)
