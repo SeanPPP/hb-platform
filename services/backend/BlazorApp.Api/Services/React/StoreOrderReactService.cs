@@ -4934,8 +4934,8 @@ namespace BlazorApp.Api.Services.React
                 .Where(o => o.OrderGUID == orderGuid && !o.IsDeleted)
                 .FirstAsync();
 
-            // 允许编辑 FlowStatus 0 (购物车) 和 1 (已提交)
-            if (order != null && (order.FlowStatus == 0 || order.FlowStatus == 1))
+            // 允许购物车、已提交、配货中继续编辑；已完成订单保持只读，避免完成后被误改。
+            if (order != null && (order.FlowStatus == 0 || order.FlowStatus == 1 || order.FlowStatus == 3))
             {
                 return order;
             }

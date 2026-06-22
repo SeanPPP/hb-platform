@@ -683,6 +683,88 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task AddOrderLineAsync_配货中订单_允许添加商品并更新合计()
+    {
+        await SeedStoreOrderAsync("ORDER-PICKING-ADD", flowStatus: 3);
+        await SeedProductAsync("P-PICKING-ADD", "ITEM-PICKING-ADD");
+        await SeedWarehouseProductAsync("P-PICKING-ADD", oemPrice: 4m, importPrice: 2.5m);
+
+        var result = await CreateService().AddOrderLineAsync(new AddOrderLineDto
+        {
+            OrderGUID = "ORDER-PICKING-ADD",
+            ProductCode = "P-PICKING-ADD",
+            Quantity = 6m,
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PICKING-ADD" && item.ProductCode == "P-PICKING-ADD")
+            .FirstAsync();
+        Assert.NotNull(detail);
+        Assert.Equal(1m, detail.AllocQuantity);
+        Assert.Equal(4m, detail.OEMAmount);
+        Assert.Equal(2.5m, detail.ImportAmount);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-PICKING-ADD")
+            .FirstAsync();
+        Assert.Equal(4m, order.OEMTotalAmount);
+        Assert.Equal(2.5m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_配货中订单_允许Excel粘贴新增商品()
+    {
+        await SeedStoreOrderAsync("ORDER-PICKING-PASTE", flowStatus: 3);
+        await SeedProductAsync("P-PICKING-PASTE", "ITEM-PICKING-PASTE");
+        await SeedWarehouseProductAsync("P-PICKING-PASTE", oemPrice: 5m, importPrice: 3m);
+
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PICKING-PASTE",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P-PICKING-PASTE", Quantity = 7m, Action = "replace" },
+            },
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PICKING-PASTE" && item.ProductCode == "P-PICKING-PASTE")
+            .FirstAsync();
+        Assert.NotNull(detail);
+        Assert.Equal(7m, detail.AllocQuantity);
+        Assert.Equal(35m, detail.OEMAmount);
+        Assert.Equal(21m, detail.ImportAmount);
+    }
+
+    [Fact]
+    public async Task AddOrderLineAsync_已完成订单_仍拒绝添加商品()
+    {
+        await SeedStoreOrderAsync("ORDER-COMPLETED-ADD", flowStatus: 2);
+        await SeedProductAsync("P-COMPLETED-ADD", "ITEM-COMPLETED-ADD");
+        await SeedWarehouseProductAsync("P-COMPLETED-ADD");
+
+        var result = await CreateService().AddOrderLineAsync(new AddOrderLineDto
+        {
+            OrderGUID = "ORDER-COMPLETED-ADD",
+            ProductCode = "P-COMPLETED-ADD",
+            Quantity = 6m,
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("Order not found or not editable", result.Message);
+
+        var detailCount = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-COMPLETED-ADD")
+            .CountAsync();
+        Assert.Equal(0, detailCount);
+    }
+
+    [Fact]
     public async Task 首页预热轻量查询_不执行Count且只取首屏商品()
     {
         for (var index = 1; index <= 25; index++)
