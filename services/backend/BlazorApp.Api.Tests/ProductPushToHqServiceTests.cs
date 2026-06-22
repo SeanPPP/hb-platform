@@ -857,6 +857,58 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_重复发送_分店价格更新不覆盖既有HQ特殊商品标记()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        await _hqDb.Updateable<DIC_商品零售价表>()
+            .SetColumns(row => new DIC_商品零售价表
+            {
+                H是否特殊商品 = true,
+                H进货价 = 11.11m,
+                H分店零售价 = 22.22m,
+            })
+            .Where(row => row.H商品编码 == "HB001")
+            .ExecuteCommandAsync();
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product
+            {
+                IsSpecialProduct = false,
+                PurchasePrice = 9.99m,
+                RetailPrice = 19.99m,
+            })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(2, second.Data?.StoreRetailPricesUpdated);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, prices.Count);
+        Assert.All(prices, row =>
+        {
+            Assert.Equal(9.99m, row.H进货价);
+            Assert.Equal(19.99m, row.H分店零售价);
+            Assert.True(row.H是否特殊商品);
+        });
+    }
+
+    [Fact]
     public async Task PushToHqAsync_套装价格缺失时_回退主商品价格()
     {
         await SeedProductGraphAsync();

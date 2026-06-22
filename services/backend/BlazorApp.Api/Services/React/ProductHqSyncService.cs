@@ -1439,7 +1439,7 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
-                    // 零售价更新不触碰库存、活动和动态销售字段。
+                    // 已有 HQ 分店零售价只更新价格/供应商/自动定价和修改信息，不覆盖特殊商品、库存、活动和动态销售字段。
                     await hqDb.Updateable<DIC_商品零售价表>()
                         .SetColumns(row => new DIC_商品零售价表
                         {
@@ -1449,7 +1449,6 @@ namespace BlazorApp.Api.Services.React
                             H进货价 = hqPrice.H进货价,
                             H分店零售价 = hqPrice.H分店零售价,
                             H是否自动定价 = hqPrice.H是否自动定价,
-                            H是否特殊商品 = hqPrice.H是否特殊商品,
                             FGC_LastModifier = hqPrice.FGC_LastModifier,
                             FGC_LastModifyDate = hqPrice.FGC_LastModifyDate,
                         })
