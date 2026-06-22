@@ -6,6 +6,7 @@ using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using System.Diagnostics;
+using System.Globalization;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
@@ -3546,26 +3547,30 @@ namespace BlazorApp.Api.Services.React
             }
 
             var itemsTotal = await detailQuery.CountAsync();
+            var sortBy = (normalizedQuery.SortBy ?? string.Empty).Trim().ToLowerInvariant();
+            var isLocationCodeSort = sortBy == "locationcode";
             var orderType = normalizedQuery.SortDescending ? OrderByType.Desc : OrderByType.Asc;
-            detailQuery = (normalizedQuery.SortBy ?? string.Empty).Trim().ToLowerInvariant() switch
+            if (!isLocationCodeSort)
             {
-                "productcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
-                "barcode" => detailQuery.OrderBy((d, p, wp, dp) => p.Barcode, orderType),
-                "productname" => detailQuery.OrderBy((d, p, wp, dp) => p.ProductName, orderType),
-                "quantity" => detailQuery.OrderBy((d, p, wp, dp) => d.Quantity, orderType),
-                "allocquantity" => detailQuery.OrderBy((d, p, wp, dp) => d.AllocQuantity, orderType),
-                "price" => detailQuery.OrderBy((d, p, wp, dp) => d.OEMPrice, orderType),
-                "amount" => detailQuery.OrderBy((d, p, wp, dp) => d.OEMAmount, orderType),
-                "importprice" => detailQuery.OrderBy(
-                    (d, p, wp, dp) => d.ImportPrice ?? wp.ImportPrice,
-                    orderType
-                ),
-                "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
-                "isactive" => detailQuery.OrderBy((d, p, wp, dp) => wp.IsActive, orderType),
-                "locationcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
-                _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
-            };
-            detailQuery = detailQuery.OrderBy((d, p, wp, dp) => d.DetailGUID, OrderByType.Asc);
+                detailQuery = sortBy switch
+                {
+                    "productcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
+                    "barcode" => detailQuery.OrderBy((d, p, wp, dp) => p.Barcode, orderType),
+                    "productname" => detailQuery.OrderBy((d, p, wp, dp) => p.ProductName, orderType),
+                    "quantity" => detailQuery.OrderBy((d, p, wp, dp) => d.Quantity, orderType),
+                    "allocquantity" => detailQuery.OrderBy((d, p, wp, dp) => d.AllocQuantity, orderType),
+                    "price" => detailQuery.OrderBy((d, p, wp, dp) => d.OEMPrice, orderType),
+                    "amount" => detailQuery.OrderBy((d, p, wp, dp) => d.OEMAmount, orderType),
+                    "importprice" => detailQuery.OrderBy(
+                        (d, p, wp, dp) => d.ImportPrice ?? wp.ImportPrice,
+                        orderType
+                    ),
+                    "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
+                    "isactive" => detailQuery.OrderBy((d, p, wp, dp) => wp.IsActive, orderType),
+                    _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
+                };
+                detailQuery = detailQuery.OrderBy((d, p, wp, dp) => d.DetailGUID, OrderByType.Asc);
+            }
 
             // SqlSugar 多表查询在 Skip/Take 后会丢失泛型联表形态，先投影再分页更稳定。
             var pageQuery = detailQuery.Select(
@@ -3604,16 +3609,36 @@ namespace BlazorApp.Api.Services.React
                         }
                 );
 
-            if (!loadAllItems)
+            List<StoreOrderCartItemDto> pageDetails;
+            if (isLocationCodeSort)
             {
-                pageQuery = pageQuery
-                    .Skip((normalizedQuery.PageNumber - 1) * normalizedQuery.PageSize)
-                    .Take(normalizedQuery.PageSize);
+                // 货位来自 ProductLocation + Location 后补；直接 Join 会让多货位商品重复行，所以这里先补齐货位再做受控排序和分页。
+                var allDetails = await pageQuery.ToListAsync();
+                await FillLocationCodesAsync(allDetails);
+                var sortedDetails = SortStoreOrderDetailsByLocationCode(
+                    allDetails,
+                    normalizedQuery.SortDescending
+                );
+                pageDetails = loadAllItems
+                    ? sortedDetails
+                    : sortedDetails
+                        .Skip((normalizedQuery.PageNumber - 1) * normalizedQuery.PageSize)
+                        .Take(normalizedQuery.PageSize)
+                        .ToList();
+            }
+            else
+            {
+                if (!loadAllItems)
+                {
+                    pageQuery = pageQuery
+                        .Skip((normalizedQuery.PageNumber - 1) * normalizedQuery.PageSize)
+                        .Take(normalizedQuery.PageSize);
+                }
+
+                pageDetails = await pageQuery.ToListAsync();
+                await FillLocationCodesAsync(pageDetails);
             }
 
-            var pageDetails = await pageQuery.ToListAsync();
-
-            await FillLocationCodesAsync(pageDetails);
             FillVolumeFields(pageDetails);
 
             // 汇总永远按整单计算，不能被当前页、关键词或状态筛选影响；用数据库聚合避免翻页时拉取全量明细。
@@ -3729,6 +3754,48 @@ namespace BlazorApp.Api.Services.React
                 SortBy = query?.SortBy,
                 SortDescending = query?.SortDescending ?? false,
             };
+        }
+
+        private static List<StoreOrderCartItemDto> SortStoreOrderDetailsByLocationCode(
+            List<StoreOrderCartItemDto> items,
+            bool sortDescending
+        )
+        {
+            var compareInfo = CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
+            return items
+                .OrderBy(item => string.IsNullOrWhiteSpace(item.LocationCode) ? 0 : 1)
+                .ThenBy(
+                    item => item,
+                    Comparer<StoreOrderCartItemDto>.Create((left, right) =>
+                    {
+                        var locationCompare = compareInfo.Compare(
+                            left.LocationCode ?? string.Empty,
+                            right.LocationCode ?? string.Empty,
+                            CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace
+                        );
+                        if (locationCompare != 0)
+                        {
+                            return sortDescending ? -locationCompare : locationCompare;
+                        }
+
+                        var itemNumberCompare = compareInfo.Compare(
+                            left.ItemNumber ?? string.Empty,
+                            right.ItemNumber ?? string.Empty,
+                            CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace
+                        );
+                        if (itemNumberCompare != 0)
+                        {
+                            return itemNumberCompare;
+                        }
+
+                        return string.Compare(
+                            left.DetailGUID,
+                            right.DetailGUID,
+                            StringComparison.OrdinalIgnoreCase
+                        );
+                    })
+                )
+                .ToList();
         }
 
         private async Task FillLocationCodesAsync(List<StoreOrderCartItemDto> items)

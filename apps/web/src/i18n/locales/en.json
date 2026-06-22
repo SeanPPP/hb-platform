@@ -4016,6 +4016,7 @@
       "refreshImportPricesWarning": "This will recalculate import amounts. Products without a valid warehouse import price will be skipped.",
       "refreshImportPricesSuccess": "Import prices updated: {{updated}} updated, {{unchanged}} unchanged, {{skipped}} skipped, {{missing}} without valid warehouse price",
       "refreshImportPricesFailed": "Failed to update import prices",
+      "defaultSort": "Default Sort",
       "editedLinesSaved": "Saved {{count}} detail row(s)",
       "noEditedLines": "No edited detail rows to save",
       "importPriceSyncConfirmTitle": "Confirm Import Price Sync",

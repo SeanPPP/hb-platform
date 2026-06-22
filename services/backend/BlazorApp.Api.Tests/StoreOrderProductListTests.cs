@@ -1039,6 +1039,59 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderDetailAsync_SortsByLocationCodeWithEmptyLocationsFirst()
+    {
+        await SeedStoreOrderAsync("ORDER-LOCATION-SORT");
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-B", "ITEM-B", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-A2", "ITEM-A-002", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-NO", "ITEM-NO", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-A1", "ITEM-A-001", quantity: 1m, allocQuantity: 1m);
+        await SeedLocationAsync("P-B", "L-B", "B-01");
+        await SeedLocationAsync("P-A2", "L-A2", "A-01");
+        await SeedLocationAsync("P-A1", "L-A1", "A-01");
+
+        var sorted = await CreateService().GetOrderDetailAsync(
+            "ORDER-LOCATION-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "locationCode",
+            }
+        );
+
+        Assert.True(sorted.Success, sorted.Message);
+        Assert.NotNull(sorted.Data);
+        Assert.Equal(4, sorted.Data.ItemsTotal);
+        Assert.Equal(1, sorted.Data.PageNumber);
+        Assert.Equal(10, sorted.Data.PageSize);
+        Assert.Equal(
+            new[] { "P-NO", "P-A1", "P-A2", "P-B" },
+            sorted.Data.Items.Select(item => item.ProductCode)
+        );
+        Assert.Equal(
+            new[] { null, "A-01", "A-01", "B-01" },
+            sorted.Data.Items.Select(item => item.LocationCode)
+        );
+
+        var paged = await CreateService().GetOrderDetailAsync(
+            "ORDER-LOCATION-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 2,
+                PageSize = 2,
+                SortBy = "locationCode",
+            }
+        );
+
+        Assert.NotNull(paged.Data);
+        Assert.Equal(4, paged.Data.ItemsTotal);
+        Assert.Equal(2, paged.Data.PageNumber);
+        Assert.Equal(2, paged.Data.PageSize);
+        Assert.Equal(new[] { "P-A2", "P-B" }, paged.Data.Items.Select(item => item.ProductCode));
+    }
+
+    [Fact]
     public async Task GetOrderDetailAsync_UsesDatabasePaging_AndSupportsInactiveStatFilter()
     {
         await SeedStoreOrderAsync("ORDER-003");

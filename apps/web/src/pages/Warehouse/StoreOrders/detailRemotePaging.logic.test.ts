@@ -47,6 +47,20 @@ async function main() {
   })
   if (remoteQueryFailure) failures.push(remoteQueryFailure)
 
+  const defaultLocationSortFailure = await runTest('详情页默认排序应按货位升序并提供默认排序按钮', () => {
+    assert(
+      detailSource.includes("useState<DetailSortField>('locationCode')") &&
+        detailSource.includes("useState<SortOrder>('ascend')") &&
+        detailSource.includes('const handleResetDetailDefaultSort = () =>') &&
+        detailSource.includes("setDetailSortField('locationCode')") &&
+        detailSource.includes("setDetailSortOrder('ascend')") &&
+        detailSource.includes("t('storeOrders.detail.defaultSort')") &&
+        detailSource.includes('icon={<SortAscendingOutlined />}'),
+      '详情页尚未默认按货位升序，或缺少恢复默认排序按钮',
+    )
+  })
+  if (defaultLocationSortFailure) failures.push(defaultLocationSortFailure)
+
   const currentPageDataFailure = await runTest('详情表格应直接使用服务端当前页 items 与 itemsTotal', () => {
     assert(
       detailSource.includes('dataSource={detail.items}') &&

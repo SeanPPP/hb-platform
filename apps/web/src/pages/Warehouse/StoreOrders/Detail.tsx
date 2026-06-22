@@ -9,6 +9,7 @@ import {
   PrinterOutlined,
   SaveOutlined,
   SearchOutlined,
+  SortAscendingOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
 import {
@@ -800,8 +801,8 @@ export default function StoreOrderDetailPage() {
   const [detailPage, setDetailPage] = useState(1)
   const [detailPageSize, setDetailPageSize] = useState(50)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
-  const [detailSortField, setDetailSortField] = useState<DetailSortField>(null)
-  const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>(null)
+  const [detailSortField, setDetailSortField] = useState<DetailSortField>('locationCode')
+  const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>('ascend')
   const [headerForm, setHeaderForm] = useState<{
     storeCode?: string
     orderDate?: string
@@ -1601,6 +1602,14 @@ export default function StoreOrderDetailPage() {
     } finally {
       setBatchLoading(false)
     }
+  }
+
+  const handleResetDetailDefaultSort = () => {
+    // 默认排序与配货单保持一致：空货位在前，再按货位升序查看整单明细。
+    setSelectedLineKeys([])
+    setDetailPage(1)
+    setDetailSortField('locationCode')
+    setDetailSortOrder('ascend')
   }
 
   const handleRefreshImportPricesFromWarehouse = () => {
@@ -2617,6 +2626,13 @@ export default function StoreOrderDetailPage() {
                         {t('storeOrders.detail.refreshImportPrices')}
                       </Button>
                     ) : null}
+                    <Button
+                      icon={<SortAscendingOutlined />}
+                      disabled={isPasteOptimisticPreviewActive}
+                      onClick={handleResetDetailDefaultSort}
+                    >
+                      {t('storeOrders.detail.defaultSort')}
+                    </Button>
                     {canUseWarehouseManagerActions ? (
                       <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                         {t('storeOrders.batchModify')}

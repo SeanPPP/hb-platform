@@ -4016,6 +4016,7 @@
       "refreshImportPricesWarning": "该操作会重算进口金额；仓库表没有有效进口价的商品会自动跳过。",
       "refreshImportPricesSuccess": "进货价更新完成：更新 {{updated}} 行，未变 {{unchanged}} 行，跳过 {{skipped}} 行，无有效仓库价 {{missing}} 行",
       "refreshImportPricesFailed": "更新进货价失败",
+      "defaultSort": "默认排序",
       "editedLinesSaved": "已保存 {{count}} 行明细",
       "noEditedLines": "没有需要保存的明细修改",
       "importPriceSyncConfirmTitle": "确认同步进口价",
