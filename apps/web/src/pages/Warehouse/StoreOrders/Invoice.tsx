@@ -672,7 +672,8 @@ export default function StoreOrderInvoicePage() {
             </div>
             <div className="store-order-invoice-payment-row">
               <span className="store-order-invoice-label">{t('warehouse.invoice.bsb')}</span>
-              <span>12532</span>
+              {/* 公司收款 BSB 需保留银行分隔符，避免显示成错误的 5 位数字。 */}
+              <span>012-532</span>
             </div>
             <div className="store-order-invoice-payment-row">
               <span className="store-order-invoice-label">{t('warehouse.invoice.account')}</span>

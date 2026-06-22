@@ -327,7 +327,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Contains("NAME:", pdfText);
                 Assert.Contains("HOT BARGAIN INTERNATIONAL", pdfText);
                 Assert.Contains("BSB:", pdfText);
-                Assert.Contains("12532", pdfText);
+                Assert.Contains("012-532", pdfText);
                 Assert.Contains("ACCOUNT:", pdfText);
                 Assert.Contains("208034605", pdfText);
                 Assert.Contains("All products remain the property of Hot Bargain International Pty Ltd", pdfText);
