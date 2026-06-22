@@ -1039,6 +1039,30 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderDetailAsync_NormalizesDefaultAndMaximumPageSize()
+    {
+        await SeedStoreOrderAsync("ORDER-PAGE-SIZE");
+        await SeedOrderLineAsync("ORDER-PAGE-SIZE", "P001", "ITEM-001", quantity: 1m, allocQuantity: 1m);
+
+        var defaultResult = await CreateService().GetOrderDetailAsync("ORDER-PAGE-SIZE");
+        var maxResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-PAGE-SIZE",
+            new StoreOrderDetailQueryDto { PageNumber = 1, PageSize = 1000 }
+        );
+        var clampedResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-PAGE-SIZE",
+            new StoreOrderDetailQueryDto { PageNumber = 1, PageSize = 2000 }
+        );
+
+        Assert.NotNull(defaultResult.Data);
+        Assert.Equal(200, defaultResult.Data.PageSize);
+        Assert.NotNull(maxResult.Data);
+        Assert.Equal(1000, maxResult.Data.PageSize);
+        Assert.NotNull(clampedResult.Data);
+        Assert.Equal(1000, clampedResult.Data.PageSize);
+    }
+
+    [Fact]
     public async Task GetOrderDetailAsync_SortsByLocationCodeWithEmptyLocationsFirst()
     {
         await SeedStoreOrderAsync("ORDER-LOCATION-SORT");

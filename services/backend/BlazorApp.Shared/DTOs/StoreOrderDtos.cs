@@ -223,8 +223,8 @@ namespace BlazorApp.Shared.DTOs
   public class StoreOrderDetailQueryDto
   {
     public const int DefaultPageNumber = 1;
-    public const int DefaultPageSize = 50;
-    public const int MaxPageSize = 500;
+    public const int DefaultPageSize = 200;
+    public const int MaxPageSize = 1000;
 
     public int PageNumber { get; set; } = DefaultPageNumber;
     public int PageSize { get; set; } = DefaultPageSize;
@@ -242,7 +242,7 @@ namespace BlazorApp.Shared.DTOs
     public int Total { get; set; }
     public int ItemsTotal { get; set; }
     public int PageNumber { get; set; } = 1;
-    public int PageSize { get; set; } = 50;
+    public int PageSize { get; set; } = StoreOrderDetailQueryDto.DefaultPageSize;
 
     /// <summary>
     /// 整单“订货未配货”的行数。

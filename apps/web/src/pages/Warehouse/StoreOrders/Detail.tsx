@@ -244,6 +244,8 @@ interface ProductPickerModalProps {
 
 const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100
 const PRODUCT_PICKER_PAGE_SIZE_OPTIONS = ['50', '100', '500']
+const STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE = 200
+const STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']
 
 interface BatchEditModalProps {
   open: boolean
@@ -799,7 +801,7 @@ export default function StoreOrderDetailPage() {
   const [pasteOptimisticPending, setPasteOptimisticPending] = useState<StoreOrderPasteOptimisticPending | null>(null)
   const [refreshImportPriceLoading, setRefreshImportPriceLoading] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
-  const [detailPageSize, setDetailPageSize] = useState(50)
+  const [detailPageSize, setDetailPageSize] = useState(STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
   const [detailSortField, setDetailSortField] = useState<DetailSortField>('locationCode')
   const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>('ascend')
@@ -837,6 +839,7 @@ export default function StoreOrderDetailPage() {
 
   useDynamicTabTitle(tabTitle)
 
+  // 明细表只请求当前页；翻页、筛选、排序都会带着 pageSize 重新向服务端取数。
   const detailQuery = useMemo<StoreOrderDetailQuery>(
     () => ({
       pageNumber: detailPage,
@@ -2066,6 +2069,7 @@ export default function StoreOrderDetailPage() {
         <Image
           src={value}
           alt={record.productName}
+          loading="lazy"
           width={30}
           height={30}
           style={{ borderRadius: 4, objectFit: 'cover' }}
@@ -2732,7 +2736,8 @@ export default function StoreOrderDetailPage() {
                   pageSize: detailPageSize,
                   total: detail.itemsTotal ?? detail.items.length,
                   showSizeChanger: true,
-                  pageSizeOptions: ['20', '50', '100', '500'],
+                  // 图片交给浏览器懒加载，表格本身按服务端分页分批请求商品明细。
+                  pageSizeOptions: STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS,
                   onChange: (nextPage, nextPageSize) => {
                     setSelectedLineKeys([])
                     setDetailPage(nextPage)
