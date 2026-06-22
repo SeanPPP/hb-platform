@@ -147,6 +147,7 @@ import {
   EditableNumberCell,
   EditableTextCell,
 } from './EditableCells'
+import { COMPACT_NUMBER_INPUT_WIDTH } from './editableCellLayout'
 import {
   canApplyCheckProductsJobResult,
   canApplyInvoiceJobResult,
@@ -154,9 +155,14 @@ import {
 import {
   applyInvoiceDetailInlineEdit,
   applyInvoiceDetailBatchEdit,
+  buildInvoiceDetailInlineNavigationDetails,
   buildInvoiceDetailSaveItems,
   normalizeInvoiceDetailInlineValue,
+  resolveInvoiceDetailInlineNavigation,
   type InvoiceDetailInlineEditableField,
+  type InvoiceDetailInlineNavigationKey,
+  type InvoiceDetailInlineNavigationTarget,
+  type InvoiceDetailInlineSortState,
 } from './inlineEdit'
 import {
   buildMatchedProductMasterUpdatePayload,
@@ -539,6 +545,10 @@ export default function InvoiceEditPage() {
   /* ---- 行选择 ---- */
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
+  /* ---- 行内数字编辑焦点 ---- */
+  const [activeInlineNumberEdit, setActiveInlineNumberEdit] = useState<InvoiceDetailInlineNavigationTarget | null>(null)
+  const [inlineNavigationSort, setInlineNavigationSort] = useState<InvoiceDetailInlineSortState | null>(null)
+
   /* ---- 行内操作类型 (本地临时存储) ---- */
   const [rowActions, setRowActions] = useState<Record<string, number>>({})
 
@@ -790,8 +800,61 @@ export default function InvoiceEditPage() {
         barcodeStatusFilter,
         actionTypeFilter,
         rowActions,
-      }),
+    }),
     [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter, actionTypeFilter, rowActions],
+  )
+  const inlineNavigationDetails = useMemo(
+    () =>
+      buildInvoiceDetailInlineNavigationDetails(
+        filteredDetails,
+        columnFilteredValues,
+        rowActions,
+        inlineNavigationSort,
+      ),
+    [filteredDetails, columnFilteredValues, rowActions, inlineNavigationSort],
+  )
+
+  useEffect(() => {
+    if (!activeInlineNumberEdit) return
+    if (!inlineNavigationDetails.some((detail) => detail.detailGUID === activeInlineNumberEdit.detailGuid)) {
+      setActiveInlineNumberEdit(null)
+    }
+  }, [activeInlineNumberEdit, inlineNavigationDetails])
+
+  const isInlineNumberEditActive = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField) =>
+      activeInlineNumberEdit?.detailGuid === detailGuid && activeInlineNumberEdit.field === field,
+    [activeInlineNumberEdit],
+  )
+
+  const activateInlineNumberEdit = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField) => {
+      setActiveInlineNumberEdit({ detailGuid, field })
+    },
+    [],
+  )
+
+  const deactivateInlineNumberEdit = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField) => {
+      setActiveInlineNumberEdit((current) =>
+        current?.detailGuid === detailGuid && current.field === field ? null : current,
+      )
+    },
+    [],
+  )
+
+  const handleInlineNumberNavigate = useCallback(
+    (
+      detailGuid: string,
+      field: InvoiceDetailInlineEditableField,
+      key: InvoiceDetailInlineNavigationKey,
+    ) => {
+      const target = resolveInvoiceDetailInlineNavigation(inlineNavigationDetails, detailGuid, field, key)
+      if (!target) return false
+      setActiveInlineNumberEdit(target)
+      return true
+    },
+    [inlineNavigationDetails],
   )
 
   const detailActionConfig = useMemo(() => DETAIL_ACTION_CONFIG(t), [t])
@@ -2100,10 +2163,17 @@ export default function InvoiceEditPage() {
   const handleTableChange: TableProps<LocalSupplierInvoiceItemDto>['onChange'] = (
     _pagination,
     filters,
-    _sorter,
+    sorter,
     extra,
   ) => {
+    const sorterInfo = Array.isArray(sorter) ? sorter[0] : sorter
+    const sorterField = Array.isArray(sorterInfo?.field)
+      ? sorterInfo.field.join('.')
+      : sorterInfo?.field != null
+        ? String(sorterInfo.field)
+        : undefined
     setColumnFilteredValues(filters as Record<string, (React.Key | boolean)[] | null>)
+    setInlineNavigationSort(sorterInfo?.order && sorterField ? { field: sorterField, order: sorterInfo.order } : null)
     // 选中行按过滤后可见数据收敛，避免隐藏明细继续参与批量执行或批量删除。
     setSelectedRowKeys((prev) => constrainSelectedRowKeysToVisibleDetails(prev, extra.currentDataSource))
   }
@@ -2440,6 +2510,13 @@ export default function InvoiceEditPage() {
           detailGuid={record.detailGUID}
           field="retailPrice"
           onSave={handleInlineDetailSave}
+          active={isInlineNumberEditActive(record.detailGUID, 'retailPrice')}
+          onActivate={() => activateInlineNumberEdit(record.detailGUID, 'retailPrice')}
+          onDeactivate={() => deactivateInlineNumberEdit(record.detailGUID, 'retailPrice')}
+          onNavigate={handleInlineNumberNavigate}
+          // 零售价列较窄，编辑态使用紧凑输入框，避免撑开单元格。
+          inputWidth={COMPACT_NUMBER_INPUT_WIDTH}
+          controls={false}
           displayValue={renderNumericCell(formatAmount(v))}
         />
       ),
@@ -2498,6 +2575,7 @@ export default function InvoiceEditPage() {
           trueLabel={t('posAdmin.invoiceDetail.auto', '自动')}
           falseLabel={t('posAdmin.invoiceDetail.manual', '手动')}
           trueColor="green"
+          toggleOnClick
         />
       ),
     },

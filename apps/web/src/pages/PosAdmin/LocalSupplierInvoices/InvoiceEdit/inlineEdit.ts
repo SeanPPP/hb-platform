@@ -1,9 +1,22 @@
+import type { Key } from 'react'
 import type {
   BatchEditFields,
   InvoiceDetailUpsertItemDto,
   LocalSupplierInvoiceItemDto,
 } from '../../../../types/localSupplierInvoice'
 import { discountRateToDecimal } from '../../../../utils/discountRate'
+import {
+  compareNullableNumbers,
+  compareNullableText,
+  filterBarcodeStatusColumn,
+  filterBooleanColumn,
+  filterProductStatusColumn,
+  matchesActionTypeColumnFilter,
+  matchesNumberColumnFilter,
+  matchesTextColumnFilter,
+  type NumberFilterField,
+  type TextFilterField,
+} from './tableColumnFilters'
 
 export type InvoiceDetailInlineEditableField =
   | 'itemNumber'
@@ -17,6 +30,41 @@ export type InvoiceDetailInlineEditableField =
   | 'autoPricing'
   | 'isSpecialProduct'
   | 'discountRate'
+
+export type InvoiceDetailInlineNavigationKey = 'ArrowUp' | 'ArrowDown'
+
+export interface InvoiceDetailInlineNavigationTarget {
+  detailGuid: string
+  field: InvoiceDetailInlineEditableField
+}
+
+export type InvoiceDetailInlineColumnFilteredValues = Record<string, (Key | boolean)[] | null>
+
+export interface InvoiceDetailInlineSortState {
+  field: string
+  order: 'ascend' | 'descend'
+}
+
+const textColumnFilterFields = new Set<string>(['itemNumber', 'barcode', 'productName'])
+
+const numberColumnFilterFields = new Set<string>([
+  'quantity',
+  'lastPurchasePrice',
+  'purchasePrice',
+  'retailPrice',
+  'pricingFloatRate',
+  'newAutoRetailPrice',
+  'discountRate',
+  'amount',
+])
+
+function isTextColumnFilterField(field: string): field is TextFilterField {
+  return textColumnFilterFields.has(field)
+}
+
+function isNumberColumnFilterField(field: string): field is NumberFilterField {
+  return numberColumnFilterFields.has(field)
+}
 
 const numericFields = new Set<InvoiceDetailInlineEditableField>([
   'quantity',
@@ -91,6 +139,75 @@ export function applyInvoiceDetailInlineEdit(
 
     return nextDetail
   })
+}
+
+function matchesInvoiceDetailColumnFilter(
+  record: LocalSupplierInvoiceItemDto,
+  field: string,
+  value: Key | boolean,
+  rowActions: Record<string, number>,
+) {
+  if (isTextColumnFilterField(field)) return matchesTextColumnFilter(record, field, value)
+  if (isNumberColumnFilterField(field)) return matchesNumberColumnFilter(record, field, value)
+  if (field === 'autoPricing') return filterBooleanColumn(record.autoPricing, value)
+  if (field === 'isSpecialProduct') return filterBooleanColumn(record.isSpecialProduct, value)
+  if (field === 'existingProductCount') return filterProductStatusColumn(record, value)
+  if (field === 'barcodeMatchCount') return filterBarcodeStatusColumn(record, value)
+  if (field === 'action') return matchesActionTypeColumnFilter(record, value, rowActions)
+  return true
+}
+
+export function buildInvoiceDetailInlineNavigationDetails(
+  details: LocalSupplierInvoiceItemDto[],
+  columnFilteredValues: InvoiceDetailInlineColumnFilteredValues,
+  rowActions: Record<string, number> = {},
+  sortState: InvoiceDetailInlineSortState | null = null,
+) {
+  const activeFilters = Object.entries(columnFilteredValues).filter(([, values]) => Boolean(values?.length))
+  const filtered = activeFilters.length
+    ? details.filter((record) =>
+        activeFilters.every(([field, values]) =>
+          values?.some((value) => matchesInvoiceDetailColumnFilter(record, field, value, rowActions)),
+        ),
+      )
+    : details
+
+  if (!sortState) return filtered
+
+  const direction = sortState.order === 'descend' ? -1 : 1
+  const sortField = sortState.field
+  if (isTextColumnFilterField(sortField)) {
+    return [...filtered].sort((left, right) =>
+      direction * compareNullableText(left[sortField], right[sortField]),
+    )
+  }
+  if (isNumberColumnFilterField(sortField)) {
+    return [...filtered].sort((left, right) =>
+      direction * compareNullableNumbers(left[sortField], right[sortField]),
+    )
+  }
+
+  return filtered
+}
+
+export function resolveInvoiceDetailInlineNavigation(
+  details: LocalSupplierInvoiceItemDto[],
+  currentDetailGuid: string,
+  field: InvoiceDetailInlineEditableField,
+  key: InvoiceDetailInlineNavigationKey,
+): InvoiceDetailInlineNavigationTarget | null {
+  const currentIndex = details.findIndex((detail) => detail.detailGUID === currentDetailGuid)
+  if (currentIndex < 0) return null
+
+  // 方向键只在调用方传入的明细列表中上下移动，避免跳出当前录入范围。
+  const nextIndex = key === 'ArrowUp' ? currentIndex - 1 : currentIndex + 1
+  const target = details[nextIndex]
+  if (!target?.detailGUID) return null
+
+  return {
+    detailGuid: target.detailGUID,
+    field,
+  }
 }
 
 export function applyInvoiceDetailBatchEdit(

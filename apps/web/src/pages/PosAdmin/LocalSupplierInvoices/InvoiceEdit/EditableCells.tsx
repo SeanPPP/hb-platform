@@ -3,15 +3,20 @@
  *
  * 职责边界：
  * - EditableTextCell：双击编辑文本，Enter 提交 / Esc 取消
- * - EditableNumberCell：双击编辑数字，Enter 提交 / Esc 取消
- * - EditableBooleanCell：双击切换布尔值
+ * - EditableNumberCell：双击编辑数字，Enter 提交 / Esc 取消；可选支持上下方向键切换同列行
+ * - EditableBooleanCell：默认双击切换布尔值，可按列配置单击切换
  * - 纯展示组件，所有保存逻辑由父组件通过 onSave 回调注入
  * - 不接管任何数据加载或业务逻辑
  */
 
 import { Input, InputNumber, Tag, Tooltip } from 'antd'
-import { useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
-import type { InvoiceDetailInlineEditableField } from './inlineEdit'
+import { useEffect, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  resolveEditableBooleanToggleTrigger,
+  resolveEditableNumberInputWidth,
+  shouldSelectEditableNumberTextOnFocus,
+} from './editableCellLayout'
+import type { InvoiceDetailInlineEditableField, InvoiceDetailInlineNavigationKey } from './inlineEdit'
 
 // ---- 类型 ----
 
@@ -20,6 +25,12 @@ type InlineCellSaveHandler = (
   field: InvoiceDetailInlineEditableField,
   value: unknown,
 ) => void
+
+type InlineCellNavigateHandler = (
+  detailGuid: string,
+  field: InvoiceDetailInlineEditableField,
+  key: InvoiceDetailInlineNavigationKey,
+) => boolean
 
 // ---- 工具 ----
 
@@ -95,49 +106,128 @@ export function EditableNumberCell({
   detailGuid,
   field,
   onSave,
+  active,
+  onActivate,
+  onDeactivate,
+  onNavigate,
   displayValue,
   style,
   min = 0,
   max,
   precision = 2,
   addonAfter,
+  inputWidth,
+  controls,
+  selectTextOnFocus,
 }: {
   value?: number | null
   detailGuid: string
   field: InvoiceDetailInlineEditableField
   onSave: InlineCellSaveHandler
+  active?: boolean
+  onActivate?: () => void
+  onDeactivate?: () => void
+  onNavigate?: InlineCellNavigateHandler
   displayValue?: ReactNode
   style?: CSSProperties
   min?: number
   max?: number
   precision?: number
   addonAfter?: ReactNode
+  inputWidth?: number
+  controls?: boolean
+  selectTextOnFocus?: boolean
 }) {
-  const [editing, setEditing] = useState(false)
+  const [localEditing, setLocalEditing] = useState(false)
   const [inputValue, setInputValue] = useState<number | null>(value ?? null)
+  const skipNextBlurCommitRef = useRef(false)
+  const isControlled = active !== undefined
+  const editing = isControlled ? Boolean(active) : localEditing
 
   useEffect(() => {
     setInputValue(value ?? null)
   }, [value])
 
-  const commit = () => {
-    if (inputValue == null) {
-      setEditing(false)
+  useEffect(() => {
+    if (editing) {
+      skipNextBlurCommitRef.current = false
+      setInputValue(value ?? null)
+    }
+  }, [editing, value])
+
+  const setEditing = (nextEditing: boolean) => {
+    if (isControlled) {
+      if (nextEditing) onActivate?.()
+      else onDeactivate?.()
       return
     }
-    onSave(detailGuid, field, inputValue)
+    setLocalEditing(nextEditing)
+  }
+
+  const openEditing = () => {
+    setInputValue(value ?? null)
+    setEditing(true)
+  }
+
+  const commit = (source: 'blur' | 'keyboard' = 'keyboard') => {
+    if (inputValue != null) {
+      onSave(detailGuid, field, inputValue)
+    }
+    if (source !== 'blur') {
+      skipNextBlurCommitRef.current = true
+    }
     setEditing(false)
   }
 
+  const handleBlur = () => {
+    if (skipNextBlurCommitRef.current) {
+      skipNextBlurCommitRef.current = false
+      return
+    }
+    commit('blur')
+  }
+
+  const navigate = (key: InvoiceDetailInlineNavigationKey) => {
+    if (!onNavigate) return
+    skipNextBlurCommitRef.current = true
+    // 方向键录入时先提交当前输入值，再由父组件打开相邻行同列编辑框。
+    if (inputValue != null) {
+      onSave(detailGuid, field, inputValue)
+    }
+    const moved = onNavigate(detailGuid, field, key)
+    if (!moved) {
+      skipNextBlurCommitRef.current = false
+    }
+  }
+
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && onNavigate) {
+      event.preventDefault()
+      event.stopPropagation()
+      navigate(event.key)
+      return
+    }
+
     if (event.key === 'Enter') {
       event.preventDefault()
       commit()
     }
     if (event.key === 'Escape') {
+      skipNextBlurCommitRef.current = true
       setInputValue(value ?? null)
       setEditing(false)
     }
+  }
+
+  const handleFocus = (event: FocusEvent<HTMLInputElement>) => {
+    if (!shouldSelectEditableNumberTextOnFocus(selectTextOnFocus)) return
+    const inputElement = event.currentTarget
+    // 方向键切到目标格时，等 AntD 同步显示值后再全选，方便直接覆盖输入。
+    window.setTimeout(() => {
+      if (document.contains(inputElement)) {
+        inputElement.select()
+      }
+    }, 0)
   }
 
   if (editing) {
@@ -149,17 +239,19 @@ export function EditableNumberCell({
         max={max}
         precision={precision}
         addonAfter={addonAfter}
+        controls={controls}
         value={inputValue}
         onChange={(nextValue) => setInputValue(nextValue)}
-        onBlur={commit}
+        onBlur={handleBlur}
+        onFocus={handleFocus}
         onKeyDown={handleKeyDown}
-        style={{ width: addonAfter ? 110 : 90 }}
+        style={{ width: resolveEditableNumberInputWidth({ addonAfter, inputWidth }) }}
       />
     )
   }
 
   return (
-    <span style={{ ...style, cursor: 'pointer' }} onDoubleClick={() => setEditing(true)}>
+    <span style={{ ...style, cursor: 'pointer' }} onDoubleClick={openEditing}>
       {displayValue ?? formatAmount(value ?? undefined)}
     </span>
   )
@@ -175,6 +267,7 @@ export function EditableBooleanCell({
   trueLabel,
   falseLabel,
   trueColor,
+  toggleOnClick,
 }: {
   value?: boolean | null
   detailGuid: string
@@ -183,15 +276,19 @@ export function EditableBooleanCell({
   trueLabel: string
   falseLabel: string
   trueColor: string
+  toggleOnClick?: boolean
 }) {
   const actualValue = Boolean(value)
+  const toggleTrigger = resolveEditableBooleanToggleTrigger(toggleOnClick)
+  const handleToggle = () => onSave(detailGuid, field, !actualValue)
 
   return (
-    <Tooltip title="双击切换">
+    <Tooltip title={toggleTrigger === 'click' ? '单击切换' : '双击切换'}>
       <Tag
         color={actualValue ? trueColor : 'default'}
         style={{ cursor: 'pointer' }}
-        onDoubleClick={() => onSave(detailGuid, field, !actualValue)}
+        onClick={toggleTrigger === 'click' ? handleToggle : undefined}
+        onDoubleClick={toggleTrigger === 'doubleClick' ? handleToggle : undefined}
       >
         {actualValue ? trueLabel : falseLabel}
       </Tag>

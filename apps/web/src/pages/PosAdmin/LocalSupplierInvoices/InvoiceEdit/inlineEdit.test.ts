@@ -1,9 +1,18 @@
 import {
   applyInvoiceDetailBatchEdit,
   applyInvoiceDetailInlineEdit,
+  buildInvoiceDetailInlineNavigationDetails,
   buildInvoiceDetailSaveItems,
   normalizeInvoiceDetailInlineValue,
+  resolveInvoiceDetailInlineNavigation,
 } from './inlineEdit'
+import {
+  COMPACT_NUMBER_INPUT_WIDTH,
+  resolveEditableBooleanToggleTrigger,
+  resolveEditableNumberInputWidth,
+  shouldSelectEditableNumberTextOnFocus,
+} from './editableCellLayout'
+import { serializeNumberColumnFilter } from './tableColumnFilters'
 import type { LocalSupplierInvoiceItemDto } from '../../../../types/localSupplierInvoice'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -186,6 +195,99 @@ async function main() {
     assert(threw, '负数进货价应被拒绝')
   })
   if (invalidFailure) failures.push(invalidFailure)
+
+  const keyboardNavigationFailure = await runTest('零售价编辑方向键应在同列上下行导航', () => {
+    const details: LocalSupplierInvoiceItemDto[] = [
+      baseDetails[0],
+      { ...baseDetails[0], detailGUID: 'detail-2', itemNumber: '72751', retailPrice: 3.5 },
+      { ...baseDetails[0], detailGUID: 'detail-3', itemNumber: '72752', retailPrice: 4.5 },
+    ]
+
+    assertDeepEqual(
+      resolveInvoiceDetailInlineNavigation(details, 'detail-2', 'retailPrice', 'ArrowUp'),
+      { detailGuid: 'detail-1', field: 'retailPrice' },
+      'ArrowUp 应跳到上一行零售价',
+    )
+    assertDeepEqual(
+      resolveInvoiceDetailInlineNavigation(details, 'detail-2', 'retailPrice', 'ArrowDown'),
+      { detailGuid: 'detail-3', field: 'retailPrice' },
+      'ArrowDown 应跳到下一行零售价',
+    )
+    assertEqual(
+      resolveInvoiceDetailInlineNavigation(details, 'detail-1', 'retailPrice', 'ArrowUp'),
+      null,
+      '第一行 ArrowUp 不应导航',
+    )
+    assertEqual(
+      resolveInvoiceDetailInlineNavigation(details, 'detail-3', 'retailPrice', 'ArrowDown'),
+      null,
+      '最后一行 ArrowDown 不应导航',
+    )
+
+    const visibleSortedDetails = [details[2], details[0]]
+    assertDeepEqual(
+      resolveInvoiceDetailInlineNavigation(visibleSortedDetails, 'detail-3', 'retailPrice', 'ArrowDown'),
+      { detailGuid: 'detail-1', field: 'retailPrice' },
+      '传入表格可见有序列表时应按屏幕顺序跳到下一行',
+    )
+    assertEqual(
+      resolveInvoiceDetailInlineNavigation(visibleSortedDetails, 'detail-2', 'retailPrice', 'ArrowDown'),
+      null,
+      '被列筛选隐藏的行不应参与方向键导航',
+    )
+
+    const columnFilteredNavigationDetails = buildInvoiceDetailInlineNavigationDetails(
+      details,
+      { retailPrice: [serializeNumberColumnFilter({ mode: 'gte', value: 3 })] },
+    )
+    assertDeepEqual(
+      columnFilteredNavigationDetails.map((detail) => detail.detailGUID),
+      ['detail-2', 'detail-3'],
+      '导航源应排除表格列过滤隐藏的行',
+    )
+    assertDeepEqual(
+      resolveInvoiceDetailInlineNavigation(columnFilteredNavigationDetails, 'detail-2', 'retailPrice', 'ArrowDown'),
+      { detailGuid: 'detail-3', field: 'retailPrice' },
+      '列过滤后 ArrowDown 应跳到屏幕下一行',
+    )
+
+    const sortedNavigationDetails = buildInvoiceDetailInlineNavigationDetails(
+      details,
+      {},
+      {},
+      { field: 'retailPrice', order: 'descend' },
+    )
+    assertDeepEqual(
+      sortedNavigationDetails.map((detail) => detail.detailGUID),
+      ['detail-3', 'detail-2', 'detail-1'],
+      '导航源应按表格当前排序顺序排列',
+    )
+  })
+  if (keyboardNavigationFailure) failures.push(keyboardNavigationFailure)
+
+  const compactInputWidthFailure = await runTest('窄列数字编辑框应支持紧凑宽度', () => {
+    assertEqual(resolveEditableNumberInputWidth({}), 90, '普通数字编辑框应保持默认宽度')
+    assertEqual(resolveEditableNumberInputWidth({ addonAfter: '%' }), 110, '带后缀数字编辑框应保持默认宽度')
+    assertEqual(
+      resolveEditableNumberInputWidth({ inputWidth: COMPACT_NUMBER_INPUT_WIDTH }),
+      COMPACT_NUMBER_INPUT_WIDTH,
+      '零售价这类窄列应能覆盖为紧凑宽度',
+    )
+  })
+  if (compactInputWidthFailure) failures.push(compactInputWidthFailure)
+
+  const selectTextOnFocusFailure = await runTest('所有数字编辑框进入编辑态时默认全选当前文本', () => {
+    assertEqual(shouldSelectEditableNumberTextOnFocus(), true, '数字编辑框默认应全选当前文本')
+    assertEqual(shouldSelectEditableNumberTextOnFocus(false), false, '显式关闭时才不全选当前文本')
+    assertEqual(shouldSelectEditableNumberTextOnFocus(true), true, '显式开启时应全选当前文本')
+  })
+  if (selectTextOnFocusFailure) failures.push(selectTextOnFocusFailure)
+
+  const booleanToggleTriggerFailure = await runTest('自动定价布尔列应支持单击切换，其它布尔列默认双击', () => {
+    assertEqual(resolveEditableBooleanToggleTrigger(), 'doubleClick', '布尔编辑默认应保持双击切换')
+    assertEqual(resolveEditableBooleanToggleTrigger(true), 'click', '自动定价列应可配置为单击切换')
+  })
+  if (booleanToggleTriggerFailure) failures.push(booleanToggleTriggerFailure)
 
   if (failures.length) {
     console.error(`\n${failures.length} test(s) failed:`)
