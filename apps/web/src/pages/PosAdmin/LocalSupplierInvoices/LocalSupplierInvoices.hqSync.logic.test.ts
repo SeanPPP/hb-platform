@@ -198,6 +198,10 @@ async function main() {
       )
     }
     assert(
+      editPageSource.includes('additionalBarcodes: item.additionalBarcodes'),
+      '编辑页明细快照应包含 additionalBarcodes，副码变化后粘贴完成 reload 才会刷新表格提示',
+    )
+    assert(
       shouldSkipDetailAutoReload({
         requestedDetailId: 'invoice-1',
         loadedDetailId: 'invoice-1',
@@ -847,6 +851,8 @@ async function main() {
     assert(editPageSource.includes("width: 108,\n      fixed: 'left'"), '货号列应固定在左侧并压缩宽度')
     assert(editPageSource.includes('width={36} height={36}'), '图片缩略图应压缩到 36px')
     assert(editPageSource.includes('<BarcodePreview value={v} compactCopy />'), '条码文本不应设置 textMaxWidth 省略隐藏')
+    assert(editPageSource.includes('additionalBarcodeCount'), '条码列应显示副码数量标签')
+    assert(editPageSource.includes('record.additionalBarcodes?.join'), '副码数量标签应悬浮显示完整副码列表')
     assert(editPageSource.includes('formatPricingFloatRate'), '定价浮率应使用专用两位小数格式化')
     assert(!editPageSource.includes('`${(v * 100).toFixed(1)}%`'), '定价浮率不应按百分比展示')
     assert(!editPageSource.includes('\n          bordered\n'), '明细表不应继续使用 bordered 边框')

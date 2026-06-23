@@ -263,6 +263,7 @@ function normalizeInvoiceDetailSnapshot(item: LocalSupplierInvoiceItemDto) {
     productCode: item.productCode,
     itemNumber: item.itemNumber,
     barcode: item.barcode,
+    additionalBarcodes: item.additionalBarcodes,
     productName: item.productName,
     specification: item.specification,
     unit: item.unit,
@@ -2439,9 +2440,11 @@ export default function InvoiceEditPage() {
             display={<BarcodePreview value={v} compactCopy />}
           />
           {(record.additionalBarcodes?.length ?? 0) > 0 && (
-            <Tag color="cyan" style={{ marginTop: 4, marginInlineEnd: 0 }}>
-              {t('posAdmin.invoiceDetail.additionalBarcodeCount', '副码 {{count}}', { count: record.additionalBarcodes?.length ?? 0 })}
-            </Tag>
+            <Tooltip title={record.additionalBarcodes?.join(', ')}>
+              <Tag color="cyan" style={{ marginTop: 4, marginInlineEnd: 0 }}>
+                {t('posAdmin.invoiceDetail.additionalBarcodeCount', '副码 {{count}}', { count: record.additionalBarcodes?.length ?? 0 })}
+              </Tag>
+            </Tooltip>
           )}
         </div>
       ),

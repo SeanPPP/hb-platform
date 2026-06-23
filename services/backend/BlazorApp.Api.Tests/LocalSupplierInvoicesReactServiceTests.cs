@@ -833,6 +833,67 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CheckProductsAsync_有副条码但主条码不属于匹配商品时_等待操作()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-add-multi-mismatch-check", "INV-ADD-MULTI-MISMATCH-CHECK", new DateTime(2026, 1, 9));
+            await _db.Insertable(new[]
+            {
+                new Product
+                {
+                    UUID = "product-add-multi-mismatch-target",
+                    ProductCode = "P-ADD-MULTI-MISMATCH-TARGET",
+                    ItemNumber = "88842",
+                    Barcode = "191554882676",
+                    ProductName = "Men Travel Perfume Assorted 35mL",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+                new Product
+                {
+                    UUID = "product-add-multi-mismatch-other",
+                    ProductCode = "P-ADD-MULTI-MISMATCH-OTHER",
+                    ItemNumber = "OTHER-88842",
+                    Barcode = "840417950853",
+                    ProductName = "Other Product",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-add-multi-mismatch-check",
+                InvoiceGUID = "invoice-add-multi-mismatch-check",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "88842",
+                Barcode = "840417950853",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                Quantity = 48,
+                PurchasePrice = 1.6546m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-add-multi-mismatch-check",
+                DetailGuids = new List<string> { "detail-add-multi-mismatch-check" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-add-multi-mismatch-check");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("P-ADD-MULTI-MISMATCH-TARGET", detail.ProductCode);
+            Assert.Equal((int)DetailAction.WaitForOperation, detail.ActivityType);
+        }
+
+        [Fact]
         public async Task QueryInChunksParallelAsync_多Chunk查询使用独立连接()
         {
             var service = CreateService();
@@ -1476,6 +1537,71 @@ namespace BlazorApp.Api.Tests
             var validationDetails = Assert.IsType<BatchExecuteActionsResultDto>(result.Details);
             Assert.Contains(validationDetails.Errors, error => error.Contains("191554882669", StringComparison.Ordinal));
             Assert.Equal(1, multiCodeCount);
+            Assert.Equal(0, productSetCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_AddMultiCode_副条码主条码不属于商品时校验失败并回滚()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-multi-secondary-mismatch", "INV-MULTI-SECONDARY-MISMATCH", new DateTime(2026, 1, 12));
+            await _db.Insertable(new[]
+            {
+                new Product
+                {
+                    UUID = "product-multi-secondary-mismatch-target",
+                    ProductCode = "P-MULTI-SECONDARY-MISMATCH-TARGET",
+                    ItemNumber = "88842",
+                    Barcode = "191554882676",
+                    ProductName = "Men Travel Perfume Assorted 35mL",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+                new Product
+                {
+                    UUID = "product-multi-secondary-mismatch-other",
+                    ProductCode = "P-MULTI-SECONDARY-MISMATCH-OTHER",
+                    ItemNumber = "OTHER-88842",
+                    Barcode = "840417950853",
+                    ProductName = "Other Product",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-multi-secondary-mismatch",
+                InvoiceGUID = "invoice-multi-secondary-mismatch",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-MULTI-SECONDARY-MISMATCH-TARGET",
+                ItemNumber = "88842",
+                Barcode = "840417950853",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                PurchasePrice = 1.6546m,
+                ActivityType = (int)DetailAction.AddMultiCode,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-multi-secondary-mismatch",
+                new List<string> { "detail-multi-secondary-mismatch" },
+                "tester"
+            );
+
+            var multiCodeCount = await _db.Queryable<StoreMultiCodeProduct>().CountAsync();
+            var productSetCodeCount = await _db.Queryable<ProductSetCode>().CountAsync();
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            var validationDetails = Assert.IsType<BatchExecuteActionsResultDto>(result.Details);
+            Assert.Contains(validationDetails.Errors, error => error.Contains("主条码未匹配当前商品", StringComparison.Ordinal));
+            Assert.Equal(0, multiCodeCount);
             Assert.Equal(0, productSetCodeCount);
         }
 

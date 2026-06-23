@@ -2746,7 +2746,8 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // 第六步：根据条码查询商品和条码映射
-                var productByBarcode = new Dictionary<string, int>();
+                var productByBarcode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var productCodesByBarcode = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
                 if (barcodes.Count > 0)
                 {
                     // 查询商品表中的条码
@@ -2766,9 +2767,11 @@ namespace BlazorApp.Api.Services.React
                     {
                         if (!string.IsNullOrWhiteSpace(p.Barcode))
                         {
-                            if (!productByBarcode.ContainsKey(p.Barcode))
-                                productByBarcode[p.Barcode] = 0;
-                            productByBarcode[p.Barcode]++;
+                            var normalizedBarcode = p.Barcode.Trim();
+                            if (!productByBarcode.ContainsKey(normalizedBarcode))
+                                productByBarcode[normalizedBarcode] = 0;
+                            productByBarcode[normalizedBarcode]++;
+                            AddBarcodeProductCode(productCodesByBarcode, p.Barcode, p.ProductCode);
                         }
                     }
 
@@ -2793,9 +2796,11 @@ namespace BlazorApp.Api.Services.React
                     {
                         if (!string.IsNullOrWhiteSpace(mc.MultiBarcode))
                         {
-                            if (!productByBarcode.ContainsKey(mc.MultiBarcode))
-                                productByBarcode[mc.MultiBarcode] = 0;
-                            productByBarcode[mc.MultiBarcode]++;
+                            var normalizedBarcode = mc.MultiBarcode.Trim();
+                            if (!productByBarcode.ContainsKey(normalizedBarcode))
+                                productByBarcode[normalizedBarcode] = 0;
+                            productByBarcode[normalizedBarcode]++;
+                            AddBarcodeProductCode(productCodesByBarcode, mc.MultiBarcode, mc.ProductCode);
                         }
                     }
                 }
@@ -2964,8 +2969,15 @@ namespace BlazorApp.Api.Services.React
                     bool hasAdditionalBarcodes = DeserializeAdditionalBarcodes(detail.AdditionalBarcodesJson).Count > 0;
                     if (productExists && hasAdditionalBarcodes)
                     {
-                        // 关键位置：主商品已确认存在时，粘贴带来的副条码应优先进入“添加多码”动作。
-                        defaultAction = (int)DetailAction.AddMultiCode;
+                        var primaryBarcodeMatchesProduct = IsBarcodeOwnedByProduct(
+                            productCodesByBarcode,
+                            detail.Barcode,
+                            result.ProductInfo?.ProductCode
+                        );
+                        // 关键位置：只有主条码确实属于当前货号匹配出的商品，才自动建议把副条码添加为多码。
+                        defaultAction = primaryBarcodeMatchesProduct
+                            ? (int)DetailAction.AddMultiCode
+                            : (int)DetailAction.WaitForOperation;
                     }
                     else if (detail.PurchasePrice.HasValue && detail.PurchasePrice.Value > 0)
                     {
@@ -4200,8 +4212,25 @@ namespace BlazorApp.Api.Services.React
                         var barcodesToAdd = GetDetailBarcodesForMultiCode(detail);
                         if (barcodesToAdd.Count == 0)
                             errors.Add($"明细 {detail.DetailGUID} 添加多码失败：条码不能为空");
-                        if (!await ProductExistsByCodeAsync(detail.ProductCode))
+                        var productExistsForMultiCode = await ProductExistsByCodeAsync(detail.ProductCode);
+                        if (!productExistsForMultiCode)
                             errors.Add($"明细 {detail.DetailGUID} 添加多码失败：商品不存在");
+                        var hasStoredAdditionalBarcodes = DeserializeAdditionalBarcodes(detail.AdditionalBarcodesJson).Count > 0;
+                        if (
+                            hasStoredAdditionalBarcodes
+                            && productExistsForMultiCode
+                            && !string.IsNullOrWhiteSpace(detail.Barcode)
+                            && !await BarcodeBelongsToProductAsync(
+                                db,
+                                detail.Barcode,
+                                detail.ProductCode,
+                                ResolveDetailStoreCode(detail.StoreCode, header.StoreCode)
+                            )
+                        )
+                        {
+                            // 关键位置：副条码只能挂到主条码已经确认归属的商品，避免货号和条码交叉时写错商品。
+                            errors.Add($"明细 {detail.DetailGUID} 添加多码失败：主条码未匹配当前商品");
+                        }
                         foreach (var barcodeToAdd in barcodesToAdd)
                         {
                             var normalizedBarcode = NormalizeCaseInsensitiveValue(barcodeToAdd);
@@ -4240,6 +4269,81 @@ namespace BlazorApp.Api.Services.React
                 return null;
 
             return value.Trim().ToUpperInvariant();
+        }
+
+        private static void AddBarcodeProductCode(
+            Dictionary<string, HashSet<string>> barcodeProductCodes,
+            string? barcode,
+            string? productCode
+        )
+        {
+            if (string.IsNullOrWhiteSpace(barcode) || string.IsNullOrWhiteSpace(productCode))
+                return;
+
+            var normalizedBarcode = barcode.Trim();
+            if (!barcodeProductCodes.TryGetValue(normalizedBarcode, out var productCodes))
+            {
+                productCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                barcodeProductCodes[normalizedBarcode] = productCodes;
+            }
+
+            productCodes.Add(productCode.Trim());
+        }
+
+        private static bool IsBarcodeOwnedByProduct(
+            Dictionary<string, HashSet<string>> barcodeProductCodes,
+            string? barcode,
+            string? productCode
+        )
+        {
+            return !string.IsNullOrWhiteSpace(barcode)
+                && !string.IsNullOrWhiteSpace(productCode)
+                && barcodeProductCodes.TryGetValue(barcode.Trim(), out var productCodes)
+                && productCodes.Contains(productCode.Trim());
+        }
+
+        private static async Task<bool> BarcodeBelongsToProductAsync(
+            ISqlSugarClient db,
+            string? barcode,
+            string? productCode,
+            string? storeCode
+        )
+        {
+            var normalizedBarcode = NormalizeCaseInsensitiveValue(barcode);
+            var normalizedProductCode = productCode?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedBarcode) || string.IsNullOrWhiteSpace(normalizedProductCode))
+                return false;
+
+            var productBarcodeMatches = await db.Queryable<Product>()
+                .AnyAsync(product =>
+                    product.IsDeleted == false
+                    && product.ProductCode == normalizedProductCode
+                    && product.Barcode != null
+                    && SqlFunc.ToUpper(product.Barcode) == normalizedBarcode
+                );
+            if (productBarcodeMatches)
+                return true;
+
+            if (!string.IsNullOrWhiteSpace(storeCode))
+            {
+                var normalizedStoreCode = storeCode.Trim();
+                return await db.Queryable<StoreMultiCodeProduct>()
+                    .AnyAsync(multiCode =>
+                        multiCode.IsDeleted == false
+                        && multiCode.StoreCode == normalizedStoreCode
+                        && multiCode.ProductCode == normalizedProductCode
+                        && multiCode.MultiBarcode != null
+                        && SqlFunc.ToUpper(multiCode.MultiBarcode) == normalizedBarcode
+                    );
+            }
+
+            return await db.Queryable<StoreMultiCodeProduct>()
+                .AnyAsync(multiCode =>
+                    multiCode.IsDeleted == false
+                    && multiCode.ProductCode == normalizedProductCode
+                    && multiCode.MultiBarcode != null
+                    && SqlFunc.ToUpper(multiCode.MultiBarcode) == normalizedBarcode
+                );
         }
 
         private static PastedDetailItemDto NormalizePastedDetailItem(PastedDetailItemDto item)
