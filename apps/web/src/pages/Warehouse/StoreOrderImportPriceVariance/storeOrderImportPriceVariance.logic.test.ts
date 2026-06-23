@@ -60,6 +60,18 @@ assert(
 )
 
 assert(
+  pageSource.includes('useLayoutEffect') &&
+    pageSource.includes('const tableRegionRef = useRef<HTMLDivElement | null>(null)') &&
+    pageSource.includes('const [tableScrollY, setTableScrollY]') &&
+    pageSource.includes("height: 'calc(100vh - 32px)'") &&
+    pageSource.includes('region.clientHeight') &&
+    pageSource.includes('scroll={{ x: 1850, y: tableScrollY }}') &&
+    pageSource.includes('主表区域按一屏高度展示，行数据只在表格 body 内滚动') &&
+    pageSource.includes("overflow: 'hidden'"),
+  '主表区域必须按一屏高度展示，并根据表格区域自身高度计算 body 内部滚动高度',
+)
+
+assert(
   pageSource.includes('getStoreOrderImportPriceVarianceDetails({') &&
     pageSource.includes('productCode: selectedProduct.productCode') &&
     pageSource.includes('<Modal') &&

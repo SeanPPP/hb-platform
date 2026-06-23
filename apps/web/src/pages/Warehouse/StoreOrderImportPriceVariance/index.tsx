@@ -20,7 +20,7 @@ import {
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { SorterResult } from 'antd/es/table/interface'
 import type { Dayjs } from 'dayjs'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -180,6 +180,8 @@ export default function StoreOrderImportPriceVariancePage() {
   const [sortBy, setSortBy] = useState(DEFAULT_SORT_BY)
   const [sortDescending, setSortDescending] = useState(DEFAULT_SORT_DESCENDING)
   const [loading, setLoading] = useState(false)
+  const tableRegionRef = useRef<HTMLDivElement | null>(null)
+  const [tableScrollY, setTableScrollY] = useState(480)
   const [supplierOptions, setSupplierOptions] = useState<SupplierOption[]>([])
   const [supplierLoading, setSupplierLoading] = useState(false)
   const supplierOptionsLoadedRef = useRef(false)
@@ -229,6 +231,79 @@ export default function StoreOrderImportPriceVariancePage() {
     },
     [],
   )
+
+  useLayoutEffect(() => {
+    let frameId: number | null = null
+
+    const readOuterHeight = (element: HTMLElement | null) => {
+      if (!element) {
+        return 0
+      }
+
+      const style = window.getComputedStyle(element)
+      const marginTop = Number.parseFloat(style.marginTop) || 0
+      const marginBottom = Number.parseFloat(style.marginBottom) || 0
+      return Math.ceil(element.getBoundingClientRect().height + marginTop + marginBottom)
+    }
+
+    const measureTableScrollY = () => {
+      const region = tableRegionRef.current
+      if (!region) {
+        return
+      }
+
+      const tableHeader = region.querySelector('.ant-table-thead') as HTMLElement | null
+      const tableBody = region.querySelector('.ant-table-body') as HTMLElement | null
+      const pagination = region.querySelector('.ant-table-pagination') as HTMLElement | null
+      const tableHeaderHeight = readOuterHeight(tableHeader)
+      const paginationHeight = readOuterHeight(pagination)
+      const horizontalScrollbarHeight = tableBody ? Math.max(0, tableBody.offsetHeight - tableBody.clientHeight) : 0
+      const innerPadding = 8
+      const minTableBodyHeight = 260
+
+      // 主表区域按一屏高度展示，行数据只在表格 body 内滚动。
+      const nextScrollY = Math.max(
+        Math.floor(
+          region.clientHeight -
+            tableHeaderHeight -
+            paginationHeight -
+            horizontalScrollbarHeight -
+            innerPadding,
+        ),
+        minTableBodyHeight,
+      )
+
+      setTableScrollY((current) => (Math.abs(current - nextScrollY) > 4 ? nextScrollY : current))
+    }
+
+    const scheduleMeasure = () => {
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      frameId = window.requestAnimationFrame(measureTableScrollY)
+    }
+
+    scheduleMeasure()
+    window.addEventListener('resize', scheduleMeasure)
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        if (frameId != null) window.cancelAnimationFrame(frameId)
+        window.removeEventListener('resize', scheduleMeasure)
+      }
+    }
+
+    const observer = new ResizeObserver(scheduleMeasure)
+    if (tableRegionRef.current) {
+      observer.observe(tableRegionRef.current)
+    }
+
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId)
+      observer.disconnect()
+      window.removeEventListener('resize', scheduleMeasure)
+    }
+  }, [i18n.language, items.length, pageSize, total])
 
   const loadSupplierOptions = useCallback(async () => {
     if (supplierOptionsLoadedRef.current || supplierLoading) {
@@ -801,22 +876,42 @@ export default function StoreOrderImportPriceVariancePage() {
         </Col>
       </Row>
 
-      <Card style={{ marginTop: 16 }}>
-        <Table<StoreOrderImportPriceVarianceItem>
-          rowKey={getRowKey}
-          loading={loading}
-          columns={productColumns}
-          dataSource={items}
-          scroll={{ x: 1850 }}
-          onChange={handleTableChange}
-          pagination={{
-            current: pageNumber,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            showTotal: (value) => t('storeOrders.importPriceVariance.totalRows', { total: value }),
-          }}
-        />
+      <Card
+        style={{
+          marginTop: 16,
+          height: 'calc(100vh - 32px)',
+          minHeight: 0,
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+        styles={{
+          body: {
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          },
+        }}
+      >
+        <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <Table<StoreOrderImportPriceVarianceItem>
+            rowKey={getRowKey}
+            loading={loading}
+            columns={productColumns}
+            dataSource={items}
+            scroll={{ x: 1850, y: tableScrollY }}
+            onChange={handleTableChange}
+            pagination={{
+              current: pageNumber,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              showTotal: (value) => t('storeOrders.importPriceVariance.totalRows', { total: value }),
+            }}
+          />
+        </div>
       </Card>
 
       <Modal
