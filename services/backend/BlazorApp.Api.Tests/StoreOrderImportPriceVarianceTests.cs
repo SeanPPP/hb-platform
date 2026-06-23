@@ -42,6 +42,9 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
             typeof(WareHouseOrder),
             typeof(WareHouseOrderDetails),
             typeof(Product),
+            typeof(WarehouseProduct),
+            typeof(DomesticProduct),
+            typeof(ChinaSupplier),
             typeof(Store)
         );
     }
@@ -65,65 +68,67 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         Assert.NotNull(all.Data);
         Assert.Equal(5, all.Data!.Total);
         Assert.Equal(5, all.Data.Summary.TotalRows);
-        Assert.Equal(71.2m, all.Data.Summary.OriginalImportAmountTotal);
-        Assert.Equal(69.2m, all.Data.Summary.BaselineImportAmountTotal);
-        Assert.Equal(2m, all.Data.Summary.VarianceAmountTotal);
+        Assert.Equal(79.2m, all.Data.Summary.OriginalImportAmountTotal);
+        Assert.Equal(79.2m, all.Data.Summary.BaselineImportAmountTotal);
+        Assert.Equal(0m, all.Data.Summary.VarianceAmountTotal);
 
         var decrease = Assert.Single(all.Data.Items, item => item.ProductCode == "P2");
         Assert.Equal("C-P2-FIRST", decrease.FirstContainerCode);
         Assert.Equal(10m, decrease.FirstContainerImportPrice);
-        Assert.Equal(8m, decrease.OrderImportPrice);
-        Assert.Equal(4m, decrease.AllocQuantity);
-        Assert.Equal(32m, decrease.OriginalImportAmount);
-        Assert.Equal(40m, decrease.BaselineImportAmount);
-        Assert.Equal(-8m, decrease.VarianceAmount);
+        Assert.Equal("CN2", decrease.SupplierCode);
+        Assert.Equal("供应商二", decrease.SupplierName);
+        Assert.Equal("domestic-p2.jpg", decrease.ProductImage);
+        Assert.Equal(55m, decrease.DomesticPrice);
+        Assert.Equal(0.55m, decrease.UnitVolume);
+        Assert.Equal(30, decrease.PackingQuantity);
+        Assert.Equal(4m, decrease.AllocQuantityTotal);
+        Assert.Equal(32m, decrease.OriginalImportAmountTotal);
+        Assert.Equal(40m, decrease.BaselineImportAmountTotal);
+        Assert.Equal(-8m, decrease.VarianceAmountTotal);
+        Assert.Equal(1, decrease.DetailCount);
 
         var increase = Assert.Single(all.Data.Items, item => item.ProductCode == "P1");
         Assert.Equal("C-P1-A", increase.FirstContainerCode);
         Assert.Equal("HG-P1-A-VALID", increase.FirstContainerNumber);
         Assert.Equal(new DateTime(2024, 1, 1), increase.FirstContainerDate);
         Assert.Equal(5m, increase.FirstContainerImportPrice);
-        Assert.Equal(7m, increase.OrderImportPrice);
-        Assert.Equal(3m, increase.AllocQuantity);
-        Assert.Equal(21m, increase.OriginalImportAmount);
-        Assert.Equal(15m, increase.BaselineImportAmount);
-        Assert.Equal(6m, increase.VarianceAmount);
+        Assert.Equal("CN1", increase.SupplierCode);
+        Assert.Equal("供应商一", increase.SupplierName);
+        Assert.Equal("product-p1.jpg", increase.ProductImage);
+        Assert.Equal(88m, increase.DomesticPrice);
+        Assert.Equal(0.88m, increase.UnitVolume);
+        Assert.Equal(12, increase.PackingQuantity);
+        Assert.Equal(5m, increase.AllocQuantityTotal);
+        Assert.Equal(29m, increase.OriginalImportAmountTotal);
+        Assert.Equal(25m, increase.BaselineImportAmountTotal);
+        Assert.Equal(4m, increase.VarianceAmountTotal);
+        Assert.Equal(2, increase.DetailCount);
 
         var zeroFirst = Assert.Single(all.Data.Items, item => item.ProductCode == "P-ZERO-FIRST");
         Assert.Equal("C-ZERO-FIRST-VALID", zeroFirst.FirstContainerCode);
         Assert.Equal(6m, zeroFirst.FirstContainerImportPrice);
-        Assert.Equal(8m, zeroFirst.OrderImportPrice);
-        Assert.Equal(2m, zeroFirst.AllocQuantity);
-        Assert.Equal(16m, zeroFirst.OriginalImportAmount);
-        Assert.Equal(12m, zeroFirst.BaselineImportAmount);
-        Assert.Equal(4m, zeroFirst.VarianceAmount);
+        Assert.Equal(2m, zeroFirst.AllocQuantityTotal);
+        Assert.Equal(16m, zeroFirst.OriginalImportAmountTotal);
+        Assert.Equal(12m, zeroFirst.BaselineImportAmountTotal);
+        Assert.Equal(4m, zeroFirst.VarianceAmountTotal);
 
         var exactHigh = Assert.Single(all.Data.Items, item => item.ProductCode == "P-EXACT-HIGH");
         Assert.Equal(0.2m, exactHigh.FirstContainerImportPrice);
-        Assert.Equal(2m, exactHigh.OrderImportPrice);
-        Assert.Equal(2m, exactHigh.OriginalImportAmount);
-        Assert.Equal(0.2m, exactHigh.BaselineImportAmount);
-        Assert.Equal(1.8m, exactHigh.VarianceAmount);
+        Assert.Equal(2m, exactHigh.OriginalImportAmountTotal);
+        Assert.Equal(0.2m, exactHigh.BaselineImportAmountTotal);
+        Assert.Equal(1.8m, exactHigh.VarianceAmountTotal);
 
         var exactLow = Assert.Single(all.Data.Items, item => item.ProductCode == "P-EXACT-LOW");
         Assert.Equal(2m, exactLow.FirstContainerImportPrice);
-        Assert.Equal(0.2m, exactLow.OrderImportPrice);
-        Assert.Equal(0.2m, exactLow.OriginalImportAmount);
-        Assert.Equal(2m, exactLow.BaselineImportAmount);
-        Assert.Equal(-1.8m, exactLow.VarianceAmount);
+        Assert.Equal(0.2m, exactLow.OriginalImportAmountTotal);
+        Assert.Equal(2m, exactLow.BaselineImportAmountTotal);
+        Assert.Equal(-1.8m, exactLow.VarianceAmountTotal);
 
         Assert.Equal("P2", all.Data.Items[0].ProductCode);
-        Assert.DoesNotContain(all.Data.Items, item => item.OrderNo == "O-BEFORE");
-        Assert.DoesNotContain(all.Data.Items, item => item.OrderNo == "O-EQUAL-DATE");
-        Assert.DoesNotContain(all.Data.Items, item => item.OrderNo == "O-SAME-PRICE");
-        Assert.DoesNotContain(all.Data.Items, item => item.OrderNo == "O-DELETED-ORDER");
-        Assert.DoesNotContain(all.Data.Items, item => item.DetailGUID == "D-DELETED");
-        Assert.DoesNotContain(all.Data.Items, item => item.DetailGUID == "D-NULL-IMPORT-PRICE");
-        Assert.DoesNotContain(all.Data.Items, item => item.DetailGUID == "D-ZERO-IMPORT-PRICE");
-        Assert.DoesNotContain(all.Data.Items, item => item.DetailGUID == "D-EXTREME-HIGH-PRICE");
-        Assert.DoesNotContain(all.Data.Items, item => item.DetailGUID == "D-EXTREME-LOW-PRICE");
         Assert.DoesNotContain(all.Data.Items, item => string.IsNullOrWhiteSpace(item.ProductCode));
         Assert.DoesNotContain(all.Data.Items, item => item.ProductCode == "P-NO-BASELINE");
+        Assert.DoesNotContain(all.Data.Items, item => item.ProductCode == "P-EXTREME-HIGH");
+        Assert.DoesNotContain(all.Data.Items, item => item.ProductCode == "P-EXTREME-LOW");
 
         var increaseOnly = await service.GetImportPriceVarianceAsync(new StoreOrderImportPriceVarianceQueryDto
         {
@@ -134,15 +139,65 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         Assert.Contains(increaseOnly.Data.Items, item => item.ProductCode == "P-ZERO-FIRST");
         Assert.Contains(increaseOnly.Data.Items, item => item.ProductCode == "P-EXACT-HIGH");
         Assert.Equal(11.8m, increaseOnly.Data.Summary.VarianceAmountTotal);
+        Assert.Equal(6m, Assert.Single(increaseOnly.Data.Items, item => item.ProductCode == "P1").VarianceAmountTotal);
 
         var decreaseOnly = await service.GetImportPriceVarianceAsync(new StoreOrderImportPriceVarianceQueryDto
         {
             VarianceDirection = "decrease",
         });
-        Assert.Equal(2, decreaseOnly.Data!.Total);
+        Assert.Equal(3, decreaseOnly.Data!.Total);
+        Assert.Contains(decreaseOnly.Data.Items, item => item.ProductCode == "P1");
         Assert.Contains(decreaseOnly.Data.Items, item => item.ProductCode == "P2");
         Assert.Contains(decreaseOnly.Data.Items, item => item.ProductCode == "P-EXACT-LOW");
-        Assert.Equal(-9.8m, decreaseOnly.Data.Summary.VarianceAmountTotal);
+        Assert.Equal(-11.8m, decreaseOnly.Data.Summary.VarianceAmountTotal);
+
+        var supplierOnly = await service.GetImportPriceVarianceAsync(new StoreOrderImportPriceVarianceQueryDto
+        {
+            SupplierCode = "CN1",
+        });
+        Assert.Equal(3, supplierOnly.Data!.Total);
+        Assert.Contains(supplierOnly.Data.Items, item => item.ProductCode == "P1");
+        Assert.Contains(supplierOnly.Data.Items, item => item.ProductCode == "P-ZERO-FIRST");
+        Assert.Contains(supplierOnly.Data.Items, item => item.ProductCode == "P-EXACT-HIGH");
+        Assert.Equal(9.8m, supplierOnly.Data.Summary.VarianceAmountTotal);
+
+        var localSupplierMustNotMatch = await service.GetImportPriceVarianceAsync(new StoreOrderImportPriceVarianceQueryDto
+        {
+            SupplierCode = "LOCAL-P1",
+        });
+        Assert.Empty(localSupplierMustNotMatch.Data!.Items);
+        Assert.Equal(0, localSupplierMustNotMatch.Data.Total);
+
+        var p1Details = await service.GetImportPriceVarianceDetailsAsync(new StoreOrderImportPriceVarianceDetailQueryDto
+        {
+            ProductCode = "P1",
+            PageNumber = 1,
+            PageSize = 20,
+        });
+        Assert.True(p1Details.Success, p1Details.Message);
+        Assert.Equal(2, p1Details.Data!.Total);
+        Assert.Equal(29m, p1Details.Data.Summary.OriginalImportAmountTotal);
+        Assert.Equal(25m, p1Details.Data.Summary.BaselineImportAmountTotal);
+        Assert.Equal(4m, p1Details.Data.Summary.VarianceAmountTotal);
+        Assert.Contains(p1Details.Data.Items, item => item.DetailGUID == "D-INCREASE");
+        Assert.Contains(p1Details.Data.Items, item => item.DetailGUID == "D-P1-DECREASE");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.OrderNo == "O-BEFORE");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.OrderNo == "O-EQUAL-DATE");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.OrderNo == "O-SAME-PRICE");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.OrderNo == "O-DELETED-ORDER");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.DetailGUID == "D-DELETED");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.DetailGUID == "D-NULL-IMPORT-PRICE");
+        Assert.DoesNotContain(p1Details.Data.Items, item => item.DetailGUID == "D-ZERO-IMPORT-PRICE");
+
+        var p1IncreaseDetails = await service.GetImportPriceVarianceDetailsAsync(new StoreOrderImportPriceVarianceDetailQueryDto
+        {
+            ProductCode = "P1",
+            SupplierCode = "CN1",
+            VarianceDirection = "increase",
+        });
+        var p1IncreaseDetail = Assert.Single(p1IncreaseDetails.Data!.Items);
+        Assert.Equal("D-INCREASE", p1IncreaseDetail.DetailGUID);
+        Assert.Equal(6m, p1IncreaseDetails.Data.Summary.VarianceAmountTotal);
     }
 
     private async Task SeedProductsAndStoreAsync()
@@ -156,14 +211,35 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
 
         await _db.Insertable(new[]
         {
-            new Product { UUID = "UUID-P1", ProductCode = "P1", ItemNumber = "ITEM-P1", ProductName = "Product One" },
-            new Product { UUID = "UUID-P2", ProductCode = "P2", ItemNumber = "ITEM-P2", ProductName = "Product Two" },
+            new Product { UUID = "UUID-P1", ProductCode = "P1", ItemNumber = "ITEM-P1", ProductName = "Product One", ProductImage = "product-p1.jpg", LocalSupplierCode = "LOCAL-P1" },
+            new Product { UUID = "UUID-P2", ProductCode = "P2", ItemNumber = "ITEM-P2", ProductName = "Product Two", ProductImage = "" },
             new Product { UUID = "UUID-P3", ProductCode = "P-NO-BASELINE", ItemNumber = "ITEM-P3", ProductName = "No Baseline" },
             new Product { UUID = "UUID-P4", ProductCode = "P-EXTREME-HIGH", ItemNumber = "ITEM-P4", ProductName = "Extreme High" },
             new Product { UUID = "UUID-P5", ProductCode = "P-EXTREME-LOW", ItemNumber = "ITEM-P5", ProductName = "Extreme Low" },
             new Product { UUID = "UUID-P6", ProductCode = "P-ZERO-FIRST", ItemNumber = "ITEM-P6", ProductName = "Zero First Baseline" },
             new Product { UUID = "UUID-P7", ProductCode = "P-EXACT-HIGH", ItemNumber = "ITEM-P7", ProductName = "Exact High" },
             new Product { UUID = "UUID-P8", ProductCode = "P-EXACT-LOW", ItemNumber = "ITEM-P8", ProductName = "Exact Low" },
+        }).ExecuteCommandAsync();
+
+        await _db.Insertable(new[]
+        {
+            new ChinaSupplier { Guid = "CS1", SupplierCode = "CN1", SupplierName = "供应商一" },
+            new ChinaSupplier { Guid = "CS2", SupplierCode = "CN2", SupplierName = "供应商二" },
+        }).ExecuteCommandAsync();
+
+        await _db.Insertable(new[]
+        {
+            new DomesticProduct { ProductCode = "P1", SupplierCode = "CN1", ProductImage = "domestic-p1.jpg", DomesticPrice = 99m, UnitVolume = 1.25m, PackingQuantity = 24 },
+            new DomesticProduct { ProductCode = "P2", SupplierCode = "CN2", ProductImage = "domestic-p2.jpg", DomesticPrice = 55m, UnitVolume = 0.55m, PackingQuantity = 30 },
+            new DomesticProduct { ProductCode = "P-ZERO-FIRST", SupplierCode = "CN1", DomesticPrice = 6m, UnitVolume = 0.66m, PackingQuantity = 18 },
+            new DomesticProduct { ProductCode = "P-EXACT-HIGH", SupplierCode = "CN1", DomesticPrice = 2m, UnitVolume = 0.2m, PackingQuantity = 10 },
+            new DomesticProduct { ProductCode = "P-EXACT-LOW", SupplierCode = "CN2", DomesticPrice = 2m, UnitVolume = 0.3m, PackingQuantity = 20 },
+        }).ExecuteCommandAsync();
+
+        await _db.Insertable(new[]
+        {
+            new WarehouseProduct { ProductCode = "P1", DomesticPrice = 88m, Volume = 0.88m, PackingQuantity = 12 },
+            new WarehouseProduct { ProductCode = "P-ZERO-FIRST", DomesticPrice = 7m, Volume = 0.77m, PackingQuantity = 16 },
         }).ExecuteCommandAsync();
     }
 
@@ -209,6 +285,9 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
     {
         await InsertOrderAsync("O1", "O-INCREASE", new DateTime(2024, 1, 5));
         await InsertDetailAsync("D-INCREASE", "O1", "P1", 7m, null, 3m);
+
+        await InsertOrderAsync("O17", "O-P1-DECREASE", new DateTime(2024, 1, 7));
+        await InsertDetailAsync("D-P1-DECREASE", "O17", "P1", 4m, null, 2m);
 
         await InsertOrderAsync("O2", "O-DECREASE", new DateTime(2024, 1, 6));
         await InsertDetailAsync("D-DECREASE", "O2", "P2", 8m, 30m, 4m);

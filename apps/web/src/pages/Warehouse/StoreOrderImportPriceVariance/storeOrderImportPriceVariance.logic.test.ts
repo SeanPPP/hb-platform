@@ -13,10 +13,30 @@ const zhLocale = JSON.parse(readFileSync(path.resolve(process.cwd(), 'src/i18n/l
 const enLocale = JSON.parse(readFileSync(path.resolve(process.cwd(), 'src/i18n/locales/en.json'), 'utf8'))
 
 assert(
-  pageSource.includes("t('storeOrders.importPriceVariance.originalImportAmount')") &&
-    pageSource.includes("t('storeOrders.importPriceVariance.baselineImportAmount')") &&
-    pageSource.includes("t('storeOrders.importPriceVariance.varianceAmount')"),
-  '页面表格必须包含原始金额、基准金额和差额列',
+  pageSource.includes("dataIndex: 'productImage'") &&
+    pageSource.includes("dataIndex: 'domesticPrice'") &&
+    pageSource.includes("dataIndex: 'unitVolume'") &&
+    pageSource.includes("dataIndex: 'packingQuantity'") &&
+    pageSource.includes("dataIndex: 'firstContainerImportPrice'") &&
+    pageSource.includes("dataIndex: 'originalImportAmountTotal'") &&
+    pageSource.includes("dataIndex: 'baselineImportAmountTotal'") &&
+    pageSource.includes("dataIndex: 'varianceAmountTotal'"),
+  '商品汇总主表必须包含商品图片、国内价格、体积、装箱数、首次进货价和三项金额合计列',
+)
+
+assert(
+  pageSource.includes("dataIndex: 'supplierCode'") &&
+    pageSource.includes("t('storeOrders.importPriceVariance.domesticSupplier')") &&
+    pageSource.includes('name="supplierCode"'),
+  '页面必须包含国内供应商筛选组件和国内供应商列',
+)
+
+assert(
+  pageSource.includes("import { getActiveChinaSuppliers }") &&
+    pageSource.includes('function DomesticSupplierFilterSelect') &&
+    pageSource.includes('getActiveChinaSuppliers(currentController.signal)') &&
+    pageSource.includes('onOpenChange={handleSupplierOpenChange}'),
+  '国内供应商过滤组件必须复用 getActiveChinaSuppliers 并在首次展开时加载',
 )
 
 assert(
@@ -27,16 +47,30 @@ assert(
 )
 
 assert(
-  pageSource.includes("dataIndex: 'varianceAmount'") &&
-    pageSource.includes("key: 'varianceAmount'") &&
+  pageSource.includes("dataIndex: 'varianceAmountTotal'") &&
+    pageSource.includes("key: 'varianceAmountTotal'") &&
     pageSource.includes("const DEFAULT_SORT_BY = 'absoluteVarianceAmount'"),
-  '差额列点击排序必须发送有符号 varianceAmount，默认首屏才使用绝对差额排序',
+  '商品汇总差额合计列点击排序必须发送有符号 varianceAmountTotal，默认首屏才使用绝对差额排序',
 )
 
 assert(
   pageSource.includes('getStoreOrderImportPriceVariance(query)') &&
     pageSource.includes('onChange={handleTableChange}'),
-  '页面必须通过服务端接口加载并响应表格分页排序',
+  '主表必须通过服务端接口加载并响应表格分页排序',
+)
+
+assert(
+  pageSource.includes('getStoreOrderImportPriceVarianceDetails({') &&
+    pageSource.includes('productCode: selectedProduct.productCode') &&
+    pageSource.includes('<Modal') &&
+    pageSource.includes('onChange={handleDetailTableChange}'),
+  '点击商品订单明细必须打开弹窗并通过 details 接口服务端分页加载',
+)
+
+assert(
+  pageSource.includes('...filters') &&
+    pageSource.includes('supplierCode: trimText(values.supplierCode)'),
+  '主表筛选和弹窗明细必须共享当前筛选条件，包括国内供应商',
 )
 
 assert(
@@ -48,7 +82,7 @@ assert(
 assert(
   pageSource.includes('navigate(`/warehouse/store-order/detail/${row.orderGUID}`, {') &&
     pageSource.includes('state: { orderNo: row.orderNo }'),
-  '订单号列必须跳转到对应订货明细并传入订单号作为详情页初始标题',
+  '弹窗订单号列必须跳转到对应订货明细并传入订单号作为详情页初始标题',
 )
 
 assert(
@@ -85,7 +119,16 @@ assert(
   zhLocale.storeOrders.importPriceVariance.originalImportAmount === '原始金额' &&
     zhLocale.storeOrders.importPriceVariance.baselineImportAmount === '基准金额' &&
     zhLocale.storeOrders.importPriceVariance.varianceAmount === '差额',
-  '中文统计页核心列文案必须自然可读',
+  '中文统计页核心明细列文案必须自然可读',
+)
+
+assert(
+  zhLocale.storeOrders.importPriceVariance.domesticSupplier === '国内供应商' &&
+    zhLocale.storeOrders.importPriceVariance.productImage === '商品图片' &&
+    zhLocale.storeOrders.importPriceVariance.domesticPrice === '国内价格' &&
+    zhLocale.storeOrders.importPriceVariance.unitVolume === '体积' &&
+    zhLocale.storeOrders.importPriceVariance.packingQuantity === '装箱数',
+  '中文商品汇总列文案必须存在',
 )
 
 assert(

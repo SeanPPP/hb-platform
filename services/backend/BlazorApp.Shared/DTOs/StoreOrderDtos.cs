@@ -245,6 +245,7 @@ namespace BlazorApp.Shared.DTOs
     public string? OrderNo { get; set; }
     public DateTime? StartDate { get; set; }
     public DateTime? EndDate { get; set; }
+    public string? SupplierCode { get; set; }
     public string? VarianceDirection { get; set; }
     public int PageNumber { get; set; } = 1;
     public int PageSize { get; set; } = 20;
@@ -253,9 +254,42 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
-  /// 首次货柜进货价基准差异明细。
+  /// 首次货柜进货价基准差异商品汇总。
   /// </summary>
   public class StoreOrderImportPriceVarianceItemDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public string? ProductImage { get; set; }
+    public string? SupplierCode { get; set; }
+    public string? SupplierName { get; set; }
+    public decimal? DomesticPrice { get; set; }
+    public decimal? UnitVolume { get; set; }
+    public int? PackingQuantity { get; set; }
+    public decimal FirstContainerImportPrice { get; set; }
+    public decimal AllocQuantityTotal { get; set; }
+    public decimal OriginalImportAmountTotal { get; set; }
+    public decimal BaselineImportAmountTotal { get; set; }
+    public decimal VarianceAmountTotal { get; set; }
+    public int DetailCount { get; set; }
+    public string? FirstContainerCode { get; set; }
+    public string? FirstContainerNumber { get; set; }
+    public DateTime? FirstContainerDate { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异单商品明细查询参数。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDetailQueryDto : StoreOrderImportPriceVarianceQueryDto
+  {
+    public string? ProductCode { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异订单明细。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDetailItemDto
   {
     public string OrderGUID { get; set; } = string.Empty;
     public string DetailGUID { get; set; } = string.Empty;
@@ -294,6 +328,18 @@ namespace BlazorApp.Shared.DTOs
   public class StoreOrderImportPriceVarianceResultDto
   {
     public List<StoreOrderImportPriceVarianceItemDto> Items { get; set; } = new();
+    public int Total { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public StoreOrderImportPriceVarianceSummaryDto Summary { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异订单明细分页结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDetailResultDto
+  {
+    public List<StoreOrderImportPriceVarianceDetailItemDto> Items { get; set; } = new();
     public int Total { get; set; }
     public int PageNumber { get; set; } = 1;
     public int PageSize { get; set; } = 20;

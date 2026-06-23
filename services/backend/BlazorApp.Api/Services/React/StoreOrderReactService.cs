@@ -2878,28 +2878,16 @@ namespace BlazorApp.Api.Services.React
 
             try
             {
-                var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
-                var requestedStoreCodes = NormalizeStoreOrderImportPriceVarianceStoreCodes(query);
-                if (accessibleStoreCodes != null)
+                var (requestedStoreCodes, noAccessibleStores) =
+                    await ResolveStoreOrderImportPriceVarianceStoreCodesAsync(query);
+                if (noAccessibleStores)
                 {
-                    requestedStoreCodes = requestedStoreCodes.Any()
-                        ? requestedStoreCodes
-                            .Intersect(accessibleStoreCodes, StringComparer.OrdinalIgnoreCase)
-                            .ToList()
-                        : accessibleStoreCodes
-                            .Where(code => !string.IsNullOrWhiteSpace(code))
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .ToList();
-
-                    if (!requestedStoreCodes.Any())
-                    {
-                        return ApiResponse<StoreOrderImportPriceVarianceResultDto>.OK(
-                            CreateEmptyImportPriceVarianceResult(pageNumber, pageSize)
-                        );
-                    }
+                    return ApiResponse<StoreOrderImportPriceVarianceResultDto>.OK(
+                        CreateEmptyImportPriceVarianceResult(pageNumber, pageSize)
+                    );
                 }
 
-                var sql = BuildStoreOrderImportPriceVarianceSql(
+                var sql = BuildStoreOrderImportPriceVarianceSummarySql(
                     query,
                     requestedStoreCodes,
                     pageNumber,
@@ -2946,6 +2934,104 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>> GetImportPriceVarianceDetailsAsync(
+            StoreOrderImportPriceVarianceDetailQueryDto query
+        )
+        {
+            query ??= new StoreOrderImportPriceVarianceDetailQueryDto();
+            var pageNumber = Math.Max(1, query.PageNumber);
+            var pageSize = Math.Clamp(query.PageSize <= 0 ? 20 : query.PageSize, 1, 500);
+            var productCode = query.ProductCode?.Trim();
+
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                return ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>.OK(
+                    CreateEmptyImportPriceVarianceDetailResult(pageNumber, pageSize)
+                );
+            }
+
+            try
+            {
+                var (requestedStoreCodes, noAccessibleStores) =
+                    await ResolveStoreOrderImportPriceVarianceStoreCodesAsync(query);
+                if (noAccessibleStores)
+                {
+                    return ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>.OK(
+                        CreateEmptyImportPriceVarianceDetailResult(pageNumber, pageSize)
+                    );
+                }
+
+                var sql = BuildStoreOrderImportPriceVarianceDetailSql(
+                    query,
+                    productCode,
+                    requestedStoreCodes,
+                    pageNumber,
+                    pageSize,
+                    _db.CurrentConnectionConfig.DbType == DbType.Sqlite
+                );
+                var summaryRow = (
+                    await _db.Ado.SqlQueryAsync<StoreOrderImportPriceVarianceSummarySqlRow>(
+                        sql.SummarySql,
+                        sql.Parameters.ToArray()
+                    )
+                ).FirstOrDefault() ?? new StoreOrderImportPriceVarianceSummarySqlRow();
+                var pageItems = await _db.Ado.SqlQueryAsync<StoreOrderImportPriceVarianceDetailItemDto>(
+                    sql.PagedSql,
+                    sql.Parameters.ToArray()
+                );
+
+                return ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>.OK(
+                    new StoreOrderImportPriceVarianceDetailResultDto
+                    {
+                        Items = pageItems,
+                        Total = summaryRow.TotalRows,
+                        PageNumber = pageNumber,
+                        PageSize = pageSize,
+                        Summary = new StoreOrderImportPriceVarianceSummaryDto
+                        {
+                            TotalRows = summaryRow.TotalRows,
+                            OriginalImportAmountTotal = summaryRow.OriginalImportAmountTotal,
+                            BaselineImportAmountTotal = summaryRow.BaselineImportAmountTotal,
+                            VarianceAmountTotal = summaryRow.VarianceAmountTotal,
+                        },
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetImportPriceVarianceDetailsAsync failed");
+                return new ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                    Data = CreateEmptyImportPriceVarianceDetailResult(pageNumber, pageSize),
+                };
+            }
+        }
+
+        private async Task<(List<string> StoreCodes, bool NoAccessibleStores)> ResolveStoreOrderImportPriceVarianceStoreCodesAsync(
+            StoreOrderImportPriceVarianceQueryDto query
+        )
+        {
+            var accessibleStoreCodes = await GetAccessibleStoreCodesAsync();
+            var requestedStoreCodes = NormalizeStoreOrderImportPriceVarianceStoreCodes(query);
+            if (accessibleStoreCodes == null)
+            {
+                return (requestedStoreCodes, false);
+            }
+
+            requestedStoreCodes = requestedStoreCodes.Any()
+                ? requestedStoreCodes
+                    .Intersect(accessibleStoreCodes, StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : accessibleStoreCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+            return (requestedStoreCodes, !requestedStoreCodes.Any());
+        }
+
         private static List<string> NormalizeStoreOrderImportPriceVarianceStoreCodes(
             StoreOrderImportPriceVarianceQueryDto query
         )
@@ -2968,7 +3054,7 @@ namespace BlazorApp.Api.Services.React
             return storeCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
-        private static StoreOrderImportPriceVarianceSqlBuildResult BuildStoreOrderImportPriceVarianceSql(
+        private static StoreOrderImportPriceVarianceSqlBuildResult BuildStoreOrderImportPriceVarianceSummarySql(
             StoreOrderImportPriceVarianceQueryDto query,
             IReadOnlyList<string> requestedStoreCodes,
             int pageNumber,
@@ -2981,6 +3067,169 @@ namespace BlazorApp.Api.Services.React
                 new("@Offset", (pageNumber - 1) * pageSize),
                 new("@PageSize", pageSize),
             };
+            var orderDirection = query.SortDescending ? "DESC" : "ASC";
+            var orderExpression = ResolveStoreOrderImportPriceVarianceSummaryOrderExpression(query.SortBy);
+            var paginationSql = isSqlite
+                ? "LIMIT @PageSize OFFSET @Offset"
+                : "OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
+
+            var baseSql = BuildStoreOrderImportPriceVarianceBaseSql(
+                query,
+                requestedStoreCodes,
+                parameters,
+                isSqlite,
+                productCodeFilter: null
+            );
+
+            var groupedSql =
+                baseSql
+                + """
+,
+GroupedRows AS (
+    SELECT
+        ProductCode,
+        MAX(ItemNumber) AS ItemNumber,
+        MAX(ProductName) AS ProductName,
+        MAX(ProductImage) AS ProductImage,
+        MAX(SupplierCode) AS SupplierCode,
+        MAX(SupplierName) AS SupplierName,
+        MAX(DomesticPrice) AS DomesticPrice,
+        MAX(UnitVolume) AS UnitVolume,
+        MAX(PackingQuantity) AS PackingQuantity,
+        MAX(FirstContainerImportPrice) AS FirstContainerImportPrice,
+        CAST(COALESCE(SUM(AllocQuantity), 0) AS decimal(18, 2)) AS AllocQuantityTotal,
+        CAST(COALESCE(SUM(OriginalImportAmount), 0) AS decimal(18, 2)) AS OriginalImportAmountTotal,
+        CAST(COALESCE(SUM(BaselineImportAmount), 0) AS decimal(18, 2)) AS BaselineImportAmountTotal,
+        CAST(COALESCE(SUM(VarianceAmount), 0) AS decimal(18, 2)) AS VarianceAmountTotal,
+        CAST(COUNT(1) AS int) AS DetailCount,
+        MAX(FirstContainerCode) AS FirstContainerCode,
+        MAX(FirstContainerNumber) AS FirstContainerNumber,
+        MAX(FirstContainerDate) AS FirstContainerDate
+    FROM FinalRows
+    GROUP BY ProductCode
+)
+""";
+
+            return new StoreOrderImportPriceVarianceSqlBuildResult
+            {
+                Parameters = parameters,
+                SummarySql =
+                    groupedSql
+                    + """
+SELECT
+    CAST(COUNT(1) AS int) AS TotalRows,
+    CAST(COALESCE(SUM(OriginalImportAmountTotal), 0) AS decimal(18, 2)) AS OriginalImportAmountTotal,
+    CAST(COALESCE(SUM(BaselineImportAmountTotal), 0) AS decimal(18, 2)) AS BaselineImportAmountTotal,
+    CAST(COALESCE(SUM(VarianceAmountTotal), 0) AS decimal(18, 2)) AS VarianceAmountTotal
+FROM GroupedRows
+""",
+                PagedSql =
+                    groupedSql
+                    + $"""
+SELECT
+    ProductCode,
+    ItemNumber,
+    ProductName,
+    ProductImage,
+    SupplierCode,
+    SupplierName,
+    DomesticPrice,
+    UnitVolume,
+    PackingQuantity,
+    FirstContainerImportPrice,
+    AllocQuantityTotal,
+    OriginalImportAmountTotal,
+    BaselineImportAmountTotal,
+    VarianceAmountTotal,
+    DetailCount,
+    FirstContainerCode,
+    FirstContainerNumber,
+    FirstContainerDate
+FROM GroupedRows
+ORDER BY {orderExpression} {orderDirection}, ProductCode ASC
+{paginationSql}
+""",
+            };
+        }
+
+        private static StoreOrderImportPriceVarianceSqlBuildResult BuildStoreOrderImportPriceVarianceDetailSql(
+            StoreOrderImportPriceVarianceDetailQueryDto query,
+            string productCode,
+            IReadOnlyList<string> requestedStoreCodes,
+            int pageNumber,
+            int pageSize,
+            bool isSqlite
+        )
+        {
+            var parameters = new List<SugarParameter>
+            {
+                new("@Offset", (pageNumber - 1) * pageSize),
+                new("@PageSize", pageSize),
+            };
+            var orderDirection = query.SortDescending ? "DESC" : "ASC";
+            var orderExpression = ResolveStoreOrderImportPriceVarianceDetailOrderExpression(query.SortBy);
+            var paginationSql = isSqlite
+                ? "LIMIT @PageSize OFFSET @Offset"
+                : "OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
+
+            var baseSql = BuildStoreOrderImportPriceVarianceBaseSql(
+                query,
+                requestedStoreCodes,
+                parameters,
+                isSqlite,
+                productCodeFilter: productCode
+            );
+
+            return new StoreOrderImportPriceVarianceSqlBuildResult
+            {
+                Parameters = parameters,
+                SummarySql =
+                    baseSql
+                    + """
+SELECT
+    CAST(COUNT(1) AS int) AS TotalRows,
+    CAST(COALESCE(SUM(OriginalImportAmount), 0) AS decimal(18, 2)) AS OriginalImportAmountTotal,
+    CAST(COALESCE(SUM(BaselineImportAmount), 0) AS decimal(18, 2)) AS BaselineImportAmountTotal,
+    CAST(COALESCE(SUM(VarianceAmount), 0) AS decimal(18, 2)) AS VarianceAmountTotal
+FROM FinalRows
+""",
+                PagedSql =
+                    baseSql
+                    + $"""
+SELECT
+    OrderGUID,
+    DetailGUID,
+    OrderNo,
+    OrderDate,
+    StoreCode,
+    StoreName,
+    ProductCode,
+    ItemNumber,
+    ProductName,
+    OrderImportPrice,
+    FirstContainerImportPrice,
+    AllocQuantity,
+    OriginalImportAmount,
+    BaselineImportAmount,
+    VarianceAmount,
+    FirstContainerCode,
+    FirstContainerNumber,
+    FirstContainerDate
+FROM FinalRows
+ORDER BY {orderExpression} {orderDirection}, OrderDate DESC, OrderNo DESC, DetailGUID ASC
+{paginationSql}
+""",
+            };
+        }
+
+        private static string BuildStoreOrderImportPriceVarianceBaseSql(
+            StoreOrderImportPriceVarianceQueryDto query,
+            IReadOnlyList<string> requestedStoreCodes,
+            List<SugarParameter> parameters,
+            bool isSqlite,
+            string? productCodeFilter
+        )
+        {
             var rowFilters = new StringBuilder();
 
             if (requestedStoreCodes.Any())
@@ -2993,6 +3242,19 @@ namespace BlazorApp.Api.Services.React
                     parameters.Add(new SugarParameter(parameterName, requestedStoreCodes[index]));
                 }
                 rowFilters.AppendLine($"    AND o.StoreCode IN ({string.Join(", ", names)})");
+            }
+
+            if (!string.IsNullOrWhiteSpace(productCodeFilter))
+            {
+                parameters.Add(new SugarParameter("@ProductCode", productCodeFilter.Trim()));
+                rowFilters.AppendLine("    AND d.ProductCode = @ProductCode");
+            }
+
+            if (!string.IsNullOrWhiteSpace(query.SupplierCode))
+            {
+                parameters.Add(new SugarParameter("@SupplierCode", query.SupplierCode.Trim()));
+                // 国内供应商过滤只匹配 DomesticProduct.SupplierCode，不能误用 Product.LocalSupplierCode。
+                rowFilters.AppendLine("    AND dp.SupplierCode = @SupplierCode");
             }
 
             if (!string.IsNullOrWhiteSpace(query.OrderNo))
@@ -3024,7 +3286,11 @@ namespace BlazorApp.Api.Services.React
         OR s.StoreName LIKE @Keyword
         OR d.ProductCode LIKE @Keyword
         OR p.ItemNumber LIKE @Keyword
+        OR dp.HBProductNo LIKE @Keyword
         OR p.ProductName LIKE @Keyword
+        OR dp.ProductName LIKE @Keyword
+        OR dp.SupplierCode LIKE @Keyword
+        OR cs.SupplierName LIKE @Keyword
     )
 """
                 );
@@ -3036,16 +3302,11 @@ namespace BlazorApp.Api.Services.React
                 "decrease" => "WHERE VarianceAmount < 0",
                 _ => string.Empty,
             };
-            var orderDirection = query.SortDescending ? "DESC" : "ASC";
-            var orderExpression = ResolveStoreOrderImportPriceVarianceOrderExpression(query.SortBy);
-            var paginationSql = isSqlite
-                ? "LIMIT @PageSize OFFSET @Offset"
-                : "OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
             var containerNumberLengthFilter = isSqlite
                 ? "LENGTH(c.ContainerNumber) > 10"
                 : "LEN(c.ContainerNumber) > 10";
 
-            var baseSql =
+            return
                 """
 WITH FirstContainerRanked AS (
     SELECT
@@ -3094,8 +3355,15 @@ FilteredRows AS (
         o.StoreCode AS StoreCode,
         s.StoreName AS StoreName,
         d.ProductCode AS ProductCode,
-        p.ItemNumber AS ItemNumber,
-        p.ProductName AS ProductName,
+        -- 商品展示字段按确认来源取值；图片空字符串也要回退国内商品图片。
+        COALESCE(NULLIF(p.ItemNumber, ''), dp.HBProductNo) AS ItemNumber,
+        COALESCE(NULLIF(p.ProductName, ''), dp.ProductName) AS ProductName,
+        COALESCE(NULLIF(p.ProductImage, ''), dp.ProductImage) AS ProductImage,
+        dp.SupplierCode AS SupplierCode,
+        cs.SupplierName AS SupplierName,
+        CAST(COALESCE(wp.DomesticPrice, dp.DomesticPrice) AS decimal(18, 2)) AS DomesticPrice,
+        CAST(COALESCE(wp.Volume, dp.UnitVolume) AS decimal(18, 4)) AS UnitVolume,
+        COALESCE(wp.PackingQuantity, dp.PackingQuantity) AS PackingQuantity,
         CAST(d.ImportPrice AS decimal(18, 2)) AS OrderImportPrice,
         CAST(fc.FirstContainerImportPrice AS decimal(18, 2)) AS FirstContainerImportPrice,
         CAST(COALESCE(d.AllocQuantity, 0) AS decimal(18, 2)) AS AllocQuantity,
@@ -3116,6 +3384,15 @@ FilteredRows AS (
     LEFT JOIN [Product] p
         ON d.ProductCode = p.ProductCode
         AND (p.IsDeleted = 0 OR p.IsDeleted IS NULL)
+    LEFT JOIN [WarehouseProduct] wp
+        ON d.ProductCode = wp.ProductCode
+        AND (wp.IsDeleted = 0 OR wp.IsDeleted IS NULL)
+    LEFT JOIN [DomesticProduct] dp
+        ON d.ProductCode = dp.ProductCode
+        AND (dp.IsDeleted = 0 OR dp.IsDeleted IS NULL)
+    LEFT JOIN [ChinaSupplier] cs
+        ON dp.SupplierCode = cs.SupplierCode
+        AND (cs.IsDeleted = 0 OR cs.IsDeleted IS NULL)
     LEFT JOIN [Store] s
         ON (o.StoreCode = s.StoreCode OR o.StoreCode = s.StoreGUID)
         AND (s.IsDeleted = 0 OR s.IsDeleted IS NULL)
@@ -3141,50 +3418,31 @@ FinalRows AS (
 """
                 + (string.IsNullOrWhiteSpace(directionFilter) ? string.Empty : $"    {directionFilter}\n")
                 + ")\n";
+        }
 
-            return new StoreOrderImportPriceVarianceSqlBuildResult
+        private static string ResolveStoreOrderImportPriceVarianceSummaryOrderExpression(string? sortBy)
+        {
+            return (sortBy ?? "absoluteVarianceAmount").Trim().ToLowerInvariant() switch
             {
-                Parameters = parameters,
-                SummarySql =
-                    baseSql
-                    + """
-SELECT
-    CAST(COUNT(1) AS int) AS TotalRows,
-    CAST(COALESCE(SUM(OriginalImportAmount), 0) AS decimal(18, 2)) AS OriginalImportAmountTotal,
-    CAST(COALESCE(SUM(BaselineImportAmount), 0) AS decimal(18, 2)) AS BaselineImportAmountTotal,
-    CAST(COALESCE(SUM(VarianceAmount), 0) AS decimal(18, 2)) AS VarianceAmountTotal
-FROM FinalRows
-""",
-                PagedSql =
-                    baseSql
-                    + $"""
-SELECT
-    OrderGUID,
-    DetailGUID,
-    OrderNo,
-    OrderDate,
-    StoreCode,
-    StoreName,
-    ProductCode,
-    ItemNumber,
-    ProductName,
-    OrderImportPrice,
-    FirstContainerImportPrice,
-    AllocQuantity,
-    OriginalImportAmount,
-    BaselineImportAmount,
-    VarianceAmount,
-    FirstContainerCode,
-    FirstContainerNumber,
-    FirstContainerDate
-FROM FinalRows
-ORDER BY {orderExpression} {orderDirection}, OrderDate DESC, OrderNo DESC, DetailGUID ASC
-{paginationSql}
-""",
+                "productcode" => "ProductCode",
+                "itemnumber" => "ItemNumber",
+                "suppliercode" => "SupplierCode",
+                "suppliername" => "SupplierName",
+                "domesticprice" => "DomesticPrice",
+                "unitvolume" => "UnitVolume",
+                "packingquantity" => "PackingQuantity",
+                "firstcontainerimportprice" => "FirstContainerImportPrice",
+                "allocquantitytotal" => "AllocQuantityTotal",
+                "originalimportamounttotal" => "OriginalImportAmountTotal",
+                "baselineimportamounttotal" => "BaselineImportAmountTotal",
+                "varianceamounttotal" => "VarianceAmountTotal",
+                "detailcount" => "DetailCount",
+                "firstcontainerdate" => "FirstContainerDate",
+                _ => "ABS(VarianceAmountTotal)",
             };
         }
 
-        private static string ResolveStoreOrderImportPriceVarianceOrderExpression(string? sortBy)
+        private static string ResolveStoreOrderImportPriceVarianceDetailOrderExpression(string? sortBy)
         {
             return (sortBy ?? "absoluteVarianceAmount").Trim().ToLowerInvariant() switch
             {
@@ -3212,6 +3470,21 @@ ORDER BY {orderExpression} {orderDirection}, OrderDate DESC, OrderNo DESC, Detai
             return new StoreOrderImportPriceVarianceResultDto
             {
                 Items = new List<StoreOrderImportPriceVarianceItemDto>(),
+                Total = 0,
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                Summary = new StoreOrderImportPriceVarianceSummaryDto(),
+            };
+        }
+
+        private static StoreOrderImportPriceVarianceDetailResultDto CreateEmptyImportPriceVarianceDetailResult(
+            int pageNumber,
+            int pageSize
+        )
+        {
+            return new StoreOrderImportPriceVarianceDetailResultDto
+            {
+                Items = new List<StoreOrderImportPriceVarianceDetailItemDto>(),
                 Total = 0,
                 PageNumber = pageNumber,
                 PageSize = pageSize,

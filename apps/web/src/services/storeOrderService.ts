@@ -12,6 +12,9 @@ import type {
   CreateStoreOrderPayload,
   RemoveStoreOrderLinePayload,
   StoreOrderHqSyncPayload,
+  StoreOrderImportPriceVarianceDetailItem,
+  StoreOrderImportPriceVarianceDetailQuery,
+  StoreOrderImportPriceVarianceDetailResult,
   StoreOrderImportPriceVarianceItem,
   StoreOrderImportPriceVarianceQuery,
   StoreOrderImportPriceVarianceResult,
@@ -150,6 +153,28 @@ function normalizeStoreOrderImportPriceVarianceResult(
 ): StoreOrderImportPriceVarianceResult {
   const result = unwrapEnvelope<{
     items?: StoreOrderImportPriceVarianceItem[]
+    total?: number | string
+    page?: number | string
+    pageNumber?: number | string
+    pageSize?: number | string
+    summary?: unknown
+  }>(payload)
+
+  return {
+    items: Array.isArray(result?.items) ? result.items : [],
+    total: readFiniteNumber(result?.total),
+    page: readFiniteNumber(result?.page ?? result?.pageNumber, query.pageNumber || 1),
+    pageSize: readFiniteNumber(result?.pageSize, query.pageSize || 20),
+    summary: normalizeImportPriceVarianceSummary(result?.summary),
+  }
+}
+
+function normalizeStoreOrderImportPriceVarianceDetailResult(
+  payload: unknown,
+  query: StoreOrderImportPriceVarianceDetailQuery,
+): StoreOrderImportPriceVarianceDetailResult {
+  const result = unwrapEnvelope<{
+    items?: StoreOrderImportPriceVarianceDetailItem[]
     total?: number | string
     page?: number | string
     pageNumber?: number | string
@@ -414,6 +439,15 @@ export async function getStoreOrderImportPriceVariance(query: StoreOrderImportPr
   })
 
   return normalizeStoreOrderImportPriceVarianceResult(response, query)
+}
+
+export async function getStoreOrderImportPriceVarianceDetails(query: StoreOrderImportPriceVarianceDetailQuery) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/import-price-variance/details`, {
+    method: 'POST',
+    data: query,
+  })
+
+  return normalizeStoreOrderImportPriceVarianceDetailResult(response, query)
 }
 
 export async function getUsedStoreOrderBranches() {
