@@ -630,6 +630,11 @@ namespace BlazorApp.Shared.DTOs
     public string ProductCode { get; set; } = string.Empty;
     public decimal? Quantity { get; set; }
     public decimal? ImportPrice { get; set; }
+
+    /// <summary>
+    /// 是否把本次进口价同步到商品主档和分店进货价；为空/false 时只保存订单明细。
+    /// </summary>
+    public bool? SyncImportPrice { get; set; }
   }
 
   /// <summary>
@@ -710,6 +715,11 @@ namespace BlazorApp.Shared.DTOs
     public decimal Quantity { get; set; }
 
     public decimal? ImportPrice { get; set; }
+
+    /// <summary>
+    /// 是否把本次进口价同步到商品主档和分店进货价；为空/false 时只保存订单明细。
+    /// </summary>
+    public bool? SyncImportPrice { get; set; }
   }
 
   /// <summary>

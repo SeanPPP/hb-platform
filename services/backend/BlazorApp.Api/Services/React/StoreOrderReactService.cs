@@ -4438,14 +4438,33 @@ namespace BlazorApp.Api.Services.React
                         Message = "Order not found or not editable",
                     };
 
-                await AddOrUpdateDetailAsync(
-                    order,
-                    request.ProductCode,
-                    request.Quantity,
-                    request.ImportPrice,
-                    isUpdate: true
-                );
-                await UpdateOrderTotalAsync(order.OrderGUID);
+                _db.Ado.BeginTran();
+                try
+                {
+                    await AddOrUpdateDetailAsync(
+                        order,
+                        request.ProductCode,
+                        request.Quantity,
+                        request.ImportPrice,
+                        isUpdate: true
+                    );
+
+                    if (request.SyncImportPrice == true && request.ImportPrice.HasValue)
+                    {
+                        await SyncOrderImportPriceToProductTablesAsync(
+                            request.ProductCode,
+                            request.ImportPrice.Value
+                        );
+                    }
+
+                    await UpdateOrderTotalAsync(order.OrderGUID);
+                    _db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _db.Ado.RollbackTran();
+                    throw;
+                }
 
                 return new ApiResponse<bool> { Success = true, Data = true };
             }
@@ -4520,22 +4539,39 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                foreach (var item in request.Items)
+                _db.Ado.BeginTran();
+                try
                 {
-                    await AddOrUpdateDetailAsync(
-                        order,
-                        item.ProductCode,
-                        item.Quantity ?? 0, // 如果未传Quantity，在AddOrUpdateDetailAsync内部需要处理（或者不允许单独更新价格而不传数量？）
-                        // 注意：AddOrUpdateDetailAsync 目前设计是接收 Quantity。如果是只更新价格，需要重构。
-                        // 重构 AddOrUpdateDetailAsync 以支持可选参数。
-                        item.ImportPrice,
-                        isUpdate: true,
-                        isBatch: true, // 标记为批量操作
-                        originalQuantity: item.Quantity // 传递原始数量，如果是null则表示不更新数量
-                    );
+                    foreach (var item in request.Items)
+                    {
+                        await AddOrUpdateDetailAsync(
+                            order,
+                            item.ProductCode,
+                            item.Quantity ?? 0,
+                            item.ImportPrice,
+                            isUpdate: true,
+                            isBatch: true,
+                            originalQuantity: item.Quantity
+                        );
+
+                        if (item.SyncImportPrice == true && item.ImportPrice.HasValue)
+                        {
+                            await SyncOrderImportPriceToProductTablesAsync(
+                                item.ProductCode,
+                                item.ImportPrice.Value
+                            );
+                        }
+                    }
+
+                    await UpdateOrderTotalAsync(order.OrderGUID);
+                    _db.Ado.CommitTran();
+                }
+                catch
+                {
+                    _db.Ado.RollbackTran();
+                    throw;
                 }
 
-                await UpdateOrderTotalAsync(order.OrderGUID);
                 return new ApiResponse<bool> { Success = true, Data = true };
             }
             catch (Exception ex)
@@ -5498,6 +5534,146 @@ namespace BlazorApp.Api.Services.React
                     StoreOrderPasteActions.Skip,
                     StringComparison.OrdinalIgnoreCase
                 );
+        }
+
+        private async Task SyncOrderImportPriceToProductTablesAsync(
+            string productCode,
+            decimal importPrice
+        )
+        {
+            var normalizedProductCode = productCode.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedProductCode) || importPrice <= 0)
+            {
+                return;
+            }
+
+            var now = DateTime.Now;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            var product = await _db.Queryable<Product>()
+                .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                .FirstAsync();
+            if (product == null)
+            {
+                throw new Exception($"Product {normalizedProductCode} not found");
+            }
+
+            product.PurchasePrice = importPrice;
+            product.UpdatedAt = now;
+            product.UpdatedBy = currentUser;
+            await _db.Updateable(product).ExecuteCommandAsync();
+
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                .FirstAsync();
+            if (warehouseProduct == null)
+            {
+                warehouseProduct = new WarehouseProduct
+                {
+                    ProductCode = normalizedProductCode,
+                    OEMPrice = 0,
+                    ImportPrice = importPrice,
+                    MinOrderQuantity = 1,
+                    IsActive = product.IsActive,
+                    CreatedAt = now,
+                    CreatedBy = currentUser,
+                    UpdatedAt = now,
+                    UpdatedBy = currentUser,
+                    IsDeleted = false,
+                };
+                await _db.Insertable(warehouseProduct).ExecuteCommandAsync();
+            }
+            else
+            {
+                warehouseProduct.ImportPrice = importPrice;
+                warehouseProduct.UpdatedAt = now;
+                warehouseProduct.UpdatedBy = currentUser;
+                await _db.Updateable(warehouseProduct).ExecuteCommandAsync();
+            }
+
+            await UpsertActiveStoreRetailPurchasePricesAsync(
+                product,
+                normalizedProductCode,
+                importPrice,
+                now,
+                currentUser
+            );
+        }
+
+        private async Task UpsertActiveStoreRetailPurchasePricesAsync(
+            Product product,
+            string productCode,
+            decimal importPrice,
+            DateTime now,
+            string currentUser
+        )
+        {
+            var activeStoreCodes = (await _db.Queryable<Store>()
+                    .Where(store => store.IsActive && !store.IsDeleted)
+                    .Select(store => store.StoreCode)
+                    .ToListAsync())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (activeStoreCodes.Count == 0)
+            {
+                return;
+            }
+
+            var existingPrices = await _db.Queryable<StoreRetailPrice>()
+                .Where(price =>
+                    price.ProductCode == productCode
+                    && price.StoreCode != null
+                    && activeStoreCodes.Contains(price.StoreCode)
+                    && !price.IsDeleted
+                )
+                .ToListAsync();
+            var existingStoreCodes = existingPrices
+                .Select(price => price.StoreCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var price in existingPrices)
+            {
+                // 订货单同步只覆盖进货价，分店零售价保持人工/策略设置不变。
+                price.PurchasePrice = importPrice;
+                price.UpdatedAt = now;
+                price.UpdatedBy = currentUser;
+            }
+
+            if (existingPrices.Count > 0)
+            {
+                await _db.Updateable(existingPrices).ExecuteCommandAsync();
+            }
+
+            var pricesToInsert = activeStoreCodes
+                .Where(storeCode => !existingStoreCodes.Contains(storeCode))
+                .Select(storeCode => new StoreRetailPrice
+                {
+                    UUID = UuidHelper.GenerateUuid7(),
+                    StoreCode = storeCode,
+                    ProductCode = productCode,
+                    StoreProductCode = storeCode + productCode,
+                    SupplierCode = product.LocalSupplierCode,
+                    PurchasePrice = importPrice,
+                    StoreRetailPriceValue = product.RetailPrice,
+                    DiscountRate = null,
+                    IsActive = product.IsActive,
+                    IsAutoPricing = product.IsAutoPricing,
+                    IsSpecialProduct = product.IsSpecialProduct,
+                    CreatedAt = now,
+                    CreatedBy = currentUser,
+                    UpdatedAt = now,
+                    UpdatedBy = currentUser,
+                    IsDeleted = false,
+                })
+                .ToList();
+
+            if (pricesToInsert.Count > 0)
+            {
+                await _db.Insertable(pricesToInsert).ExecuteCommandAsync();
+            }
         }
 
         private async Task AddOrUpdateDetailAsync(

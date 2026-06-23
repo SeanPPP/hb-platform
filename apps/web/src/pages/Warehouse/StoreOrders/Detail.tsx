@@ -166,6 +166,7 @@ interface EditedLinePayload {
   productCode: string
   quantity?: number
   importPrice?: number
+  syncImportPrice?: boolean
   importPriceChanged: boolean
 }
 
@@ -1154,15 +1155,13 @@ export default function StoreOrderDetailPage() {
         return payloads
       }
 
-      if (importPriceChanged && !syncImportPrice && !allocQuantityChanged) {
-        return payloads
-      }
-
       payloads.push({
         detailGUID: line.detailGUID,
         productCode: line.productCode,
         quantity: allocQuantityChanged ? edited.allocQuantity : undefined,
-        importPrice: importPriceChanged && syncImportPrice ? edited.importPrice : undefined,
+        // 进口价本身始终保存到订单明细；syncImportPrice 只控制是否同步商品/分店主档。
+        importPrice: importPriceChanged ? edited.importPrice : undefined,
+        syncImportPrice: importPriceChanged ? syncImportPrice : undefined,
         importPriceChanged,
       })
 
@@ -1423,16 +1422,14 @@ export default function StoreOrderDetailPage() {
       return
     }
 
+    const importPriceChanged = hasImportPriceChanged(line)
     let syncImportPrice = true
-    if (hasImportPriceChanged(line)) {
+    if (importPriceChanged) {
       const syncChoice = await confirmImportPriceSync()
       if (syncChoice === null) {
         return
       }
       syncImportPrice = syncChoice
-      if (!syncImportPrice && (edited?.allocQuantity === undefined || Number(edited.allocQuantity) === Number(line.allocQuantity ?? 0))) {
-        return
-      }
     }
 
     setLineActionLoading(true)
@@ -1441,7 +1438,9 @@ export default function StoreOrderDetailPage() {
         orderGUID: detail.orderGUID,
         productCode: line.productCode,
         allocQuantity,
-        importPrice: syncImportPrice ? importPrice : undefined,
+        // 取消勾选只取消主档同步，不取消订单明细价格保存。
+        importPrice: importPriceChanged ? importPrice : undefined,
+        syncImportPrice: importPriceChanged ? syncImportPrice : undefined,
       })
       message.success(t('storeOrders.detail.lineSaved'))
       await loadDetail(false)
@@ -1480,16 +1479,8 @@ export default function StoreOrderDetailPage() {
         return
       }
       syncImportPrice = syncChoice
-      if (!syncImportPrice) {
-        const nextPayloads = getEditedLinePayloads(syncImportPrice)
-        if (!nextPayloads.length) {
-          return
-        }
-        payloads.splice(0, payloads.length, ...nextPayloads)
-      }
-      if (!syncImportPrice && !payloads.length) {
-        return
-      }
+      const nextPayloads = getEditedLinePayloads(syncImportPrice)
+      payloads.splice(0, payloads.length, ...nextPayloads)
     }
 
     setLineActionLoading(true)
@@ -1500,6 +1491,7 @@ export default function StoreOrderDetailPage() {
           productCode: item.productCode,
           quantity: item.quantity,
           importPrice: item.importPrice,
+          syncImportPrice: item.syncImportPrice,
         })),
       })
       message.success(t('storeOrders.detail.editedLinesSaved', { count: payloads.length }))
@@ -1870,7 +1862,9 @@ export default function StoreOrderDetailPage() {
   }
 
   const focusDetailInput = (detailGUID: string, field: DetailEditableField) => {
-    detailInputRefs.current[getDetailInputKey(detailGUID, field)]?.focus?.()
+    const input = detailInputRefs.current[getDetailInputKey(detailGUID, field)]
+    // 方向键切入单元格后全选文本，方便直接覆盖价格或发货数。
+    window.setTimeout(() => input?.focus?.({ cursor: 'all' }), 0)
   }
 
   const handleDetailInputKeyDown = (
@@ -2172,6 +2166,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
+          controls={false}
           disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}

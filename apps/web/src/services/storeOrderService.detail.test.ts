@@ -1,4 +1,5 @@
 import {
+  batchUpdateStoreOrderLines,
   batchMapStoreOrderStoreCode,
   createStoreOrderPasteReplaceJob,
   getUnmatchedStoreOrderGroups,
@@ -795,6 +796,7 @@ try {
     productCode: 'product-1',
     allocQuantity: 7,
     importPrice: 1.25,
+    syncImportPrice: false,
   })
 
   assertEqual(capturedUrl, '/api/react/v1/store-order/line/update', '单行保存接口路径应保持不变')
@@ -805,9 +807,63 @@ try {
       orderGUID: 'order-1',
       productCode: 'product-1',
       importPrice: 1.25,
+      syncImportPrice: false,
       quantity: 7,
     },
-    '单行保存应在 service 层把前端 allocQuantity 显式映射为后端 quantity 字段',
+    '单行保存应映射发货数字段，并保留进口价同步开关',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: null,
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  await batchUpdateStoreOrderLines({
+    orderGUID: 'order-1',
+    items: [
+      {
+        productCode: 'product-1',
+        importPrice: 2.5,
+        syncImportPrice: true,
+      },
+    ],
+  })
+
+  assertEqual(capturedUrl, '/api/react/v1/store-order/line/batch-update', '批量保存接口路径应保持不变')
+  assertEqual(capturedMethod, 'POST', '批量保存接口应继续使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      items: [
+        {
+          productCode: 'product-1',
+          importPrice: 2.5,
+          syncImportPrice: true,
+        },
+      ],
+    },
+    '批量保存应保留只改进口价和同步开关的 payload',
   )
 } finally {
   globalThis.fetch = originalFetch

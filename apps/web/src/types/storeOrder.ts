@@ -410,6 +410,7 @@ export interface UpdateStoreOrderLinePayload {
   productCode: string
   allocQuantity: number
   importPrice?: number
+  syncImportPrice?: boolean
 }
 
 export interface RemoveStoreOrderLinePayload {
@@ -423,6 +424,7 @@ export interface BatchUpdateStoreOrderLinePayload {
     productCode: string
     quantity?: number
     importPrice?: number
+    syncImportPrice?: boolean
   }>
 }
 
