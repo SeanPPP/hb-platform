@@ -99,6 +99,58 @@ export interface StoreOrderListResult {
   pageSize: number
 }
 
+export type StoreOrderImportPriceVarianceDirection = 'all' | 'increase' | 'decrease'
+
+export interface StoreOrderImportPriceVarianceQuery {
+  keyword?: string
+  storeCode?: string
+  storeCodes?: string[]
+  orderNo?: string
+  startDate?: string
+  endDate?: string
+  varianceDirection?: StoreOrderImportPriceVarianceDirection
+  pageNumber: number
+  pageSize: number
+  sortBy?: string
+  sortDescending?: boolean
+}
+
+export interface StoreOrderImportPriceVarianceItem {
+  orderGUID: string
+  detailGUID: string
+  orderNo?: string
+  orderDate?: string
+  storeCode?: string
+  storeName?: string
+  productCode?: string
+  itemNumber?: string
+  productName?: string
+  orderImportPrice: number
+  firstContainerImportPrice: number
+  allocQuantity: number
+  originalImportAmount: number
+  baselineImportAmount: number
+  varianceAmount: number
+  firstContainerCode?: string
+  firstContainerNumber?: string
+  firstContainerDate?: string
+}
+
+export interface StoreOrderImportPriceVarianceSummary {
+  totalRows: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  varianceAmountTotal: number
+}
+
+export interface StoreOrderImportPriceVarianceResult {
+  items: StoreOrderImportPriceVarianceItem[]
+  total: number
+  page: number
+  pageSize: number
+  summary: StoreOrderImportPriceVarianceSummary
+}
+
 export interface CreateStoreOrderPayload {
   storeCode: string
   remarks?: string

@@ -89,6 +89,7 @@ namespace BlazorApp.Api.Services
                 Children = new List<NavigationMenuDto>
                 {
                     new() { Path = "/warehouse/store-orders", TitleKey = "menu.storeOrders", Icon = "ReconciliationOutlined", Permission = Permissions.Warehouse.ManageOrders },
+                    new() { Path = "/warehouse/store-order-import-price-variance", TitleKey = "menu.storeOrderImportPriceVariance", Icon = "BarChartOutlined", Permission = Permissions.Warehouse.ManageOrders },
                     new() { Path = "/warehouse/containers",   TitleKey = "menu.containers", Icon = "InboxOutlined",          Permission = Permissions.Container.View },
                     new() { Path = "/warehouse/products",     TitleKey = "menu.warehouseProducts", Icon = "AppstoreOutlined",   Permission = Permissions.Warehouse.ManageProducts },
                     new() { Path = "/warehouse/categories",   TitleKey = "menu.categories",        Icon = "TagsOutlined",       Permission = Permissions.Warehouse.ManageCategories },
@@ -350,7 +351,7 @@ namespace BlazorApp.Api.Services
                 return new List<NavigationMenuDto>();
             }
 
-            // 仓库员工桌面端只暴露分店订货列表，避免旧 Warehouse.Manage 权限把其它仓库/收银菜单带出来。
+            // 仓库员工桌面端只暴露分店订货相关入口，避免旧 Warehouse.Manage 权限把其它仓库/收银菜单带出来。
             return new List<NavigationMenuDto>
             {
                 new()
@@ -365,6 +366,13 @@ namespace BlazorApp.Api.Services
                             Path = "/warehouse/store-orders",
                             TitleKey = "menu.storeOrders",
                             Icon = "ReconciliationOutlined",
+                            Permission = Permissions.Warehouse.ManageOrders,
+                        },
+                        new()
+                        {
+                            Path = "/warehouse/store-order-import-price-variance",
+                            TitleKey = "menu.storeOrderImportPriceVariance",
+                            Icon = "BarChartOutlined",
                             Permission = Permissions.Warehouse.ManageOrders,
                         },
                     },

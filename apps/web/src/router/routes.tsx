@@ -76,6 +76,7 @@ import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
 import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
 import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
 import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
+import StoreOrderImportPriceVariancePage from '../pages/Warehouse/StoreOrderImportPriceVariance'
 import type { AccessControl } from '../types/auth'
 import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
@@ -322,6 +323,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageWarehouseOrders',
         },
         element: <StoreOrdersPage />,
+      },
+      {
+        path: '/warehouse/store-order-import-price-variance',
+        meta: {
+          title: 'menu.storeOrderImportPriceVariance',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouseOrders',
+        },
+        element: <StoreOrderImportPriceVariancePage />,
       },
       {
         path: '/warehouse/store-order/detail/:id',
@@ -720,7 +731,7 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
     return []
   }
 
-  // 仓库员工侧边栏只保留分店订货列表，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
+  // 仓库员工侧边栏只保留分店订货相关入口，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
   return [
     {
       key: '/warehouse',
@@ -731,6 +742,11 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
           key: '/warehouse/store-orders',
           icon: iconMap.ReconciliationOutlined,
           label: i18n.t('menu.storeOrders'),
+        },
+        {
+          key: '/warehouse/store-order-import-price-variance',
+          icon: iconMap.BarChartOutlined,
+          label: i18n.t('menu.storeOrderImportPriceVariance'),
         },
       ],
     },

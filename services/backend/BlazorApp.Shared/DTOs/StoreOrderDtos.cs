@@ -235,6 +235,72 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 首次货柜进货价基准差异查询参数。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceQueryDto
+  {
+    public string? Keyword { get; set; }
+    public string? StoreCode { get; set; }
+    public List<string>? StoreCodes { get; set; }
+    public string? OrderNo { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? VarianceDirection { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public string? SortBy { get; set; }
+    public bool SortDescending { get; set; } = true;
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异明细。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceItemDto
+  {
+    public string OrderGUID { get; set; } = string.Empty;
+    public string DetailGUID { get; set; } = string.Empty;
+    public string? OrderNo { get; set; }
+    public DateTime? OrderDate { get; set; }
+    public string? StoreCode { get; set; }
+    public string? StoreName { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public decimal OrderImportPrice { get; set; }
+    public decimal FirstContainerImportPrice { get; set; }
+    public decimal AllocQuantity { get; set; }
+    public decimal OriginalImportAmount { get; set; }
+    public decimal BaselineImportAmount { get; set; }
+    public decimal VarianceAmount { get; set; }
+    public string? FirstContainerCode { get; set; }
+    public string? FirstContainerNumber { get; set; }
+    public DateTime? FirstContainerDate { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异汇总。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceSummaryDto
+  {
+    public int TotalRows { get; set; }
+    public decimal OriginalImportAmountTotal { get; set; }
+    public decimal BaselineImportAmountTotal { get; set; }
+    public decimal VarianceAmountTotal { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异分页结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceResultDto
+  {
+    public List<StoreOrderImportPriceVarianceItemDto> Items { get; set; } = new();
+    public int Total { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public StoreOrderImportPriceVarianceSummaryDto Summary { get; set; } = new();
+  }
+
+  /// <summary>
   /// 订货明细交互页 DTO，保留订单头和整单汇总，只分页返回当前页明细。
   /// </summary>
   public class StoreOrderDetailDto : StoreOrderCartDto

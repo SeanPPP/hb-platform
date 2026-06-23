@@ -707,8 +707,8 @@ assertEqual(
 
 assertEqual(
   warehouseStaffMenu?.children?.map((node) => node.path).join(','),
-  '/warehouse/store-orders',
-  'WarehouseStaff desktop preview should only show store order list under warehouse',
+  '/warehouse/store-orders,/warehouse/store-order-import-price-variance',
+  'WarehouseStaff desktop preview should only show store order entries under warehouse',
 )
 
 assertEqual(
