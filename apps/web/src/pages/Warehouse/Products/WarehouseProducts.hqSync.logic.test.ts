@@ -1031,6 +1031,49 @@ async function main() {
   })
   if (columnFilterStateFailure) failures.push(columnFilterStateFailure)
 
+  const topCategoryTreeFilterFailure = await runTest('仓库商品页顶部分类筛选应使用可折叠分类树', () => {
+    const topFilterSection = extractSection(
+      pageSource,
+      '<Input value={searchText}',
+      '<Select value={productType}',
+    )
+
+    assert(
+      pageSource.includes('TreeSelect') &&
+        pageSource.includes('buildFilterCategoryTreeOptions') &&
+        pageSource.includes('const [categoryFilterExpandedKeys, setCategoryFilterExpandedKeys] = useState<string[]>([])') &&
+        pageSource.includes("const [categoryFilterSearchText, setCategoryFilterSearchText] = useState('')") &&
+        pageSource.includes('const hasCategoryFilterSearchText = categoryFilterSearchText.trim().length > 0;') &&
+        pageSource.includes('const categoryFilterTreeOptions = useMemo(() => buildFilterCategoryTreeOptions(categories, t, i18n.language)'),
+      '顶部分类筛选应引入 TreeSelect，并使用树形分类 options、搜索状态与独立展开状态',
+    )
+    assert(
+      pageSource.includes('const firstLevelExpandedKeys = collectCategoryExpandedKeys(tree, 1);') &&
+        pageSource.includes('setCategoryExpandedKeys(firstLevelExpandedKeys);') &&
+        pageSource.includes('setCategoryFilterExpandedKeys(firstLevelExpandedKeys);'),
+      '加载分类树后应同时初始化批量分类树和顶部筛选树的一级展开状态',
+    )
+    assert(
+      topFilterSection.includes('<TreeSelect') &&
+        topFilterSection.includes('treeData={categoryFilterTreeOptions}') &&
+        topFilterSection.includes('searchValue={categoryFilterSearchText}') &&
+        topFilterSection.includes('onSearch={setCategoryFilterSearchText}') &&
+        topFilterSection.includes('treeExpandedKeys={hasCategoryFilterSearchText ? undefined : categoryFilterExpandedKeys}') &&
+        topFilterSection.includes('if (!hasCategoryFilterSearchText)') &&
+        topFilterSection.includes('treeNodeFilterProp="searchText"'),
+      '顶部分类控件应绑定 treeData、搜索字段，并在搜索时让 TreeSelect 自动展开命中路径',
+    )
+    assert(
+      topFilterSection.includes('allowClear') &&
+        topFilterSection.includes('setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY);') &&
+        topFilterSection.includes("setCategoryFilterSearchText('');") &&
+        pageSource.includes('setCategoryFilterValue(UNCATEGORIZED_PRODUCTS_FILTER_KEY);') &&
+        pageSource.includes('uncategorizedOnly: true,'),
+      '顶部分类树清空后应回到全部商品并清空搜索词，未分类快捷按钮仍应查询 UncategorizedOnly',
+    )
+  })
+  if (topCategoryTreeFilterFailure) failures.push(topCategoryTreeFilterFailure)
+
   const tableChangeColumnFilterFailure = await runTest('表格 onChange 应读取列头 filters 并重查第一页', () => {
     const tableSection = extractSection(
       pageSource,

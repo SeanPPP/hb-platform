@@ -2,7 +2,7 @@
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, notification, } from 'antd';
+import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
@@ -28,7 +28,7 @@ import CategoryTreePicker from './CategoryTreePicker';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
-import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, } from '../Categories/categoryProductFilters';
+import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, buildFilterCategoryTreeOptions, } from '../Categories/categoryProductFilters';
 import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTokens, getSingleFilterValue, normalizeTableFilters, parseComparableFilterTokens, parseTextFilterTokens, resolveCategoryFilterValueFromTableFilters, setFilterValues, type ComparableFilterMode, type TextFilterMode, type WarehouseProductColumnFilters, } from './columnFilters';
 interface ProductFormValues {
     supplierCode?: string;
@@ -586,6 +586,8 @@ export default function WarehouseProductsPage() {
     const [categories, setCategories] = useState<WarehouseCategoryNode[]>([]);
     const [categoryLoading, setCategoryLoading] = useState(false);
     const [categoryFilterValue, setCategoryFilterValue] = useState<string>(ALL_PRODUCTS_FILTER_KEY);
+    const [categoryFilterExpandedKeys, setCategoryFilterExpandedKeys] = useState<string[]>([]);
+    const [categoryFilterSearchText, setCategoryFilterSearchText] = useState('');
     const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({});
     const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([]);
     const [batchCategoryOpen, setBatchCategoryOpen] = useState(false);
@@ -637,6 +639,8 @@ export default function WarehouseProductsPage() {
     const { access } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const categoryFilterOptions = useMemo(() => buildFilterCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t]);
+    const categoryFilterTreeOptions = useMemo(() => buildFilterCategoryTreeOptions(categories, t, i18n.language), [categories, i18n.language, t]);
+    const hasCategoryFilterSearchText = categoryFilterSearchText.trim().length > 0;
     const domesticSupplierFilterOptions = useMemo(() => buildSupplierOptions(suppliers).map((item) => ({
         text: String(item.label),
         value: String(item.value),
@@ -979,7 +983,9 @@ export default function WarehouseProductsPage() {
             getCategoryTree()
                 .then((tree) => {
                 setCategories(tree);
-                setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1));
+                const firstLevelExpandedKeys = collectCategoryExpandedKeys(tree, 1);
+                setCategoryExpandedKeys(firstLevelExpandedKeys);
+                setCategoryFilterExpandedKeys(firstLevelExpandedKeys);
             })
                 .catch((error) => {
                 console.error(error);
@@ -1744,7 +1750,32 @@ export default function WarehouseProductsPage() {
             setSupplierCode(value);
             setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode', value ? [value] : undefined));
         }} options={buildSupplierOptions(suppliers)} placeholder={t('warehouse.allDomesticSuppliers')} style={{ width: 240 }} showSearch filterOption={filterSupplierOption} allowClear/>
-          <Select value={categoryFilterValue} onChange={(value) => setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY)} options={categoryFilterOptions} placeholder={t('warehouse.categories.category', '分类')} style={{ width: 220 }} showSearch optionFilterProp="label" loading={categoryLoading} allowClear/>
+          {/* 顶部筛选使用真实分类树，避免多级分类继续依赖 -- 前缀伪缩进。 */}
+          <TreeSelect
+            value={categoryFilterValue}
+            onChange={(value) => {
+              setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY);
+              setCategoryFilterSearchText('');
+            }}
+            treeData={categoryFilterTreeOptions}
+            placeholder={t('warehouse.categories.category', '分类')}
+            style={{ width: 220 }}
+            showSearch
+            searchValue={categoryFilterSearchText}
+            onSearch={setCategoryFilterSearchText}
+            treeNodeFilterProp="searchText"
+            treeExpandedKeys={hasCategoryFilterSearchText ? undefined : categoryFilterExpandedKeys}
+            onTreeExpand={(keys) => {
+              // 搜索时交给 TreeSelect 自动展开命中路径；非搜索时保留用户手动展开状态。
+              if (!hasCategoryFilterSearchText) {
+                setCategoryFilterExpandedKeys(keys.map(String));
+              }
+            }}
+            popupMatchSelectWidth={320}
+            listHeight={360}
+            allowClear
+            notFoundContent={categoryLoading ? t('common.loading', '加载中') : t('warehouse.categories.noCategoryData', '暂无分类数据')}
+          />
           <Select value={productType} onChange={(value) => {
             setProductType(value);
             setColumnFilters((current) => setFilterValues(current, 'productType', value === undefined ? undefined : [String(value)]));
