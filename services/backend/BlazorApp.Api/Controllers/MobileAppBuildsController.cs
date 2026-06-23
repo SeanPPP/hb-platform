@@ -4,6 +4,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -14,6 +15,7 @@ namespace BlazorApp.Api.Controllers
     [Authorize]
     public class MobileAppBuildsController : ControllerBase
     {
+        private const int MaxEasWebhookBodyBytes = 256 * 1024;
         private readonly IMobileAppBuildService _service;
         private readonly EasWebhookOptions _options;
         private readonly ILogger<MobileAppBuildsController> _logger;
@@ -31,10 +33,35 @@ namespace BlazorApp.Api.Controllers
 
         [HttpPost("eas-webhook")]
         [AllowAnonymous]
+        [RequestSizeLimit(MaxEasWebhookBodyBytes)]
         public async Task<IActionResult> EasWebhook()
         {
+            if (Request.ContentLength is > MaxEasWebhookBodyBytes)
+            {
+                _logger.LogWarning(
+                    "EAS Webhook 请求体超过限制，ContentLength: {ContentLength}",
+                    Request.ContentLength
+                );
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    ApiResponse<object>.Error("请求体过大", "WEBHOOK_BODY_TOO_LARGE")
+                );
+            }
+
             using var memory = new MemoryStream();
             await Request.Body.CopyToAsync(memory);
+            if (memory.Length > MaxEasWebhookBodyBytes)
+            {
+                _logger.LogWarning(
+                    "EAS Webhook 读取后发现请求体超过限制，Length: {Length}",
+                    memory.Length
+                );
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    ApiResponse<object>.Error("请求体过大", "WEBHOOK_BODY_TOO_LARGE")
+                );
+            }
+
             var bodyBytes = memory.ToArray();
 
             if (!IsValidSignature(bodyBytes, Request.Headers["expo-signature"].FirstOrDefault()))
@@ -84,6 +111,7 @@ namespace BlazorApp.Api.Controllers
                     AppVersion = result.Data.AppVersion,
                     AppBuildVersion = result.Data.AppBuildVersion,
                     ArtifactUrl = result.Data.ArtifactUrl,
+                    CosArtifactUrl = result.Data.CosArtifactUrl,
                 };
 
             return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(latest));
@@ -112,6 +140,34 @@ namespace BlazorApp.Api.Controllers
             }
 
             // 每次点击都重新解析最新未过期地址，避免旧 OTA 弹窗里持有的 EAS artifact URL 过期。
+            return Redirect(result.Data.ArtifactUrl);
+        }
+
+        [HttpGet("android/{easBuildId}/download")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AndroidBuildDownload(
+            string easBuildId,
+            [FromQuery] string profile = "production"
+        )
+        {
+            var normalizedProfile = NormalizePublicProfile(profile);
+            if (normalizedProfile == null || string.IsNullOrWhiteSpace(easBuildId))
+            {
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            var result = await _service.GetByBuildIdAsync(easBuildId, normalizedProfile);
+            if (!result.Success)
+            {
+                return BadRequest(ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details));
+            }
+
+            if (string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl))
+            {
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            // 新安装器绑定到检查时拿到的 buildId，避免最新 APK 后续变化时下载到另一个构建。
             return Redirect(result.Data.ArtifactUrl);
         }
 

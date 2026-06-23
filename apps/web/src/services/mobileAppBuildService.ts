@@ -30,6 +30,18 @@ function getBoolean(raw: Record<string, unknown>, key: string) {
   return false
 }
 
+function getNumber(raw: Record<string, unknown>, key: string) {
+  const value = raw[key]
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
 export function normalizeMobileAppBuild(raw: Record<string, unknown>): MobileAppBuild {
   return {
     id: getString(raw, 'id') ?? '',
@@ -44,6 +56,14 @@ export function normalizeMobileAppBuild(raw: Record<string, unknown>): MobileApp
     appVersion: getString(raw, 'appVersion'),
     appBuildVersion: getString(raw, 'appBuildVersion'),
     artifactUrl: getString(raw, 'artifactUrl'),
+    originalArtifactUrl: getString(raw, 'originalArtifactUrl'),
+    cosArtifactUrl: getString(raw, 'cosArtifactUrl'),
+    cosObjectKey: getString(raw, 'cosObjectKey'),
+    cosMirroredAt: getString(raw, 'cosMirroredAt'),
+    cosMirrorError: getString(raw, 'cosMirrorError'),
+    cosMirrorStatus: getString(raw, 'cosMirrorStatus'),
+    cosMirrorAttempts: getNumber(raw, 'cosMirrorAttempts'),
+    cosMirrorLastAttemptAtUtc: getString(raw, 'cosMirrorLastAttemptAtUtc'),
     buildDetailsPageUrl: getString(raw, 'buildDetailsPageUrl'),
     gitCommitHash: getString(raw, 'gitCommitHash'),
     gitCommitMessage: getString(raw, 'gitCommitMessage'),

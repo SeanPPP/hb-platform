@@ -41,6 +41,22 @@ namespace BlazorApp.Shared.DTOs
 
         public string ArtifactUrl { get; set; } = string.Empty;
 
+        public string? OriginalArtifactUrl { get; set; }
+
+        public string? CosArtifactUrl { get; set; }
+
+        public string? CosObjectKey { get; set; }
+
+        public DateTime? CosMirroredAt { get; set; }
+
+        public string? CosMirrorError { get; set; }
+
+        public string CosMirrorStatus { get; set; } = "pending";
+
+        public int CosMirrorAttempts { get; set; }
+
+        public DateTime? CosMirrorLastAttemptAtUtc { get; set; }
+
         public string? BuildDetailsPageUrl { get; set; }
 
         public string? GitCommitHash { get; set; }
@@ -67,6 +83,8 @@ namespace BlazorApp.Shared.DTOs
         public string? AppBuildVersion { get; set; }
 
         public string ArtifactUrl { get; set; } = string.Empty;
+
+        public string? CosArtifactUrl { get; set; }
     }
 
     public class MobileAppBuildQueryDto

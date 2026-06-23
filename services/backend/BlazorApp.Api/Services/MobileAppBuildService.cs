@@ -7,11 +7,18 @@ using SqlSugar;
 
 namespace BlazorApp.Api.Services
 {
-    public class MobileAppBuildService : IMobileAppBuildService
+    public class MobileAppBuildService : IMobileAppBuildService, IMobileAppBuildMirrorQueue
     {
         private readonly ISqlSugarClient _db;
         private readonly EasWebhookOptions _options;
         private readonly ILogger<MobileAppBuildService> _logger;
+        private const string UnsafeArtifactMirrorErrorPrefix = "UNSAFE_ARTIFACT:";
+        public const string CosMirrorStatusPending = "pending";
+        public const string CosMirrorStatusRunning = "running";
+        public const string CosMirrorStatusSucceeded = "succeeded";
+        public const string CosMirrorStatusFailed = "failed";
+        public const string CosMirrorStatusUnsafe = "unsafe";
+        private const int CosMirrorErrorMaxLength = 1000;
 
         public MobileAppBuildService(
             ISqlSugarClient db,
@@ -69,9 +76,12 @@ namespace BlazorApp.Api.Services
                 .FirstAsync(x => x.EasBuildId == payload.EasBuildId);
             var action = existing == null ? "saved" : "updated";
             var entity = existing ?? new MobileAppBuild { Id = Guid.NewGuid() };
+            var previousArtifactUrl = existing?.ArtifactUrl;
 
             // EAS 会重试同一个 buildId；这里用幂等更新保留单条最新产物记录。
             ApplyPayload(entity, payload, now);
+            var artifactChanged = existing != null && HasArtifactUrlChanged(previousArtifactUrl, entity.ArtifactUrl);
+            QueueCosMirrorIfNeeded(entity, existing == null, artifactChanged);
 
             if (existing == null)
             {
@@ -94,8 +104,19 @@ namespace BlazorApp.Api.Services
                         throw;
                     }
 
-                    entity.Id = concurrentExisting.Id;
-                    await _db.Updateable(entity).ExecuteCommandAsync();
+                    // 并发插入冲突后必须以数据库现有行为基准，避免新建实体的空 COS 字段覆盖已镜像结果。
+                    var concurrentPreviousArtifactUrl = concurrentExisting.ArtifactUrl;
+                    ApplyPayload(concurrentExisting, payload, now);
+                    var concurrentArtifactChanged = HasArtifactUrlChanged(
+                        concurrentPreviousArtifactUrl,
+                        concurrentExisting.ArtifactUrl
+                    );
+                    QueueCosMirrorIfNeeded(concurrentExisting, false, concurrentArtifactChanged);
+
+                    await _db.Updateable(concurrentExisting).ExecuteCommandAsync();
+                    existing = concurrentExisting;
+                    entity = concurrentExisting;
+                    artifactChanged = concurrentArtifactChanged;
                     action = "updated";
                 }
             }
@@ -117,17 +138,58 @@ namespace BlazorApp.Api.Services
         public async Task<ApiResponse<MobileAppBuildDto?>> GetLatestAsync(string profile)
         {
             var normalizedProfile = NormalizeProfile(profile);
+            var now = DateTime.UtcNow;
             var entity = await _db
                 .Queryable<MobileAppBuild>()
                 .Where(x =>
                     x.Platform == "android"
                     && x.Status == "finished"
                     && x.BuildProfile == normalizedProfile
-                    && !string.IsNullOrEmpty(x.ArtifactUrl)
-                    && (x.ExpirationDate == null || x.ExpirationDate > DateTime.UtcNow)
+                    && (x.CosMirrorStatus == null || x.CosMirrorStatus != CosMirrorStatusUnsafe)
+                    && (
+                        !string.IsNullOrEmpty(x.CosArtifactUrl)
+                        || (
+                            !string.IsNullOrEmpty(x.ArtifactUrl)
+                            && (x.ExpirationDate == null || x.ExpirationDate > now)
+                        )
+                    )
                 )
                 .OrderByDescending(x => x.CompletedAt)
                 .OrderByDescending(x => x.ReceivedAt)
+                .FirstAsync();
+
+            return ApiResponse<MobileAppBuildDto?>.OK(entity == null ? null : MapToDto(entity));
+        }
+
+        public async Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(
+            string easBuildId,
+            string profile
+        )
+        {
+            var normalizedBuildId = NormalizeRequiredText(easBuildId);
+            if (string.IsNullOrWhiteSpace(normalizedBuildId))
+            {
+                return ApiResponse<MobileAppBuildDto?>.OK(null);
+            }
+
+            var normalizedProfile = NormalizeProfile(profile);
+            var now = DateTime.UtcNow;
+            var entity = await _db
+                .Queryable<MobileAppBuild>()
+                .Where(x =>
+                    x.EasBuildId == normalizedBuildId
+                    && x.Platform == "android"
+                    && x.Status == "finished"
+                    && x.BuildProfile == normalizedProfile
+                    && (x.CosMirrorStatus == null || x.CosMirrorStatus != CosMirrorStatusUnsafe)
+                    && (
+                        !string.IsNullOrEmpty(x.CosArtifactUrl)
+                        || (
+                            !string.IsNullOrEmpty(x.ArtifactUrl)
+                            && (x.ExpirationDate == null || x.ExpirationDate > now)
+                        )
+                    )
+                )
                 .FirstAsync();
 
             return ApiResponse<MobileAppBuildDto?>.OK(entity == null ? null : MapToDto(entity));
@@ -312,6 +374,8 @@ namespace BlazorApp.Api.Services
                 return "missing_artifact_url";
             if (!IsHttpsUrl(payload.ArtifactUrl))
                 return "invalid_artifact_url";
+            if (!IsAllowedArtifactUrl(payload.ArtifactUrl))
+                return "artifact_url_not_allowed";
 
             return null;
         }
@@ -431,6 +495,175 @@ namespace BlazorApp.Api.Services
             return false;
         }
 
+        public async Task<MobileAppBuild?> ClaimNextCosMirrorJobAsync(
+            DateTime now,
+            int maxAttempts,
+            TimeSpan staleRunningAfter
+        )
+        {
+            var staleCutoff = now.Subtract(staleRunningAfter);
+            var job = await _db
+                .Queryable<MobileAppBuild>()
+                .Where(x =>
+                    x.Platform == "android"
+                    && x.Status == "finished"
+                    && !string.IsNullOrEmpty(x.ArtifactUrl)
+                    && string.IsNullOrEmpty(x.CosArtifactUrl)
+                    && (
+                        x.CosMirrorStatus == null
+                        || x.CosMirrorStatus == CosMirrorStatusPending
+                        || (x.CosMirrorStatus == CosMirrorStatusFailed && x.CosMirrorAttempts < maxAttempts)
+                        || (
+                            x.CosMirrorStatus == CosMirrorStatusRunning
+                            && x.CosMirrorLastAttemptAtUtc != null
+                            && x.CosMirrorLastAttemptAtUtc < staleCutoff
+                        )
+                    )
+                )
+                .OrderByDescending(x => x.CompletedAt)
+                .OrderByDescending(x => x.ReceivedAt)
+                .FirstAsync();
+
+            if (job == null)
+            {
+                return null;
+            }
+
+            var attempts = Math.Max(0, job.CosMirrorAttempts) + 1;
+            var affected = await _db
+                .Updateable<MobileAppBuild>()
+                .SetColumns(x => new MobileAppBuild
+                {
+                    CosMirrorStatus = CosMirrorStatusRunning,
+                    CosMirrorAttempts = attempts,
+                    CosMirrorLastAttemptAtUtc = now,
+                    CosMirrorError = null,
+                })
+                // 当前服务每轮只认领一条；这里仍按 artifact 和空 COS 地址保护，避免旧任务覆盖新产物。
+                .Where(x =>
+                    x.Id == job.Id
+                    && x.ArtifactUrl == job.ArtifactUrl
+                    && string.IsNullOrEmpty(x.CosArtifactUrl)
+                    && (
+                        x.CosMirrorStatus == null
+                        || x.CosMirrorStatus == CosMirrorStatusPending
+                        || (x.CosMirrorStatus == CosMirrorStatusFailed && x.CosMirrorAttempts < maxAttempts)
+                        || (
+                            x.CosMirrorStatus == CosMirrorStatusRunning
+                            && x.CosMirrorLastAttemptAtUtc != null
+                            && x.CosMirrorLastAttemptAtUtc < staleCutoff
+                        )
+                    )
+                )
+                .ExecuteCommandAsync();
+
+            if (affected <= 0)
+            {
+                return null;
+            }
+
+            job.CosMirrorStatus = CosMirrorStatusRunning;
+            job.CosMirrorAttempts = attempts;
+            job.CosMirrorLastAttemptAtUtc = now;
+            job.CosMirrorError = null;
+            return job;
+        }
+
+        public async Task CompleteCosMirrorSuccessAsync(
+            MobileAppBuild entity,
+            MobileAppBuildArtifactMirrorResult mirror
+        )
+        {
+            entity.CosArtifactUrl = NormalizeOptionalText(mirror.ArtifactUrl);
+            entity.CosObjectKey = NormalizeOptionalText(mirror.ObjectKey);
+            entity.CosMirroredAt = mirror.MirroredAt;
+            entity.CosMirrorStatus = CosMirrorStatusSucceeded;
+            entity.CosMirrorError = null;
+
+            await _db
+                .Updateable<MobileAppBuild>()
+                .SetColumns(x => new MobileAppBuild
+                {
+                    CosArtifactUrl = entity.CosArtifactUrl,
+                    CosObjectKey = entity.CosObjectKey,
+                    CosMirroredAt = entity.CosMirroredAt,
+                    CosMirrorStatus = CosMirrorStatusSucceeded,
+                    CosMirrorError = null,
+                })
+                // ArtifactUrl 变化时旧镜像任务不允许回写当前行。
+                .Where(x => x.Id == entity.Id && x.ArtifactUrl == entity.ArtifactUrl)
+                .ExecuteCommandAsync();
+        }
+
+        public async Task CompleteCosMirrorFailureAsync(MobileAppBuild entity, Exception exception)
+        {
+            var status = exception is MobileAppBuildArtifactMirrorException { IsDownloadUnsafe: true }
+                ? CosMirrorStatusUnsafe
+                : CosMirrorStatusFailed;
+            var error = TruncateForColumn(FormatCosMirrorError(exception), CosMirrorErrorMaxLength);
+            entity.CosMirrorStatus = status;
+            entity.CosMirrorError = error;
+
+            await _db
+                .Updateable<MobileAppBuild>()
+                .SetColumns(x => new MobileAppBuild
+                {
+                    CosMirrorStatus = status,
+                    CosMirrorError = error,
+                })
+                // 失败结果只写入尚未镜像成功的行，避免并发失败覆盖另一个请求的成功 COS 地址。
+                .Where(
+                    x =>
+                        x.Id == entity.Id
+                        && x.ArtifactUrl == entity.ArtifactUrl
+                        && string.IsNullOrEmpty(x.CosArtifactUrl)
+                )
+                .ExecuteCommandAsync();
+        }
+
+        private static bool HasArtifactUrlChanged(string? previousArtifactUrl, string currentArtifactUrl)
+        {
+            return !string.Equals(
+                NormalizeOptionalText(previousArtifactUrl),
+                NormalizeOptionalText(currentArtifactUrl),
+                StringComparison.Ordinal
+            );
+        }
+
+        private static void QueueCosMirrorIfNeeded(
+            MobileAppBuild entity,
+            bool isNewBuild,
+            bool artifactChanged
+        )
+        {
+            if (isNewBuild || artifactChanged)
+            {
+                ResetCosMirrorQueue(entity);
+                return;
+            }
+
+            // 旧数据可能没有状态字段；只在空状态时补成 pending，不覆盖 failed/unsafe 的审计结果。
+            if (
+                string.IsNullOrWhiteSpace(entity.CosArtifactUrl)
+                && string.IsNullOrWhiteSpace(entity.CosMirrorStatus)
+            )
+            {
+                entity.CosMirrorStatus = CosMirrorStatusPending;
+            }
+        }
+
+        private static void ResetCosMirrorQueue(MobileAppBuild entity)
+        {
+            // 原始 EAS artifact 变化时，旧 COS 地址不能继续代表当前构建产物，并重新进入后台镜像队列。
+            entity.CosArtifactUrl = null;
+            entity.CosObjectKey = null;
+            entity.CosMirroredAt = null;
+            entity.CosMirrorError = null;
+            entity.CosMirrorStatus = CosMirrorStatusPending;
+            entity.CosMirrorAttempts = 0;
+            entity.CosMirrorLastAttemptAtUtc = null;
+        }
+
         private static void ApplyPayload(MobileAppBuild entity, EasBuildPayload payload, DateTime now)
         {
             entity.EasBuildId = payload.EasBuildId;
@@ -472,7 +705,17 @@ namespace BlazorApp.Api.Services
                 RuntimeVersion = entity.RuntimeVersion,
                 AppVersion = entity.AppVersion,
                 AppBuildVersion = entity.AppBuildVersion,
-                ArtifactUrl = entity.ArtifactUrl,
+                ArtifactUrl = ResolveDownloadUrl(entity),
+                OriginalArtifactUrl = entity.ArtifactUrl,
+                CosArtifactUrl = entity.CosArtifactUrl,
+                CosObjectKey = entity.CosObjectKey,
+                CosMirroredAt = entity.CosMirroredAt,
+                CosMirrorError = entity.CosMirrorError,
+                CosMirrorStatus = string.IsNullOrWhiteSpace(entity.CosMirrorStatus)
+                    ? CosMirrorStatusPending
+                    : entity.CosMirrorStatus,
+                CosMirrorAttempts = entity.CosMirrorAttempts,
+                CosMirrorLastAttemptAtUtc = entity.CosMirrorLastAttemptAtUtc,
                 BuildDetailsPageUrl = entity.BuildDetailsPageUrl,
                 GitCommitHash = entity.GitCommitHash,
                 GitCommitMessage = entity.GitCommitMessage,
@@ -481,6 +724,31 @@ namespace BlazorApp.Api.Services
                 ExpirationDate = entity.ExpirationDate,
                 ReceivedAt = entity.ReceivedAt,
             };
+        }
+
+        private static string ResolveDownloadUrl(MobileAppBuild entity)
+        {
+            return NormalizeOptionalText(entity.CosArtifactUrl) ?? entity.ArtifactUrl;
+        }
+
+        private static string FormatCosMirrorError(Exception ex)
+        {
+            var prefix = ex is MobileAppBuildArtifactMirrorException { IsDownloadUnsafe: true }
+                ? UnsafeArtifactMirrorErrorPrefix
+                : $"{ex.GetType().Name}:";
+            return $"{prefix} {ex.Message}";
+        }
+
+        private static string TruncateForColumn(string value, int maxLength)
+        {
+            return value.Length <= maxLength ? value : value[..maxLength];
+        }
+
+        private static bool IsAllowedArtifactUrl(string url)
+        {
+            return Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                && string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                && TencentCosMobileAppBuildArtifactMirror.IsAllowedArtifactHost(uri.Host);
         }
 
         private static void ApplyOtaUpdate(

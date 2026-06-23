@@ -91,7 +91,11 @@
     <Compile Include="ApplicationLogServiceTests.cs" />
     <Compile Include="ApplicationLogQueueTests.cs" />
     <Compile Include="ApplicationLogBackgroundServiceTests.cs" />
+    <Compile Include="TencentCloudUploadServiceTests.cs" />
+    <Compile Include="TencentCosMobileAppBuildArtifactMirrorTests.cs" />
+    <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />
     <Compile Include="MobileAppBuildServiceTests.cs" />
+    <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />

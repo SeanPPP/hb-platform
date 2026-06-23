@@ -7,6 +7,8 @@ import {
   buildAppDownloadOtaQuery,
   normalizeAppDownloadProfile,
   normalizeRuntimeVersionFilter,
+  resolveAppDownloadMirrorStatus,
+  resolveAppDownloadSource,
   resolveAppDownloadContentState,
 } from './logic'
 
@@ -94,6 +96,68 @@ assertEqual(
   'ready',
   '存在历史记录时应展示可用态',
 )
+assertEqual(
+  resolveAppDownloadMirrorStatus({
+    artifactUrl: 'https://cos.example/hb.apk',
+    originalArtifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    cosArtifactUrl: 'https://cos.example/hb.apk',
+    cosMirrorStatus: 'succeeded',
+  }),
+  'succeeded',
+  '存在 COS 地址时镜像状态应为已镜像',
+)
+assertEqual(
+  resolveAppDownloadMirrorStatus({
+    artifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    originalArtifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    cosMirrorStatus: 'running',
+  }),
+  'running',
+  '后端 running 状态应直接展示为镜像中',
+)
+assertEqual(
+  resolveAppDownloadMirrorStatus({
+    artifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    originalArtifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    cosMirrorStatus: 'unsafe',
+    cosMirrorError: 'UNSAFE_ARTIFACT: bad content',
+  }),
+  'unsafe',
+  '后端 unsafe 状态应展示为不安全',
+)
+assertEqual(
+  resolveAppDownloadMirrorStatus({
+    artifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    originalArtifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    cosMirrorError: 'timeout',
+  }),
+  'failed',
+  '存在镜像错误时镜像状态应为失败',
+)
+assertEqual(
+  resolveAppDownloadMirrorStatus({
+    artifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    originalArtifactUrl: 'https://expo.dev/artifacts/hb.apk',
+  }),
+  'pending',
+  '有原始下载地址但没有 COS 结果时应展示等待镜像',
+)
+assertEqual(
+  resolveAppDownloadSource({
+    artifactUrl: 'https://cos.example/hb.apk',
+    cosArtifactUrl: 'https://cos.example/hb.apk',
+  }),
+  'cos',
+  '后端 artifactUrl 指向 COS 地址时下载源应显示 COS 镜像',
+)
+assertEqual(
+  resolveAppDownloadSource({
+    artifactUrl: 'https://expo.dev/artifacts/hb.apk',
+    cosArtifactUrl: 'https://cos.example/hb.apk',
+  }),
+  'eas',
+  '后端 artifactUrl 未指向 COS 地址时下载源应显示 EAS 回退',
+)
 
 assertEqual(
   zhLocale.system.appDownloads.loadFailedDescription,
@@ -119,6 +183,26 @@ assertEqual(
   zhLocale.system.appDownloads.runtime,
   'Runtime',
   '中文 Runtime 描述项文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.downloadSources.cos,
+  'COS 镜像',
+  '中文 COS 下载源文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.mirrorStatuses.failed,
+  '镜像失败',
+  '中文镜像失败状态文案应存在',
+)
+assertEqual(
+  enLocale.system.appDownloads.mirrorStatuses.pending,
+  'Pending Mirror',
+  '英文等待镜像状态文案应存在',
+)
+assertEqual(
+  zhLocale.system.appDownloads.mirrorStatuses.unsafe,
+  '不安全',
+  '中文不安全状态文案应存在',
 )
 assertEqual(
   zhLocale.system.appDownloads.ota.rollbackLatestOnly,

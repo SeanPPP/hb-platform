@@ -8,6 +8,8 @@ namespace BlazorApp.Api.Interfaces
 
         Task<ApiResponse<MobileAppBuildDto?>> GetLatestAsync(string profile);
 
+        Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(string easBuildId, string profile);
+
         Task<ApiResponse<PagedResult<MobileAppBuildDto>>> GetHistoryAsync(
             MobileAppBuildQueryDto query
         );

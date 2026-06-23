@@ -4,6 +4,8 @@ import { i18n } from "@/shared/i18n/i18n";
 import {
   checkAndDownloadNativeAppUpdate,
   checkLegacyNativeAppUpdate,
+  getBuildBoundNativeAppDownloadUrl,
+  getStableNativeAppDownloadUrl,
   type NativeAppBuildInfo,
 } from "./native-app-update";
 
@@ -33,20 +35,6 @@ async function getLegacyCurrentBuildVersion() {
   const configVersionCode = Constants.expoConfig?.android?.versionCode;
   const value = nativeVersionCode ?? configVersionCode;
   return value == null ? null : String(value);
-}
-
-function buildStableApkDownloadUrl(baseURL: string | undefined, profile: string) {
-  if (!baseURL?.trim()) {
-    return null;
-  }
-
-  try {
-    const base = baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
-    const query = new URLSearchParams({ profile });
-    return new URL(`mobile-app-builds/android-latest/download?${query.toString()}`, base).toString();
-  } catch {
-    return null;
-  }
 }
 
 export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
@@ -172,7 +160,7 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
           platform: Platform.OS,
           getCurrentBuildVersion: () => currentBuildVersion,
           getBuildProfile: () => buildProfile,
-          getDownloadUrl: (build) => buildStableApkDownloadUrl(apiClient.defaults.baseURL, build.buildProfile || buildProfile),
+          getDownloadUrl: (build) => getStableNativeAppDownloadUrl(apiClient.defaults.baseURL, build.buildProfile || buildProfile),
         });
 
         if (result.status !== "available" || promptedBuildIdRef.current === result.build.easBuildId) {
@@ -195,6 +183,7 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         getCurrentBuildVersion: () => Application.nativeBuildVersion,
         getBuildProfile: () => buildProfile,
         getDownloadDirectory: () => FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? null,
+        getDownloadUrl: (build) => getBuildBoundNativeAppDownloadUrl(apiClient.defaults.baseURL, build, buildProfile),
         getFileInfo: FileSystem.getInfoAsync,
         downloadFile: FileSystem.downloadAsync,
         deleteFile: (fileUri) => FileSystem.deleteAsync(fileUri, { idempotent: true }),

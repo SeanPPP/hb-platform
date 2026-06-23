@@ -44,7 +44,10 @@ import {
   buildAppDownloadOtaQuery,
   normalizeAppDownloadProfile,
   normalizeRuntimeVersionFilter,
+  resolveAppDownloadMirrorStatus,
+  resolveAppDownloadSource,
   resolveAppDownloadContentState,
+  type AppDownloadMirrorStatus,
   type AppDownloadProfile,
 } from './logic'
 
@@ -96,6 +99,23 @@ function getStatusColor(status?: string | null) {
 
 function getOtaTypeColor(record: MobileAppOtaUpdate) {
   return record.isRollback ? 'orange' : 'blue'
+}
+
+function getMirrorStatusColor(status: AppDownloadMirrorStatus) {
+  switch (status) {
+    case 'succeeded':
+      return 'green'
+    case 'running':
+      return 'processing'
+    case 'failed':
+      return 'orange'
+    case 'unsafe':
+      return 'red'
+    case 'pending':
+      return 'default'
+    default:
+      return 'default'
+  }
 }
 
 export default function AppDownloadsPage() {
@@ -337,6 +357,41 @@ export default function AppDownloadsPage() {
         dataIndex: 'expirationDate',
         width: 190,
         render: (value: string | null | undefined) => formatDateTime(value),
+      },
+      {
+        title: t('system.appDownloads.downloadSource'),
+        key: 'downloadSource',
+        width: 130,
+        render: (_value, record) => (
+          <Tag>{t(`system.appDownloads.downloadSources.${resolveAppDownloadSource(record)}`)}</Tag>
+        ),
+      },
+      {
+        title: t('system.appDownloads.mirrorStatus'),
+        key: 'mirrorStatus',
+        width: 140,
+        render: (_value, record) => {
+          const mirrorStatus = resolveAppDownloadMirrorStatus(record)
+          return (
+            <Tag color={getMirrorStatusColor(mirrorStatus)}>
+              {t(`system.appDownloads.mirrorStatuses.${mirrorStatus}`)}
+            </Tag>
+          )
+        },
+      },
+      {
+        title: t('system.appDownloads.mirrorError'),
+        dataIndex: 'cosMirrorError',
+        width: 220,
+        render: (value: string | null | undefined) => (
+          <Typography.Text
+            type={value ? 'danger' : undefined}
+            ellipsis={{ tooltip: value || undefined }}
+            style={{ maxWidth: 200 }}
+          >
+            {value || '--'}
+          </Typography.Text>
+        ),
       },
       {
         title: t('system.appDownloads.commit'),
@@ -619,6 +674,28 @@ export default function AppDownloadsPage() {
               <Descriptions.Item label={t('system.appDownloads.expirationDate')}>
                 {formatDateTime(latest.expirationDate)}
               </Descriptions.Item>
+              <Descriptions.Item label={t('system.appDownloads.downloadSource')}>
+                <Tag>{t(`system.appDownloads.downloadSources.${resolveAppDownloadSource(latest)}`)}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.appDownloads.mirrorStatus')}>
+                {(() => {
+                  const mirrorStatus = resolveAppDownloadMirrorStatus(latest)
+                  return (
+                    <Tag color={getMirrorStatusColor(mirrorStatus)}>
+                      {t(`system.appDownloads.mirrorStatuses.${mirrorStatus}`)}
+                    </Tag>
+                  )
+                })()}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('system.appDownloads.mirrorError')} span={2}>
+                <Typography.Text
+                  type={latest.cosMirrorError ? 'danger' : undefined}
+                  ellipsis={{ tooltip: latest.cosMirrorError || undefined }}
+                  style={{ maxWidth: 480 }}
+                >
+                  {latest.cosMirrorError || '--'}
+                </Typography.Text>
+              </Descriptions.Item>
               <Descriptions.Item label={t('system.appDownloads.commit')}>
                 {formatShortCommit(latest.gitCommitHash)}
               </Descriptions.Item>
@@ -635,7 +712,7 @@ export default function AppDownloadsPage() {
           loading={buildLoading}
           columns={columns}
           dataSource={items}
-          scroll={{ x: 1240 }}
+          scroll={{ x: 1730 }}
           locale={{
             emptyText: (
               <Empty

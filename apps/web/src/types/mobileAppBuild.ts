@@ -11,6 +11,14 @@ export interface MobileAppBuild {
   appVersion?: string | null
   appBuildVersion?: string | null
   artifactUrl?: string | null
+  originalArtifactUrl?: string | null
+  cosArtifactUrl?: string | null
+  cosObjectKey?: string | null
+  cosMirroredAt?: string | null
+  cosMirrorError?: string | null
+  cosMirrorStatus?: string | null
+  cosMirrorAttempts?: number | null
+  cosMirrorLastAttemptAtUtc?: string | null
   buildDetailsPageUrl?: string | null
   gitCommitHash?: string | null
   gitCommitMessage?: string | null

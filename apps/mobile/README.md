@@ -4,7 +4,7 @@
 
 ## EAS APK Webhook 与 App 下载二维码
 
-后台的“App 下载”页面会展示当前 Android APK 下载二维码。EAS Webhook 用于在每次 Expo EAS Android APK 构建完成后，把新的 APK 下载地址同步给后端，再由后端的“App 下载”接口提供给 Web 页面生成二维码。
+后台的“App 下载”页面会展示当前 Android APK 下载二维码。EAS Webhook 用于在每次 Expo EAS Android APK 构建完成后，把新的 APK 下载地址写入后端，并标记为 COS 镜像待处理；后台服务再异步下载 EAS artifact、上传到腾讯云 COS，并把镜像状态展示到 Web 页面。
 
 ### 创建 EAS Webhook
 
@@ -26,6 +26,7 @@ eas webhook:create --event BUILD --url https://<backend-domain>/api/mobile-app-b
 
 - 新 APK 使用 `runtimeVersion=1.0.2`，并启用 App 内后台下载和打开安装器。
 - 旧 APK 过渡提醒使用 `runtimeVersion=1.0.1`，并关闭原生安装器，只用系统浏览器打开后端稳定下载入口，由后端实时跳转到最新未过期 APK。
+- 新安装器会绑定检查时拿到的 EAS buildId，下载 `/api/mobile-app-builds/android/{easBuildId}/download?profile=<profile>`，避免 latest 后续变化时下载到另一个 APK；旧 runtime 继续使用 `/api/mobile-app-builds/android-latest/download?profile=<profile>`。
 
 在 `apps/mobile` 目录下发布旧 APK 过渡 OTA：
 
@@ -89,11 +90,11 @@ EasWebhook__AcceptedProfiles__0=preview
 EasWebhook__AcceptedProfiles__1=production
 ```
 
-数据库需先执行 `services/backend/BlazorApp.Api/Data/Migrations/20260615_CreateMobileAppBuild.sql`，确认 `MobileAppBuild` 表和两个 `IX_MobileAppBuild_*` 索引存在后，后台 App 下载页才会从空态或最新构建记录开始正常展示。
+数据库需先执行 `services/backend/BlazorApp.Api/Data/Migrations/20260615_CreateMobileAppBuild.sql`，确认 `MobileAppBuild` 表和两个 `IX_MobileAppBuild_*` 索引存在后，后台 App 下载页才会从空态或最新构建记录开始正常展示。旧库升级需再执行 `services/backend/BlazorApp.Api/Data/Migrations/20260623_AddMobileAppBuildCosMirrorFields.sql`；服务启动时也会补齐缺失的 COS 镜像字段。
 
 ### 本地 mock 验证
 
-本地验证的目标是确认后端可以完成签名校验、解析 EAS BUILD payload、保存最新 APK 地址，并通过最新版本接口读回。
+本地验证的目标是确认后端可以完成签名校验、解析 EAS BUILD payload、保存最新 APK 地址、排队 COS 镜像，并通过最新版本接口读回。
 
 1. 准备一份 Expo `BUILD` 事件 payload，至少包含后端解析所需的账号、项目、profile、平台、构建状态和 APK 下载地址字段。字段值使用测试占位内容，不要使用真实生产下载地址。
 2. 使用与后端 `EasWebhook:Secret` 相同的 `<secret>` 对原始 JSON body 计算 HMAC-SHA1，生成请求头：
@@ -120,5 +121,5 @@ curl "http://localhost:5002/api/mobile-app-builds/latest"
 验证通过的判断标准：
 
 - webhook POST 返回成功状态。
-- `/api/mobile-app-builds/latest` 返回的 profile、项目和 APK 下载地址与 mock payload 一致。
+- `/api/mobile-app-builds/latest` 返回的 profile、项目和 APK 下载地址与 mock payload 一致；COS 未完成时会临时使用未过期的 EAS artifact，COS 成功后优先返回 COS 地址。
 - 不匹配的 secret、非 Android 构建、非成功构建、非允许账号/项目/profile 的 payload 不应更新“App 下载”页。

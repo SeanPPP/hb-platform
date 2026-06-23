@@ -181,7 +181,7 @@ export function buildBatchExecuteConfirmText({
   selectedCount,
   createProductCount,
   labels,
-}: BatchExecuteActionCounts & { labels: BatchExecuteConfirmLabels }): BatchExecuteConfirmText {
+}: Pick<BatchExecuteActionCounts, 'selectedCount' | 'createProductCount'> & { labels: BatchExecuteConfirmLabels }): BatchExecuteConfirmText {
   const lines = [
     renderTemplate(labels.content, { count: selectedCount }),
   ]

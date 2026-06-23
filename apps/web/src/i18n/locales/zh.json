@@ -3184,12 +3184,28 @@
       "channel": "Channel",
       "runtime": "Runtime",
       "status": "状态",
+      "downloadSource": "下载源",
+      "mirrorStatus": "镜像状态",
+      "mirrorError": "错误提示",
       "completedAt": "完成时间",
       "expirationDate": "过期时间",
       "commit": "Commit",
       "profiles": {
         "production": "正式版",
         "preview": "预览版"
+      },
+      "downloadSources": {
+        "cos": "COS 镜像",
+        "eas": "EAS 回退",
+        "unknown": "未知"
+      },
+      "mirrorStatuses": {
+        "succeeded": "已镜像",
+        "running": "镜像中",
+        "failed": "镜像失败",
+        "unsafe": "不安全",
+        "pending": "等待镜像",
+        "unavailable": "无下载地址"
       },
       "ota": {
         "title": "OTA 更新记录",

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {
   checkAndDownloadNativeAppUpdate,
   checkLegacyNativeAppUpdate,
+  getBuildBoundNativeAppDownloadUrl,
+  getStableNativeAppDownloadUrl,
   type NativeAppBuildInfo,
   type NativeAppUpdateDependencies,
 } from "./native-app-update";
@@ -54,11 +56,70 @@ function createDependencies(
 
 async function run() {
   {
+    assert.equal(
+      getStableNativeAppDownloadUrl("https://hotbargain.vip/api", "preview"),
+      "https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=preview",
+      "legacy latest helper 应生成 android-latest 稳定下载入口"
+    );
+  }
+
+  {
+    assert.equal(
+      getBuildBoundNativeAppDownloadUrl("https://hotbargain.vip/api", {
+        easBuildId: "eas/build 11",
+        appVersion: "1.0.2",
+        appBuildVersion: "11",
+        artifactUrl: "https://expo.dev/artifacts/eas/build-11.apk",
+        buildProfile: "preview",
+      }),
+      "https://hotbargain.vip/api/mobile-app-builds/android/eas%2Fbuild%2011/download?profile=preview",
+      "新安装器 helper 应生成绑定 easBuildId 的稳定下载入口"
+    );
+  }
+
+  {
     const dependencies = createDependencies();
     const result = await checkAndDownloadNativeAppUpdate(dependencies);
 
     assert.equal(result.status, "downloaded", "远端 buildVersion 更高时应下载 APK");
     assert.equal(dependencies.downloaded.length, 1, "APK 应在后台下载一次");
+  }
+
+  {
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            success: true,
+            data: {
+              easBuildId: "build-11",
+              appVersion: "1.0.2",
+              appBuildVersion: "11",
+              artifactUrl: "https://expo.dev/artifacts/eas/build-11.apk",
+              buildProfile: "production",
+            },
+          },
+        }),
+      },
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "后端 ApiResponse.data 包装返回时应仍能识别最新 APK");
+    assert.equal(dependencies.downloaded.length, 1, "包装响应里的新 APK 应触发下载");
+  }
+
+  {
+    const dependencies = createDependencies({
+      getDownloadUrl: (build) => getBuildBoundNativeAppDownloadUrl("https://hotbargain.vip/api", build),
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "新安装器分支检测到新 APK 时应下载");
+    assert.equal(
+      dependencies.downloaded[0],
+      "https://hotbargain.vip/api/mobile-app-builds/android/build-11/download?profile=production -> file:///cache/hb-build-11.apk",
+      "新安装器分支应使用绑定 build 的后端稳定下载入口，避免 latest 指向漂移"
+    );
   }
 
   {

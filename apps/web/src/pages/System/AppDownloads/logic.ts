@@ -18,6 +18,16 @@ export interface AppDownloadOtaQuery {
 }
 
 export type AppDownloadContentState = 'error' | 'empty' | 'ready'
+export type AppDownloadMirrorStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'unsafe' | 'unavailable'
+export type AppDownloadSource = 'cos' | 'eas' | 'unknown'
+
+export interface AppDownloadMirrorFields {
+  artifactUrl?: string | null
+  originalArtifactUrl?: string | null
+  cosArtifactUrl?: string | null
+  cosMirrorError?: string | null
+  cosMirrorStatus?: string | null
+}
 
 export function normalizeAppDownloadProfile(value?: string | number | null): AppDownloadProfile {
   const normalized = String(value ?? DEFAULT_APP_DOWNLOAD_PROFILE).trim().toLowerCase()
@@ -73,4 +83,38 @@ export function resolveAppDownloadContentState(
   }
 
   return 'ready'
+}
+
+export function resolveAppDownloadMirrorStatus(build?: AppDownloadMirrorFields | null): AppDownloadMirrorStatus {
+  if (!build?.artifactUrl) {
+    return 'unavailable'
+  }
+
+  const status = String(build.cosMirrorStatus ?? '').trim().toLowerCase()
+  if (status === 'pending' || status === 'running' || status === 'succeeded' || status === 'failed' || status === 'unsafe') {
+    return status
+  }
+
+  if (build.cosArtifactUrl) {
+    return 'succeeded'
+  }
+
+  if (build.cosMirrorError?.startsWith('UNSAFE_ARTIFACT:')) {
+    return 'unsafe'
+  }
+
+  if (build.cosMirrorError) {
+    return 'failed'
+  }
+
+  // 有原始 artifact 但还没有 COS 结果时，展示为等待镜像，不影响 artifactUrl 下载。
+  return build.originalArtifactUrl || build.artifactUrl ? 'pending' : 'unavailable'
+}
+
+export function resolveAppDownloadSource(build?: AppDownloadMirrorFields | null): AppDownloadSource {
+  if (!build?.artifactUrl) {
+    return 'unknown'
+  }
+
+  return build.cosArtifactUrl && build.artifactUrl === build.cosArtifactUrl ? 'cos' : 'eas'
 }

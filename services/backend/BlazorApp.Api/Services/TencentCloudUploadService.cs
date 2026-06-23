@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
@@ -13,17 +14,20 @@ namespace BlazorApp.Api.Services
         private readonly TencentCloudSettings _settings;
         private readonly ILogger<TencentCloudUploadService> _logger;
         private readonly HttpClient _httpClient;
+        private readonly TimeProvider _timeProvider;
         private const int DefaultChunkSize = 40 * 1024 * 1024;
 
         public TencentCloudUploadService(
             IOptions<TencentCloudSettings> settings,
             ILogger<TencentCloudUploadService> logger,
-            HttpClient httpClient
+            HttpClient httpClient,
+            TimeProvider? timeProvider = null
         )
         {
             _settings = settings.Value;
             _logger = logger;
             _httpClient = httpClient;
+            _timeProvider = timeProvider ?? TimeProvider.System;
         }
 
         private string GeneratePublicUrl(string objectKey)
@@ -49,18 +53,18 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        private string HmacSha256(string key, string data)
+        private static string HmacSha1(string key, string data)
         {
-            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(key));
+            using var hmac = new HMACSHA1(Encoding.UTF8.GetBytes(key));
             var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
             return Convert.ToHexString(hash).ToLower();
         }
 
-        private string Sha256Hex(string input)
+        private static string Sha1Hex(string input)
         {
-            using var sha256 = SHA256.Create();
+            using var sha1 = SHA1.Create();
             var bytes = Encoding.UTF8.GetBytes(input);
-            var hash = sha256.ComputeHash(bytes);
+            var hash = sha1.ComputeHash(bytes);
             return Convert.ToHexString(hash).ToLower();
         }
 
@@ -246,6 +250,63 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        public async Task<ApiResponse<UploadResult>> UploadStreamAsync(
+            string objectKey,
+            string contentType,
+            Stream content,
+            long? fileSize = null,
+            CancellationToken cancellationToken = default
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_settings.SecretId)
+                    || string.IsNullOrWhiteSpace(_settings.SecretKey)
+                    || string.IsNullOrWhiteSpace(_settings.BucketName)
+                    || string.IsNullOrWhiteSpace(_settings.Region))
+                {
+                    return ApiResponse<UploadResult>.Error("腾讯云主桶配置不完整", "COS_NOT_CONFIGURED");
+                }
+
+                var url = GeneratePresignedPutUrl(objectKey, contentType, 3600);
+                using var request = new HttpRequestMessage(HttpMethod.Put, url);
+                request.Content = new StreamContent(content);
+                request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+                if (fileSize is > 0)
+                {
+                    request.Content.Headers.ContentLength = fileSize.Value;
+                }
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                response.EnsureSuccessStatusCode();
+
+                var downloadUrl = GeneratePublicUrl(objectKey);
+                return ApiResponse<UploadResult>.OK(
+                    new UploadResult
+                    {
+                        ObjectKey = objectKey,
+                        DownloadUrl = downloadUrl,
+                        FileSize = fileSize ?? (content.CanSeek ? content.Length : 0),
+                    },
+                    "文件上传成功"
+                );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // 关键位置：后台任务停机取消必须向上传递，不能被包装成 COS_UPLOAD_FAILED 后回写为镜像失败。
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "服务端上传文件到 COS 失败，ObjectKey: {ObjectKey}", objectKey);
+                return ApiResponse<UploadResult>.Error(
+                    "服务端上传文件到 COS 失败",
+                    "COS_UPLOAD_FAILED",
+                    ex.Message
+                );
+            }
+        }
+
         private string GeneratePresignedPutUrl(
             string objectKey,
             string contentType,
@@ -260,29 +321,34 @@ namespace BlazorApp.Api.Services
             var secretKey = _settings.SecretKey;
 
             var host = $"{bucket}.cos.{regionValue}.myqcloud.com";
-            var now = DateTime.UtcNow;
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
             var startTimestamp = new DateTimeOffset(now).ToUnixTimeSeconds();
             var expiredTimestamp = new DateTimeOffset(
                 now.AddSeconds(expiresInSeconds)
             ).ToUnixTimeSeconds();
 
             var keyTime = $"{startTimestamp};{expiredTimestamp}";
-            var signKey = HmacSha256(secretKey, keyTime);
+            var path = BuildCosCanonicalPath(objectKey);
+            var (headerList, httpHeaders) = BuildCosHeaderSignatureParts(
+                new Dictionary<string, string>
+                {
+                    ["content-type"] = contentType,
+                    ["host"] = host,
+                }
+            );
+            var authorization = GenerateCosAuthorization(
+                "put",
+                path,
+                "",
+                httpHeaders,
+                keyTime,
+                secretId,
+                secretKey,
+                headerList,
+                ""
+            );
 
-            var httpString = "put";
-            var httpUri = $"/{objectKey}";
-            var httpUriString = Uri.EscapeDataString(httpUri);
-
-            var headerString = "content-type;host";
-            var formatString = $"{httpString}\n{httpUriString}\n\n{headerString}\n";
-            var formatStringSha256 = Sha256Hex(formatString);
-            var stringToSign = $"sha256\n{keyTime}\n{formatStringSha256}\n";
-            var signature = HmacSha256(signKey, stringToSign);
-
-            var authorization =
-                $"q-sign-algorithm=sha256&q-ak={secretId}&q-sign-time={keyTime}&q-key-time={keyTime}&q-header-list=content-type;host&q-url-param-list=&q-signature={signature}";
-
-            return $"https://{host}/{objectKey}?authorization={Uri.EscapeDataString(authorization)}";
+            return $"https://{host}{BuildCosUrlPath(objectKey)}?{BuildCosAuthorizationQuery(authorization)}";
         }
 
         #endregion
@@ -364,50 +430,198 @@ namespace BlazorApp.Api.Services
             var secretKey = _settings.SecretKey;
 
             var host = $"{bucket}.cos.{region}.myqcloud.com";
-            var now = DateTime.UtcNow;
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
             var startTimestamp = new DateTimeOffset(now).ToUnixTimeSeconds();
             var expiredTimestamp = new DateTimeOffset(
                 now.AddSeconds(expiresInSeconds)
             ).ToUnixTimeSeconds();
-
             var keyTime = $"{startTimestamp};{expiredTimestamp}";
-            var signKey = HmacSha256(secretKey, keyTime);
-
-            var httpString = method.ToLower();
-            var httpUri = $"/{objectKey}";
-            var queryString = "";
+            var operationParameters = new List<(string Key, string Value)>();
 
             if (multipart)
             {
-                queryString = "uploads=";
+                operationParameters.Add(("uploads", ""));
             }
             else if (!string.IsNullOrEmpty(uploadId))
             {
                 if (partNumber > 0)
                 {
-                    queryString =
-                        $"partNumber={partNumber}&uploadId={Uri.EscapeDataString(uploadId)}";
+                    operationParameters.Add(("partNumber", partNumber.ToString()));
+                    operationParameters.Add(("uploadId", uploadId));
                 }
                 else
                 {
-                    queryString = $"uploadId={Uri.EscapeDataString(uploadId)}";
+                    operationParameters.Add(("uploadId", uploadId));
                 }
             }
 
-            var headerString = "";
-            var formatString = $"{httpString}\n{Uri.EscapeDataString(httpUri)}\n{queryString}\n{headerString}\n";
-            var formatStringSha256 = Sha256Hex(formatString);
-            var stringToSign = $"sha256\n{keyTime}\n{formatStringSha256}\n";
-            var signature = HmacSha256(signKey, stringToSign);
-
-            var authorization =
-                $"q-sign-algorithm=sha256&q-ak={secretId}&q-sign-time={keyTime}&q-key-time={keyTime}&q-header-list=&q-url-param-list={(string.IsNullOrEmpty(queryString) ? "" : Uri.EscapeDataString(queryString.Split('=')[0]))}&q-signature={signature}";
-
-            if (string.IsNullOrEmpty(queryString))
+            var path = BuildCosCanonicalPath(objectKey);
+            var canonicalParameters = BuildCosCanonicalQueryParameters(operationParameters);
+            var urlParamList = BuildCosQueryParameterList(operationParameters);
+            var (headerList, httpHeaders) = BuildCosHeaderSignatureParts(
+                new Dictionary<string, string> { ["host"] = host }
+            );
+            var authorization = GenerateCosAuthorization(
+                method,
+                path,
+                canonicalParameters,
+                httpHeaders,
+                keyTime,
+                secretId,
+                secretKey,
+                headerList,
+                urlParamList
+            );
+            var queryParts = new List<string>();
+            var operationQuery = BuildCosActualQueryParameters(operationParameters);
+            if (!string.IsNullOrEmpty(operationQuery))
             {
-                return $"https://{host}/{objectKey}?authorization={Uri.EscapeDataString(authorization)}";
+                queryParts.Add(operationQuery);
             }
-            return $"https://{host}/{objectKey}?{queryString}&authorization={Uri.EscapeDataString(authorization)}";
+            queryParts.Add(BuildCosAuthorizationQuery(authorization));
+
+            return $"https://{host}{BuildCosUrlPath(objectKey)}?{string.Join("&", queryParts)}";
+        }
+
+        private static string GenerateCosAuthorization(
+            string method,
+            string canonicalPath,
+            string canonicalParameters,
+            string canonicalHeaders,
+            string keyTime,
+            string secretId,
+            string secretKey,
+            string headerList,
+            string urlParamList
+        )
+        {
+            // 腾讯云 COS XML API 签名只支持 sha1；这里和官方 HttpString 格式保持一致。
+            var httpString =
+                $"{method.ToLowerInvariant()}\n{canonicalPath}\n{canonicalParameters}\n{canonicalHeaders}\n";
+            var stringToSign = $"sha1\n{keyTime}\n{Sha1Hex(httpString)}\n";
+            var signKey = HmacSha1(secretKey, keyTime);
+            var signature = HmacSha1(signKey, stringToSign);
+
+            return string.Join(
+                "&",
+                "q-sign-algorithm=sha1",
+                $"q-ak={secretId}",
+                $"q-sign-time={keyTime}",
+                $"q-key-time={keyTime}",
+                $"q-header-list={headerList}",
+                $"q-url-param-list={urlParamList}",
+                $"q-signature={signature}"
+            );
+        }
+
+        private static string BuildCosAuthorizationQuery(string authorization)
+        {
+            return string.Join(
+                "&",
+                authorization
+                    .Split('&', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(part =>
+                    {
+                        var index = part.IndexOf('=');
+                        if (index < 0)
+                        {
+                            return CosUrlEncode(part);
+                        }
+
+                        var key = part[..index];
+                        var value = part[(index + 1)..];
+                        return $"{CosUrlEncode(key)}={CosUrlEncode(value)}";
+                    })
+            );
+        }
+
+        private static (string HeaderList, string HttpHeaders) BuildCosHeaderSignatureParts(
+            IReadOnlyDictionary<string, string> headers
+        )
+        {
+            var normalized = headers
+                .Select(pair => new
+                {
+                    Key = CosUrlEncode(pair.Key.Trim().ToLowerInvariant()),
+                    Value = CosUrlEncode(pair.Value.Trim()),
+                })
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .ToList();
+
+            return (
+                string.Join(";", normalized.Select(pair => pair.Key)),
+                string.Join("&", normalized.Select(pair => $"{pair.Key}={pair.Value}"))
+            );
+        }
+
+        private static string BuildCosCanonicalQueryParameters(
+            IReadOnlyCollection<(string Key, string Value)> parameters
+        )
+        {
+            if (parameters.Count == 0)
+            {
+                return "";
+            }
+
+            return string.Join(
+                "&",
+                parameters
+                    .Select(pair => new
+                    {
+                        Key = CosUrlEncode(pair.Key.ToLowerInvariant()),
+                        Value = CosUrlEncode(pair.Value),
+                    })
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair => $"{pair.Key}={pair.Value}")
+            );
+        }
+
+        private static string BuildCosQueryParameterList(
+            IReadOnlyCollection<(string Key, string Value)> parameters
+        )
+        {
+            return parameters.Count == 0
+                ? ""
+                : string.Join(
+                    ";",
+                    parameters
+                        .Select(pair => CosUrlEncode(pair.Key.ToLowerInvariant()))
+                        .Order(StringComparer.Ordinal)
+                );
+        }
+
+        private static string BuildCosActualQueryParameters(
+            IReadOnlyCollection<(string Key, string Value)> parameters
+        )
+        {
+            return parameters.Count == 0
+                ? ""
+                : string.Join(
+                    "&",
+                    parameters.Select(pair => $"{CosUrlEncode(pair.Key)}={CosUrlEncode(pair.Value)}")
+                );
+        }
+
+        private static string BuildCosCanonicalPath(string objectKey)
+        {
+            return "/" + objectKey.TrimStart('/');
+        }
+
+        private static string BuildCosUrlPath(string objectKey)
+        {
+            return "/"
+                + string.Join(
+                    "/",
+                    objectKey
+                        .TrimStart('/')
+                        .Split('/', StringSplitOptions.None)
+                        .Select(CosUrlEncode)
+                );
+        }
+
+        private static string CosUrlEncode(string value)
+        {
+            return Uri.EscapeDataString(value);
         }
 
         #endregion

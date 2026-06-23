@@ -3184,12 +3184,28 @@
       "channel": "Channel",
       "runtime": "Runtime",
       "status": "Status",
+      "downloadSource": "Download Source",
+      "mirrorStatus": "Mirror Status",
+      "mirrorError": "Error",
       "completedAt": "Completed At",
       "expirationDate": "Expiration Date",
       "commit": "Commit",
       "profiles": {
         "production": "Production",
         "preview": "Preview"
+      },
+      "downloadSources": {
+        "cos": "COS Mirror",
+        "eas": "EAS Fallback",
+        "unknown": "Unknown"
+      },
+      "mirrorStatuses": {
+        "succeeded": "Mirrored",
+        "running": "Mirroring",
+        "failed": "Mirror Failed",
+        "unsafe": "Unsafe",
+        "pending": "Pending Mirror",
+        "unavailable": "No Download URL"
       },
       "ota": {
         "title": "OTA Updates",

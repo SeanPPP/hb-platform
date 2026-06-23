@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Controllers;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
@@ -68,6 +69,413 @@ public sealed class MobileAppBuildServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task EasWebhook_镜像到Cos成功_保存Cos地址且下载优先Cos()
+    {
+        var cosUrl = "https://hb-sales-2019-1300114625.cos.ap-sydney.myqcloud.com/mobile-app-builds/production/build-cos.apk";
+        var mirror = FakeMobileAppBuildArtifactMirror.Success(
+            cosUrl,
+            "mobile-app-builds/production/build-cos.apk",
+            new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc)
+        );
+        var body = CreatePayload(
+            easBuildId: "build-cos",
+            artifactUrl: "https://expo.dev/artifacts/eas/build-cos.apk",
+            expirationDate: "2000-01-01T00:00:00Z"
+        );
+        var controller = CreateController(body, CreateSignature(body));
+
+        var result = await controller.EasWebhook();
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildWebhookResultDto>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Equal("saved", response.Data!.Action);
+        Assert.Equal(0, mirror.Calls);
+
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Null(saved.CosArtifactUrl);
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusPending, saved.CosMirrorStatus);
+        Assert.Null(saved.CosMirrorError);
+
+        var service = CreateService();
+        var job = await service.ClaimNextCosMirrorJobAsync(
+            new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        Assert.NotNull(job);
+        var mirrored = await mirror.MirrorAsync(job!);
+        await service.CompleteCosMirrorSuccessAsync(job!, mirrored);
+
+        saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Equal(1, mirror.Calls);
+        Assert.Equal(cosUrl, saved.CosArtifactUrl);
+        Assert.Equal("mobile-app-builds/production/build-cos.apk", saved.CosObjectKey);
+        Assert.Equal(new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc), saved.CosMirroredAt);
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusSucceeded, saved.CosMirrorStatus);
+        Assert.Equal(1, saved.CosMirrorAttempts);
+        Assert.Null(saved.CosMirrorError);
+
+        var latest = await service.GetLatestAsync("production");
+        Assert.True(latest.Success);
+        Assert.NotNull(latest.Data);
+        Assert.Equal(cosUrl, latest.Data!.ArtifactUrl);
+        Assert.Equal(cosUrl, latest.Data.CosArtifactUrl);
+
+        var downloadResult = await CreateController("{}", CreateSignature("{}")).AndroidLatestDownload("production");
+        var redirect = Assert.IsType<RedirectResult>(downloadResult);
+        Assert.Equal(cosUrl, redirect.Url);
+    }
+
+    [Fact]
+    public async Task EasWebhook_重复Build且Cos已存在_不重复镜像()
+    {
+        var cosUrl = "https://hb-sales-2019-1300114625.cos.ap-sydney.myqcloud.com/mobile-app-builds/production/build-repeat-cos.apk";
+        var mirror = FakeMobileAppBuildArtifactMirror.Success(
+            cosUrl,
+            "mobile-app-builds/production/build-repeat-cos.apk",
+            new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc)
+        );
+        var body = CreatePayload(
+            easBuildId: "build-repeat-cos",
+            artifactUrl: "https://expo.dev/artifacts/eas/build-repeat-cos.apk"
+        );
+        var service = CreateService();
+
+        await service.HandleEasWebhookAsync(body);
+        var job = await service.ClaimNextCosMirrorJobAsync(
+            new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        Assert.NotNull(job);
+        await service.CompleteCosMirrorSuccessAsync(job!, await mirror.MirrorAsync(job!));
+        await service.HandleEasWebhookAsync(body);
+
+        var nextJob = await service.ClaimNextCosMirrorJobAsync(
+            new DateTime(2026, 6, 23, 0, 10, 0, DateTimeKind.Utc),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+
+        Assert.Equal(1, mirror.Calls);
+        Assert.Null(nextJob);
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Equal(cosUrl, saved.CosArtifactUrl);
+        Assert.Null(saved.CosMirrorError);
+    }
+
+    [Fact]
+    public async Task EasWebhook_镜像到Cos失败_仍保存Eas地址并记录错误()
+    {
+        var mirror = FakeMobileAppBuildArtifactMirror.Failure(new InvalidOperationException("COS unavailable"));
+        var body = CreatePayload(
+            easBuildId: "build-cos-failed",
+            artifactUrl: "https://expo.dev/artifacts/eas/build-cos-failed.apk"
+        );
+        var controller = CreateController(body, CreateSignature(body));
+
+        var result = await controller.EasWebhook();
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildWebhookResultDto>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Equal("saved", response.Data!.Action);
+
+        var service = CreateService();
+        var job = await service.ClaimNextCosMirrorJobAsync(
+            new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        Assert.NotNull(job);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            mirror.MirrorAsync(job!)
+        );
+        await service.CompleteCosMirrorFailureAsync(job!, exception);
+
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Equal("https://expo.dev/artifacts/eas/build-cos-failed.apk", saved.ArtifactUrl);
+        Assert.Null(saved.CosArtifactUrl);
+        Assert.Null(saved.CosObjectKey);
+        Assert.Null(saved.CosMirroredAt);
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusFailed, saved.CosMirrorStatus);
+        Assert.Equal(1, saved.CosMirrorAttempts);
+        Assert.Contains("COS unavailable", saved.CosMirrorError);
+
+        var latest = await service.GetLatestAsync("production");
+        Assert.Equal("https://expo.dev/artifacts/eas/build-cos-failed.apk", latest.Data!.ArtifactUrl);
+    }
+
+    [Fact]
+    public async Task EasWebhook_Artifact不是允许域名_忽略且不入库()
+    {
+        var body = CreatePayload(
+            easBuildId: "build-untrusted-artifact",
+            artifactUrl: "https://example.com/build.apk"
+        );
+        var controller = CreateController(body, CreateSignature(body));
+
+        var result = await controller.EasWebhook();
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildWebhookResultDto>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Equal("ignored", response.Data!.Action);
+        Assert.Equal("artifact_url_not_allowed", response.Data.Reason);
+        Assert.Equal(0, await _db.Queryable<MobileAppBuild>().CountAsync());
+    }
+
+    [Fact]
+    public async Task EasWebhook_镜像判定Artifact不安全_不作为Latest下载()
+    {
+        var mirror = FakeMobileAppBuildArtifactMirror.Failure(
+            new MobileAppBuildArtifactMirrorException("APK 下载地址缺少 Content-Length", isDownloadUnsafe: true)
+        );
+        var body = CreatePayload(
+            easBuildId: "build-unsafe-artifact",
+            artifactUrl: "https://expo.dev/artifacts/eas/build-unsafe-artifact.apk"
+        );
+        var controller = CreateController(body, CreateSignature(body));
+
+        var result = await controller.EasWebhook();
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildWebhookResultDto>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Equal("saved", response.Data!.Action);
+
+        var service = CreateService();
+        var job = await service.ClaimNextCosMirrorJobAsync(
+            new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        Assert.NotNull(job);
+        var exception = await Assert.ThrowsAsync<MobileAppBuildArtifactMirrorException>(() =>
+            mirror.MirrorAsync(job!)
+        );
+        await service.CompleteCosMirrorFailureAsync(job!, exception);
+
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Null(saved.CosArtifactUrl);
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusUnsafe, saved.CosMirrorStatus);
+        Assert.Equal(1, saved.CosMirrorAttempts);
+        Assert.StartsWith("UNSAFE_ARTIFACT:", saved.CosMirrorError);
+
+        var retryJob = await service.ClaimNextCosMirrorJobAsync(
+            new DateTime(2026, 6, 23, 0, 10, 0, DateTimeKind.Utc),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        Assert.Null(retryJob);
+
+        var latest = await service.GetLatestAsync("production");
+        Assert.True(latest.Success);
+        Assert.Null(latest.Data);
+
+        var download = await CreateController("{}", CreateSignature("{}")).AndroidLatestDownload("production");
+        Assert.IsType<NotFoundObjectResult>(download);
+    }
+
+    [Fact]
+    public async Task Cos镜像Unsafe即使存在Cos地址_也不作为Latest下载()
+    {
+        var service = CreateService();
+        await _db.Insertable(
+            new MobileAppBuild
+            {
+                Id = Guid.NewGuid(),
+                EasBuildId = "build-unsafe-with-cos",
+                AccountName = "hotbargain",
+                ProjectName = "hb-mobile",
+                Platform = "android",
+                Status = "finished",
+                BuildProfile = "production",
+                ArtifactUrl = "https://expo.dev/artifacts/eas/build-unsafe-with-cos.apk",
+                CosArtifactUrl = "https://hb-sales-2019-1300114625.cos.ap-sydney.myqcloud.com/mobile-app-builds/production/build-unsafe-with-cos.apk",
+                CosObjectKey = "mobile-app-builds/production/build-unsafe-with-cos.apk",
+                CosMirrorStatus = MobileAppBuildService.CosMirrorStatusUnsafe,
+                CosMirrorError = "UNSAFE_ARTIFACT: bad content",
+                CompletedAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+                ExpirationDate = new DateTime(2099, 7, 15, 0, 0, 0, DateTimeKind.Utc),
+                ReceivedAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+                CreatedAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+            }
+        ).ExecuteCommandAsync();
+
+        var latest = await service.GetLatestAsync("production");
+        var bound = await service.GetByBuildIdAsync("build-unsafe-with-cos", "production");
+        var latestDownload = await CreateController("{}", CreateSignature("{}")).AndroidLatestDownload("production");
+        var boundDownload = await CreateController("{}", CreateSignature("{}")).AndroidBuildDownload(
+            "build-unsafe-with-cos",
+            "production"
+        );
+
+        Assert.True(latest.Success);
+        Assert.Null(latest.Data);
+        Assert.True(bound.Success);
+        Assert.Null(bound.Data);
+        Assert.IsType<NotFoundObjectResult>(latestDownload);
+        Assert.IsType<NotFoundObjectResult>(boundDownload);
+    }
+
+    [Fact]
+    public async Task Cos镜像Artifact临时失败_保留EasFallback且允许重试()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "build-transient-artifact",
+                artifactUrl: "https://expo.dev/artifacts/eas/build-transient-artifact.apk"
+            )
+        );
+        var now = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc);
+
+        var first = await service.ClaimNextCosMirrorJobAsync(now, 3, TimeSpan.FromMinutes(30));
+        Assert.NotNull(first);
+        await service.CompleteCosMirrorFailureAsync(
+            first!,
+            new MobileAppBuildArtifactMirrorException(
+                "APK 下载地址返回 HTTP 403 Forbidden",
+                isDownloadUnsafe: false
+            )
+        );
+
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusFailed, saved.CosMirrorStatus);
+        Assert.Contains("HTTP 403", saved.CosMirrorError);
+
+        var latest = await service.GetLatestAsync("production");
+        Assert.True(latest.Success);
+        Assert.Equal("build-transient-artifact", latest.Data!.EasBuildId);
+        Assert.Equal("https://expo.dev/artifacts/eas/build-transient-artifact.apk", latest.Data.ArtifactUrl);
+
+        var retry = await service.ClaimNextCosMirrorJobAsync(
+            now.AddMinutes(1),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        Assert.NotNull(retry);
+        Assert.Equal(2, retry!.CosMirrorAttempts);
+    }
+
+    [Fact]
+    public async Task Cos镜像普通失败_三次内可重试超过后不再认领()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "build-retry",
+                artifactUrl: "https://expo.dev/artifacts/eas/build-retry.apk"
+            )
+        );
+        var now = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc);
+
+        var first = await service.ClaimNextCosMirrorJobAsync(now, 3, TimeSpan.FromMinutes(30));
+        Assert.NotNull(first);
+        await service.CompleteCosMirrorFailureAsync(first!, new InvalidOperationException("first failed"));
+
+        var second = await service.ClaimNextCosMirrorJobAsync(now.AddMinutes(1), 3, TimeSpan.FromMinutes(30));
+        Assert.NotNull(second);
+        Assert.Equal(2, second!.CosMirrorAttempts);
+        await service.CompleteCosMirrorFailureAsync(second, new HttpRequestException("second failed"));
+
+        var third = await service.ClaimNextCosMirrorJobAsync(now.AddMinutes(2), 3, TimeSpan.FromMinutes(30));
+        Assert.NotNull(third);
+        Assert.Equal(3, third!.CosMirrorAttempts);
+        await service.CompleteCosMirrorFailureAsync(third, new TimeoutException("third failed"));
+
+        var exhausted = await service.ClaimNextCosMirrorJobAsync(now.AddMinutes(3), 3, TimeSpan.FromMinutes(30));
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        Assert.Null(exhausted);
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusFailed, saved.CosMirrorStatus);
+        Assert.Equal(3, saved.CosMirrorAttempts);
+        Assert.Contains("third failed", saved.CosMirrorError);
+
+        var latest = await service.GetLatestAsync("production");
+        Assert.Equal("https://expo.dev/artifacts/eas/build-retry.apk", latest.Data!.ArtifactUrl);
+    }
+
+    [Fact]
+    public async Task Cos镜像Running超过三十分钟_可重新认领()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "build-stale-running",
+                artifactUrl: "https://expo.dev/artifacts/eas/build-stale-running.apk"
+            )
+        );
+        var now = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc);
+
+        var first = await service.ClaimNextCosMirrorJobAsync(now, 3, TimeSpan.FromMinutes(30));
+        Assert.NotNull(first);
+
+        var tooSoon = await service.ClaimNextCosMirrorJobAsync(
+            now.AddMinutes(10),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+        var stale = await service.ClaimNextCosMirrorJobAsync(
+            now.AddMinutes(31),
+            3,
+            TimeSpan.FromMinutes(30)
+        );
+
+        Assert.Null(tooSoon);
+        Assert.NotNull(stale);
+        Assert.Equal(2, stale!.CosMirrorAttempts);
+        Assert.Equal(MobileAppBuildService.CosMirrorStatusRunning, stale.CosMirrorStatus);
+    }
+
+    [Fact]
+    public async Task Cos镜像失败回写_已有成功Cos地址时_不覆盖下载地址()
+    {
+        var service = CreateService();
+        var buildId = Guid.NewGuid();
+        var artifactUrl = "https://expo.dev/artifacts/eas/build-concurrent.apk";
+        var cosUrl = "https://hb-sales-2019-1300114625.cos.ap-sydney.myqcloud.com/mobile-app-builds/production/build-concurrent.apk";
+        await _db.Insertable(
+            new MobileAppBuild
+            {
+                Id = buildId,
+                EasBuildId = "build-concurrent",
+                AccountName = "hotbargain",
+                ProjectName = "hb-mobile",
+                Platform = "android",
+                Status = "finished",
+                BuildProfile = "production",
+                ArtifactUrl = artifactUrl,
+                CosArtifactUrl = cosUrl,
+                CosObjectKey = "mobile-app-builds/production/build-concurrent.apk",
+                CosMirroredAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+                CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded,
+                CompletedAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+                ExpirationDate = new DateTime(2099, 7, 15, 0, 0, 0, DateTimeKind.Utc),
+                ReceivedAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+                CreatedAt = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+            }
+        ).ExecuteCommandAsync();
+
+        // 模拟另一个并发 webhook 持有的旧实体：它没有 COS 字段，但镜像失败后尝试回写错误。
+        await service.CompleteCosMirrorFailureAsync(
+            new MobileAppBuild
+            {
+                Id = buildId,
+                EasBuildId = "build-concurrent",
+                ArtifactUrl = artifactUrl,
+            },
+            new HttpRequestException("COS unavailable")
+        );
+
+        var saved = await _db.Queryable<MobileAppBuild>().SingleAsync(x => x.Id == buildId);
+        Assert.Equal(cosUrl, saved.CosArtifactUrl);
+        Assert.Equal("mobile-app-builds/production/build-concurrent.apk", saved.CosObjectKey);
+        Assert.Null(saved.CosMirrorError);
+    }
+
+    [Fact]
     public async Task EasWebhook_签名基于原始字节_带Bom请求仍可通过()
     {
         var body = CreatePayload(easBuildId: "build-bom");
@@ -92,6 +500,23 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         var result = await controller.EasWebhook();
 
         Assert.IsType<UnauthorizedObjectResult>(result);
+        Assert.Equal(0, await _db.Queryable<MobileAppBuild>().CountAsync());
+    }
+
+    [Fact]
+    public async Task EasWebhook_请求体超限_直接拒绝且不验签不入库()
+    {
+        var bodyBytes = new byte[256 * 1024 + 1];
+        var controller = CreateController(bodyBytes, "sha1=bad");
+        controller.ControllerContext.HttpContext.Request.ContentLength = bodyBytes.Length;
+
+        var result = await controller.EasWebhook();
+
+        var status = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, status.StatusCode);
+        var response = Assert.IsType<ApiResponse<object>>(status.Value);
+        Assert.False(response.Success);
+        Assert.Equal("WEBHOOK_BODY_TOO_LARGE", response.Code);
         Assert.Equal(0, await _db.Queryable<MobileAppBuild>().CountAsync());
     }
 
@@ -304,10 +729,12 @@ public sealed class MobileAppBuildServiceTests : IDisposable
                 nameof(MobileAppBuildPublicDto.AppVersion),
                 nameof(MobileAppBuildPublicDto.ArtifactUrl),
                 nameof(MobileAppBuildPublicDto.BuildProfile),
+                nameof(MobileAppBuildPublicDto.CosArtifactUrl),
                 nameof(MobileAppBuildPublicDto.EasBuildId),
             ],
             publicFields
         );
+        Assert.Null(response.Data.CosArtifactUrl);
 
         var previewResult = await controller.AndroidLatest("preview");
         var previewOk = Assert.IsType<OkObjectResult>(previewResult);
@@ -354,6 +781,36 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         Assert.Equal("https://expo.dev/download-preview.apk", previewRedirect.Url);
 
         Assert.IsType<NotFoundObjectResult>(internalResult);
+    }
+
+    [Fact]
+    public async Task AndroidBuildDownload_Latest已变化时仍跳转指定Build()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "download-bound-old",
+                artifactUrl: "https://expo.dev/download-bound-old.apk",
+                completedAt: "2026-06-15T01:00:00Z"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "download-bound-new",
+                artifactUrl: "https://expo.dev/download-bound-new.apk",
+                completedAt: "2026-06-15T02:00:00Z"
+            )
+        );
+        var controller = CreateController("{}", CreateSignature("{}"));
+
+        var boundResult = await controller.AndroidBuildDownload("download-bound-old", "production");
+        var latestResult = await controller.AndroidLatestDownload("production");
+
+        var boundRedirect = Assert.IsType<RedirectResult>(boundResult);
+        Assert.Equal("https://expo.dev/download-bound-old.apk", boundRedirect.Url);
+
+        var latestRedirect = Assert.IsType<RedirectResult>(latestResult);
+        Assert.Equal("https://expo.dev/download-bound-new.apk", latestRedirect.Url);
     }
 
     [Fact]
@@ -790,6 +1247,59 @@ public sealed class MobileAppBuildServiceTests : IDisposable
             Options.Create(CreateOptions()),
             NullLogger<MobileAppBuildService>.Instance
         );
+    }
+
+    private sealed class FakeMobileAppBuildArtifactMirror : IMobileAppBuildArtifactMirror
+    {
+        private readonly MobileAppBuildArtifactMirrorResult? _result;
+        private readonly Exception? _exception;
+
+        private FakeMobileAppBuildArtifactMirror(
+            MobileAppBuildArtifactMirrorResult? result,
+            Exception? exception
+        )
+        {
+            _result = result;
+            _exception = exception;
+        }
+
+        public int Calls { get; private set; }
+
+        public static FakeMobileAppBuildArtifactMirror Success(
+            string artifactUrl,
+            string objectKey,
+            DateTime mirroredAt
+        )
+        {
+            return new FakeMobileAppBuildArtifactMirror(
+                new MobileAppBuildArtifactMirrorResult
+                {
+                    ArtifactUrl = artifactUrl,
+                    ObjectKey = objectKey,
+                    MirroredAt = mirroredAt,
+                },
+                null
+            );
+        }
+
+        public static FakeMobileAppBuildArtifactMirror Failure(Exception exception)
+        {
+            return new FakeMobileAppBuildArtifactMirror(null, exception);
+        }
+
+        public Task<MobileAppBuildArtifactMirrorResult> MirrorAsync(
+            MobileAppBuild build,
+            CancellationToken cancellationToken = default
+        )
+        {
+            Calls += 1;
+            if (_exception != null)
+            {
+                throw _exception;
+            }
+
+            return Task.FromResult(_result!);
+        }
     }
 
     private static EasWebhookOptions CreateOptions()

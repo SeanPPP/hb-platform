@@ -40,6 +40,7 @@ export type NativeAppUpdateDependencies = {
   getCurrentBuildVersion: () => string | null;
   getBuildProfile: () => string | null;
   getDownloadDirectory: () => string | null;
+  getDownloadUrl?: (build: NativeAppBuildInfo) => string | null;
   platform: NativeAppUpdatePlatform;
 };
 
@@ -66,6 +67,44 @@ function asString(value: unknown): string | null {
   return null;
 }
 
+export function getStableNativeAppDownloadUrl(baseURL: string | undefined, profile: string) {
+  if (!baseURL?.trim()) {
+    return null;
+  }
+
+  try {
+    const base = baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
+    const query = new URLSearchParams({ profile });
+    // 后端稳定入口会在点击/下载时重新解析最新 APK，避免客户端持有过期 EAS artifact。
+    return new URL(`mobile-app-builds/android-latest/download?${query.toString()}`, base).toString();
+  } catch {
+    return null;
+  }
+}
+
+export function getBuildBoundNativeAppDownloadUrl(
+  baseURL: string | undefined,
+  build: NativeAppBuildInfo,
+  fallbackProfile = "production"
+) {
+  if (!baseURL?.trim() || !build.easBuildId.trim()) {
+    return null;
+  }
+
+  try {
+    const base = baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
+    const profile = build.buildProfile?.trim() || fallbackProfile;
+    const query = new URLSearchParams({ profile });
+    // 新安装器必须绑定已判定的新 build，避免下载过程中 latest 指向另一个 APK。
+    return new URL(
+      `mobile-app-builds/android/${encodeURIComponent(build.easBuildId)}/download?${query.toString()}`,
+      base
+    ).toString();
+  } catch {
+    return null;
+  }
+}
+
 function toBuildNumber(value: string | null): number | null {
   if (!value) {
     return null;
@@ -80,8 +119,10 @@ function normalizeLatestBuild(payload: unknown): NativeAppBuildInfo | null {
     return null;
   }
 
-  const artifactUrl = asString(root.artifactUrl);
-  const easBuildId = asString(root.easBuildId);
+  // 后端匿名接口返回 ApiResponse 包装；直接 DTO 和包装 DTO 都要兼容旧包自更新。
+  const buildRoot = asRecord(root.data) ?? root;
+  const artifactUrl = asString(buildRoot.artifactUrl);
+  const easBuildId = asString(buildRoot.easBuildId);
   if (!artifactUrl || !easBuildId) {
     return null;
   }
@@ -89,9 +130,9 @@ function normalizeLatestBuild(payload: unknown): NativeAppBuildInfo | null {
   return {
     easBuildId,
     artifactUrl,
-    appVersion: asString(root.appVersion),
-    appBuildVersion: asString(root.appBuildVersion),
-    buildProfile: asString(root.buildProfile),
+    appVersion: asString(buildRoot.appVersion),
+    appBuildVersion: asString(buildRoot.appBuildVersion),
+    buildProfile: asString(buildRoot.buildProfile),
   };
 }
 
@@ -159,8 +200,9 @@ export async function checkAndDownloadNativeAppUpdate(
       await dependencies.deleteFile?.(fileUri);
     }
 
-    // APK 检查默认静默下载；只有下载完成后才提示用户安装，避免先弹窗再等待大文件。
-    const download = await dependencies.downloadFile(build!.artifactUrl, fileUri);
+    // APK 检查默认静默下载；优先走后端稳定入口，避免 EAS artifact 临时链接过期后出现“文件不存在”。
+    const downloadUrl = dependencies.getDownloadUrl?.(build!) || build!.artifactUrl;
+    const download = await dependencies.downloadFile(downloadUrl, fileUri);
     if (download.status != null && (download.status < 200 || download.status >= 300)) {
       await dependencies.deleteFile?.(fileUri);
       throw new Error(`APK 下载失败，HTTP 状态码: ${download.status}`);
