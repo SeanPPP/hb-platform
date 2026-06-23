@@ -233,6 +233,10 @@ export interface UpdateHqProductsResult {
   hqAutoPricingUpdated?: number
   hqSpecialProductsUpdated?: number
   hqDiscountRatesUpdated?: number
+  hqProductSetCodesCreated?: number
+  hqProductSetCodesUpdated?: number
+  hqStoreMultiCodesCreated?: number
+  hqStoreMultiCodesUpdated?: number
   errors: EnsureHqProductError[]
 }
 
@@ -455,12 +459,18 @@ export interface BatchExecuteActionsRequest {
   expectedActions: BatchExecuteExpectedAction[]
   confirmedCreateProductCount: number
   confirmedAt: string
+  newProductProductTypeSelections?: BatchExecuteNewProductProductTypeSelection[]
 }
 
 export interface BatchExecuteExpectedAction {
   detailGuid: string
   action: DetailAction
   activityType: DetailAction
+}
+
+export interface BatchExecuteNewProductProductTypeSelection {
+  detailGuid: string
+  productType: 1 | 2
 }
 
 export interface BatchExecuteActionsResult {

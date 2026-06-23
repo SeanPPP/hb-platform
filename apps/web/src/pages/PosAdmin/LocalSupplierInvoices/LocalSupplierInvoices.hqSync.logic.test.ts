@@ -149,6 +149,10 @@ async function main() {
     assert(typeSource.includes('UpdateHqProductsResult'), '应声明字段级更新 HQ 结果类型')
     assert(typeSource.includes('hqRetailPricesUpdated?: number'), '字段级更新 HQ 结果应包含零售价更新计数')
     assert(typeSource.includes('hqDiscountRatesUpdated?: number'), '字段级更新 HQ 结果应包含折扣率更新计数')
+    assert(typeSource.includes('hqProductSetCodesCreated?: number'), '字段级更新 HQ 结果应包含 HQ 一品多码新增计数')
+    assert(typeSource.includes('hqProductSetCodesUpdated?: number'), '字段级更新 HQ 结果应包含 HQ 一品多码更新计数')
+    assert(typeSource.includes('hqStoreMultiCodesCreated?: number'), '字段级更新 HQ 结果应包含 HQ 分店一品多码新增计数')
+    assert(typeSource.includes('hqStoreMultiCodesUpdated?: number'), '字段级更新 HQ 结果应包含 HQ 分店一品多码更新计数')
     assert(typeSource.includes('LocalSupplierInvoiceBatchJobStatus'), '本地进货单批量后台任务应声明状态类型')
     assert(typeSource.includes('UpdateToStorePricesJobResult'), '更新到分店应声明后台任务结果类型')
     assert(typeSource.includes('UpdateHqProductsJobResult'), '更新HQ商品应声明后台任务结果类型')
@@ -159,6 +163,14 @@ async function main() {
     assert(typeSource.includes('result?: CheckProductsResponse'), '商品检测后台任务 result 应复用 CheckProductsResponse')
   })
   if (ensureHqTypeFailure) failures.push(ensureHqTypeFailure)
+
+  const updateHqMultiCodeResultFailure = await runTest('编辑页更新HQ商品结果应展示多码同步统计', () => {
+    assert(editPageSource.includes('result.hqProductSetCodesCreated'), '结果弹窗应展示 HQ 一品多码新增数量')
+    assert(editPageSource.includes('result.hqProductSetCodesUpdated'), '结果弹窗应展示 HQ 一品多码更新数量')
+    assert(editPageSource.includes('result.hqStoreMultiCodesCreated'), '结果弹窗应展示 HQ 分店一品多码新增数量')
+    assert(editPageSource.includes('result.hqStoreMultiCodesUpdated'), '结果弹窗应展示 HQ 分店一品多码更新数量')
+  })
+  if (updateHqMultiCodeResultFailure) failures.push(updateHqMultiCodeResultFailure)
 
   const invoiceDetailKeepAliveFailure = await runTest('分店进货单详情 Tab 切回已有进货单时应跳过自动刷新', () => {
     for (const [pageName, source] of [

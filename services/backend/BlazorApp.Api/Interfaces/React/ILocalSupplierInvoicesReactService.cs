@@ -80,7 +80,8 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<BatchExecuteActionsResultDto>> BatchExecuteActionsAsync(
             string invoiceGuid,
             List<string> detailGuids,
-            string userName
+            string userName,
+            List<BatchExecuteNewProductProductTypeSelectionDto>? newProductProductTypeSelections = null
         );
         Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids);
     }

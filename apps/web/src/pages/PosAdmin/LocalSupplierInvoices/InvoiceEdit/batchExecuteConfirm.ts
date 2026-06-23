@@ -2,6 +2,7 @@ import type { Key } from 'react'
 import type {
   BatchExecuteActionsResult,
   BatchExecuteExpectedAction,
+  BatchExecuteNewProductProductTypeSelection,
   LocalSupplierInvoiceItemDto,
 } from '../../../../types/localSupplierInvoice'
 import { DetailAction } from '../../../../types/localSupplierInvoice'
@@ -10,6 +11,7 @@ import { RequestError } from '../../../../utils/request'
 export interface BatchExecuteActionCounts {
   selectedCount: number
   createProductCount: number
+  createProductWithAdditionalBarcodesCount: number
 }
 
 export interface BatchExecuteConfirmLabels {
@@ -32,7 +34,16 @@ export interface BatchExecuteSnapshot {
   detailGuids: string[]
   expectedActions: BatchExecuteExpectedAction[]
   confirmedCreateProductCount: number
+  newProductProductTypeSelections: BatchExecuteNewProductProductTypeSelection[]
   confirmedAt?: string
+}
+
+export interface NewProductWithAdditionalBarcodesRow {
+  detailGuid: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  additionalBarcodeCount: number
 }
 
 export interface BatchExecuteErrorFeedback {
@@ -75,31 +86,54 @@ function normalizeBatchExecuteFailure(error: unknown): BatchExecuteActionsResult
 
 export function countSelectedBatchExecuteActions(
   selectedRowKeys: Key[],
-  details: Array<Pick<LocalSupplierInvoiceItemDto, 'detailGUID' | 'activityType'>>,
+  details: Array<Pick<LocalSupplierInvoiceItemDto, 'detailGUID' | 'activityType'> & Partial<Pick<LocalSupplierInvoiceItemDto, 'additionalBarcodes'>>>,
   rowActions: Record<string, number>,
 ): BatchExecuteActionCounts {
   const selectedKeys = new Set(selectedRowKeys.map(String))
   const selectedDetails = details.filter((item) => selectedKeys.has(item.detailGUID))
+  const createDetails = selectedDetails.filter((item) => {
+    // 页面内存中的 rowActions 代表用户刚刚修改但可能尚未重新加载的操作类型。
+    const currentAction = getCurrentDetailAction(item, rowActions)
+    return currentAction === DetailAction.CreateProduct
+  })
 
   return {
     selectedCount: selectedKeys.size,
-    createProductCount: selectedDetails.filter((item) => {
-      // 页面内存中的 rowActions 代表用户刚刚修改但可能尚未重新加载的操作类型。
-      const currentAction = getCurrentDetailAction(item, rowActions)
-      return currentAction === DetailAction.CreateProduct
-    }).length,
+    createProductCount: createDetails.length,
+    createProductWithAdditionalBarcodesCount: createDetails.filter((item) => (item.additionalBarcodes?.length ?? 0) > 0).length,
   }
+}
+
+export function getNewProductWithAdditionalBarcodesRows(
+  selectedRowKeys: Key[],
+  details: Array<Pick<LocalSupplierInvoiceItemDto, 'detailGUID' | 'activityType' | 'additionalBarcodes' | 'itemNumber' | 'barcode' | 'productName'>>,
+  rowActions: Record<string, number>,
+): NewProductWithAdditionalBarcodesRow[] {
+  const selectedKeys = new Set(selectedRowKeys.map(String))
+  return details
+    .filter((item) => selectedKeys.has(item.detailGUID))
+    .filter((item) => getCurrentDetailAction(item, rowActions) === DetailAction.CreateProduct)
+    .filter((item) => (item.additionalBarcodes?.length ?? 0) > 0)
+    .map((item) => ({
+      detailGuid: item.detailGUID,
+      itemNumber: item.itemNumber,
+      barcode: item.barcode,
+      productName: item.productName,
+      additionalBarcodeCount: item.additionalBarcodes?.length ?? 0,
+    }))
 }
 
 export function buildBatchExecuteSnapshot({
   selectedRowKeys,
   details,
   rowActions,
+  newProductProductTypeSelections,
   confirmedAt,
 }: {
   selectedRowKeys: Key[]
   details: Array<Pick<LocalSupplierInvoiceItemDto, 'detailGUID' | 'activityType'>>
   rowActions: Record<string, number>
+  newProductProductTypeSelections?: BatchExecuteNewProductProductTypeSelection[]
   confirmedAt?: string
 }): BatchExecuteSnapshot {
   const detailMap = new Map(details.map((item) => [item.detailGUID, item]))
@@ -124,6 +158,7 @@ export function buildBatchExecuteSnapshot({
     detailGuids: [...detailGuids],
     expectedActions,
     confirmedCreateProductCount: expectedActions.filter((item) => item.action === DetailAction.CreateProduct).length,
+    newProductProductTypeSelections: newProductProductTypeSelections?.map((item) => ({ ...item })) ?? [],
     confirmedAt,
   }
 }

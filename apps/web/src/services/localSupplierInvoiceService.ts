@@ -293,6 +293,7 @@ export async function batchExecuteActions(data: BatchExecuteActionsRequest): Pro
     expectedActions: data.expectedActions,
     confirmedCreateProductCount: data.confirmedCreateProductCount,
     confirmedAt: data.confirmedAt,
+    newProductProductTypeSelections: data.newProductProductTypeSelections ?? [],
   })
   assertApiSuccess(response, '批量执行操作失败')
   return unwrapApiData(response)

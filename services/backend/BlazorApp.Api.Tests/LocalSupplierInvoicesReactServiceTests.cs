@@ -927,6 +927,7 @@ namespace BlazorApp.Api.Tests
             Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("ExpectedActions"));
             Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("ConfirmedCreateProductCount"));
             Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("ConfirmedAt"));
+            Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("NewProductProductTypeSelections"));
 
             var actionDtoType = typeof(BatchExecuteActionsRequestDto).Assembly.GetType(
                 "BlazorApp.Shared.DTOs.BatchExecuteExpectedActionDto"
@@ -936,6 +937,13 @@ namespace BlazorApp.Api.Tests
             Assert.NotNull(actionDtoType!.GetProperty("DetailGuid"));
             Assert.NotNull(actionDtoType.GetProperty("ActivityType"));
             Assert.NotNull(actionDtoType.GetProperty("Action"));
+
+            var productTypeSelectionDtoType = typeof(BatchExecuteActionsRequestDto).Assembly.GetType(
+                "BlazorApp.Shared.DTOs.BatchExecuteNewProductProductTypeSelectionDto"
+            );
+            Assert.NotNull(productTypeSelectionDtoType);
+            Assert.NotNull(productTypeSelectionDtoType!.GetProperty("DetailGuid"));
+            Assert.NotNull(productTypeSelectionDtoType.GetProperty("ProductType"));
         }
 
         [Fact]
@@ -1470,9 +1478,12 @@ namespace BlazorApp.Api.Tests
                 .ToListAsync();
             var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
                 .SingleAsync(x => x.DetailGUID == "detail-multi-secondary");
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == "P-MULTI-SECONDARY");
 
             Assert.True(result.Success, $"{result.ErrorCode} {result.Message}");
             Assert.Equal(2, result.Data?.AddedMultiCodes);
+            Assert.Equal(2, product.ProductType);
             Assert.Equal(new[] { "191554882669", "191554882690" }, productSetCodes.Select(x => x.SetBarcode).ToArray());
             Assert.Equal(new[] { "191554882669", "191554882690" }, storeMultiCodes.Select(x => x.MultiBarcode).ToArray());
             Assert.Equal(99, detail.ActivityType);
@@ -1603,6 +1614,164 @@ namespace BlazorApp.Api.Tests
             Assert.Contains(validationDetails.Errors, error => error.Contains("主条码未匹配当前商品", StringComparison.Ordinal));
             Assert.Equal(0, multiCodeCount);
             Assert.Equal(0, productSetCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_CreateProductWithAdditionalBarcodes_选择多码时写入两张多码表()
+        {
+            await SeedStoreAndSupplierAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-guid-2",
+                StoreCode = "S02",
+                StoreName = "Melbourne Store",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await InsertInvoiceAsync("invoice-create-multicode-product", "INV-CREATE-MULTICODE", new DateTime(2026, 1, 12));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-create-multicode-product",
+                InvoiceGUID = "invoice-create-multicode-product",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                PurchasePrice = 1.6546m,
+                RetailPrice = 3.99m,
+                ActivityType = (int)DetailAction.CreateProduct,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-create-multicode-product",
+                new List<string> { "detail-create-multicode-product" },
+                "tester",
+                new List<BatchExecuteNewProductProductTypeSelectionDto>
+                {
+                    new() { DetailGuid = "detail-create-multicode-product", ProductType = 2 },
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ItemNumber == "88842");
+            var productSetCodes = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .OrderBy(x => x.SetBarcode)
+                .ToListAsync();
+            var storeMultiCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .OrderBy(x => x.StoreCode)
+                .OrderBy(x => x.MultiBarcode)
+                .ToListAsync();
+            var storePriceCount = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .CountAsync();
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-create-multicode-product");
+
+            Assert.True(result.Success, $"{result.Code} {result.Message}");
+            Assert.Equal(1, result.Data?.CreatedProducts);
+            Assert.Equal(2, result.Data?.AddedMultiCodes);
+            Assert.Equal(2, product.ProductType);
+            Assert.Equal(2, storePriceCount);
+            Assert.Equal(new[] { "191554882669", "191554882690" }, productSetCodes.Select(x => x.SetBarcode).ToArray());
+            Assert.Equal(4, storeMultiCodes.Count);
+            Assert.Equal(new[] { "S01", "S02" }, storeMultiCodes.Select(x => x.StoreCode).Distinct().OrderBy(x => x).ToArray());
+            Assert.Equal(99, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_CreateProductWithAdditionalBarcodes_选择套装时仍写入副码关系()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-create-set-product", "INV-CREATE-SET", new DateTime(2026, 1, 12));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-create-set-product",
+                InvoiceGUID = "invoice-create-set-product",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "SET-88842",
+                Barcode = "291554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "291554882690",
+                }),
+                ProductName = "Set Product With Additional Barcode",
+                PurchasePrice = 2.00m,
+                RetailPrice = 5.00m,
+                ActivityType = (int)DetailAction.CreateProduct,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-create-set-product",
+                new List<string> { "detail-create-set-product" },
+                "tester",
+                new List<BatchExecuteNewProductProductTypeSelectionDto>
+                {
+                    new() { DetailGuid = "detail-create-set-product", ProductType = 1 },
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ItemNumber == "SET-88842");
+            var productSetCodeCount = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .CountAsync();
+            var storeMultiCodeCount = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .CountAsync();
+
+            Assert.True(result.Success, $"{result.Code} {result.Message}");
+            Assert.Equal(1, product.ProductType);
+            Assert.Equal(1, result.Data?.AddedMultiCodes);
+            Assert.Equal(1, productSetCodeCount);
+            Assert.Equal(1, storeMultiCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_CreateProductWithAdditionalBarcodes_缺少类型选择时回滚()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-create-missing-type", "INV-CREATE-MISSING-TYPE", new DateTime(2026, 1, 12));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-create-missing-type",
+                InvoiceGUID = "invoice-create-missing-type",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "MISSING-TYPE",
+                Barcode = "391554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "391554882690",
+                }),
+                ProductName = "Missing Type Product",
+                PurchasePrice = 2.00m,
+                RetailPrice = 5.00m,
+                ActivityType = (int)DetailAction.CreateProduct,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-create-missing-type",
+                new List<string> { "detail-create-missing-type" },
+                "tester"
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            var validationDetails = Assert.IsType<BatchExecuteActionsResultDto>(result.Details);
+            Assert.Contains(validationDetails.Errors, error => error.Contains("必须选择商品类型", StringComparison.Ordinal));
+            Assert.Equal(0, await _db.Queryable<Product>().Where(x => x.ItemNumber == "MISSING-TYPE").CountAsync());
+            Assert.Equal(0, await _db.Queryable<ProductSetCode>().CountAsync());
+            Assert.Equal(0, await _db.Queryable<StoreMultiCodeProduct>().CountAsync());
         }
 
         [Fact]

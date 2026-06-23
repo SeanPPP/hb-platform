@@ -268,6 +268,7 @@ namespace BlazorApp.Api.Services.React
                             updatedBy,
                             result
                         );
+                        await SyncHqMultiCodesAsync(item, targetStoreCodes, updatedBy, result);
                     }
                     catch (Exception ex)
                     {
@@ -720,6 +721,161 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private async Task SyncHqMultiCodesAsync(
+            PreparedSyncItem item,
+            List<string> targetStoreCodes,
+            string updatedBy,
+            UpdateHqProductsResult result
+        )
+        {
+            var productCode = item.Product.ProductCode;
+            if (string.IsNullOrWhiteSpace(productCode))
+                return;
+
+            var localDb = _context.Db;
+            var hqDb = _hqContext.Db;
+            var now = DateTime.UtcNow;
+            var storeCodes = targetStoreCodes
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct()
+                .ToList();
+
+            var productSetCodes = await localDb.Queryable<ProductSetCode>()
+                .Where(x =>
+                    x.ProductCode == productCode
+                    && x.IsDeleted == false
+                    && x.SetBarcode != null
+                )
+                .ToListAsync();
+            if (productSetCodes.Count == 0)
+                return;
+
+            var storeMultiCodes = await localDb.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.ProductCode == productCode
+                    && x.StoreCode != null
+                    && storeCodes.Contains(x.StoreCode)
+                    && x.IsDeleted == false
+                    && x.MultiBarcode != null
+                )
+                .ToListAsync();
+            var storeMultiByCode = storeMultiCodes
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(x.StoreCode)
+                    && !string.IsNullOrWhiteSpace(x.MultiCodeProductCode)
+                )
+                .GroupBy(x => BuildHqStoreMultiCodeKey(x.StoreCode, x.ProductCode, x.MultiCodeProductCode))
+                .ToDictionary(g => g.Key, g => g.First());
+            var storeMultiByBarcode = storeMultiCodes
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(x.StoreCode)
+                    && !string.IsNullOrWhiteSpace(x.MultiBarcode)
+                )
+                .GroupBy(x => BuildHqStoreMultiCodeKey(
+                    x.StoreCode,
+                    x.ProductCode,
+                    NormalizeCaseInsensitiveValue(x.MultiBarcode)
+                ))
+                .ToDictionary(g => g.Key, g => g.First());
+
+            var existingHqProductSetCodes = await hqDb.Queryable<DIC_一品多码表>()
+                .Where(x => x.H商品编码 == productCode)
+                .ToListAsync();
+            var hqProductSetByCode = existingHqProductSetCodes
+                .Where(x => !string.IsNullOrWhiteSpace(x.H多码商品编号))
+                .GroupBy(x => x.H多码商品编号!)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var hqProductSetByBarcode = existingHqProductSetCodes
+                .Where(x => !string.IsNullOrWhiteSpace(x.H多条形码))
+                .GroupBy(x => NormalizeCaseInsensitiveValue(x.H多条形码)!)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var productSetCode in productSetCodes)
+            {
+                var mapped = BuildHqProductSetCode(item, productSetCode, updatedBy, now);
+                var existing = FindExistingHqProductSetCode(
+                    productSetCode,
+                    hqProductSetByCode,
+                    hqProductSetByBarcode
+                );
+                if (existing == null)
+                {
+                    await hqDb.Insertable(mapped).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
+                    result.HqProductSetCodesCreated++;
+                    continue;
+                }
+
+                ApplyHqProductSetCode(existing, mapped);
+                await hqDb.Updateable(existing).ExecuteCommandAsync();
+                result.HqProductSetCodesUpdated++;
+            }
+
+            var existingHqStoreMultiCodes = await hqDb.Queryable<DIC_分店一品多码表>()
+                .Where(x =>
+                    x.H商品编码 == productCode
+                    && x.H分店代码 != null
+                    && storeCodes.Contains(x.H分店代码)
+                )
+                .ToListAsync();
+            var hqStoreByCode = existingHqStoreMultiCodes
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(x.H分店代码)
+                    && !string.IsNullOrWhiteSpace(x.H多码商品编码)
+                )
+                .GroupBy(x => BuildHqStoreMultiCodeKey(x.H分店代码, x.H商品编码, x.H多码商品编码))
+                .ToDictionary(g => g.Key, g => g.First());
+            var hqStoreByBarcode = existingHqStoreMultiCodes
+                .Where(x =>
+                    !string.IsNullOrWhiteSpace(x.H分店代码)
+                    && !string.IsNullOrWhiteSpace(x.H多条形码)
+                )
+                .GroupBy(x => BuildHqStoreMultiCodeKey(
+                    x.H分店代码,
+                    x.H商品编码,
+                    NormalizeCaseInsensitiveValue(x.H多条形码)
+                ))
+                .ToDictionary(g => g.Key, g => g.First());
+
+            foreach (var storeCode in storeCodes)
+            {
+                foreach (var productSetCode in productSetCodes)
+                {
+                    var storeMultiCode = FindLocalStoreMultiCode(
+                        storeCode,
+                        productCode,
+                        productSetCode,
+                        storeMultiByCode,
+                        storeMultiByBarcode
+                    );
+                    var mapped = BuildHqStoreMultiCode(
+                        item,
+                        productSetCode,
+                        storeMultiCode,
+                        storeCode,
+                        updatedBy,
+                        now
+                    );
+                    var existing = FindExistingHqStoreMultiCode(
+                        storeCode,
+                        productCode,
+                        productSetCode,
+                        hqStoreByCode,
+                        hqStoreByBarcode
+                    );
+                    if (existing == null)
+                    {
+                        await hqDb.Insertable(mapped).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
+                        result.HqStoreMultiCodesCreated++;
+                        continue;
+                    }
+
+                    ApplyHqStoreMultiCode(existing, mapped);
+                    await hqDb.Updateable(existing).ExecuteCommandAsync();
+                    result.HqStoreMultiCodesUpdated++;
+                }
+            }
+        }
+
         private async Task UpsertHqStorePricesAsync(
             StoreLocalSupplierInvoiceDetails detail,
             Product product,
@@ -812,6 +968,251 @@ namespace BlazorApp.Api.Services.React
                     AddError(result, detail.DetailGUID, storeCode, $"同步HQ分店价格失败：{ex.Message}");
                 }
             }
+        }
+
+        private static DIC_一品多码表? FindExistingHqProductSetCode(
+            ProductSetCode productSetCode,
+            Dictionary<string, DIC_一品多码表> hqProductSetByCode,
+            Dictionary<string, DIC_一品多码表> hqProductSetByBarcode
+        )
+        {
+            if (
+                !string.IsNullOrWhiteSpace(productSetCode.SetProductCode)
+                && hqProductSetByCode.TryGetValue(productSetCode.SetProductCode, out var byCode)
+            )
+            {
+                return byCode;
+            }
+
+            var barcodeKey = NormalizeCaseInsensitiveValue(productSetCode.SetBarcode);
+            return barcodeKey != null && hqProductSetByBarcode.TryGetValue(barcodeKey, out var byBarcode)
+                ? byBarcode
+                : null;
+        }
+
+        private static StoreMultiCodeProduct? FindLocalStoreMultiCode(
+            string storeCode,
+            string productCode,
+            ProductSetCode productSetCode,
+            Dictionary<string, StoreMultiCodeProduct> storeMultiByCode,
+            Dictionary<string, StoreMultiCodeProduct> storeMultiByBarcode
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(productSetCode.SetProductCode))
+            {
+                var codeKey = BuildHqStoreMultiCodeKey(
+                    storeCode,
+                    productCode,
+                    productSetCode.SetProductCode
+                );
+                if (storeMultiByCode.TryGetValue(codeKey, out var byCode))
+                    return byCode;
+            }
+
+            var barcodeKey = NormalizeCaseInsensitiveValue(productSetCode.SetBarcode);
+            if (barcodeKey == null)
+                return null;
+
+            return storeMultiByBarcode.TryGetValue(
+                BuildHqStoreMultiCodeKey(storeCode, productCode, barcodeKey),
+                out var byBarcode
+            )
+                ? byBarcode
+                : null;
+        }
+
+        private static DIC_分店一品多码表? FindExistingHqStoreMultiCode(
+            string storeCode,
+            string productCode,
+            ProductSetCode productSetCode,
+            Dictionary<string, DIC_分店一品多码表> hqStoreByCode,
+            Dictionary<string, DIC_分店一品多码表> hqStoreByBarcode
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(productSetCode.SetProductCode))
+            {
+                var codeKey = BuildHqStoreMultiCodeKey(
+                    storeCode,
+                    productCode,
+                    productSetCode.SetProductCode
+                );
+                if (hqStoreByCode.TryGetValue(codeKey, out var byCode))
+                    return byCode;
+            }
+
+            var barcodeKey = NormalizeCaseInsensitiveValue(productSetCode.SetBarcode);
+            if (barcodeKey == null)
+                return null;
+
+            return hqStoreByBarcode.TryGetValue(
+                BuildHqStoreMultiCodeKey(storeCode, productCode, barcodeKey),
+                out var byBarcode
+            )
+                ? byBarcode
+                : null;
+        }
+
+        private static DIC_一品多码表 BuildHqProductSetCode(
+            PreparedSyncItem item,
+            ProductSetCode productSetCode,
+            string updatedBy,
+            DateTime now
+        )
+        {
+            var detail = item.Detail;
+            var product = item.Product;
+            return new DIC_一品多码表
+            {
+                HGUID = productSetCode.SetCodeId,
+                H商品编码 = product.ProductCode ?? string.Empty,
+                H多码商品编号 = productSetCode.SetProductCode ?? string.Empty,
+                H供应商编码 = product.LocalSupplierCode ?? detail.SupplierCode ?? string.Empty,
+                H主条形码 = product.Barcode ?? detail.Barcode ?? string.Empty,
+                H多条形码 = productSetCode.SetBarcode ?? string.Empty,
+                H进货价 = productSetCode.SetPurchasePrice ?? product.PurchasePrice ?? detail.PurchasePrice ?? 0,
+                H一品多码零售价 =
+                    productSetCode.SetRetailPrice ?? product.RetailPrice ?? ResolveRetailPrice(detail),
+                H使用状态 = productSetCode.IsActive,
+                H是否自动定价 = product.IsAutoPricing,
+                FGC_Creator = updatedBy,
+                FGC_CreateDate = now,
+                FGC_LastModifier = updatedBy,
+                FGC_LastModifyDate = now,
+                FGC_UpdateHelp = "分店进货单更新HQ商品同步",
+            };
+        }
+
+        private static DIC_分店一品多码表 BuildHqStoreMultiCode(
+            PreparedSyncItem item,
+            ProductSetCode productSetCode,
+            StoreMultiCodeProduct? storeMultiCode,
+            string storeCode,
+            string updatedBy,
+            DateTime now
+        )
+        {
+            var detail = item.Detail;
+            var product = item.Product;
+            var productCode = product.ProductCode ?? string.Empty;
+            var multiCodeProductCode =
+                storeMultiCode?.MultiCodeProductCode
+                ?? productSetCode.SetProductCode
+                ?? UuidHelper.GenerateUuid7();
+            return new DIC_分店一品多码表
+            {
+                HGUID = storeMultiCode?.UUID ?? UuidHelper.GenerateUuid7(),
+                H分店代码 = storeCode,
+                H商品编码 = productCode,
+                H分店商品编码 = BuildStoreProductCode(storeCode, productCode),
+                H多码商品编码 = multiCodeProductCode,
+                H分店多码商品编码 =
+                    storeMultiCode?.StoreMultiCodeProductCode ?? storeCode + multiCodeProductCode,
+                H供应商编码 = product.LocalSupplierCode ?? detail.SupplierCode ?? string.Empty,
+                H主条形码 = product.Barcode ?? detail.Barcode ?? string.Empty,
+                H多条形码 = storeMultiCode?.MultiBarcode ?? productSetCode.SetBarcode ?? string.Empty,
+                H进货价 =
+                    storeMultiCode?.PurchasePrice
+                    ?? productSetCode.SetPurchasePrice
+                    ?? product.PurchasePrice
+                    ?? detail.PurchasePrice
+                    ?? 0,
+                H折扣率 = storeMultiCode?.DiscountRate ?? detail.DiscountRate ?? 0,
+                H一品多码零售价 =
+                    storeMultiCode?.MultiCodeRetailPrice
+                    ?? productSetCode.SetRetailPrice
+                    ?? product.RetailPrice
+                    ?? ResolveRetailPrice(detail),
+                H库存 = 0,
+                H库存金额 = 0,
+                H自动新价格 = detail.NewAutoRetailPrice ?? 0,
+                H库存预警数 = 0,
+                H商品缺货日期 = DateTime.MinValue,
+                H是否缺货状态 = false,
+                H最小订货量 = 0,
+                H最小订货量合计金额 = 0,
+                H活动类型 = string.Empty,
+                H满减活动代码 = string.Empty,
+                H活动开始日期 = DateTime.MinValue,
+                H活动结束日期 = DateTime.MinValue,
+                H满减数量 = 0,
+                H满减金额 = 0,
+                H是否自动定价 = storeMultiCode?.IsAutoPricing ?? product.IsAutoPricing,
+                H是否特殊商品 = storeMultiCode?.IsSpecialProduct ?? product.IsSpecialProduct,
+                H商品柜组号 = string.Empty,
+                H使用状态 = storeMultiCode?.IsActive ?? productSetCode.IsActive,
+                H动态销售数量 = 0,
+                H动态销售额 = 0,
+                H动态成本 = 0,
+                H动态毛利 = 0,
+                H动态毛利率 = 0,
+                H动态销售占比 = 0,
+                FGC_Creator = updatedBy,
+                FGC_CreateDate = now,
+                FGC_LastModifier = updatedBy,
+                FGC_LastModifyDate = now,
+            };
+        }
+
+        private static void ApplyHqProductSetCode(
+            DIC_一品多码表 existing,
+            DIC_一品多码表 mapped
+        )
+        {
+            existing.HGUID = string.IsNullOrWhiteSpace(existing.HGUID) ? mapped.HGUID : existing.HGUID;
+            existing.H商品编码 = mapped.H商品编码;
+            existing.H多码商品编号 = mapped.H多码商品编号;
+            existing.H供应商编码 = mapped.H供应商编码;
+            existing.H主条形码 = mapped.H主条形码;
+            existing.H多条形码 = mapped.H多条形码;
+            existing.H进货价 = mapped.H进货价;
+            existing.H一品多码零售价 = mapped.H一品多码零售价;
+            existing.H使用状态 = mapped.H使用状态;
+            existing.H是否自动定价 = mapped.H是否自动定价;
+            existing.FGC_LastModifier = mapped.FGC_LastModifier;
+            existing.FGC_LastModifyDate = mapped.FGC_LastModifyDate;
+            existing.FGC_UpdateHelp = mapped.FGC_UpdateHelp;
+        }
+
+        private static void ApplyHqStoreMultiCode(
+            DIC_分店一品多码表 existing,
+            DIC_分店一品多码表 mapped
+        )
+        {
+            var existingStoreMultiCode = existing.H分店多码商品编码;
+            existing.HGUID = string.IsNullOrWhiteSpace(existing.HGUID) ? mapped.HGUID : existing.HGUID;
+            existing.H分店代码 = mapped.H分店代码;
+            existing.H商品编码 = mapped.H商品编码;
+            existing.H分店商品编码 = mapped.H分店商品编码;
+            existing.H多码商品编码 = mapped.H多码商品编码;
+            existing.H分店多码商品编码 = string.IsNullOrWhiteSpace(existingStoreMultiCode)
+                ? mapped.H分店多码商品编码
+                : existingStoreMultiCode;
+            existing.H供应商编码 = mapped.H供应商编码;
+            existing.H主条形码 = mapped.H主条形码;
+            existing.H多条形码 = mapped.H多条形码;
+            existing.H进货价 = mapped.H进货价;
+            existing.H折扣率 = mapped.H折扣率;
+            existing.H一品多码零售价 = mapped.H一品多码零售价;
+            existing.H自动新价格 = mapped.H自动新价格;
+            existing.H是否自动定价 = mapped.H是否自动定价;
+            existing.H是否特殊商品 = mapped.H是否特殊商品;
+            existing.H使用状态 = mapped.H使用状态;
+            existing.FGC_LastModifier = mapped.FGC_LastModifier;
+            existing.FGC_LastModifyDate = mapped.FGC_LastModifyDate;
+        }
+
+        private static string BuildHqStoreMultiCodeKey(
+            string? storeCode,
+            string? productCode,
+            string? multiCodeOrBarcode
+        )
+        {
+            return string.Join(
+                "\u001f",
+                NormalizeCaseInsensitiveValue(storeCode) ?? string.Empty,
+                NormalizeCaseInsensitiveValue(productCode) ?? string.Empty,
+                NormalizeCaseInsensitiveValue(multiCodeOrBarcode) ?? string.Empty
+            );
         }
 
         private static DIC_商品零售价表 BuildHqStorePrice(

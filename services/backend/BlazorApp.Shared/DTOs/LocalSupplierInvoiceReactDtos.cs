@@ -517,6 +517,10 @@ namespace BlazorApp.Shared.DTOs
         public int HqAutoPricingUpdated { get; set; }
         public int HqSpecialProductsUpdated { get; set; }
         public int HqDiscountRatesUpdated { get; set; }
+        public int HqProductSetCodesCreated { get; set; }
+        public int HqProductSetCodesUpdated { get; set; }
+        public int HqStoreMultiCodesCreated { get; set; }
+        public int HqStoreMultiCodesUpdated { get; set; }
     }
 
     /// <summary>
@@ -916,6 +920,27 @@ namespace BlazorApp.Shared.DTOs
         /// 用户确认时间
         /// </summary>
         public DateTime? ConfirmedAt { get; set; }
+
+        /// <summary>
+        /// 新商品带副码时，用户选择的主档商品类型。
+        /// </summary>
+        public List<BatchExecuteNewProductProductTypeSelectionDto> NewProductProductTypeSelections { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 新商品带副码时的商品类型选择。
+    /// </summary>
+    public class BatchExecuteNewProductProductTypeSelectionDto
+    {
+        /// <summary>
+        /// 明细GUID
+        /// </summary>
+        public string DetailGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 商品主档类型：1=套装，2=多码。
+        /// </summary>
+        public int ProductType { get; set; }
     }
 
     /// <summary>

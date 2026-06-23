@@ -149,6 +149,7 @@ import {
   buildBatchExecuteSnapshot,
   constrainSelectedRowKeysToVisibleDetails,
   getBatchExecuteErrorFeedback,
+  getNewProductWithAdditionalBarcodesRows,
 } from './batchExecuteConfirm'
 import {
   EditableBooleanCell,
@@ -1267,6 +1268,10 @@ export default function InvoiceEditPage() {
           <div>{t('posAdmin.invoiceDetail.updateHqAutoPricingUpdated', 'HQ自动定价更新：{{count}} 条', { count: result.hqAutoPricingUpdated ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.updateHqSpecialProductsUpdated', 'HQ特殊商品更新：{{count}} 条', { count: result.hqSpecialProductsUpdated ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.updateHqDiscountRatesUpdated', 'HQ折扣率更新：{{count}} 条', { count: result.hqDiscountRatesUpdated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqProductSetCodesCreated', 'HQ一品多码新增：{{count}} 条', { count: result.hqProductSetCodesCreated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqProductSetCodesUpdated', 'HQ一品多码更新：{{count}} 条', { count: result.hqProductSetCodesUpdated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqStoreMultiCodesCreated', 'HQ分店一品多码新增：{{count}} 条', { count: result.hqStoreMultiCodesCreated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqStoreMultiCodesUpdated', 'HQ分店一品多码更新：{{count}} 条', { count: result.hqStoreMultiCodesUpdated ?? 0 })}</div>
           {hqErrors.length > 0 && (
             <div style={{ maxHeight: 220, overflow: 'auto', marginTop: 8 }}>
               {hqErrors.map((item, index) => (
@@ -1866,6 +1871,7 @@ export default function InvoiceEditPage() {
         expectedActions: snapshot.expectedActions,
         confirmedCreateProductCount: snapshot.confirmedCreateProductCount,
         confirmedAt: snapshot.confirmedAt ?? new Date().toISOString(),
+        newProductProductTypeSelections: snapshot.newProductProductTypeSelections,
       })
       const parts = formatBatchExecuteResultParts(result)
       const hasDetails = !!result.errors?.length || result.failed > 0 || result.skipped > 0
@@ -1914,6 +1920,14 @@ export default function InvoiceEditPage() {
       details,
       rowActions,
     })
+    const newProductWithAdditionalBarcodesRows = getNewProductWithAdditionalBarcodesRows(
+      visibleSelectedRowKeys,
+      details,
+      rowActions,
+    )
+    const newProductProductTypeSelectionMap = new Map<string, 1 | 2>(
+      newProductWithAdditionalBarcodesRows.map((row) => [row.detailGuid, 2]),
+    )
     const confirmText = buildBatchExecuteConfirmText({
       selectedCount: previewSnapshot.selectedCount,
       createProductCount: previewSnapshot.confirmedCreateProductCount,
@@ -1933,6 +1947,41 @@ export default function InvoiceEditPage() {
           {confirmText.content.split('\n').map((line) => (
             <div key={line}>{line}</div>
           ))}
+          {newProductWithAdditionalBarcodesRows.length > 0 && (
+            <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
+              <Alert
+                type="warning"
+                showIcon
+                message={t('posAdmin.invoiceDetail.newProductMultiBarcodeTypeTitle', '检测到新商品包含副码')}
+                description={t('posAdmin.invoiceDetail.newProductMultiBarcodeTypeDesc', '请选择主档商品类型；副码会写入总部多码关系和所有有效分店多码表。')}
+              />
+              {newProductWithAdditionalBarcodesRows.map((row) => (
+                <div key={row.detailGuid} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center' }}>
+                  <Space direction="vertical" size={2}>
+                    <span>{row.itemNumber || '--'} · {row.productName || '--'}</span>
+                    <Space size={4}>
+                      <Tag>{row.barcode || '--'}</Tag>
+                      <Tag color="cyan">
+                        {t('posAdmin.invoiceDetail.additionalBarcodeCount', '副码 {{count}}', { count: row.additionalBarcodeCount })}
+                      </Tag>
+                    </Space>
+                  </Space>
+                  <Radio.Group
+                    defaultValue={2}
+                    optionType="button"
+                    buttonStyle="solid"
+                    onChange={(event) => {
+                      newProductProductTypeSelectionMap.set(row.detailGuid, event.target.value as 1 | 2)
+                    }}
+                    options={[
+                      { label: t('posAdmin.invoiceDetail.productTypeMultiCode', '多码'), value: 2 },
+                      { label: t('posAdmin.invoiceDetail.productTypeSet', '套装'), value: 1 },
+                    ]}
+                  />
+                </div>
+              ))}
+            </Space>
+          )}
         </Space>
       ),
       okText: confirmText.okText,
@@ -1943,6 +1992,11 @@ export default function InvoiceEditPage() {
           selectedRowKeys: previewSnapshot.detailGuids,
           details,
           rowActions,
+          // 关键位置：有副码的新商品必须在用户确认后带上主档类型，避免后台静默建成普通商品。
+          newProductProductTypeSelections: newProductWithAdditionalBarcodesRows.map((row) => ({
+            detailGuid: row.detailGuid,
+            productType: newProductProductTypeSelectionMap.get(row.detailGuid) ?? 2,
+          })),
           // 真正提交的确认时间在用户点击确认时生成。
           confirmedAt: new Date().toISOString(),
         }))
