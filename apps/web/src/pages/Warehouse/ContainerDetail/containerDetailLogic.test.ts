@@ -55,6 +55,7 @@ import {
   getContainerDetailProductType,
   getContainerDetailProductTypeFilterKey,
   getContainerDetailImageUrl,
+  getContainerDetailImportPriceTrend,
   getContainerDetailLastImportPrice,
   getContainerDetailLastOemPrice,
   getContainerDetailOemPriceSource,
@@ -196,6 +197,31 @@ assertEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.find((column) => column.key === 'lastImportPrice')?.labelKey,
   'containers.fields.warehouseImportPrice',
   '上次进货价格导出列应复用表格里的 Last Purchase Price 翻译 key',
+)
+assertEqual(
+  getContainerDetailImportPriceTrend({ id: 120, hguid: 'import-trend-up', lastImportPrice: 0.29, 进口价格: 0.38 }),
+  'up',
+  '本次进口价格高于上次进口价格时应显示绿色上涨',
+)
+assertEqual(
+  getContainerDetailImportPriceTrend({ id: 121, hguid: 'import-trend-down', lastImportPrice: 0.38, 进口价格: 0.29 }),
+  'down',
+  '本次进口价格低于上次进口价格时应显示红色下降',
+)
+assertEqual(
+  getContainerDetailImportPriceTrend({ id: 122, hguid: 'import-trend-same', lastImportPrice: 0.29, 进口价格: 0.29 }),
+  undefined,
+  '本次进口价格等于上次进口价格时不应显示趋势箭头',
+)
+assertEqual(
+  getContainerDetailImportPriceTrend({ id: 123, hguid: 'import-trend-missing-last', 进口价格: 0.38 }),
+  undefined,
+  '缺少上次进口价格时不应显示趋势箭头',
+)
+assertEqual(
+  getContainerDetailImportPriceTrend({ id: 124, hguid: 'import-trend-missing-current', lastImportPrice: 0.38 }),
+  undefined,
+  '缺少本次进口价格时不应显示趋势箭头',
 )
 assertEqual(
   calculateContainerDetailTableScrollY({
@@ -3086,7 +3112,8 @@ assertEqual(
   '价格列应按国内价格人民币、其它价格美元显示货币符号',
 )
 assertEqual(
-  columnsSource.includes("warehouseImportPrice > importPrice ? 'up' : 'down'") &&
+  containerDetailLogicSource.includes("return currentImportPrice > lastImportPrice ? 'up' : 'down'") &&
+    columnsSource.includes('getContainerDetailImportPriceTrend(row)') &&
     columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") &&
     columnsSource.includes("return <Icon className={className} />") &&
     pageSource.includes("onChange={(value) => markPendingPricePatch(row, { 进口价格: value == null ? undefined : Number(value) })") &&

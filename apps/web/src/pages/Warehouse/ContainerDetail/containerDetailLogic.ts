@@ -597,6 +597,23 @@ export function getContainerDetailLastImportPrice(row: ContainerDetail): number 
   return row.lastImportPrice ?? row.LastImportPrice ?? row.warehouseImportPrice ?? row.WarehouseImportPrice
 }
 
+export function getContainerDetailImportPriceTrend(row: ContainerDetail): 'up' | 'down' | undefined {
+  const lastImportPrice = getContainerDetailLastImportPrice(row)
+  const currentImportPrice = row.进口价格
+  if (
+    typeof lastImportPrice !== 'number' ||
+    typeof currentImportPrice !== 'number' ||
+    !Number.isFinite(lastImportPrice) ||
+    !Number.isFinite(currentImportPrice) ||
+    lastImportPrice === currentImportPrice
+  ) {
+    return undefined
+  }
+
+  // 趋势以本次进口价格相对上次进口价格的变化判断，用于表格箭头和颜色。
+  return currentImportPrice > lastImportPrice ? 'up' : 'down'
+}
+
 export function getContainerDetailLastOemPrice(row: ContainerDetail): number | undefined {
   return row.lastOEMPrice ?? row.LastOEMPrice ?? row.warehouseOEMPrice ?? row.WarehouseOEMPrice
 }

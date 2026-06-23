@@ -21,7 +21,7 @@ import {
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   getContainerDetailCategoryName,
   getContainerDetailCategoryTooltipRecord,
-  getContainerDetailLastImportPrice,
+  getContainerDetailImportPriceTrend,
   resolveContainerDetailOemPrice,
   type ContainerDetailSortField,
 } from './containerDetailLogic'
@@ -55,25 +55,9 @@ export function renderOemPriceCell(row: ContainerDetail) {
   return <span className={className}>{formatCurrency(resolveContainerDetailOemPrice(row), '$')}</span>
 }
 
-/** 进口价格与上次进货价格趋势方向。 */
-function getImportPriceTrend(row: ContainerDetail): 'up' | 'down' | undefined {
-  const warehouseImportPrice = getContainerDetailLastImportPrice(row)
-  const importPrice = row.进口价格
-  if (
-    typeof warehouseImportPrice !== 'number' ||
-    typeof importPrice !== 'number' ||
-    !Number.isFinite(warehouseImportPrice) ||
-    !Number.isFinite(importPrice) ||
-    warehouseImportPrice === importPrice
-  ) {
-    return undefined
-  }
-  return warehouseImportPrice > importPrice ? 'up' : 'down'
-}
-
 /** 进口价格趋势图标（只读指示器，不参与业务逻辑）。 */
 export function renderImportPriceTrend(row: ContainerDetail) {
-  const trend = getImportPriceTrend(row)
+  const trend = getContainerDetailImportPriceTrend(row)
   if (!trend) return null
   const className = trend === 'up' ? 'container-detail-import-price-trend-up' : 'container-detail-import-price-trend-down'
   const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined
