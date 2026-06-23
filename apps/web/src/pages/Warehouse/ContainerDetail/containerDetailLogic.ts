@@ -965,6 +965,8 @@ export interface BuildContainerDetailQueryOptions {
   sortState?: ContainerDetailSortState
   pageNumber: number
   pageSize: number
+  includeTotal?: boolean
+  includeStats?: boolean
 }
 
 function assignQueryValue<K extends keyof ContainerDetailQuery>(
@@ -1017,11 +1019,21 @@ export function buildContainerDetailQuery({
   sortState,
   pageNumber,
   pageSize,
+  includeTotal,
+  includeStats,
 }: BuildContainerDetailQueryOptions): ContainerDetailQuery {
   const query: ContainerDetailQuery = {
     containerGuid,
     pageNumber,
     pageSize,
+  }
+
+  // total/tagStats 是货柜明细追加页的主要固定开销；只有调用方明确指定时才传给后端。
+  if (includeTotal != null) {
+    query.includeTotal = includeTotal
+  }
+  if (includeStats != null) {
+    query.includeStats = includeStats
   }
 
   assignTrimmedText(query, 'itemNumber', filters.itemNumber)

@@ -857,31 +857,36 @@ namespace BlazorApp.Api.Services.React
             {
                 if (string.IsNullOrWhiteSpace(request.ContainerGuid))
                 {
+                    var emptyTotalComputed = request.IncludeTotal || request.IncludeStats;
                     return new ContainerDetailQueryResultDto
                     {
                         PageNumber = Math.Max(1, request.PageNumber),
                         PageSize = Math.Clamp(request.PageSize, 1, 500),
+                        TotalComputed = emptyTotalComputed,
+                        StatsComputed = request.IncludeStats,
                     };
                 }
 
                 var pageNumber = Math.Max(1, request.PageNumber);
                 var pageSize = Math.Clamp(request.PageSize <= 0 ? 50 : request.PageSize, 1, 500);
                 var query = BuildContainerDetailQuery(request);
-                var total = await query.Clone().CountAsync();
+                var total = 0;
+                var stats = new ContainerDetailTagStatsDto();
+                var totalComputed = request.IncludeTotal || request.IncludeStats;
 
-                // tagStats 必须按当前服务端筛选口径统计，不能只统计当前懒加载块。
-                var stats = new ContainerDetailTagStatsDto
+                if (request.IncludeStats)
                 {
-                    All = total,
-                    New = await query.Clone().Where((cd, wp, dp, lp) => lp.ProductCode == null).CountAsync(),
-                    Existing = await query.Clone().Where((cd, wp, dp, lp) => lp.ProductCode != null).CountAsync(),
-                    NoOemPrice = await query.Clone().Where((cd, wp, dp, lp) => lp.ProductCode == null && (cd.OEMPrice == null || cd.OEMPrice <= 0)).CountAsync(),
-                    AbnormalImport = await query.Clone().Where((cd, wp, dp, lp) => cd.ImportPrice == null || cd.ImportPrice <= 0).CountAsync(),
-                    Active = await query.Clone().Where((cd, wp, dp, lp) => wp.IsActive == true).CountAsync(),
-                    Inactive = await query.Clone().Where((cd, wp, dp, lp) => wp.IsActive != true).CountAsync(),
-                };
+                    // 标签统计里 All 已经是同口径总数；请求统计时同步视为 total 已计算，避免响应契约出现歧义组合。
+                    stats = await QueryContainerDetailTagStatsAsync(query);
+                    total = stats.All;
+                }
+                else if (request.IncludeTotal)
+                {
+                    total = await query.Clone().CountAsync();
+                }
 
-                var items = await ApplyContainerDetailSort(query.Clone(), request)
+                var takeSize = totalComputed ? pageSize : pageSize + 1;
+                var loadedItems = await ApplyContainerDetailSort(query.Clone(), request)
                     .Select(
                         (cd, wp, dp, lp) =>
                             new ContainerDetailDto
@@ -934,19 +939,29 @@ namespace BlazorApp.Api.Services.React
                             }
                     )
                     .Skip((pageNumber - 1) * pageSize)
-                    .Take(pageSize)
+                    .Take(takeSize)
                     .ToListAsync();
+
+                // 追加页不再计算 total；多取一条即可判断是否还有下一页，返回前截回正常页大小。
+                var hasMore = totalComputed
+                    ? pageNumber * pageSize < total
+                    : loadedItems.Count > pageSize;
+                var items = totalComputed
+                    ? loadedItems
+                    : loadedItems.Take(pageSize).ToList();
 
                 await FillContainerDetailCategoryNamesAsync(items);
                 FillContainerDetailProductImages(items);
                 return new ContainerDetailQueryResultDto
                 {
                     Items = items,
-                    ItemsTotal = total,
+                    ItemsTotal = totalComputed ? total : 0,
                     PageNumber = pageNumber,
                     PageSize = pageSize,
-                    HasMore = pageNumber * pageSize < total,
-                    TagStats = stats,
+                    HasMore = hasMore,
+                    TotalComputed = totalComputed,
+                    StatsComputed = request.IncludeStats,
+                    TagStats = request.IncludeStats ? stats : new ContainerDetailTagStatsDto(),
                 };
             }
             catch (Exception ex)
@@ -958,6 +973,37 @@ namespace BlazorApp.Api.Services.React
                 );
                 throw;
             }
+        }
+
+        private async Task<ContainerDetailTagStatsDto> QueryContainerDetailTagStatsAsync(
+            ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> query
+        )
+        {
+            var stats = await query.Clone()
+                .Select((cd, wp, dp, lp) => new
+                {
+                    All = SqlFunc.AggregateCount(cd.DetailCode),
+                    New = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode == null, cd.DetailCode, null)),
+                    Existing = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode != null, cd.DetailCode, null)),
+                    NoOemPrice = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode == null && (cd.OEMPrice == null || cd.OEMPrice <= 0), cd.DetailCode, null)),
+                    AbnormalImport = SqlFunc.AggregateCount(SqlFunc.IIF(cd.ImportPrice == null || cd.ImportPrice <= 0, cd.DetailCode, null)),
+                    Active = SqlFunc.AggregateCount(SqlFunc.IIF(wp.IsActive == true, cd.DetailCode, null)),
+                    Inactive = SqlFunc.AggregateCount(SqlFunc.IIF(wp.IsActive != true, cd.DetailCode, null)),
+                })
+                .FirstAsync();
+
+            return stats == null
+                ? new ContainerDetailTagStatsDto()
+                : new ContainerDetailTagStatsDto
+                {
+                    All = stats.All,
+                    New = stats.New,
+                    Existing = stats.Existing,
+                    NoOemPrice = stats.NoOemPrice,
+                    AbnormalImport = stats.AbnormalImport,
+                    Active = stats.Active,
+                    Inactive = stats.Inactive,
+                };
         }
 
         private static void FillContainerDetailProductImages(List<ContainerDetailDto> items)

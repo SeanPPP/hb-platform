@@ -195,6 +195,8 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         );
 
         Assert.Equal(3, result.ItemsTotal);
+        Assert.True(result.TotalComputed);
+        Assert.True(result.StatsComputed);
         Assert.Equal(1, result.PageNumber);
         Assert.Equal(2, result.PageSize);
         Assert.True(result.HasMore);
@@ -207,6 +209,108 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         Assert.Equal(1, result.TagStats.AbnormalImport);
         Assert.Equal(2, result.TagStats.Active);
         Assert.Equal(1, result.TagStats.Inactive);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_禁用标签统计时应保留总数但标记未计算统计()
+    {
+        await SeedContainerAsync("C-NO-STATS", "CSLU6099488");
+        await SeedDetailAsync("D-NO-STATS-1", "C-NO-STATS", "P-NO-STATS-1", "HB201", localExists: true);
+        await SeedDetailAsync("D-NO-STATS-2", "C-NO-STATS", "P-NO-STATS-2", "HB202", localExists: false);
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-NO-STATS",
+                PageNumber = 1,
+                PageSize = 50,
+                IncludeStats = false,
+            }
+        );
+
+        Assert.Equal(2, result.ItemsTotal);
+        Assert.True(result.TotalComputed);
+        Assert.False(result.StatsComputed);
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(0, result.TagStats.All);
+        Assert.Equal(0, result.TagStats.New);
+        Assert.Equal(0, result.TagStats.Existing);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_禁用总数时应多取一条判断是否还有下一页()
+    {
+        await SeedContainerAsync("C-NO-TOTAL", "CSLU6099489");
+        await SeedDetailAsync("D-NO-TOTAL-1", "C-NO-TOTAL", "P-NO-TOTAL-1", "HB301");
+        await SeedDetailAsync("D-NO-TOTAL-2", "C-NO-TOTAL", "P-NO-TOTAL-2", "HB302");
+        await SeedDetailAsync("D-NO-TOTAL-3", "C-NO-TOTAL", "P-NO-TOTAL-3", "HB303");
+        var service = CreateService();
+
+        var firstPage = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-NO-TOTAL",
+                PageNumber = 1,
+                PageSize = 2,
+                IncludeTotal = false,
+                IncludeStats = false,
+                SortBy = "itemNumber",
+                SortOrder = "ascend",
+            }
+        );
+        var lastPage = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-NO-TOTAL",
+                PageNumber = 2,
+                PageSize = 2,
+                IncludeTotal = false,
+                IncludeStats = false,
+                SortBy = "itemNumber",
+                SortOrder = "ascend",
+            }
+        );
+
+        Assert.False(firstPage.TotalComputed);
+        Assert.False(firstPage.StatsComputed);
+        Assert.Equal(0, firstPage.ItemsTotal);
+        Assert.True(firstPage.HasMore);
+        Assert.Equal(new[] { "HB301", "HB302" }, firstPage.Items.Select(x => x.商品信息?.货号).ToArray());
+        Assert.False(lastPage.TotalComputed);
+        Assert.False(lastPage.StatsComputed);
+        Assert.Equal(0, lastPage.ItemsTotal);
+        Assert.False(lastPage.HasMore);
+        Assert.Equal(new[] { "HB303" }, lastPage.Items.Select(x => x.商品信息?.货号).ToArray());
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_请求标签统计时应同步返回统计内总数()
+    {
+        await SeedContainerAsync("C-STATS-TOTAL", "CSLU6099490");
+        await SeedDetailAsync("D-STATS-TOTAL-1", "C-STATS-TOTAL", "P-STATS-TOTAL-1", "HB401", localExists: true);
+        await SeedDetailAsync("D-STATS-TOTAL-2", "C-STATS-TOTAL", "P-STATS-TOTAL-2", "HB402", localExists: false);
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-STATS-TOTAL",
+                PageNumber = 1,
+                PageSize = 1,
+                IncludeTotal = false,
+                IncludeStats = true,
+                SortBy = "itemNumber",
+                SortOrder = "ascend",
+            }
+        );
+
+        Assert.True(result.TotalComputed);
+        Assert.True(result.StatsComputed);
+        Assert.Equal(2, result.ItemsTotal);
+        Assert.Equal(2, result.TagStats.All);
+        Assert.True(result.HasMore);
+        Assert.Equal(new[] { "HB401" }, result.Items.Select(x => x.商品信息?.货号).ToArray());
     }
 
     [Fact]

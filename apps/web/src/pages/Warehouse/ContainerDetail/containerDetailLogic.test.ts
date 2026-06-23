@@ -1059,6 +1059,25 @@ assertDeepEqual(
 
 assertDeepEqual(
   buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-APPEND',
+    filters: {},
+    pageNumber: 2,
+    pageSize: 50,
+    includeTotal: false,
+    includeStats: false,
+  }),
+  {
+    containerGuid: 'CONTAINER-APPEND',
+    pageNumber: 2,
+    pageSize: 50,
+    includeTotal: false,
+    includeStats: false,
+  },
+  '追加页查询应允许显式跳过 total 和标签统计',
+)
+
+assertDeepEqual(
+  buildContainerDetailQuery({
     containerGuid: 'CONTAINER-TYPE-TAGS',
     filters: { productTypes: ['normal'] },
     pageNumber: 1,
@@ -2916,6 +2935,30 @@ assertEqual(
   })(),
   true,
   '明细加载查询应只保留无标签 base 查询，标签切换不应进入远程查询 key',
+)
+assertEqual(
+  pageSource.includes("const shouldComputeDetailMeta = mode === 'reset'") &&
+    pageSource.includes('includeTotal: shouldComputeDetailMeta') &&
+    pageSource.includes('includeStats: shouldComputeDetailMeta') &&
+    pageSource.includes('if (result.totalComputed !== false) {') &&
+    pageSource.includes('if (result.statsComputed !== false) {'),
+  true,
+  '货柜明细首屏才应请求 total/tagStats，追加页不应覆盖首屏统计',
+)
+assertEqual(
+  (() => {
+    const currentQueryStart = pageSource.indexOf('const fetchAllRowsForCurrentQuery = async () => {')
+    const wholeQueryStart = pageSource.indexOf('const fetchAllRowsForWholeContainer = async () => {')
+    const queryBlockEnd = pageSource.indexOf('const confirmSubmitContainer', wholeQueryStart)
+    const allRowsSource = pageSource.slice(currentQueryStart, queryBlockEnd)
+    return currentQueryStart >= 0 &&
+      wholeQueryStart > currentQueryStart &&
+      queryBlockEnd > wholeQueryStart &&
+      allRowsSource.includes('includeTotal: false') &&
+      allRowsSource.includes('includeStats: false')
+  })(),
+  true,
+  '后台批量拉全量明细时应跳过 total/tagStats 并依赖 hasMore',
 )
 assertEqual(
   !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&

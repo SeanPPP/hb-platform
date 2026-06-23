@@ -423,6 +423,8 @@ namespace BlazorApp.Shared.DTOs
         public List<string> SelectedTags { get; set; } = new();
         public string? SortBy { get; set; }
         public string? SortOrder { get; set; }
+        public bool IncludeTotal { get; set; } = true;
+        public bool IncludeStats { get; set; } = true;
     }
 
     /// <summary>
@@ -449,6 +451,8 @@ namespace BlazorApp.Shared.DTOs
         public int PageNumber { get; set; }
         public int PageSize { get; set; }
         public bool HasMore { get; set; }
+        public bool TotalComputed { get; set; } = true;
+        public bool StatsComputed { get; set; } = true;
         public ContainerDetailTagStatsDto TagStats { get; set; } = new();
     }
 

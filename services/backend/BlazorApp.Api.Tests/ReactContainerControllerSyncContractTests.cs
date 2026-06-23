@@ -137,6 +137,8 @@ public class ReactContainerControllerSyncContractTests
             PageNumber = 1,
             PageSize = 50,
             HasMore = false,
+            TotalComputed = true,
+            StatsComputed = true,
             TagStats = new ContainerDetailTagStatsDto { All = 1 },
         };
         var containerService = new Mock<IContainerReactService>();
@@ -153,12 +155,16 @@ public class ReactContainerControllerSyncContractTests
                 ContainerGuid = "BODY-GUID",
                 PageNumber = 1,
                 PageSize = 50,
+                IncludeTotal = false,
+                IncludeStats = false,
             }
         );
 
         var ok = Assert.IsType<OkObjectResult>(response);
         Assert.NotNull(actualRequest);
         Assert.Equal("ROUTE-GUID", actualRequest!.ContainerGuid);
+        Assert.False(actualRequest.IncludeTotal);
+        Assert.False(actualRequest.IncludeStats);
         AssertPayload(ok.Value, true, "获取货柜商品明细成功", expectedResult);
     }
 

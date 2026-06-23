@@ -955,9 +955,16 @@ export default function ContainerDetailPage() {
     }
 
     try {
+      const shouldComputeDetailMeta = mode === 'reset'
       const result = await queryContainerProducts(
         containerGuid,
-        { ...detailQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
+        {
+          ...detailQuery,
+          pageNumber,
+          pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+          includeTotal: shouldComputeDetailMeta,
+          includeStats: shouldComputeDetailMeta,
+        },
         controller.signal,
       )
       if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
@@ -965,10 +972,14 @@ export default function ContainerDetailPage() {
       }
 
       setRows((items) => mode === 'reset' ? result.items : mergeContainerDetailLoadedItems(items, result.items))
-      setDetailItemsTotal(result.itemsTotal)
+      if (result.totalComputed !== false) {
+        setDetailItemsTotal(result.itemsTotal)
+      }
       setDetailPageNumber(result.pageNumber)
       setDetailHasMore(result.hasMore)
-      setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
+      if (result.statsComputed !== false) {
+        setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
+      }
       if (mode === 'reset') {
         lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
       }
@@ -1303,6 +1314,8 @@ export default function ContainerDetailPage() {
         ...baseDetailQuery,
         pageNumber,
         pageSize: 500,
+        includeTotal: false,
+        includeStats: false,
       })
       allRows.push(...result.items)
       hasMore = result.hasMore
@@ -1324,6 +1337,8 @@ export default function ContainerDetailPage() {
         filters: {},
         pageNumber,
         pageSize: 500,
+        includeTotal: false,
+        includeStats: false,
       }))
       allRows.push(...result.items)
       hasMore = result.hasMore
