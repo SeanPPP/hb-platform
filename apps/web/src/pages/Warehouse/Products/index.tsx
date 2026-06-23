@@ -292,6 +292,9 @@ const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.act
 const WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID = 'warehouse-products-hq-sync';
 const WAREHOUSE_PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000;
 const WAREHOUSE_PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+// 仓库商品主表数据量大，默认展示 100 条并保留大分页选项，继续依赖现有虚拟表格和服务端分页。
+const WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE = 100;
+const WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000'];
 const WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.warehouseProducts.columnOrder.v1';
 const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = [
     'rowNumber',
@@ -595,7 +598,7 @@ export default function WarehouseProductsPage() {
     const [productType, setProductType] = useState<ProductType>();
     const [isActive, setIsActive] = useState<boolean>();
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(20);
+    const [pageSize, setPageSize] = useState(WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE);
     const [total, setTotal] = useState(0);
     const [sortField, setSortField] = useState('createdAt');
     const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('descend');
@@ -1805,6 +1808,7 @@ export default function WarehouseProductsPage() {
                 pageSize,
                 total,
                 showSizeChanger: true,
+                pageSizeOptions: WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS,
             }} onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[], extra) => {
                 const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
                 const nextSortField = typeof nextSorter?.field === 'string' ? nextSorter.field : sortField;

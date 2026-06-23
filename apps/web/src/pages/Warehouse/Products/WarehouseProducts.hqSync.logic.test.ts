@@ -679,6 +679,36 @@ async function main() {
   })
   if (compactTableFailure) failures.push(compactTableFailure)
 
+  const mainTablePaginationFailure = await runTest('仓库商品主表默认每页 100 且仅提供大分页选项', () => {
+    const tableSection = extractSection(
+      pageSource,
+      'pagination={{',
+      '}} onChange={(pagination: TablePaginationConfig',
+    )
+
+    assert(
+      pageSource.includes('const WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE = 100') &&
+        pageSource.includes("const WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']"),
+      '仓库商品主表应集中声明默认分页 100 和 50/100/200/500/1000 分页选项',
+    )
+    assert(
+      pageSource.includes('const [pageSize, setPageSize] = useState(WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE);'),
+      '仓库商品主表 pageSize 初始值应使用默认分页常量 100',
+    )
+    assert(
+      tableSection.includes('pageSizeOptions: WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS') &&
+        tableSection.includes('showSizeChanger: true,'),
+      '仓库商品主表分页下拉应只使用 50/100/200/500/1000 这些选项，并保留切换入口',
+    )
+    assert(
+      pageSource.includes('virtual') &&
+        pageSource.includes('scroll={{ x: 2260, y: 620 }}') &&
+        pageSource.includes('const result = await getWarehouseProductsTable(query);'),
+      '分页调整应保留现有虚拟表格、固定滚动高度和异步服务端分页请求',
+    )
+  })
+  if (mainTablePaginationFailure) failures.push(mainTablePaginationFailure)
+
   const adminOnlyButtonFailure = await runTest('页面应仅对 Admin 渲染从 HQ 同步按钮', () => {
     assert(
       pageSource.includes('CloudSyncOutlined'),
