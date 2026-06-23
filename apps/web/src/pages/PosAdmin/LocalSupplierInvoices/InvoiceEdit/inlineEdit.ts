@@ -251,6 +251,7 @@ export function buildInvoiceDetailSaveItems(
     detailGUID: detail.detailGUID,
     itemNumber: detail.itemNumber,
     barcode: detail.barcode,
+    additionalBarcodes: detail.additionalBarcodes,
     productName: detail.productName,
     quantity: detail.quantity,
     purchasePrice: detail.purchasePrice,

@@ -14,6 +14,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -135,7 +136,14 @@ import {
   type TextFilterField,
   type TextFilterMode,
 } from './tableColumnFilters'
-import { defaultPasteFieldOrder, parsePasteText, type PasteFieldKey } from './pasteDetails'
+import {
+  analyzePasteMultilineCells,
+  defaultPasteFieldOrder,
+  getPasteTextMaxColumnCount,
+  parsePasteText,
+  type PasteFieldKey,
+  type PasteMultilineCellMode,
+} from './pasteDetails'
 import {
   buildBatchExecuteConfirmText,
   buildBatchExecuteSnapshot,
@@ -335,17 +343,6 @@ function loadSavedPasteFieldOrder() {
   } catch {
     return [...defaultPasteFieldOrder]
   }
-}
-
-function getPasteTextMaxColumnCount(text: string) {
-  if (!text.trim()) return 0
-
-  return Math.max(
-    ...text
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => line.split('\t').length),
-  )
 }
 
 function getStatusStatsTagStyle(selected: boolean): CSSProperties {
@@ -578,6 +575,7 @@ export default function InvoiceEditPage() {
   const activePasteJobIdRef = useRef<string | null>(null)
   const [pasteFieldOrder, setPasteFieldOrder] = useState<PasteFieldKey[]>(loadSavedPasteFieldOrder)
   const [normalizeRetailPriceOnPaste, setNormalizeRetailPriceOnPaste] = useState(true)
+  const [pasteMultilineCellMode, setPasteMultilineCellMode] = useState<PasteMultilineCellMode>('merge')
 
   /* ---- 批量编辑 Modal ---- */
   const [batchEditVisible, setBatchEditVisible] = useState(false)
@@ -897,9 +895,20 @@ export default function InvoiceEditPage() {
   )
   const pasteColumnCount = useMemo(() => getPasteTextMaxColumnCount(pasteText), [pasteText])
   const hasDuplicatePasteField = useMemo(() => hasDuplicatePasteFields(pasteFieldOrder), [pasteFieldOrder])
+  const pasteMultilineAnalysis = useMemo(
+    () => analyzePasteMultilineCells(pasteText, pasteFieldOrder),
+    [pasteText, pasteFieldOrder],
+  )
   const pasteParseOptions = useMemo(
-    () => ({ normalizeRetailPrice: normalizeRetailPriceOnPaste }),
-    [normalizeRetailPriceOnPaste],
+    () => ({
+      normalizeRetailPrice: normalizeRetailPriceOnPaste,
+      multilineCellMode: pasteMultilineCellMode,
+    }),
+    [normalizeRetailPriceOnPaste, pasteMultilineCellMode],
+  )
+  const parsedPasteRowCount = useMemo(
+    () => parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions).length,
+    [pasteText, pasteFieldOrder, pasteParseOptions],
   )
 
   useEffect(() => {
@@ -1092,6 +1101,7 @@ export default function InvoiceEditPage() {
       activePasteJobIdRef.current = job.jobId
       setPasteVisible(false)
       setPasteText('')
+      setPasteMultilineCellMode('merge')
       notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.pasteJobSubmitted', '粘贴数据任务已提交'))
 
       void (async () => {
@@ -2428,6 +2438,11 @@ export default function InvoiceEditPage() {
             onSave={handleInlineDetailSave}
             display={<BarcodePreview value={v} compactCopy />}
           />
+          {(record.additionalBarcodes?.length ?? 0) > 0 && (
+            <Tag color="cyan" style={{ marginTop: 4, marginInlineEnd: 0 }}>
+              {t('posAdmin.invoiceDetail.additionalBarcodeCount', '副码 {{count}}', { count: record.additionalBarcodes?.length ?? 0 })}
+            </Tag>
+          )}
         </div>
       ),
     },
@@ -2960,7 +2975,10 @@ export default function InvoiceEditPage() {
             {isAdmin && (
               <Button
                 icon={<SnippetsOutlined />}
-                onClick={() => setPasteVisible(true)}
+                onClick={() => {
+                  setPasteMultilineCellMode('merge')
+                  setPasteVisible(true)
+                }}
               >
                 {t('posAdmin.invoiceDetail.pasteDataBtn', '粘贴数据')}
               </Button>
@@ -3097,6 +3115,7 @@ export default function InvoiceEditPage() {
         onCancel={() => {
           setPasteVisible(false)
           setPasteText('')
+          setPasteMultilineCellMode('merge')
         }}
         onOk={() => void handlePaste()}
         width={700}
@@ -3118,6 +3137,37 @@ export default function InvoiceEditPage() {
         <div style={{ marginBottom: 8, color: '#666', fontSize: 12 }}>
           {t('posAdmin.invoiceDetail.pasteHint', '请从 Excel 复制数据后粘贴到下方文本框。每行一条记录，可在下方调整列对应字段（Tab 分隔）')}
         </div>
+        {pasteMultilineAnalysis.hasMultilineCells && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={t('posAdmin.invoiceDetail.pasteMultilineDetectedTitle', '检测到单元格内有换行')}
+            description={(
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <div>
+                  {t('posAdmin.invoiceDetail.pasteMultilineDetectedDesc', '请选择处理方式；无法安全拆分的记录会自动按单元格内合并处理。')}
+                </div>
+                <Radio.Group
+                  value={pasteMultilineCellMode}
+                  onChange={(event) => setPasteMultilineCellMode(event.target.value as PasteMultilineCellMode)}
+                >
+                  <Radio value="merge">
+                    {t('posAdmin.invoiceDetail.pasteMultilineMerge', '单元格内合并（推荐）')}
+                  </Radio>
+                  <Radio value="smartSplit">
+                    {t('posAdmin.invoiceDetail.pasteMultilineSmartSplit', '按换行智能拆分')}
+                  </Radio>
+                </Radio.Group>
+                {pasteMultilineCellMode === 'smartSplit' && pasteMultilineAnalysis.unsafeRecordCount > 0 && (
+                  <div style={{ color: '#ad6800', fontSize: 12 }}>
+                    {t('posAdmin.invoiceDetail.pasteMultilineUnsafeWarning', '有 {{count}} 条记录的多行列数量不一致，将按单元格内合并处理。', { count: pasteMultilineAnalysis.unsafeRecordCount })}
+                  </div>
+                )}
+              </Space>
+            )}
+          />
+        )}
         <div style={{ marginBottom: 12 }}>
           <Space size={8} align="center" wrap>
             {/* 只影响粘贴映射为“零售价”的列，进货价和新自动零售价保持原始粘贴值。 */}
@@ -3176,7 +3226,7 @@ export default function InvoiceEditPage() {
         />
         {pasteText.trim() && (
           <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions).length })}
+            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsedPasteRowCount })}
           </div>
         )}
       </Modal>

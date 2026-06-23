@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -62,6 +63,9 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductCode { get; set; }
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public List<string> AdditionalBarcodes { get; set; } = new();
+        [JsonIgnore]
+        public string? AdditionalBarcodesJson { get; set; }
         public string? ProductName { get; set; }
         public string? Specification { get; set; }
         public string? Unit { get; set; }
@@ -302,6 +306,7 @@ namespace BlazorApp.Shared.DTOs
         public string? DetailGUID { get; set; }
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public List<string> AdditionalBarcodes { get; set; } = new();
         public string? ProductName { get; set; }
         public string? ProductCategoryGUID { get; set; }
         public string? StoreProductCode { get; set; }
@@ -741,6 +746,7 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public List<string> AdditionalBarcodes { get; set; } = new();
         public string? ProductName { get; set; }
         public decimal? Quantity { get; set; }
         public decimal? PurchasePrice { get; set; }

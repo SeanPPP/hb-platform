@@ -52,6 +52,7 @@ export interface LocalSupplierInvoiceItemDto {
   productCode?: string
   itemNumber?: string
   barcode?: string
+  additionalBarcodes?: string[]
   productName?: string
   specification?: string
   unit?: string
@@ -89,6 +90,7 @@ export interface InvoiceDetailUpsertItemDto {
   detailGUID?: string
   itemNumber?: string
   barcode?: string
+  additionalBarcodes?: string[]
   productName?: string
   productCategoryGUID?: string
   storeProductCode?: string
@@ -409,6 +411,7 @@ export interface PasteDetailsRequest {
   items: {
     itemNumber?: string
     barcode?: string
+    additionalBarcodes?: string[]
     productName?: string
     quantity?: number
     purchasePrice?: number
