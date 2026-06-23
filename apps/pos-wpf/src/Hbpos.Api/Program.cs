@@ -4,6 +4,7 @@ using Hbpos.Api.Logging;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.DependencyInjection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +24,16 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
+    // 启动时只检查 Square 后端注册存在，避免提前实例化 SQL 仓储并要求数据库连接串。
+    var serviceRegistration = scope.ServiceProvider.GetRequiredService<IServiceProviderIsService>();
+    if (!serviceRegistration.IsService(typeof(ISquareTerminalBackendService)))
+    {
+        throw new InvalidOperationException($"{nameof(ISquareTerminalBackendService)} is not registered.");
+    }
+
+    // REST client 不依赖本地数据库，真实解析可提前验证 Square:ApiVersion 配置。
+    _ = scope.ServiceProvider.GetRequiredService<ISquareTerminalRestClient>();
+
     var storeSchemaInitializer = scope.ServiceProvider.GetRequiredService<IStoreSchemaInitializer>();
     await storeSchemaInitializer.InitializeAsync();
 

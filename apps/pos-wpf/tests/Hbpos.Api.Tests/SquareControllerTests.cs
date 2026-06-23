@@ -203,33 +203,41 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
-    public async Task GetLocations_ReturnsServiceUnavailableWithoutLeakingToken()
+    public void Startup_FailsWhenSquareBackendServiceIsMissing()
     {
         var expected = new SquareTokenResponse(
             "Production",
             BackendToken,
             new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
 
-        await using var factory = new SquareApiFactory(new StubSquareTokenService(
-            responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)));
-        using var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        using var factory = new SquareApiFactory(
+            new StubSquareTokenService(responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)),
+            registerBackendService: false);
 
-        using var response = await client.GetAsync("/api/v1/square/locations?environment=Production");
+        var exception = Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
-        Assert.NotNull(apiResult);
-        Assert.False(apiResult.Success);
-        Assert.Equal("SQUARE_BACKEND_NOT_IMPLEMENTED", apiResult.ErrorCode);
-        Assert.DoesNotContain(BackendToken, await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Contains(nameof(ISquareTerminalBackendService), exception.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(BackendToken, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Startup_FailsWhenSquareApiVersionIsInvalid()
+    {
+        using var factory = new SquareApiFactory(squareApiVersion: "20260520");
+
+        var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+
+        Assert.Contains("Square:ApiVersion must use yyyy-MM-dd.", exception.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(BackendToken, exception.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task GetToken_ReturnsSanitizedServerErrorWhenServiceThrows()
     {
+        var squareLogger = new RecordingLogger<SquareController>();
         await using var factory = new SquareApiFactory(new StubSquareTokenService(
-            exceptionFactory: _ => new InvalidOperationException($"SQL timeout from POSM_SquareToken on server db01 for token {BackendToken}")));
+            exceptionFactory: _ => new InvalidOperationException($"SQL timeout from POSM_SquareToken on server db01 for token {BackendToken}")),
+            squareLogger: squareLogger);
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
@@ -249,6 +257,13 @@ public sealed class SquareControllerTests
         Assert.True(
             !message.Contains(BackendToken, StringComparison.Ordinal),
             "sanitized API error should not include token values");
+        Assert.Contains(squareLogger.Lines, line =>
+            line.Contains("token-status", StringComparison.Ordinal) &&
+            line.Contains("SQUARE_TOKEN_READ_FAILED", StringComparison.Ordinal) &&
+            line.Contains("InvalidOperationException", StringComparison.Ordinal) &&
+            line.Contains("token [REDACTED]", StringComparison.Ordinal));
+        Assert.All(squareLogger.Lines, line =>
+            Assert.DoesNotContain(BackendToken, line, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -259,13 +274,15 @@ public sealed class SquareControllerTests
             BackendToken,
             new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
 
+        var squareLogger = new RecordingLogger<SquareController>();
         await using var factory = new SquareApiFactory(
             new StubSquareTokenService(responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)),
             backendService: new ThrowingSquareTerminalBackendService(
                 () => new SquareTerminalBackendException(
                     "SQUARE_BACKEND_REQUEST_FAILED",
                     "token opaque-api-square-token should never leak",
-                    HttpStatusCode.ServiceUnavailable)));
+                    HttpStatusCode.ServiceUnavailable)),
+            squareLogger: squareLogger);
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
@@ -279,6 +296,14 @@ public sealed class SquareControllerTests
         Assert.Equal("SQUARE_BACKEND_REQUEST_FAILED", apiResult.ErrorCode);
         Assert.Equal("Square backend request failed.", apiResult.Message);
         Assert.DoesNotContain(BackendToken, rawContent, StringComparison.Ordinal);
+        Assert.Contains(squareLogger.Lines, line =>
+            line.Contains("locations", StringComparison.Ordinal) &&
+            line.Contains("SQUARE_BACKEND_REQUEST_FAILED", StringComparison.Ordinal) &&
+            line.Contains("503", StringComparison.Ordinal) &&
+            line.Contains("SquareTerminalBackendException", StringComparison.Ordinal) &&
+            line.Contains("token [REDACTED]", StringComparison.Ordinal));
+        Assert.All(squareLogger.Lines, line =>
+            Assert.DoesNotContain(BackendToken, line, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -289,12 +314,14 @@ public sealed class SquareControllerTests
             BackendToken,
             new DateTimeOffset(2026, 5, 26, 4, 0, 0, TimeSpan.Zero));
 
+        var squareLogger = new RecordingLogger<SquareController>();
         await using var factory = new SquareApiFactory(
             new StubSquareTokenService(responseFactory: _ => Task.FromResult<SquareTokenResponse?>(expected)),
             backendService: new ThrowingSquareTerminalBackendService(
                 () => new SquareTerminalRestException(
                     HttpStatusCode.BadGateway,
-                    $"Square upstream exploded with token {BackendToken}")));
+                    $"Square upstream exploded with token {BackendToken}")),
+            squareLogger: squareLogger);
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
@@ -308,6 +335,14 @@ public sealed class SquareControllerTests
         Assert.Equal("SQUARE_UPSTREAM_REQUEST_FAILED", apiResult.ErrorCode);
         Assert.Equal("Square upstream request failed.", apiResult.Message);
         Assert.DoesNotContain(BackendToken, rawContent, StringComparison.Ordinal);
+        Assert.Contains(squareLogger.Lines, line =>
+            line.Contains("locations", StringComparison.Ordinal) &&
+            line.Contains("SQUARE_UPSTREAM_REQUEST_FAILED", StringComparison.Ordinal) &&
+            line.Contains("502", StringComparison.Ordinal) &&
+            line.Contains("SquareTerminalRestException", StringComparison.Ordinal) &&
+            line.Contains("token [REDACTED]", StringComparison.Ordinal));
+        Assert.All(squareLogger.Lines, line =>
+            Assert.DoesNotContain(BackendToken, line, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -451,27 +486,6 @@ public sealed class SquareControllerTests
     }
 
     [Fact]
-    public async Task ReceiveWebhook_ReturnsStableServiceUnavailableWhenBackendServiceIsMissing()
-    {
-        const string rawBody = "{\"type\":\"terminal.checkout.updated\"}";
-
-        await using var factory = new SquareApiFactory();
-        using var client = factory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/square/webhooks");
-        request.Headers.TryAddWithoutValidation("x-square-hmacsha256-signature", "missing-service-signature");
-        request.Content = new StringContent(rawBody, Encoding.UTF8, "application/json");
-
-        using var response = await client.SendAsync(request);
-
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
-        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<SquareWebhookAcceptedResponse>>();
-        Assert.NotNull(apiResult);
-        Assert.False(apiResult.Success);
-        Assert.Equal("SQUARE_WEBHOOK_NOT_IMPLEMENTED", apiResult.ErrorCode);
-    }
-
-    [Fact]
     public async Task ReceiveWebhook_ReturnsStableForbiddenWhenSignatureIsInvalid()
     {
         const string rawBody = "{\"event_id\":\"event-001\",\"type\":\"terminal.checkout.updated\"}";
@@ -541,21 +555,33 @@ public sealed class SquareControllerTests
         ISquareTokenSchemaInitializer? schemaInitializer = null,
         ISquareWebhookSchemaInitializer? webhookSchemaInitializer = null,
         ISquareTerminalBackendService? backendService = null,
-        string? posmConnectionString = null)
+        string? posmConnectionString = null,
+        string? squareApiVersion = null,
+        RecordingLogger<SquareController>? squareLogger = null,
+        bool registerBackendService = true)
         : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
         {
             builder.UseEnvironment("Production");
-            if (!string.IsNullOrWhiteSpace(posmConnectionString))
+            if (!string.IsNullOrWhiteSpace(posmConnectionString) || squareApiVersion is not null)
             {
                 builder.ConfigureAppConfiguration((_, configurationBuilder) =>
                 {
-                    configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                    // 测试配置只覆盖显式传入项，避免改变默认启动路径。
+                    var settings = new Dictionary<string, string?>();
+                    if (!string.IsNullOrWhiteSpace(posmConnectionString))
                     {
-                        ["ConnectionStrings:MainConnection"] = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-main-test;Trusted_Connection=True;",
-                        ["ConnectionStrings:PosmConnection"] = posmConnectionString
-                    });
+                        settings["ConnectionStrings:MainConnection"] = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-main-test;Trusted_Connection=True;";
+                        settings["ConnectionStrings:PosmConnection"] = posmConnectionString;
+                    }
+
+                    if (squareApiVersion is not null)
+                    {
+                        settings["Square:ApiVersion"] = squareApiVersion;
+                    }
+
+                    configurationBuilder.AddInMemoryCollection(settings);
                 });
             }
 
@@ -597,11 +623,42 @@ public sealed class SquareControllerTests
                 services.AddSingleton(webhookSchemaInitializer ?? new NoOpSquareWebhookSchemaInitializer());
 
                 services.RemoveAll<ISquareTerminalBackendService>();
-                if (backendService is not null)
+                if (registerBackendService)
                 {
-                    services.AddSingleton(backendService);
+                    services.AddSingleton(backendService ?? new CapturingSquareTerminalBackendService());
+                }
+
+                if (squareLogger is not null)
+                {
+                    services.AddSingleton<ILogger<SquareController>>(squareLogger);
                 }
             });
+        }
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Lines { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Lines.Add(formatter(state, exception));
         }
     }
 

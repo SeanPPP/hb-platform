@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using Hbpos.Contracts.Square;
+using Microsoft.Extensions.Options;
 
 namespace Hbpos.Api.Services;
 
@@ -93,11 +95,44 @@ public sealed class SquareTerminalRestException(HttpStatusCode statusCode, strin
     public HttpStatusCode StatusCode { get; } = statusCode;
 }
 
-public sealed class HttpSquareTerminalRestClient(HttpClient httpClient) : ISquareTerminalRestClient
+public sealed class SquareTerminalRestOptions
+{
+    public const string DefaultApiVersion = "2026-01-22";
+
+    public string? ApiVersion { get; set; } = DefaultApiVersion;
+
+    public string GetApiVersion()
+    {
+        var apiVersion = string.IsNullOrWhiteSpace(ApiVersion)
+            ? DefaultApiVersion
+            : ApiVersion.Trim();
+
+        if (!IsValidApiVersion(apiVersion))
+        {
+            throw new InvalidOperationException("Square:ApiVersion must use yyyy-MM-dd.");
+        }
+
+        return apiVersion;
+    }
+
+    public static bool IsValidApiVersion(string? apiVersion)
+    {
+        return string.IsNullOrWhiteSpace(apiVersion) ||
+            DateOnly.TryParseExact(
+                apiVersion.Trim(),
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out _);
+    }
+}
+
+public sealed class HttpSquareTerminalRestClient(
+    HttpClient httpClient,
+    IOptions<SquareTerminalRestOptions>? options = null) : ISquareTerminalRestClient
 {
     private const string ProductionBaseUrl = "https://connect.squareup.com/v2/";
     private const string SandboxBaseUrl = "https://connect.squareupsandbox.com/v2/";
-    private const string SquareVersion = "2026-01-22";
     private const string TerminalApiProductType = "TERMINAL_API";
     private static readonly Regex BearerTokenRegex = new(
         @"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}",
@@ -108,6 +143,8 @@ public sealed class HttpSquareTerminalRestClient(HttpClient httpClient) : ISquar
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(100));
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly string _squareVersion = options?.Value.GetApiVersion() ??
+        SquareTerminalRestOptions.DefaultApiVersion;
 
     public Task<IReadOnlyList<SquareLocationDto>> GetLocationsAsync(
         string environment,
@@ -472,7 +509,7 @@ public sealed class HttpSquareTerminalRestClient(HttpClient httpClient) : ISquar
     {
         var request = new HttpRequestMessage(method, new Uri(GetBaseUri(environment), relativeUrl));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.TryAddWithoutValidation("Square-Version", SquareVersion);
+        request.Headers.TryAddWithoutValidation("Square-Version", _squareVersion);
         if (body is not null)
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);

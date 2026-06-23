@@ -4,11 +4,55 @@ using System.Text;
 using System.Text.Json;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Square;
+using Microsoft.Extensions.Options;
 
 namespace Hbpos.Api.Tests;
 
 public sealed class SquareTerminalRestClientTests
 {
+    [Fact]
+    public async Task GetLocationsAsync_UsesConfiguredSquareVersionHeader()
+    {
+        var handler = new CapturingHandler(_ => CreateJsonResponse(
+            """
+            {
+              "locations": [
+                {
+                  "id": "location-001",
+                  "name": "Front Counter"
+                }
+              ]
+            }
+            """));
+        using var httpClient = new HttpClient(handler);
+        var client = new HttpSquareTerminalRestClient(
+            httpClient,
+            Options.Create(new SquareTerminalRestOptions
+            {
+                ApiVersion = "2026-05-20"
+            }));
+
+        await client.GetLocationsAsync("Production", "secret-square-token", CancellationToken.None);
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal("2026-05-20", handler.LastRequest!.Headers.GetValues("Square-Version").Single());
+    }
+
+    [Fact]
+    public void Constructor_RejectsInvalidSquareVersion()
+    {
+        using var httpClient = new HttpClient(new CapturingHandler(_ => CreateJsonResponse("{}")));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => new HttpSquareTerminalRestClient(
+            httpClient,
+            Options.Create(new SquareTerminalRestOptions
+            {
+                ApiVersion = "20260520"
+            })));
+
+        Assert.Contains("Square:ApiVersion must use yyyy-MM-dd.", exception.Message);
+    }
+
     [Fact]
     public async Task CreateCheckoutAsync_SendsExpectedProductionRequest()
     {

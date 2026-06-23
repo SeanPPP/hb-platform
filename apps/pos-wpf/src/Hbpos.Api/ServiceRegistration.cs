@@ -10,6 +10,10 @@ public static class ServiceRegistration
         IConfiguration? configuration = null)
     {
         services.AddOptions<SquareWebhookOptions>();
+        services.AddOptions<SquareTerminalRestOptions>()
+            .Validate(
+                options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
+                "Square:ApiVersion must use yyyy-MM-dd.");
         if (configuration is not null)
         {
             services.Configure<LinklyCloudBackendAsyncOptions>(options =>
@@ -23,6 +27,7 @@ public static class ServiceRegistration
                     configuration.GetSection("LinklyCloudBackendAsync"));
             });
             services.Configure<SquareWebhookOptions>(configuration.GetSection("Square"));
+            services.Configure<SquareTerminalRestOptions>(configuration.GetSection("Square"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -146,4 +151,5 @@ public static class ServiceRegistration
             assign(value.Trim());
         }
     }
+
 }
