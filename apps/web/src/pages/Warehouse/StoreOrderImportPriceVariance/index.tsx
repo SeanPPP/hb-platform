@@ -5,6 +5,7 @@ import {
   Card,
   Col,
   DatePicker,
+  Empty,
   Form,
   Image,
   Input,
@@ -36,6 +37,7 @@ import type {
   StoreOrderImportPriceVarianceItem,
   StoreOrderImportPriceVarianceQuery,
   StoreOrderImportPriceVarianceSummary,
+  StoreOrderImportPriceVarianceSupplierSummary,
 } from '../../../types/storeOrder'
 
 const { RangePicker } = DatePicker
@@ -115,8 +117,21 @@ function formatNumber(value?: number, fractionDigits = 2) {
   return Number.isInteger(number) ? String(number) : number.toFixed(fractionDigits)
 }
 
+// 供应商统计接口一次性返回完整聚合结果，列排序在前端本地完成。
+function compareSupplierText(left?: string, right?: string) {
+  return (left || '').localeCompare(right || '', 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function compareSupplierNumber(left?: number, right?: number) {
+  return (left ?? 0) - (right ?? 0)
+}
+
 function getRowKey(row: StoreOrderImportPriceVarianceItem) {
   return row.productCode || row.itemNumber || row.productName || 'product'
+}
+
+function getSupplierSummaryRowKey(row: StoreOrderImportPriceVarianceSupplierSummary) {
+  return row.supplierCode || row.supplierName || 'unknown-supplier'
 }
 
 function getDetailRowKey(row: StoreOrderImportPriceVarianceDetailItem) {
@@ -174,6 +189,7 @@ export default function StoreOrderImportPriceVariancePage() {
   const [filters, setFilters] = useState<AppliedFilters>({ varianceDirection: 'all' })
   const [items, setItems] = useState<StoreOrderImportPriceVarianceItem[]>([])
   const [summary, setSummary] = useState<StoreOrderImportPriceVarianceSummary>(emptySummary)
+  const [supplierSummaries, setSupplierSummaries] = useState<StoreOrderImportPriceVarianceSupplierSummary[]>([])
   const [total, setTotal] = useState(0)
   const [pageNumber, setPageNumber] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -182,6 +198,8 @@ export default function StoreOrderImportPriceVariancePage() {
   const [loading, setLoading] = useState(false)
   const tableRegionRef = useRef<HTMLDivElement | null>(null)
   const [tableScrollY, setTableScrollY] = useState(480)
+  const supplierSummaryRegionRef = useRef<HTMLDivElement | null>(null)
+  const [supplierSummaryTableScrollY, setSupplierSummaryTableScrollY] = useState(360)
   const [supplierOptions, setSupplierOptions] = useState<SupplierOption[]>([])
   const [supplierLoading, setSupplierLoading] = useState(false)
   const supplierOptionsLoadedRef = useRef(false)
@@ -213,6 +231,7 @@ export default function StoreOrderImportPriceVariancePage() {
       setPageNumber(result.page)
       setPageSize(result.pageSize)
       setSummary(result.summary)
+      setSupplierSummaries(result.supplierSummaries)
     } catch (error) {
       console.error(error)
       void message.error(t('storeOrders.importPriceVariance.loadFailed'))
@@ -246,10 +265,9 @@ export default function StoreOrderImportPriceVariancePage() {
       return Math.ceil(element.getBoundingClientRect().height + marginTop + marginBottom)
     }
 
-    const measureTableScrollY = () => {
-      const region = tableRegionRef.current
+    const measureTableBodyScrollY = (region: HTMLElement | null, minTableBodyHeight: number) => {
       if (!region) {
-        return
+        return null
       }
 
       const tableHeader = region.querySelector('.ant-table-thead') as HTMLElement | null
@@ -259,10 +277,8 @@ export default function StoreOrderImportPriceVariancePage() {
       const paginationHeight = readOuterHeight(pagination)
       const horizontalScrollbarHeight = tableBody ? Math.max(0, tableBody.offsetHeight - tableBody.clientHeight) : 0
       const innerPadding = 8
-      const minTableBodyHeight = 260
 
-      // 主表区域按一屏高度展示，行数据只在表格 body 内滚动。
-      const nextScrollY = Math.max(
+      return Math.max(
         Math.floor(
           region.clientHeight -
             tableHeaderHeight -
@@ -272,8 +288,21 @@ export default function StoreOrderImportPriceVariancePage() {
         ),
         minTableBodyHeight,
       )
+    }
 
-      setTableScrollY((current) => (Math.abs(current - nextScrollY) > 4 ? nextScrollY : current))
+    const measureTableScrollY = () => {
+      // 主表和供应商统计都把滚动限制在表格 body 内，避免整页被长表格撑开。
+      const nextScrollY = measureTableBodyScrollY(tableRegionRef.current, 260)
+      const nextSupplierScrollY = measureTableBodyScrollY(supplierSummaryRegionRef.current, 240)
+
+      if (nextScrollY != null) {
+        setTableScrollY((current) => (Math.abs(current - nextScrollY) > 4 ? nextScrollY : current))
+      }
+      if (nextSupplierScrollY != null) {
+        setSupplierSummaryTableScrollY((current) =>
+          Math.abs(current - nextSupplierScrollY) > 4 ? nextSupplierScrollY : current,
+        )
+      }
     }
 
     const scheduleMeasure = () => {
@@ -297,13 +326,16 @@ export default function StoreOrderImportPriceVariancePage() {
     if (tableRegionRef.current) {
       observer.observe(tableRegionRef.current)
     }
+    if (supplierSummaryRegionRef.current) {
+      observer.observe(supplierSummaryRegionRef.current)
+    }
 
     return () => {
       if (frameId != null) window.cancelAnimationFrame(frameId)
       observer.disconnect()
       window.removeEventListener('resize', scheduleMeasure)
     }
-  }, [i18n.language, items.length, pageSize, total])
+  }, [i18n.language, items.length, pageSize, supplierSummaries.length, total])
 
   const loadSupplierOptions = useCallback(async () => {
     if (supplierOptionsLoadedRef.current || supplierLoading) {
@@ -725,6 +757,108 @@ export default function StoreOrderImportPriceVariancePage() {
     [i18n.language, openContainerDetail, openOrderDetail, t],
   )
 
+  const supplierSummaryColumns = useMemo<ColumnsType<StoreOrderImportPriceVarianceSupplierSummary>>(
+    () => [
+      {
+        title: t('storeOrders.importPriceVariance.domesticSupplier'),
+        dataIndex: 'supplierName',
+        key: 'supplierName',
+        width: 220,
+        sorter: (left, right) =>
+          compareSupplierText(left.supplierName || left.supplierCode, right.supplierName || right.supplierCode) ||
+          compareSupplierText(left.supplierCode, right.supplierCode),
+        render: (_value, row) => {
+          const supplierName =
+            row.supplierName ||
+            row.supplierCode ||
+            t('storeOrders.importPriceVariance.unknownSupplier')
+
+          return (
+            <Space direction="vertical" size={0}>
+              <Typography.Text strong>{supplierName}</Typography.Text>
+              <Typography.Text type="secondary">{row.supplierCode || '--'}</Typography.Text>
+            </Space>
+          )
+        },
+      },
+      {
+        title: t('storeOrders.importPriceVariance.originalImportAmountTotal'),
+        dataIndex: 'originalImportAmountTotal',
+        key: 'originalImportAmountTotal',
+        align: 'right',
+        width: 140,
+        sorter: (left, right) =>
+          compareSupplierNumber(left.originalImportAmountTotal, right.originalImportAmountTotal),
+        render: (value?: number) => formatMoney(value),
+      },
+      {
+        title: t('storeOrders.importPriceVariance.baselineImportAmountTotal'),
+        dataIndex: 'baselineImportAmountTotal',
+        key: 'baselineImportAmountTotal',
+        align: 'right',
+        width: 140,
+        sorter: (left, right) =>
+          compareSupplierNumber(left.baselineImportAmountTotal, right.baselineImportAmountTotal),
+        render: (value?: number) => formatMoney(value),
+      },
+      {
+        title: t('storeOrders.importPriceVariance.increaseVarianceAmountTotal'),
+        dataIndex: 'increaseVarianceAmountTotal',
+        key: 'increaseVarianceAmountTotal',
+        align: 'right',
+        width: 130,
+        sorter: (left, right) =>
+          compareSupplierNumber(left.increaseVarianceAmountTotal, right.increaseVarianceAmountTotal),
+        render: (value?: number) => (
+          <Typography.Text style={{ color: '#cf1322' }}>{formatMoney(value)}</Typography.Text>
+        ),
+      },
+      {
+        title: t('storeOrders.importPriceVariance.decreaseVarianceAmountTotal'),
+        dataIndex: 'decreaseVarianceAmountTotal',
+        key: 'decreaseVarianceAmountTotal',
+        align: 'right',
+        width: 130,
+        sorter: (left, right) =>
+          compareSupplierNumber(left.decreaseVarianceAmountTotal, right.decreaseVarianceAmountTotal),
+        render: (value?: number) => (
+          <Typography.Text style={{ color: '#389e0d' }}>{formatMoney(value)}</Typography.Text>
+        ),
+      },
+      {
+        title: t('storeOrders.importPriceVariance.varianceAmountTotal'),
+        dataIndex: 'varianceAmountTotal',
+        key: 'varianceAmountTotal',
+        align: 'right',
+        width: 130,
+        sorter: (left, right) => compareSupplierNumber(left.varianceAmountTotal, right.varianceAmountTotal),
+        render: (value?: number) => {
+          const amount = value ?? 0
+          return <Tag color={amount > 0 ? 'red' : amount < 0 ? 'green' : 'default'}>{formatMoney(amount)}</Tag>
+        },
+      },
+      {
+        title: t('storeOrders.importPriceVariance.productCount'),
+        dataIndex: 'productCount',
+        key: 'productCount',
+        align: 'right',
+        width: 100,
+        sorter: (left, right) => compareSupplierNumber(left.productCount, right.productCount),
+        render: (value?: number) => formatNumber(value, 0),
+      },
+      {
+        title: t('storeOrders.importPriceVariance.detailCount'),
+        dataIndex: 'detailCount',
+        key: 'detailCount',
+        align: 'right',
+        width: 100,
+        sorter: (left, right) => compareSupplierNumber(left.detailCount, right.detailCount),
+        render: (value?: number) => formatNumber(value, 0),
+      },
+    ],
+    [t],
+  )
+
   const handleSearch = (values: FilterValues) => {
     setFilters(normalizeFilters(values))
     setPageNumber(1)
@@ -875,6 +1009,44 @@ export default function StoreOrderImportPriceVariancePage() {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        title={t('storeOrders.importPriceVariance.supplierVarianceRankingTitle')}
+        style={{
+          marginTop: 16,
+          maxHeight: 'calc(100vh - 32px)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+        styles={{
+          body: {
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+          },
+        }}
+      >
+        <div ref={supplierSummaryRegionRef} style={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
+          <Table<StoreOrderImportPriceVarianceSupplierSummary>
+            rowKey={getSupplierSummaryRowKey}
+            loading={loading}
+            columns={supplierSummaryColumns}
+            dataSource={supplierSummaries}
+            size="small"
+            scroll={{ x: 1120, y: supplierSummaryTableScrollY }}
+            locale={{
+              emptyText: <Empty description={t('storeOrders.importPriceVariance.noSupplierVarianceData')} />,
+            }}
+            pagination={{
+              defaultPageSize: 50,
+              pageSizeOptions: [20, 50, 100],
+              showSizeChanger: true,
+              showTotal: (value) => t('storeOrders.importPriceVariance.totalSuppliers', { total: value }),
+            }}
+          />
+        </div>
+      </Card>
 
       <Card
         style={{

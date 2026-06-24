@@ -323,6 +323,22 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 首次货柜进货价基准差异国内供应商汇总。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceSupplierSummaryDto
+  {
+    public string? SupplierCode { get; set; }
+    public string? SupplierName { get; set; }
+    public int ProductCount { get; set; }
+    public int DetailCount { get; set; }
+    public decimal OriginalImportAmountTotal { get; set; }
+    public decimal BaselineImportAmountTotal { get; set; }
+    public decimal IncreaseVarianceAmountTotal { get; set; }
+    public decimal DecreaseVarianceAmountTotal { get; set; }
+    public decimal VarianceAmountTotal { get; set; }
+  }
+
+  /// <summary>
   /// 首次货柜进货价基准差异分页结果。
   /// </summary>
   public class StoreOrderImportPriceVarianceResultDto
@@ -332,6 +348,7 @@ namespace BlazorApp.Shared.DTOs
     public int PageNumber { get; set; } = 1;
     public int PageSize { get; set; } = 20;
     public StoreOrderImportPriceVarianceSummaryDto Summary { get; set; } = new();
+    public List<StoreOrderImportPriceVarianceSupplierSummaryDto> SupplierSummaries { get; set; } = new();
   }
 
   /// <summary>

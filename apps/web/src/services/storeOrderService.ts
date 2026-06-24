@@ -19,6 +19,7 @@ import type {
   StoreOrderImportPriceVarianceQuery,
   StoreOrderImportPriceVarianceResult,
   StoreOrderImportPriceVarianceSummary,
+  StoreOrderImportPriceVarianceSupplierSummary,
   SyncMissingStoreOrdersPayload,
   SyncMissingStoreOrdersResult,
   StoreOrderSyncJobResult,
@@ -147,6 +148,28 @@ function normalizeImportPriceVarianceSummary(payload: unknown): StoreOrderImport
   }
 }
 
+function readOptionalText(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function normalizeImportPriceVarianceSupplierSummary(
+  payload: unknown,
+): StoreOrderImportPriceVarianceSupplierSummary {
+  const summary = isRecord(payload) ? payload : {}
+
+  return {
+    supplierCode: readOptionalText(summary.supplierCode),
+    supplierName: readOptionalText(summary.supplierName),
+    productCount: readFiniteNumber(summary.productCount),
+    detailCount: readFiniteNumber(summary.detailCount),
+    originalImportAmountTotal: readFiniteNumber(summary.originalImportAmountTotal),
+    baselineImportAmountTotal: readFiniteNumber(summary.baselineImportAmountTotal),
+    increaseVarianceAmountTotal: readFiniteNumber(summary.increaseVarianceAmountTotal),
+    decreaseVarianceAmountTotal: readFiniteNumber(summary.decreaseVarianceAmountTotal),
+    varianceAmountTotal: readFiniteNumber(summary.varianceAmountTotal),
+  }
+}
+
 function normalizeStoreOrderImportPriceVarianceResult(
   payload: unknown,
   query: StoreOrderImportPriceVarianceQuery,
@@ -158,6 +181,7 @@ function normalizeStoreOrderImportPriceVarianceResult(
     pageNumber?: number | string
     pageSize?: number | string
     summary?: unknown
+    supplierSummaries?: unknown
   }>(payload)
 
   return {
@@ -166,6 +190,9 @@ function normalizeStoreOrderImportPriceVarianceResult(
     page: readFiniteNumber(result?.page ?? result?.pageNumber, query.pageNumber || 1),
     pageSize: readFiniteNumber(result?.pageSize, query.pageSize || 20),
     summary: normalizeImportPriceVarianceSummary(result?.summary),
+    supplierSummaries: Array.isArray(result?.supplierSummaries)
+      ? result.supplierSummaries.map(normalizeImportPriceVarianceSupplierSummary)
+      : [],
   }
 }
 

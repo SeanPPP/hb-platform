@@ -144,12 +144,25 @@ export interface StoreOrderImportPriceVarianceSummary {
   varianceAmountTotal: number
 }
 
+export interface StoreOrderImportPriceVarianceSupplierSummary {
+  supplierCode?: string
+  supplierName?: string
+  productCount: number
+  detailCount: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  increaseVarianceAmountTotal: number
+  decreaseVarianceAmountTotal: number
+  varianceAmountTotal: number
+}
+
 export interface StoreOrderImportPriceVarianceResult {
   items: StoreOrderImportPriceVarianceItem[]
   total: number
   page: number
   pageSize: number
   summary: StoreOrderImportPriceVarianceSummary
+  supplierSummaries: StoreOrderImportPriceVarianceSupplierSummary[]
 }
 
 export interface StoreOrderImportPriceVarianceDetailQuery extends StoreOrderImportPriceVarianceQuery {

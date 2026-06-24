@@ -60,13 +60,36 @@ assert(
 )
 
 assert(
+  pageSource.includes('const [supplierSummaries, setSupplierSummaries]') &&
+    pageSource.includes('setSupplierSummaries(result.supplierSummaries)') &&
+    pageSource.includes('const supplierSummaryColumns') &&
+    pageSource.includes('<Table<StoreOrderImportPriceVarianceSupplierSummary>') &&
+    pageSource.includes('supplierVarianceRankingTitle') &&
+    pageSource.includes('noSupplierVarianceData') &&
+    pageSource.includes("dataIndex: 'increaseVarianceAmountTotal'") &&
+    pageSource.includes("dataIndex: 'decreaseVarianceAmountTotal'") &&
+    pageSource.includes('defaultPageSize: 50') &&
+    pageSource.includes('pageSizeOptions: [20, 50, 100]') &&
+    pageSource.includes('compareSupplierText') &&
+    pageSource.includes('compareSupplierNumber') &&
+    pageSource.includes('sorter: (left, right)') &&
+    pageSource.includes('const supplierSummaryRegionRef = useRef<HTMLDivElement | null>(null)') &&
+    pageSource.includes('const [supplierSummaryTableScrollY, setSupplierSummaryTableScrollY]') &&
+    pageSource.includes("maxHeight: 'calc(100vh - 32px)'") &&
+    pageSource.includes('scroll={{ x: 1120, y: supplierSummaryTableScrollY }}') &&
+    !pageSource.includes('result.supplierSummaries.slice(0, 10)') &&
+    !pageSource.includes('SUPPLIER_SUMMARY_PLACEHOLDER_COUNT'),
+  '页面必须用单张一屏内可滚动、可排序的表格展示所有国内供应商差额统计，并默认每页 50 条',
+)
+
+assert(
   pageSource.includes('useLayoutEffect') &&
     pageSource.includes('const tableRegionRef = useRef<HTMLDivElement | null>(null)') &&
     pageSource.includes('const [tableScrollY, setTableScrollY]') &&
     pageSource.includes("height: 'calc(100vh - 32px)'") &&
     pageSource.includes('region.clientHeight') &&
     pageSource.includes('scroll={{ x: 1850, y: tableScrollY }}') &&
-    pageSource.includes('主表区域按一屏高度展示，行数据只在表格 body 内滚动') &&
+    pageSource.includes('主表和供应商统计都把滚动限制在表格 body 内') &&
     pageSource.includes("overflow: 'hidden'"),
   '主表区域必须按一屏高度展示，并根据表格区域自身高度计算 body 内部滚动高度',
 )
@@ -149,6 +172,24 @@ assert(
     enLocale.storeOrders.importPriceVariance.directionIncrease === 'Overcharged' &&
     enLocale.storeOrders.importPriceVariance.directionDecrease === 'Undercharged',
   '差额方向文案必须表达订单进货价相对首次货柜价的多收/少收语义',
+)
+
+assert(
+  zhLocale.storeOrders.importPriceVariance.supplierVarianceRankingTitle === '国内供应商差额统计' &&
+    zhLocale.storeOrders.importPriceVariance.increaseVarianceAmountTotal === '多收合计' &&
+    zhLocale.storeOrders.importPriceVariance.decreaseVarianceAmountTotal === '少收合计' &&
+    zhLocale.storeOrders.importPriceVariance.productCount === '商品数' &&
+    zhLocale.storeOrders.importPriceVariance.detailCount === '明细数' &&
+    zhLocale.storeOrders.importPriceVariance.noSupplierVarianceData === '暂无供应商差额数据' &&
+    zhLocale.storeOrders.importPriceVariance.totalSuppliers === '共 {{total}} 个供应商' &&
+    enLocale.storeOrders.importPriceVariance.supplierVarianceRankingTitle === 'Domestic Supplier Variance' &&
+    enLocale.storeOrders.importPriceVariance.increaseVarianceAmountTotal === 'Overcharged Total' &&
+    enLocale.storeOrders.importPriceVariance.decreaseVarianceAmountTotal === 'Undercharged Total' &&
+    enLocale.storeOrders.importPriceVariance.productCount === 'Products' &&
+    enLocale.storeOrders.importPriceVariance.detailCount === 'Details' &&
+    enLocale.storeOrders.importPriceVariance.noSupplierVarianceData === 'No supplier variance data' &&
+    enLocale.storeOrders.importPriceVariance.totalSuppliers === '{{total}} suppliers',
+  '中英文供应商差额统计表格文案必须存在',
 )
 
 console.log('storeOrderImportPriceVariance.logic.test: ok')
