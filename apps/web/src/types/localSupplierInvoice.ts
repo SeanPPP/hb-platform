@@ -74,6 +74,47 @@ export interface LocalSupplierInvoiceItemDto {
   oldStoreProductCode?: string
 }
 
+export interface LocalSupplierInvoiceSalesAnalysisItemDto {
+  detailGUID: string
+  productCode?: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  productImage?: string
+  specification?: string
+  unit?: string
+  quantity?: number
+  purchasePrice?: number
+  retailPrice?: number
+  amount?: number
+  salesQty30: number
+  salesQty60: number
+  salesQty90: number
+  previousPurchaseDate?: string | null
+  previousToCurrentDays?: number | null
+  salesSincePreviousPurchase?: number | null
+  salesSincePreviousPurchase30?: number | null
+  salesSincePreviousPurchase60?: number | null
+  salesSincePreviousPurchase90?: number | null
+  salesStatisticLastUpdate?: string | null
+}
+
+export interface LocalSupplierInvoiceSalesAnalysisResponseDto {
+  invoiceGUID: string
+  invoiceNo?: string
+  storeCode?: string
+  storeName?: string
+  supplierCode?: string
+  supplierName?: string
+  orderDate?: string | null
+  inboundDate?: string | null
+  analysisDate?: string | null
+  salesStatisticLastUpdate?: string | null
+  items: LocalSupplierInvoiceSalesAnalysisItemDto[]
+  calculationNote: string
+}
+
+
 export interface UpdateInvoiceRequest {
   storeCode?: string
   supplierCode?: string

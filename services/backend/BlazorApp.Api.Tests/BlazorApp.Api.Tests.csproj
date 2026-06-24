@@ -60,6 +60,7 @@
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
+    <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />

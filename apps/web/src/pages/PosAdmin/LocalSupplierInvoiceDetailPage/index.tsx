@@ -1,4 +1,5 @@
 import {
+  BarChartOutlined,
   CopyOutlined,
   EditOutlined,
   SendOutlined,
@@ -26,6 +27,7 @@ import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import BarcodePreview from '../../../components/BarcodePreview'
 import {
@@ -156,6 +158,7 @@ function getPriceChangeBg(lastPrice?: number, currentPrice?: number): string {
 export default function LocalSupplierInvoiceDetailPage() {
   const { t } = useTranslation()
   const route = useStableRouteContext()
+  const navigate = useNavigate()
   const { active } = useKeepAliveContext()
   const invoiceGuid = route?.params.id
   const { access, currentUser } = useAuthStore()
@@ -629,7 +632,20 @@ export default function LocalSupplierInvoiceDetailPage() {
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {/* 顶部：订单基本信息 */}
-      <Card title={t('posAdmin.invoiceDetail.orderBasicInfo', '订单基本信息')} loading={loading}>
+      <Card
+        title={t('posAdmin.invoiceDetail.orderBasicInfo', '订单基本信息')}
+        loading={loading}
+        extra={
+          invoiceGuid ? (
+            <Button
+              icon={<BarChartOutlined />}
+              onClick={() => navigate(`/pos-admin/local-supplier-invoices/${invoiceGuid}/sales-analysis`)}
+            >
+              {t('posAdmin.invoiceDetail.salesAnalysis', '销量分析')}
+            </Button>
+          ) : null
+        }
+      >
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={6}>

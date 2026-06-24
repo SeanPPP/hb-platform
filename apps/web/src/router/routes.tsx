@@ -57,6 +57,7 @@ import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
 import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
+import LocalSupplierInvoiceSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
@@ -592,6 +593,18 @@ export const appRoutes: AppRouteItem[] = [
           dynamicTitle: () => i18n.t('menu.invoiceDetail'),
         },
         element: <LocalSupplierInvoiceDetailPage />,
+      },
+      {
+        path: '/pos-admin/local-supplier-invoices/:id/sales-analysis',
+        meta: {
+          title: 'menu.localSupplierInvoiceSalesAnalysis',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageLocalPurchase',
+          activeMenu: '/pos-admin/local-supplier-invoices',
+          dynamicTitle: () => i18n.t('menu.localSupplierInvoiceSalesAnalysis', '进货单销量分析'),
+        },
+        element: <LocalSupplierInvoiceSalesAnalysisPage />,
       },
       {
         path: '/pos-admin/local-supplier-invoices/:id',
