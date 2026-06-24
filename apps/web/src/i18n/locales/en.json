@@ -70,6 +70,7 @@
     "appDownloads": "App Downloads",
     "salesOrders": "Sales Records",
     "localSupplierInvoices": "Local Invoices",
+    "localSupplierPurchaseSalesAnalysis": "Local Purchase Sales Analysis",
     "invoiceDetail": "Invoice Detail",
     "localSupplierInvoiceSalesAnalysis": "Invoice Sales Analysis",
     "editInvoice": "Edit Invoice",
@@ -2730,6 +2731,35 @@
       "detailsTitle": "Product Details ({{count}})",
       "copyItemNumber": "Copy Item No.",
       "calculationNote": "30/60/90-day sales after purchase are counted from the day after the current purchase date; interval sales still use the historical range from the previous purchase to this purchase."
+    },
+    "localSupplierPurchaseSalesAnalysis": {
+      "title": "Local Supplier Purchase Sales Analysis",
+      "subtitle": "Review the latest purchase cadence and follow-up sales by store, supplier, and order date range.",
+      "loadFailed": "Failed to load local supplier purchase sales analysis",
+      "refresh": "Refresh",
+      "empty": "No local supplier purchase sales data matched the current filters.",
+      "filters": {
+        "store": "Store",
+        "supplier": "Supplier",
+        "keyword": "Item No. / Barcode / Name"
+      },
+      "columns": {
+        "image": "Image",
+        "product": "Item No. / Name",
+        "supplier": "Supplier",
+        "latestPurchase": "Latest Purchase",
+        "previousPurchase": "Previous Purchase",
+        "intervalDays": "Interval Days",
+        "intervalSales": "Interval Sales",
+        "salesQty30": "30-day Sales",
+        "salesQty60": "60-day Sales",
+        "salesQty90": "90-day Sales",
+        "updatedAt": "Statistics Updated At"
+      },
+      "summary": {
+        "updatedAt": "Statistics Updated At",
+        "total": "{{count}} rows"
+      }
     },
     "salesOrders": {
       "title": "Sales Records",

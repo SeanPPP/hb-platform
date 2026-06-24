@@ -70,6 +70,7 @@
     "appDownloads": "App 下载",
     "salesOrders": "收银记录",
     "localSupplierInvoices": "分店进货单",
+    "localSupplierPurchaseSalesAnalysis": "分店进货销量分析",
     "invoiceDetail": "进货单详情",
     "localSupplierInvoiceSalesAnalysis": "进货单销量分析",
     "editInvoice": "编辑进货单",
@@ -2730,6 +2731,35 @@
       "detailsTitle": "商品明细 ({{count}})",
       "copyItemNumber": "复制货号",
       "calculationNote": "进货后30/60/90天销量从本次进货日期次日开始统计；上次到本次区间销量仍按历史区间显示。"
+    },
+    "localSupplierPurchaseSalesAnalysis": {
+      "title": "分店供应商进货销量分析",
+      "subtitle": "按分店、供应商和订单日期范围查看商品最近进货与后续销量表现。",
+      "loadFailed": "分店供应商进货销量分析加载失败",
+      "refresh": "刷新",
+      "empty": "当前条件下暂无分店供应商进货销量数据。",
+      "filters": {
+        "store": "分店",
+        "supplier": "供应商",
+        "keyword": "货号 / 条码 / 名称"
+      },
+      "columns": {
+        "image": "图片",
+        "product": "货号 / 名称",
+        "supplier": "供应商",
+        "latestPurchase": "最近进货",
+        "previousPurchase": "上次进货",
+        "intervalDays": "间隔天数",
+        "intervalSales": "间隔销量",
+        "salesQty30": "30 天销量",
+        "salesQty60": "60 天销量",
+        "salesQty90": "90 天销量",
+        "updatedAt": "统计更新时间"
+      },
+      "summary": {
+        "updatedAt": "统计更新时间",
+        "total": "共 {{count}} 条"
+      }
     },
     "salesOrders": {
       "title": "收银记录",

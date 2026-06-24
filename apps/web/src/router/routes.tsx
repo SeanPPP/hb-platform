@@ -58,6 +58,7 @@ import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import LocalSupplierInvoiceSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'
+import LocalSupplierPurchaseSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
@@ -581,6 +582,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageLocalPurchase',
         },
         element: <LocalSupplierInvoicesPage />,
+      },
+      {
+        path: '/pos-admin/local-supplier-purchase-sales-analysis',
+        meta: {
+          title: 'menu.localSupplierPurchaseSalesAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canManageLocalPurchase',
+        },
+        element: <LocalSupplierPurchaseSalesAnalysisPage />,
       },
       {
         path: '/pos-admin/invoice-detail/:id',

@@ -140,6 +140,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/pos-admin/schedule-attendance",   TitleKey = "menu.scheduleAttendance",     Icon = "CalendarOutlined",           Permission = Permissions.Attendance.Schedule.ViewStore },
                     new() { Path = "/pos-admin/sales-orders",          TitleKey = "menu.salesOrders",            Icon = "FileDoneOutlined",           Permission = Permissions.Orders.View },
                     new() { Path = "/pos-admin/local-supplier-invoices", TitleKey = "menu.localSupplierInvoices", Icon = "ReconciliationOutlined",     Permission = Permissions.LocalPurchase.View },
+                    new() { Path = "/pos-admin/local-supplier-purchase-sales-analysis", TitleKey = "menu.localSupplierPurchaseSalesAnalysis", Icon = "BarChartOutlined", Permission = Permissions.LocalPurchase.View },
                 },
             },
         };

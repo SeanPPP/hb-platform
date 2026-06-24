@@ -114,6 +114,60 @@ export interface LocalSupplierInvoiceSalesAnalysisResponseDto {
   calculationNote: string
 }
 
+export type LocalSupplierPurchaseSalesAnalysisSortOrder = 'asc' | 'desc'
+
+export interface LocalSupplierPurchaseSalesAnalysisQueryDto {
+  storeCode?: string
+  supplierCode?: string
+  orderDateStart?: string
+  orderDateEnd?: string
+  keyword?: string
+  sortBy?: string
+  sortOrder?: LocalSupplierPurchaseSalesAnalysisSortOrder
+  page?: number
+  pageSize?: number
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisRowDto {
+  storeCode: string
+  storeName?: string
+  productCode: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  productImage?: string
+  supplierCode: string
+  supplierName?: string
+  latestPurchaseDate?: string | null
+  latestPurchaseQty?: number | null
+  previousPurchaseDate?: string | null
+  previousPurchaseQty?: number | null
+  purchaseIntervalDays?: number | null
+  salesBetweenPurchases?: number | null
+  salesQty30: number
+  salesQty60: number
+  salesQty90: number
+  salesStatisticLastUpdate?: string | null
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisResponseDto {
+  items: LocalSupplierPurchaseSalesAnalysisRowDto[]
+  total: number
+  page: number
+  pageSize: number
+  salesStatisticLastUpdate?: string | null
+  calculationNote: string
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisStoreOptionDto {
+  label: string
+  value: string
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisSupplierOptionDto {
+  label: string
+  value: string
+}
 
 export interface UpdateInvoiceRequest {
   storeCode?: string

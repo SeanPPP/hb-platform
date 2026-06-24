@@ -157,6 +157,30 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsLocalSupplierInvoicesWithLocalPurchasePermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.LocalPurchase.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
+        var item = Assert.Single(
+            posAdmin.Children!,
+            child => child.Path == "/pos-admin/local-supplier-invoices"
+        );
+        Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
+
+        var analysisItem = Assert.Single(
+            posAdmin.Children!,
+            child => child.Path == "/pos-admin/local-supplier-purchase-sales-analysis"
+        );
+        Assert.Equal(Permissions.LocalPurchase.View, analysisItem.Permission);
+    }
+
+    [Fact]
     public void BuildMenu_ShowsAdvertisementsWithAdvertisementViewPermission()
     {
         var user = CreateUser(
@@ -790,6 +814,23 @@ public class NavigationServiceTests
     {
         var authorizeAttribute = GetMethodAuthorizeAttribute(
             typeof(ReactLocalSupplierInvoicesController),
+            methodName
+        );
+
+        Assert.Equal(Permissions.LocalPurchase.View, authorizeAttribute.Policy);
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetSalesAnalysis))]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysis))]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisStoreOptions))]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisSupplierOptions))]
+    public void LocalSupplierInvoiceSalesAnalysisEndpoints_RequireLocalPurchaseViewPermission(
+        string methodName
+    )
+    {
+        var authorizeAttribute = GetMethodAuthorizeAttribute(
+            typeof(ReactLocalSupplierInvoiceSalesAnalysisController),
             methodName
         );
 

@@ -33,6 +33,7 @@ namespace BlazorApp.Api.Controllers.React
             _logger = logger;
         }
 
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
         [HttpGet("{invoiceGuid}/sales-analysis")]
         public async Task<IActionResult> GetSalesAnalysis(string invoiceGuid)
         {
@@ -61,6 +62,146 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             return NotFound(new { success = false, message = result.Message });
+        }
+
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [HttpGet("purchase-sales-analysis")]
+        public async Task<IActionResult> GetPurchaseSalesAnalysis(
+            [FromQuery] LocalSupplierPurchaseSalesAnalysisQueryDto query
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(query.StoreCode))
+                {
+                    return BadRequest(
+                        ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                            "请先选择分店。",
+                            "VALIDATION_ERROR"
+                        )
+                    );
+                }
+
+                if (string.IsNullOrWhiteSpace(query.SupplierCode))
+                {
+                    return BadRequest(
+                        ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                            "请先选择供应商。",
+                            "VALIDATION_ERROR"
+                        )
+                    );
+                }
+
+                var storeScope = await ResolveStoreScopeAsync(query.StoreCode);
+                if (storeScope.Forbidden)
+                {
+                    return Forbid();
+                }
+
+                if (storeScope.RequiresStoreSelection)
+                {
+                    return BadRequest(
+                        ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                            "当前账号关联多个门店，请先选择一个门店。",
+                            "STORE_REQUIRED"
+                        )
+                    );
+                }
+
+                query.StoreCode = storeScope.SelectedStoreCode ?? query.StoreCode;
+                var result = await _service.GetPurchaseSalesAnalysisAsync(
+                    query,
+                    storeScope.ScopedStoreCodes
+                );
+
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+
+                return string.Equals(
+                    result.ErrorCode,
+                    "VALIDATION_ERROR",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                    ? BadRequest(result)
+                    : StatusCode(StatusCodes.Status500InternalServerError, result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "分店供应商进货销量分析查询失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto>.Error(
+                        "分店供应商进货销量分析查询失败"
+                    )
+                );
+            }
+        }
+
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [HttpGet("purchase-sales-analysis/store-options")]
+        public async Task<IActionResult> GetPurchaseSalesAnalysisStoreOptions()
+        {
+            try
+            {
+                var storeScope = await ResolveStoreScopeAsync(null, requireStoreSelectionWhenMissing: false);
+                if (storeScope.Forbidden)
+                {
+                    return Forbid();
+                }
+
+                var result = await _service.GetStoreOptionsAsync(storeScope.ScopedStoreCodes);
+                return Ok(ApiResponse<List<LocalSupplierPurchaseSalesAnalysisStoreOptionDto>>.OK(result));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "分店供应商进货销量分析分店选项加载失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<List<LocalSupplierPurchaseSalesAnalysisStoreOptionDto>>.Error(
+                        "分店供应商进货销量分析分店选项加载失败"
+                    )
+                );
+            }
+        }
+
+        [Authorize(Policy = Permissions.LocalPurchase.View)]
+        [HttpGet("purchase-sales-analysis/supplier-options")]
+        public async Task<IActionResult> GetPurchaseSalesAnalysisSupplierOptions(
+            [FromQuery] string? storeCode
+        )
+        {
+            try
+            {
+                // 供应商候选跟随门店权限收口，避免普通用户看到无权门店的进货供应商。
+                var storeScope = await ResolveStoreScopeAsync(
+                    storeCode,
+                    requireStoreSelectionWhenMissing: false
+                );
+                if (storeScope.Forbidden)
+                {
+                    return Forbid();
+                }
+
+                var result = await _service.GetSupplierOptionsAsync(
+                    storeScope.ScopedStoreCodes,
+                    storeScope.SelectedStoreCode ?? storeCode
+                );
+                return Ok(
+                    ApiResponse<List<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto>>.OK(result)
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "分店供应商进货销量分析供应商选项加载失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<List<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto>>.Error(
+                        "分店供应商进货销量分析供应商选项加载失败"
+                    )
+                );
+            }
         }
 
         private async Task<StoreScopeResult> ResolveStoreScopeAsync(
