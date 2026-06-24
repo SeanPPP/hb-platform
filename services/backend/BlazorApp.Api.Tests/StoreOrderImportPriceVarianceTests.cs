@@ -49,6 +49,41 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         );
     }
 
+    [Theory]
+    [InlineData(
+        "orderDate",
+        true,
+        "OrderDate DESC, OrderNo DESC, DetailGUID ASC",
+        "OrderDate DESC, OrderDate DESC"
+    )]
+    [InlineData(
+        "orderNo",
+        false,
+        "OrderNo ASC, OrderDate DESC, DetailGUID ASC",
+        "OrderNo ASC, OrderNo DESC"
+    )]
+    [InlineData(
+        null,
+        true,
+        "ABS(VarianceAmount) DESC, OrderDate DESC, OrderNo DESC, DetailGUID ASC",
+        "ABS(VarianceAmount) DESC, ABS(VarianceAmount) DESC"
+    )]
+    public void BuildStoreOrderImportPriceVarianceDetailOrderBy_RemovesDuplicateSortColumns(
+        string? sortBy,
+        bool sortDescending,
+        string expected,
+        string duplicatedFragment
+    )
+    {
+        var orderBy = StoreOrderReactService.BuildStoreOrderImportPriceVarianceDetailOrderBy(
+            sortBy,
+            sortDescending
+        );
+
+        Assert.Equal(expected, orderBy);
+        Assert.DoesNotContain(duplicatedFragment, orderBy);
+    }
+
     [Fact]
     public async Task GetImportPriceVarianceAsync_AppliesBaselineRulesAndDirectionFilters()
     {
@@ -188,6 +223,15 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         Assert.DoesNotContain(p1Details.Data.Items, item => item.DetailGUID == "D-DELETED");
         Assert.DoesNotContain(p1Details.Data.Items, item => item.DetailGUID == "D-NULL-IMPORT-PRICE");
         Assert.DoesNotContain(p1Details.Data.Items, item => item.DetailGUID == "D-ZERO-IMPORT-PRICE");
+
+        var p1DetailsByOrderDate = await service.GetImportPriceVarianceDetailsAsync(new StoreOrderImportPriceVarianceDetailQueryDto
+        {
+            ProductCode = "P1",
+            SortBy = "orderDate",
+            SortDescending = true,
+        });
+        Assert.True(p1DetailsByOrderDate.Success, p1DetailsByOrderDate.Message);
+        Assert.Equal(2, p1DetailsByOrderDate.Data!.Total);
 
         var p1IncreaseDetails = await service.GetImportPriceVarianceDetailsAsync(new StoreOrderImportPriceVarianceDetailQueryDto
         {

@@ -69,6 +69,7 @@ namespace BlazorApp.Api.Services.React
         {
             public string SummarySql { get; init; } = string.Empty;
             public string PagedSql { get; init; } = string.Empty;
+            public string SupplierSummarySql { get; init; } = string.Empty;
             public List<SugarParameter> Parameters { get; init; } = new();
         }
 
@@ -2904,6 +2905,10 @@ namespace BlazorApp.Api.Services.React
                     sql.PagedSql,
                     sql.Parameters.ToArray()
                 );
+                var supplierSummaries = await _db.Ado.SqlQueryAsync<StoreOrderImportPriceVarianceSupplierSummaryDto>(
+                    sql.SupplierSummarySql,
+                    sql.Parameters.ToArray()
+                );
 
                 return ApiResponse<StoreOrderImportPriceVarianceResultDto>.OK(
                     new StoreOrderImportPriceVarianceResultDto
@@ -2919,6 +2924,7 @@ namespace BlazorApp.Api.Services.React
                             BaselineImportAmountTotal = summaryRow.BaselineImportAmountTotal,
                             VarianceAmountTotal = summaryRow.VarianceAmountTotal,
                         },
+                        SupplierSummaries = supplierSummaries,
                     }
                 );
             }
@@ -3149,6 +3155,38 @@ FROM GroupedRows
 ORDER BY {orderExpression} {orderDirection}, ProductCode ASC
 {paginationSql}
 """,
+                SupplierSummarySql =
+                    baseSql
+                    + """
+,
+SupplierRows AS (
+    SELECT
+        SupplierCode,
+        SupplierName,
+        CAST(COUNT(DISTINCT ProductCode) AS int) AS ProductCount,
+        CAST(COUNT(1) AS int) AS DetailCount,
+        CAST(COALESCE(SUM(OriginalImportAmount), 0) AS decimal(18, 2)) AS OriginalImportAmountTotal,
+        CAST(COALESCE(SUM(BaselineImportAmount), 0) AS decimal(18, 2)) AS BaselineImportAmountTotal,
+        CAST(COALESCE(SUM(CASE WHEN VarianceAmount > 0 THEN VarianceAmount ELSE 0 END), 0) AS decimal(18, 2)) AS IncreaseVarianceAmountTotal,
+        CAST(COALESCE(SUM(CASE WHEN VarianceAmount < 0 THEN -VarianceAmount ELSE 0 END), 0) AS decimal(18, 2)) AS DecreaseVarianceAmountTotal,
+        CAST(COALESCE(SUM(VarianceAmount), 0) AS decimal(18, 2)) AS VarianceAmountTotal
+    FROM FinalRows
+    GROUP BY SupplierCode, SupplierName
+)
+SELECT
+    SupplierCode,
+    SupplierName,
+    ProductCount,
+    DetailCount,
+    OriginalImportAmountTotal,
+    BaselineImportAmountTotal,
+    IncreaseVarianceAmountTotal,
+    DecreaseVarianceAmountTotal,
+    VarianceAmountTotal
+FROM SupplierRows
+-- 返回当前筛选条件下全部供应商，页面本地分页和排序。
+ORDER BY ABS(VarianceAmountTotal) DESC, SupplierCode ASC
+""",
             };
         }
 
@@ -3166,8 +3204,10 @@ ORDER BY {orderExpression} {orderDirection}, ProductCode ASC
                 new("@Offset", (pageNumber - 1) * pageSize),
                 new("@PageSize", pageSize),
             };
-            var orderDirection = query.SortDescending ? "DESC" : "ASC";
-            var orderExpression = ResolveStoreOrderImportPriceVarianceDetailOrderExpression(query.SortBy);
+            var orderBy = BuildStoreOrderImportPriceVarianceDetailOrderBy(
+                query.SortBy,
+                query.SortDescending
+            );
             var paginationSql = isSqlite
                 ? "LIMIT @PageSize OFFSET @Offset"
                 : "OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
@@ -3216,7 +3256,7 @@ SELECT
     FirstContainerNumber,
     FirstContainerDate
 FROM FinalRows
-ORDER BY {orderExpression} {orderDirection}, OrderDate DESC, OrderNo DESC, DetailGUID ASC
+ORDER BY {orderBy}
 {paginationSql}
 """,
             };
@@ -3462,6 +3502,35 @@ FinalRows AS (
             };
         }
 
+        internal static string BuildStoreOrderImportPriceVarianceDetailOrderBy(
+            string? sortBy,
+            bool sortDescending
+        )
+        {
+            var orderDirection = sortDescending ? "DESC" : "ASC";
+            var terms = new List<(string Expression, string Direction)>
+            {
+                (ResolveStoreOrderImportPriceVarianceDetailOrderExpression(sortBy), orderDirection),
+            };
+
+            void AddFallback(string expression, string direction)
+            {
+                if (terms.Any(term => string.Equals(term.Expression, expression, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return;
+                }
+
+                terms.Add((expression, direction));
+            }
+
+            // SQL Server 不允许 ORDER BY 中重复同一列；二级稳定排序必须按主排序列去重。
+            AddFallback("OrderDate", "DESC");
+            AddFallback("OrderNo", "DESC");
+            AddFallback("DetailGUID", "ASC");
+
+            return string.Join(", ", terms.Select(term => $"{term.Expression} {term.Direction}"));
+        }
+
         private static StoreOrderImportPriceVarianceResultDto CreateEmptyImportPriceVarianceResult(
             int pageNumber,
             int pageSize
@@ -3474,6 +3543,7 @@ FinalRows AS (
                 PageNumber = pageNumber,
                 PageSize = pageSize,
                 Summary = new StoreOrderImportPriceVarianceSummaryDto(),
+                SupplierSummaries = new List<StoreOrderImportPriceVarianceSupplierSummaryDto>(),
             };
         }
 
