@@ -2984,6 +2984,86 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal("payment.status.cardCancelled", viewModel.StatusMessage);
     }
 
+    [Theory]
+    [InlineData("payment.card.squareCanceled", "Square checkout was canceled.")]
+    [InlineData("payment.card.squareCanceledBuyer", "Square checkout was canceled by the buyer. Ask the customer to try again or choose another payment method.")]
+    [InlineData("payment.card.squareCanceledSeller", "Square checkout was canceled. Please start the card payment again.")]
+    public async Task Payment_page_square_cancel_status_keeps_friendly_message_without_overlay(
+        string statusKey,
+        string statusMessage)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-160SQ-CANCEL", "Square Friendly Cancel Tea", "930160SQ", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(statusKey, statusMessage));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.IsCancelPaymentVisible);
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.CardPaymentErrorOverlay is null or { IsOpen: false });
+        Assert.Equal(statusMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_square_timeout_status_opens_timeout_overlay()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-160SQ-TIMEOUT", "Square Timeout Tea", "930160ST", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(
+            "payment.card.squareTimedOut",
+            "Square checkout timed out before the customer completed payment."));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+        Assert.True(viewModel.CardPaymentErrorOverlay!.IsOpen);
+        Assert.Equal("payment.card.error.overlay.timeout.title", viewModel.CardPaymentErrorOverlay.TitleKey);
+        Assert.Equal("Square checkout timed out before the customer completed payment.", viewModel.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData("payment.card.squareTerminalOffline", "Square terminal is offline. Check the terminal network and try again.")]
+    [InlineData("payment.card.squareTerminalNotPickedUp", "Square terminal did not pick up the checkout. Check that the terminal is online, then try again.")]
+    public async Task Payment_page_square_terminal_connectivity_status_opens_square_overlay(
+        string statusKey,
+        string statusMessage)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-160SQ-OFFLINE", "Square Offline Tea", "930160SO", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail(statusKey, statusMessage));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.False(viewModel.IsCardPaymentInProgress);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+        Assert.True(viewModel.CardPaymentErrorOverlay!.IsOpen);
+        Assert.Equal("payment.card.error.overlay.squareCommunicationFailed.title", viewModel.CardPaymentErrorOverlay.TitleKey);
+        Assert.Equal(statusMessage, viewModel.StatusMessage);
+    }
+
     [Fact]
     public async Task Payment_page_card_failure_result_restores_buttons_without_adding_tender()
     {

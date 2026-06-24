@@ -511,7 +511,7 @@ public sealed class CashPaymentWorkflowService(
         {
             await squarePaymentAttemptRepository!.MarkFailedAsync(
                 squareAttempt.AttemptGuid,
-                MapSquareAuthorizationFailureStatus(authorization.Message),
+                MapSquareAuthorizationFailureStatus(authorization.StatusKey, authorization.Message),
                 null,
                 authorization.ResponseText,
                 authorization.ResponseCode,
@@ -836,10 +836,27 @@ public sealed class CashPaymentWorkflowService(
         return LocalCardPaymentAttemptStatus.Failed;
     }
 
-    private static LocalSquarePaymentAttemptStatus MapSquareAuthorizationFailureStatus(string? message)
+    private static LocalSquarePaymentAttemptStatus MapSquareAuthorizationFailureStatus(
+        string? statusKey,
+        string? message)
     {
+        // Square 友好状态键比英文 message 更稳定，优先用它保留本地 attempt 的真实分类。
+        switch (statusKey)
+        {
+            case "payment.card.squareTimedOut":
+            case "payment.card.squareTerminalNotPickedUp":
+                return LocalSquarePaymentAttemptStatus.TimedOut;
+            case "payment.card.squareCanceled":
+            case "payment.card.squareCanceledBuyer":
+            case "payment.card.squareCanceledSeller":
+                return LocalSquarePaymentAttemptStatus.Canceled;
+            case "payment.card.squareTerminalOffline":
+                return LocalSquarePaymentAttemptStatus.Failed;
+        }
+
         var text = (message ?? string.Empty).ToUpperInvariant();
-        if (text.Contains("TIMEOUT", StringComparison.Ordinal))
+        if (text.Contains("TIMEOUT", StringComparison.Ordinal) ||
+            text.Contains("TIMED OUT", StringComparison.Ordinal))
         {
             return LocalSquarePaymentAttemptStatus.TimedOut;
         }

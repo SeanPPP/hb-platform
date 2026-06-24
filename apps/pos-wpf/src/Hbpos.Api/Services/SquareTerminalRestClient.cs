@@ -642,7 +642,11 @@ public sealed class HttpSquareTerminalRestClient(
             Status: TryGetString(element, "status"),
             ApprovedMoney: TryGetMoney(element, "approved_money"),
             TotalMoney: TryGetMoney(element, "total_money"),
-            UpdatedAt: TryGetDateTimeOffset(element, "updated_at"));
+            UpdatedAt: TryGetDateTimeOffset(element, "updated_at"),
+            CardBrand: NormalizeOptionalText(TryGetNestedString(element, "card_details", "card", "card_brand")),
+            // 只从 Square 的 last_4 生成脱敏显示值，避免把 BIN、有效期或 fingerprint 带给前端。
+            MaskedCardNumber: FormatMaskedCardNumber(TryGetNestedString(element, "card_details", "card", "last_4")),
+            AuthCode: NormalizeOptionalText(TryGetNestedString(element, "card_details", "auth_result_code")));
     }
 
     private static SquareRefundResponse MapRefund(string environment, JsonElement element)
@@ -728,6 +732,29 @@ public sealed class HttpSquareTerminalRestClient(
         }
 
         return current.ValueKind == JsonValueKind.String ? current.GetString() : null;
+    }
+
+    private static string? NormalizeOptionalText(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? FormatMaskedCardNumber(string? last4)
+    {
+        var normalized = NormalizeOptionalText(last4);
+        if (normalized is null)
+        {
+            return null;
+        }
+
+        var digits = new string(normalized.Where(char.IsDigit).ToArray());
+        if (digits.Length == 0)
+        {
+            return null;
+        }
+
+        var lastFour = digits.Length > 4 ? digits[^4..] : digits;
+        return $"****{lastFour}";
     }
 
     private static string? TryGetTerminalApplicationLocation(JsonElement element)

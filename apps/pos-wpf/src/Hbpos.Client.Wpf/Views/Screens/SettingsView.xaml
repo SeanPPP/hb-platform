@@ -401,7 +401,7 @@
                                                         <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}">
                                                             <Run Text="{Binding Id}" />
                                                             <Run Text="  " />
-                                                            <Run Text="{Binding Status}" />
+                                                            <Run Text="{Binding StatusDisplayName}" />
                                                         </TextBlock>
                                                     </StackPanel>
                                                 </DataTemplate>

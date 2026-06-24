@@ -67,8 +67,19 @@ public sealed class SquareSettingsCoordinator
             state.SelectedDevice = null;
             state.SelectedLocation = locations.FirstOrDefault(loc =>
                 string.Equals(loc.Id, state.SavedLocationId, StringComparison.OrdinalIgnoreCase));
+            if (env == CardTerminalEnvironment.Sandbox && state.SelectedLocation is null && locations.Count == 1)
+            {
+                state.SelectedLocation = locations[0];
+            }
+
+            if (env == CardTerminalEnvironment.Sandbox && state.SelectedLocation is not null)
+            {
+                // Sandbox 官方测试设备在设备加载链路中补齐；只加载 location 后也要立即触发，避免设备下拉为空。
+                await LoadDevicesForLocationAsync(state.SelectedLocation.Id, selectSavedDevice: true, devices, state);
+            }
+
             state.HasSavedToken = true;
-            Log($"load locations succeeded environment={env} count={locations.Count} selectedLocationId={LogVal(state.SelectedLocation?.Id)}");
+            Log($"load locations succeeded environment={env} count={locations.Count} selectedLocationId={LogVal(state.SelectedLocation?.Id)} devicesCount={devices.Count} selectedDeviceId={LogVal(state.SelectedDevice?.Id)}");
             Status(locations.Count == 0 ? "settings.status.noSquareLocations" : "settings.status.squareLocationsLoaded", locations.Count);
         }, "load square locations");
     }

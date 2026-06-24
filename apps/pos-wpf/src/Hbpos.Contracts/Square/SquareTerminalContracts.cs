@@ -52,7 +52,10 @@ public sealed record SquarePaymentStatusDto(
     string? Status = null,
     SquareMoneyDto? ApprovedMoney = null,
     SquareMoneyDto? TotalMoney = null,
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    string? CardBrand = null,
+    string? MaskedCardNumber = null,
+    string? AuthCode = null);
 
 public sealed record SquareCheckoutStatusResponse(
     string CheckoutId,

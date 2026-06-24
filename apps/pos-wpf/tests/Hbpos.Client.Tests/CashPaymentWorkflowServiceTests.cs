@@ -454,6 +454,71 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal("SQ:payment-1", completion.Order.Payments.Single().Reference);
     }
 
+    [Theory]
+    [InlineData(
+        "payment.card.squareTimedOut",
+        "Square checkout timed out before the customer completed payment.",
+        LocalSquarePaymentAttemptStatus.TimedOut)]
+    [InlineData(
+        "payment.card.squareTerminalNotPickedUp",
+        "Square terminal did not pick up this checkout.",
+        LocalSquarePaymentAttemptStatus.TimedOut)]
+    [InlineData(
+        "payment.card.squareCanceled",
+        "Square checkout was not completed. Please try again.",
+        LocalSquarePaymentAttemptStatus.Canceled)]
+    [InlineData(
+        "payment.card.squareCanceledBuyer",
+        "Customer canceled the Square payment.",
+        LocalSquarePaymentAttemptStatus.Canceled)]
+    [InlineData(
+        "payment.card.squareCanceledSeller",
+        "Square checkout was canceled.",
+        LocalSquarePaymentAttemptStatus.Canceled)]
+    [InlineData(
+        "payment.card.squareTerminalOffline",
+        "Square terminal is offline. Check the terminal network and try again.",
+        LocalSquarePaymentAttemptStatus.Failed)]
+    public async Task Square_card_tender_preserves_friendly_failure_status_on_local_attempt(
+        string statusKey,
+        string message,
+        LocalSquarePaymentAttemptStatus expectedAttemptStatus)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-397", "Square Failure Tea", "930397", 10m));
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new ObservingCardTerminalClient(() => { }, new PaymentAuthorizationResult(
+            false,
+            null,
+            message,
+            StatusKey: statusKey));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: squareAttempts,
+            squarePaymentAttemptContextAccessor: new SquarePaymentAttemptContextAccessor());
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cancellationToken: CancellationToken.None,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(tenderResult.Succeeded);
+        Assert.Equal(statusKey, tenderResult.StatusKey);
+        Assert.Equal(message, tenderResult.StatusMessage);
+        var savedAttempt = Assert.Single(squareAttempts.Attempts);
+        Assert.Equal(expectedAttemptStatus, savedAttempt.Status);
+        Assert.Equal(message, savedAttempt.ResponseText);
+    }
+
     [Fact]
     public async Task Card_tender_fallback_success_tells_supervisor_to_change_primary_mode_in_settings()
     {
@@ -1468,12 +1533,14 @@ public sealed class CashPaymentWorkflowServiceTests
             string? responseCode,
             string? responseText,
             DateTimeOffset resolvedAt,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? cancelReason = null)
         {
             Update(attemptGuid, attempt => attempt with
             {
                 Status = status,
                 CheckoutStatus = checkoutStatus ?? attempt.CheckoutStatus,
+                CancelReason = cancelReason ?? attempt.CancelReason,
                 PaymentStatus = paymentStatus ?? attempt.PaymentStatus,
                 ResponseCode = responseCode,
                 ResponseText = responseText,

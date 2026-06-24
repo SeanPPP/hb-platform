@@ -43,6 +43,7 @@
   <data name="settings.square.loadLocations" xml:space="preserve"><value>Load Locations</value></data>
   <data name="settings.square.loadLocations.tooltip" xml:space="preserve"><value>Load Square locations</value></data>
   <data name="settings.square.device" xml:space="preserve"><value>Device</value></data>
+  <data name="settings.square.deviceStatus.sandboxTest" xml:space="preserve"><value>Square sandbox test</value></data>
   <data name="settings.square.loadDevices" xml:space="preserve"><value>Load Devices</value></data>
   <data name="settings.square.loadDevices.tooltip" xml:space="preserve"><value>Load Square devices</value></data>
   <data name="settings.square.deviceCodes" xml:space="preserve"><value>Device Codes</value></data>

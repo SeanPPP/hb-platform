@@ -17,7 +17,10 @@ public sealed record SquarePaymentStatusResult(
     string PaymentId,
     string Status,
     long AmountCents,
-    string Currency);
+    string Currency,
+    string? CardBrand = null,
+    string? MaskedCardNumber = null,
+    string? AuthCode = null);
 
 public interface ISquareTerminalPaymentClient
 {
@@ -97,7 +100,10 @@ public sealed class SquareTerminalPaymentClient(HttpClient httpClient) : ISquare
             payment.PaymentId,
             payment.Status ?? string.Empty,
             amount.Amount,
-            amount.Currency);
+            amount.Currency,
+            payment.CardBrand,
+            payment.MaskedCardNumber,
+            payment.AuthCode);
     }
 
     private async Task<T> SendApiAsync<T>(

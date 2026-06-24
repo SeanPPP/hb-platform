@@ -220,6 +220,53 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public async Task LoadLocationsCommand_in_sandbox_auto_loads_devices_for_single_location()
+    {
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with
+            {
+                Processor = CardProcessorKind.Square,
+                Environment = CardTerminalEnvironment.Sandbox,
+                HasProtectedSquareAccessToken = true
+            },
+            CachedToken);
+        var viewModel = new SettingsViewModel(service);
+
+        await viewModel.LoadAsync();
+        await viewModel.LoadLocationsCommand.ExecuteAsync(null);
+
+        Assert.Equal(CardTerminalEnvironment.Sandbox, service.LastListSquareLocationsEnvironment);
+        Assert.Equal(CardTerminalEnvironment.Sandbox, service.LastListSquareDevicesEnvironment);
+        Assert.Single(viewModel.SquareLocations);
+        Assert.Single(viewModel.SquareDevices);
+        Assert.NotNull(viewModel.SelectedSquareLocation);
+        Assert.Equal("LOC-1", viewModel.SelectedSquareLocation!.Id);
+    }
+
+    [Fact]
+    public async Task LoadLocationsCommand_in_production_keeps_device_loading_manual()
+    {
+        var service = new FakeCardTerminalSetupService(
+            CardTerminalConfiguration.Default with
+            {
+                Processor = CardProcessorKind.Square,
+                Environment = CardTerminalEnvironment.Production,
+                HasProtectedSquareAccessToken = true
+            },
+            CachedToken);
+        var viewModel = new SettingsViewModel(service);
+
+        await viewModel.LoadAsync();
+        await viewModel.LoadLocationsCommand.ExecuteAsync(null);
+
+        Assert.Equal(CardTerminalEnvironment.Production, service.LastListSquareLocationsEnvironment);
+        Assert.Null(service.LastListSquareDevicesEnvironment);
+        Assert.Single(viewModel.SquareLocations);
+        Assert.Empty(viewModel.SquareDevices);
+        Assert.Null(viewModel.SelectedSquareLocation);
+    }
+
+    [Fact]
     public async Task LoadAsync_uses_backend_square_token_status_text()
     {
         var configuredViewModel = new SettingsViewModel(new FakeCardTerminalSetupService(

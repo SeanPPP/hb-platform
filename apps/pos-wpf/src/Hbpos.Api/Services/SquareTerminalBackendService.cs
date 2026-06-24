@@ -90,7 +90,8 @@ public sealed class SquareTerminalBackendService(
     {
         ValidateIdempotencyKey(request.IdempotencyKey);
         var context = await GetRequestContextAsync(request.Environment, cancellationToken);
-        var checkout = await restClient.CreateCheckoutAsync(context.Environment, context.AccessToken, request, cancellationToken);
+        var checkoutRequest = ResolveCheckoutRequest(context.Environment, request);
+        var checkout = await restClient.CreateCheckoutAsync(context.Environment, context.AccessToken, checkoutRequest, cancellationToken);
         return MapCheckout(checkout);
     }
 
@@ -229,6 +230,22 @@ public sealed class SquareTerminalBackendService(
                 IdempotencyKeyRequiredMessage,
                 HttpStatusCode.BadRequest);
         }
+    }
+
+    private static SquareCreateCheckoutRequest ResolveCheckoutRequest(
+        string environment,
+        SquareCreateCheckoutRequest request)
+    {
+        if (!string.Equals(environment, "Sandbox", StringComparison.OrdinalIgnoreCase))
+        {
+            return request;
+        }
+
+        // Sandbox Terminal checkout 只能靠 Square 官方特殊 device_id 控制模拟结果；普通配对设备 ID 在这里兜底为成功卡测值。
+        var sandboxDeviceId = SquareSandboxTerminalDeviceIds.ResolveCheckoutDeviceId(request.DeviceId);
+        return string.Equals(request.DeviceId, sandboxDeviceId, StringComparison.OrdinalIgnoreCase)
+            ? request
+            : request with { DeviceId = sandboxDeviceId };
     }
 
     private static SquareCheckoutStatusResponse MapCheckout(

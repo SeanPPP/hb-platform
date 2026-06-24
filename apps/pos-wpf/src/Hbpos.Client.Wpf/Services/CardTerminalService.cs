@@ -510,6 +510,12 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan SquarePollInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SquareCleanupTimeout = TimeSpan.FromSeconds(5);
+    private const string SquareTimedOutStatusKey = "payment.card.squareTimedOut";
+    private const string SquareTerminalOfflineStatusKey = "payment.card.squareTerminalOffline";
+    private const string SquareTerminalNotPickedUpStatusKey = "payment.card.squareTerminalNotPickedUp";
+    private const string SquareTimedOutMessage = "Square checkout timed out before the customer completed payment.";
+    private const string SquareTerminalOfflineMessage = "Square terminal is offline. Check the terminal network and try again.";
+    private const string SquareTerminalNotPickedUpMessage = "Square terminal did not pick up the checkout. Check that the terminal is online, then try again.";
 
     private readonly ICardTerminalSettingsProvider _settingsProvider;
     private readonly HttpClient _httpClient;
@@ -603,6 +609,8 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         string? checkoutId = null;
         var pollCount = 0;
         string? lastLoggedStatus = null;
+        var sawSquareInProgress = false;
+        var sawSquareCancelRequested = false;
         var reference = Limit($"{session.DeviceCode}-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}", 40);
         const string squareCurrency = "AUD";
         var requestedMinorAmount = ToMinorUnits(amount);
@@ -673,6 +681,16 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
 
                 var currentCheckout = ReadSquareCheckoutStatusResponse(getBody);
                 var status = currentCheckout.Status ?? string.Empty;
+                if (string.Equals(status, "IN_PROGRESS", StringComparison.OrdinalIgnoreCase))
+                {
+                    sawSquareInProgress = true;
+                }
+
+                if (string.Equals(status, "CANCEL_REQUESTED", StringComparison.OrdinalIgnoreCase))
+                {
+                    sawSquareCancelRequested = true;
+                }
+
                 if (!string.Equals(lastLoggedStatus, status, StringComparison.OrdinalIgnoreCase))
                 {
                     LogSquare($"checkout status checkoutId={checkoutId} poll={pollCount} status={status}");
@@ -791,10 +809,10 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
                             new CardTransactionDto(
                                 "Square",
                                 paymentId,
+                                payment.AuthCode,
+                                payment.CardBrand,
                                 null,
-                                null,
-                                null,
-                                null,
+                                payment.MaskedCardNumber,
                                 null,
                                 null,
                                 paymentStatus,
@@ -807,16 +825,26 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
 
                 if (string.Equals(status, "CANCELED", StringComparison.OrdinalIgnoreCase))
                 {
-                    LogSquare($"checkout canceled checkoutId={checkoutId} poll={pollCount}");
+                    var cancelOutcome = MapSquareCanceledCheckout(
+                        currentCheckout.CancelReason,
+                        currentCheckout.DeviceId ?? checkoutDeviceId,
+                        sawSquareInProgress,
+                        sawSquareCancelRequested);
+                    LogSquare($"checkout canceled checkoutId={checkoutId} poll={pollCount} cancelReason={LogValue(currentCheckout.CancelReason)} mappedStatusKey={cancelOutcome.StatusKey}");
                     await MarkSquareAttemptFailureAsync(
                         squareAttempt,
-                        LocalSquarePaymentAttemptStatus.Canceled,
+                        cancelOutcome.AttemptStatus,
                         status,
                         paymentStatus: null,
                         responseCode: null,
-                        responseText: "Square checkout was canceled.",
-                        timeoutCts.Token);
-                    return new PaymentAuthorizationResult(false, null, T("payment.card.squareCanceled", "Square checkout was canceled."));
+                        responseText: cancelOutcome.Message,
+                        timeoutCts.Token,
+                        cancelReason: currentCheckout.CancelReason);
+                    return new PaymentAuthorizationResult(
+                        false,
+                        null,
+                        cancelOutcome.Message,
+                        StatusKey: cancelOutcome.StatusKey);
                 }
 
                 if (!IsSquarePendingStatus(status))
@@ -844,13 +872,33 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            var cancellationReason = cancellationToken.IsCancellationRequested ? "caller-cancelled" : "local-timeout";
+            var wasCallerCancelled = cancellationToken.IsCancellationRequested;
+            var cancellationReason = wasCallerCancelled ? "caller-cancelled" : "local-timeout";
             LogSquare($"authorize canceled checkoutId={LogValue(checkoutId)} reason={cancellationReason}; starting cleanup");
             await CleanupSquareCheckoutBestEffortAsync(
                 settings,
                 checkoutId,
                 allowRefresh: true);
-            throw;
+            if (wasCallerCancelled)
+            {
+                throw;
+            }
+
+            // 本地轮询超时时，是否见过 IN_PROGRESS 用来区分顾客未完成与终端未接单。
+            var timeoutOutcome = MapSquareLocalTimeout(sawSquareInProgress);
+            await MarkSquareAttemptFailureAsync(
+                squareAttempt,
+                timeoutOutcome.AttemptStatus,
+                lastLoggedStatus,
+                paymentStatus: null,
+                responseCode: null,
+                responseText: timeoutOutcome.Message,
+                CancellationToken.None);
+            return new PaymentAuthorizationResult(
+                false,
+                null,
+                timeoutOutcome.Message,
+                StatusKey: timeoutOutcome.StatusKey);
         }
         catch (HttpRequestException ex)
         {
@@ -887,13 +935,15 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         string? paymentStatus,
         string? responseCode,
         string? responseText,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? cancelReason = null)
     {
         if (squareAttempt is null || _squarePaymentAttemptRepository is null)
         {
             return;
         }
 
+        // 取消原因和失败结果必须同一次写入，避免两次 UPDATE 中断时留下半成品记录。
         await _squarePaymentAttemptRepository.MarkFailedAsync(
             squareAttempt.AttemptGuid,
             status,
@@ -902,7 +952,82 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
             responseCode,
             responseText,
             DateTimeOffset.UtcNow,
-            cancellationToken);
+            cancellationToken,
+            cancelReason);
+    }
+
+    private sealed record SquareCanceledCheckoutOutcome(
+        string StatusKey,
+        string Message,
+        LocalSquarePaymentAttemptStatus AttemptStatus);
+
+    private SquareCanceledCheckoutOutcome MapSquareCanceledCheckout(
+        string? cancelReason,
+        string? checkoutDeviceId,
+        bool sawSquareInProgress,
+        bool sawSquareCancelRequested)
+    {
+        var normalizedReason = cancelReason?.Trim();
+        if (string.Equals(normalizedReason, "BUYER_CANCELED", StringComparison.OrdinalIgnoreCase))
+        {
+            return new SquareCanceledCheckoutOutcome(
+                "payment.card.squareCanceledBuyer",
+                T("payment.card.squareCanceledBuyer", "Square checkout was canceled by the buyer. Ask the customer to try again or choose another payment method."),
+                LocalSquarePaymentAttemptStatus.Canceled);
+        }
+
+        if (string.Equals(normalizedReason, "SELLER_CANCELED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedReason, "CANCEL_REQUESTED", StringComparison.OrdinalIgnoreCase) ||
+            sawSquareCancelRequested)
+        {
+            return new SquareCanceledCheckoutOutcome(
+                "payment.card.squareCanceledSeller",
+                T("payment.card.squareCanceledSeller", "Square checkout was canceled. Please start the card payment again."),
+                LocalSquarePaymentAttemptStatus.Canceled);
+        }
+
+        if (string.Equals(normalizedReason, "TIMED_OUT", StringComparison.OrdinalIgnoreCase))
+        {
+            // TIMED_OUT 是否见过 IN_PROGRESS 是收银端区分“顾客没完成”和“终端没接单”的关键依据。
+            // Sandbox 官方超时设备会立即返回 TIMED_OUT，不一定先进入 IN_PROGRESS，必须保留为 Square 超时。
+            if (SquareSandboxTerminalDeviceIds.AreSameDeviceId(
+                    checkoutDeviceId,
+                    SquareSandboxTerminalDeviceIds.SquareTimedOut))
+            {
+                return new SquareCanceledCheckoutOutcome(
+                    SquareTimedOutStatusKey,
+                    T(SquareTimedOutStatusKey, SquareTimedOutMessage),
+                    LocalSquarePaymentAttemptStatus.TimedOut);
+            }
+
+            return sawSquareInProgress
+                ? new SquareCanceledCheckoutOutcome(
+                    SquareTimedOutStatusKey,
+                    T(SquareTimedOutStatusKey, SquareTimedOutMessage),
+                    LocalSquarePaymentAttemptStatus.TimedOut)
+                : new SquareCanceledCheckoutOutcome(
+                    SquareTerminalNotPickedUpStatusKey,
+                    T(SquareTerminalNotPickedUpStatusKey, SquareTerminalNotPickedUpMessage),
+                    LocalSquarePaymentAttemptStatus.TimedOut);
+        }
+
+        return new SquareCanceledCheckoutOutcome(
+            "payment.card.squareCanceled",
+            T("payment.card.squareCanceled", "Square checkout was not completed. Please try again."),
+            LocalSquarePaymentAttemptStatus.Canceled);
+    }
+
+    private SquareCanceledCheckoutOutcome MapSquareLocalTimeout(bool sawSquareInProgress)
+    {
+        return sawSquareInProgress
+            ? new SquareCanceledCheckoutOutcome(
+                SquareTimedOutStatusKey,
+                T(SquareTimedOutStatusKey, SquareTimedOutMessage),
+                LocalSquarePaymentAttemptStatus.TimedOut)
+            : new SquareCanceledCheckoutOutcome(
+                SquareTerminalNotPickedUpStatusKey,
+                T(SquareTerminalNotPickedUpStatusKey, SquareTerminalNotPickedUpMessage),
+                LocalSquarePaymentAttemptStatus.TimedOut);
     }
 
     private static LocalSquarePaymentAttemptStatus MapSquarePaymentFailureStatus(
@@ -1119,16 +1244,33 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         }
     }
 
-    private static PaymentAuthorizationResult FailSquareRequest(
+    private PaymentAuthorizationResult FailSquareRequest(
         string operation,
         System.Net.HttpStatusCode statusCode,
         string? responseBody)
     {
         var detail = ReadSquareErrorMessage(responseBody);
+        if (string.Equals(operation, "checkout", StringComparison.OrdinalIgnoreCase) &&
+            IsSquareTerminalOfflineError(detail))
+        {
+            return new PaymentAuthorizationResult(
+                false,
+                null,
+                T(SquareTerminalOfflineStatusKey, SquareTerminalOfflineMessage),
+                StatusKey: SquareTerminalOfflineStatusKey);
+        }
+
         var message = string.IsNullOrWhiteSpace(detail)
             ? $"Square {operation} failed with HTTP {(int)statusCode}."
             : $"Square {operation} failed with HTTP {(int)statusCode}: {detail}";
         return new PaymentAuthorizationResult(false, null, message);
+    }
+
+    private static bool IsSquareTerminalOfflineError(string? detail)
+    {
+        return !string.IsNullOrWhiteSpace(detail) &&
+            detail.Contains("offline", StringComparison.OrdinalIgnoreCase) &&
+            detail.Contains("device", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ReadSquareErrorMessage(string? responseBody)
@@ -1216,13 +1358,27 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
             ReadRequiredString(checkoutElement, "id"),
             Environment: string.Empty,
             Status: ReadRequiredString(checkoutElement, "status"),
-            DeviceId: null,
+            DeviceId: ReadCheckoutDeviceId(checkoutElement),
             LocationId: null,
             AmountMoney: amountMoney,
             Payment: string.IsNullOrWhiteSpace(paymentId) ? null : new SquarePaymentStatusDto(paymentId),
             PaymentIds: paymentIds,
             CancelReason: ReadOptionalString(checkoutElement, "cancel_reason"),
             UpdatedAt: null);
+    }
+
+    private static string? ReadCheckoutDeviceId(JsonElement checkoutElement)
+    {
+        var directDeviceId = ReadOptionalString(checkoutElement, "device_id");
+        if (!string.IsNullOrWhiteSpace(directDeviceId))
+        {
+            return directDeviceId;
+        }
+
+        return checkoutElement.TryGetProperty("device_options", out var deviceOptions) &&
+            deviceOptions.ValueKind == JsonValueKind.Object
+                ? ReadOptionalString(deviceOptions, "device_id")
+                : null;
     }
 
     private static SquarePaymentStatusDto ReadSquarePaymentStatusResponse(string responseBody)
@@ -1245,7 +1401,11 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
             Status: ReadRequiredString(paymentElement, "status"),
             ApprovedMoney: amountMoney,
             TotalMoney: amountMoney,
-            UpdatedAt: null);
+            UpdatedAt: null,
+            CardBrand: NormalizeOptionalText(ReadOptionalNestedString(paymentElement, "card_details", "card", "card_brand")),
+            // raw Square 响应只取 last_4 生成脱敏卡号；完整卡资料不能进入本地订单。
+            MaskedCardNumber: FormatMaskedCardNumber(ReadOptionalNestedString(paymentElement, "card_details", "card", "last_4")),
+            AuthCode: NormalizeOptionalText(ReadOptionalNestedString(paymentElement, "card_details", "auth_result_code")));
     }
 
     private static SquareRefundResponse ReadSquareRefundResponse(string responseBody)
@@ -1379,6 +1539,44 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
             propertyElement.ValueKind == JsonValueKind.String
                 ? propertyElement.GetString()
                 : null;
+    }
+
+    private static string? ReadOptionalNestedString(JsonElement element, params string[] propertyPath)
+    {
+        var current = element;
+        foreach (var propertyName in propertyPath)
+        {
+            if (!current.TryGetProperty(propertyName, out current) ||
+                current.ValueKind == JsonValueKind.Null)
+            {
+                return null;
+            }
+        }
+
+        return current.ValueKind == JsonValueKind.String ? current.GetString() : null;
+    }
+
+    private static string? NormalizeOptionalText(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? FormatMaskedCardNumber(string? last4)
+    {
+        var normalized = NormalizeOptionalText(last4);
+        if (normalized is null)
+        {
+            return null;
+        }
+
+        var digits = new string(normalized.Where(char.IsDigit).ToArray());
+        if (digits.Length == 0)
+        {
+            return null;
+        }
+
+        var lastFour = digits.Length > 4 ? digits[^4..] : digits;
+        return $"****{lastFour}";
     }
 
     private static string Limit(string value, int maxLength)

@@ -80,7 +80,16 @@ public sealed class SquarePaymentRecoveryService(
                 return deferredResult;
             }
 
-            return await CompleteVerifiedAttemptAsync(cart, attempt, draft, attempt.PaymentId!, attempt.PaymentStatus!, cancellationToken);
+            return await CompleteVerifiedAttemptAsync(
+                cart,
+                attempt,
+                draft,
+                attempt.PaymentId!,
+                attempt.PaymentStatus!,
+                cardBrand: null,
+                maskedCardNumber: null,
+                authCode: null,
+                cancellationToken);
         }
 
         SquareCheckoutStatusResult checkoutStatus;
@@ -206,7 +215,16 @@ public sealed class SquarePaymentRecoveryService(
             "Payment verified during recovery.",
             DateTimeOffset.UtcNow,
             cancellationToken);
-        return await CompleteVerifiedAttemptAsync(cart, attempt, draft, payment.PaymentId, payment.Status, cancellationToken);
+        return await CompleteVerifiedAttemptAsync(
+            cart,
+            attempt,
+            draft,
+            payment.PaymentId,
+            payment.Status,
+            payment.CardBrand,
+            payment.MaskedCardNumber,
+            payment.AuthCode,
+            cancellationToken);
     }
 
     private async Task<CardPaymentRecoveryResult> CompleteVerifiedAttemptAsync(
@@ -215,6 +233,9 @@ public sealed class SquarePaymentRecoveryService(
         CardPaymentOrderDraft draft,
         string paymentId,
         string paymentStatus,
+        string? cardBrand,
+        string? maskedCardNumber,
+        string? authCode,
         CancellationToken cancellationToken)
     {
         cart.RestoreSnapshot(draft.CartSnapshot);
@@ -227,10 +248,10 @@ public sealed class SquarePaymentRecoveryService(
                 new CardTransactionDto(
                     "Square",
                     paymentId,
+                    authCode,
+                    cardBrand,
                     null,
-                    null,
-                    null,
-                    null,
+                    maskedCardNumber,
                     null,
                     null,
                     paymentStatus,

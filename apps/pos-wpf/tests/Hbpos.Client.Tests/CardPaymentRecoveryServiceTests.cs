@@ -552,6 +552,38 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_square_payment_details_are_saved_to_completed_order()
+    {
+        var attempt = CreateSquareAttempt(LocalSquarePaymentAttemptStatus.CheckoutCreated, checkoutId: "CHECKOUT-001");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult("CHECKOUT-001", "COMPLETED", 1000, "AUD", ["PAYMENT-001"], null),
+            Payment = new SquarePaymentStatusResult(
+                "PAYMENT-001",
+                "COMPLETED",
+                1000,
+                "AUD",
+                CardBrand: "VISA",
+                MaskedCardNumber: "****1111",
+                AuthCode: "68aLBM")
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        var payment = Assert.Single(result.Order!.Payments);
+        var transaction = Assert.Single(payment.CardTransactions!);
+        Assert.Equal("VISA", transaction.CardType);
+        Assert.Equal("****1111", transaction.MaskedCardNumber);
+        Assert.Equal("68aLBM", transaction.AuthCode);
+        Assert.Equal("COMPLETED", transaction.ResponseText);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_square_canceled_with_non_empty_current_cart_defers_without_restoring_or_marking_terminal()
     {
         var attempt = CreateSquareAttempt(LocalSquarePaymentAttemptStatus.CheckoutCreated, checkoutId: "CHECKOUT-001");
@@ -1000,7 +1032,8 @@ public sealed class CardPaymentRecoveryServiceTests
             string? responseCode,
             string? responseText,
             DateTimeOffset resolvedAt,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? cancelReason = null)
         {
             MarkFailedCount++;
             Status = status;

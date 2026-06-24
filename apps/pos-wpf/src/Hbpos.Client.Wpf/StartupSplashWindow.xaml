@@ -10,10 +10,12 @@
         ShowInTaskbar="False"
         Topmost="True"
         Icon="pack://application:,,,/Resources/AppIcon.ico"
-        Background="White"
+        AllowsTransparency="True"
+        Background="Transparent"
         FontFamily="{StaticResource PosFontFamily}"
         UseLayoutRounding="True">
-    <Grid Background="White" Margin="10">
+    <!-- 保持窗口外层透明，避免遮住内部 Border 的圆角。 -->
+    <Grid Background="Transparent" Margin="10">
         <Border Background="White"
                 BorderBrush="#FFE3E7EF"
                 BorderThickness="1"

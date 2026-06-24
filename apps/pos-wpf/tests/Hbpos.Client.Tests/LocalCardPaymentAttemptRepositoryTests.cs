@@ -105,6 +105,48 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task Square_attempt_repository_mark_failed_persists_cancel_reason_with_failure_fields()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalSquarePaymentAttemptRepository(store);
+            var attempt = CreateSquareAttempt();
+            var resolvedAt = attempt.CreatedAt.AddMinutes(4);
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(attempt);
+            await repository.MarkFailedAsync(
+                attempt.AttemptGuid,
+                LocalSquarePaymentAttemptStatus.Canceled,
+                "CANCELED",
+                paymentStatus: null,
+                responseCode: "BUYER_CANCELED",
+                responseText: "Square checkout was canceled by the buyer.",
+                resolvedAt,
+                cancelReason: "BUYER_CANCELED");
+
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+
+            Assert.NotNull(saved);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Canceled, saved.Status);
+            Assert.Equal("CANCELED", saved.CheckoutStatus);
+            Assert.Equal("BUYER_CANCELED", saved.CancelReason);
+            Assert.Equal("BUYER_CANCELED", saved.ResponseCode);
+            Assert.Equal("Square checkout was canceled by the buyer.", saved.ResponseText);
+            Assert.Equal(resolvedAt, saved.ResolvedAt);
+            Assert.Equal(resolvedAt, saved.UpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Square_attempt_repository_gets_latest_open_attempt_with_scope_filter()
     {
         var databasePath = CreateTempDatabasePath();

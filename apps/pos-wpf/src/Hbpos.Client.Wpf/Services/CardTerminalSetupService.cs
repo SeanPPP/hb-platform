@@ -1,4 +1,5 @@
 using Hbpos.Client.Wpf.Localization;
+using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Wpf.Services;
 
@@ -139,7 +140,7 @@ public sealed class CardTerminalSetupService(
         var setupAccessToken = ResolveSetupAccessToken(accessToken, environment);
         var devices = await squareSetupClient.ListDevicesAsync(setupAccessToken, environment, locationId, cancellationToken);
         LogSquareSetup($"list devices succeeded environment={environment} locationId={LogValue(locationId)} count={devices.Count}");
-        return devices;
+        return devices.Select(WithLocalizedSquareDeviceStatusDisplayName).ToArray();
     }
 
     public Task<IReadOnlyList<SquareDeviceCodeOption>> ListSquareDeviceCodesAsync(
@@ -530,6 +531,22 @@ public sealed class CardTerminalSetupService(
             trimmed.Length == 36 &&
             trimmed[14] == '4' &&
             trimmed[19] is '8' or '9' or 'a' or 'A' or 'b' or 'B';
+    }
+
+    private SquareDeviceOption WithLocalizedSquareDeviceStatusDisplayName(SquareDeviceOption device)
+    {
+        if (string.Equals(device.Status, SquareSandboxTerminalDeviceIds.TestDeviceStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            // Sandbox 测试设备保留原始状态码，同时给设置页一个本地化显示名。
+            return device with
+            {
+                StatusDisplayName = T("settings.square.deviceStatus.sandboxTest", "Square sandbox test")
+            };
+        }
+
+        return string.IsNullOrWhiteSpace(device.StatusDisplayName) && !string.IsNullOrWhiteSpace(device.Status)
+            ? device with { StatusDisplayName = device.Status }
+            : device;
     }
 
     private string T(string key, string fallback)

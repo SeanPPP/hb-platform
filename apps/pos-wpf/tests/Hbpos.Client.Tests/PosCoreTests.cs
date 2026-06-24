@@ -631,6 +631,43 @@ public sealed class PosCoreTests
     }
 
     [Fact]
+    public void Payment_success_view_model_shows_masked_square_card_details()
+    {
+        var order = CreateLocalOrder(
+            paymentMethod: PaymentMethodKind.Card,
+            actualAmount: 9m,
+            tenderedAmount: null,
+            changeAmount: null,
+            paymentReference: "SQ:payment-1",
+            cardTransactions:
+            [
+                new CardTransactionDto(
+                    "Square",
+                    "payment-1",
+                    "68aLBM",
+                    "VISA",
+                    null,
+                    "****1111",
+                    null,
+                    null,
+                    "COMPLETED",
+                    null,
+                    DateTimeOffset.UtcNow,
+                    9m,
+                    null)
+            ]);
+        var viewModel = new PaymentSuccessViewModel();
+
+        viewModel.LoadFromOrder(order);
+
+        Assert.True(viewModel.IsCardPaymentSummaryVisible);
+        Assert.Equal("VISA | ****1111 | Auth 68aLBM | COMPLETED", viewModel.CardPaymentSummary);
+        Assert.Contains(viewModel.ReceiptPreviewRows, row => row.Text.Contains("****1111", StringComparison.Ordinal));
+        Assert.DoesNotContain(viewModel.ReceiptPreviewRows, row => row.Text.Contains("411111", StringComparison.Ordinal));
+        Assert.DoesNotContain(viewModel.ReceiptPreviewRows, row => row.Text.Contains("sq-test-fingerprint", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Payment_success_view_model_shows_cash_change_when_persisted_change_is_positive()
     {
         var order = CreateLocalOrder(tenderedAmount: 10m, changeAmount: 1m);
@@ -753,7 +790,9 @@ public sealed class PosCoreTests
         PaymentMethodKind paymentMethod = PaymentMethodKind.Cash,
         decimal actualAmount = 9.00m,
         decimal? tenderedAmount = 10.00m,
-        decimal? changeAmount = 1.00m)
+        decimal? changeAmount = 1.00m,
+        string? paymentReference = null,
+        IReadOnlyList<CardTransactionDto>? cardTransactions = null)
     {
         var totalAmount = actualAmount + 0.20m;
         var firstLineAmount = decimal.Round(actualAmount - 4.00m, 2, MidpointRounding.AwayFromZero);
@@ -789,7 +828,7 @@ public sealed class PosCoreTests
             0.20m,
             actualAmount,
             lines,
-            [new LocalPayment(Guid.NewGuid(), paymentMethod, actualAmount, null)],
+            [new LocalPayment(Guid.NewGuid(), paymentMethod, actualAmount, paymentReference, cardTransactions)],
             tenderedAmount,
             changeAmount);
     }

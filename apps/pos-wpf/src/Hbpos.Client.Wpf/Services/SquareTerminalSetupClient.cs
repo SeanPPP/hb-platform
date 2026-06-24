@@ -8,7 +8,7 @@ namespace Hbpos.Client.Wpf.Services;
 
 public sealed record SquareLocationOption(string Id, string Name);
 
-public sealed record SquareDeviceOption(string Id, string Name, string? Status);
+public sealed record SquareDeviceOption(string Id, string Name, string? Status, string? StatusDisplayName = null);
 
 public sealed record SquareDeviceCodeOption(
     string Id,
@@ -97,12 +97,17 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
             cancellationToken);
 
         var result = await ReadApiResultAsync<List<SquareDeviceDto>>(response, "devices", cancellationToken);
-        return result
+        var devices = result
             .Select(device => new SquareDeviceOption(
                 device.Id,
                 string.IsNullOrWhiteSpace(device.Name) ? device.Id : device.Name,
-                device.Status))
+                device.Status,
+                string.IsNullOrWhiteSpace(device.Status) ? null : device.Status))
             .ToArray();
+
+        return environment == CardTerminalEnvironment.Sandbox
+            ? AppendSandboxCheckoutDevices(devices)
+            : devices;
     }
 
     public async Task<IReadOnlyList<SquareDeviceCodeOption>> ListDeviceCodesAsync(
@@ -262,6 +267,26 @@ public sealed class SquareTerminalSetupClient(HttpClient httpClient) : ISquareTe
             deviceCode.DeviceId,
             PairBy: null,
             CreatedAt: null);
+    }
+
+    private static IReadOnlyList<SquareDeviceOption> AppendSandboxCheckoutDevices(IReadOnlyList<SquareDeviceOption> devices)
+    {
+        var merged = devices.ToList();
+        foreach (var sandboxDevice in SquareSandboxTerminalDeviceIds.CheckoutDevices)
+        {
+            if (merged.Any(device => SquareSandboxTerminalDeviceIds.AreSameDeviceId(device.Id, sandboxDevice.DeviceId)))
+            {
+                continue;
+            }
+
+            // Sandbox 设备列表追加官方 checkout 测试 ID，让收银端可以通过选择设备控制成功、取消、超时等模拟结果。
+            merged.Add(new SquareDeviceOption(
+                sandboxDevice.DeviceId,
+                sandboxDevice.Name,
+                SquareSandboxTerminalDeviceIds.TestDeviceStatus));
+        }
+
+        return merged;
     }
 }
 

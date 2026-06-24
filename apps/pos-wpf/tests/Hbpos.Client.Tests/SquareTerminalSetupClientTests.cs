@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Tests;
 
@@ -95,20 +96,96 @@ public sealed class SquareTerminalSetupClientTests
         Assert.Equal(HttpMethod.Get, capturedRequest!.Method);
         AssertHbposApiRequest(capturedRequest, "api/v1/square/devices?environment=Sandbox&locationId=LOC%2F%2001");
         AssertNoSquareHeaders(capturedRequest);
-        Assert.Collection(
-            result,
-            device =>
-            {
-                Assert.Equal("device:123", device.Id);
-                Assert.Equal("Counter Terminal", device.Name);
-                Assert.Equal("AVAILABLE", device.Status);
-            },
-            device =>
-            {
-                Assert.Equal("device:456", device.Id);
-                Assert.Equal("Spare Terminal", device.Name);
-                Assert.Equal("OFFLINE", device.Status);
-            });
+        Assert.True(result.Count >= 2);
+        Assert.Equal("device:123", result[0].Id);
+        Assert.Equal("Counter Terminal", result[0].Name);
+        Assert.Equal("AVAILABLE", result[0].Status);
+        Assert.Equal("device:456", result[1].Id);
+        Assert.Equal("Spare Terminal", result[1].Name);
+        Assert.Equal("OFFLINE", result[1].Status);
+    }
+
+    [Fact]
+    public async Task ListDevicesAsync_WhenSandbox_AppendsOfficialCheckoutTestDevices()
+    {
+        var alreadyReturnedSandboxDeviceId = SquareSandboxTerminalDeviceIds.CreditCardSuccess;
+        var handler = new StubHttpMessageHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": "device:123",
+                      "name": "Counter Terminal",
+                      "status": "AVAILABLE"
+                    },
+                    {
+                      "id": "device:9fa747a2-25ff-48ee-b078-04381f7c828f",
+                      "name": "Sandbox API Terminal",
+                      "status": "AVAILABLE"
+                    }
+                  ]
+                }
+                """,
+                Encoding.UTF8,
+                "application/json")
+        }));
+
+        var client = CreateClient(handler);
+
+        var result = await client.ListDevicesAsync(TestAccessToken, CardTerminalEnvironment.Sandbox, "LOC-1");
+
+        var normalizedIds = result
+            .Select(device => SquareSandboxTerminalDeviceIds.NormalizeDeviceId(device.Id))
+            .Where(id => id is not null)
+            .ToArray();
+        foreach (var sandboxDevice in SquareSandboxTerminalDeviceIds.CheckoutDevices)
+        {
+            Assert.Contains(normalizedIds, id => string.Equals(id, sandboxDevice.DeviceId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        Assert.Equal(1, normalizedIds.Count(id => string.Equals(id, alreadyReturnedSandboxDeviceId, StringComparison.OrdinalIgnoreCase)));
+        Assert.Contains(result, device =>
+            SquareSandboxTerminalDeviceIds.AreSameDeviceId(device.Id, "9fa747a2-25ff-48ee-b078-04381f7c828f") &&
+            device.Name.Contains("Sandbox", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result, device =>
+            device.Id == "841100b9-ee60-4537-9bcf-e30b2ba5e215" &&
+            device.Name.Contains("cancel", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result, device =>
+            device.Id == "0a956d49-619a-4530-8e5e-8eac603ffc5e" &&
+            device.Name.Contains("timeout", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ListDevicesAsync_WhenProduction_DoesNotAppendSandboxCheckoutTestDevices()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {
+                  "success": true,
+                  "data": [
+                    {
+                      "id": "device:123",
+                      "name": "Counter Terminal",
+                      "status": "AVAILABLE"
+                    }
+                  ]
+                }
+                """,
+                Encoding.UTF8,
+                "application/json")
+        }));
+
+        var client = CreateClient(handler);
+
+        var result = await client.ListDevicesAsync(TestAccessToken, CardTerminalEnvironment.Production, "LOC-1");
+
+        var device = Assert.Single(result);
+        Assert.Equal("device:123", device.Id);
     }
 
     [Fact]

@@ -22,6 +22,7 @@
         Background="{StaticResource PosScreenBackgroundBrush}">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:LocalizationKeyConverter x:Key="LocalizationKeyConverter" />
         <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
 
         <Style x:Key="CustomerDisplayModeIconButtonStyle" TargetType="Button">
@@ -1031,6 +1032,116 @@
                 </Grid>
             </Border>
         </Border>
+
+        <!-- 刷卡错误全局弹窗：和 Linkly 终端弹窗同级，避免只在右侧支付区域内显示。 -->
+        <Grid Grid.RowSpan="3"
+              Panel.ZIndex="90">
+            <Grid.Style>
+                <Style TargetType="{x:Type Grid}">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsCashPaymentScreenActive}" Value="True" />
+                                <Condition Binding="{Binding CachedCashPaymentScreen.CardPaymentErrorOverlay.IsOpen}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <Setter Property="Visibility" Value="Visible" />
+                        </MultiDataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+
+            <Border Background="#66000000">
+                <Border.InputBindings>
+                    <MouseBinding MouseAction="LeftClick"
+                                  Command="{Binding CachedCashPaymentScreen.CloseCardPaymentErrorOverlayCommand}" />
+                </Border.InputBindings>
+            </Border>
+
+            <Border Width="520"
+                    Padding="24"
+                    Background="{StaticResource PosSurfaceBrush}"
+                    CornerRadius="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    DataContext="{Binding CachedCashPaymentScreen}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.22" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" Margin="0,0,0,18">
+                        <Button DockPanel.Dock="Right"
+                                Command="{Binding CloseCardPaymentErrorOverlayCommand}"
+                                Style="{StaticResource TitleBarButtonStyle}"
+                                ToolTip="{loc:Loc shell.window.close}">
+                            <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                        </Button>
+                        <TextBlock Text="{Binding CardPaymentErrorOverlay.TitleKey, Converter={StaticResource LocalizationKeyConverter}}"
+                                   FontSize="20"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosTextBrush}"
+                                   TextWrapping="Wrap" />
+                    </DockPanel>
+
+                    <Grid Grid.Row="1" Margin="0,0,0,20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="54"
+                                Height="54"
+                                Background="#FFFFEEF0"
+                                CornerRadius="12"
+                                VerticalAlignment="Top">
+                            <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                     Width="34"
+                                                     Height="34"
+                                                     Foreground="{StaticResource PosDangerBrush}"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding CardPaymentErrorOverlay.DisplayMessage}"
+                                   Margin="16,0,0,0"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+
+                    <!-- 有恢复或确认操作时保留主按钮，普通错误只显示关闭按钮。 -->
+                    <StackPanel Grid.Row="2"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right">
+                        <Button Command="{Binding CardPaymentErrorPrimaryActionCommand}"
+                                MinWidth="148"
+                                Height="44"
+                                Margin="0,0,8,0"
+                                Visibility="{Binding CardPaymentErrorOverlay.HasPrimaryAction, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed}"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <TextBlock Text="{Binding CardPaymentErrorOverlay.PrimaryButtonTextKey, Converter={StaticResource LocalizationKeyConverter}}"
+                                       Foreground="White"
+                                       FontWeight="Bold" />
+                        </Button>
+                        <Button Command="{Binding CloseCardPaymentErrorOverlayCommand}"
+                                MinWidth="112"
+                                Height="44"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <TextBlock Text="{Binding CardPaymentErrorOverlay.ButtonTextKey, Converter={StaticResource LocalizationKeyConverter}}"
+                                       Foreground="White"
+                                       FontWeight="Bold" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </Window>
 

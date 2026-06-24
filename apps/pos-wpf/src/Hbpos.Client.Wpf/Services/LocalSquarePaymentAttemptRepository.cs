@@ -118,7 +118,8 @@ public interface ILocalSquarePaymentAttemptRepository
         string? responseCode,
         string? responseText,
         DateTimeOffset resolvedAt,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? cancelReason = null);
 
     Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default);
 
@@ -275,13 +276,15 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         string? responseCode,
         string? responseText,
         DateTimeOffset resolvedAt,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? cancelReason = null)
     {
         await ExecuteUpdateAsync(
             """
             UPDATE LocalSquarePaymentAttempts
             SET Status = $Status,
                 CheckoutStatus = COALESCE($CheckoutStatus, CheckoutStatus),
+                CancelReason = COALESCE($CancelReason, CancelReason),
                 PaymentStatus = COALESCE($PaymentStatus, PaymentStatus),
                 ResponseCode = $ResponseCode,
                 ResponseText = $ResponseText,
@@ -294,6 +297,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
                 command.Parameters.AddWithValue("$Status", status.ToString());
                 command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$CancelReason", (object?)cancelReason ?? DBNull.Value);
                 command.Parameters.AddWithValue("$PaymentStatus", (object?)paymentStatus ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);

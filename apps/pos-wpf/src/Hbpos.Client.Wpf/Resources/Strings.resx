@@ -200,10 +200,19 @@
   <data name="payment.card.squareConfigIncomplete" xml:space="preserve"><value>Square terminal configuration is incomplete.</value></data>
   <data name="payment.card.squareMissingCheckoutId" xml:space="preserve"><value>Square checkout did not return an id.</value></data>
   <data name="payment.card.squareAmountMismatch" xml:space="preserve"><value>Square authorized amount did not match the requested amount.</value></data>
-  <data name="payment.card.squareCanceled" xml:space="preserve"><value>Square checkout was canceled.</value></data>
+  <data name="payment.card.squareCanceled" xml:space="preserve"><value>Square checkout was not completed. Please try again.</value></data>
+  <data name="payment.card.squareCanceledBuyer" xml:space="preserve"><value>Square checkout was canceled by the buyer. Ask the customer to try again or choose another payment method.</value></data>
+  <data name="payment.card.squareCanceledSeller" xml:space="preserve"><value>Square checkout was canceled. Please start the card payment again.</value></data>
+  <data name="payment.card.squareTimedOut" xml:space="preserve"><value>Square checkout timed out before the customer completed payment.</value></data>
+  <data name="payment.card.squareTerminalOffline" xml:space="preserve"><value>Square terminal is offline. Check the terminal network and try again.</value></data>
+  <data name="payment.card.squareTerminalNotPickedUp" xml:space="preserve"><value>Square terminal did not pick up the checkout. Check that the terminal is online, then try again.</value></data>
   <data name="payment.card.squareUnexpectedStatus" xml:space="preserve"><value>Square checkout entered unexpected status '{0}'.</value></data>
   <data name="payment.card.squareCommunicationFailed" xml:space="preserve"><value>Square terminal communication failed.</value></data>
   <data name="payment.card.squareInvalidResponse" xml:space="preserve"><value>Square terminal returned an invalid response.</value></data>
+  <data name="payment.card.squareMissingPaymentId" xml:space="preserve"><value>Square checkout did not return a payment id.</value></data>
+  <data name="payment.card.squarePaymentStatus" xml:space="preserve"><value>Square payment status is {0}.</value></data>
+  <data name="payment.card.squarePaymentAmountMismatch" xml:space="preserve"><value>Square payment amount did not match the requested amount.</value></data>
+  <data name="payment.card.squarePaymentCurrencyMismatch" xml:space="preserve"><value>Square payment currency did not match the requested currency.</value></data>
   <data name="payment.card.squareRefundMissingReference" xml:space="preserve"><value>Square refund requires an original Square payment reference.</value></data>
   <data name="payment.card.squareRefundStatus" xml:space="preserve"><value>Square refund status is {0}.</value></data>
   <data name="payment.card.error.overlay.connectionFailed.title" xml:space="preserve"><value>Card Terminal Connection Failed</value></data>
@@ -232,6 +241,7 @@
   <data name="success.subtitle" xml:space="preserve"><value>The transaction has been processed successfully.</value></data>
   <data name="success.totalPaid" xml:space="preserve"><value>Total Amount Paid</value></data>
   <data name="success.transactionId" xml:space="preserve"><value>Transaction ID</value></data>
+  <data name="success.cardDetails" xml:space="preserve"><value>Card details</value></data>
   <data name="success.digitalReceipt" xml:space="preserve"><value>Digital Receipt</value></data>
   <data name="success.email" xml:space="preserve"><value>Send via email</value></data>
   <data name="success.sms" xml:space="preserve"><value>Send via SMS</value></data>

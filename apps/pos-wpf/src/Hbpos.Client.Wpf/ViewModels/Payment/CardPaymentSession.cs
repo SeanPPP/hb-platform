@@ -234,6 +234,11 @@ internal sealed class CardPaymentSession
 
     private bool TrySetCardTerminalFailureStatus(PaymentTenderAttemptResult result)
     {
+        if (IsSquareFriendlyStatusKey(result.StatusKey))
+        {
+            return false;
+        }
+
         if (IsConfirmedCardCancellation(result.StatusMessage))
         {
             _vm.SetStatus("payment.status.cardCancelled");
@@ -383,6 +388,18 @@ internal sealed class CardPaymentSession
         return string.Equals(statusKey, "payment.status.cardDeclined", StringComparison.Ordinal);
     }
 
+    private static bool IsSquareFriendlyStatusKey(string statusKey)
+    {
+        // Square 已映射状态要保留原文案，避免再被通用取消/超时识别覆盖。
+        return statusKey is
+            "payment.card.squareCanceled" or
+            "payment.card.squareCanceledBuyer" or
+            "payment.card.squareCanceledSeller" or
+            "payment.card.squareTimedOut" or
+            "payment.card.squareTerminalOffline" or
+            "payment.card.squareTerminalNotPickedUp";
+    }
+
     private static bool IsTimeoutMessage(string? message)
     {
         return !string.IsNullOrWhiteSpace(message) &&
@@ -473,6 +490,9 @@ internal sealed class CardPaymentSession
             "linkly.cloud.resultUnknown" => CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery(),
 
             "payment.card.squareCommunicationFailed" => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
+            "payment.card.squareTimedOut" => CardPaymentErrorOverlayViewModel.Timeout(),
+            "payment.card.squareTerminalOffline" or
+            "payment.card.squareTerminalNotPickedUp" => CardPaymentErrorOverlayViewModel.SquareCommunicationFailed(),
 
             "linkly.local.timeout" or
             "linkly.cloud.timeout" or

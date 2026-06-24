@@ -5,6 +5,7 @@ using System.Text.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Orders;
+using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Tests;
 
@@ -271,7 +272,20 @@ public sealed class ConfiguredCardTerminalClientTests
                       "payment": {
                         "id": "payment-1",
                         "status": "COMPLETED",
-                        "amount_money": { "amount": 1099, "currency": "AUD" }
+                        "amount_money": { "amount": 1099, "currency": "AUD" },
+                        "card_details": {
+                          "status": "AUTHORIZED",
+                          "card": {
+                            "card_brand": "VISA",
+                            "last_4": "1111",
+                            "bin": "411111",
+                            "exp_month": 11,
+                            "exp_year": 2030,
+                            "fingerprint": "sq-test-fingerprint"
+                          },
+                          "auth_result_code": "68aLBM",
+                          "entry_method": "CONTACTLESS"
+                        }
                       }
                     }
                     """);
@@ -310,6 +324,9 @@ public sealed class ConfiguredCardTerminalClientTests
         var cardTransaction = Assert.Single(result.CardTransactions!);
         Assert.Equal("Square", cardTransaction.Processor);
         Assert.Equal("payment-1", cardTransaction.TxnRef);
+        Assert.Equal("VISA", cardTransaction.CardType);
+        Assert.Equal("****1111", cardTransaction.MaskedCardNumber);
+        Assert.Equal("68aLBM", cardTransaction.AuthCode);
         Assert.Collection(
             requests,
             create =>
@@ -781,8 +798,264 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
         Assert.False(result.Approved);
-        Assert.Equal("Square checkout was canceled.", result.Message);
+        Assert.Equal("payment.card.squareCanceledSeller", result.StatusKey);
+        Assert.Equal("Square checkout was canceled. Please start the card payment again.", result.Message);
         Assert.Equal(3, requests.Count);
+    }
+
+    [Theory]
+    [InlineData("BUYER_CANCELED", "payment.card.squareCanceledBuyer", "Square checkout was canceled by the buyer. Ask the customer to try again or choose another payment method.")]
+    [InlineData("SELLER_CANCELED", "payment.card.squareCanceledSeller", "Square checkout was canceled. Please start the card payment again.")]
+    [InlineData("CANCEL_REQUESTED", "payment.card.squareCanceledSeller", "Square checkout was canceled. Please start the card payment again.")]
+    [InlineData("SOMETHING_ELSE", "payment.card.squareCanceled", "Square checkout was not completed. Please try again.")]
+    public async Task AuthorizeAsync_maps_square_cancel_reason_to_friendly_status(
+        string cancelReason,
+        string expectedStatusKey,
+        string expectedMessage)
+    {
+        var statusPollCount = 0;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "checkout": {
+                        "id": "checkout-cancel-reason",
+                        "status": "PENDING"
+                      }
+                    }
+                    """);
+            }
+
+            statusPollCount++;
+            return JsonResponse(
+                statusPollCount == 1
+                    ? """
+                      {
+                        "checkout": {
+                          "id": "checkout-cancel-reason",
+                          "status": "IN_PROGRESS"
+                        }
+                      }
+                      """
+                    : $$"""
+                      {
+                        "checkout": {
+                          "id": "checkout-cancel-reason",
+                          "status": "CANCELED",
+                          "cancel_reason": "{{cancelReason}}"
+                        }
+                      }
+                      """);
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler));
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.Equal(expectedStatusKey, result.StatusKey);
+        Assert.Equal(expectedMessage, result.Message);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_maps_in_progress_square_timeout_to_customer_timeout_status()
+    {
+        var statusPollCount = 0;
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "checkout": {
+                        "id": "checkout-timeout-customer",
+                        "status": "PENDING"
+                      }
+                    }
+                    """);
+            }
+
+            statusPollCount++;
+            return JsonResponse(
+                statusPollCount == 1
+                    ? """
+                      {
+                        "checkout": {
+                          "id": "checkout-timeout-customer",
+                          "status": "IN_PROGRESS"
+                        }
+                      }
+                      """
+                    : """
+                      {
+                        "checkout": {
+                          "id": "checkout-timeout-customer",
+                          "status": "CANCELED",
+                          "cancel_reason": "TIMED_OUT"
+                        }
+                      }
+                      """);
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler));
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.Equal("payment.card.squareTimedOut", result.StatusKey);
+        Assert.Equal("Square checkout timed out before the customer completed payment.", result.Message);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_maps_pending_square_timed_out_checkout_to_terminal_not_picked_up_status()
+    {
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "checkout": {
+                        "id": "checkout-timeout-terminal",
+                        "status": "PENDING"
+                      }
+                    }
+                    """);
+            }
+
+            return JsonResponse(
+                """
+                {
+                  "checkout": {
+                    "id": "checkout-timeout-terminal",
+                    "status": "CANCELED",
+                    "cancel_reason": "TIMED_OUT"
+                  }
+                }
+                """);
+        });
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler));
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.Equal("payment.card.squareTerminalNotPickedUp", result.StatusKey);
+        Assert.Equal("Square terminal did not pick up the checkout. Check that the terminal is online, then try again.", result.Message);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_maps_sandbox_square_timeout_device_to_timeout_status()
+    {
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse(
+                    $$"""
+                    {
+                      "checkout": {
+                        "id": "checkout-sandbox-timeout",
+                        "status": "PENDING",
+                        "device_options": {
+                          "device_id": "{{SquareSandboxTerminalDeviceIds.SquareTimedOut}}"
+                        }
+                      }
+                    }
+                    """);
+            }
+
+            return JsonResponse(
+                $$"""
+                {
+                  "checkout": {
+                    "id": "checkout-sandbox-timeout",
+                    "status": "CANCELED",
+                    "cancel_reason": "TIMED_OUT",
+                    "device_options": {
+                      "device_id": "{{SquareSandboxTerminalDeviceIds.SquareTimedOut}}"
+                    }
+                  }
+                }
+                """);
+        });
+        var settings = CreateSquareSettings() with
+        {
+            Environment = CardTerminalEnvironment.Sandbox,
+            SquareDeviceId = SquareSandboxTerminalDeviceIds.SquareTimedOut,
+            SquareApiBaseUrl = CardTerminalSettings.GetSquareApiBaseUrl(CardTerminalEnvironment.Sandbox)
+        };
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(settings),
+            CreateApiClient(handler));
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.Equal("payment.card.squareTimedOut", result.StatusKey);
+        Assert.Equal("Square checkout timed out before the customer completed payment.", result.Message);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_marks_square_canceled_attempt_with_single_failure_update()
+    {
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "checkout": {
+                        "id": "checkout-buyer-canceled",
+                        "status": "PENDING"
+                      }
+                    }
+                    """);
+            }
+
+            return JsonResponse(
+                """
+                {
+                  "checkout": {
+                    "id": "checkout-buyer-canceled",
+                    "status": "CANCELED",
+                    "cancel_reason": "BUYER_CANCELED"
+                  }
+                }
+                """);
+        });
+        var contextAccessor = new SquarePaymentAttemptContextAccessor();
+        var repository = new RecordingFailureSquarePaymentAttemptRepository();
+        var attemptGuid = Guid.Parse("99999999-aaaa-bbbb-cccc-999999999999");
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            CreateApiClient(handler),
+            squarePaymentAttemptContextAccessor: contextAccessor,
+            squarePaymentAttemptRepository: repository);
+
+        PaymentAuthorizationResult result;
+        using (contextAccessor.Begin(new SquarePaymentAttemptContext(attemptGuid, "idem-buyer-cancel")))
+        {
+            result = await client.AuthorizeAsync(10m, CreateSession());
+        }
+
+        Assert.False(result.Approved);
+        Assert.Equal("payment.card.squareCanceledBuyer", result.StatusKey);
+        Assert.Equal(0, repository.UpdateCheckoutStatusCount);
+        Assert.Equal(1, repository.MarkFailedCount);
+        Assert.Equal(attemptGuid, repository.FailedAttemptGuid);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Canceled, repository.FailedStatus);
+        Assert.Equal("CANCELED", repository.FailedCheckoutStatus);
+        Assert.Equal("BUYER_CANCELED", repository.FailedCancelReason);
     }
 
     [Fact]
@@ -812,7 +1085,8 @@ public sealed class ConfiguredCardTerminalClientTests
         var result = await client.AuthorizeAsync(10m, CreateSession());
 
         Assert.False(result.Approved);
-        Assert.Equal("Square checkout failed with HTTP 400: BAD_REQUEST: Device is offline.", result.Message);
+        Assert.Equal("payment.card.squareTerminalOffline", result.StatusKey);
+        Assert.Equal("Square terminal is offline. Check the terminal network and try again.", result.Message);
         AssertContainsLogLine(logs.Lines, "checkout create failed http=400 detail=BAD_REQUEST: Device is offline.");
         AssertNoSensitiveTokenLogged(logs.Lines);
     }
@@ -1043,7 +1317,11 @@ public sealed class ConfiguredCardTerminalClientTests
         var authorizeTask = client.AuthorizeAsync(10m, CreateSession());
         await getStarted.Task;
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => authorizeTask);
+        var result = await authorizeTask;
+
+        Assert.False(result.Approved);
+        Assert.Equal("payment.card.squareTerminalNotPickedUp", result.StatusKey);
+        Assert.Equal("Square terminal did not pick up the checkout. Check that the terminal is online, then try again.", result.Message);
         Assert.Collection(
             requests,
             create =>
@@ -1398,6 +1676,104 @@ public sealed class ConfiguredCardTerminalClientTests
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
+        }
+    }
+
+    private sealed class RecordingFailureSquarePaymentAttemptRepository : ILocalSquarePaymentAttemptRepository
+    {
+        public int UpdateCheckoutStatusCount { get; private set; }
+
+        public int MarkFailedCount { get; private set; }
+
+        public Guid? FailedAttemptGuid { get; private set; }
+
+        public LocalSquarePaymentAttemptStatus? FailedStatus { get; private set; }
+
+        public string? FailedCheckoutStatus { get; private set; }
+
+        public string? FailedCancelReason { get; private set; }
+
+        public Task CreateAsync(LocalSquarePaymentAttempt attempt, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task MarkCheckoutCreatedAsync(
+            Guid attemptGuid,
+            string checkoutId,
+            string? checkoutStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateCheckoutStatusAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus status,
+            string? checkoutStatus,
+            string? cancelReason,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            UpdateCheckoutStatusCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task MarkPaymentVerifiedAsync(
+            Guid attemptGuid,
+            string paymentId,
+            string paymentStatus,
+            string? responseCode,
+            string? responseText,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task MarkFailedAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus status,
+            string? checkoutStatus,
+            string? paymentStatus,
+            string? responseCode,
+            string? responseText,
+            DateTimeOffset resolvedAt,
+            CancellationToken cancellationToken = default,
+            string? cancelReason = null)
+        {
+            MarkFailedCount++;
+            FailedAttemptGuid = attemptGuid;
+            FailedStatus = status;
+            FailedCheckoutStatus = checkoutStatus;
+            FailedCancelReason = cancelReason;
+            return Task.CompletedTask;
+        }
+
+        public Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
+            string storeCode,
+            string deviceCode,
+            string cashierId,
+            string environment,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<LocalSquarePaymentAttempt?>(null);
+        }
+
+        public Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<LocalSquarePaymentAttempt?>(null);
         }
     }
 

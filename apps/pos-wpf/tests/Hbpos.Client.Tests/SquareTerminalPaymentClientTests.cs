@@ -57,7 +57,10 @@ public sealed class SquareTerminalPaymentClientTests
                   "data": {
                     "paymentId": "payment-1",
                     "status": "COMPLETED",
-                    "approvedMoney": { "amount": 1000, "currency": "AUD" }
+                    "approvedMoney": { "amount": 1000, "currency": "AUD" },
+                    "cardBrand": "VISA",
+                    "maskedCardNumber": "****1111",
+                    "authCode": "68aLBM"
                   }
                 }
                 """));
@@ -67,6 +70,9 @@ public sealed class SquareTerminalPaymentClientTests
         var result = await client.GetPaymentAsync(CreateSettings(), "payment-1");
 
         Assert.Equal("COMPLETED", result.Status);
+        Assert.Equal("VISA", result.CardBrand);
+        Assert.Equal("****1111", result.MaskedCardNumber);
+        Assert.Equal("68aLBM", result.AuthCode);
         Assert.NotNull(capturedRequest);
         AssertHbposApiRequest(capturedRequest!, "api/v1/square/payments/payment-1?environment=Production");
         AssertNoSquareHeaders(capturedRequest!);

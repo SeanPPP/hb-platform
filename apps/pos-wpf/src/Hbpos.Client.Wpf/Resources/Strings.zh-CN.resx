@@ -535,7 +535,22 @@
     <value>Square 授权金额与请求金额不一致。</value>
   </data>
   <data name="payment.card.squareCanceled" xml:space="preserve">
-    <value>Square 收款已取消。</value>
+    <value>Square 收款未完成，请重新尝试或选择其他付款方式。</value>
+  </data>
+  <data name="payment.card.squareCanceledBuyer" xml:space="preserve">
+    <value>顾客取消或未完成 Square 付款，请重新尝试或选择其他付款方式。</value>
+  </data>
+  <data name="payment.card.squareCanceledSeller" xml:space="preserve">
+    <value>Square 收款已取消，请重新发起刷卡。</value>
+  </data>
+  <data name="payment.card.squareTimedOut" xml:space="preserve">
+    <value>Square 收款超时，顾客未在终端上完成付款。</value>
+  </data>
+  <data name="payment.card.squareTerminalOffline" xml:space="preserve">
+    <value>Square 终端离线，请检查终端网络和状态后重试。</value>
+  </data>
+  <data name="payment.card.squareTerminalNotPickedUp" xml:space="preserve">
+    <value>Square 终端没有接收本次收款，请检查终端是否在线并重试。</value>
   </data>
   <data name="payment.card.squareUnexpectedStatus" xml:space="preserve">
     <value>Square 收款进入了非预期状态：{0}。</value>
@@ -545,6 +560,18 @@
   </data>
   <data name="payment.card.squareInvalidResponse" xml:space="preserve">
     <value>Square 刷卡机返回了无效响应。</value>
+  </data>
+  <data name="payment.card.squareMissingPaymentId" xml:space="preserve">
+    <value>Square 收款没有返回付款 id。</value>
+  </data>
+  <data name="payment.card.squarePaymentStatus" xml:space="preserve">
+    <value>Square 付款状态为 {0}。</value>
+  </data>
+  <data name="payment.card.squarePaymentAmountMismatch" xml:space="preserve">
+    <value>Square 付款金额与请求金额不一致。</value>
+  </data>
+  <data name="payment.card.squarePaymentCurrencyMismatch" xml:space="preserve">
+    <value>Square 付款币种与请求币种不一致。</value>
   </data>
   <data name="payment.card.squareRefundMissingReference" xml:space="preserve">
     <value>Square 退款必须提供原始 Square 付款参考号。</value>
@@ -626,6 +653,9 @@
   </data>
   <data name="success.transactionId" xml:space="preserve">
     <value>交易编号</value>
+  </data>
+  <data name="success.cardDetails" xml:space="preserve">
+    <value>卡信息</value>
   </data>
   <data name="success.digitalReceipt" xml:space="preserve">
     <value>电子小票</value>

@@ -43,6 +43,7 @@
   <data name="settings.square.loadLocations" xml:space="preserve"><value>&#x52A0;&#x8F7D;&#x95E8;&#x5E97;&#x4F4D;&#x7F6E;</value></data>
   <data name="settings.square.loadLocations.tooltip" xml:space="preserve"><value>&#x52A0;&#x8F7D; Square &#x95E8;&#x5E97;&#x4F4D;&#x7F6E;</value></data>
   <data name="settings.square.device" xml:space="preserve"><value>&#x8BBE;&#x5907;</value></data>
+  <data name="settings.square.deviceStatus.sandboxTest" xml:space="preserve"><value>Square 沙盒测试</value></data>
   <data name="settings.square.loadDevices" xml:space="preserve"><value>&#x52A0;&#x8F7D;&#x8BBE;&#x5907;</value></data>
   <data name="settings.square.loadDevices.tooltip" xml:space="preserve"><value>&#x52A0;&#x8F7D; Square &#x8BBE;&#x5907;</value></data>
   <data name="settings.square.deviceCodes" xml:space="preserve"><value>&#x8BBE;&#x5907;&#x7801;&#x7BA1;&#x7406;</value></data>

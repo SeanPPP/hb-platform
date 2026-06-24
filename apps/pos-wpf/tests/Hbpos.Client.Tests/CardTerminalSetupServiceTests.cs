@@ -1,6 +1,8 @@
 using System.Net;
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Linkly;
+using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Tests;
 
@@ -53,6 +55,34 @@ public sealed class CardTerminalSetupServiceTests
         Assert.Equal(0, store.CachedTokenReadCount);
         Assert.Equal(0, store.EnvironmentTokenReadCount);
         Assert.Equal(0, store.ForceRefreshCount);
+    }
+
+    [Fact]
+    public async Task ListSquareDevicesAsync_localizes_sandbox_test_device_status_display_name()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.ChineseCultureName);
+        var squareClient = new FakeSquareTerminalSetupClient
+        {
+            Devices =
+            [
+                new(
+                    SquareSandboxTerminalDeviceIds.BuyerCanceled,
+                    "Sandbox: cancel by buyer",
+                    SquareSandboxTerminalDeviceIds.TestDeviceStatus)
+            ]
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(),
+            squareClient,
+            new FakeLinklyTerminalClient(),
+            localization: localization);
+
+        var devices = await service.ListSquareDevicesAsync(null, CardTerminalEnvironment.Sandbox, "LOC-1");
+
+        var device = Assert.Single(devices);
+        Assert.Equal(SquareSandboxTerminalDeviceIds.TestDeviceStatus, device.Status);
+        Assert.Equal("Square 沙盒测试", device.StatusDisplayName);
     }
 
     [Fact]
@@ -770,6 +800,8 @@ public sealed class CardTerminalSetupServiceTests
 
         public List<string> Tokens { get; } = [];
 
+        public IReadOnlyList<SquareDeviceOption> Devices { get; init; } = [];
+
         public Task<IReadOnlyList<SquareLocationOption>> ListLocationsAsync(
             string accessToken,
             CardTerminalEnvironment environment,
@@ -791,7 +823,8 @@ public sealed class CardTerminalSetupServiceTests
             string locationId,
             CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            Tokens.Add(accessToken);
+            return Task.FromResult(Devices);
         }
 
         public Task<IReadOnlyList<SquareDeviceCodeOption>> ListDeviceCodesAsync(

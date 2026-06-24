@@ -63,6 +63,8 @@
                                     <Run Text=" / " />
                                     <Run Text="{Binding CashierName, Mode=OneWay}" />
                                 </TextBlock>
+                                <TextBlock Text="{loc:Loc success.cardDetails}" Margin="0,8,0,0" FontSize="9" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}" />
+                                <TextBlock Text="{Binding CardPaymentSummary}" Margin="0,2,0,0" FontSize="12" Foreground="{StaticResource PosTextBrush}" TextWrapping="Wrap" Visibility="{Binding IsCardPaymentSummaryVisible, Converter={StaticResource BoolToVis}}" />
                             </StackPanel>
                         </Grid>
                     </Border>

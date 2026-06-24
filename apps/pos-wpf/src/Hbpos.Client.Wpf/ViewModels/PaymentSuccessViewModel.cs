@@ -41,6 +41,12 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
     [ObservableProperty]
     private bool _isCashChangeVisible;
 
+    [ObservableProperty]
+    private string? _cardPaymentSummary;
+
+    [ObservableProperty]
+    private bool _isCardPaymentSummaryVisible;
+
     public PaymentSuccessViewModel()
         : this(initialize: true, receiptQueryService: null, receiptTextFormatter: null, receiptPrinterSettingsStore: null)
     {
@@ -165,6 +171,8 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
         TenderedAmount = receipt.TenderedAmount;
         ChangeAmount = receipt.ChangeAmount;
         IsCashChangeVisible = ShouldShowCashChange(receipt);
+        CardPaymentSummary = GetCardPaymentSummary(receipt);
+        IsCardPaymentSummaryVisible = !string.IsNullOrWhiteSpace(CardPaymentSummary);
 
         ReceiptLines.ReplaceWith(receipt.Lines);
         Payments.ReplaceWith(receipt.Payments);
@@ -221,6 +229,16 @@ public sealed partial class PaymentSuccessViewModel : ObservableObject
         return receipt.ActualAmount > 0m &&
             receipt.ChangeAmount is not null &&
             receipt.Payments.Any(payment => payment.Method == PaymentMethodKind.Cash);
+    }
+
+    private static string? GetCardPaymentSummary(ReceiptDetails receipt)
+    {
+        // 成功页只展示已经脱敏的本地卡交易摘要，不从原始 Square 响应推导任何敏感字段。
+        return receipt.Payments
+            .Where(payment => payment.Method == PaymentMethodKind.Card)
+            .Select(payment => payment.CardSummary)
+            .FirstOrDefault(summary => !string.IsNullOrWhiteSpace(summary))?
+            .Trim();
     }
 
     private static IReadOnlyList<ReceiptPreviewRow> AddCashChangePreviewRows(

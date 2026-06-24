@@ -53,6 +53,120 @@ public sealed class SquareTerminalBackendServiceTests
     }
 
     [Fact]
+    public async Task CreateCheckoutAsync_WhenSandboxUsesConfiguredDevice_ReplacesWithOfficialCheckoutDeviceId()
+    {
+        const string squareSandboxSuccessDeviceId = "9fa747a2-25ff-48ee-b078-04381f7c828f";
+        var tokenService = new RecordingSquareTokenService(new SquareTokenResponse(
+            "Sandbox",
+            "token-sandbox",
+            DateTimeOffset.UtcNow));
+        var restClient = new FakeSquareTerminalRestClient
+        {
+            CreateCheckoutAsyncHandler = (environment, accessToken, request, _) =>
+            {
+                Assert.Equal("Sandbox", environment);
+                Assert.Equal("token-sandbox", accessToken);
+                Assert.Equal(squareSandboxSuccessDeviceId, request.DeviceId);
+                return Task.FromResult(new SquareTerminalCheckoutRecord(
+                    "checkout-sandbox",
+                    environment,
+                    Status: "PENDING",
+                    DeviceId: request.DeviceId,
+                    LocationId: request.LocationId,
+                    AmountMoney: request.AmountMoney,
+                    UpdatedAt: new DateTimeOffset(2026, 6, 23, 1, 2, 3, TimeSpan.Zero)));
+            }
+        };
+        var service = new SquareTerminalBackendService(tokenService, restClient);
+        var request = new SquareCreateCheckoutRequest(
+            "sandbox",
+            "idem-sandbox",
+            "device:paired-terminal",
+            "location-sandbox",
+            new SquareMoneyDto(1299, "AUD"));
+
+        var response = await service.CreateCheckoutAsync(request, CancellationToken.None);
+
+        Assert.Equal("Sandbox", tokenService.RequestedEnvironments.Single());
+        Assert.Equal(squareSandboxSuccessDeviceId, response.DeviceId);
+    }
+
+    [Fact]
+    public async Task CreateCheckoutAsync_WhenSandboxUsesOfficialCheckoutDeviceId_KeepsSelectedSimulation()
+    {
+        const string squareSandboxCancelDeviceId = "841100b9-ee60-4537-9bcf-e30b2ba5e215";
+        var tokenService = new RecordingSquareTokenService(new SquareTokenResponse(
+            "Sandbox",
+            "token-sandbox",
+            DateTimeOffset.UtcNow));
+        var restClient = new FakeSquareTerminalRestClient
+        {
+            CreateCheckoutAsyncHandler = (environment, _, request, _) =>
+            {
+                Assert.Equal("Sandbox", environment);
+                Assert.Equal(squareSandboxCancelDeviceId, request.DeviceId);
+                return Task.FromResult(new SquareTerminalCheckoutRecord(
+                    "checkout-cancel",
+                    environment,
+                    Status: "PENDING",
+                    DeviceId: request.DeviceId,
+                    LocationId: request.LocationId,
+                    AmountMoney: request.AmountMoney,
+                    UpdatedAt: new DateTimeOffset(2026, 6, 23, 1, 2, 3, TimeSpan.Zero)));
+            }
+        };
+        var service = new SquareTerminalBackendService(tokenService, restClient);
+        var request = new SquareCreateCheckoutRequest(
+            "sandbox",
+            "idem-sandbox-cancel",
+            $"device:{squareSandboxCancelDeviceId.ToUpperInvariant()}",
+            "location-sandbox",
+            new SquareMoneyDto(1299, "AUD"));
+
+        var response = await service.CreateCheckoutAsync(request, CancellationToken.None);
+
+        Assert.Equal(squareSandboxCancelDeviceId, response.DeviceId);
+    }
+
+    [Fact]
+    public async Task CreateCheckoutAsync_WhenSandboxDeviceIdDiffersOnlyByCase_ReusesOriginalRequest()
+    {
+        const string squareSandboxCancelDeviceId = "841100B9-EE60-4537-9BCF-E30B2BA5E215";
+        var tokenService = new RecordingSquareTokenService(new SquareTokenResponse(
+            "Sandbox",
+            "token-sandbox",
+            DateTimeOffset.UtcNow));
+        SquareCreateCheckoutRequest? forwardedRequest = null;
+        var restClient = new FakeSquareTerminalRestClient
+        {
+            CreateCheckoutAsyncHandler = (environment, _, request, _) =>
+            {
+                forwardedRequest = request;
+                return Task.FromResult(new SquareTerminalCheckoutRecord(
+                    "checkout-cancel",
+                    environment,
+                    Status: "PENDING",
+                    DeviceId: request.DeviceId,
+                    LocationId: request.LocationId,
+                    AmountMoney: request.AmountMoney,
+                    UpdatedAt: new DateTimeOffset(2026, 6, 23, 1, 2, 3, TimeSpan.Zero)));
+            }
+        };
+        var service = new SquareTerminalBackendService(tokenService, restClient);
+        var request = new SquareCreateCheckoutRequest(
+            "sandbox",
+            "idem-sandbox-cancel",
+            squareSandboxCancelDeviceId,
+            "location-sandbox",
+            new SquareMoneyDto(1299, "AUD"));
+
+        var response = await service.CreateCheckoutAsync(request, CancellationToken.None);
+
+        Assert.Same(request, forwardedRequest);
+        Assert.Equal(squareSandboxCancelDeviceId, response.DeviceId);
+    }
+
+    [Fact]
     public async Task GetCheckoutAsync_WhenCompleted_LoadsPaymentDetails()
     {
         var tokenService = new RecordingSquareTokenService(new SquareTokenResponse(

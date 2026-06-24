@@ -158,6 +158,19 @@ public sealed class SquareTerminalRestClientTests
                   "amount": 1299,
                   "currency": "AUD"
                 },
+                "card_details": {
+                  "status": "AUTHORIZED",
+                  "card": {
+                    "card_brand": "VISA",
+                    "last_4": "1111",
+                    "bin": "411111",
+                    "exp_month": 11,
+                    "exp_year": 2030,
+                    "fingerprint": "sq-test-fingerprint"
+                  },
+                  "auth_result_code": "68aLBM",
+                  "entry_method": "CONTACTLESS"
+                },
                 "updated_at": "2026-06-22T01:02:03Z"
               }
             }
@@ -181,6 +194,9 @@ public sealed class SquareTerminalRestClientTests
         Assert.Equal("COMPLETED", response.Status);
         Assert.Equal(1299, response.ApprovedMoney?.Amount);
         Assert.Equal(1299, response.TotalMoney?.Amount);
+        Assert.Equal("VISA", response.CardBrand);
+        Assert.Equal("****1111", response.MaskedCardNumber);
+        Assert.Equal("68aLBM", response.AuthCode);
     }
 
     [Fact]
