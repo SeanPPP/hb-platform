@@ -432,6 +432,8 @@
                    Grid.Row="0"
                    DataContext="{Binding DataContext, ElementName=SearchBoxHost}"
                    IsOpen="{Binding IsMatchesPopupOpen, Mode=TwoWay}"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
                    Placement="Bottom"
                    PlacementTarget="{Binding ElementName=SearchBoxHost}"
                    StaysOpen="False"
@@ -446,8 +448,13 @@
                     <Border.Effect>
                         <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.18" />
                     </Border.Effect>
+                    <!-- 使用 WPF 基础触屏惯性属性，兼容 Win7/10/11，避免引入系统版本专属特效。 -->
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  CanContentScroll="False"
+                                  PanningMode="VerticalOnly"
+                                  PanningDeceleration="0.0008"
+                                  PanningRatio="1.0">
                         <ItemsControl ItemsSource="{Binding Matches}">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -578,6 +585,7 @@
             </Popup>
 
             <Grid Grid.Row="1" Margin="14,0,14,6">
+                <!-- 购物车列表使用像素级触屏滚动，保持 Win7/10/11 可用的 WPF 基础属性。 -->
                 <DataGrid ItemsSource="{Binding CartLines}"
                           SelectedItem="{Binding SelectedCartLine, Mode=TwoWay}"
                           SelectionMode="Single"
@@ -592,10 +600,11 @@
                           EnableColumnVirtualization="True"
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel"
                           ScrollViewer.CanContentScroll="True"
-                          ScrollViewer.PanningMode="VerticalFirst"
-                          ScrollViewer.PanningDeceleration="0.001"
-                          ScrollViewer.PanningRatio="1.1"
+                          ScrollViewer.PanningMode="VerticalOnly"
+                          ScrollViewer.PanningDeceleration="0.0008"
+                          ScrollViewer.PanningRatio="1.0"
                           GridLinesVisibility="None"
                           BorderThickness="0"
                           RowStyle="{StaticResource CartDataGridRowStyle}"
