@@ -4123,7 +4123,16 @@
       "saveDomesticPriceSuccess": "国内价格已保存",
       "saveDomesticPriceFailed": "保存国内价格失败",
       "saveWarehouseImportPriceSuccess": "仓库进货价格已保存",
-      "saveWarehouseImportPriceFailed": "保存仓库进货价格失败"
+      "saveWarehouseImportPriceFailed": "保存仓库进货价格失败",
+      "selectProductsFirst": "请先选择商品",
+      "selectedProducts": "已选 {{count}} 个商品",
+      "cancelSelection": "取消选择",
+      "batchWarehouseImportPrice": "批量修改当前参考进货价",
+      "batchWarehouseImportPriceTitle": "批量修改当前参考进货价 ({{count}} 个商品)",
+      "batchWarehouseImportPriceHint": "将把已选 {{count}} 个商品的当前参考进货价统一修改为下方价格。",
+      "batchWarehouseImportPricePlaceholder": "输入新的当前参考进货价",
+      "batchSaveWarehouseImportPriceSuccess": "已批量保存 {{count}} 个商品的仓库进货价格",
+      "batchSaveWarehouseImportPriceFailed": "批量保存仓库进货价格失败"
     },
     "detail": {
       "loadProductsFailed": "加载商品失败",

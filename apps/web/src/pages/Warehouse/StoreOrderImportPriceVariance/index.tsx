@@ -1,4 +1,4 @@
-import { SearchOutlined, ReloadOutlined } from '@ant-design/icons'
+import { DollarOutlined, SearchOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   App as AntdApp,
   Button,
@@ -9,6 +9,7 @@ import {
   Form,
   Image,
   Input,
+  InputNumber,
   Modal,
   Row,
   Select,
@@ -22,12 +23,13 @@ import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type { InputRef } from 'antd/es/input'
 import type { SorterResult } from 'antd/es/table/interface'
 import type { Dayjs } from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type Key } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import {
+  batchUpdateStoreOrderImportPriceVarianceWarehouseImportPrice,
   getStoreOrderImportPriceVariance,
   getStoreOrderImportPriceVarianceDetails,
   updateStoreOrderImportPriceVarianceDomesticPrice,
@@ -65,6 +67,10 @@ interface AppliedFilters {
   startDate?: string
   endDate?: string
   varianceDirection: StoreOrderImportPriceVarianceDirection
+}
+
+interface BatchWarehouseImportPriceFormValues {
+  warehouseImportPrice?: number
 }
 
 interface SupplierOption {
@@ -212,6 +218,7 @@ export default function StoreOrderImportPriceVariancePage() {
   const navigate = useNavigate()
   const { message } = AntdApp.useApp()
   const [form] = Form.useForm<FilterValues>()
+  const [batchWarehouseImportPriceForm] = Form.useForm<BatchWarehouseImportPriceFormValues>()
   const [filters, setFilters] = useState<AppliedFilters>({ varianceDirection: 'all' })
   const [items, setItems] = useState<StoreOrderImportPriceVarianceItem[]>([])
   const [summary, setSummary] = useState<StoreOrderImportPriceVarianceSummary>(emptySummary)
@@ -246,6 +253,9 @@ export default function StoreOrderImportPriceVariancePage() {
   const [detailSortBy, setDetailSortBy] = useState(DEFAULT_DETAIL_SORT_BY)
   const [detailSortDescending, setDetailSortDescending] = useState(DEFAULT_DETAIL_SORT_DESCENDING)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
+  const [batchWarehouseImportPriceOpen, setBatchWarehouseImportPriceOpen] = useState(false)
+  const [batchWarehouseImportPriceSaving, setBatchWarehouseImportPriceSaving] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -728,6 +738,67 @@ export default function StoreOrderImportPriceVariancePage() {
     ],
   )
 
+  const openBatchWarehouseImportPriceModal = useCallback(() => {
+    if (!selectedRowKeys.length) {
+      void message.warning(t('storeOrders.importPriceVariance.selectProductsFirst'))
+      return
+    }
+
+    batchWarehouseImportPriceForm.resetFields()
+    setBatchWarehouseImportPriceOpen(true)
+  }, [batchWarehouseImportPriceForm, message, selectedRowKeys.length, t])
+
+  const closeBatchWarehouseImportPriceModal = useCallback(() => {
+    if (batchWarehouseImportPriceSaving) {
+      return
+    }
+
+    setBatchWarehouseImportPriceOpen(false)
+    batchWarehouseImportPriceForm.resetFields()
+  }, [batchWarehouseImportPriceForm, batchWarehouseImportPriceSaving])
+
+  const handleBatchWarehouseImportPriceSave = useCallback(async () => {
+    const productCodes = selectedRowKeys.map(String).filter(Boolean)
+    if (!productCodes.length) {
+      void message.warning(t('storeOrders.importPriceVariance.selectProductsFirst'))
+      return
+    }
+
+    try {
+      const values = await batchWarehouseImportPriceForm.validateFields()
+      setBatchWarehouseImportPriceSaving(true)
+
+      // 批量修改只提交商品编码和统一的新当前参考进货价，避免误覆盖国内价格、商品主档或分店价格。
+      const result = await batchUpdateStoreOrderImportPriceVarianceWarehouseImportPrice({
+        productCodes,
+        warehouseImportPrice: values.warehouseImportPrice ?? 0,
+      })
+
+      void message.success(
+        t('storeOrders.importPriceVariance.batchSaveWarehouseImportPriceSuccess', {
+          count: result.updatedCount || productCodes.length,
+        }),
+      )
+      setBatchWarehouseImportPriceOpen(false)
+      batchWarehouseImportPriceForm.resetFields()
+      setSelectedRowKeys([])
+      await loadData()
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) {
+        return
+      }
+
+      console.error(error)
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : t('storeOrders.importPriceVariance.batchSaveWarehouseImportPriceFailed')
+      void message.error(errorMessage)
+    } finally {
+      setBatchWarehouseImportPriceSaving(false)
+    }
+  }, [batchWarehouseImportPriceForm, loadData, message, selectedRowKeys, t])
+
   const productColumns = useMemo<ColumnsType<StoreOrderImportPriceVarianceItem>>(
     () => [
       {
@@ -1133,6 +1204,7 @@ export default function StoreOrderImportPriceVariancePage() {
   const handleSearch = (values: FilterValues) => {
     setFilters(normalizeFilters(values))
     setPageNumber(1)
+    setSelectedRowKeys([])
   }
 
   const handleReset = () => {
@@ -1142,6 +1214,7 @@ export default function StoreOrderImportPriceVariancePage() {
     setPageSize(DEFAULT_PAGE_SIZE)
     setSortBy(DEFAULT_SORT_BY)
     setSortDescending(DEFAULT_SORT_DESCENDING)
+    setSelectedRowKeys([])
   }
 
   const handleTableChange = (
@@ -1338,12 +1411,50 @@ export default function StoreOrderImportPriceVariancePage() {
           },
         }}
       >
+        {selectedRowKeys.length > 0 && (
+          <div
+            style={{
+              marginBottom: 12,
+              padding: '8px 12px',
+              background: '#fafafa',
+              border: '1px solid #f0f0f0',
+              borderRadius: 4,
+            }}
+          >
+            <Space wrap>
+              <Typography.Text>
+                {t('storeOrders.importPriceVariance.selectedProducts', { count: selectedRowKeys.length })}
+              </Typography.Text>
+              <Button
+                type="primary"
+                size="small"
+                icon={<DollarOutlined />}
+                loading={batchWarehouseImportPriceSaving}
+                disabled={batchWarehouseImportPriceSaving}
+                onClick={openBatchWarehouseImportPriceModal}
+              >
+                {t('storeOrders.importPriceVariance.batchWarehouseImportPrice')}
+              </Button>
+              <Button size="small" onClick={() => setSelectedRowKeys([])}>
+                {t('storeOrders.importPriceVariance.cancelSelection')}
+              </Button>
+            </Space>
+          </div>
+        )}
         <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Table<StoreOrderImportPriceVarianceItem>
             rowKey={getRowKey}
             loading={loading}
             columns={productColumns}
             dataSource={items}
+            rowSelection={{
+              fixed: true,
+              columnWidth: 48,
+              selectedRowKeys,
+              preserveSelectedRowKeys: true,
+              onChange: setSelectedRowKeys,
+              getCheckboxProps: (row) => ({ disabled: !row.productCode }),
+            }}
             scroll={{ x: 2000, y: tableScrollY }}
             onChange={handleTableChange}
             pagination={{
@@ -1356,6 +1467,52 @@ export default function StoreOrderImportPriceVariancePage() {
           />
         </div>
       </Card>
+
+      <Modal
+        open={batchWarehouseImportPriceOpen}
+        title={t('storeOrders.importPriceVariance.batchWarehouseImportPriceTitle', {
+          count: selectedRowKeys.length,
+        })}
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
+        confirmLoading={batchWarehouseImportPriceSaving}
+        maskClosable={!batchWarehouseImportPriceSaving}
+        closable={!batchWarehouseImportPriceSaving}
+        destroyOnClose
+        onCancel={closeBatchWarehouseImportPriceModal}
+        onOk={() => void handleBatchWarehouseImportPriceSave()}
+      >
+        <Form form={batchWarehouseImportPriceForm} layout="vertical" preserve={false}>
+          <Typography.Paragraph type="secondary">
+            {t('storeOrders.importPriceVariance.batchWarehouseImportPriceHint', {
+              count: selectedRowKeys.length,
+            })}
+          </Typography.Paragraph>
+          <Form.Item
+            name="warehouseImportPrice"
+            label={t('storeOrders.importPriceVariance.warehouseImportPrice')}
+            rules={[
+              {
+                required: true,
+                message: t('storeOrders.importPriceVariance.invalidWarehouseImportPrice'),
+              },
+              {
+                type: 'number',
+                min: 0,
+                message: t('storeOrders.importPriceVariance.invalidWarehouseImportPrice'),
+              },
+            ]}
+          >
+            <InputNumber
+              min={0}
+              precision={2}
+              autoFocus
+              style={{ width: '100%' }}
+              placeholder={t('storeOrders.importPriceVariance.batchWarehouseImportPricePlaceholder')}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         open={detailModalOpen}

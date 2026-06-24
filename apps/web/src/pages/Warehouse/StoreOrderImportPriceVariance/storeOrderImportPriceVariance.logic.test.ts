@@ -25,6 +25,10 @@ assert(
 	  '商品汇总主表必须包含商品图片、国内价格、体积、装箱数、当前仓库进货价格、首次进货价和三项金额合计列',
 	)
 
+const editablePriceBlockStart = pageSource.indexOf('const renderEditablePriceCell')
+const editablePriceBlockEnd = pageSource.indexOf('const openBatchWarehouseImportPriceModal')
+const editablePriceBlock = pageSource.slice(editablePriceBlockStart, editablePriceBlockEnd)
+
 	assert(
 	  pageSource.includes('updateStoreOrderImportPriceVarianceDomesticPrice') &&
 	    pageSource.includes('updateStoreOrderImportPriceVarianceWarehouseImportPrice') &&
@@ -39,7 +43,9 @@ assert(
     pageSource.includes("event.key === 'ArrowDown'") &&
     pageSource.includes("event.key === 'Enter'") &&
     pageSource.includes("event.key === 'Escape'") &&
-    !pageSource.includes('<InputNumber') &&
+    editablePriceBlockStart >= 0 &&
+    editablePriceBlockEnd > editablePriceBlockStart &&
+    !editablePriceBlock.includes('<InputNumber') &&
     !pageSource.includes('type="number"'),
 	  '国内价格和当前仓库进货价格列必须使用普通 Input 内联编辑，支持全选、方向键、回车保存、Esc 取消，且不能出现数字加减控件',
 	)
@@ -50,6 +56,25 @@ assert(
   warehouseImportPriceColumnIndex >= 0 &&
     firstContainerImportPriceColumnIndex > warehouseImportPriceColumnIndex,
   '当前仓库进货价格列必须位于首次货柜价列前面',
+)
+
+assert(
+  pageSource.includes('const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])') &&
+    pageSource.includes('rowSelection={{') &&
+    pageSource.includes('selectedRowKeys,') &&
+    pageSource.includes('preserveSelectedRowKeys: true') &&
+    pageSource.includes('getCheckboxProps: (row) => ({ disabled: !row.productCode })') &&
+    pageSource.includes('openBatchWarehouseImportPriceModal') &&
+    pageSource.includes('handleBatchWarehouseImportPriceSave') &&
+    pageSource.includes('batchUpdateStoreOrderImportPriceVarianceWarehouseImportPrice({') &&
+    pageSource.includes('productCodes,') &&
+    pageSource.includes('warehouseImportPrice: values.warehouseImportPrice ?? 0') &&
+    pageSource.includes('setSelectedRowKeys([])') &&
+    pageSource.includes('await loadData()') &&
+    pageSource.includes("title={t('storeOrders.importPriceVariance.batchWarehouseImportPriceTitle'") &&
+    pageSource.includes('<InputNumber') &&
+    pageSource.includes('批量修改只提交商品编码和统一的新当前参考进货价'),
+  '商品汇总主表必须支持勾选商品后批量修改当前参考进货价，成功后清空选择并刷新统计结果',
 )
 
 assert(
@@ -194,6 +219,21 @@ assert(
 	    zhLocale.storeOrders.importPriceVariance.unitVolume === '体积' &&
 	    zhLocale.storeOrders.importPriceVariance.packingQuantity === '装箱数',
   '中文商品汇总列文案必须存在',
+)
+
+assert(
+  zhLocale.storeOrders.importPriceVariance.batchWarehouseImportPrice === '批量修改当前参考进货价' &&
+    zhLocale.storeOrders.importPriceVariance.batchWarehouseImportPriceTitle ===
+      '批量修改当前参考进货价 ({{count}} 个商品)' &&
+    zhLocale.storeOrders.importPriceVariance.batchSaveWarehouseImportPriceSuccess ===
+      '已批量保存 {{count}} 个商品的仓库进货价格' &&
+    enLocale.storeOrders.importPriceVariance.batchWarehouseImportPrice ===
+      'Batch update reference import price' &&
+    enLocale.storeOrders.importPriceVariance.batchWarehouseImportPriceTitle ===
+      'Batch Update Reference Import Price ({{count}} products)' &&
+    enLocale.storeOrders.importPriceVariance.batchSaveWarehouseImportPriceSuccess ===
+      'Saved warehouse import price for {{count}} products',
+  '批量修改当前参考进货价的中英文按钮、标题和成功文案必须存在',
 )
 
 assert(

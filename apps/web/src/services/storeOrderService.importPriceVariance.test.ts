@@ -1,4 +1,5 @@
 import {
+  batchUpdateStoreOrderImportPriceVarianceWarehouseImportPrice,
   getStoreOrderImportPriceVariance,
   getStoreOrderImportPriceVarianceDetails,
   updateStoreOrderImportPriceVarianceDomesticPrice,
@@ -112,6 +113,55 @@ try {
     },
     'summary 数字字段应归一化',
   )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          updatedCount: '2',
+          warehouseImportPrice: '6.79',
+          productCodes: ['P-001', 'P-002', 123],
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await batchUpdateStoreOrderImportPriceVarianceWarehouseImportPrice({
+    productCodes: ['P-001', 'P-002'],
+    warehouseImportPrice: 6.789,
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/import-price-variance/warehouse-import-price/batch',
+    '仓库进货价格批量保存接口路径应指向价差统计页专用窄接口',
+  )
+  assertEqual(capturedMethod, 'POST', '仓库进货价格批量保存接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    { productCodes: ['P-001', 'P-002'], warehouseImportPrice: 6.789 },
+    '仓库进货价格批量保存接口应提交商品编码列表和统一新价格',
+  )
+  assertEqual(result.updatedCount, 2, '批量保存响应应归一化 updatedCount')
+  assertEqual(result.warehouseImportPrice, 6.79, '批量保存响应仓库进货价格应归一化为数字')
+  assertDeepEqual(result.productCodes, ['P-001', 'P-002'], '批量保存响应应过滤非字符串商品编码')
 } finally {
   globalThis.fetch = originalFetch
 }

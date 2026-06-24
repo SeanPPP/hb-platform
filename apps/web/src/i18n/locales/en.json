@@ -4123,7 +4123,16 @@
       "saveDomesticPriceSuccess": "Domestic price saved",
       "saveDomesticPriceFailed": "Failed to save domestic price",
       "saveWarehouseImportPriceSuccess": "Warehouse import price saved",
-      "saveWarehouseImportPriceFailed": "Failed to save warehouse import price"
+      "saveWarehouseImportPriceFailed": "Failed to save warehouse import price",
+      "selectProductsFirst": "Please select products first",
+      "selectedProducts": "{{count}} products selected",
+      "cancelSelection": "Clear selection",
+      "batchWarehouseImportPrice": "Batch update reference import price",
+      "batchWarehouseImportPriceTitle": "Batch Update Reference Import Price ({{count}} products)",
+      "batchWarehouseImportPriceHint": "The selected {{count}} products will use the same current reference import price below.",
+      "batchWarehouseImportPricePlaceholder": "Enter new reference import price",
+      "batchSaveWarehouseImportPriceSuccess": "Saved warehouse import price for {{count}} products",
+      "batchSaveWarehouseImportPriceFailed": "Failed to batch save warehouse import price"
     },
     "detail": {
       "loadProductsFailed": "Failed to load products",

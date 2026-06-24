@@ -19,6 +19,7 @@ namespace BlazorApp.Api.Services.React
     {
         private const int HomePageWarmUpCommandTimeoutSeconds = 30;
         private const int OrderListAggregateChunkSize = 500;
+        private const int ImportPriceVarianceWarehouseImportPriceBatchLimit = 500;
         private readonly ISqlSugarClient _db;
         private readonly ILogger<StoreOrderReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
@@ -3105,7 +3106,8 @@ namespace BlazorApp.Api.Services.React
                 };
             }
 
-            if (!request!.WarehouseImportPrice.HasValue)
+            var requestedWarehouseImportPrice = request?.WarehouseImportPrice;
+            if (!requestedWarehouseImportPrice.HasValue)
             {
                 return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
                 {
@@ -3114,7 +3116,7 @@ namespace BlazorApp.Api.Services.React
                 };
             }
 
-            if (request.WarehouseImportPrice.Value < 0)
+            if (requestedWarehouseImportPrice.Value < 0)
             {
                 return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
                 {
@@ -3136,7 +3138,7 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                var normalizedPrice = Math.Round(request.WarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
+                var normalizedPrice = Math.Round(requestedWarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
                 var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
                 warehouseProduct.ImportPrice = normalizedPrice;
                 warehouseProduct.UpdatedAt = DateTime.UtcNow;
@@ -3167,6 +3169,129 @@ namespace BlazorApp.Api.Services.React
                 {
                     Success = false,
                     Message = "保存仓库进货价格失败",
+                };
+            }
+        }
+
+        public async Task<ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>> UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto request
+        )
+        {
+            var productCodes = (request?.ProductCodes ?? new List<string>())
+                .Select(code => code?.Trim())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(code => code!)
+                .ToList();
+
+            if (!productCodes.Any())
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "请选择商品",
+                };
+            }
+
+            // 批量查询会生成 SQL 参数；这里主动限流，避免跨页选择过多时撞数据库参数上限。
+            if (productCodes.Count > ImportPriceVarianceWarehouseImportPriceBatchLimit)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
+                {
+                    Success = false,
+                    Message = $"一次最多选择 {ImportPriceVarianceWarehouseImportPriceBatchLimit} 个商品",
+                };
+            }
+
+            var requestedBatchWarehouseImportPrice = request?.WarehouseImportPrice;
+            if (!requestedBatchWarehouseImportPrice.HasValue)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "仓库进货价格不能为空",
+                };
+            }
+
+            if (requestedBatchWarehouseImportPrice.Value < 0)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "仓库进货价格不能小于 0",
+                };
+            }
+
+            var normalizedPrice = Math.Round(requestedBatchWarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
+            var transactionStarted = false;
+            try
+            {
+                var warehouseProducts = await _db.Queryable<WarehouseProduct>()
+                    .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
+                    .ToListAsync();
+                var existingCodeSet = warehouseProducts
+                    .Select(wp => wp.ProductCode)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var missingCodes = productCodes.Where(code => !existingCodeSet.Contains(code)).ToList();
+                if (missingCodes.Any())
+                {
+                    return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
+                    {
+                        Success = false,
+                        Message = $"未找到仓库商品，无法批量更新仓库进货价格：{string.Join(", ", missingCodes)}",
+                    };
+                }
+
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                var now = DateTime.UtcNow;
+                foreach (var warehouseProduct in warehouseProducts)
+                {
+                    warehouseProduct.ImportPrice = normalizedPrice;
+                    warehouseProduct.UpdatedAt = now;
+                    warehouseProduct.UpdatedBy = currentUser;
+                }
+
+                _db.Ado.BeginTran();
+                transactionStarted = true;
+
+                // 该批量入口只修改 WarehouseProduct 当前参考进货价，避免误联动商品主档、分店价格或历史订单。
+                await _db.Updateable(warehouseProducts)
+                    .UpdateColumns(wp => new
+                    {
+                        wp.ImportPrice,
+                        wp.UpdatedAt,
+                        wp.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
+
+                _db.Ado.CommitTran();
+                transactionStarted = false;
+
+                return ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>.OK(
+                    new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto
+                    {
+                        UpdatedCount = warehouseProducts.Count,
+                        WarehouseImportPrice = normalizedPrice,
+                        ProductCodes = productCodes,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                if (transactionStarted)
+                {
+                    _db.Ado.RollbackTran();
+                }
+
+                _logger.LogError(
+                    ex,
+                    "UpdateImportPriceVarianceWarehouseImportPriceBatchAsync failed for {ProductCodes}",
+                    string.Join(", ", productCodes)
+                );
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "批量保存仓库进货价格失败",
                 };
             }
         }

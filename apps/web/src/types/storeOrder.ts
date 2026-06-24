@@ -186,6 +186,17 @@ export interface StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult {
   warehouseImportPrice: number
 }
 
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdatePayload {
+  productCodes: string[]
+  warehouseImportPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResult {
+  updatedCount: number
+  warehouseImportPrice: number
+  productCodes: string[]
+}
+
 export interface StoreOrderImportPriceVarianceDetailQuery extends StoreOrderImportPriceVarianceQuery {
   productCode: string
 }

@@ -17,6 +17,8 @@ import type {
   StoreOrderImportPriceVarianceDetailResult,
   StoreOrderImportPriceVarianceDomesticPriceUpdatePayload,
   StoreOrderImportPriceVarianceDomesticPriceUpdateResult,
+  StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdatePayload,
+  StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResult,
   StoreOrderImportPriceVarianceWarehouseImportPriceUpdatePayload,
   StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult,
   StoreOrderImportPriceVarianceItem,
@@ -248,6 +250,24 @@ function normalizeStoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult(
   return {
     productCode: typeof result?.productCode === 'string' ? result.productCode : '',
     warehouseImportPrice: readFiniteNumber(result?.warehouseImportPrice),
+  }
+}
+
+function normalizeStoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResult(
+  payload: unknown,
+): StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResult {
+  const result = unwrapEnvelope<{
+    updatedCount?: unknown
+    warehouseImportPrice?: unknown
+    productCodes?: unknown
+  }>(payload)
+
+  return {
+    updatedCount: readFiniteNumber(result?.updatedCount),
+    warehouseImportPrice: readFiniteNumber(result?.warehouseImportPrice),
+    productCodes: Array.isArray(result?.productCodes)
+      ? result.productCodes.filter((code): code is string => typeof code === 'string')
+      : [],
   }
 }
 
@@ -550,6 +570,20 @@ export async function updateStoreOrderImportPriceVarianceWarehouseImportPrice(
   )
 
   return normalizeStoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult(response)
+}
+
+export async function batchUpdateStoreOrderImportPriceVarianceWarehouseImportPrice(
+  payload: StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdatePayload,
+) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/import-price-variance/warehouse-import-price/batch`,
+    {
+      method: 'POST',
+      data: payload,
+    },
+  )
+
+  return normalizeStoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResult(response)
 }
 
 export async function getUsedStoreOrderBranches() {

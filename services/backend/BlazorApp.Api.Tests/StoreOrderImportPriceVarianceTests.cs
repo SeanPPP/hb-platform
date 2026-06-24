@@ -44,6 +44,7 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
             typeof(WareHouseOrderDetails),
             typeof(Product),
             typeof(WarehouseProduct),
+            typeof(StoreRetailPrice),
             typeof(DomesticProduct),
             typeof(ChinaSupplier),
             typeof(Store)
@@ -227,6 +228,150 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
 
         var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P2");
         Assert.Equal(55m, domesticProduct.DomesticPrice);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceBatchAsync_UpdatesWarehouseImportPriceOnly()
+    {
+        await SeedProductsAndStoreAsync();
+        await InsertOrderAsync("O-BATCH-STAYS", "O-BATCH-STAYS", new DateTime(2024, 1, 9));
+        await InsertDetailAsync("D-BATCH-STAYS", "O-BATCH-STAYS", "P1", 1.23m, null, 2m);
+
+        var service = CreateService(userName: "batcher");
+        var result = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { " P1 ", "P-ZERO-FIRST", "P1", " " },
+                WarehouseImportPrice = 6.789m,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data!.UpdatedCount);
+        Assert.Equal(6.79m, result.Data.WarehouseImportPrice);
+        Assert.Equal(new[] { "P1", "P-ZERO-FIRST" }, result.Data.ProductCodes);
+
+        var warehouseProducts = await _db.Queryable<WarehouseProduct>()
+            .Where(item => item.ProductCode == "P1" || item.ProductCode == "P-ZERO-FIRST")
+            .OrderBy(item => item.ProductCode)
+            .ToListAsync();
+        Assert.All(warehouseProducts, item =>
+        {
+            Assert.Equal(6.79m, item.ImportPrice);
+            Assert.Equal("batcher", item.UpdatedBy);
+        });
+        Assert.Equal(88m, warehouseProducts.Single(item => item.ProductCode == "P1").DomesticPrice);
+        Assert.Equal(7m, warehouseProducts.Single(item => item.ProductCode == "P-ZERO-FIRST").DomesticPrice);
+
+        var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(99m, domesticProduct.DomesticPrice);
+        Assert.Null(domesticProduct.ImportPrice);
+
+        var product = await _db.Queryable<Product>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(44m, product.PurchasePrice);
+
+        var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(22m, storeRetailPrice.PurchasePrice);
+
+        var orderDetail = await _db.Queryable<WareHouseOrderDetails>().FirstAsync(item => item.DetailGUID == "D-BATCH-STAYS");
+        Assert.Equal(1.23m, orderDetail.ImportPrice);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceBatchAsync_ValidatesInputAndRollsBackMissingWarehouseProduct()
+    {
+        await SeedProductsAndStoreAsync();
+
+        var service = CreateService();
+
+        var missingProductCodes = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { " ", "" },
+                WarehouseImportPrice = 1m,
+            }
+        );
+        Assert.False(missingProductCodes.Success);
+        Assert.Equal("请选择商品", missingProductCodes.Message);
+
+        var missingPrice = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { "P1" },
+                WarehouseImportPrice = null,
+            }
+        );
+        Assert.False(missingPrice.Success);
+        Assert.Equal("仓库进货价格不能为空", missingPrice.Message);
+
+        var negativePrice = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { "P1" },
+                WarehouseImportPrice = -0.01m,
+            }
+        );
+        Assert.False(negativePrice.Success);
+        Assert.Equal("仓库进货价格不能小于 0", negativePrice.Message);
+
+        var tooManyProducts = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = Enumerable.Range(1, 501).Select(index => $"P{index}").ToList(),
+                WarehouseImportPrice = 1m,
+            }
+        );
+        Assert.False(tooManyProducts.Success);
+        Assert.Equal("一次最多选择 500 个商品", tooManyProducts.Message);
+
+        var missingWarehouseProduct = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { "P1", "P2" },
+                WarehouseImportPrice = 66m,
+            }
+        );
+        Assert.False(missingWarehouseProduct.Success);
+        Assert.Equal("未找到仓库商品，无法批量更新仓库进货价格：P2", missingWarehouseProduct.Message);
+
+        var p1WarehouseProduct = await _db.Queryable<WarehouseProduct>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(2.34m, p1WarehouseProduct.ImportPrice);
+        Assert.Equal("seed-user", p1WarehouseProduct.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceBatchAsync_WhenUpdateFails_RollsBackAndHidesInternalMessage()
+    {
+        await SeedProductsAndStoreAsync();
+        await _db.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER fail_import_price_batch_update
+            BEFORE UPDATE ON WarehouseProduct
+            BEGIN
+                SELECT RAISE(ABORT, 'sensitive trigger detail');
+            END;
+            """
+        );
+
+        var service = CreateService(userName: "batcher");
+        var result = await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { "P1", "P-ZERO-FIRST" },
+                WarehouseImportPrice = 9.99m,
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("批量保存仓库进货价格失败", result.Message);
+        Assert.DoesNotContain("sensitive", result.Message);
+
+        var warehouseProducts = await _db.Queryable<WarehouseProduct>()
+            .Where(item => item.ProductCode == "P1" || item.ProductCode == "P-ZERO-FIRST")
+            .ToListAsync();
+        Assert.Equal(2.34m, warehouseProducts.Single(item => item.ProductCode == "P1").ImportPrice);
+        Assert.Equal(3.21m, warehouseProducts.Single(item => item.ProductCode == "P-ZERO-FIRST").ImportPrice);
     }
 
     [Fact]
@@ -438,12 +583,12 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
 
         await _db.Insertable(new[]
         {
-            new Product { UUID = "UUID-P1", ProductCode = "P1", ItemNumber = "ITEM-P1", ProductName = "Product One", ProductImage = "product-p1.jpg", LocalSupplierCode = "LOCAL-P1" },
+            new Product { UUID = "UUID-P1", ProductCode = "P1", ItemNumber = "ITEM-P1", ProductName = "Product One", ProductImage = "product-p1.jpg", LocalSupplierCode = "LOCAL-P1", PurchasePrice = 44m },
             new Product { UUID = "UUID-P2", ProductCode = "P2", ItemNumber = "ITEM-P2", ProductName = "Product Two", ProductImage = "" },
             new Product { UUID = "UUID-P3", ProductCode = "P-NO-BASELINE", ItemNumber = "ITEM-P3", ProductName = "No Baseline" },
             new Product { UUID = "UUID-P4", ProductCode = "P-EXTREME-HIGH", ItemNumber = "ITEM-P4", ProductName = "Extreme High" },
             new Product { UUID = "UUID-P5", ProductCode = "P-EXTREME-LOW", ItemNumber = "ITEM-P5", ProductName = "Extreme Low" },
-            new Product { UUID = "UUID-P6", ProductCode = "P-ZERO-FIRST", ItemNumber = "ITEM-P6", ProductName = "Zero First Baseline" },
+            new Product { UUID = "UUID-P6", ProductCode = "P-ZERO-FIRST", ItemNumber = "ITEM-P6", ProductName = "Zero First Baseline", PurchasePrice = 33m },
             new Product { UUID = "UUID-P7", ProductCode = "P-EXACT-HIGH", ItemNumber = "ITEM-P7", ProductName = "Exact High" },
             new Product { UUID = "UUID-P8", ProductCode = "P-EXACT-LOW", ItemNumber = "ITEM-P8", ProductName = "Exact Low" },
         }).ExecuteCommandAsync();
@@ -476,6 +621,12 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
                 UpdatedBy = "seed-user",
             },
             new WarehouseProduct { ProductCode = "P-ZERO-FIRST", DomesticPrice = 7m, ImportPrice = 3.21m, Volume = 0.77m, PackingQuantity = 16 },
+        }).ExecuteCommandAsync();
+
+        await _db.Insertable(new[]
+        {
+            new StoreRetailPrice { UUID = "SRP-P1", StoreCode = "S1", ProductCode = "P1", PurchasePrice = 22m },
+            new StoreRetailPrice { UUID = "SRP-P-ZERO-FIRST", StoreCode = "S1", ProductCode = "P-ZERO-FIRST", PurchasePrice = 11m },
         }).ExecuteCommandAsync();
     }
 

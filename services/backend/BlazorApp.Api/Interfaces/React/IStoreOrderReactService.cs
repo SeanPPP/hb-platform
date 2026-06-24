@@ -94,6 +94,13 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 批量更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>> UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto request
+        );
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailAsync(

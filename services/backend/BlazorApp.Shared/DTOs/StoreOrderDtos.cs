@@ -332,6 +332,25 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 首次货柜价差异统计页批量更新仓库当前进货价格请求。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+  {
+    public List<string>? ProductCodes { get; set; }
+    public decimal? WarehouseImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页批量更新仓库当前进货价格结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto
+  {
+    public int UpdatedCount { get; set; }
+    public decimal WarehouseImportPrice { get; set; }
+    public List<string> ProductCodes { get; set; } = new();
+  }
+
+  /// <summary>
   /// 首次货柜进货价基准差异单商品明细查询参数。
   /// </summary>
   public class StoreOrderImportPriceVarianceDetailQueryDto : StoreOrderImportPriceVarianceQueryDto

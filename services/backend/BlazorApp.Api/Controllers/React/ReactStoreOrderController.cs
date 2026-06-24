@@ -1275,6 +1275,39 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 批量更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        [HttpPost("import-price-variance/warehouse-import-price/batch")]
+        public async Task<IActionResult> UpdateImportPriceVarianceWarehouseImportPriceBatch(
+            [FromBody] StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+                    request ?? new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto()
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceWarehouseImportPriceBatch failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         [HttpGet("detail/{orderGuid}")]
