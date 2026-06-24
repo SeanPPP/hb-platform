@@ -124,6 +124,24 @@ export default function ProductImportPage() {
     })
   }, [])
 
+  const deleteAllRows = useCallback(() => {
+    if (state.products.length === 0) return
+    Modal.confirm({
+      title: t('productImport.deleteAllConfirmTitle', '删除所有表格行'),
+      content: t('productImport.deleteAllConfirmContent', '确认删除当前表格中的所有行？此操作不可恢复。'),
+      okText: t('common.confirm', '确定'),
+      cancelText: t('common.cancel', '取消'),
+      okButtonProps: { danger: true },
+      onOk: () => {
+        // 清空全部行时同步移除检测结果，避免旧统计继续显示在空表上。
+        setState((prev) => ({ ...prev, products: [], selectedIds: [], needsDetection: false, statistics: calculateStatistics([], []) }))
+        setShowStatistics(false)
+        setDuplicateGroups([])
+        setSelectedColumnKey(null)
+      },
+    })
+  }, [state.products.length, t])
+
   const updateProduct = useCallback((rowId: string, field: string, value: unknown) => {
     setState((prev) => {
       const newProducts = prev.products.map((p) => {
@@ -893,6 +911,7 @@ export default function ProductImportPage() {
         <Space wrap size="small">
           <Button icon={<PlusOutlined />} onClick={() => addEmptyRows(10)}>{t('productImport.addEmptyRows', '添加空行(10)')}</Button>
           <Button onClick={deleteSelectedRows} disabled={state.selectedIds.length === 0}>{t('productImport.deleteSelected', '删除选中')}</Button>
+          <Button danger icon={<DeleteOutlined />} onClick={deleteAllRows} disabled={state.products.length === 0}>{t('productImport.deleteAll', '删除全部')}</Button>
           <Button icon={<TranslationOutlined />} onClick={handleBatchTranslate} disabled={translating || state.products.length === 0} loading={translating}>{t('productImport.batchTranslate', '批量翻译')}</Button>
           <Button type="primary" onClick={handleDetect} disabled={state.detecting || !state.supplier} loading={state.detecting}>{t('productImport.detectMatch', '检测匹配')}</Button>
           {!state.needsDetection && (
