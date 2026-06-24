@@ -124,6 +124,7 @@ export interface StoreOrderImportPriceVarianceItem {
   supplierCode?: string
   supplierName?: string
   domesticPrice?: number
+  warehouseImportPrice?: number
   unitVolume?: number
   packingQuantity?: number
   firstContainerImportPrice: number
@@ -163,6 +164,26 @@ export interface StoreOrderImportPriceVarianceResult {
   pageSize: number
   summary: StoreOrderImportPriceVarianceSummary
   supplierSummaries: StoreOrderImportPriceVarianceSupplierSummary[]
+}
+
+export interface StoreOrderImportPriceVarianceDomesticPriceUpdatePayload {
+  productCode: string
+  domesticPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceDomesticPriceUpdateResult {
+  productCode: string
+  domesticPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceUpdatePayload {
+  productCode: string
+  warehouseImportPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult {
+  productCode: string
+  warehouseImportPrice: number
 }
 
 export interface StoreOrderImportPriceVarianceDetailQuery extends StoreOrderImportPriceVarianceQuery {
@@ -349,6 +370,13 @@ export interface StoreOrderDetailLine {
   rrp?: number
 }
 
+export interface StoreOrderInvoiceEmailSentInfo {
+  hasSent: boolean
+  sentAt?: string
+  toEmail?: string
+  jobId?: string
+}
+
 export interface StoreOrderDetail {
   orderGUID: string
   orderNo?: string
@@ -370,6 +398,7 @@ export interface StoreOrderDetail {
   totalAllocQuantity?: number
   totalSKU?: number
   itemsTotal: number
+  invoiceEmailSentInfo?: StoreOrderInvoiceEmailSentInfo
   orderedNotShippedCount?: number
   shippedWithoutOrderCount?: number
   items: StoreOrderDetailLine[]
@@ -457,6 +486,7 @@ export interface StoreOrderCart {
   storeAddress?: string
   storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
+  invoiceEmailSentInfo?: StoreOrderInvoiceEmailSentInfo
   items: StoreOrderCartItem[]
 }
 

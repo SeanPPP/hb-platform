@@ -4,6 +4,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
 using System.Diagnostics;
 using System.ComponentModel.DataAnnotations;
@@ -3015,6 +3016,161 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>> UpdateImportPriceVarianceDomesticPriceAsync(
+            StoreOrderImportPriceVarianceDomesticPriceUpdateDto request
+        )
+        {
+            var productCode = request?.ProductCode?.Trim();
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "商品编码不能为空",
+                };
+            }
+
+            if (!request!.DomesticPrice.HasValue)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "国内价格不能为空",
+                };
+            }
+
+            if (request.DomesticPrice.Value < 0)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "国内价格不能小于 0",
+                };
+            }
+
+            try
+            {
+                var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                    .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
+                if (warehouseProduct == null)
+                {
+                    return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
+                    {
+                        Success = false,
+                        Message = "未找到仓库商品，无法更新国内价格",
+                    };
+                }
+
+                var normalizedPrice = Math.Round(request.DomesticPrice.Value, 2, MidpointRounding.AwayFromZero);
+                warehouseProduct.DomesticPrice = normalizedPrice;
+
+                // 该页面编辑的是仓库商品国内价格，严格只回写 WarehouseProduct.DomesticPrice。
+                await _db.Updateable(warehouseProduct)
+                    .UpdateColumns(wp => new
+                    {
+                        wp.DomesticPrice,
+                    })
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>.OK(
+                    new StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto
+                    {
+                        ProductCode = productCode,
+                        DomesticPrice = normalizedPrice,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceDomesticPriceAsync failed for {ProductCode}", productCode);
+                return new ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "保存国内价格失败",
+                };
+            }
+        }
+
+        public async Task<ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>> UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto request
+        )
+        {
+            var productCode = request?.ProductCode?.Trim();
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "商品编码不能为空",
+                };
+            }
+
+            if (!request!.WarehouseImportPrice.HasValue)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "仓库进货价格不能为空",
+                };
+            }
+
+            if (request.WarehouseImportPrice.Value < 0)
+            {
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "仓库进货价格不能小于 0",
+                };
+            }
+
+            try
+            {
+                var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                    .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
+                if (warehouseProduct == null)
+                {
+                    return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
+                    {
+                        Success = false,
+                        Message = "未找到仓库商品，无法更新仓库进货价格",
+                    };
+                }
+
+                var normalizedPrice = Math.Round(request.WarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
+                var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+                warehouseProduct.ImportPrice = normalizedPrice;
+                warehouseProduct.UpdatedAt = DateTime.UtcNow;
+                warehouseProduct.UpdatedBy = currentUser;
+
+                // 该页面编辑的是仓库商品当前进货价格，只更新 WarehouseProduct.ImportPrice。
+                await _db.Updateable(warehouseProduct)
+                    .UpdateColumns(wp => new
+                    {
+                        wp.ImportPrice,
+                        wp.UpdatedAt,
+                        wp.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
+
+                return ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>.OK(
+                    new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto
+                    {
+                        ProductCode = productCode,
+                        WarehouseImportPrice = normalizedPrice,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceWarehouseImportPriceAsync failed for {ProductCode}", productCode);
+                return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
+                {
+                    Success = false,
+                    Message = "保存仓库进货价格失败",
+                };
+            }
+        }
+
         private async Task<(List<string> StoreCodes, bool NoAccessibleStores)> ResolveStoreOrderImportPriceVarianceStoreCodesAsync(
             StoreOrderImportPriceVarianceQueryDto query
         )
@@ -3100,6 +3256,7 @@ GroupedRows AS (
         MAX(SupplierCode) AS SupplierCode,
         MAX(SupplierName) AS SupplierName,
         MAX(DomesticPrice) AS DomesticPrice,
+        MAX(WarehouseImportPrice) AS WarehouseImportPrice,
         MAX(UnitVolume) AS UnitVolume,
         MAX(PackingQuantity) AS PackingQuantity,
         MAX(FirstContainerImportPrice) AS FirstContainerImportPrice,
@@ -3140,6 +3297,7 @@ SELECT
     SupplierCode,
     SupplierName,
     DomesticPrice,
+    WarehouseImportPrice,
     UnitVolume,
     PackingQuantity,
     FirstContainerImportPrice,
@@ -3402,6 +3560,7 @@ FilteredRows AS (
         dp.SupplierCode AS SupplierCode,
         cs.SupplierName AS SupplierName,
         CAST(COALESCE(wp.DomesticPrice, dp.DomesticPrice) AS decimal(18, 2)) AS DomesticPrice,
+        CAST(wp.ImportPrice AS decimal(18, 2)) AS WarehouseImportPrice,
         CAST(COALESCE(wp.Volume, dp.UnitVolume) AS decimal(18, 4)) AS UnitVolume,
         COALESCE(wp.PackingQuantity, dp.PackingQuantity) AS PackingQuantity,
         CAST(d.ImportPrice AS decimal(18, 2)) AS OrderImportPrice,
@@ -3469,6 +3628,7 @@ FinalRows AS (
                 "suppliercode" => "SupplierCode",
                 "suppliername" => "SupplierName",
                 "domesticprice" => "DomesticPrice",
+                "warehouseimportprice" => "WarehouseImportPrice",
                 "unitvolume" => "UnitVolume",
                 "packingquantity" => "PackingQuantity",
                 "firstcontainerimportprice" => "FirstContainerImportPrice",
@@ -4049,6 +4209,7 @@ FinalRows AS (
                         TotalAllocQuantity = result.Data.TotalAllocQuantity,
                         TotalSKU = result.Data.TotalSKU,
                         FlowStatus = result.Data.FlowStatus,
+                        InvoiceEmailSentInfo = result.Data.InvoiceEmailSentInfo,
                         Items = result.Data.Items,
                     },
                 Message = result.Message,
@@ -4485,6 +4646,13 @@ FinalRows AS (
                 )
                 .FirstAsync();
 
+            // 关键位置：详情接口始终带回最近一次成功发送的发票邮件记录，避免前端重复推导发送状态。
+            var latestInvoiceEmailSentRecord = await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(r => r.StoreOrderUuid == order.Order.OrderGUID)
+                .OrderBy(r => r.SentAtUtc, OrderByType.Desc)
+                .OrderBy(r => r.CreatedAtUtc, OrderByType.Desc)
+                .FirstAsync();
+
             var dto = new StoreOrderDetailDto
             {
                 OrderGUID = order.Order.OrderGUID,
@@ -4506,6 +4674,18 @@ FinalRows AS (
                 StoreContactEmail = order.StoreContactEmail,
                 ShippingFee = order.Order.ShippingFee,
                 FlowStatus = order.Order.FlowStatus,
+                InvoiceEmailSentInfo = latestInvoiceEmailSentRecord == null
+                    ? new StoreOrderInvoiceEmailSentInfoDto()
+                    : new StoreOrderInvoiceEmailSentInfoDto
+                    {
+                        HasSent = true,
+                        SentAt = DateTime.SpecifyKind(
+                            latestInvoiceEmailSentRecord.SentAtUtc,
+                            DateTimeKind.Utc
+                        ),
+                        ToEmail = latestInvoiceEmailSentRecord.ToEmail,
+                        JobId = latestInvoiceEmailSentRecord.JobId,
+                    },
                 Items = pageDetails,
                 Total = loadAllItems ? pageDetails.Count : itemsTotal,
                 ItemsTotal = loadAllItems ? pageDetails.Count : itemsTotal,

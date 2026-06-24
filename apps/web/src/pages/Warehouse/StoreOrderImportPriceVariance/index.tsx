@@ -19,9 +19,10 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { InputRef } from 'antd/es/input'
 import type { SorterResult } from 'antd/es/table/interface'
 import type { Dayjs } from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import PageContainer from '../../../components/PageContainer'
@@ -29,6 +30,8 @@ import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import {
   getStoreOrderImportPriceVariance,
   getStoreOrderImportPriceVarianceDetails,
+  updateStoreOrderImportPriceVarianceDomesticPrice,
+  updateStoreOrderImportPriceVarianceWarehouseImportPrice,
 } from '../../../services/storeOrderService'
 import type { ChinaSupplierItem } from '../../../types/chinaSupplier'
 import type {
@@ -43,6 +46,7 @@ import type {
 const { RangePicker } = DatePicker
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
+type EditablePriceField = 'domesticPrice' | 'warehouseImportPrice'
 
 interface FilterValues {
   keyword?: string
@@ -117,6 +121,20 @@ function formatNumber(value?: number, fractionDigits = 2) {
   return Number.isInteger(number) ? String(number) : number.toFixed(fractionDigits)
 }
 
+function parsePriceDraft(value: string) {
+  const normalized = value.trim().replace(/,/g, '')
+  if (!normalized) {
+    return null
+  }
+
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null
+  }
+
+  return Math.round(parsed * 100) / 100
+}
+
 // 供应商统计接口一次性返回完整聚合结果，列排序在前端本地完成。
 function compareSupplierText(left?: string, right?: string) {
   return (left || '').localeCompare(right || '', 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
@@ -128,6 +146,14 @@ function compareSupplierNumber(left?: number, right?: number) {
 
 function getRowKey(row: StoreOrderImportPriceVarianceItem) {
   return row.productCode || row.itemNumber || row.productName || 'product'
+}
+
+function getEditablePriceInputKey(row: StoreOrderImportPriceVarianceItem, field: EditablePriceField) {
+  return `${field}:${getRowKey(row)}`
+}
+
+function getEditablePriceValue(row: StoreOrderImportPriceVarianceItem, field: EditablePriceField) {
+  return field === 'domesticPrice' ? row.domesticPrice : row.warehouseImportPrice
 }
 
 function getSupplierSummaryRowKey(row: StoreOrderImportPriceVarianceSupplierSummary) {
@@ -198,6 +224,12 @@ export default function StoreOrderImportPriceVariancePage() {
   const [loading, setLoading] = useState(false)
   const tableRegionRef = useRef<HTMLDivElement | null>(null)
   const [tableScrollY, setTableScrollY] = useState(480)
+  const priceInputRefs = useRef<Record<string, InputRef | null>>({})
+  const [editingPriceKey, setEditingPriceKey] = useState<string | null>(null)
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({})
+  // 键盘保存会紧接着触发 blur，用 ref 做同步防重，避免重复提交同一格。
+  const savingPriceKeyRef = useRef<string | null>(null)
+  const [savingPriceKey, setSavingPriceKey] = useState<string | null>(null)
   const supplierSummaryRegionRef = useRef<HTMLDivElement | null>(null)
   const [supplierSummaryTableScrollY, setSupplierSummaryTableScrollY] = useState(360)
   const [supplierOptions, setSupplierOptions] = useState<SupplierOption[]>([])
@@ -472,6 +504,230 @@ export default function StoreOrderImportPriceVariancePage() {
     void loadDetailData()
   }, [loadDetailData])
 
+  const registerPriceInput = useCallback((key: string, node: InputRef | null) => {
+    if (node) {
+      priceInputRefs.current[key] = node
+      return
+    }
+
+    delete priceInputRefs.current[key]
+  }, [])
+
+  const focusPriceInput = useCallback((row: StoreOrderImportPriceVarianceItem, field: EditablePriceField) => {
+    const key = getEditablePriceInputKey(row, field)
+    setEditingPriceKey(key)
+    setPriceDrafts((current) => ({
+      ...current,
+      [key]: formatMoney(getEditablePriceValue(row, field)),
+    }))
+
+    // 进入编辑后全选文本，方便仓库同事直接覆盖当前价格。
+    window.setTimeout(() => priceInputRefs.current[key]?.focus?.({ cursor: 'all' }), 0)
+  }, [])
+
+  const clearPriceDraft = useCallback((key: string) => {
+    setPriceDrafts((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }, [])
+
+  const cancelPriceEdit = useCallback(
+    (row: StoreOrderImportPriceVarianceItem, field: EditablePriceField) => {
+      const key = getEditablePriceInputKey(row, field)
+      setEditingPriceKey(null)
+      clearPriceDraft(key)
+    },
+    [clearPriceDraft],
+  )
+
+  const saveEditablePrice = useCallback(
+    async (
+      row: StoreOrderImportPriceVarianceItem,
+      field: EditablePriceField,
+      nextRow?: StoreOrderImportPriceVarianceItem,
+    ) => {
+      const key = getEditablePriceInputKey(row, field)
+      if (savingPriceKeyRef.current === key) {
+        return false
+      }
+
+      const draft = priceDrafts[key] ?? formatMoney(getEditablePriceValue(row, field))
+      const nextPrice = parsePriceDraft(draft)
+      if (nextPrice == null) {
+        const invalidKey =
+          field === 'domesticPrice'
+            ? 'storeOrders.importPriceVariance.invalidDomesticPrice'
+            : 'storeOrders.importPriceVariance.invalidWarehouseImportPrice'
+        void message.error(t(invalidKey))
+        window.setTimeout(() => priceInputRefs.current[key]?.focus?.({ cursor: 'all' }), 0)
+        return false
+      }
+
+      const currentPrice = Math.round((getEditablePriceValue(row, field) ?? 0) * 100) / 100
+      if (nextPrice === currentPrice) {
+        setEditingPriceKey(null)
+        clearPriceDraft(key)
+        if (nextRow) {
+          focusPriceInput(nextRow, field)
+        }
+        return true
+      }
+
+      const failedKey =
+        field === 'domesticPrice'
+          ? 'storeOrders.importPriceVariance.saveDomesticPriceFailed'
+          : 'storeOrders.importPriceVariance.saveWarehouseImportPriceFailed'
+      if (!row.productCode) {
+        void message.error(t(failedKey))
+        return false
+      }
+
+      savingPriceKeyRef.current = key
+      setSavingPriceKey(key)
+      try {
+        let resultProductCode = ''
+        let resultPrice = 0
+        if (field === 'domesticPrice') {
+          const result = await updateStoreOrderImportPriceVarianceDomesticPrice({
+            productCode: row.productCode,
+            domesticPrice: nextPrice,
+          })
+          resultProductCode = result.productCode
+          resultPrice = result.domesticPrice
+        } else {
+          const result = await updateStoreOrderImportPriceVarianceWarehouseImportPrice({
+            productCode: row.productCode,
+            warehouseImportPrice: nextPrice,
+          })
+          resultProductCode = result.productCode
+          resultPrice = result.warehouseImportPrice
+        }
+
+        setItems((current) =>
+          current.map((item) =>
+            item.productCode === resultProductCode ? { ...item, [field]: resultPrice } : item,
+          ),
+        )
+        setSelectedProduct((current) =>
+          current?.productCode === resultProductCode ? { ...current, [field]: resultPrice } : current,
+        )
+        setEditingPriceKey(null)
+        clearPriceDraft(key)
+        const successKey =
+          field === 'domesticPrice'
+            ? 'storeOrders.importPriceVariance.saveDomesticPriceSuccess'
+            : 'storeOrders.importPriceVariance.saveWarehouseImportPriceSuccess'
+        void message.success(t(successKey))
+        if (nextRow) {
+          focusPriceInput(nextRow, field)
+        }
+        return true
+      } catch (error) {
+        const errorMessage = error instanceof Error && error.message ? error.message : t(failedKey)
+        void message.error(errorMessage)
+        window.setTimeout(() => priceInputRefs.current[key]?.focus?.({ cursor: 'all' }), 0)
+        return false
+      } finally {
+        savingPriceKeyRef.current = null
+        setSavingPriceKey(null)
+      }
+    },
+    [
+      clearPriceDraft,
+      focusPriceInput,
+      message,
+      priceDrafts,
+      t,
+    ],
+  )
+
+  const handlePriceKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>, row: StoreOrderImportPriceVarianceItem, field: EditablePriceField) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        event.stopPropagation()
+        void saveEditablePrice(row, field)
+        return
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        cancelPriceEdit(row, field)
+        return
+      }
+
+      const isArrowUp = event.key === 'ArrowUp'
+      const isArrowDown = event.key === 'ArrowDown'
+      if (!isArrowUp && !isArrowDown) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      const currentIndex = items.findIndex(
+        (item) => getEditablePriceInputKey(item, field) === getEditablePriceInputKey(row, field),
+      )
+      const nextIndex = isArrowUp ? currentIndex - 1 : currentIndex + 1
+      const nextRow = nextIndex >= 0 && nextIndex < items.length ? items[nextIndex] : undefined
+      void saveEditablePrice(row, field, nextRow)
+    },
+    [cancelPriceEdit, items, saveEditablePrice],
+  )
+
+  const renderEditablePriceCell = useCallback(
+    (value: number | undefined, row: StoreOrderImportPriceVarianceItem, field: EditablePriceField) => {
+      const rowKey = getEditablePriceInputKey(row, field)
+      if (editingPriceKey !== rowKey) {
+        return (
+          <Typography.Text
+            style={{ cursor: 'text' }}
+            onClick={() => focusPriceInput(row, field)}
+          >
+            {formatMoney(value)}
+          </Typography.Text>
+        )
+      }
+
+      return (
+        <Input
+          ref={(node) => registerPriceInput(rowKey, node)}
+          size="small"
+          inputMode="decimal"
+          autoComplete="off"
+          value={priceDrafts[rowKey] ?? formatMoney(value)}
+          disabled={savingPriceKey === rowKey}
+          style={{ textAlign: 'right', width: '100%' }}
+          onChange={(event) =>
+            setPriceDrafts((current) => ({
+              ...current,
+              [rowKey]: event.target.value,
+            }))
+          }
+          onFocus={(event) => event.currentTarget.select()}
+          onClick={(event) => event.currentTarget.select()}
+          onBlur={() => {
+            if (editingPriceKey === rowKey) {
+              void saveEditablePrice(row, field)
+            }
+          }}
+          onKeyDown={(event) => handlePriceKeyDown(event, row, field)}
+        />
+      )
+    },
+    [
+      editingPriceKey,
+      focusPriceInput,
+      handlePriceKeyDown,
+      priceDrafts,
+      registerPriceInput,
+      saveEditablePrice,
+      savingPriceKey,
+    ],
+  )
+
   const productColumns = useMemo<ColumnsType<StoreOrderImportPriceVarianceItem>>(
     () => [
       {
@@ -524,7 +780,7 @@ export default function StoreOrderImportPriceVariancePage() {
         align: 'right',
         width: 120,
         sorter: true,
-        render: (value?: number) => formatMoney(value),
+        render: (value: number | undefined, row) => renderEditablePriceCell(value, row, 'domesticPrice'),
       },
       {
         title: t('storeOrders.importPriceVariance.unitVolume'),
@@ -543,6 +799,15 @@ export default function StoreOrderImportPriceVariancePage() {
         width: 110,
         sorter: true,
         render: (value?: number) => formatNumber(value, 0),
+      },
+      {
+        title: t('storeOrders.importPriceVariance.warehouseImportPrice'),
+        dataIndex: 'warehouseImportPrice',
+        key: 'warehouseImportPrice',
+        align: 'right',
+        width: 150,
+        sorter: true,
+        render: (value: number | undefined, row) => renderEditablePriceCell(value, row, 'warehouseImportPrice'),
       },
       {
         title: t('storeOrders.importPriceVariance.firstContainerImportPrice'),
@@ -625,7 +890,13 @@ export default function StoreOrderImportPriceVariancePage() {
         ),
       },
     ],
-    [i18n.language, openContainerDetail, openProductDetails, t],
+    [
+      i18n.language,
+      openContainerDetail,
+      openProductDetails,
+      renderEditablePriceCell,
+      t,
+    ],
   )
 
   const detailColumns = useMemo<ColumnsType<StoreOrderImportPriceVarianceDetailItem>>(
@@ -1073,7 +1344,7 @@ export default function StoreOrderImportPriceVariancePage() {
             loading={loading}
             columns={productColumns}
             dataSource={items}
-            scroll={{ x: 1850, y: tableScrollY }}
+            scroll={{ x: 2000, y: tableScrollY }}
             onChange={handleTableChange}
             pagination={{
               current: pageNumber,

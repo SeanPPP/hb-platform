@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -85,6 +86,176 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPriceAsync_UpdatesWarehousePriceOnly()
+    {
+        await SeedProductsAndStoreAsync();
+
+        var service = CreateService();
+        var result = await service.UpdateImportPriceVarianceDomesticPriceAsync(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+            {
+                ProductCode = " P1 ",
+                DomesticPrice = 12.345m,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal("P1", result.Data!.ProductCode);
+        Assert.Equal(12.35m, result.Data.DomesticPrice);
+
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(12.35m, warehouseProduct.DomesticPrice);
+        Assert.Equal("seed-user", warehouseProduct.UpdatedBy);
+        Assert.Equal(new DateTime(2024, 1, 1), warehouseProduct.UpdatedAt);
+
+        var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(99m, domesticProduct.DomesticPrice);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPriceAsync_ValidatesInputAndRequiresWarehouseProduct()
+    {
+        await SeedProductsAndStoreAsync();
+
+        var service = CreateService();
+
+        var missingProductCode = await service.UpdateImportPriceVarianceDomesticPriceAsync(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto { ProductCode = " ", DomesticPrice = 1m }
+        );
+        Assert.False(missingProductCode.Success);
+        Assert.Equal("商品编码不能为空", missingProductCode.Message);
+
+        var missingPrice = await service.UpdateImportPriceVarianceDomesticPriceAsync(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto { ProductCode = "P1", DomesticPrice = null }
+        );
+        Assert.False(missingPrice.Success);
+        Assert.Equal("国内价格不能为空", missingPrice.Message);
+
+        var negativePrice = await service.UpdateImportPriceVarianceDomesticPriceAsync(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto { ProductCode = "P1", DomesticPrice = -0.01m }
+        );
+        Assert.False(negativePrice.Success);
+        Assert.Equal("国内价格不能小于 0", negativePrice.Message);
+
+        var missingWarehouseProduct = await service.UpdateImportPriceVarianceDomesticPriceAsync(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto { ProductCode = "P2", DomesticPrice = 66m }
+        );
+        Assert.False(missingWarehouseProduct.Success);
+        Assert.Equal("未找到仓库商品，无法更新国内价格", missingWarehouseProduct.Message);
+
+        var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P2");
+        Assert.Equal(55m, domesticProduct.DomesticPrice);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceAsync_UpdatesWarehouseImportPriceOnly()
+    {
+        await SeedProductsAndStoreAsync();
+
+        var service = CreateService(userName: "tester");
+        var result = await service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = " P1 ",
+                WarehouseImportPrice = 4.567m,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal("P1", result.Data!.ProductCode);
+        Assert.Equal(4.57m, result.Data.WarehouseImportPrice);
+
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(4.57m, warehouseProduct.ImportPrice);
+        Assert.Equal(88m, warehouseProduct.DomesticPrice);
+        Assert.Equal("tester", warehouseProduct.UpdatedBy);
+        Assert.NotEqual(new DateTime(2024, 1, 1), warehouseProduct.UpdatedAt);
+
+        var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P1");
+        Assert.Equal(99m, domesticProduct.DomesticPrice);
+        Assert.Null(domesticProduct.ImportPrice);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceAsync_ValidatesInputAndRequiresWarehouseProduct()
+    {
+        await SeedProductsAndStoreAsync();
+
+        var service = CreateService();
+
+        var missingProductCode = await service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = " ",
+                WarehouseImportPrice = 1m,
+            }
+        );
+        Assert.False(missingProductCode.Success);
+        Assert.Equal("商品编码不能为空", missingProductCode.Message);
+
+        var missingPrice = await service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = null,
+            }
+        );
+        Assert.False(missingPrice.Success);
+        Assert.Equal("仓库进货价格不能为空", missingPrice.Message);
+
+        var negativePrice = await service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = -0.01m,
+            }
+        );
+        Assert.False(negativePrice.Success);
+        Assert.Equal("仓库进货价格不能小于 0", negativePrice.Message);
+
+        var missingWarehouseProduct = await service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P2",
+                WarehouseImportPrice = 66m,
+            }
+        );
+        Assert.False(missingWarehouseProduct.Success);
+        Assert.Equal("未找到仓库商品，无法更新仓库进货价格", missingWarehouseProduct.Message);
+
+        var domesticProduct = await _db.Queryable<DomesticProduct>().FirstAsync(item => item.ProductCode == "P2");
+        Assert.Equal(55m, domesticProduct.DomesticPrice);
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPriceAsync_WhenDatabaseFails_HidesInternalMessage()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}", "missing.db");
+        using var failingDb = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = $"Data Source={missingDirectory}",
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
+        var service = CreateService(failingDb);
+
+        var result = await service.UpdateImportPriceVarianceDomesticPriceAsync(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("保存国内价格失败", result.Message);
+        Assert.DoesNotContain("Data Source", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task GetImportPriceVarianceAsync_AppliesBaselineRulesAndDirectionFilters()
     {
         await SeedProductsAndStoreAsync();
@@ -114,6 +285,7 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         Assert.Equal("供应商二", decrease.SupplierName);
         Assert.Equal("domestic-p2.jpg", decrease.ProductImage);
         Assert.Equal(55m, decrease.DomesticPrice);
+        Assert.Null(decrease.WarehouseImportPrice);
         Assert.Equal(0.55m, decrease.UnitVolume);
         Assert.Equal(30, decrease.PackingQuantity);
         Assert.Equal(4m, decrease.AllocQuantityTotal);
@@ -131,6 +303,7 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         Assert.Equal("供应商一", increase.SupplierName);
         Assert.Equal("product-p1.jpg", increase.ProductImage);
         Assert.Equal(88m, increase.DomesticPrice);
+        Assert.Equal(2.34m, increase.WarehouseImportPrice);
         Assert.Equal(0.88m, increase.UnitVolume);
         Assert.Equal(12, increase.PackingQuantity);
         Assert.Equal(5m, increase.AllocQuantityTotal);
@@ -195,6 +368,16 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         Assert.Contains(supplierOnly.Data.Items, item => item.ProductCode == "P-ZERO-FIRST");
         Assert.Contains(supplierOnly.Data.Items, item => item.ProductCode == "P-EXACT-HIGH");
         Assert.Equal(9.8m, supplierOnly.Data.Summary.VarianceAmountTotal);
+
+        var warehouseImportPriceDesc = await service.GetImportPriceVarianceAsync(new StoreOrderImportPriceVarianceQueryDto
+        {
+            SortBy = "warehouseImportPrice",
+            SortDescending = true,
+            PageNumber = 1,
+            PageSize = 20,
+        });
+        Assert.Equal("P-ZERO-FIRST", warehouseImportPriceDesc.Data!.Items[0].ProductCode);
+        Assert.Equal(3.21m, warehouseImportPriceDesc.Data.Items[0].WarehouseImportPrice);
 
         var localSupplierMustNotMatch = await service.GetImportPriceVarianceAsync(new StoreOrderImportPriceVarianceQueryDto
         {
@@ -282,8 +465,17 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
 
         await _db.Insertable(new[]
         {
-            new WarehouseProduct { ProductCode = "P1", DomesticPrice = 88m, Volume = 0.88m, PackingQuantity = 12 },
-            new WarehouseProduct { ProductCode = "P-ZERO-FIRST", DomesticPrice = 7m, Volume = 0.77m, PackingQuantity = 16 },
+            new WarehouseProduct
+            {
+                ProductCode = "P1",
+                DomesticPrice = 88m,
+                ImportPrice = 2.34m,
+                Volume = 0.88m,
+                PackingQuantity = 12,
+                UpdatedAt = new DateTime(2024, 1, 1),
+                UpdatedBy = "seed-user",
+            },
+            new WarehouseProduct { ProductCode = "P-ZERO-FIRST", DomesticPrice = 7m, ImportPrice = 3.21m, Volume = 0.77m, PackingQuantity = 16 },
         }).ExecuteCommandAsync();
     }
 
@@ -419,12 +611,27 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private StoreOrderReactService CreateService()
+    private StoreOrderReactService CreateService(ISqlSugarClient? db = null, string? userName = null)
     {
+        var httpContextAccessor = string.IsNullOrWhiteSpace(userName)
+            ? new HttpContextAccessor()
+            : new HttpContextAccessor
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(
+                            new[] { new Claim(ClaimTypes.Name, userName) },
+                            "TestAuth"
+                        )
+                    ),
+                },
+            };
+
         return new StoreOrderReactService(
-            CreateSqlSugarContext(_db),
+            CreateSqlSugarContext(db ?? _db),
             NullLogger<StoreOrderReactService>.Instance,
-            new HttpContextAccessor(),
+            httpContextAccessor,
             Mock.Of<IOrderNumberGenerator>(),
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),

@@ -80,6 +80,20 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前国内价格。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>> UpdateImportPriceVarianceDomesticPriceAsync(
+            StoreOrderImportPriceVarianceDomesticPriceUpdateDto request
+        );
+
+        /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>> UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto request
+        );
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailAsync(

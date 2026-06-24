@@ -153,6 +153,17 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 发票邮件最近一次成功发送信息。
+  /// </summary>
+  public class StoreOrderInvoiceEmailSentInfoDto
+  {
+    public bool HasSent { get; set; }
+    public DateTime? SentAt { get; set; }
+    public string? ToEmail { get; set; }
+    public string? JobId { get; set; }
+  }
+
+  /// <summary>
   /// 购物车DTO (FlowStatus=0 的 WareHouseOrder)
   /// </summary>
   public class StoreOrderCartDto
@@ -214,6 +225,11 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public int? FlowStatus { get; set; }
 
+    /// <summary>
+    /// 发票邮件最近一次成功发送信息。
+    /// </summary>
+    public StoreOrderInvoiceEmailSentInfoDto InvoiceEmailSentInfo { get; set; } = new();
+
     public List<StoreOrderCartItemDto> Items { get; set; } = new();
   }
 
@@ -265,6 +281,7 @@ namespace BlazorApp.Shared.DTOs
     public string? SupplierCode { get; set; }
     public string? SupplierName { get; set; }
     public decimal? DomesticPrice { get; set; }
+    public decimal? WarehouseImportPrice { get; set; }
     public decimal? UnitVolume { get; set; }
     public int? PackingQuantity { get; set; }
     public decimal FirstContainerImportPrice { get; set; }
@@ -276,6 +293,42 @@ namespace BlazorApp.Shared.DTOs
     public string? FirstContainerCode { get; set; }
     public string? FirstContainerNumber { get; set; }
     public DateTime? FirstContainerDate { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前国内价格请求。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+  {
+    public string? ProductCode { get; set; }
+    public decimal? DomesticPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前国内价格结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public decimal DomesticPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前进货价格请求。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+  {
+    public string? ProductCode { get; set; }
+    public decimal? WarehouseImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前进货价格结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public decimal WarehouseImportPrice { get; set; }
   }
 
   /// <summary>

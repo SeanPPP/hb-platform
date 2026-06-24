@@ -1209,6 +1209,72 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前国内价格。
+        /// </summary>
+        [HttpPost("import-price-variance/domestic-price")]
+        public async Task<IActionResult> UpdateImportPriceVarianceDomesticPrice(
+            [FromBody] StoreOrderImportPriceVarianceDomesticPriceUpdateDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateImportPriceVarianceDomesticPriceAsync(
+                    request ?? new StoreOrderImportPriceVarianceDomesticPriceUpdateDto()
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceDomesticPrice failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        [HttpPost("import-price-variance/warehouse-import-price")]
+        public async Task<IActionResult> UpdateImportPriceVarianceWarehouseImportPrice(
+            [FromBody] StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+                    request ?? new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto()
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceWarehouseImportPrice failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         [HttpGet("detail/{orderGuid}")]

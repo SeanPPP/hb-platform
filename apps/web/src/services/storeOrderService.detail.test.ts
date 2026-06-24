@@ -270,6 +270,12 @@ try {
           totalImportAmount: 88,
           totalVolume: 12,
           itemsTotal: 35,
+          invoiceEmailSentInfo: {
+            hasSent: true,
+            sentAt: '2026-06-08T09:15:00Z',
+            toEmail: 'invoice@example.com',
+            jobId: 'invoice-job-1',
+          },
           items: [
             {
               detailGUID: 'detail-1',
@@ -323,6 +329,12 @@ try {
       totalImportAmount: 88,
       totalVolume: 12,
       itemsTotal: 35,
+      invoiceEmailSentInfo: {
+        hasSent: true,
+        sentAt: '2026-06-08T09:15:00Z',
+        toEmail: 'invoice@example.com',
+        jobId: 'invoice-job-1',
+      },
       items: [
         {
           detailGUID: 'detail-1',
@@ -337,7 +349,7 @@ try {
         },
       ],
     },
-    '订货明细接口应保留服务端返回的当前页 items 与 itemsTotal',
+    '订货明细接口应保留服务端返回的当前页 items、itemsTotal 和发票邮件发送信息',
   )
 } finally {
   globalThis.fetch = originalFetch

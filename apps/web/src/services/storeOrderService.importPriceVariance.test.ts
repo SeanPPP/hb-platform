@@ -1,4 +1,9 @@
-import { getStoreOrderImportPriceVariance, getStoreOrderImportPriceVarianceDetails } from './storeOrderService'
+import {
+  getStoreOrderImportPriceVariance,
+  getStoreOrderImportPriceVarianceDetails,
+  updateStoreOrderImportPriceVarianceDomesticPrice,
+  updateStoreOrderImportPriceVarianceWarehouseImportPrice,
+} from './storeOrderService'
 
 function assertEqual<T>(actual: T, expected: T, label: string) {
   if (actual !== expected) {
@@ -40,6 +45,7 @@ try {
               supplierCode: 'CN1',
               supplierName: '供应商一',
               domesticPrice: 8.8,
+              warehouseImportPrice: 2.22,
               unitVolume: 0.25,
               packingQuantity: 12,
               firstContainerImportPrice: 2.5,
@@ -89,6 +95,7 @@ try {
   assertEqual(result.items.length, 1, '应保留后端返回的商品汇总列表')
   assertEqual(result.items[0].supplierCode, 'CN1', '商品汇总行应包含国内供应商编码')
   assertEqual(result.items[0].domesticPrice, 8.8, '商品汇总行应包含国内价格')
+  assertEqual(result.items[0].warehouseImportPrice, 2.22, '商品汇总行应包含当前仓库进货价格')
   assertEqual(result.items[0].unitVolume, 0.25, '商品汇总行应包含体积')
   assertEqual(result.items[0].packingQuantity, 12, '商品汇总行应包含装箱数')
   assertEqual(result.items[0].detailCount, 2, '商品汇总行应包含明细数量')
@@ -105,6 +112,100 @@ try {
     },
     'summary 数字字段应归一化',
   )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          productCode: 'P-001',
+          warehouseImportPrice: '4.57',
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await updateStoreOrderImportPriceVarianceWarehouseImportPrice({
+    productCode: 'P-001',
+    warehouseImportPrice: 4.567,
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/import-price-variance/warehouse-import-price',
+    '仓库进货价格保存接口路径应指向价差统计页专用窄接口',
+  )
+  assertEqual(capturedMethod, 'POST', '仓库进货价格保存接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    { productCode: 'P-001', warehouseImportPrice: 4.567 },
+    '仓库进货价格保存接口应提交商品编码和新价格',
+  )
+  assertEqual(result.productCode, 'P-001', '仓库进货价格保存响应应保留商品编码')
+  assertEqual(result.warehouseImportPrice, 4.57, '保存响应仓库进货价格应归一化为数字')
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  let capturedUrl = ''
+  let capturedMethod = ''
+  let capturedBody: unknown = null
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedMethod = String(init?.method)
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          productCode: 'P-001',
+          domesticPrice: '12.35',
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }) as typeof fetch
+
+  const result = await updateStoreOrderImportPriceVarianceDomesticPrice({
+    productCode: 'P-001',
+    domesticPrice: 12.345,
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/import-price-variance/domestic-price',
+    '国内价格保存接口路径应指向价差统计页专用窄接口',
+  )
+  assertEqual(capturedMethod, 'POST', '国内价格保存接口应使用 POST')
+  assertDeepEqual(
+    capturedBody,
+    { productCode: 'P-001', domesticPrice: 12.345 },
+    '国内价格保存接口应提交商品编码和新价格',
+  )
+  assertEqual(result.productCode, 'P-001', '保存响应应保留商品编码')
+  assertEqual(result.domesticPrice, 12.35, '保存响应国内价格应归一化为数字')
 } finally {
   globalThis.fetch = originalFetch
 }

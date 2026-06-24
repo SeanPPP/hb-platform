@@ -89,6 +89,7 @@ import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import { InvoiceEmailSentStatusText } from './invoiceEmailSentInfo'
 import { resolveStoreContactDraftValue } from './storeOrderStoreContact'
 import {
   buildPasteSubmitItems,
@@ -749,7 +750,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 }
 
 export default function StoreOrderDetailPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const route = useStableRouteContext()
   const { active } = useKeepAliveContext()
   const location = useLocation()
@@ -2493,18 +2494,21 @@ export default function StoreOrderDetailPage() {
                   />
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.contactEmailLabel')}>
-                  <Input
-                    type="email"
-                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
-                    value={headerForm.contactEmail}
-                    onChange={(event) =>
-                      setHeaderForm((current) => ({
-                        ...current,
-                        contactEmail: event.target.value,
-                      }))
-                    }
-                    placeholder={t('storeOrders.contactEmailLabel')}
-                  />
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Input
+                      type="email"
+                      disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+                      value={headerForm.contactEmail}
+                      onChange={(event) =>
+                        setHeaderForm((current) => ({
+                          ...current,
+                          contactEmail: event.target.value,
+                        }))
+                      }
+                      placeholder={t('storeOrders.contactEmailLabel')}
+                    />
+                    <InvoiceEmailSentStatusText info={detail.invoiceEmailSentInfo} t={t} lng={i18n.language} />
+                  </Space>
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.skuCountLabel')}>{detail.totalSKU ?? detail.items.length}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>

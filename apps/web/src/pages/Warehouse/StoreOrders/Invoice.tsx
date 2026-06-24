@@ -24,6 +24,7 @@ import {
   StoreOrderInvoiceEmailPollingTimeoutError,
   createStoreOrderInvoiceEmailJobPoller,
 } from './invoiceEmailJobPolling'
+import { InvoiceEmailSentStatusText } from './invoiceEmailSentInfo'
 import {
   buildDocumentFileName,
   collectElementBreakOffsets,
@@ -424,7 +425,7 @@ export default function StoreOrderInvoicePage() {
     }
   }
 
-  const pollInvoiceEmailJob = async (jobId: string) => {
+  const pollInvoiceEmailJob = async (jobId: string, fallbackRecipientEmail?: string) => {
     stopInvoiceEmailPollingRef.current?.()
 
     const poller = createStoreOrderInvoiceEmailJobPoller({
@@ -436,6 +437,20 @@ export default function StoreOrderInvoicePage() {
     try {
       const result = await poller.promise
       if (result.status === 'Succeeded') {
+        // 邮件发送成功后立即刷新前端提示，避免用户重新打开弹窗时仍看到旧状态。
+        setOrder((current) =>
+          current
+            ? {
+                ...current,
+                invoiceEmailSentInfo: {
+                  hasSent: true,
+                  sentAt: result.completedAt || new Date().toISOString(),
+                  toEmail: result.toEmail || fallbackRecipientEmail || current.invoiceEmailSentInfo?.toEmail,
+                  jobId: result.jobId || jobId,
+                },
+              }
+            : current,
+        )
         message.success(result.message || t('warehouse.invoice.emailSendSuccess'))
         return
       }
@@ -485,7 +500,7 @@ export default function StoreOrderInvoicePage() {
       message.success(t('warehouse.invoice.emailJobSubmitted'))
       setEmailModalOpen(false)
       if (job.jobId) {
-        void pollInvoiceEmailJob(job.jobId)
+        void pollInvoiceEmailJob(job.jobId, normalizedRecipientEmail)
       }
 
       if (saveAsStoreDefault && order.storeCode) {
@@ -734,6 +749,7 @@ export default function StoreOrderInvoicePage() {
             ]}
             onChange={(value) => void handleEmailModalLanguageChange(value)}
           />
+          <InvoiceEmailSentStatusText info={order?.invoiceEmailSentInfo} t={t} lng={emailModalLanguage} />
           <Input
             type="email"
             value={recipientEmail}

@@ -60,7 +60,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             typeof(ProductGrade),
             typeof(User),
             typeof(UserStore),
-            typeof(InvoiceEmailConfiguration)
+            typeof(InvoiceEmailConfiguration),
+            typeof(StoreOrderInvoiceEmailSendRecord)
         );
     }
 
@@ -105,6 +106,49 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.True(fullResult.Success);
         Assert.Equal("Test Store", fullResult.Data!.StoreName);
         Assert.Equal("store@example.com", fullResult.Data!.StoreContactEmail);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_ReturnsLatestInvoiceEmailSentInfo()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Insertable(
+            new[]
+            {
+                new StoreOrderInvoiceEmailSendRecord
+                {
+                    Id = "record-1",
+                    StoreOrderUuid = "order-1",
+                    ToEmail = "old@example.com",
+                    SentAtUtc = new DateTime(2026, 6, 5, 1, 0, 0, DateTimeKind.Utc),
+                    JobId = "job-old",
+                    CreatedAtUtc = new DateTime(2026, 6, 5, 1, 0, 0, DateTimeKind.Utc),
+                },
+                new StoreOrderInvoiceEmailSendRecord
+                {
+                    Id = "record-2",
+                    StoreOrderUuid = "order-1",
+                    ToEmail = "latest@example.com",
+                    SentAtUtc = new DateTime(2026, 6, 6, 3, 30, 0, DateTimeKind.Utc),
+                    JobId = "job-latest",
+                    CreatedAtUtc = new DateTime(2026, 6, 6, 3, 31, 0, DateTimeKind.Utc),
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateStoreOrderService();
+
+        var detailResult = await service.GetOrderDetailAsync("order-1");
+        var fullResult = await service.GetOrderDetailFullAsync("order-1");
+
+        Assert.True(detailResult.Success);
+        Assert.True(detailResult.Data!.InvoiceEmailSentInfo.HasSent);
+        Assert.Equal(new DateTime(2026, 6, 6, 3, 30, 0, DateTimeKind.Utc), detailResult.Data.InvoiceEmailSentInfo.SentAt);
+        Assert.Equal(DateTimeKind.Utc, detailResult.Data.InvoiceEmailSentInfo.SentAt!.Value.Kind);
+        Assert.Equal("latest@example.com", detailResult.Data.InvoiceEmailSentInfo.ToEmail);
+        Assert.Equal("job-latest", detailResult.Data.InvoiceEmailSentInfo.JobId);
+        Assert.True(fullResult.Success);
+        Assert.True(fullResult.Data!.InvoiceEmailSentInfo.HasSent);
+        Assert.Equal("latest@example.com", fullResult.Data.InvoiceEmailSentInfo.ToEmail);
     }
 
     [Fact]
@@ -311,7 +355,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
-    public async Task StoreOrderInvoiceEmailJobService_StartsJobAndMarksSucceeded()
+    public async Task StoreOrderInvoiceEmailJobService_StartsJobAndMarksSucceeded_AndWritesSendRecord()
     {
         var request = new SendStoreOrderInvoiceEmailDto
         {
@@ -356,6 +400,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         var started = await jobService.StartJobAsync(request);
         var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+        var sendRecords = await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+            .Where(x => x.StoreOrderUuid == "order-1")
+            .ToListAsync();
 
         Assert.False(string.IsNullOrWhiteSpace(started.JobId));
         Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Succeeded, completed.Status);
@@ -381,6 +428,10 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 attachment.ContentType
             )
         );
+        var sendRecord = Assert.Single(sendRecords);
+        Assert.Equal("customer@example.com", sendRecord.ToEmail);
+        Assert.Equal(started.JobId, sendRecord.JobId);
+        Assert.Equal("order-1", sendRecord.StoreOrderUuid);
     }
 
     [Fact]
@@ -407,6 +458,110 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         invoiceEmailService.Verify(
             item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()),
             Times.Never
+        );
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(x => x.StoreOrderUuid == "order-1")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailJobService_WhenSendFails_DoesNotWriteSendRecord()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+        };
+        var attachmentService = new Mock<IStoreOrderInvoiceAttachmentService>(MockBehavior.Strict);
+        attachmentService
+            .Setup(item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ApiResponse<StoreOrderInvoiceAttachmentBundle>.OK(
+                new StoreOrderInvoiceAttachmentBundle
+                {
+                    OrderGUID = "order-1",
+                    OrderNo = "SO001",
+                    StoreCode = "S001",
+                    Attachments =
+                    {
+                        new StoreOrderInvoiceEmailAttachment
+                        {
+                            FileName = "Invoice_S001_SO001.pdf",
+                            ContentType = "application/pdf",
+                            Bytes = new byte[] { 1, 2, 3, 4 },
+                        },
+                    },
+                }
+            ));
+        var invoiceEmailService = new Mock<IInvoiceEmailService>(MockBehavior.Strict);
+        invoiceEmailService
+            .Setup(item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()))
+            .ReturnsAsync(ApiResponse<bool>.Error("SMTP 发送失败"));
+        var jobService = CreateInvoiceEmailJobService(attachmentService, invoiceEmailService);
+
+        var started = await jobService.StartJobAsync(request);
+        var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+
+        Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Failed, completed.Status);
+        Assert.Equal("SMTP 发送失败", completed.Message);
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(x => x.StoreOrderUuid == "order-1")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailJobService_WhenSendRecordWriteFails_KeepsJobSucceeded()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+        };
+        var attachmentService = new Mock<IStoreOrderInvoiceAttachmentService>(MockBehavior.Strict);
+        attachmentService
+            .Setup(item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ApiResponse<StoreOrderInvoiceAttachmentBundle>.OK(
+                new StoreOrderInvoiceAttachmentBundle
+                {
+                    OrderGUID = "order-1",
+                    OrderNo = "SO001",
+                    StoreCode = "S001",
+                    Attachments =
+                    {
+                        new StoreOrderInvoiceEmailAttachment
+                        {
+                            FileName = "Invoice_S001_SO001.pdf",
+                            ContentType = "application/pdf",
+                            Bytes = new byte[] { 1, 2, 3, 4 },
+                        },
+                    },
+                }
+            ));
+        var invoiceEmailService = new Mock<IInvoiceEmailService>(MockBehavior.Strict);
+        invoiceEmailService
+            .Setup(item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()))
+            .ReturnsAsync(ApiResponse<bool>.OK(true, "发票邮件发送成功"));
+        var jobService = CreateInvoiceEmailJobService(
+            attachmentService,
+            invoiceEmailService,
+            registerSqlSugarContext: false
+        );
+
+        var started = await jobService.StartJobAsync(request);
+        var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+
+        Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal("发票邮件发送成功", completed.Message);
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(x => x.StoreOrderUuid == "order-1")
+                .CountAsync()
         );
     }
 
@@ -810,12 +965,17 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         );
     }
 
-    private static StoreOrderInvoiceEmailJobService CreateInvoiceEmailJobService(
+    private StoreOrderInvoiceEmailJobService CreateInvoiceEmailJobService(
         Mock<IStoreOrderInvoiceAttachmentService> attachmentService,
-        Mock<IInvoiceEmailService> invoiceEmailService
+        Mock<IInvoiceEmailService> invoiceEmailService,
+        bool registerSqlSugarContext = true
     )
     {
         var services = new ServiceCollection();
+        if (registerSqlSugarContext)
+        {
+            services.AddSingleton(CreateSqlSugarContext(_db));
+        }
         services.AddSingleton(attachmentService.Object);
         services.AddSingleton(invoiceEmailService.Object);
         var provider = services.BuildServiceProvider();

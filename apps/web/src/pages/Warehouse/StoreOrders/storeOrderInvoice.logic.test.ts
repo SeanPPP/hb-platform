@@ -44,6 +44,7 @@ async function main() {
     assert(invoiceSource.includes('getStoreOrderInvoiceEmailJob'), '发票页应接入发票邮件 job 查询 service')
     assert(invoiceSource.includes('translateStoreOrderInvoiceEmailText'), '发票页应接入发票邮件文本翻译 service')
     assert(invoiceSource.includes('createStoreOrderInvoiceEmailJobPoller'), '发票页应使用发票邮件 job 轮询器')
+    assert(invoiceSource.includes('InvoiceEmailSentStatusText'), '发票页应复用发票邮件发送状态提示组件')
     assert(invoiceSource.includes('stopInvoiceEmailPollingRef.current?.()'), '发票页卸载时应清理邮件 job 轮询')
     assert(invoiceSource.includes("result.status === 'Succeeded'"), '发票页应处理邮件发送成功终态')
     assert(invoiceSource.includes("result.status === 'Failed'"), '发票页应处理邮件发送失败终态')
@@ -75,6 +76,10 @@ async function main() {
     assert(
       invoiceSource.includes("t('warehouse.invoice.saveAsStoreDefault', { lng: emailModalLanguage })"),
       '发票邮件弹窗保存默认邮箱开关应使用局部语言',
+    )
+    assert(
+      invoiceSource.includes('<InvoiceEmailSentStatusText info={order?.invoiceEmailSentInfo} t={t} lng={emailModalLanguage} />'),
+      '发票邮件弹窗收件人输入框上方应显示上次发送提示',
     )
   })
   if (emailEntryFailure) failures.push(emailEntryFailure)
@@ -151,6 +156,11 @@ async function main() {
 
   const translationFailure = await runTest('发票邮件文案应提供中英文翻译', () => {
     for (const key of [
+      'invoiceEmailLabel',
+      'invoiceEmailNotSent',
+      'invoiceEmailSent',
+      'invoiceEmailLastSentAt',
+      'invoiceEmailRecipient',
       'sendEmail',
       'emailModalTitle',
       'recipientEmail',

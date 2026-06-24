@@ -14,14 +14,42 @@ const enLocale = JSON.parse(readFileSync(path.resolve(process.cwd(), 'src/i18n/l
 
 assert(
   pageSource.includes("dataIndex: 'productImage'") &&
-    pageSource.includes("dataIndex: 'domesticPrice'") &&
-    pageSource.includes("dataIndex: 'unitVolume'") &&
-    pageSource.includes("dataIndex: 'packingQuantity'") &&
-    pageSource.includes("dataIndex: 'firstContainerImportPrice'") &&
+	    pageSource.includes("dataIndex: 'domesticPrice'") &&
+	    pageSource.includes("dataIndex: 'unitVolume'") &&
+	    pageSource.includes("dataIndex: 'packingQuantity'") &&
+	    pageSource.includes("dataIndex: 'warehouseImportPrice'") &&
+	    pageSource.includes("dataIndex: 'firstContainerImportPrice'") &&
     pageSource.includes("dataIndex: 'originalImportAmountTotal'") &&
     pageSource.includes("dataIndex: 'baselineImportAmountTotal'") &&
     pageSource.includes("dataIndex: 'varianceAmountTotal'"),
-  '商品汇总主表必须包含商品图片、国内价格、体积、装箱数、首次进货价和三项金额合计列',
+	  '商品汇总主表必须包含商品图片、国内价格、体积、装箱数、当前仓库进货价格、首次进货价和三项金额合计列',
+	)
+
+	assert(
+	  pageSource.includes('updateStoreOrderImportPriceVarianceDomesticPrice') &&
+	    pageSource.includes('updateStoreOrderImportPriceVarianceWarehouseImportPrice') &&
+	    pageSource.includes('function parsePriceDraft') &&
+	    pageSource.includes("type EditablePriceField = 'domesticPrice' | 'warehouseImportPrice'") &&
+	    pageSource.includes('const priceInputRefs = useRef') &&
+	    pageSource.includes('const savingPriceKeyRef = useRef') &&
+	    pageSource.includes('savingPriceKeyRef.current === key') &&
+	    pageSource.includes('inputMode="decimal"') &&
+	    pageSource.includes('event.currentTarget.select()') &&
+    pageSource.includes("event.key === 'ArrowUp'") &&
+    pageSource.includes("event.key === 'ArrowDown'") &&
+    pageSource.includes("event.key === 'Enter'") &&
+    pageSource.includes("event.key === 'Escape'") &&
+    !pageSource.includes('<InputNumber') &&
+    !pageSource.includes('type="number"'),
+	  '国内价格和当前仓库进货价格列必须使用普通 Input 内联编辑，支持全选、方向键、回车保存、Esc 取消，且不能出现数字加减控件',
+	)
+
+const warehouseImportPriceColumnIndex = pageSource.indexOf("dataIndex: 'warehouseImportPrice'")
+const firstContainerImportPriceColumnIndex = pageSource.indexOf("dataIndex: 'firstContainerImportPrice'")
+assert(
+  warehouseImportPriceColumnIndex >= 0 &&
+    firstContainerImportPriceColumnIndex > warehouseImportPriceColumnIndex,
+  '当前仓库进货价格列必须位于首次货柜价列前面',
 )
 
 assert(
@@ -88,7 +116,7 @@ assert(
     pageSource.includes('const [tableScrollY, setTableScrollY]') &&
     pageSource.includes("height: 'calc(100vh - 32px)'") &&
     pageSource.includes('region.clientHeight') &&
-    pageSource.includes('scroll={{ x: 1850, y: tableScrollY }}') &&
+    pageSource.includes('scroll={{ x: 2000, y: tableScrollY }}') &&
     pageSource.includes('主表和供应商统计都把滚动限制在表格 body 内') &&
     pageSource.includes("overflow: 'hidden'"),
   '主表区域必须按一屏高度展示，并根据表格区域自身高度计算 body 内部滚动高度',
@@ -158,11 +186,13 @@ assert(
 )
 
 assert(
-  zhLocale.storeOrders.importPriceVariance.domesticSupplier === '国内供应商' &&
-    zhLocale.storeOrders.importPriceVariance.productImage === '商品图片' &&
-    zhLocale.storeOrders.importPriceVariance.domesticPrice === '国内价格' &&
-    zhLocale.storeOrders.importPriceVariance.unitVolume === '体积' &&
-    zhLocale.storeOrders.importPriceVariance.packingQuantity === '装箱数',
+	  zhLocale.storeOrders.importPriceVariance.domesticSupplier === '国内供应商' &&
+	    zhLocale.storeOrders.importPriceVariance.productImage === '商品图片' &&
+	    zhLocale.storeOrders.importPriceVariance.domesticPrice === '国内价格' &&
+	    zhLocale.storeOrders.importPriceVariance.warehouseImportPrice === '当前仓库进货价格' &&
+	    enLocale.storeOrders.importPriceVariance.warehouseImportPrice === 'Current Warehouse Import Price' &&
+	    zhLocale.storeOrders.importPriceVariance.unitVolume === '体积' &&
+	    zhLocale.storeOrders.importPriceVariance.packingQuantity === '装箱数',
   '中文商品汇总列文案必须存在',
 )
 

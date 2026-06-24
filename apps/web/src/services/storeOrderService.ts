@@ -15,6 +15,10 @@ import type {
   StoreOrderImportPriceVarianceDetailItem,
   StoreOrderImportPriceVarianceDetailQuery,
   StoreOrderImportPriceVarianceDetailResult,
+  StoreOrderImportPriceVarianceDomesticPriceUpdatePayload,
+  StoreOrderImportPriceVarianceDomesticPriceUpdateResult,
+  StoreOrderImportPriceVarianceWarehouseImportPriceUpdatePayload,
+  StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult,
   StoreOrderImportPriceVarianceItem,
   StoreOrderImportPriceVarianceQuery,
   StoreOrderImportPriceVarianceResult,
@@ -25,6 +29,7 @@ import type {
   StoreOrderSyncJobResult,
   StoreOrderSyncJobStatus,
   StoreOrderInvoiceEmailJobResult,
+  StoreOrderInvoiceEmailSentInfo,
   StoreOrderPasteReplaceJobResult,
   StoreOrderBatchMapStoreCodePayload,
   StoreOrderBatchMapStoreCodeResult,
@@ -218,11 +223,40 @@ function normalizeStoreOrderImportPriceVarianceDetailResult(
   }
 }
 
+function normalizeStoreOrderImportPriceVarianceDomesticPriceUpdateResult(
+  payload: unknown,
+): StoreOrderImportPriceVarianceDomesticPriceUpdateResult {
+  const result = unwrapEnvelope<{
+    productCode?: unknown
+    domesticPrice?: unknown
+  }>(payload)
+
+  return {
+    productCode: typeof result?.productCode === 'string' ? result.productCode : '',
+    domesticPrice: readFiniteNumber(result?.domesticPrice),
+  }
+}
+
+function normalizeStoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult(
+  payload: unknown,
+): StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult {
+  const result = unwrapEnvelope<{
+    productCode?: unknown
+    warehouseImportPrice?: unknown
+  }>(payload)
+
+  return {
+    productCode: typeof result?.productCode === 'string' ? result.productCode : '',
+    warehouseImportPrice: readFiniteNumber(result?.warehouseImportPrice),
+  }
+}
+
 function normalizeCart(payload: unknown): StoreOrderCart | null {
   const result = normalizeResult<Partial<StoreOrderCart> | null>(payload)
   if (!result) {
     return null
   }
+  const invoiceEmailSentInfo = normalizeStoreOrderInvoiceEmailSentInfo(result.invoiceEmailSentInfo)
 
   return {
     orderGUID: result.orderGUID ?? '',
@@ -239,6 +273,7 @@ function normalizeCart(payload: unknown): StoreOrderCart | null {
     outboundDate: result.outboundDate,
     storeAddress: result.storeAddress,
     flowStatus: result.flowStatus,
+    invoiceEmailSentInfo,
     items: Array.isArray(result.items) ? result.items : [],
   }
 }
@@ -250,6 +285,7 @@ function normalizeStoreOrderDetail(payload: unknown): StoreOrderDetail | null {
   }
 
   const items = Array.isArray(result.items) ? result.items : []
+  const invoiceEmailSentInfo = normalizeStoreOrderInvoiceEmailSentInfo(result.invoiceEmailSentInfo)
 
   return {
     ...result,
@@ -259,8 +295,22 @@ function normalizeStoreOrderDetail(payload: unknown): StoreOrderDetail | null {
     totalImportAmount: result.totalImportAmount ?? 0,
     totalVolume: result.totalVolume ?? 0,
     itemsTotal: result.itemsTotal ?? items.length,
+    invoiceEmailSentInfo,
     items,
   } as StoreOrderDetail
+}
+
+function normalizeStoreOrderInvoiceEmailSentInfo(value: unknown): StoreOrderInvoiceEmailSentInfo | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  return {
+    hasSent: Boolean(value.hasSent),
+    sentAt: typeof value.sentAt === 'string' ? value.sentAt : undefined,
+    toEmail: typeof value.toEmail === 'string' ? value.toEmail : undefined,
+    jobId: typeof value.jobId === 'string' ? value.jobId : undefined,
+  }
 }
 
 function normalizeResult<T>(payload: unknown): T {
@@ -475,6 +525,31 @@ export async function getStoreOrderImportPriceVarianceDetails(query: StoreOrderI
   })
 
   return normalizeStoreOrderImportPriceVarianceDetailResult(response, query)
+}
+
+export async function updateStoreOrderImportPriceVarianceDomesticPrice(
+  payload: StoreOrderImportPriceVarianceDomesticPriceUpdatePayload,
+) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/import-price-variance/domestic-price`, {
+    method: 'POST',
+    data: payload,
+  })
+
+  return normalizeStoreOrderImportPriceVarianceDomesticPriceUpdateResult(response)
+}
+
+export async function updateStoreOrderImportPriceVarianceWarehouseImportPrice(
+  payload: StoreOrderImportPriceVarianceWarehouseImportPriceUpdatePayload,
+) {
+  const response = await request<ApiResponse<unknown> | unknown>(
+    `${API_BASE}/import-price-variance/warehouse-import-price`,
+    {
+      method: 'POST',
+      data: payload,
+    },
+  )
+
+  return normalizeStoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult(response)
 }
 
 export async function getUsedStoreOrderBranches() {

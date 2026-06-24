@@ -730,6 +730,180 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPrice_ForbidsOrderReadOnlyUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceDomesticPrice(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPrice_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+        {
+            ProductCode = "P1",
+            DomesticPrice = 12.3m,
+        };
+        var response = ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>.OK(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateImportPriceVarianceDomesticPriceAsync(request))
+            .ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceDomesticPrice(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPrice_HidesInternalServiceException()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.UpdateImportPriceVarianceDomesticPriceAsync(
+                    It.IsAny<StoreOrderImportPriceVarianceDomesticPriceUpdateDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("sensitive sql detail"));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceDomesticPrice(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain("sensitive", message);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPrice_ForbidsOrderReadOnlyUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPrice(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPrice_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+        {
+            ProductCode = "P1",
+            WarehouseImportPrice = 12.3m,
+        };
+        var response = ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>.OK(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateImportPriceVarianceWarehouseImportPriceAsync(request))
+            .ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPrice(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPrice_HidesInternalServiceException()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+                    It.IsAny<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("sensitive sql detail"));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPrice(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain("sensitive", message);
+        service.VerifyAll();
+    }
+
+    [Fact]
     public async Task GetOrderList_AllowsAssignedStoreForOrderViewUser()
     {
         var expected = new PagedListReactDto<StoreOrderListItemDto>

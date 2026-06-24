@@ -475,6 +475,7 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskRuntimeControl),
                 typeof(ScheduledTaskInstanceState),
                 typeof(InvoiceEmailConfiguration),
+                typeof(StoreOrderInvoiceEmailSendRecord),
                 typeof(ApplicationLog),
                 typeof(MobileAppBuild),
                 typeof(MobileAppOtaUpdate),
@@ -1077,6 +1078,7 @@ namespace BlazorApp.Api.Data
                 typeof(AttendanceLeaveRequest),
                 typeof(AttendanceSettings),
                 typeof(InvoiceEmailConfiguration),
+                typeof(StoreOrderInvoiceEmailSendRecord),
                 typeof(SeasonalCardCatalog),
                 typeof(SeasonalCardRemainingSubmission)
             );
@@ -1226,6 +1228,8 @@ namespace BlazorApp.Api.Data
                     "CREATE INDEX IF NOT EXISTS \"IX_ScheduledTaskLog_ScheduledTime\" ON \"ScheduledTaskLog\" (\"ScheduledTime\")",
                 ["IX_ScheduledTaskInstanceState_LastSeenAtUtc"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ScheduledTaskInstanceState_LastSeenAtUtc\" ON \"ScheduledTaskInstanceState\" (\"LastSeenAtUtc\")",
+                ["IX_StoreOrderInvoiceEmailSendRecord_Order_Time"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_StoreOrderInvoiceEmailSendRecord_Order_Time\" ON \"StoreOrderInvoiceEmailSendRecord\" (\"StoreOrderUuid\", \"SentAtUtc\" DESC, \"CreatedAtUtc\" DESC)",
                 ["IX_ApplicationLog_TimestampUtc"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_ApplicationLog_TimestampUtc\" ON \"ApplicationLog\" (\"TimestampUtc\")",
                 ["IX_ApplicationLog_Project_Level_Time"] =
@@ -1656,6 +1660,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_TaskType_Status' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_TaskType_Status ON [ScheduledTaskLog](TaskType, Status)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskLog_ScheduledTime' AND object_id = OBJECT_ID('ScheduledTaskLog')) CREATE INDEX IX_ScheduledTaskLog_ScheduledTime ON [ScheduledTaskLog](ScheduledTime)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ScheduledTaskInstanceState_LastSeenAtUtc' AND object_id = OBJECT_ID('ScheduledTaskInstanceState')) CREATE INDEX IX_ScheduledTaskInstanceState_LastSeenAtUtc ON [ScheduledTaskInstanceState](LastSeenAtUtc)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_StoreOrderInvoiceEmailSendRecord_Order_Time' AND object_id = OBJECT_ID('StoreOrderInvoiceEmailSendRecord')) CREATE INDEX IX_StoreOrderInvoiceEmailSendRecord_Order_Time ON [StoreOrderInvoiceEmailSendRecord](StoreOrderUuid, SentAtUtc DESC, CreatedAtUtc DESC)",
                 // ApplicationLog表的普通索引，支撑按项目、等级、时间、TraceId 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_TimestampUtc' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_TimestampUtc ON [ApplicationLog](TimestampUtc)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ApplicationLog_Project_Level_Time' AND object_id = OBJECT_ID('ApplicationLog')) CREATE INDEX IX_ApplicationLog_Project_Level_Time ON [ApplicationLog](ProjectCode, Level, TimestampUtc)",
