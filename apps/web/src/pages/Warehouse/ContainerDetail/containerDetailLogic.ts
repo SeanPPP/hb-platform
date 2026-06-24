@@ -112,6 +112,31 @@ export interface ContainerDetailExportColumnDefinition {
 
 export type ContainerDetailExportRow = Record<ContainerDetailExportColumnKey, string | number>
 
+export interface UpdateFieldSelectionState {
+  isAllSelected: boolean
+  isPartiallySelected: boolean
+}
+
+export function getUpdateFieldSelectionState<T extends string>(
+  selectedFields: readonly T[],
+  allFields: readonly T[],
+): UpdateFieldSelectionState {
+  const fieldSet = new Set(allFields)
+  const selectedCount = selectedFields.filter((field) => fieldSet.has(field)).length
+
+  return {
+    isAllSelected: allFields.length > 0 && selectedCount === allFields.length,
+    isPartiallySelected: selectedCount > 0 && selectedCount < allFields.length,
+  }
+}
+
+export function getNextUpdateFieldSelection<T extends string>(
+  checked: boolean,
+  allFields: readonly T[],
+): T[] {
+  return checked ? [...allFields] : []
+}
+
 // 默认导出列固定为业务核对模板，避免用户误导出旧字段顺序。
 export const DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS: ContainerDetailExportColumnKey[] = [
   'index',
@@ -572,6 +597,23 @@ export function getContainerDetailLastImportPrice(row: ContainerDetail): number 
   return row.lastImportPrice ?? row.LastImportPrice ?? row.warehouseImportPrice ?? row.WarehouseImportPrice
 }
 
+export function getContainerDetailImportPriceTrend(row: ContainerDetail): 'up' | 'down' | undefined {
+  const lastImportPrice = getContainerDetailLastImportPrice(row)
+  const currentImportPrice = row.进口价格
+  if (
+    typeof lastImportPrice !== 'number' ||
+    typeof currentImportPrice !== 'number' ||
+    !Number.isFinite(lastImportPrice) ||
+    !Number.isFinite(currentImportPrice) ||
+    lastImportPrice === currentImportPrice
+  ) {
+    return undefined
+  }
+
+  // 趋势以本次进口价格相对上次进口价格的变化判断，用于表格箭头和颜色。
+  return currentImportPrice > lastImportPrice ? 'up' : 'down'
+}
+
 export function getContainerDetailLastOemPrice(row: ContainerDetail): number | undefined {
   return row.lastOEMPrice ?? row.LastOEMPrice ?? row.warehouseOEMPrice ?? row.WarehouseOEMPrice
 }
@@ -701,16 +743,6 @@ const containerDetailProductTypeTags: ContainerDetailProductTypeFilter[] = ['nor
 
 function isContainerDetailProductTypeTag(tag: ContainerDetailTagFilter): tag is ContainerDetailProductTypeFilter {
   return containerDetailProductTypeTags.includes(tag as ContainerDetailProductTypeFilter)
-}
-
-function mergeProductTypeFilters(
-  columnFilters: ContainerDetailProductTypeFilter[] | undefined,
-  selectedTags: ContainerDetailTagFilter[],
-) {
-  const tagFilters = selectedTags.filter(isContainerDetailProductTypeTag)
-  if (!tagFilters.length) return columnFilters
-  // 商品类型统计 tag 和列头筛选共用 productTypes 参数；去重后交给后端做远程过滤。
-  return Array.from(new Set([...(columnFilters ?? []), ...tagFilters]))
 }
 
 export function matchesContainerDetailSelectedTags(row: ContainerDetail, selectedTags: ContainerDetailTagFilter[]) {
@@ -947,10 +979,11 @@ export function applyContainerDetailColumnState(
 export interface BuildContainerDetailQueryOptions {
   containerGuid: string
   filters: ContainerDetailColumnFilters
-  selectedTags: ContainerDetailTagFilter[]
   sortState?: ContainerDetailSortState
   pageNumber: number
   pageSize: number
+  includeTotal?: boolean
+  includeStats?: boolean
 }
 
 function assignQueryValue<K extends keyof ContainerDetailQuery>(
@@ -1000,10 +1033,11 @@ function assignNumberRange(
 export function buildContainerDetailQuery({
   containerGuid,
   filters,
-  selectedTags,
   sortState,
   pageNumber,
   pageSize,
+  includeTotal,
+  includeStats,
 }: BuildContainerDetailQueryOptions): ContainerDetailQuery {
   const query: ContainerDetailQuery = {
     containerGuid,
@@ -1011,12 +1045,20 @@ export function buildContainerDetailQuery({
     pageSize,
   }
 
+  // total/tagStats 是货柜明细追加页的主要固定开销；只有调用方明确指定时才传给后端。
+  if (includeTotal != null) {
+    query.includeTotal = includeTotal
+  }
+  if (includeStats != null) {
+    query.includeStats = includeStats
+  }
+
   assignTrimmedText(query, 'itemNumber', filters.itemNumber)
   assignTrimmedText(query, 'barcode', filters.barcode)
   assignTrimmedText(query, 'productName', filters.productName)
   assignTrimmedText(query, 'englishName', filters.englishName)
   assignTrimmedText(query, 'remark', filters.remark)
-  assignNonEmptyArray(query, 'productTypes', mergeProductTypeFilters(filters.productTypes, selectedTags))
+  assignNonEmptyArray(query, 'productTypes', filters.productTypes)
   assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
   assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
   assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
@@ -1034,9 +1076,6 @@ export function buildContainerDetailQuery({
   assignNumberRange(query, 'lastOEMPriceMin', 'lastOEMPriceMax', filters.lastOEMPrice)
   assignNumberRange(query, 'importPriceMin', 'importPriceMax', filters.importPrice)
   assignNumberRange(query, 'oemPriceMin', 'oemPriceMax', filters.oemPrice)
-
-  const remoteTags = selectedTags.filter((tag) => tag !== 'all' && !isContainerDetailProductTypeTag(tag))
-  assignNonEmptyArray(query, 'selectedTags', remoteTags)
 
   if (sortState) {
     query.sortBy = sortState.field

@@ -148,6 +148,8 @@ export interface ContainerDetailQuery {
   selectedTags?: ContainerDetailQueryTag[]
   sortBy?: string
   sortOrder?: ContainerDetailQuerySortOrder
+  includeTotal?: boolean
+  includeStats?: boolean
 }
 
 export interface ContainerDetailTagStats {
@@ -166,6 +168,8 @@ export interface ContainerDetailQueryResult {
   pageNumber: number
   pageSize: number
   hasMore: boolean
+  totalComputed?: boolean
+  statsComputed?: boolean
   tagStats: ContainerDetailTagStats
 }
 

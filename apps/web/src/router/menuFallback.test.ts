@@ -36,13 +36,19 @@ const completeBackendMenus = [
 const warehouseStaffLocalMenus = [
   {
     key: '/warehouse',
-    children: [{ key: '/warehouse/store-orders' }],
+    children: [
+      { key: '/warehouse/store-orders' },
+      { key: '/warehouse/store-order-import-price-variance' },
+    ],
   },
 ]
 const warehouseStaffBackendMenus = [
   {
     key: '/warehouse',
-    children: [{ key: '/warehouse/store-orders' }],
+    children: [
+      { key: '/warehouse/store-orders' },
+      { key: '/warehouse/store-order-import-price-variance' },
+    ],
   },
 ]
 const warehouseStaffStaleBackendMenus = [{ key: '/dashboard' }]

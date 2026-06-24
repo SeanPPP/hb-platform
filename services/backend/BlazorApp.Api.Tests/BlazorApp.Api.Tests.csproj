@@ -59,12 +59,14 @@
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
+    <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
     <Compile Include="StoreOrderProductListTests.cs" />
+    <Compile Include="StoreOrderImportPriceVarianceTests.cs" />
     <Compile Include="StoreOrderPasteReplaceJobServiceTests.cs" />
     <Compile Include="StoreOrderContactAndInvoiceTests.cs" />
     <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
@@ -90,7 +92,11 @@
     <Compile Include="ApplicationLogServiceTests.cs" />
     <Compile Include="ApplicationLogQueueTests.cs" />
     <Compile Include="ApplicationLogBackgroundServiceTests.cs" />
+    <Compile Include="TencentCloudUploadServiceTests.cs" />
+    <Compile Include="TencentCosMobileAppBuildArtifactMirrorTests.cs" />
+    <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />
     <Compile Include="MobileAppBuildServiceTests.cs" />
+    <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />

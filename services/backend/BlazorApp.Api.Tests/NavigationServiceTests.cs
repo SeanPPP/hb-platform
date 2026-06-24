@@ -40,6 +40,24 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsProductMovementReportWithoutDashboardPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+
+        var menu = _service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(menu, item => item.Path == "/executive-sales-intelligence");
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/product-movement-report"
+        );
+        Assert.DoesNotContain(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/sales-detail-v2"
+        );
+    }
+
+    [Fact]
     public async Task BuildMenu_UsesDatabasePermissionsInsteadOfStalePermissionClaims()
     {
         using var harness = new NavigationTestHarness();
@@ -856,8 +874,15 @@ public class NavigationServiceTests
         var warehouseMenu = Assert.Single(menu);
         Assert.Equal("/warehouse", warehouseMenu.Path);
 
-        var storeOrderMenu = Assert.Single(warehouseMenu.Children!);
-        Assert.Equal("/warehouse/store-orders", storeOrderMenu.Path);
+        var children = warehouseMenu.Children!;
+        Assert.Equal(
+            new[]
+            {
+                "/warehouse/store-orders",
+                "/warehouse/store-order-import-price-variance",
+            },
+            children.Select(item => item.Path).ToArray()
+        );
         Assert.DoesNotContain(menu, item => item.Path == "/dashboard");
         Assert.DoesNotContain(menu, item => item.Path == "/pos-admin");
         Assert.DoesNotContain(

@@ -1,0 +1,269 @@
+import assert from "node:assert/strict";
+import {
+  checkAndDownloadNativeAppUpdate,
+  checkLegacyNativeAppUpdate,
+  getBuildBoundNativeAppDownloadUrl,
+  getStableNativeAppDownloadUrl,
+  type NativeAppBuildInfo,
+  type NativeAppUpdateDependencies,
+} from "./native-app-update";
+
+type NativeAppUpdateTestDependencies = NativeAppUpdateDependencies & {
+  downloaded: string[];
+  deleted: string[];
+  getDownloadUrl?: (build: NativeAppBuildInfo) => string | null;
+};
+
+function createDependencies(
+  overrides?: Partial<NativeAppUpdateDependencies> & {
+    getDownloadUrl?: (build: NativeAppBuildInfo) => string | null;
+  }
+): NativeAppUpdateTestDependencies {
+  const downloaded: string[] = [];
+  const deleted: string[] = [];
+  let fileExists = false;
+  return {
+    platform: "android",
+    getCurrentBuildVersion: () => "10",
+    getBuildProfile: () => "production",
+    getDownloadDirectory: () => "file:///cache",
+    getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+    downloadFile: async (url, fileUri) => {
+      downloaded.push(`${url} -> ${fileUri}`);
+      fileExists = true;
+      return { uri: fileUri, status: 200, mimeType: "application/vnd.android.package-archive" };
+    },
+    deleteFile: async (fileUri) => {
+      deleted.push(fileUri);
+      fileExists = false;
+    },
+    apiClient: {
+      get: async () => ({
+        data: {
+          easBuildId: "build-11",
+          appVersion: "1.0.2",
+          appBuildVersion: "11",
+          artifactUrl: "https://expo.dev/artifacts/eas/build-11.apk",
+          buildProfile: "production",
+        },
+      }),
+    },
+    downloaded,
+    deleted,
+    ...overrides,
+  } as NativeAppUpdateTestDependencies;
+}
+
+async function run() {
+  {
+    assert.equal(
+      getStableNativeAppDownloadUrl("https://hotbargain.vip/api", "preview"),
+      "https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=preview",
+      "legacy latest helper 应生成 android-latest 稳定下载入口"
+    );
+  }
+
+  {
+    assert.equal(
+      getBuildBoundNativeAppDownloadUrl("https://hotbargain.vip/api", {
+        easBuildId: "eas/build 11",
+        appVersion: "1.0.2",
+        appBuildVersion: "11",
+        artifactUrl: "https://expo.dev/artifacts/eas/build-11.apk",
+        buildProfile: "preview",
+      }),
+      "https://hotbargain.vip/api/mobile-app-builds/android/eas%2Fbuild%2011/download?profile=preview",
+      "新安装器 helper 应生成绑定 easBuildId 的稳定下载入口"
+    );
+  }
+
+  {
+    const dependencies = createDependencies();
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "远端 buildVersion 更高时应下载 APK");
+    assert.equal(dependencies.downloaded.length, 1, "APK 应在后台下载一次");
+  }
+
+  {
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            success: true,
+            data: {
+              easBuildId: "build-11",
+              appVersion: "1.0.2",
+              appBuildVersion: "11",
+              artifactUrl: "https://expo.dev/artifacts/eas/build-11.apk",
+              buildProfile: "production",
+            },
+          },
+        }),
+      },
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "后端 ApiResponse.data 包装返回时应仍能识别最新 APK");
+    assert.equal(dependencies.downloaded.length, 1, "包装响应里的新 APK 应触发下载");
+  }
+
+  {
+    const dependencies = createDependencies({
+      getDownloadUrl: (build) => getBuildBoundNativeAppDownloadUrl("https://hotbargain.vip/api", build),
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "新安装器分支检测到新 APK 时应下载");
+    assert.equal(
+      dependencies.downloaded[0],
+      "https://hotbargain.vip/api/mobile-app-builds/android/build-11/download?profile=production -> file:///cache/hb-build-11.apk",
+      "新安装器分支应使用绑定 build 的后端稳定下载入口，避免 latest 指向漂移"
+    );
+  }
+
+  {
+    const dependencies = createDependencies({
+      getDownloadUrl: (build) => `https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=${build.buildProfile}`,
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "available", "旧 APK OTA 检测到更高 buildVersion 时应提示下载");
+    assert.equal(
+      result.status === "available" ? result.url : "",
+      "https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=production",
+      "旧 APK OTA 应返回稳定下载入口"
+    );
+    assert.equal(dependencies.downloaded.length, 0, "旧 APK OTA 不应下载 APK 文件");
+  }
+
+  {
+    const dependencies = createDependencies({
+      getCurrentBuildVersion: () => "11",
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "旧 APK 当前版本已最新时不应提示下载");
+    assert.equal(dependencies.downloaded.length, 0, "旧 APK 无新包时不应下载 APK 文件");
+  }
+
+  {
+    const dependencies = createDependencies();
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "旧 APK 缺少稳定下载入口时不应回退到 EAS artifact 地址");
+    assert.equal(dependencies.downloaded.length, 0, "旧 APK 缺少稳定下载入口时不应下载 APK 文件");
+  }
+
+  {
+    const dependencies = createDependencies({
+      getCurrentBuildVersion: () => "11",
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "当前安装包已是最新时不应下载");
+    assert.equal(dependencies.downloaded.length, 0, "无新包时不应触发下载");
+  }
+
+  {
+    const dependencies = createDependencies({
+      platform: "ios",
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "unsupported-platform", "非 Android 平台不应检查 APK");
+    assert.equal(dependencies.downloaded.length, 0, "非 Android 平台不应下载 APK");
+  }
+
+  {
+    const dependencies = createDependencies({
+      getFileInfo: async () => ({ exists: true, size: 1024 }),
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "已缓存 APK 时应直接进入可提示安装状态");
+    assert.equal(dependencies.downloaded.length, 0, "已缓存同一 APK 时不应重复下载");
+  }
+
+  {
+    let fileInfoCalls = 0;
+    const dependencies = createDependencies({
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        return { uri: fileUri, status: 403, mimeType: "text/html" };
+      },
+      getFileInfo: async () => ({
+        exists: ++fileInfoCalls > 1,
+        size: fileInfoCalls > 1 ? 1024 : undefined,
+      }),
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /HTTP 状态码: 403/,
+      "下载非 2xx 响应时不应进入已下载状态"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "应先尝试下载一次");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "失败下载文件应被清理");
+  }
+
+  {
+    let fileInfoCalls = 0;
+    const dependencies = createDependencies({
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        return { uri: fileUri, status: 200, mimeType: "text/html; charset=utf-8" };
+      },
+      getFileInfo: async () => ({
+        exists: ++fileInfoCalls > 1,
+        size: fileInfoCalls > 1 ? 1024 : undefined,
+      }),
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /文件类型异常/,
+      "下载到 HTML 错误页时不应提示安装"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "应先尝试下载一次");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "非 APK 下载结果应被清理");
+  }
+
+  {
+    let fileInfoCalls = 0;
+    const dependencies = createDependencies({
+      getFileInfo: async () => {
+        fileInfoCalls += 1;
+        return { exists: true, size: fileInfoCalls === 1 ? 0 : 1024 };
+      },
+    });
+
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "已有空文件时应清理并重新下载");
+    assert.equal(dependencies.downloaded.length, 1, "空缓存文件应触发重新下载");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "空缓存文件应先被删除");
+  }
+
+  {
+    let fileInfoCalls = 0;
+    const dependencies = createDependencies({
+      getFileInfo: async () => ({
+        exists: ++fileInfoCalls > 1,
+        size: 0,
+      }),
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /文件为空或不存在/,
+      "下载后文件为空时不应提示安装"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "应尝试下载一次");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "空下载结果应被清理");
+  }
+
+  console.log("native-app-update.test.ts: ok");
+}
+
+void run();

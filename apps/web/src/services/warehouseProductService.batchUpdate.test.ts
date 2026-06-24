@@ -47,20 +47,23 @@ try {
       MinOrderQuantity: 6,
       PackingQuantity: 24,
     },
-  ])
+  ], { syncStorePurchasePrice: false })
 
   assert(capturedBody, '应捕获仓库商品批量更新请求体')
   assert(capturedUrl.endsWith('/api/react/v1/product-warehouse/batch-update'), '批量更新应调用仓库商品 batch-update 接口')
   assert(capturedMethod === 'POST', '批量更新应使用 POST 方法')
   assertDeepEqual(
-    capturedBody.Items,
-    [
-      {
-        ProductCode: 'P001',
-        MinOrderQuantity: 6,
-        PackingQuantity: 24,
-      },
-    ],
+    capturedBody,
+    {
+      Items: [
+        {
+          ProductCode: 'P001',
+          MinOrderQuantity: 6,
+          PackingQuantity: 24,
+        },
+      ],
+      SyncStorePurchasePrice: false,
+    },
     '批量更新请求体应保留 MinOrderQuantity 和 PackingQuantity',
   )
 } finally {

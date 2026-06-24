@@ -168,6 +168,8 @@ namespace BlazorApp.Api.Data
                 ["IX_ProductLocation_ProductCode"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_ProductCode] ON [ProductLocation] ([ProductCode])"),
                 ["IX_ProductLocation_LocationGuid"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_LocationGuid] ON [ProductLocation] ([LocationGuid]) WHERE [LocationGuid] IS NOT NULL"),
                 ["IX_ProductLocation_Product_Location"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_Product_Location] ON [ProductLocation] ([ProductCode], [LocationGuid]) WHERE [LocationGuid] IS NOT NULL"),
+                ["IX_ProductLocation_ProductCode_Active"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_ProductCode_Active] ON [ProductLocation] ([ProductCode]) INCLUDE ([LocationGuid]) WHERE [IsDeleted] = 0 AND [ProductCode] IS NOT NULL AND [LocationGuid] IS NOT NULL"),
+                ["IX_ProductLocation_LocationGuid_Active"] = ("ProductLocation", "CREATE NONCLUSTERED INDEX [IX_ProductLocation_LocationGuid_Active] ON [ProductLocation] ([LocationGuid]) INCLUDE ([ProductCode]) WHERE [IsDeleted] = 0 AND [LocationGuid] IS NOT NULL AND [ProductCode] IS NOT NULL"),
 
                 // WarehouseCategory表索引
                 ["IX_WarehouseCategory_ParentGUID"] = ("WarehouseCategory", "CREATE NONCLUSTERED INDEX [IX_WarehouseCategory_ParentGUID] ON [WarehouseCategory] ([ParentGUID]) WHERE [ParentGUID] IS NOT NULL"),

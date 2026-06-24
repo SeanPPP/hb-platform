@@ -12,6 +12,14 @@ import type {
   CreateStoreOrderPayload,
   RemoveStoreOrderLinePayload,
   StoreOrderHqSyncPayload,
+  StoreOrderImportPriceVarianceDetailItem,
+  StoreOrderImportPriceVarianceDetailQuery,
+  StoreOrderImportPriceVarianceDetailResult,
+  StoreOrderImportPriceVarianceItem,
+  StoreOrderImportPriceVarianceQuery,
+  StoreOrderImportPriceVarianceResult,
+  StoreOrderImportPriceVarianceSummary,
+  StoreOrderImportPriceVarianceSupplierSummary,
   SyncMissingStoreOrdersPayload,
   SyncMissingStoreOrdersResult,
   StoreOrderSyncJobResult,
@@ -113,6 +121,100 @@ function normalizeProductPagedList(payload: unknown): StoreOrderProductListResul
     total: result?.total ?? 0,
     page: result?.page ?? result?.pageNumber ?? 1,
     pageSize: result?.pageSize ?? 24,
+  }
+}
+
+function readFiniteNumber(value: unknown, fallback = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+
+  return fallback
+}
+
+function normalizeImportPriceVarianceSummary(payload: unknown): StoreOrderImportPriceVarianceSummary {
+  const summary = isRecord(payload) ? payload : {}
+
+  return {
+    totalRows: readFiniteNumber(summary.totalRows),
+    originalImportAmountTotal: readFiniteNumber(summary.originalImportAmountTotal),
+    baselineImportAmountTotal: readFiniteNumber(summary.baselineImportAmountTotal),
+    varianceAmountTotal: readFiniteNumber(summary.varianceAmountTotal),
+  }
+}
+
+function readOptionalText(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function normalizeImportPriceVarianceSupplierSummary(
+  payload: unknown,
+): StoreOrderImportPriceVarianceSupplierSummary {
+  const summary = isRecord(payload) ? payload : {}
+
+  return {
+    supplierCode: readOptionalText(summary.supplierCode),
+    supplierName: readOptionalText(summary.supplierName),
+    productCount: readFiniteNumber(summary.productCount),
+    detailCount: readFiniteNumber(summary.detailCount),
+    originalImportAmountTotal: readFiniteNumber(summary.originalImportAmountTotal),
+    baselineImportAmountTotal: readFiniteNumber(summary.baselineImportAmountTotal),
+    increaseVarianceAmountTotal: readFiniteNumber(summary.increaseVarianceAmountTotal),
+    decreaseVarianceAmountTotal: readFiniteNumber(summary.decreaseVarianceAmountTotal),
+    varianceAmountTotal: readFiniteNumber(summary.varianceAmountTotal),
+  }
+}
+
+function normalizeStoreOrderImportPriceVarianceResult(
+  payload: unknown,
+  query: StoreOrderImportPriceVarianceQuery,
+): StoreOrderImportPriceVarianceResult {
+  const result = unwrapEnvelope<{
+    items?: StoreOrderImportPriceVarianceItem[]
+    total?: number | string
+    page?: number | string
+    pageNumber?: number | string
+    pageSize?: number | string
+    summary?: unknown
+    supplierSummaries?: unknown
+  }>(payload)
+
+  return {
+    items: Array.isArray(result?.items) ? result.items : [],
+    total: readFiniteNumber(result?.total),
+    page: readFiniteNumber(result?.page ?? result?.pageNumber, query.pageNumber || 1),
+    pageSize: readFiniteNumber(result?.pageSize, query.pageSize || 20),
+    summary: normalizeImportPriceVarianceSummary(result?.summary),
+    supplierSummaries: Array.isArray(result?.supplierSummaries)
+      ? result.supplierSummaries.map(normalizeImportPriceVarianceSupplierSummary)
+      : [],
+  }
+}
+
+function normalizeStoreOrderImportPriceVarianceDetailResult(
+  payload: unknown,
+  query: StoreOrderImportPriceVarianceDetailQuery,
+): StoreOrderImportPriceVarianceDetailResult {
+  const result = unwrapEnvelope<{
+    items?: StoreOrderImportPriceVarianceDetailItem[]
+    total?: number | string
+    page?: number | string
+    pageNumber?: number | string
+    pageSize?: number | string
+    summary?: unknown
+  }>(payload)
+
+  return {
+    items: Array.isArray(result?.items) ? result.items : [],
+    total: readFiniteNumber(result?.total),
+    page: readFiniteNumber(result?.page ?? result?.pageNumber, query.pageNumber || 1),
+    pageSize: readFiniteNumber(result?.pageSize, query.pageSize || 20),
+    summary: normalizeImportPriceVarianceSummary(result?.summary),
   }
 }
 
@@ -355,6 +457,24 @@ export async function getStoreOrderList(query: StoreOrderListQuery) {
   })
 
   return normalizePagedList<StoreOrderListItem>(response)
+}
+
+export async function getStoreOrderImportPriceVariance(query: StoreOrderImportPriceVarianceQuery) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/import-price-variance`, {
+    method: 'POST',
+    data: query,
+  })
+
+  return normalizeStoreOrderImportPriceVarianceResult(response, query)
+}
+
+export async function getStoreOrderImportPriceVarianceDetails(query: StoreOrderImportPriceVarianceDetailQuery) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/import-price-variance/details`, {
+    method: 'POST',
+    data: query,
+  })
+
+  return normalizeStoreOrderImportPriceVarianceDetailResult(response, query)
 }
 
 export async function getUsedStoreOrderBranches() {

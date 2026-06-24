@@ -1113,6 +1113,102 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取首次货柜进货价基准差异统计。
+        /// </summary>
+        [HttpPost("import-price-variance")]
+        public async Task<IActionResult> GetImportPriceVariance(
+            [FromBody] StoreOrderImportPriceVarianceQueryDto query
+        )
+        {
+            try
+            {
+                query ??= new StoreOrderImportPriceVarianceQueryDto();
+
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
+                if (forbidden == null)
+                {
+                    forbidden = await RequireAssignedStoreScopeAsync(query.StoreCode);
+                }
+                if (forbidden == null && query.StoreCodes != null)
+                {
+                    foreach (var storeCode in query.StoreCodes)
+                    {
+                        forbidden = await RequireStoreScopeAsync(storeCode);
+                        if (forbidden != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetImportPriceVarianceAsync(query);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetImportPriceVariance failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取首次货柜进货价基准差异单商品订单明细。
+        /// </summary>
+        [HttpPost("import-price-variance/details")]
+        public async Task<IActionResult> GetImportPriceVarianceDetails(
+            [FromBody] StoreOrderImportPriceVarianceDetailQueryDto query
+        )
+        {
+            try
+            {
+                query ??= new StoreOrderImportPriceVarianceDetailQueryDto();
+
+                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
+                if (forbidden == null)
+                {
+                    forbidden = await RequireAssignedStoreScopeAsync(query.StoreCode);
+                }
+                if (forbidden == null && query.StoreCodes != null)
+                {
+                    foreach (var storeCode in query.StoreCodes)
+                    {
+                        forbidden = await RequireStoreScopeAsync(storeCode);
+                        if (forbidden != null)
+                        {
+                            break;
+                        }
+                    }
+                }
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetImportPriceVarianceDetailsAsync(query);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetImportPriceVarianceDetails failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         [HttpGet("detail/{orderGuid}")]

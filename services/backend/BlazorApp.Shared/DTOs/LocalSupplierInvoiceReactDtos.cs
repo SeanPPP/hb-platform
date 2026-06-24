@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -62,6 +63,9 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductCode { get; set; }
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public List<string> AdditionalBarcodes { get; set; } = new();
+        [JsonIgnore]
+        public string? AdditionalBarcodesJson { get; set; }
         public string? ProductName { get; set; }
         public string? Specification { get; set; }
         public string? Unit { get; set; }
@@ -302,6 +306,7 @@ namespace BlazorApp.Shared.DTOs
         public string? DetailGUID { get; set; }
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public List<string> AdditionalBarcodes { get; set; } = new();
         public string? ProductName { get; set; }
         public string? ProductCategoryGUID { get; set; }
         public string? StoreProductCode { get; set; }
@@ -512,6 +517,10 @@ namespace BlazorApp.Shared.DTOs
         public int HqAutoPricingUpdated { get; set; }
         public int HqSpecialProductsUpdated { get; set; }
         public int HqDiscountRatesUpdated { get; set; }
+        public int HqProductSetCodesCreated { get; set; }
+        public int HqProductSetCodesUpdated { get; set; }
+        public int HqStoreMultiCodesCreated { get; set; }
+        public int HqStoreMultiCodesUpdated { get; set; }
     }
 
     /// <summary>
@@ -741,6 +750,7 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public List<string> AdditionalBarcodes { get; set; } = new();
         public string? ProductName { get; set; }
         public decimal? Quantity { get; set; }
         public decimal? PurchasePrice { get; set; }
@@ -910,6 +920,27 @@ namespace BlazorApp.Shared.DTOs
         /// 用户确认时间
         /// </summary>
         public DateTime? ConfirmedAt { get; set; }
+
+        /// <summary>
+        /// 新商品带副码时，用户选择的主档商品类型。
+        /// </summary>
+        public List<BatchExecuteNewProductProductTypeSelectionDto> NewProductProductTypeSelections { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 新商品带副码时的商品类型选择。
+    /// </summary>
+    public class BatchExecuteNewProductProductTypeSelectionDto
+    {
+        /// <summary>
+        /// 明细GUID
+        /// </summary>
+        public string DetailGuid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 商品主档类型：1=套装，2=多码。
+        /// </summary>
+        public int ProductType { get; set; }
     }
 
     /// <summary>

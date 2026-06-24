@@ -66,6 +66,20 @@ namespace BlazorApp.Api.Interfaces.React
         Task<PagedListReactDto<StoreOrderListItemDto>> GetOrderListAsync(StoreOrderListFilterDto filter);
 
         /// <summary>
+        /// 获取首次货柜进货价基准差异统计。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceResultDto>> GetImportPriceVarianceAsync(
+            StoreOrderImportPriceVarianceQueryDto query
+        );
+
+        /// <summary>
+        /// 获取首次货柜进货价基准差异单商品订单明细。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>> GetImportPriceVarianceDetailsAsync(
+            StoreOrderImportPriceVarianceDetailQueryDto query
+        );
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailAsync(

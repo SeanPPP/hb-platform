@@ -52,6 +52,7 @@ export interface LocalSupplierInvoiceItemDto {
   productCode?: string
   itemNumber?: string
   barcode?: string
+  additionalBarcodes?: string[]
   productName?: string
   specification?: string
   unit?: string
@@ -89,6 +90,7 @@ export interface InvoiceDetailUpsertItemDto {
   detailGUID?: string
   itemNumber?: string
   barcode?: string
+  additionalBarcodes?: string[]
   productName?: string
   productCategoryGUID?: string
   storeProductCode?: string
@@ -231,6 +233,10 @@ export interface UpdateHqProductsResult {
   hqAutoPricingUpdated?: number
   hqSpecialProductsUpdated?: number
   hqDiscountRatesUpdated?: number
+  hqProductSetCodesCreated?: number
+  hqProductSetCodesUpdated?: number
+  hqStoreMultiCodesCreated?: number
+  hqStoreMultiCodesUpdated?: number
   errors: EnsureHqProductError[]
 }
 
@@ -409,6 +415,7 @@ export interface PasteDetailsRequest {
   items: {
     itemNumber?: string
     barcode?: string
+    additionalBarcodes?: string[]
     productName?: string
     quantity?: number
     purchasePrice?: number
@@ -452,12 +459,18 @@ export interface BatchExecuteActionsRequest {
   expectedActions: BatchExecuteExpectedAction[]
   confirmedCreateProductCount: number
   confirmedAt: string
+  newProductProductTypeSelections?: BatchExecuteNewProductProductTypeSelection[]
 }
 
 export interface BatchExecuteExpectedAction {
   detailGuid: string
   action: DetailAction
   activityType: DetailAction
+}
+
+export interface BatchExecuteNewProductProductTypeSelection {
+  detailGuid: string
+  productType: 1 | 2
 }
 
 export interface BatchExecuteActionsResult {

@@ -683,6 +683,88 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task AddOrderLineAsync_配货中订单_允许添加商品并更新合计()
+    {
+        await SeedStoreOrderAsync("ORDER-PICKING-ADD", flowStatus: 3);
+        await SeedProductAsync("P-PICKING-ADD", "ITEM-PICKING-ADD");
+        await SeedWarehouseProductAsync("P-PICKING-ADD", oemPrice: 4m, importPrice: 2.5m);
+
+        var result = await CreateService().AddOrderLineAsync(new AddOrderLineDto
+        {
+            OrderGUID = "ORDER-PICKING-ADD",
+            ProductCode = "P-PICKING-ADD",
+            Quantity = 6m,
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PICKING-ADD" && item.ProductCode == "P-PICKING-ADD")
+            .FirstAsync();
+        Assert.NotNull(detail);
+        Assert.Equal(1m, detail.AllocQuantity);
+        Assert.Equal(4m, detail.OEMAmount);
+        Assert.Equal(2.5m, detail.ImportAmount);
+
+        var order = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.OrderGUID == "ORDER-PICKING-ADD")
+            .FirstAsync();
+        Assert.Equal(4m, order.OEMTotalAmount);
+        Assert.Equal(2.5m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task PasteReplaceOrderLinesAsync_配货中订单_允许Excel粘贴新增商品()
+    {
+        await SeedStoreOrderAsync("ORDER-PICKING-PASTE", flowStatus: 3);
+        await SeedProductAsync("P-PICKING-PASTE", "ITEM-PICKING-PASTE");
+        await SeedWarehouseProductAsync("P-PICKING-PASTE", oemPrice: 5m, importPrice: 3m);
+
+        var result = await CreateService().PasteReplaceOrderLinesAsync(new PasteReplaceOrderLinesDto
+        {
+            OrderGUID = "ORDER-PICKING-PASTE",
+            TargetField = StoreOrderPasteTargetFields.AllocQuantity,
+            Items = new List<ProductQuantityDto>
+            {
+                new() { ProductCode = "P-PICKING-PASTE", Quantity = 7m, Action = "replace" },
+            },
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-PICKING-PASTE" && item.ProductCode == "P-PICKING-PASTE")
+            .FirstAsync();
+        Assert.NotNull(detail);
+        Assert.Equal(7m, detail.AllocQuantity);
+        Assert.Equal(35m, detail.OEMAmount);
+        Assert.Equal(21m, detail.ImportAmount);
+    }
+
+    [Fact]
+    public async Task AddOrderLineAsync_已完成订单_仍拒绝添加商品()
+    {
+        await SeedStoreOrderAsync("ORDER-COMPLETED-ADD", flowStatus: 2);
+        await SeedProductAsync("P-COMPLETED-ADD", "ITEM-COMPLETED-ADD");
+        await SeedWarehouseProductAsync("P-COMPLETED-ADD");
+
+        var result = await CreateService().AddOrderLineAsync(new AddOrderLineDto
+        {
+            OrderGUID = "ORDER-COMPLETED-ADD",
+            ProductCode = "P-COMPLETED-ADD",
+            Quantity = 6m,
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("Order not found or not editable", result.Message);
+
+        var detailCount = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-COMPLETED-ADD")
+            .CountAsync();
+        Assert.Equal(0, detailCount);
+    }
+
+    [Fact]
     public async Task 首页预热轻量查询_不执行Count且只取首屏商品()
     {
         for (var index = 1; index <= 25; index++)
@@ -954,6 +1036,119 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(result.Data);
         var item = Assert.Single(result.Data.Items);
         Assert.Equal("A-01, B-01", item.LocationCode);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_NormalizesDefaultAndMaximumPageSize()
+    {
+        await SeedStoreOrderAsync("ORDER-PAGE-SIZE");
+        await SeedOrderLineAsync("ORDER-PAGE-SIZE", "P001", "ITEM-001", quantity: 1m, allocQuantity: 1m);
+
+        var defaultResult = await CreateService().GetOrderDetailAsync("ORDER-PAGE-SIZE");
+        var maxResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-PAGE-SIZE",
+            new StoreOrderDetailQueryDto { PageNumber = 1, PageSize = 1000 }
+        );
+        var clampedResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-PAGE-SIZE",
+            new StoreOrderDetailQueryDto { PageNumber = 1, PageSize = 2000 }
+        );
+
+        Assert.NotNull(defaultResult.Data);
+        Assert.Equal(200, defaultResult.Data.PageSize);
+        Assert.NotNull(maxResult.Data);
+        Assert.Equal(1000, maxResult.Data.PageSize);
+        Assert.NotNull(clampedResult.Data);
+        Assert.Equal(1000, clampedResult.Data.PageSize);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_SortsByLocationCodeWithEmptyLocationsFirst()
+    {
+        await SeedStoreOrderAsync("ORDER-LOCATION-SORT");
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-B", "ITEM-B", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-A2", "ITEM-A-002", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-NO", "ITEM-NO", quantity: 1m, allocQuantity: 1m);
+        await SeedOrderLineAsync("ORDER-LOCATION-SORT", "P-A1", "ITEM-A-001", quantity: 1m, allocQuantity: 1m);
+        await SeedLocationAsync("P-B", "L-B", "B-01");
+        await SeedLocationAsync("P-A2", "L-A2", "A-01");
+        await SeedLocationAsync("P-A2", "L-A2-Z", "Z-99");
+        await SeedLocationAsync("P-A1", "L-A1", "A-01");
+
+        _sqlLogs.Clear();
+        var sorted = await CreateService().GetOrderDetailAsync(
+            "ORDER-LOCATION-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "locationCode",
+            }
+        );
+
+        Assert.True(sorted.Success, sorted.Message);
+        Assert.NotNull(sorted.Data);
+        Assert.Equal(4, sorted.Data.ItemsTotal);
+        Assert.Equal(1, sorted.Data.PageNumber);
+        Assert.Equal(10, sorted.Data.PageSize);
+        Assert.Equal(
+            new[] { "P-NO", "P-A1", "P-A2", "P-B" },
+            sorted.Data.Items.Select(item => item.ProductCode)
+        );
+        Assert.Equal(
+            new[] { null, "A-01", "A-01, Z-99", "B-01" },
+            sorted.Data.Items.Select(item => item.LocationCode)
+        );
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("ProductLocation", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("Location", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("MIN", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("GROUP BY", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                && !log.Contains("COUNT(1)", StringComparison.OrdinalIgnoreCase)
+        );
+
+        _sqlLogs.Clear();
+        var paged = await CreateService().GetOrderDetailAsync(
+            "ORDER-LOCATION-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 3,
+                PageSize = 1,
+                SortBy = "locationCode",
+            }
+        );
+
+        Assert.NotNull(paged.Data);
+        Assert.Equal(4, paged.Data.ItemsTotal);
+        Assert.Equal(3, paged.Data.PageNumber);
+        Assert.Equal(1, paged.Data.PageSize);
+        Assert.Equal("P-A2", Assert.Single(paged.Data.Items).ProductCode);
+        Assert.Equal("A-01, Z-99", paged.Data.Items.Single().LocationCode);
+        Assert.Contains(
+            _sqlLogs,
+            log =>
+                log.Contains("ProductLocation", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("MIN", StringComparison.OrdinalIgnoreCase)
+                && log.Contains("LIMIT", StringComparison.OrdinalIgnoreCase)
+                && !log.Contains("COUNT(1)", StringComparison.OrdinalIgnoreCase)
+        );
+
+        var descending = await CreateService().GetOrderDetailAsync(
+            "ORDER-LOCATION-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 2,
+                PageSize = 1,
+                SortBy = "locationCode",
+                SortDescending = true,
+            }
+        );
+
+        Assert.NotNull(descending.Data);
+        Assert.Equal("P-B", Assert.Single(descending.Data.Items).ProductCode);
     }
 
     [Fact]

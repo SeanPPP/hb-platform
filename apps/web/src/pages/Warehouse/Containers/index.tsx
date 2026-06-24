@@ -701,6 +701,13 @@ export default function ContainersPage() {
       render: (v) => formatNumber(v, 2),
     },
     {
+      title: t('containers.fields.remark'),
+      dataIndex: '备注',
+      width: 180,
+      ellipsis: true,
+      render: (value?: string) => value?.trim() || '--',
+    },
+    {
       title: t('containers.fields.status'),
       dataIndex: '状态',
       width: 120,
@@ -817,7 +824,7 @@ export default function ContainersPage() {
             columns={columns}
             dataSource={containers}
             rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1500 }}
             pagination={{
               current: page,
               pageSize,

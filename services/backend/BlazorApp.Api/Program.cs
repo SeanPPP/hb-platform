@@ -464,6 +464,11 @@ builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection
 builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
+builder.Services.AddHttpClient<TencentCosMobileAppBuildArtifactMirror>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped<IMobileAppBuildArtifactMirror>(sp =>
+    sp.GetRequiredService<TencentCosMobileAppBuildArtifactMirror>()
+);
 builder.Services.AddScoped<IChinaSupplierService, ChinaSupplierService>(); // 国内供应商管理服务
 builder.Services.AddScoped<IDomesticSupplierService, DomesticSupplierService>(); // 义乌采购国内供应商服务
 builder.Services.AddScoped<IWarehouseCategoryService, WarehouseCategoryService>(); // 仓库分类服务
@@ -486,13 +491,20 @@ builder.Services.AddScoped<ItemBarcodeService>(); // 货号条码生成服务
 builder.Services.AddScoped<IDomesticProductCreationService, DomesticProductCreationService>(); // 国内商品货号条码批量创建服务
 builder.Services.AddScoped<IAutoPricingService, AutoPricingService>(); // 自动定价计算服务
 builder.Services.AddScoped<IVersionInfoService, VersionInfoService>(); // 版本管理服务
-builder.Services.AddScoped<IMobileAppBuildService>(sp =>
+builder.Services.AddScoped<MobileAppBuildService>(sp =>
 {
     var context = sp.GetRequiredService<SqlSugarContext>();
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<EasWebhookOptions>>();
     var logger = sp.GetRequiredService<ILogger<MobileAppBuildService>>();
     return new MobileAppBuildService(context.Db, options, logger);
 }); // Expo EAS APK 构建记录服务
+builder.Services.AddScoped<IMobileAppBuildService>(sp =>
+    sp.GetRequiredService<MobileAppBuildService>()
+);
+builder.Services.AddScoped<IMobileAppBuildMirrorQueue>(sp =>
+    sp.GetRequiredService<MobileAppBuildService>()
+);
+builder.Services.AddHostedService<MobileAppBuildMirrorBackgroundService>();
 builder.Services.AddScoped<INavigationService, NavigationService>(); // 动态导航菜单服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务
@@ -601,6 +613,7 @@ builder.Services.AddScoped<IDeviceRegistrationReactService, DeviceRegistrationRe
 builder.Services.AddScoped<ITaxInvoiceService, TaxInvoiceService>();
 builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactService>();
 builder.Services.AddScoped<ISalesDashboardCacheWarmer, SalesDashboardCacheWarmer>();
+builder.Services.AddScoped<IProductMovementReportService, ProductMovementReportService>();
 builder.Services.AddScoped<IHolidayProductReactService, HolidayProductReactService>();
 builder.Services.AddScoped<IStoreManagerProductReactService, StoreManagerProductReactService>();
 builder.Services.AddScoped<ILocationReactService, LocationReactService>();
@@ -694,6 +707,7 @@ try
         // 只创建不存在的表，更新表结构，保留现有数据
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
         dbContext.EnsureLoginSessionSchema();
+        await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
         // dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");

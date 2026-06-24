@@ -59,6 +59,8 @@ function createEmptyAccess(): AccessControl {
     canManageWarehouse: false,
     canManageStore: false,
     canViewReports: false,
+    canViewSalesIntelligence: false,
+    canViewProductMovementReport: false,
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
@@ -101,6 +103,7 @@ function createEmptyAccess(): AccessControl {
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
+    canManageAppDownloads: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
@@ -203,6 +206,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete)
 
   const canViewReports = isAdmin || hasPermission(P.Reports.View)
+  const canViewProductMovementReport =
+    isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View)
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport
   const canExportData = isAdmin || hasPermission(P.Reports.Export)
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
@@ -290,6 +296,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings)
   // App 下载页只认独立系统权限，非 Admin 需要后台显式分配。
   const canViewAppDownloads = isAdmin || hasPermission(P.System.ViewAppDownloads)
+  // OTA 登记和回撤命令属于发布管理动作，和只读下载页权限分开控制。
+  const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
@@ -328,6 +336,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageWarehouse,
     canManageStore,
     canViewReports,
+    canViewSalesIntelligence,
+    canViewProductMovementReport,
     canExportData,
     canModifyPrice,
     canDeletePrice,
@@ -370,6 +380,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,
+    canManageAppDownloads,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
     canViewPosProducts,

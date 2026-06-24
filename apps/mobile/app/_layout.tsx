@@ -10,6 +10,7 @@ import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
 import { useAutomaticAppUpdate } from "@/modules/updates/use-automatic-app-update";
+import { useAutomaticNativeAppUpdate } from "@/modules/updates/use-automatic-native-app-update";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
@@ -50,6 +51,7 @@ export default function RootLayout() {
 
   usePrinterAutoConnect();
   useAutomaticAppUpdate({ enabled: appReady && !startupError });
+  useAutomaticNativeAppUpdate({ enabled: appReady && !startupError });
 
   useEffect(() => {
     return installGlobalErrorLogging();

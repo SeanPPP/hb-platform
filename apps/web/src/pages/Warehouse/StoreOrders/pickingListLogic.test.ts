@@ -25,16 +25,17 @@ function runTest(name: string, execute: () => void) {
 
 // 这里锁定配货单“内包装数量”的业务规则，避免组件里再次出现临时兜底逻辑。
 runTest('minOrderQuantity 有效时应返回纯数字格式的内包装数量', () => {
-  assertEqual(formatInnerPackCount(12, 12), '1', '整除时应显示整数且不带小数')
-  assertEqual(formatInnerPackCount(18, 12), '1.5', '非整除时应保留 1 位小数')
-  assertEqual(formatInnerPackCount(0, 12), '0', '订货数量为 0 时应显示 0')
+  assertEqual(formatInnerPackCount(12, undefined, 12), '1', '整除时应显示整数且不带小数')
+  assertEqual(formatInnerPackCount(18, undefined, 12), '1.5', '非整除时应保留 1 位小数')
+  assertEqual(formatInnerPackCount(0, 12, 12), '1', '订货数量为 0 时应使用发货数兜底计算包数')
+  assertEqual(formatInnerPackCount(0, 18, 12), '1.5', '发货数兜底后非整除时应保留 1 位小数')
 })
 
 runTest('minOrderQuantity 为空 0 1 或无效时应返回空字符串', () => {
-  assertEqual(formatInnerPackCount(24, undefined), '', 'minOrderQuantity 为空时应显示空字符串')
-  assertEqual(formatInnerPackCount(24, 0), '', 'minOrderQuantity 为 0 时应显示空字符串')
-  assertEqual(formatInnerPackCount(24, 1), '', 'minOrderQuantity 为 1 时应显示空字符串')
-  assertEqual(formatInnerPackCount(24, Number.NaN), '', 'minOrderQuantity 非法时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, undefined), '', 'minOrderQuantity 为空时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, 0), '', 'minOrderQuantity 为 0 时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, 1), '', 'minOrderQuantity 为 1 时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, Number.NaN), '', 'minOrderQuantity 非法时应显示空字符串')
 })
 
 runTest('分店订货体积应统一保留两位小数', () => {
@@ -182,6 +183,13 @@ runTest('配货单订货数为空或为 0 时应使用发货数兜底', () => {
   assertEqual(formatPickingOrderQuantity(0, 12), 12, '订货数为 0 时应显示发货数')
   assertEqual(formatPickingOrderQuantity(undefined, 8), 8, '订货数缺失时应显示发货数')
   assertEqual(formatPickingOrderQuantity(0, 0), '', '订货数和发货数都为空时应显示空字符串')
+})
+
+runTest('配货单包数应使用订货数列同口径数量作为分子', () => {
+  assertEqual(formatInnerPackCount(0, 12, 12), '1', 'MC020-16 主动配货 12 且中包数 12 时应显示 1 包')
+  assertEqual(formatInnerPackCount(0, 18, 12), '1.5', '主动配货 18 且中包数 12 时应显示 1.5 包')
+  assertEqual(formatInnerPackCount(undefined, 12, 12), '1', '订货数缺失时也应使用发货数兜底计算包数')
+  assertEqual(formatInnerPackCount(0, 0, 12), '', '订货数和发货数都为空时包数应显示空白')
 })
 
 runTest('配货单打印应取消固定 30 行分页并交给 A4 打印流填满页面', () => {
@@ -477,6 +485,11 @@ runTest('配货单打印表头应将订货数量显示为订货数', () => {
     pickingListSource.includes('<td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>'),
     true,
     '订货数单元格应使用发货数兜底显示函数',
+  )
+  assertEqual(
+    pickingListSource.includes('{formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity)}'),
+    true,
+    '包数单元格应传入发货数作为兜底分子',
   )
   assertEqual(pickingListSource.includes('<th className="col-send-qty">'), false, '打印表头不应继续显示发货数列')
   assertEqual(pickingListSource.includes('<td className="col-send-qty">'), false, '明细行不应继续显示发货数单元格')

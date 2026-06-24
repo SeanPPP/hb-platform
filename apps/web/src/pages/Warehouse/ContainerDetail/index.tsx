@@ -61,7 +61,6 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
-import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import {
   applyContainerFloatRateByScope,
@@ -93,8 +92,8 @@ import {
   type PushProductsToHqJobResult,
 } from '../../../services/posProductService'
 import { createHqSyncJobPoller } from '../../../services/productHqSyncPolling'
-import { upsertForActiveStores as upsertMultiCodeForActiveStores } from '../../../services/storeMultiCodePriceService'
-import { upsertForActiveStores as upsertRetailForActiveStores } from '../../../services/storeRetailPriceService'
+import { upsertForActiveStores as upsertMultiCodeForActiveStores, type StoreMultiCodePriceUpsertActiveItem } from '../../../services/storeMultiCodePriceService'
+import { upsertForActiveStores as upsertRetailForActiveStores, type StoreRetailPriceUpsertActiveItem } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
 import {
   batchAssignProducts,
@@ -105,8 +104,10 @@ import {
   batchUpdateWarehouseProducts,
   bulkSetStatus,
   detectProducts,
+  type WarehouseProductBatchUpdateItem,
 } from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
+import { useTabsStore } from '../../../store/tabs'
 import type { ContainerDetail, ContainerDetailBatchScope, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
@@ -157,7 +158,9 @@ import {
   getContainerDetailTranslationSource,
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
+  getNextUpdateFieldSelection,
   getNextContainerDetailEditableCell,
+  getUpdateFieldSelectionState,
   isContainerDetailColumnOrderCustomized,
   isContainerDetailSortField,
   mergeContainerDetailColumnOrder,
@@ -188,7 +191,7 @@ import {
 } from './containerDetailLogic'
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip } from '../Products/categoryPath'
 import CategoryTreePicker from '../Products/CategoryTreePicker'
-import type { PushProductsToHqResult } from '../../../types/posProduct'
+import type { PushProductsToHqResult, PushProductsToHqUpdateField } from '../../../types/posProduct'
 import ContainerTagFilters from './ContainerTagFilters'
 import useContainerSetCode from './useContainerSetCode'
 import {
@@ -209,6 +212,35 @@ type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 
 type PendingContainerDetailPricePatch = Pick<UpdateContainerDetailRequest, 'hguid'> & Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格'>>
 type PendingContainerDetailPricePatchMap = Record<string, PendingContainerDetailPricePatch>
 type ContainerDetailExportFormat = 'excel' | 'pdf'
+type ContainerExistingProductUpdateField =
+  | 'domesticPrice'
+  | 'importPrice'
+  | 'oemPrice'
+  | 'volume'
+  | 'storePurchasePrice'
+  | 'storeRetailPrice'
+  | 'storeMultiCodePurchasePrice'
+  | 'storeMultiCodeRetailPrice'
+
+interface UpdateFieldOption<T extends string> {
+  value: T
+  labelKey: string
+  fallbackLabel: string
+}
+
+type BatchActionConfirmOptions = {
+  danger?: boolean
+  extra?: ReactNode
+  beforeConfirm?: () => boolean
+}
+
+interface UpdateFieldSelectorProps<T extends string> {
+  t: TFunction
+  fields: readonly UpdateFieldOption<T>[]
+  defaultFields: T[]
+  onChange: (values: T[]) => void
+  hint?: ReactNode
+}
 
 function formatDate(value?: string) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '--'
@@ -233,6 +265,97 @@ const containerStatusOptions = [
   { value: 2, color: 'success', labelKey: 'completed' },
   { value: 7, color: 'error', labelKey: 'cancelled' },
 ] as const
+
+const containerExistingProductUpdateFields: readonly UpdateFieldOption<ContainerExistingProductUpdateField>[] = [
+  { value: 'domesticPrice', labelKey: 'containers.updateFields.domesticPrice', fallbackLabel: '国内价格（仓库主表）' },
+  { value: 'importPrice', labelKey: 'containers.updateFields.importPrice', fallbackLabel: '进口价（商品/仓库主表）' },
+  { value: 'oemPrice', labelKey: 'containers.updateFields.oemPrice', fallbackLabel: '贴牌价（仓库主表）' },
+  { value: 'volume', labelKey: 'containers.updateFields.volume', fallbackLabel: '单件体积（仓库主表）' },
+  { value: 'storePurchasePrice', labelKey: 'containers.updateFields.storePurchasePrice', fallbackLabel: '分店进货价' },
+  { value: 'storeRetailPrice', labelKey: 'containers.updateFields.storeRetailPrice', fallbackLabel: '分店零售价' },
+  { value: 'storeMultiCodePurchasePrice', labelKey: 'containers.updateFields.storeMultiCodePurchasePrice', fallbackLabel: '分店多码进货价' },
+  { value: 'storeMultiCodeRetailPrice', labelKey: 'containers.updateFields.storeMultiCodeRetailPrice', fallbackLabel: '分店多码零售价' },
+]
+
+const defaultContainerExistingProductUpdateFields: ContainerExistingProductUpdateField[] = [
+  'importPrice',
+  'oemPrice',
+  'storePurchasePrice',
+  'storeRetailPrice',
+  'storeMultiCodePurchasePrice',
+  'storeMultiCodeRetailPrice',
+]
+
+const pushToHqUpdateFields = [
+  { value: 'itemNumber', labelKey: 'containers.updateFields.hqItemNumber', fallbackLabel: '货号' },
+  { value: 'barcode', labelKey: 'containers.updateFields.hqBarcode', fallbackLabel: '条码' },
+  { value: 'productName', labelKey: 'containers.updateFields.hqProductName', fallbackLabel: '商品名称' },
+  { value: 'englishName', labelKey: 'containers.updateFields.hqEnglishName', fallbackLabel: '英文名称' },
+  { value: 'image', labelKey: 'containers.updateFields.hqImage', fallbackLabel: '商品图片' },
+  { value: 'purchasePrice', labelKey: 'containers.updateFields.hqPurchasePrice', fallbackLabel: '商品字典进货价' },
+  { value: 'retailPrice', labelKey: 'containers.updateFields.hqRetailPrice', fallbackLabel: '商品字典零售价' },
+  { value: 'middlePackQuantity', labelKey: 'containers.updateFields.hqMiddlePackQuantity', fallbackLabel: '中包数量' },
+  { value: 'supplierCode', labelKey: 'containers.updateFields.hqSupplierCode', fallbackLabel: '供应商编码' },
+  { value: 'storePurchasePrice', labelKey: 'containers.updateFields.hqStorePurchasePrice', fallbackLabel: 'HQ 分店进货价' },
+  { value: 'storeRetailPrice', labelKey: 'containers.updateFields.hqStoreRetailPrice', fallbackLabel: 'HQ 分店零售价' },
+  { value: 'inventoryDomesticPrice', labelKey: 'containers.updateFields.hqInventoryDomesticPrice', fallbackLabel: 'HQ 库存国内价' },
+  { value: 'inventoryImportPrice', labelKey: 'containers.updateFields.hqInventoryImportPrice', fallbackLabel: 'HQ 库存进口价' },
+  { value: 'inventoryOemPrice', labelKey: 'containers.updateFields.hqInventoryOemPrice', fallbackLabel: 'HQ 库存贴牌价' },
+  { value: 'productSetCodes', labelKey: 'containers.updateFields.hqProductSetCodes', fallbackLabel: 'HQ 一品多码' },
+  { value: 'storeMultiCodes', labelKey: 'containers.updateFields.hqStoreMultiCodes', fallbackLabel: 'HQ 分店一品多码' },
+] as const satisfies readonly UpdateFieldOption<PushProductsToHqUpdateField>[]
+
+type PushToHqUpdateFieldOptionValue = (typeof pushToHqUpdateFields)[number]['value']
+type MissingPushToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushToHqUpdateFieldOptionValue>
+const assertAllPushToHqUpdateFieldsCovered: Record<MissingPushToHqUpdateFieldOption, never> = {}
+void assertAllPushToHqUpdateFieldsCovered
+
+const defaultPushToHqUpdateFields: PushProductsToHqUpdateField[] = pushToHqUpdateFields.map((field) => field.value)
+
+function UpdateFieldSelector<T extends string>({
+  t,
+  fields,
+  defaultFields,
+  onChange,
+  hint,
+}: UpdateFieldSelectorProps<T>) {
+  const allValues = useMemo(() => fields.map((field) => field.value), [fields])
+  const [selectedFields, setSelectedFields] = useState<T[]>(defaultFields)
+  const { isAllSelected, isPartiallySelected } = getUpdateFieldSelectionState(selectedFields, allValues)
+
+  const updateSelectedFields = (values: T[]) => {
+    setSelectedFields(values)
+    onChange(values)
+  }
+
+  return (
+    <Space direction="vertical" size={8}>
+      <Typography.Text strong>
+        {t('containers.updateFields.title', '选择要更新的字段')}
+      </Typography.Text>
+      {hint}
+      <Checkbox
+        indeterminate={isPartiallySelected}
+        checked={isAllSelected}
+        onChange={(event) => updateSelectedFields(getNextUpdateFieldSelection(event.target.checked, allValues))}
+      >
+        {t('common.selectAll', '全选')}
+      </Checkbox>
+      <Checkbox.Group
+        value={selectedFields}
+        onChange={(values) => updateSelectedFields(values.map(String) as T[])}
+      >
+        <Space direction="vertical" size={4}>
+          {fields.map((field) => (
+            <Checkbox key={field.value} value={field.value}>
+              {t(field.labelKey, field.fallbackLabel)}
+            </Checkbox>
+          ))}
+        </Space>
+      </Checkbox.Group>
+    </Space>
+  )
+}
 
 function getStatusTag(status: number | undefined, t: TFunction) {
   if (status == null) return <Tag>{t('containers.status.unknown')}</Tag>
@@ -501,6 +624,7 @@ export default function ContainerDetailPage() {
   const containerGuid = route?.params.containerGuid || ''
   const viewport = useContainerDetailViewport()
   const access = useAuthStore((state) => state.access)
+  const updateTabTitle = useTabsStore((state) => state.updateTabTitle)
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
   const visibleContainerGuidRef = useRef<string | null>(null)
@@ -537,6 +661,7 @@ export default function ContainerDetailPage() {
   const [batchPricesModalOpen, setBatchPricesModalOpen] = useState(false)
   const [batchPricesSaving, setBatchPricesSaving] = useState(false)
   const [batchModalTargetCount, setBatchModalTargetCount] = useState(0)
+  const [batchModalScopeRows, setBatchModalScopeRows] = useState<ContainerDetail[]>([])
   const [batchEnglishName, setBatchEnglishName] = useState('')
   const [batchEnglishNameModalOpen, setBatchEnglishNameModalOpen] = useState(false)
   const [batchEnglishNameSaving, setBatchEnglishNameSaving] = useState(false)
@@ -616,7 +741,17 @@ export default function ContainerDetailPage() {
     }),
   )
 
-  useDynamicTabTitle(container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined)
+  const containerDetailTabTitle = container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined
+  const containerDetailTabKey = containerGuid ? `/warehouse/container/detail/${containerGuid}` : undefined
+
+  useEffect(() => {
+    if (!active || !containerDetailTabKey || !containerDetailTabTitle) {
+      return
+    }
+
+    // 隐藏的 KeepAlive 旧实例也会收到全局 URL 变化；只有当前激活页能写自己的 Tab 标题。
+    updateTabTitle(containerDetailTabKey, containerDetailTabTitle)
+  }, [active, containerDetailTabKey, containerDetailTabTitle, updateTabTitle])
 
   useEffect(() => {
     let frameId: number | null = null
@@ -702,32 +837,15 @@ export default function ContainerDetailPage() {
   const baseDetailQuery = useMemo(() => buildContainerDetailQuery({
     containerGuid,
     filters: remoteColumnFilters,
-    selectedTags: [],
     pageNumber: 1,
     pageSize: CONTAINER_DETAIL_PAGE_SIZE,
   }), [containerGuid, remoteColumnFilters])
 
-  const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({
-    containerGuid,
-    filters: remoteColumnFilters,
-    selectedTags: selectedTagFilters,
-    pageNumber: 1,
-    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-  }), [containerGuid, remoteColumnFilters, selectedTagFilters])
-  const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({
-    containerGuid,
-    filters: columnFilters,
-    selectedTags: selectedTagFilters,
-    pageNumber: 1,
-    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-  }), [containerGuid, columnFilters, selectedTagFilters])
-
   const baseDetailQueryKey = useMemo(() => JSON.stringify(baseDetailQuery), [baseDetailQuery])
-  const scopedDetailQueryKey = useMemo(() => JSON.stringify(scopedDetailQuery), [scopedDetailQuery])
   const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
     ? lastLoadedContainerDetailSuccessRef.current?.queryKey
     : null
-  const canUseLocalTagFilters = canUseContainerDetailLocalTagFilters({
+  const hasLoadedFullBaseDetailQuery = canUseContainerDetailLocalTagFilters({
     loadedQueryKey: loadedDetailQueryKey,
     baseQueryKey: baseDetailQueryKey,
     loadedRowsLength: rows.length,
@@ -736,9 +854,9 @@ export default function ContainerDetailPage() {
     loading: detailLoading,
     loadingMore: detailLoadingMore,
   })
-  // 当前非标签查询已全量加载时，标签只在前端切换；未全量时仍用带标签查询交给后端兜底。
-  const detailQuery = canUseLocalTagFilters ? baseDetailQuery : scopedDetailQuery
-  const detailQueryKey = canUseLocalTagFilters ? baseDetailQueryKey : scopedDetailQueryKey
+  // 标签过滤不再进入后端查询；未全量加载时由前端继续补齐 base 查询后再过滤。
+  const detailQuery = baseDetailQuery
+  const detailQueryKey = baseDetailQueryKey
   // 远程加载 effect 只依赖这个稳定 key，避免视口状态变化触发重复拉取。
   const activeLoadQueryKey = detailQueryKey
 
@@ -837,9 +955,16 @@ export default function ContainerDetailPage() {
     }
 
     try {
+      const shouldComputeDetailMeta = mode === 'reset'
       const result = await queryContainerProducts(
         containerGuid,
-        { ...detailQuery, pageNumber, pageSize: CONTAINER_DETAIL_PAGE_SIZE },
+        {
+          ...detailQuery,
+          pageNumber,
+          pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+          includeTotal: shouldComputeDetailMeta,
+          includeStats: shouldComputeDetailMeta,
+        },
         controller.signal,
       )
       if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
@@ -847,10 +972,14 @@ export default function ContainerDetailPage() {
       }
 
       setRows((items) => mode === 'reset' ? result.items : mergeContainerDetailLoadedItems(items, result.items))
-      setDetailItemsTotal(result.itemsTotal)
+      if (result.totalComputed !== false) {
+        setDetailItemsTotal(result.itemsTotal)
+      }
       setDetailPageNumber(result.pageNumber)
       setDetailHasMore(result.hasMore)
-      setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
+      if (result.statsComputed !== false) {
+        setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
+      }
       if (mode === 'reset') {
         lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
       }
@@ -921,14 +1050,24 @@ export default function ContainerDetailPage() {
     return () => {
       detailAbortControllerRef.current?.abort()
     }
-    // detailQueryKey 会在明细未全量加载时包含 tag；全量加载后标签切换只走前端过滤。
+    // 标签不进入 detailQueryKey；只有非标签远程筛选变化才重置懒加载结果。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, activeLoadQueryKey])
 
   useEffect(() => {
-    // 标签可能只在前端过滤，不再触发远程重载；主动清空选择，保持批量操作范围清晰。
+    // 标签只在前端过滤；切换标签时主动清空选择，保持批量操作范围清晰。
     setSelectedRowKeys([])
   }, [selectedTagFilters])
+
+  useEffect(() => {
+    if (!active || !selectedTagFilters.length || !detailHasMore || detailLoading || detailLoadingMore) {
+      return
+    }
+
+    // 标签需要针对当前 base 查询的完整结果生效，点选标签后后台补齐剩余懒加载块。
+    void loadDetailChunk(detailPageNumber + 1, 'append')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, selectedTagFilters, detailHasMore, detailLoading, detailLoadingMore, detailPageNumber, activeLoadQueryKey])
 
   useEffect(() => {
     const wasActive = wasContainerDetailTabActiveRef.current
@@ -961,17 +1100,15 @@ export default function ContainerDetailPage() {
   }, [rows])
 
   const tagFilteredRows = useMemo(() => {
-    // 后端已通过 scopedDetailQuery 返回过滤后数据时，跳过前端过滤避免冗余扫描
-    if (!canUseLocalTagFilters) return baseFilteredRows
     return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-  }, [baseFilteredRows, selectedTagFilters, canUseLocalTagFilters])
+  }, [baseFilteredRows, selectedTagFilters])
 
   const textFilteredRows = useMemo(() => {
     // 顶部筛选条已移除，文字筛选统一走列头筛选，避免同一条件出现两个入口。
     return applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)
   }, [columnFilters, tagFilteredRows])
 
-  const localTagStats = useMemo(() => buildContainerDetailTagStats(tagFilteredRows), [tagFilteredRows])
+  const localBaseTagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
   const filteredRows = textFilteredRows
 
   const displayRows = useMemo(
@@ -981,6 +1118,12 @@ export default function ContainerDetailPage() {
     },
     [filteredRows, sortState],
   )
+
+  const applyCurrentClientFilters = (sourceRows: ContainerDetail[]) => {
+    const nextTagFilteredRows = sourceRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
+    const nextTextFilteredRows = applyContainerDetailLoadedTextFilters(nextTagFilteredRows, '', columnFilters)
+    return applyContainerDetailColumnState(nextTextFilteredRows, {}, sortState)
+  }
 
   const setEditableCellRef = (
     rowKeyValue: string,
@@ -1052,15 +1195,14 @@ export default function ContainerDetailPage() {
     })
   }
 
-  const localProductTypeStats = useMemo(() => buildContainerDetailTagStats(rows), [rows])
   const tagStats: ContainerDetailTagStats = useMemo(() => ({
-    ...(canUseLocalTagFilters ? localTagStats : remoteTagStats),
-    // 商品类型统计由前端按当前已加载明细实时计算，后端仍只负责已有业务 tag 统计。
-    normal: canUseLocalTagFilters ? localTagStats.normal : localProductTypeStats.normal,
-    set: canUseLocalTagFilters ? localTagStats.set : localProductTypeStats.set,
-    multi: canUseLocalTagFilters ? localTagStats.multi : localProductTypeStats.multi,
-    setChild: canUseLocalTagFilters ? localTagStats.setChild : localProductTypeStats.setChild,
-  }), [canUseLocalTagFilters, localProductTypeStats, localTagStats, remoteTagStats])
+    ...(hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats),
+    // 商品类型统计后端不返回，始终由当前已加载 base 明细补充；全量加载完成后即为准确统计。
+    normal: localBaseTagStats.normal,
+    set: localBaseTagStats.set,
+    multi: localBaseTagStats.multi,
+    setChild: localBaseTagStats.setChild,
+  }), [hasLoadedFullBaseDetailQuery, localBaseTagStats, remoteTagStats])
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
@@ -1123,17 +1265,18 @@ export default function ContainerDetailPage() {
   const hasHiddenSelectedRows = selectedRowKeys.length > 0 && selectedRows.length < selectedRowKeys.length
   const targetRows = selectedRowKeys.length ? selectedRows : displayRows
 
-  const buildDetailBatchScope = (): ContainerDetailBatchScope => (
-    selectedRowKeys.length
-      ? { selectedHguids: selectedRowKeys.map(String) }
-      : { query: scopedFullDetailQuery }
-  )
+  const getRowsHguids = (scopeRows: ContainerDetail[]) => scopeRows
+    .map((row) => row.hguid)
+    .filter((value): value is string => Boolean(value))
+
+  const buildDetailBatchScope = (scopeRows: ContainerDetail[] = targetRows): ContainerDetailBatchScope => ({
+    selectedHguids: getRowsHguids(scopeRows),
+  })
 
   const buildWholeContainerDetailBatchScope = (): ContainerDetailBatchScope => ({
     query: buildContainerDetailQuery({
       containerGuid,
       filters: {},
-      selectedTags: [],
       pageNumber: 1,
       pageSize: CONTAINER_DETAIL_PAGE_SIZE,
     }),
@@ -1166,18 +1309,20 @@ export default function ContainerDetailPage() {
     let hasMore = true
 
     while (hasMore) {
-      // 导出和批量写操作必须作用于当前完整筛选结果，不能丢掉前端文本筛选。
+      // 导出和批量写操作先拉取非标签远程筛选的完整结果，再在前端套用标签、文字筛选和排序。
       const result = await queryContainerProducts(containerGuid, {
-        ...scopedFullDetailQuery,
+        ...baseDetailQuery,
         pageNumber,
         pageSize: 500,
+        includeTotal: false,
+        includeStats: false,
       })
       allRows.push(...result.items)
       hasMore = result.hasMore
       pageNumber += 1
     }
 
-    return allRows
+    return applyCurrentClientFilters(allRows)
   }
 
   const fetchAllRowsForWholeContainer = async () => {
@@ -1190,9 +1335,10 @@ export default function ContainerDetailPage() {
       const result = await queryContainerProducts(containerGuid, buildContainerDetailQuery({
         containerGuid,
         filters: {},
-        selectedTags: [],
         pageNumber,
         pageSize: 500,
+        includeTotal: false,
+        includeStats: false,
       }))
       allRows.push(...result.items)
       hasMore = result.hasMore
@@ -1258,7 +1404,7 @@ export default function ContainerDetailPage() {
   const confirmBatchAction = (
     actionName: string,
     count: number,
-    options: { danger?: boolean; extra?: ReactNode } = {},
+    options: BatchActionConfirmOptions = {},
   ) => new Promise<boolean>((resolve) => {
     Modal.confirm({
       title: actionName,
@@ -1266,21 +1412,22 @@ export default function ContainerDetailPage() {
       okText: actionName,
       cancelText: t('common.cancel'),
       okButtonProps: options.danger ? { danger: true } : undefined,
-      onOk: () => resolve(true),
+      onOk: () => {
+        if (options.beforeConfirm && !options.beforeConfirm()) {
+          return Promise.reject()
+        }
+        resolve(true)
+        return undefined
+      },
       onCancel: () => resolve(false),
     })
   })
 
-  const getBatchActionTargetCount = async () => {
-    if (selectedRowKeys.length) return selectedRowKeys.length
+  const resolveBatchActionTargetRows = async () => {
+    if (selectedRowKeys.length) return targetRows
     try {
-      // 未勾选时确认数量必须和实际批量 scope 一致，包含列头文字筛选和标签筛选。
-      const result = await queryContainerProducts(containerGuid, {
-        ...scopedFullDetailQuery,
-        pageNumber: 1,
-        pageSize: 1,
-      })
-      return result.itemsTotal
+      // 未勾选时确认数量和实际批量 scope 都以前端完整可见结果为准。
+      return await fetchAllRowsForCurrentQuery()
     } catch (error) {
       message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed', '加载货柜明细失败'))
       return null
@@ -1289,39 +1436,94 @@ export default function ContainerDetailPage() {
 
   const confirmBatchScope = async (
     actionName: string,
-    options: { danger?: boolean; extra?: ReactNode } = {},
+    options: BatchActionConfirmOptions = {},
   ) => {
     if (!ensureTargetRowsVisible()) return null
-    const count = await getBatchActionTargetCount()
-    if (count == null) return null
-    if (!count) {
+    const scopedRows = await resolveBatchActionTargetRows()
+    if (scopedRows == null) return null
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return null
     }
-    const confirmed = await confirmBatchAction(actionName, count, options)
-    return confirmed ? buildDetailBatchScope() : null
+    const confirmed = await confirmBatchAction(actionName, scopedRows.length, options)
+    return confirmed ? buildDetailBatchScope(scopedRows) : null
   }
 
   const confirmBatchRows = async (
     actionName: string,
-    options: { danger?: boolean; extra?: ReactNode } = {},
+    options: BatchActionConfirmOptions = {},
   ) => {
     if (!ensureTargetRowsVisible()) return null
-    const count = await getBatchActionTargetCount()
-    if (count == null) return null
-    if (!count) {
+    const scopedRows = await resolveBatchActionTargetRows()
+    if (scopedRows == null) return null
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return null
     }
-    const confirmed = await confirmBatchAction(actionName, count, options)
+    const confirmed = await confirmBatchAction(actionName, scopedRows.length, options)
     if (!confirmed) return null
-    // 确认后再按当前远程筛选条件拉取全部匹配行，避免确认前为大货柜加载完整数据。
-    try {
-      return selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed', '加载货柜明细失败'))
-      return null
-    }
+    return scopedRows
+  }
+
+  const renderUpdateFieldSelector = <T extends string>(
+    fields: readonly UpdateFieldOption<T>[],
+    defaultFields: T[],
+    onChange: (values: T[]) => void,
+    hint?: ReactNode,
+  ) => (
+    <UpdateFieldSelector
+      t={t}
+      fields={fields}
+      defaultFields={defaultFields}
+      onChange={onChange}
+      hint={hint}
+    />
+  )
+
+  const requireSelectedUpdateFields = (selectedFields: string[]) => {
+    if (selectedFields.length > 0) return true
+    message.warning(t('containers.updateFields.selectAtLeastOne', '请至少选择一个更新字段'))
+    return false
+  }
+
+  const confirmBatchRowsWithUpdateFields = async <T extends string>(
+    actionName: string,
+    fields: readonly UpdateFieldOption<T>[],
+    defaultFields: T[],
+    hint?: ReactNode,
+  ): Promise<{ rows: ContainerDetail[]; fields: T[] } | null> => {
+    let selectedFields = [...defaultFields]
+    const rows = await confirmBatchRows(actionName, {
+      extra: renderUpdateFieldSelector(fields, defaultFields, (values) => {
+        selectedFields = values
+      }, hint),
+      beforeConfirm: () => requireSelectedUpdateFields(selectedFields),
+    })
+    return rows ? { rows, fields: selectedFields } : null
+  }
+
+  const confirmPushToHqUpdateFields = async (
+    count: number,
+  ): Promise<PushProductsToHqUpdateField[] | null> => {
+    const actionName = t('containers.actions.pushToHq', '发送到 HQ')
+    let selectedFields = [...defaultPushToHqUpdateFields]
+    const confirmed = await confirmBatchAction(actionName, count, {
+      extra: renderUpdateFieldSelector(
+        pushToHqUpdateFields,
+        defaultPushToHqUpdateFields,
+        (values) => {
+          selectedFields = values
+        },
+        <Typography.Text type="secondary">
+          {t(
+            'containers.updateFields.hqCreateHint',
+            '字段选择主要限制已有 HQ 记录更新；如果目标表需要新增记录，系统仍会写入创建该记录所需的完整字段。',
+          )}
+        </Typography.Text>,
+      ),
+      beforeConfirm: () => requireSelectedUpdateFields(selectedFields),
+    })
+    return confirmed ? selectedFields : null
   }
 
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
@@ -1601,13 +1803,14 @@ export default function ContainerDetailPage() {
 
   const openBatchFloatRateModal = async () => {
     if (!ensureTargetRowsVisible()) return
-    const count = await getBatchActionTargetCount()
-    if (count == null) return
-    if (!count) {
+    const scopedRows = await resolveBatchActionTargetRows()
+    if (scopedRows == null) return
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return
     }
-    setBatchModalTargetCount(count)
+    setBatchModalTargetCount(scopedRows.length)
+    setBatchModalScopeRows(scopedRows)
     setBatchFloatRate(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE)
     setBatchFloatRateModalOpen(true)
   }
@@ -1622,10 +1825,11 @@ export default function ContainerDetailPage() {
     }
     setBatchFloatRateSaving(true)
     try {
-      const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(), batchFloatRate)
+      const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)
       await loadDetailChunk(1, 'reset')
       setBatchFloatRateModalOpen(false)
       setBatchModalTargetCount(0)
+      setBatchModalScopeRows([])
       setBatchFloatRate(null)
       setSelectedRowKeys([])
       message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
@@ -1707,13 +1911,14 @@ export default function ContainerDetailPage() {
 
   const openBatchPricesModal = async () => {
     if (!ensureTargetRowsVisible()) return
-    const count = await getBatchActionTargetCount()
-    if (count == null) return
-    if (!count) {
+    const scopedRows = await resolveBatchActionTargetRows()
+    if (scopedRows == null) return
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return
     }
-    setBatchModalTargetCount(count)
+    setBatchModalTargetCount(scopedRows.length)
+    setBatchModalScopeRows(scopedRows)
     setBatchImportPrice(null)
     setBatchOemPrice(null)
     setBatchPricesModalOpen(true)
@@ -1726,13 +1931,14 @@ export default function ContainerDetailPage() {
     }
     setBatchPricesSaving(true)
     try {
-      const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(), {
+      const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), {
         importPrice: batchImportPrice,
         oemPrice: batchOemPrice,
       })
       await loadDetailChunk(1, 'reset')
       setBatchPricesModalOpen(false)
       setBatchModalTargetCount(0)
+      setBatchModalScopeRows([])
       setBatchImportPrice(null)
       setBatchOemPrice(null)
       setSelectedRowKeys([])
@@ -1815,26 +2021,28 @@ export default function ContainerDetailPage() {
 
   const openBatchEditEnglishName = async () => {
     if (!ensureTargetRowsVisible()) return
-    const count = await getBatchActionTargetCount()
-    if (count == null) return
-    if (!count) {
+    const scopedRows = await resolveBatchActionTargetRows()
+    if (scopedRows == null) return
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
       return
     }
-    setBatchModalTargetCount(count)
+    setBatchModalTargetCount(scopedRows.length)
+    setBatchModalScopeRows(scopedRows)
     setBatchEnglishName('')
     setBatchEnglishNameModalOpen(true)
   }
 
   const openBatchCategory = async () => {
     if (!ensureTargetRowsVisible()) return
-    const count = await getBatchActionTargetCount()
-    if (count == null) return
-    if (!count) {
+    const scopedRows = await resolveBatchActionTargetRows()
+    if (scopedRows == null) return
+    if (!scopedRows.length) {
       message.warning(t('containers.messages.noCategoryFilterRows', '当前没有可分类的明细'))
       return
     }
-    setBatchModalTargetCount(count)
+    setBatchModalTargetCount(scopedRows.length)
+    setBatchModalScopeRows(scopedRows)
     setTargetCategoryGuid(undefined)
     // 每次打开批量分类弹窗都只展开到一级分类，避免默认露出过深的子分类。
     setCategoryExpandedKeys(collectCategoryExpandedKeys(categories, 1))
@@ -1955,7 +2163,7 @@ export default function ContainerDetailPage() {
     }
     if (!ensureTargetRowsVisible()) return
 
-    const batchCategoryTargetRows = selectedRowKeys.length ? selectedRows : await fetchAllRowsForCurrentQuery()
+    const batchCategoryTargetRows = batchModalScopeRows
     const { productCodes, skippedMissingCodeCount } = getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)
     if (!productCodes.length) {
       message.warning(t('containers.messages.noProductsForCategoryAssign', '当前目标明细没有可分类的已有商品'))
@@ -1978,6 +2186,7 @@ export default function ContainerDetailPage() {
       setSelectedRowKeys([])
       setBatchCategoryOpen(false)
       setBatchModalTargetCount(0)
+      setBatchModalScopeRows([])
       setTargetCategoryGuid(undefined)
       message.success(t('containers.messages.batchCategoryUpdated', '已设置 {{count}} 个商品分类', { count: productCodes.length }))
       if (skippedMissingCodeCount > 0) {
@@ -1991,7 +2200,7 @@ export default function ContainerDetailPage() {
   }
 
   const submitBatchEditEnglishName = async () => {
-    const scopedRows = selectedRowKeys.length ? selectedRows : await fetchAllRowsForCurrentQuery()
+    const scopedRows = batchModalScopeRows
     const updates = buildContainerDetailEnglishNameUpdates(scopedRows, batchEnglishName)
     if (!updates.length) {
       message.warning(t('containers.messages.enterEnglishName'))
@@ -2009,6 +2218,7 @@ export default function ContainerDetailPage() {
       }
       setBatchEnglishNameModalOpen(false)
       setBatchModalTargetCount(0)
+      setBatchModalScopeRows([])
       setBatchEnglishName('')
       message.success(t('containers.messages.englishNamesUpdated', { count: result.totalUpdated }))
     } catch (error) {
@@ -2252,14 +2462,18 @@ export default function ContainerDetailPage() {
       return
     }
 
+    const updateFields = await confirmPushToHqUpdateFields(selection.items.length)
+    if (!updateFields) return
+
     try {
       // 写 HQ 是跨库操作，使用即时锁防止连续点击造成重复提交。
       pushToHqLoadingRef.current = true
       setPushToHqLoading(true)
       const job = await createPushProductsToHqJob({
-        operationId: buildPushProductsToHqOperationId(containerGuid, selection.productCodes, selection.items.length),
+        operationId: buildPushProductsToHqOperationId(containerGuid, selection.productCodes, selection.items.length, updateFields),
         productCodes: selection.productCodes,
         items: selection.items,
+        updateFields,
       })
       const pushToHqNotificationKey = `container-push-to-hq:${job.jobId}`
       notification.info({
@@ -2531,51 +2745,88 @@ export default function ContainerDetailPage() {
 
   const updateExistingPurchase = async () => {
     if (!ensureNoPendingPriceDetails()) return
-    const scopedRows = await confirmBatchRows(t('containers.actions.updateExistingPurchase'))
-    if (!scopedRows) return
+    const confirmed = await confirmBatchRowsWithUpdateFields(
+      t('containers.actions.updateExistingPurchase'),
+      containerExistingProductUpdateFields,
+      defaultContainerExistingProductUpdateFields,
+    )
+    if (!confirmed) return
+    const { rows: scopedRows, fields: updateFields } = confirmed
     const candidates = scopedRows.filter((row) => !row.是否新商品)
     if (!candidates.length) {
       message.info(t('containers.messages.noExistingProductsToUpdate'))
       return
     }
+    const shouldUpdate = (field: ContainerExistingProductUpdateField) => updateFields.includes(field)
+    const hasPositiveImportPrice = (row: ContainerDetail) => (row.进口价格 ?? 0) > 0
+    const hasPositiveOemPrice = (row: ContainerDetail) => (resolveContainerDetailOemPrice(row) ?? 0) > 0
     const updates = candidates.filter((row) => {
       const code = row.商品编码 || row.商品信息?.商品编码 || ''
-      const oemPrice = resolveContainerDetailOemPrice(row)
       // 更新已有商品时贴牌价只使用货柜明细业务价，上次贴牌价格仅作只读快照展示。
-      return Boolean(code) && ((row.进口价格 ?? 0) > 0 || (oemPrice ?? 0) > 0)
+      return Boolean(code) && (
+        (shouldUpdate('domesticPrice') && row.国内价格 != null)
+        || (shouldUpdate('importPrice') && hasPositiveImportPrice(row))
+        || (shouldUpdate('oemPrice') && hasPositiveOemPrice(row))
+        || (shouldUpdate('volume') && row.单件体积 != null)
+        || (shouldUpdate('storePurchasePrice') && hasPositiveImportPrice(row))
+        || (shouldUpdate('storeRetailPrice') && hasPositiveOemPrice(row))
+        || (shouldUpdate('storeMultiCodePurchasePrice') && hasPositiveImportPrice(row))
+        || (shouldUpdate('storeMultiCodeRetailPrice') && hasPositiveOemPrice(row))
+      )
     })
     if (!updates.length) {
       message.info(t('containers.messages.noPurchasePriceDiff'))
       return
     }
     try {
-      await batchUpdateWarehouseProducts(updates.map((row) => {
-        const oemPrice = resolveContainerDetailOemPrice(row)
-        return {
+      const warehouseUpdates = updates.map((row) => {
+        const item: WarehouseProductBatchUpdateItem = {
           ProductCode: row.商品编码 || row.商品信息?.商品编码,
-          ImportPrice: row.进口价格,
-          OEMPrice: oemPrice,
-          IsActive: true,
         }
-      }))
-      await upsertRetailForActiveStores(updates.map((row) => {
         const oemPrice = resolveContainerDetailOemPrice(row)
-        return {
-          ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
-          PurchasePrice: row.进口价格,
-          StoreRetailPriceValue: oemPrice,
-          IsActive: true,
+        if (shouldUpdate('domesticPrice') && row.国内价格 != null) item.DomesticPrice = row.国内价格
+        if (shouldUpdate('importPrice') && hasPositiveImportPrice(row)) item.ImportPrice = row.进口价格
+        if (shouldUpdate('oemPrice') && hasPositiveOemPrice(row)) item.OEMPrice = oemPrice
+        if (shouldUpdate('volume') && row.单件体积 != null) item.Volume = row.单件体积
+        return item
+      }).filter((item) => Object.keys(item).length > 1)
+
+      if (warehouseUpdates.length) {
+        await batchUpdateWarehouseProducts(warehouseUpdates, {
+          // 货柜页已把分店进货价拆成独立勾选项，避免主表进口价默认联动分店表。
+          syncStorePurchasePrice: shouldUpdate('storePurchasePrice'),
+        })
+      }
+
+      if (shouldUpdate('storePurchasePrice') || shouldUpdate('storeRetailPrice')) {
+        const retailUpdates = updates.map((row) => {
+          const item: StoreRetailPriceUpsertActiveItem = {
+            ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
+          }
+          const oemPrice = resolveContainerDetailOemPrice(row)
+          if (shouldUpdate('storePurchasePrice') && hasPositiveImportPrice(row)) item.PurchasePrice = row.进口价格
+          if (shouldUpdate('storeRetailPrice') && hasPositiveOemPrice(row)) item.StoreRetailPriceValue = oemPrice
+          return item
+        }).filter((item) => Object.keys(item).length > 1)
+        if (retailUpdates.length) {
+          await upsertRetailForActiveStores(retailUpdates)
         }
-      }))
-      await upsertMultiCodeForActiveStores(updates.map((row) => {
-        const oemPrice = resolveContainerDetailOemPrice(row)
-        return {
-          ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
-          PurchasePrice: row.进口价格,
-          MultiCodeRetailPrice: oemPrice,
-          IsActive: true,
+      }
+
+      if (shouldUpdate('storeMultiCodePurchasePrice') || shouldUpdate('storeMultiCodeRetailPrice')) {
+        const multiCodeUpdates = updates.map((row) => {
+          const item: StoreMultiCodePriceUpsertActiveItem = {
+            ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
+          }
+          const oemPrice = resolveContainerDetailOemPrice(row)
+          if (shouldUpdate('storeMultiCodePurchasePrice') && hasPositiveImportPrice(row)) item.PurchasePrice = row.进口价格
+          if (shouldUpdate('storeMultiCodeRetailPrice') && hasPositiveOemPrice(row)) item.MultiCodeRetailPrice = oemPrice
+          return item
+        }).filter((item) => Object.keys(item).length > 1)
+        if (multiCodeUpdates.length) {
+          await upsertMultiCodeForActiveStores(multiCodeUpdates)
         }
-      }))
+      }
       message.success(t('containers.messages.purchasePricesUpdated', { count: updates.length }))
     } catch (error) {
       message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '更新已有商品价格失败'))
@@ -3541,6 +3792,7 @@ export default function ContainerDetailPage() {
         onCancel={() => {
           setBatchFloatRateModalOpen(false)
           setBatchModalTargetCount(0)
+          setBatchModalScopeRows([])
           setBatchFloatRate(null)
         }}
       >
@@ -3567,6 +3819,7 @@ export default function ContainerDetailPage() {
         onCancel={() => {
           setBatchPricesModalOpen(false)
           setBatchModalTargetCount(0)
+          setBatchModalScopeRows([])
           setBatchImportPrice(null)
           setBatchOemPrice(null)
         }}
@@ -3605,6 +3858,7 @@ export default function ContainerDetailPage() {
         onCancel={() => {
           setBatchEnglishNameModalOpen(false)
           setBatchModalTargetCount(0)
+          setBatchModalScopeRows([])
           setBatchEnglishName('')
         }}
       >
@@ -3631,6 +3885,7 @@ export default function ContainerDetailPage() {
         onCancel={() => {
           setBatchCategoryOpen(false)
           setBatchModalTargetCount(0)
+          setBatchModalScopeRows([])
           setTargetCategoryGuid(undefined)
         }}
         onOk={() => void handleBatchCategorySave()}

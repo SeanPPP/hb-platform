@@ -338,6 +338,8 @@ namespace BlazorApp.Api.Data
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
         public SimpleClient<MobileAppBuild> MobileAppBuildDb =>
             new SimpleClient<MobileAppBuild>(_db);
+        public SimpleClient<MobileAppOtaUpdate> MobileAppOtaUpdateDb =>
+            new SimpleClient<MobileAppOtaUpdate>(_db);
 
         // 节日商品相关实体
         public SimpleClient<HolidayProduct> HolidayProductDb =>
@@ -475,6 +477,7 @@ namespace BlazorApp.Api.Data
                 typeof(InvoiceEmailConfiguration),
                 typeof(ApplicationLog),
                 typeof(MobileAppBuild),
+                typeof(MobileAppOtaUpdate),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
@@ -1235,6 +1238,10 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppBuild_EasBuildId\" ON \"MobileAppBuild\" (\"EasBuildId\")",
                 ["IX_MobileAppBuild_Profile_CompletedAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_MobileAppBuild_Profile_CompletedAt\" ON \"MobileAppBuild\" (\"BuildProfile\", \"Platform\", \"Status\", \"CompletedAt\")",
+                ["IX_MobileAppOtaUpdate_Group_Platform"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Group_Platform\" ON \"MobileAppOtaUpdate\" (\"UpdateGroupId\", \"Platform\")",
+                ["IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt\" ON \"MobileAppOtaUpdate\" (\"Channel\", \"RuntimeVersion\", \"PublishedAt\")",
             };
 
             foreach (var indexCheck in indexStatements)
@@ -1364,6 +1371,10 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_ItemNumber_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_ItemNumber_Lookup ON [Product]([ItemNumber]) INCLUDE([ProductCode], [Barcode]) WHERE [ItemNumber] IS NOT NULL AND [IsDeleted] = 0",
                 ["IX_Product_Barcode_Lookup"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Barcode_Lookup' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Barcode_Lookup ON [Product]([Barcode]) INCLUDE([ProductCode], [ItemNumber]) WHERE [Barcode] IS NOT NULL AND [IsDeleted] = 0",
+                ["IX_ProductLocation_ProductCode_Active"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductLocation_ProductCode_Active' AND object_id = OBJECT_ID('ProductLocation')) CREATE INDEX IX_ProductLocation_ProductCode_Active ON [ProductLocation]([ProductCode]) INCLUDE([LocationGuid]) WHERE [IsDeleted] = 0 AND [ProductCode] IS NOT NULL AND [LocationGuid] IS NOT NULL",
+                ["IX_ProductLocation_LocationGuid_Active"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductLocation_LocationGuid_Active' AND object_id = OBJECT_ID('ProductLocation')) CREATE INDEX IX_ProductLocation_LocationGuid_Active ON [ProductLocation]([LocationGuid]) INCLUDE([ProductCode]) WHERE [IsDeleted] = 0 AND [LocationGuid] IS NOT NULL AND [ProductCode] IS NOT NULL",
                 ["IX_Location_List_Code"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Code' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Code ON [Location]([IsDeleted], [LocationCode]) INCLUDE([LocationGuid], [LocationType], [LocationBarcode], [Status], [UpdatedAt], [UpdatedBy])",
                 ["IX_Location_List_Barcode"] =
@@ -1608,6 +1619,9 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_UpdatedAt' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_UpdatedAt ON [Product](UpdatedAt DESC)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_LocalSupplierCode' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_LocalSupplierCode ON [Product](LocalSupplierCode)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Search' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Search ON [Product](ProductName, ProductCode, ItemNumber, Barcode)",
+                // ProductLocation 活跃映射覆盖索引，支撑订货明细货位排序的 ProductLocation -> Location 聚合。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductLocation_ProductCode_Active' AND object_id = OBJECT_ID('ProductLocation')) CREATE INDEX IX_ProductLocation_ProductCode_Active ON [ProductLocation]([ProductCode]) INCLUDE([LocationGuid]) WHERE [IsDeleted] = 0 AND [ProductCode] IS NOT NULL AND [LocationGuid] IS NOT NULL",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductLocation_LocationGuid_Active' AND object_id = OBJECT_ID('ProductLocation')) CREATE INDEX IX_ProductLocation_LocationGuid_Active ON [ProductLocation]([LocationGuid]) INCLUDE([ProductCode]) WHERE [IsDeleted] = 0 AND [LocationGuid] IS NOT NULL AND [ProductCode] IS NOT NULL",
                 // Location 列表过滤和远程排序索引，支撑仓库标签管理页快速分页查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Code' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Code ON [Location]([IsDeleted], [LocationCode]) INCLUDE([LocationGuid], [LocationType], [LocationBarcode], [Status], [UpdatedAt], [UpdatedBy])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Location_List_Barcode' AND object_id = OBJECT_ID('Location')) CREATE INDEX IX_Location_List_Barcode ON [Location]([IsDeleted], [LocationBarcode]) INCLUDE([LocationGuid], [LocationCode], [LocationType], [Status], [UpdatedAt], [UpdatedBy]) WHERE [LocationBarcode] IS NOT NULL",
@@ -1650,6 +1664,9 @@ namespace BlazorApp.Api.Data
                 // MobileAppBuild表的索引，支撑 EAS buildId 幂等和最新 APK 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_EasBuildId' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE UNIQUE INDEX IX_MobileAppBuild_EasBuildId ON [MobileAppBuild](EasBuildId)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE INDEX IX_MobileAppBuild_Profile_CompletedAt ON [MobileAppBuild](BuildProfile, Platform, Status, CompletedAt)",
+                // MobileAppOtaUpdate表的索引，支撑 OTA group 幂等登记和渠道/runtime 查询。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE UNIQUE INDEX IX_MobileAppOtaUpdate_Group_Platform ON [MobileAppOtaUpdate](UpdateGroupId, Platform)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE INDEX IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt ON [MobileAppOtaUpdate](Channel, RuntimeVersion, PublishedAt)",
             };
 
             foreach (var sql in normalIndexStatements)

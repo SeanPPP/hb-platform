@@ -14,6 +14,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -135,18 +136,27 @@ import {
   type TextFilterField,
   type TextFilterMode,
 } from './tableColumnFilters'
-import { defaultPasteFieldOrder, parsePasteText, type PasteFieldKey } from './pasteDetails'
+import {
+  analyzePasteMultilineCells,
+  defaultPasteFieldOrder,
+  getPasteTextMaxColumnCount,
+  parsePasteText,
+  type PasteFieldKey,
+  type PasteMultilineCellMode,
+} from './pasteDetails'
 import {
   buildBatchExecuteConfirmText,
   buildBatchExecuteSnapshot,
   constrainSelectedRowKeysToVisibleDetails,
   getBatchExecuteErrorFeedback,
+  getNewProductWithAdditionalBarcodesRows,
 } from './batchExecuteConfirm'
 import {
   EditableBooleanCell,
   EditableNumberCell,
   EditableTextCell,
 } from './EditableCells'
+import { COMPACT_NUMBER_INPUT_WIDTH } from './editableCellLayout'
 import {
   canApplyCheckProductsJobResult,
   canApplyInvoiceJobResult,
@@ -154,9 +164,14 @@ import {
 import {
   applyInvoiceDetailInlineEdit,
   applyInvoiceDetailBatchEdit,
+  buildInvoiceDetailInlineNavigationDetails,
   buildInvoiceDetailSaveItems,
   normalizeInvoiceDetailInlineValue,
+  resolveInvoiceDetailInlineNavigation,
   type InvoiceDetailInlineEditableField,
+  type InvoiceDetailInlineNavigationKey,
+  type InvoiceDetailInlineNavigationTarget,
+  type InvoiceDetailInlineSortState,
 } from './inlineEdit'
 import {
   buildMatchedProductMasterUpdatePayload,
@@ -249,6 +264,7 @@ function normalizeInvoiceDetailSnapshot(item: LocalSupplierInvoiceItemDto) {
     productCode: item.productCode,
     itemNumber: item.itemNumber,
     barcode: item.barcode,
+    additionalBarcodes: item.additionalBarcodes,
     productName: item.productName,
     specification: item.specification,
     unit: item.unit,
@@ -329,17 +345,6 @@ function loadSavedPasteFieldOrder() {
   } catch {
     return [...defaultPasteFieldOrder]
   }
-}
-
-function getPasteTextMaxColumnCount(text: string) {
-  if (!text.trim()) return 0
-
-  return Math.max(
-    ...text
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => line.split('\t').length),
-  )
 }
 
 function getStatusStatsTagStyle(selected: boolean): CSSProperties {
@@ -539,6 +544,10 @@ export default function InvoiceEditPage() {
   /* ---- 行选择 ---- */
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
+  /* ---- 行内数字编辑焦点 ---- */
+  const [activeInlineNumberEdit, setActiveInlineNumberEdit] = useState<InvoiceDetailInlineNavigationTarget | null>(null)
+  const [inlineNavigationSort, setInlineNavigationSort] = useState<InvoiceDetailInlineSortState | null>(null)
+
   /* ---- 行内操作类型 (本地临时存储) ---- */
   const [rowActions, setRowActions] = useState<Record<string, number>>({})
 
@@ -568,6 +577,7 @@ export default function InvoiceEditPage() {
   const activePasteJobIdRef = useRef<string | null>(null)
   const [pasteFieldOrder, setPasteFieldOrder] = useState<PasteFieldKey[]>(loadSavedPasteFieldOrder)
   const [normalizeRetailPriceOnPaste, setNormalizeRetailPriceOnPaste] = useState(true)
+  const [pasteMultilineCellMode, setPasteMultilineCellMode] = useState<PasteMultilineCellMode>('merge')
 
   /* ---- 批量编辑 Modal ---- */
   const [batchEditVisible, setBatchEditVisible] = useState(false)
@@ -790,8 +800,61 @@ export default function InvoiceEditPage() {
         barcodeStatusFilter,
         actionTypeFilter,
         rowActions,
-      }),
+    }),
     [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter, actionTypeFilter, rowActions],
+  )
+  const inlineNavigationDetails = useMemo(
+    () =>
+      buildInvoiceDetailInlineNavigationDetails(
+        filteredDetails,
+        columnFilteredValues,
+        rowActions,
+        inlineNavigationSort,
+      ),
+    [filteredDetails, columnFilteredValues, rowActions, inlineNavigationSort],
+  )
+
+  useEffect(() => {
+    if (!activeInlineNumberEdit) return
+    if (!inlineNavigationDetails.some((detail) => detail.detailGUID === activeInlineNumberEdit.detailGuid)) {
+      setActiveInlineNumberEdit(null)
+    }
+  }, [activeInlineNumberEdit, inlineNavigationDetails])
+
+  const isInlineNumberEditActive = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField) =>
+      activeInlineNumberEdit?.detailGuid === detailGuid && activeInlineNumberEdit.field === field,
+    [activeInlineNumberEdit],
+  )
+
+  const activateInlineNumberEdit = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField) => {
+      setActiveInlineNumberEdit({ detailGuid, field })
+    },
+    [],
+  )
+
+  const deactivateInlineNumberEdit = useCallback(
+    (detailGuid: string, field: InvoiceDetailInlineEditableField) => {
+      setActiveInlineNumberEdit((current) =>
+        current?.detailGuid === detailGuid && current.field === field ? null : current,
+      )
+    },
+    [],
+  )
+
+  const handleInlineNumberNavigate = useCallback(
+    (
+      detailGuid: string,
+      field: InvoiceDetailInlineEditableField,
+      key: InvoiceDetailInlineNavigationKey,
+    ) => {
+      const target = resolveInvoiceDetailInlineNavigation(inlineNavigationDetails, detailGuid, field, key)
+      if (!target) return false
+      setActiveInlineNumberEdit(target)
+      return true
+    },
+    [inlineNavigationDetails],
   )
 
   const detailActionConfig = useMemo(() => DETAIL_ACTION_CONFIG(t), [t])
@@ -834,9 +897,20 @@ export default function InvoiceEditPage() {
   )
   const pasteColumnCount = useMemo(() => getPasteTextMaxColumnCount(pasteText), [pasteText])
   const hasDuplicatePasteField = useMemo(() => hasDuplicatePasteFields(pasteFieldOrder), [pasteFieldOrder])
+  const pasteMultilineAnalysis = useMemo(
+    () => analyzePasteMultilineCells(pasteText, pasteFieldOrder),
+    [pasteText, pasteFieldOrder],
+  )
   const pasteParseOptions = useMemo(
-    () => ({ normalizeRetailPrice: normalizeRetailPriceOnPaste }),
-    [normalizeRetailPriceOnPaste],
+    () => ({
+      normalizeRetailPrice: normalizeRetailPriceOnPaste,
+      multilineCellMode: pasteMultilineCellMode,
+    }),
+    [normalizeRetailPriceOnPaste, pasteMultilineCellMode],
+  )
+  const parsedPasteRowCount = useMemo(
+    () => parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions).length,
+    [pasteText, pasteFieldOrder, pasteParseOptions],
   )
 
   useEffect(() => {
@@ -1029,6 +1103,7 @@ export default function InvoiceEditPage() {
       activePasteJobIdRef.current = job.jobId
       setPasteVisible(false)
       setPasteText('')
+      setPasteMultilineCellMode('merge')
       notifyBackgroundTaskSubmitted(t('posAdmin.invoiceDetail.pasteJobSubmitted', '粘贴数据任务已提交'))
 
       void (async () => {
@@ -1193,6 +1268,10 @@ export default function InvoiceEditPage() {
           <div>{t('posAdmin.invoiceDetail.updateHqAutoPricingUpdated', 'HQ自动定价更新：{{count}} 条', { count: result.hqAutoPricingUpdated ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.updateHqSpecialProductsUpdated', 'HQ特殊商品更新：{{count}} 条', { count: result.hqSpecialProductsUpdated ?? 0 })}</div>
           <div>{t('posAdmin.invoiceDetail.updateHqDiscountRatesUpdated', 'HQ折扣率更新：{{count}} 条', { count: result.hqDiscountRatesUpdated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqProductSetCodesCreated', 'HQ一品多码新增：{{count}} 条', { count: result.hqProductSetCodesCreated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqProductSetCodesUpdated', 'HQ一品多码更新：{{count}} 条', { count: result.hqProductSetCodesUpdated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqStoreMultiCodesCreated', 'HQ分店一品多码新增：{{count}} 条', { count: result.hqStoreMultiCodesCreated ?? 0 })}</div>
+          <div>{t('posAdmin.invoiceDetail.updateHqStoreMultiCodesUpdated', 'HQ分店一品多码更新：{{count}} 条', { count: result.hqStoreMultiCodesUpdated ?? 0 })}</div>
           {hqErrors.length > 0 && (
             <div style={{ maxHeight: 220, overflow: 'auto', marginTop: 8 }}>
               {hqErrors.map((item, index) => (
@@ -1792,6 +1871,7 @@ export default function InvoiceEditPage() {
         expectedActions: snapshot.expectedActions,
         confirmedCreateProductCount: snapshot.confirmedCreateProductCount,
         confirmedAt: snapshot.confirmedAt ?? new Date().toISOString(),
+        newProductProductTypeSelections: snapshot.newProductProductTypeSelections,
       })
       const parts = formatBatchExecuteResultParts(result)
       const hasDetails = !!result.errors?.length || result.failed > 0 || result.skipped > 0
@@ -1840,6 +1920,14 @@ export default function InvoiceEditPage() {
       details,
       rowActions,
     })
+    const newProductWithAdditionalBarcodesRows = getNewProductWithAdditionalBarcodesRows(
+      visibleSelectedRowKeys,
+      details,
+      rowActions,
+    )
+    const newProductProductTypeSelectionMap = new Map<string, 1 | 2>(
+      newProductWithAdditionalBarcodesRows.map((row) => [row.detailGuid, 2]),
+    )
     const confirmText = buildBatchExecuteConfirmText({
       selectedCount: previewSnapshot.selectedCount,
       createProductCount: previewSnapshot.confirmedCreateProductCount,
@@ -1859,6 +1947,41 @@ export default function InvoiceEditPage() {
           {confirmText.content.split('\n').map((line) => (
             <div key={line}>{line}</div>
           ))}
+          {newProductWithAdditionalBarcodesRows.length > 0 && (
+            <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
+              <Alert
+                type="warning"
+                showIcon
+                message={t('posAdmin.invoiceDetail.newProductMultiBarcodeTypeTitle', '检测到新商品包含副码')}
+                description={t('posAdmin.invoiceDetail.newProductMultiBarcodeTypeDesc', '请选择主档商品类型；副码会写入总部多码关系和所有有效分店多码表。')}
+              />
+              {newProductWithAdditionalBarcodesRows.map((row) => (
+                <div key={row.detailGuid} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center' }}>
+                  <Space direction="vertical" size={2}>
+                    <span>{row.itemNumber || '--'} · {row.productName || '--'}</span>
+                    <Space size={4}>
+                      <Tag>{row.barcode || '--'}</Tag>
+                      <Tag color="cyan">
+                        {t('posAdmin.invoiceDetail.additionalBarcodeCount', '副码 {{count}}', { count: row.additionalBarcodeCount })}
+                      </Tag>
+                    </Space>
+                  </Space>
+                  <Radio.Group
+                    defaultValue={2}
+                    optionType="button"
+                    buttonStyle="solid"
+                    onChange={(event) => {
+                      newProductProductTypeSelectionMap.set(row.detailGuid, event.target.value as 1 | 2)
+                    }}
+                    options={[
+                      { label: t('posAdmin.invoiceDetail.productTypeMultiCode', '多码'), value: 2 },
+                      { label: t('posAdmin.invoiceDetail.productTypeSet', '套装'), value: 1 },
+                    ]}
+                  />
+                </div>
+              ))}
+            </Space>
+          )}
         </Space>
       ),
       okText: confirmText.okText,
@@ -1869,6 +1992,11 @@ export default function InvoiceEditPage() {
           selectedRowKeys: previewSnapshot.detailGuids,
           details,
           rowActions,
+          // 关键位置：有副码的新商品必须在用户确认后带上主档类型，避免后台静默建成普通商品。
+          newProductProductTypeSelections: newProductWithAdditionalBarcodesRows.map((row) => ({
+            detailGuid: row.detailGuid,
+            productType: newProductProductTypeSelectionMap.get(row.detailGuid) ?? 2,
+          })),
           // 真正提交的确认时间在用户点击确认时生成。
           confirmedAt: new Date().toISOString(),
         }))
@@ -2100,10 +2228,17 @@ export default function InvoiceEditPage() {
   const handleTableChange: TableProps<LocalSupplierInvoiceItemDto>['onChange'] = (
     _pagination,
     filters,
-    _sorter,
+    sorter,
     extra,
   ) => {
+    const sorterInfo = Array.isArray(sorter) ? sorter[0] : sorter
+    const sorterField = Array.isArray(sorterInfo?.field)
+      ? sorterInfo.field.join('.')
+      : sorterInfo?.field != null
+        ? String(sorterInfo.field)
+        : undefined
     setColumnFilteredValues(filters as Record<string, (React.Key | boolean)[] | null>)
+    setInlineNavigationSort(sorterInfo?.order && sorterField ? { field: sorterField, order: sorterInfo.order } : null)
     // 选中行按过滤后可见数据收敛，避免隐藏明细继续参与批量执行或批量删除。
     setSelectedRowKeys((prev) => constrainSelectedRowKeysToVisibleDetails(prev, extra.currentDataSource))
   }
@@ -2358,6 +2493,13 @@ export default function InvoiceEditPage() {
             onSave={handleInlineDetailSave}
             display={<BarcodePreview value={v} compactCopy />}
           />
+          {(record.additionalBarcodes?.length ?? 0) > 0 && (
+            <Tooltip title={record.additionalBarcodes?.join(', ')}>
+              <Tag color="cyan" style={{ marginTop: 4, marginInlineEnd: 0 }}>
+                {t('posAdmin.invoiceDetail.additionalBarcodeCount', '副码 {{count}}', { count: record.additionalBarcodes?.length ?? 0 })}
+              </Tag>
+            </Tooltip>
+          )}
         </div>
       ),
     },
@@ -2440,6 +2582,13 @@ export default function InvoiceEditPage() {
           detailGuid={record.detailGUID}
           field="retailPrice"
           onSave={handleInlineDetailSave}
+          active={isInlineNumberEditActive(record.detailGUID, 'retailPrice')}
+          onActivate={() => activateInlineNumberEdit(record.detailGUID, 'retailPrice')}
+          onDeactivate={() => deactivateInlineNumberEdit(record.detailGUID, 'retailPrice')}
+          onNavigate={handleInlineNumberNavigate}
+          // 零售价列较窄，编辑态使用紧凑输入框，避免撑开单元格。
+          inputWidth={COMPACT_NUMBER_INPUT_WIDTH}
+          controls={false}
           displayValue={renderNumericCell(formatAmount(v))}
         />
       ),
@@ -2498,6 +2647,7 @@ export default function InvoiceEditPage() {
           trueLabel={t('posAdmin.invoiceDetail.auto', '自动')}
           falseLabel={t('posAdmin.invoiceDetail.manual', '手动')}
           trueColor="green"
+          toggleOnClick
         />
       ),
     },
@@ -2882,7 +3032,10 @@ export default function InvoiceEditPage() {
             {isAdmin && (
               <Button
                 icon={<SnippetsOutlined />}
-                onClick={() => setPasteVisible(true)}
+                onClick={() => {
+                  setPasteMultilineCellMode('merge')
+                  setPasteVisible(true)
+                }}
               >
                 {t('posAdmin.invoiceDetail.pasteDataBtn', '粘贴数据')}
               </Button>
@@ -3019,6 +3172,7 @@ export default function InvoiceEditPage() {
         onCancel={() => {
           setPasteVisible(false)
           setPasteText('')
+          setPasteMultilineCellMode('merge')
         }}
         onOk={() => void handlePaste()}
         width={700}
@@ -3040,6 +3194,37 @@ export default function InvoiceEditPage() {
         <div style={{ marginBottom: 8, color: '#666', fontSize: 12 }}>
           {t('posAdmin.invoiceDetail.pasteHint', '请从 Excel 复制数据后粘贴到下方文本框。每行一条记录，可在下方调整列对应字段（Tab 分隔）')}
         </div>
+        {pasteMultilineAnalysis.hasMultilineCells && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={t('posAdmin.invoiceDetail.pasteMultilineDetectedTitle', '检测到单元格内有换行')}
+            description={(
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <div>
+                  {t('posAdmin.invoiceDetail.pasteMultilineDetectedDesc', '请选择处理方式；无法安全拆分的记录会自动按单元格内合并处理。')}
+                </div>
+                <Radio.Group
+                  value={pasteMultilineCellMode}
+                  onChange={(event) => setPasteMultilineCellMode(event.target.value as PasteMultilineCellMode)}
+                >
+                  <Radio value="merge">
+                    {t('posAdmin.invoiceDetail.pasteMultilineMerge', '单元格内合并（推荐）')}
+                  </Radio>
+                  <Radio value="smartSplit">
+                    {t('posAdmin.invoiceDetail.pasteMultilineSmartSplit', '按换行智能拆分')}
+                  </Radio>
+                </Radio.Group>
+                {pasteMultilineCellMode === 'smartSplit' && pasteMultilineAnalysis.unsafeRecordCount > 0 && (
+                  <div style={{ color: '#ad6800', fontSize: 12 }}>
+                    {t('posAdmin.invoiceDetail.pasteMultilineUnsafeWarning', '有 {{count}} 条记录的多行列数量不一致，将按单元格内合并处理。', { count: pasteMultilineAnalysis.unsafeRecordCount })}
+                  </div>
+                )}
+              </Space>
+            )}
+          />
+        )}
         <div style={{ marginBottom: 12 }}>
           <Space size={8} align="center" wrap>
             {/* 只影响粘贴映射为“零售价”的列，进货价和新自动零售价保持原始粘贴值。 */}
@@ -3098,7 +3283,7 @@ export default function InvoiceEditPage() {
         />
         {pasteText.trim() && (
           <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions).length })}
+            {t('posAdmin.invoiceDetail.parsedRows', '已识别 {{count}} 行数据', { count: parsedPasteRowCount })}
           </div>
         )}
       </Modal>

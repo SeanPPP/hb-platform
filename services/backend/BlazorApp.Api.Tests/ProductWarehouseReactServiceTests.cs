@@ -1269,6 +1269,48 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdateAsync_WhenStorePurchaseSyncDisabled_DoesNotUpdateStoreRetailPurchasePrice()
+        {
+            await SeedPriceSyncProductAsync(
+                "P-BATCH-IMPORT-NO-STORE",
+                purchasePrice: 4.28m,
+                retailPrice: 11.99m,
+                importPrice: 4.28m,
+                oemPrice: 11.99m
+            );
+            await SeedStoreRetailPriceAsync("S01", "P-BATCH-IMPORT-NO-STORE", purchasePrice: 4.28m, retailPrice: 11.99m);
+            await _db.Updateable<WarehouseProduct>()
+                .SetColumns(x => new WarehouseProduct { IsActive = false })
+                .Where(x => x.ProductCode == "P-BATCH-IMPORT-NO-STORE")
+                .ExecuteCommandAsync();
+            var service = CreateService();
+
+            var result = await service.BatchUpdateAsync(
+                new List<UpdateItemDto>
+                {
+                    new()
+                    {
+                        ProductCode = "P-BATCH-IMPORT-NO-STORE",
+                        ImportPrice = 6.66m,
+                        SyncStorePurchasePrice = false,
+                    },
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-BATCH-IMPORT-NO-STORE");
+            var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P-BATCH-IMPORT-NO-STORE");
+            var storePrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == "P-BATCH-IMPORT-NO-STORE");
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(6.66m, warehouseProduct.ImportPrice);
+            Assert.False(warehouseProduct.IsActive);
+            Assert.Equal(6.66m, product.PurchasePrice);
+            Assert.Equal(4.28m, storePrice.PurchasePrice);
+            Assert.Equal(11.99m, storePrice.StoreRetailPriceValue);
+        }
+
+        [Fact]
         public async Task BatchToggleActiveAsync_UpdatesLinkedProductStatusTables()
         {
             await SeedPriceSyncProductAsync(

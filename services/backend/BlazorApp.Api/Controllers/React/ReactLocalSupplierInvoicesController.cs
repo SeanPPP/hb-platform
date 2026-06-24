@@ -1189,7 +1189,12 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             var user = User.Identity?.Name ?? "system";
-            var result = await _service.BatchExecuteActionsAsync(invoiceGuid, dto.DetailGuids, user);
+            var result = await _service.BatchExecuteActionsAsync(
+                invoiceGuid,
+                dto.DetailGuids,
+                user,
+                dto.NewProductProductTypeSelections
+            );
             if (result.Success)
                 return Ok(new { success = true, data = result.Data, message = result.Message });
             return BadRequest(new { success = false, message = result.Message, code = result.Code, details = result.Details });

@@ -99,6 +99,105 @@ export interface StoreOrderListResult {
   pageSize: number
 }
 
+export type StoreOrderImportPriceVarianceDirection = 'all' | 'increase' | 'decrease'
+
+export interface StoreOrderImportPriceVarianceQuery {
+  keyword?: string
+  storeCode?: string
+  storeCodes?: string[]
+  supplierCode?: string
+  orderNo?: string
+  startDate?: string
+  endDate?: string
+  varianceDirection?: StoreOrderImportPriceVarianceDirection
+  pageNumber: number
+  pageSize: number
+  sortBy?: string
+  sortDescending?: boolean
+}
+
+export interface StoreOrderImportPriceVarianceItem {
+  productCode: string
+  itemNumber?: string
+  productName?: string
+  productImage?: string
+  supplierCode?: string
+  supplierName?: string
+  domesticPrice?: number
+  unitVolume?: number
+  packingQuantity?: number
+  firstContainerImportPrice: number
+  allocQuantityTotal: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  varianceAmountTotal: number
+  detailCount: number
+  firstContainerCode?: string
+  firstContainerNumber?: string
+  firstContainerDate?: string
+}
+
+export interface StoreOrderImportPriceVarianceSummary {
+  totalRows: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  varianceAmountTotal: number
+}
+
+export interface StoreOrderImportPriceVarianceSupplierSummary {
+  supplierCode?: string
+  supplierName?: string
+  productCount: number
+  detailCount: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  increaseVarianceAmountTotal: number
+  decreaseVarianceAmountTotal: number
+  varianceAmountTotal: number
+}
+
+export interface StoreOrderImportPriceVarianceResult {
+  items: StoreOrderImportPriceVarianceItem[]
+  total: number
+  page: number
+  pageSize: number
+  summary: StoreOrderImportPriceVarianceSummary
+  supplierSummaries: StoreOrderImportPriceVarianceSupplierSummary[]
+}
+
+export interface StoreOrderImportPriceVarianceDetailQuery extends StoreOrderImportPriceVarianceQuery {
+  productCode: string
+}
+
+export interface StoreOrderImportPriceVarianceDetailItem {
+  orderGUID: string
+  detailGUID: string
+  orderNo?: string
+  orderDate?: string
+  storeCode?: string
+  storeName?: string
+  productCode?: string
+  itemNumber?: string
+  productName?: string
+  orderImportPrice: number
+  firstContainerImportPrice: number
+  allocQuantity: number
+  originalImportAmount: number
+  baselineImportAmount: number
+  varianceAmount: number
+  firstContainerCode?: string
+  firstContainerNumber?: string
+  firstContainerDate?: string
+}
+
+export interface StoreOrderImportPriceVarianceDetailResult {
+  items: StoreOrderImportPriceVarianceDetailItem[]
+  total: number
+  page: number
+  pageSize: number
+  summary: StoreOrderImportPriceVarianceSummary
+}
+
 export interface CreateStoreOrderPayload {
   storeCode: string
   remarks?: string
@@ -410,6 +509,7 @@ export interface UpdateStoreOrderLinePayload {
   productCode: string
   allocQuantity: number
   importPrice?: number
+  syncImportPrice?: boolean
 }
 
 export interface RemoveStoreOrderLinePayload {
@@ -423,6 +523,7 @@ export interface BatchUpdateStoreOrderLinePayload {
     productCode: string
     quantity?: number
     importPrice?: number
+    syncImportPrice?: boolean
   }>
 }
 

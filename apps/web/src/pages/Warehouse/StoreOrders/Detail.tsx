@@ -9,6 +9,7 @@ import {
   PrinterOutlined,
   SaveOutlined,
   SearchOutlined,
+  SortAscendingOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
 import {
@@ -165,6 +166,7 @@ interface EditedLinePayload {
   productCode: string
   quantity?: number
   importPrice?: number
+  syncImportPrice?: boolean
   importPriceChanged: boolean
 }
 
@@ -243,6 +245,8 @@ interface ProductPickerModalProps {
 
 const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100
 const PRODUCT_PICKER_PAGE_SIZE_OPTIONS = ['50', '100', '500']
+const STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE = 200
+const STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']
 
 interface BatchEditModalProps {
   open: boolean
@@ -798,10 +802,10 @@ export default function StoreOrderDetailPage() {
   const [pasteOptimisticPending, setPasteOptimisticPending] = useState<StoreOrderPasteOptimisticPending | null>(null)
   const [refreshImportPriceLoading, setRefreshImportPriceLoading] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
-  const [detailPageSize, setDetailPageSize] = useState(50)
+  const [detailPageSize, setDetailPageSize] = useState(STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
-  const [detailSortField, setDetailSortField] = useState<DetailSortField>(null)
-  const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>(null)
+  const [detailSortField, setDetailSortField] = useState<DetailSortField>('locationCode')
+  const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>('ascend')
   const [headerForm, setHeaderForm] = useState<{
     storeCode?: string
     orderDate?: string
@@ -836,6 +840,7 @@ export default function StoreOrderDetailPage() {
 
   useDynamicTabTitle(tabTitle)
 
+  // 明细表只请求当前页；翻页、筛选、排序都会带着 pageSize 重新向服务端取数。
   const detailQuery = useMemo<StoreOrderDetailQuery>(
     () => ({
       pageNumber: detailPage,
@@ -1150,15 +1155,13 @@ export default function StoreOrderDetailPage() {
         return payloads
       }
 
-      if (importPriceChanged && !syncImportPrice && !allocQuantityChanged) {
-        return payloads
-      }
-
       payloads.push({
         detailGUID: line.detailGUID,
         productCode: line.productCode,
         quantity: allocQuantityChanged ? edited.allocQuantity : undefined,
-        importPrice: importPriceChanged && syncImportPrice ? edited.importPrice : undefined,
+        // 进口价本身始终保存到订单明细；syncImportPrice 只控制是否同步商品/分店主档。
+        importPrice: importPriceChanged ? edited.importPrice : undefined,
+        syncImportPrice: importPriceChanged ? syncImportPrice : undefined,
         importPriceChanged,
       })
 
@@ -1419,16 +1422,14 @@ export default function StoreOrderDetailPage() {
       return
     }
 
+    const importPriceChanged = hasImportPriceChanged(line)
     let syncImportPrice = true
-    if (hasImportPriceChanged(line)) {
+    if (importPriceChanged) {
       const syncChoice = await confirmImportPriceSync()
       if (syncChoice === null) {
         return
       }
       syncImportPrice = syncChoice
-      if (!syncImportPrice && (edited?.allocQuantity === undefined || Number(edited.allocQuantity) === Number(line.allocQuantity ?? 0))) {
-        return
-      }
     }
 
     setLineActionLoading(true)
@@ -1437,7 +1438,9 @@ export default function StoreOrderDetailPage() {
         orderGUID: detail.orderGUID,
         productCode: line.productCode,
         allocQuantity,
-        importPrice: syncImportPrice ? importPrice : undefined,
+        // 取消勾选只取消主档同步，不取消订单明细价格保存。
+        importPrice: importPriceChanged ? importPrice : undefined,
+        syncImportPrice: importPriceChanged ? syncImportPrice : undefined,
       })
       message.success(t('storeOrders.detail.lineSaved'))
       await loadDetail(false)
@@ -1476,16 +1479,8 @@ export default function StoreOrderDetailPage() {
         return
       }
       syncImportPrice = syncChoice
-      if (!syncImportPrice) {
-        const nextPayloads = getEditedLinePayloads(syncImportPrice)
-        if (!nextPayloads.length) {
-          return
-        }
-        payloads.splice(0, payloads.length, ...nextPayloads)
-      }
-      if (!syncImportPrice && !payloads.length) {
-        return
-      }
+      const nextPayloads = getEditedLinePayloads(syncImportPrice)
+      payloads.splice(0, payloads.length, ...nextPayloads)
     }
 
     setLineActionLoading(true)
@@ -1496,6 +1491,7 @@ export default function StoreOrderDetailPage() {
           productCode: item.productCode,
           quantity: item.quantity,
           importPrice: item.importPrice,
+          syncImportPrice: item.syncImportPrice,
         })),
       })
       message.success(t('storeOrders.detail.editedLinesSaved', { count: payloads.length }))
@@ -1601,6 +1597,14 @@ export default function StoreOrderDetailPage() {
     } finally {
       setBatchLoading(false)
     }
+  }
+
+  const handleResetDetailDefaultSort = () => {
+    // 默认排序与配货单保持一致：空货位在前，再按货位升序查看整单明细。
+    setSelectedLineKeys([])
+    setDetailPage(1)
+    setDetailSortField('locationCode')
+    setDetailSortOrder('ascend')
   }
 
   const handleRefreshImportPricesFromWarehouse = () => {
@@ -1858,7 +1862,9 @@ export default function StoreOrderDetailPage() {
   }
 
   const focusDetailInput = (detailGUID: string, field: DetailEditableField) => {
-    detailInputRefs.current[getDetailInputKey(detailGUID, field)]?.focus?.()
+    const input = detailInputRefs.current[getDetailInputKey(detailGUID, field)]
+    // 方向键切入单元格后全选文本，方便直接覆盖价格或发货数。
+    window.setTimeout(() => input?.focus?.({ cursor: 'all' }), 0)
   }
 
   const handleDetailInputKeyDown = (
@@ -2057,6 +2063,7 @@ export default function StoreOrderDetailPage() {
         <Image
           src={value}
           alt={record.productName}
+          loading="lazy"
           width={30}
           height={30}
           style={{ borderRadius: 4, objectFit: 'cover' }}
@@ -2159,6 +2166,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
+          controls={false}
           disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}
@@ -2617,6 +2625,13 @@ export default function StoreOrderDetailPage() {
                         {t('storeOrders.detail.refreshImportPrices')}
                       </Button>
                     ) : null}
+                    <Button
+                      icon={<SortAscendingOutlined />}
+                      disabled={isPasteOptimisticPreviewActive}
+                      onClick={handleResetDetailDefaultSort}
+                    >
+                      {t('storeOrders.detail.defaultSort')}
+                    </Button>
                     {canUseWarehouseManagerActions ? (
                       <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                         {t('storeOrders.batchModify')}
@@ -2716,7 +2731,8 @@ export default function StoreOrderDetailPage() {
                   pageSize: detailPageSize,
                   total: detail.itemsTotal ?? detail.items.length,
                   showSizeChanger: true,
-                  pageSizeOptions: ['20', '50', '100', '500'],
+                  // 图片交给浏览器懒加载，表格本身按服务端分页分批请求商品明细。
+                  pageSizeOptions: STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS,
                   onChange: (nextPage, nextPageSize) => {
                     setSelectedLineKeys([])
                     setDetailPage(nextPage)

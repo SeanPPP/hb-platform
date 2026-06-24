@@ -12,8 +12,9 @@ import {
   printRawCommand,
   scanPrinters,
 } from "@/modules/printer/native";
+import { buildReceiptPrinterTestCommand } from "@/modules/printer/receipt";
 import { PrinterStorage } from "@/modules/printer/storage";
-import { usePrinterStore } from "@/modules/printer/state";
+import { usePrinterStore, useReceiptPrinterStore } from "@/modules/printer/state";
 import type {
   PrinterDevice,
   ProductLabelPrintPayload,
@@ -110,7 +111,8 @@ function normalizeWarehouseLocationLabelPayload(
 async function ensureConnectedPrinter() {
   const store = usePrinterStore.getState();
   const status = await getPrinterStatus();
-  if (status.connected) {
+  const savedPrinter = await PrinterStorage.getPrinter();
+  if (status.connected && savedPrinter?.address && status.address === savedPrinter.address) {
     store.setStatus("connected");
     return;
   }
@@ -120,10 +122,14 @@ async function ensureConnectedPrinter() {
     throw new Error("Printer auto-connect is paused. Reconnect it in Settings first.");
   }
 
-  const savedPrinter = await PrinterStorage.getPrinter();
   if (!savedPrinter?.address) {
     store.setStatus("disconnected");
     throw new Error("No label printer has been selected yet.");
+  }
+
+  if (status.connected && status.address !== savedPrinter.address) {
+    // 小票测试会临时占用原生 socket；标签打印前必须确保当前连接回到标签打印机。
+    await disconnectPrinter();
   }
 
   store.setStatus("connecting");
@@ -161,6 +167,10 @@ export async function getSavedPrinter() {
   return PrinterStorage.getPrinter();
 }
 
+export async function getSavedReceiptPrinter() {
+  return PrinterStorage.getReceiptPrinter();
+}
+
 export async function clearSavedPrinter() {
   await disconnectPrinter();
   await PrinterStorage.clearPrinter();
@@ -174,6 +184,14 @@ export async function clearSavedPrinter() {
 export async function hydrateSavedPrinter() {
   const savedPrinter = await PrinterStorage.getPrinter();
   const store = usePrinterStore.getState();
+  store.setSavedPrinter(savedPrinter);
+  store.setHydrated(true);
+  return savedPrinter;
+}
+
+export async function hydrateSavedReceiptPrinter() {
+  const savedPrinter = await PrinterStorage.getReceiptPrinter();
+  const store = useReceiptPrinterStore.getState();
   store.setSavedPrinter(savedPrinter);
   store.setHydrated(true);
   return savedPrinter;
@@ -253,6 +271,110 @@ export async function syncPrinterStatus() {
 export async function testPrinterConnection() {
   await ensureConnectedPrinter();
   return printRawCommand("! 0 200 200 160 1\r\nPAGE-WIDTH 570\r\nTEXT 7 0 20 30 HB LABEL PRINTER\r\nTEXT 4 0 20 78 Connection OK\r\nTEXT 4 0 20 118 TEST\r\nPRINT\r\n");
+}
+
+export async function selectReceiptPrinter(device: PrinterDevice) {
+  const nextPrinter = toSavedPrinter(device);
+  await PrinterStorage.setReceiptPrinter(nextPrinter);
+  const store = useReceiptPrinterStore.getState();
+  store.setSavedPrinter(nextPrinter);
+  store.setAutoReconnectPaused(false);
+  store.setLastError(null);
+  store.setStatus("idle");
+  return true;
+}
+
+export async function clearSavedReceiptPrinter() {
+  const savedPrinter = await PrinterStorage.getReceiptPrinter();
+  const nativeStatus = await getPrinterStatus();
+  if (savedPrinter?.address && nativeStatus.connected && nativeStatus.address === savedPrinter.address) {
+    await disconnectPrinter();
+  }
+
+  await PrinterStorage.clearReceiptPrinter();
+  const store = useReceiptPrinterStore.getState();
+  store.setSavedPrinter(null);
+  store.setAutoReconnectPaused(false);
+  store.setLastError(null);
+  store.setStatus("idle");
+}
+
+export async function testReceiptPrinterConnection() {
+  const savedPrinter = await PrinterStorage.getReceiptPrinter();
+  const receiptStore = useReceiptPrinterStore.getState();
+  if (!savedPrinter?.address) {
+    receiptStore.setStatus("disconnected");
+    throw new Error("No receipt printer has been selected yet.");
+  }
+
+  receiptStore.setSavedPrinter(savedPrinter);
+  receiptStore.setStatus("connecting");
+  receiptStore.setLastError(null);
+
+  const labelStoreBeforeTest = usePrinterStore.getState();
+  const previousLabelAutoReconnectPaused = labelStoreBeforeTest.autoReconnectPaused;
+  labelStoreBeforeTest.setAutoReconnectPaused(true);
+  if (labelStoreBeforeTest.savedPrinter) {
+    labelStoreBeforeTest.setStatus("paused");
+  }
+
+  let testSucceeded = false;
+  let testError: unknown = null;
+  let cleanupError: unknown = null;
+
+  try {
+    const connected = await connectPrinter(savedPrinter.address);
+    if (!connected) {
+      receiptStore.setStatus("error");
+      throw new Error("Unable to connect to the saved receipt printer.");
+    }
+
+    receiptStore.setStatus("connected");
+    await printRawCommand(buildReceiptPrinterTestCommand());
+    testSucceeded = true;
+  } catch (error) {
+    testError = error;
+    receiptStore.setStatus("error");
+    receiptStore.setLastError(error instanceof Error ? error.message : String(error));
+  } finally {
+    try {
+      await disconnectPrinter();
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    const labelStoreAfterTest = usePrinterStore.getState();
+    labelStoreAfterTest.setAutoReconnectPaused(previousLabelAutoReconnectPaused);
+    // 原生蓝牙模块只有一个 socket，小票测试结束后恢复标签打印机原自动重连策略。
+    labelStoreAfterTest.setStatus(
+      labelStoreAfterTest.savedPrinter
+        ? previousLabelAutoReconnectPaused
+          ? "paused"
+          : "disconnected"
+        : "idle"
+    );
+  }
+
+  if (cleanupError) {
+    const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+    receiptStore.setStatus("error");
+    if (testError) {
+      const testMessage = testError instanceof Error ? testError.message : String(testError);
+      receiptStore.setLastError(`${testMessage}; disconnect failed: ${cleanupMessage}`);
+    } else {
+      receiptStore.setLastError(cleanupMessage);
+    }
+    if (testSucceeded) {
+      throw new Error(`Receipt test print was sent, but disconnect failed: ${cleanupMessage}`);
+    }
+  }
+
+  if (testError) {
+    throw testError;
+  }
+
+  receiptStore.setStatus("disconnected");
+  return true;
 }
 
 export async function printProductLabel(detail: ProductDetail, overrides?: ProductLabelOverrides, printType?: string | null) {

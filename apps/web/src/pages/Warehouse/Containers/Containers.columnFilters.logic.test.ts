@@ -88,6 +88,17 @@ async function main() {
   })
   if (columnFailure) failures.push(columnFailure)
 
+  const remarkColumnFailure = await runTest('货柜列表应显示备注列', () => {
+    const columnsStart = pageSource.indexOf('const columns: ColumnsType<ContainerMain> = [')
+    const columnsEnd = pageSource.indexOf(']\n\n  return', columnsStart)
+    assert(columnsStart >= 0 && columnsEnd > columnsStart, '无法定位货柜列表 columns 定义')
+
+    const columnsSource = pageSource.slice(columnsStart, columnsEnd)
+    assert(columnsSource.includes("title: t('containers.fields.remark')"), '货柜列表列定义缺少备注标题')
+    assert(columnsSource.includes("dataIndex: '备注'"), '货柜列表列定义缺少备注字段')
+  })
+  if (remarkColumnFailure) failures.push(remarkColumnFailure)
+
   const resetFailure = await runTest('顶部重置应同步清空列头过滤', () => {
     assert(
       pageSource.includes('setColumnFilters({})') &&

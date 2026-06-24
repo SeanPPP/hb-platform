@@ -44,6 +44,7 @@ import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagemen
 import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
+import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -75,6 +76,7 @@ import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
 import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
 import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
 import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
+import StoreOrderImportPriceVariancePage from '../pages/Warehouse/StoreOrderImportPriceVariance'
 import type { AccessControl } from '../types/auth'
 import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
@@ -323,6 +325,16 @@ export const appRoutes: AppRouteItem[] = [
         element: <StoreOrdersPage />,
       },
       {
+        path: '/warehouse/store-order-import-price-variance',
+        meta: {
+          title: 'menu.storeOrderImportPriceVariance',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canManageWarehouseOrders',
+        },
+        element: <StoreOrderImportPriceVariancePage />,
+      },
+      {
         path: '/warehouse/store-order/detail/:id',
         meta: {
           title: 'menu.storeOrderDetail',
@@ -427,7 +439,7 @@ export const appRoutes: AppRouteItem[] = [
     meta: {
       title: 'menu.executiveSalesIntelligence',
       icon: 'BarChartOutlined',
-      accessKey: 'canViewReports',
+      accessKey: 'canViewSalesIntelligence',
     },
     children: [
       {
@@ -449,6 +461,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewReports',
         },
         element: <SalesDetailAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/product-movement-report',
+        meta: {
+          title: 'menu.productMovementReport',
+          icon: 'ReconciliationOutlined',
+          keepAlive: true,
+          accessKey: 'canViewProductMovementReport',
+        },
+        element: <ProductMovementReportPage />,
       },
     ],
   },
@@ -709,7 +731,7 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
     return []
   }
 
-  // 仓库员工侧边栏只保留分店订货列表，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
+  // 仓库员工侧边栏只保留分店订货相关入口，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
   return [
     {
       key: '/warehouse',
@@ -720,6 +742,11 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
           key: '/warehouse/store-orders',
           icon: iconMap.ReconciliationOutlined,
           label: i18n.t('menu.storeOrders'),
+        },
+        {
+          key: '/warehouse/store-order-import-price-variance',
+          icon: iconMap.BarChartOutlined,
+          label: i18n.t('menu.storeOrderImportPriceVariance'),
         },
       ],
     },
