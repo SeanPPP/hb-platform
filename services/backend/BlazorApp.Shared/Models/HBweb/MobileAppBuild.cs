@@ -52,6 +52,27 @@ namespace BlazorApp.Shared.Models.HBweb
         public string ArtifactUrl { get; set; } = string.Empty;
 
         [SugarColumn(Length = 1000, IsNullable = true)]
+        public string? CosArtifactUrl { get; set; }
+
+        [SugarColumn(Length = 500, IsNullable = true)]
+        public string? CosObjectKey { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public DateTime? CosMirroredAt { get; set; }
+
+        [SugarColumn(Length = 1000, IsNullable = true)]
+        public string? CosMirrorError { get; set; }
+
+        [SugarColumn(Length = 32, IsNullable = false)]
+        public string CosMirrorStatus { get; set; } = "pending";
+
+        [SugarColumn(IsNullable = false)]
+        public int CosMirrorAttempts { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public DateTime? CosMirrorLastAttemptAtUtc { get; set; }
+
+        [SugarColumn(Length = 1000, IsNullable = true)]
         public string? BuildDetailsPageUrl { get; set; }
 
         [SugarColumn(Length = 120, IsNullable = true)]

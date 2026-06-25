@@ -1,9 +1,11 @@
 import {
   HqProductSyncPollingTimeoutError,
   buildProductHqSyncOperationId,
+  buildPushProductsToHqOperationId,
   createProductHqSyncJobPoller,
   createProductHqSyncFullJob,
   createProductHqSyncIncrementalJob,
+  createPushProductsToHqJob,
   getProductHqSyncJob,
   syncSelectedProductsFromHq,
   syncProductsFromHqFull,
@@ -241,6 +243,86 @@ async function main() {
     )
   })
   if (incrementalJobFailure) failures.push(incrementalJobFailure)
+
+  const pushToHqFieldsFailure = await runTest('货柜发送 HQ job 应携带字段选择并让 operationId 区分字段', async () => {
+    const operationId = buildPushProductsToHqOperationId(
+      'container-1',
+      ['P002', 'P001'],
+      2,
+      ['storeRetailPrice', 'inventoryImportPrice'],
+    )
+    assertEqual(
+      operationId,
+      'container-push-hq:container-1:P001,P002:2:inventoryImportPrice,storeRetailPrice',
+      '字段选择应进入发送 HQ operationId',
+    )
+
+    const result = await captureFetch(
+      {
+        success: true,
+        data: {
+          jobId: 'push-job-1',
+          status: 'Queued',
+          operationId,
+          result: { successCount: 0, failedCount: 0, totalCount: 0 },
+        },
+      },
+      () => createPushProductsToHqJob({
+        operationId,
+        productCodes: ['P001'],
+        updateFields: ['storeRetailPrice', 'inventoryImportPrice'],
+        items: [
+          {
+            productCode: 'P001',
+            isNewProduct: false,
+            importPrice: 1.23,
+            oemPrice: 4.56,
+          },
+        ],
+      }),
+    )
+
+    assertDeepEqual(
+      {
+        url: result.capturedUrl,
+        method: result.capturedMethod,
+        body: result.capturedBody,
+        job: result.result,
+      },
+      {
+        url: '/api/react/v1/products/push-to-hq/jobs',
+        method: 'POST',
+        body: {
+          operationId,
+          productCodes: ['P001'],
+          updateFields: ['storeRetailPrice', 'inventoryImportPrice'],
+          items: [
+            {
+              productCode: 'P001',
+              isNewProduct: false,
+              importPrice: 1.23,
+              oemPrice: 4.56,
+            },
+          ],
+        },
+        job: {
+          jobId: 'push-job-1',
+          status: 'Queued',
+          operationId,
+          result: {
+            successCount: 0,
+            failedCount: 0,
+            totalCount: 0,
+            affectedRowCount: 0,
+            errors: [],
+          },
+          errors: [],
+        },
+      },
+      '发送 HQ job 请求应保留 updateFields',
+    )
+  })
+  if (pushToHqFieldsFailure) failures.push(pushToHqFieldsFailure)
 
   const selectedProductsSyncFailure = await runTest('选中商品从 HQ 同步应调用选中商品接口并携带商品编码', async () => {
     const result = await captureFetch(

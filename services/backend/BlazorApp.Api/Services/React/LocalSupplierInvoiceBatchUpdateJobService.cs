@@ -780,6 +780,8 @@ namespace BlazorApp.Api.Services.React
                     {
                         ItemNumber = item.ItemNumber,
                         Barcode = item.Barcode,
+                        // 关键位置：异步粘贴任务要跨线程执行，副条码必须随请求一起克隆，避免后台入库时丢失多码提示。
+                        AdditionalBarcodes = item.AdditionalBarcodes?.ToList() ?? new List<string>(),
                         ProductName = item.ProductName,
                         Quantity = item.Quantity,
                         PurchasePrice = item.PurchasePrice,
@@ -829,7 +831,8 @@ namespace BlazorApp.Api.Services.React
                         item.Quantity,
                         item.PurchasePrice,
                         item.NewAutoRetailPrice,
-                        item.RetailPrice
+                        item.RetailPrice,
+                        string.Join(",", item.AdditionalBarcodes ?? [])
                     ))
             );
         }

@@ -111,7 +111,34 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public string SortBy { get; set; } = "Default";
 
+    /// <summary>
+    /// 列排序方向；旧调用未传时保持升序默认，PriceDesc 等兼容排序仍按原语义处理。
+    /// </summary>
+    public bool SortDescending { get; set; }
+
     public string? Grade { get; set; }
+
+    /// <summary>
+    /// 商品选择弹窗列头筛选条件。
+    /// </summary>
+    public StoreOrderProductColumnFiltersDto? ColumnFilters { get; set; }
+  }
+
+  /// <summary>
+  /// 订货页面商品列表列头筛选条件。
+  /// </summary>
+  public class StoreOrderProductColumnFiltersDto
+  {
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public string? SupplierKeyword { get; set; }
+    public string? Barcode { get; set; }
+    public int? StockQuantityMin { get; set; }
+    public int? StockQuantityMax { get; set; }
+    public int? MinOrderQuantityMin { get; set; }
+    public int? MinOrderQuantityMax { get; set; }
+    public decimal? ImportPriceMin { get; set; }
+    public decimal? ImportPriceMax { get; set; }
   }
 
   /// <summary>
@@ -150,6 +177,17 @@ namespace BlazorApp.Shared.DTOs
     public string Barcode { get; set; } = string.Empty;
     public string? MatchType { get; set; }
     public List<StoreOrderProductDto> Items { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 发票邮件最近一次成功发送信息。
+  /// </summary>
+  public class StoreOrderInvoiceEmailSentInfoDto
+  {
+    public bool HasSent { get; set; }
+    public DateTime? SentAt { get; set; }
+    public string? ToEmail { get; set; }
+    public string? JobId { get; set; }
   }
 
   /// <summary>
@@ -214,6 +252,11 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public int? FlowStatus { get; set; }
 
+    /// <summary>
+    /// 发票邮件最近一次成功发送信息。
+    /// </summary>
+    public StoreOrderInvoiceEmailSentInfoDto InvoiceEmailSentInfo { get; set; } = new();
+
     public List<StoreOrderCartItemDto> Items { get; set; } = new();
   }
 
@@ -223,8 +266,8 @@ namespace BlazorApp.Shared.DTOs
   public class StoreOrderDetailQueryDto
   {
     public const int DefaultPageNumber = 1;
-    public const int DefaultPageSize = 50;
-    public const int MaxPageSize = 500;
+    public const int DefaultPageSize = 200;
+    public const int MaxPageSize = 1000;
 
     public int PageNumber { get; set; } = DefaultPageNumber;
     public int PageSize { get; set; } = DefaultPageSize;
@@ -235,6 +278,191 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 首次货柜进货价基准差异查询参数。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceQueryDto
+  {
+    public string? Keyword { get; set; }
+    public string? StoreCode { get; set; }
+    public List<string>? StoreCodes { get; set; }
+    public string? OrderNo { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? SupplierCode { get; set; }
+    public string? VarianceDirection { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public string? SortBy { get; set; }
+    public bool SortDescending { get; set; } = true;
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异商品汇总。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceItemDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public string? ProductImage { get; set; }
+    public string? SupplierCode { get; set; }
+    public string? SupplierName { get; set; }
+    public decimal? DomesticPrice { get; set; }
+    public decimal? WarehouseImportPrice { get; set; }
+    public decimal? UnitVolume { get; set; }
+    public int? PackingQuantity { get; set; }
+    public decimal FirstContainerImportPrice { get; set; }
+    public decimal AllocQuantityTotal { get; set; }
+    public decimal OriginalImportAmountTotal { get; set; }
+    public decimal BaselineImportAmountTotal { get; set; }
+    public decimal VarianceAmountTotal { get; set; }
+    public int DetailCount { get; set; }
+    public string? FirstContainerCode { get; set; }
+    public string? FirstContainerNumber { get; set; }
+    public DateTime? FirstContainerDate { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前国内价格请求。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+  {
+    public string? ProductCode { get; set; }
+    public decimal? DomesticPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前国内价格结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public decimal DomesticPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前进货价格请求。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+  {
+    public string? ProductCode { get; set; }
+    public decimal? WarehouseImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页更新仓库当前进货价格结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto
+  {
+    public string ProductCode { get; set; } = string.Empty;
+    public decimal WarehouseImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页批量更新仓库当前进货价格请求。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+  {
+    public List<string>? ProductCodes { get; set; }
+    public decimal? WarehouseImportPrice { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜价差异统计页批量更新仓库当前进货价格结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto
+  {
+    public int UpdatedCount { get; set; }
+    public decimal WarehouseImportPrice { get; set; }
+    public List<string> ProductCodes { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异单商品明细查询参数。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDetailQueryDto : StoreOrderImportPriceVarianceQueryDto
+  {
+    public string? ProductCode { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异订单明细。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDetailItemDto
+  {
+    public string OrderGUID { get; set; } = string.Empty;
+    public string DetailGUID { get; set; } = string.Empty;
+    public string? OrderNo { get; set; }
+    public DateTime? OrderDate { get; set; }
+    public string? StoreCode { get; set; }
+    public string? StoreName { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public decimal OrderImportPrice { get; set; }
+    public decimal FirstContainerImportPrice { get; set; }
+    public decimal AllocQuantity { get; set; }
+    public decimal OriginalImportAmount { get; set; }
+    public decimal BaselineImportAmount { get; set; }
+    public decimal VarianceAmount { get; set; }
+    public string? FirstContainerCode { get; set; }
+    public string? FirstContainerNumber { get; set; }
+    public DateTime? FirstContainerDate { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异汇总。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceSummaryDto
+  {
+    public int TotalRows { get; set; }
+    public decimal OriginalImportAmountTotal { get; set; }
+    public decimal BaselineImportAmountTotal { get; set; }
+    public decimal VarianceAmountTotal { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异国内供应商汇总。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceSupplierSummaryDto
+  {
+    public string? SupplierCode { get; set; }
+    public string? SupplierName { get; set; }
+    public int ProductCount { get; set; }
+    public int DetailCount { get; set; }
+    public decimal OriginalImportAmountTotal { get; set; }
+    public decimal BaselineImportAmountTotal { get; set; }
+    public decimal IncreaseVarianceAmountTotal { get; set; }
+    public decimal DecreaseVarianceAmountTotal { get; set; }
+    public decimal VarianceAmountTotal { get; set; }
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异分页结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceResultDto
+  {
+    public List<StoreOrderImportPriceVarianceItemDto> Items { get; set; } = new();
+    public int Total { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public StoreOrderImportPriceVarianceSummaryDto Summary { get; set; } = new();
+    public List<StoreOrderImportPriceVarianceSupplierSummaryDto> SupplierSummaries { get; set; } = new();
+  }
+
+  /// <summary>
+  /// 首次货柜进货价基准差异订单明细分页结果。
+  /// </summary>
+  public class StoreOrderImportPriceVarianceDetailResultDto
+  {
+    public List<StoreOrderImportPriceVarianceDetailItemDto> Items { get; set; } = new();
+    public int Total { get; set; }
+    public int PageNumber { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public StoreOrderImportPriceVarianceSummaryDto Summary { get; set; } = new();
+  }
+
+  /// <summary>
   /// 订货明细交互页 DTO，保留订单头和整单汇总，只分页返回当前页明细。
   /// </summary>
   public class StoreOrderDetailDto : StoreOrderCartDto
@@ -242,7 +470,7 @@ namespace BlazorApp.Shared.DTOs
     public int Total { get; set; }
     public int ItemsTotal { get; set; }
     public int PageNumber { get; set; } = 1;
-    public int PageSize { get; set; } = 50;
+    public int PageSize { get; set; } = StoreOrderDetailQueryDto.DefaultPageSize;
 
     /// <summary>
     /// 整单“订货未配货”的行数。
@@ -627,9 +855,15 @@ namespace BlazorApp.Shared.DTOs
 
   public class BatchUpdateItemDto
   {
+    public string? DetailGUID { get; set; }
     public string ProductCode { get; set; } = string.Empty;
     public decimal? Quantity { get; set; }
     public decimal? ImportPrice { get; set; }
+
+    /// <summary>
+    /// 是否把本次进口价同步到商品主档和分店进货价；为空/false 时只保存订单明细。
+    /// </summary>
+    public bool? SyncImportPrice { get; set; }
   }
 
   /// <summary>
@@ -710,6 +944,11 @@ namespace BlazorApp.Shared.DTOs
     public decimal Quantity { get; set; }
 
     public decimal? ImportPrice { get; set; }
+
+    /// <summary>
+    /// 是否把本次进口价同步到商品主档和分店进货价；为空/false 时只保存订单明细。
+    /// </summary>
+    public bool? SyncImportPrice { get; set; }
   }
 
   /// <summary>

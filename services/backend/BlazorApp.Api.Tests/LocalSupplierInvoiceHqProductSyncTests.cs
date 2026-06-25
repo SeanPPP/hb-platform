@@ -43,12 +43,16 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
             typeof(Product),
             typeof(DomesticProduct),
             typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct),
             typeof(StoreLocalSupplierInvoice),
             typeof(StoreLocalSupplierInvoiceDetails)
         );
         _hqDb.CodeFirst.InitTables(
             typeof(DIC_商品信息字典表),
-            typeof(DIC_商品零售价表)
+            typeof(DIC_商品零售价表),
+            typeof(DIC_一品多码表),
+            typeof(DIC_分店一品多码表)
         );
     }
 
@@ -60,6 +64,10 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.NotNull(typeof(EnsureHqProductsRequest).GetProperty("DetailGuids"));
         Assert.NotNull(typeof(EnsureHqProductsRequest).GetProperty("TargetStoreCodes"));
         Assert.NotNull(typeof(EnsureHqProductsResult).GetProperty("HqPurchasePricesUpdated"));
+        Assert.NotNull(typeof(UpdateHqProductsResult).GetProperty("HqProductSetCodesCreated"));
+        Assert.NotNull(typeof(UpdateHqProductsResult).GetProperty("HqProductSetCodesUpdated"));
+        Assert.NotNull(typeof(UpdateHqProductsResult).GetProperty("HqStoreMultiCodesCreated"));
+        Assert.NotNull(typeof(UpdateHqProductsResult).GetProperty("HqStoreMultiCodesUpdated"));
         AssertRequiredProperty<UpdateHqProductsRequest>("DetailGuids");
         AssertRequiredProperty<UpdateHqProductsRequest>("TargetStoreCodes");
         AssertRequiredProperty<UpdateHqProductsRequest>("UpdateFields");
@@ -183,6 +191,133 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.False(hqS02.H是否自动定价);
         Assert.Equal(6m, hqS02.H进货价);
         Assert.Equal(12m, hqS02.H分店零售价);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_同步本地多码关系到HQ()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqPriceAsync("S02", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-multicode",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "88842",
+            Barcode = "191554882676",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            AutoPricing = true,
+            IsSpecialProduct = true,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-code-1",
+            ProductCode = "P-001",
+            SetProductCode = "MC-001",
+            SetItemNumber = "88842",
+            SetBarcode = "191554882690",
+            SetPurchasePrice = 8m,
+            SetRetailPrice = 18m,
+            SetQuantity = 1,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreMultiCodeProduct
+            {
+                UUID = "store-multi-s01",
+                StoreCode = "S01",
+                ProductCode = "P-001",
+                MultiCodeProductCode = "MC-001",
+                StoreMultiCodeProductCode = "S01MC-001",
+                MultiBarcode = "191554882690",
+                PurchasePrice = 8m,
+                MultiCodeRetailPrice = 18m,
+                DiscountRate = 0.12m,
+                IsAutoPricing = true,
+                IsSpecialProduct = true,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "store-multi-s02",
+                StoreCode = "S02",
+                ProductCode = "P-001",
+                MultiCodeProductCode = "MC-001",
+                StoreMultiCodeProductCode = "S02MC-001",
+                MultiBarcode = "191554882690",
+                PurchasePrice = 9m,
+                MultiCodeRetailPrice = 19m,
+                DiscountRate = 0.22m,
+                IsAutoPricing = false,
+                IsSpecialProduct = false,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var firstResult = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-multicode" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(firstResult.Success, BuildFailureMessage(firstResult));
+        Assert.Equal(1, firstResult.Data!.HqProductSetCodesCreated);
+        Assert.Equal(1, firstResult.Data.HqStoreMultiCodesCreated);
+        Assert.Equal(1, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
+        Assert.Equal(1, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
+
+        var hqSetCode = await _hqDb.Queryable<DIC_一品多码表>().SingleAsync();
+        var hqStoreMulti = await _hqDb.Queryable<DIC_分店一品多码表>().SingleAsync();
+        Assert.Equal("P-001", hqSetCode.H商品编码);
+        Assert.Equal("MC-001", hqSetCode.H多码商品编号);
+        Assert.Equal("191554882690", hqSetCode.H多条形码);
+        Assert.Equal("S01", hqStoreMulti.H分店代码);
+        Assert.Equal("S01MC-001", hqStoreMulti.H分店多码商品编码);
+        Assert.Equal(18m, hqStoreMulti.H一品多码零售价);
+
+        var secondResult = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-multicode" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(secondResult.Success, BuildFailureMessage(secondResult));
+        Assert.Equal(0, secondResult.Data!.HqProductSetCodesCreated);
+        Assert.Equal(1, secondResult.Data.HqProductSetCodesUpdated);
+        Assert.Equal(0, secondResult.Data.HqStoreMultiCodesCreated);
+        Assert.Equal(1, secondResult.Data.HqStoreMultiCodesUpdated);
+        Assert.Equal(1, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
+        Assert.Equal(1, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
     }
 
     [Fact]

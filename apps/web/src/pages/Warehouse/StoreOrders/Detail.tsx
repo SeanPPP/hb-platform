@@ -9,6 +9,7 @@ import {
   PrinterOutlined,
   SaveOutlined,
   SearchOutlined,
+  SortAscendingOutlined,
   SyncOutlined,
 } from '@ant-design/icons'
 import {
@@ -36,7 +37,7 @@ import {
   notification,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { SortOrder, SorterResult } from 'antd/es/table/interface'
+import type { FilterDropdownProps, SortOrder, SorterResult } from 'antd/es/table/interface'
 import type { InputNumberRef } from 'rc-input-number'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
@@ -80,6 +81,7 @@ import type {
   StoreOrderDetailStatFilter,
   StoreOrderDetailSortField,
   StoreOrderPasteTargetField,
+  StoreOrderProductColumnFilters,
   StoreOrderProductItem,
 } from '../../../types/storeOrder'
 import { StoreOrderFlowStatus, StoreOrderStatusColorMap } from '../../../types/storeOrder'
@@ -88,7 +90,14 @@ import { useDynamicTabTitle } from '../../../hooks/useDynamicTabTitle'
 import { deriveStoreOrderDetailPermissions } from './storeOrderDetailPermissions'
 import { shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import { shouldShowStoreOrderDetailInitialLoading } from './detailLoadState'
+import { InvoiceEmailSentStatusText } from './invoiceEmailSentInfo'
 import { resolveStoreContactDraftValue } from './storeOrderStoreContact'
+import { buildBatchCopyOrderQuantityPayload, shouldSubmitBatchCopyOrderQuantity } from './batchCopyOrderQuantity'
+import {
+  formatProductPickerSupplierLabel,
+  matchesProductPickerSupplierOption,
+  type ProductPickerSupplierOption,
+} from './productPickerSupplierFilter'
 import {
   buildPasteSubmitItems,
   createPastePreviewItems,
@@ -151,6 +160,7 @@ type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
 type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner'
+type BatchEditType = 'allocQuantity' | 'importPrice' | 'status' | 'copyOrderQuantityToAllocQuantity'
 
 function resolvePasteTargetField(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteTargetField {
   return writeTarget === 'allocQuantityByInner' ? 'allocQuantity' : writeTarget
@@ -165,6 +175,7 @@ interface EditedLinePayload {
   productCode: string
   quantity?: number
   importPrice?: number
+  syncImportPrice?: boolean
   importPriceChanged: boolean
 }
 
@@ -243,6 +254,155 @@ interface ProductPickerModalProps {
 
 const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100
 const PRODUCT_PICKER_PAGE_SIZE_OPTIONS = ['50', '100', '500']
+const STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE = 200
+const STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']
+type ProductPickerTextFilterKey = 'itemNumber' | 'productName' | 'supplierKeyword' | 'barcode'
+type ProductPickerNumberFilterKey =
+  | 'stockQuantityMin'
+  | 'stockQuantityMax'
+  | 'minOrderQuantityMin'
+  | 'minOrderQuantityMax'
+  | 'importPriceMin'
+  | 'importPriceMax'
+type ProductPickerNumberRange = {
+  min: ProductPickerNumberFilterKey
+  max: ProductPickerNumberFilterKey
+}
+
+function cleanProductPickerColumnFilters(
+  filters?: StoreOrderProductColumnFilters,
+): StoreOrderProductColumnFilters | undefined {
+  if (!filters) {
+    return undefined
+  }
+
+  const next: StoreOrderProductColumnFilters = {}
+  const assignText = (key: ProductPickerTextFilterKey) => {
+    const value = filters[key]?.trim()
+    if (value) {
+      next[key] = value
+    }
+  }
+  const assignNumber = (key: ProductPickerNumberFilterKey) => {
+    const value = filters[key]
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      next[key] = value
+    }
+  }
+
+  assignText('itemNumber')
+  assignText('productName')
+  assignText('supplierKeyword')
+  assignText('barcode')
+  assignNumber('stockQuantityMin')
+  assignNumber('stockQuantityMax')
+  assignNumber('minOrderQuantityMin')
+  assignNumber('minOrderQuantityMax')
+  assignNumber('importPriceMin')
+  assignNumber('importPriceMax')
+
+  return Object.keys(next).length ? next : undefined
+}
+
+interface ProductPickerTextFilterDropdownProps {
+  value?: string
+  placeholder: string
+  applyLabel: string
+  resetLabel: string
+  confirm: FilterDropdownProps['confirm']
+  onApply: (value: string, confirm: FilterDropdownProps['confirm']) => void
+  onReset: (confirm: FilterDropdownProps['confirm']) => void
+}
+
+function ProductPickerTextFilterDropdown({
+  value,
+  placeholder,
+  applyLabel,
+  resetLabel,
+  confirm,
+  onApply,
+  onReset,
+}: ProductPickerTextFilterDropdownProps) {
+  const [draft, setDraft] = useState(value ?? '')
+
+  useEffect(() => {
+    setDraft(value ?? '')
+  }, [value])
+
+  return (
+    <div className="store-order-list-column-filter" onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Input
+        allowClear
+        value={draft}
+        placeholder={placeholder}
+        onChange={(event) => setDraft(event.target.value)}
+        onPressEnter={() => onApply(draft, confirm)}
+      />
+      <Space>
+        <Button size="small" type="primary" onClick={() => onApply(draft, confirm)}>{applyLabel}</Button>
+        <Button size="small" onClick={() => onReset(confirm)}>{resetLabel}</Button>
+      </Space>
+    </div>
+  )
+}
+
+interface ProductPickerNumberRangeFilterDropdownProps {
+  minValue?: number
+  maxValue?: number
+  minPlaceholder: string
+  maxPlaceholder: string
+  applyLabel: string
+  resetLabel: string
+  confirm: FilterDropdownProps['confirm']
+  onApply: (range: { min?: number; max?: number }, confirm: FilterDropdownProps['confirm']) => void
+  onReset: (confirm: FilterDropdownProps['confirm']) => void
+}
+
+function ProductPickerNumberRangeFilterDropdown({
+  minValue,
+  maxValue,
+  minPlaceholder,
+  maxPlaceholder,
+  applyLabel,
+  resetLabel,
+  confirm,
+  onApply,
+  onReset,
+}: ProductPickerNumberRangeFilterDropdownProps) {
+  const [minDraft, setMinDraft] = useState<number | undefined>(minValue)
+  const [maxDraft, setMaxDraft] = useState<number | undefined>(maxValue)
+
+  useEffect(() => {
+    setMinDraft(minValue)
+  }, [minValue])
+
+  useEffect(() => {
+    setMaxDraft(maxValue)
+  }, [maxValue])
+
+  return (
+    <div className="store-order-list-column-filter" onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Space.Compact>
+        <InputNumber
+          controls={false}
+          value={minDraft}
+          placeholder={minPlaceholder}
+          onChange={(value) => setMinDraft(value == null ? undefined : Number(value))}
+        />
+        <InputNumber
+          controls={false}
+          value={maxDraft}
+          placeholder={maxPlaceholder}
+          onChange={(value) => setMaxDraft(value == null ? undefined : Number(value))}
+        />
+      </Space.Compact>
+      <Space>
+        <Button size="small" type="primary" onClick={() => onApply({ min: minDraft, max: maxDraft }, confirm)}>{applyLabel}</Button>
+        <Button size="small" onClick={() => onReset(confirm)}>{resetLabel}</Button>
+      </Space>
+    </div>
+  )
+}
 
 interface BatchEditModalProps {
   open: boolean
@@ -250,7 +410,7 @@ interface BatchEditModalProps {
   selectedCount: number
   onCancel: () => void
   onConfirm: (payload: {
-    type: 'allocQuantity' | 'importPrice' | 'status'
+    type: BatchEditType
     allocQuantity?: number
     importPrice?: number
     isActive?: boolean
@@ -269,9 +429,13 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
   const [pageNumber, setPageNumber] = useState(1)
   const [pageSize, setPageSize] = useState(PRODUCT_PICKER_DEFAULT_PAGE_SIZE)
   const [total, setTotal] = useState(0)
-  const [supplierOptions, setSupplierOptions] = useState<Array<{ label: string; value: string }>>([])
+  const [supplierOptions, setSupplierOptions] = useState<ProductPickerSupplierOption[]>([])
   const [supplierCode, setSupplierCode] = useState<string>()
   const [supplierLoading, setSupplierLoading] = useState(false)
+  const [productSortBy, setProductSortBy] = useState('Default')
+  const [productSortDescending, setProductSortDescending] = useState(false)
+  const [columnFilters, setColumnFilters] = useState<StoreOrderProductColumnFilters>({})
+  const [selectedProductsByCode, setSelectedProductsByCode] = useState<Record<string, StoreOrderProductItem>>({})
   const [editingValues, setEditingValues] = useState<
     Record<string, { quantity?: number; importPrice?: number }>
   >({})
@@ -281,12 +445,19 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     pageNumber?: number
     pageSize?: number
     supplierCode?: string
+    sortBy?: string
+    sortDescending?: boolean
+    columnFilters?: StoreOrderProductColumnFilters
   }) => {
     const nextKeyword = overrides?.keyword ?? keyword
     const trimmedKeyword = nextKeyword.trim()
     const nextPageNumber = overrides?.pageNumber ?? pageNumber
     const nextPageSize = overrides?.pageSize ?? pageSize
     const nextSupplierCode = overrides?.supplierCode ?? supplierCode
+    const nextSortBy = overrides?.sortBy ?? productSortBy
+    const nextSortDescending = overrides?.sortDescending ?? productSortDescending
+    const nextColumnFilters = overrides?.columnFilters ?? columnFilters
+    const cleanedColumnFilters = cleanProductPickerColumnFilters(nextColumnFilters)
 
     productRequestControllerRef.current?.abort()
     const currentController = new AbortController()
@@ -303,7 +474,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
           excludeOrderGUID: orderGUID,
           pageNumber: nextPageNumber,
           pageSize: nextPageSize,
-          sortBy: 'Default',
+          sortBy: nextSortBy,
+          sortDescending: nextSortDescending,
+          columnFilters: cleanedColumnFilters,
         },
         currentController.signal,
       )
@@ -314,6 +487,23 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       setTotal(result.total)
       setPageNumber(nextPageNumber)
       setPageSize(nextPageSize)
+      setProductSortBy(nextSortBy)
+      setProductSortDescending(nextSortDescending)
+      setColumnFilters(cleanedColumnFilters ?? {})
+      setSelectedProductsByCode((current) => {
+        if (!selectedRowKeys.length) {
+          return current
+        }
+
+        const selectedKeySet = new Set(selectedRowKeys.map(String))
+        const next = { ...current }
+        result.items.forEach((item) => {
+          if (selectedKeySet.has(item.productCode)) {
+            next[item.productCode] = item
+          }
+        })
+        return next
+      })
     } catch (error) {
       if (isAbortError(error)) {
         return
@@ -348,8 +538,12 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
         suppliers
           .filter((item) => Boolean(item.supplierCode))
           .map((item) => ({
-            label: item.supplierName || item.supplierCode,
+            // 下拉显示补充店铺号，搜索仍保留编码/名称/店铺号三种入口。
+            label: formatProductPickerSupplierLabel(item.supplierName, item.supplierCode, item.shopNumber),
             value: item.supplierCode,
+            supplierCode: item.supplierCode,
+            supplierName: item.supplierName,
+            shopNumber: item.shopNumber,
           })),
       )
       supplierOptionsLoadedRef.current = true
@@ -391,6 +585,10 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       setSupplierCode(undefined)
       setFetching(false)
       setSupplierLoading(false)
+      setProductSortBy('Default')
+      setProductSortDescending(false)
+      setColumnFilters({})
+      setSelectedProductsByCode({})
       setEditingValues({})
     }
   }, [open])
@@ -407,6 +605,86 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       />
     </Tooltip>
   )
+
+  const applyProductColumnFilterPatch = (
+    patch: StoreOrderProductColumnFilters,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    // 每个表头弹层只提交自己的 patch，避免未点击“应用”的其他列草稿被带入服务端查询。
+    const cleanedFilters = cleanProductPickerColumnFilters({ ...columnFilters, ...patch })
+    setColumnFilters(cleanedFilters ?? {})
+    confirm()
+    void loadProducts({ pageNumber: 1, columnFilters: cleanedFilters ?? {} })
+  }
+
+  const clearProductColumnFilter = (
+    keys: Array<keyof StoreOrderProductColumnFilters>,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    const patch: StoreOrderProductColumnFilters = {}
+    keys.forEach((key) => {
+      patch[key] = undefined
+    })
+    applyProductColumnFilterPatch(patch, confirm)
+  }
+
+  const makeProductTextFilterDropdown = (
+    key: ProductPickerTextFilterKey,
+    placeholder: string,
+  ) => ({ confirm }: FilterDropdownProps) => (
+    <ProductPickerTextFilterDropdown
+      value={columnFilters[key]}
+      placeholder={placeholder}
+      applyLabel={t('containers.actions.applyColumnFilter', '应用')}
+      resetLabel={t('containers.actions.resetColumnFilter', '重置')}
+      confirm={confirm}
+      onApply={(value, nextConfirm) => applyProductColumnFilterPatch({ [key]: value }, nextConfirm)}
+      onReset={(nextConfirm) => clearProductColumnFilter([key], nextConfirm)}
+    />
+  )
+
+  const makeProductNumberRangeFilterDropdown = (
+    range: ProductPickerNumberRange,
+  ) => ({ confirm }: FilterDropdownProps) => (
+    <ProductPickerNumberRangeFilterDropdown
+      minValue={columnFilters[range.min] as number | undefined}
+      maxValue={columnFilters[range.max] as number | undefined}
+      minPlaceholder={t('containers.placeholders.minValue', '最小值')}
+      maxPlaceholder={t('containers.placeholders.maxValue', '最大值')}
+      applyLabel={t('containers.actions.applyColumnFilter', '应用')}
+      resetLabel={t('containers.actions.resetColumnFilter', '重置')}
+      confirm={confirm}
+      onApply={(value, nextConfirm) =>
+        applyProductColumnFilterPatch(
+          {
+            [range.min]: value.min,
+            [range.max]: value.max,
+          },
+          nextConfirm,
+        )
+      }
+      onReset={(nextConfirm) => clearProductColumnFilter([range.min, range.max], nextConfirm)}
+    />
+  )
+
+  const productFilterIcon = (active?: boolean) => (
+    <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
+  )
+  const productSortOrder = (field: string): SortOrder =>
+    productSortBy === field ? (productSortDescending ? 'descend' : 'ascend') : null
+  const hasProductNumberRangeFilter = (range: ProductPickerNumberRange) => (
+    typeof columnFilters[range.min] === 'number' || typeof columnFilters[range.max] === 'number'
+  )
+  const productTextFilterProps = (key: ProductPickerTextFilterKey, placeholder: string) => ({
+    filterDropdown: makeProductTextFilterDropdown(key, placeholder),
+    filterIcon: productFilterIcon,
+    filtered: Boolean(columnFilters[key]?.trim()),
+  })
+  const productNumberFilterProps = (range: ProductPickerNumberRange) => ({
+    filterDropdown: makeProductNumberRangeFilterDropdown(range),
+    filterIcon: productFilterIcon,
+    filtered: hasProductNumberRangeFilter(range),
+  })
 
   const columns: ColumnsType<StoreOrderProductItem> = [
     {
@@ -428,6 +706,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       title: t('column.itemNumber'),
       dataIndex: 'itemNumber',
       width: 98,
+      sorter: true,
+      sortOrder: productSortOrder('itemNumber'),
+      ...productTextFilterProps('itemNumber', t('storeOrders.detail.filterItemNumber', '过滤货号')),
       render: (value: string | undefined) =>
         value ? (
           <Space size={2} wrap={false} className="store-order-picker-inline-cell">
@@ -442,6 +723,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       title: t('column.productName'),
       dataIndex: 'productName',
       width: 170,
+      sorter: true,
+      sortOrder: productSortOrder('productName'),
+      ...productTextFilterProps('productName', t('storeOrders.detail.filterProductName', '过滤商品名称')),
       render: (value: string | undefined) => (
         <span className="store-order-picker-two-line" title={value}>
           {value || '--'}
@@ -452,6 +736,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       title: t('column.supplierName', '供应商名称'),
       dataIndex: 'domesticSupplierName',
       width: 108,
+      ...productTextFilterProps('supplierKeyword', t('storeOrders.detail.filterSupplierKeyword', '过滤供应商')),
       render: (value: string | undefined, record) => {
         const displayValue = value || record.domesticSupplierCode || '--'
         return (
@@ -465,6 +750,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       title: t('column.barcode'),
       dataIndex: 'barcode',
       width: 122,
+      sorter: true,
+      sortOrder: productSortOrder('barcode'),
+      ...productTextFilterProps('barcode', t('storeOrders.detail.filterBarcode', '过滤条码')),
       render: (value: string | undefined) =>
         value ? (
           <Space size={2} wrap={false} className="store-order-picker-inline-cell store-order-picker-barcode-cell">
@@ -479,16 +767,25 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       title: t('column.stock'),
       dataIndex: 'stockQuantity',
       width: 56,
+      sorter: true,
+      sortOrder: productSortOrder('stockQuantity'),
+      ...productNumberFilterProps({ min: 'stockQuantityMin', max: 'stockQuantityMax' }),
     },
     {
       title: t('column.minOrder'),
       dataIndex: 'minOrderQuantity',
       width: 62,
+      sorter: true,
+      sortOrder: productSortOrder('minOrderQuantity'),
+      ...productNumberFilterProps({ min: 'minOrderQuantityMin', max: 'minOrderQuantityMax' }),
     },
     {
       title: t('column.defaultImportPrice'),
       dataIndex: 'importPrice',
       width: 84,
+      sorter: true,
+      sortOrder: productSortOrder('importPrice'),
+      ...productNumberFilterProps({ min: 'importPriceMin', max: 'importPriceMax' }),
       render: (value: number | undefined) => formatCurrencyAmount(value),
     },
     {
@@ -554,7 +851,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
     }
 
     const payload = selectedRowKeys
-      .map((key) => products.find((item) => item.productCode === String(key)))
+      .map((key) => selectedProductsByCode[String(key)] ?? products.find((item) => item.productCode === String(key)))
       .filter((item): item is StoreOrderProductItem => Boolean(item))
       .map((item) => ({
         productCode: item.productCode,
@@ -597,6 +894,9 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
             value={supplierCode}
             loading={supplierLoading}
             options={supplierOptions}
+            filterOption={(input, option) => {
+              return matchesProductPickerSupplierOption(input, option as ProductPickerSupplierOption | undefined)
+            }}
             style={{ width: 260 }}
             onOpenChange={(visible) => {
               if (visible) {
@@ -625,7 +925,30 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
           columns={columns}
           rowSelection={{
             selectedRowKeys,
-            onChange: setSelectedRowKeys,
+            onChange: (nextSelectedRowKeys, nextSelectedRows) => {
+              setSelectedRowKeys(nextSelectedRowKeys)
+              setSelectedProductsByCode((current) => {
+                const nextSelectedKeySet = new Set(nextSelectedRowKeys.map(String))
+                const next: Record<string, StoreOrderProductItem> = {}
+                Object.entries(current).forEach(([productCode, product]) => {
+                  if (nextSelectedKeySet.has(productCode)) {
+                    next[productCode] = product
+                  }
+                })
+                // preserveSelectedRowKeys 只保留 key；这里补齐当前页实体，跨页/过滤后仍能提交。
+                products.forEach((product) => {
+                  if (nextSelectedKeySet.has(product.productCode)) {
+                    next[product.productCode] = product
+                  }
+                })
+                nextSelectedRows.forEach((product) => {
+                  if (nextSelectedKeySet.has(product.productCode)) {
+                    next[product.productCode] = product
+                  }
+                })
+                return next
+              })
+            },
             preserveSelectedRowKeys: true,
             columnWidth: 32,
           }}
@@ -635,8 +958,35 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
             total,
             showSizeChanger: true,
             pageSizeOptions: PRODUCT_PICKER_PAGE_SIZE_OPTIONS,
-            onChange: (nextPage, nextPageSize) =>
-              void loadProducts({ pageNumber: nextPage, pageSize: nextPageSize }),
+          }}
+          onChange={(pagination, _filters, sorter, extra) => {
+            if (extra.action === 'filter') {
+              return
+            }
+
+            const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
+            let nextSortBy = productSortBy
+            let nextSortDescending = productSortDescending
+
+            if (extra.action === 'sort') {
+              if (
+                (nextSorter?.order === 'ascend' || nextSorter?.order === 'descend') &&
+                typeof nextSorter.field === 'string'
+              ) {
+                nextSortBy = nextSorter.field
+                nextSortDescending = nextSorter.order === 'descend'
+              } else {
+                nextSortBy = 'Default'
+                nextSortDescending = false
+              }
+            }
+
+            void loadProducts({
+              pageNumber: extra.action === 'sort' ? 1 : pagination.current || 1,
+              pageSize: pagination.pageSize || pageSize,
+              sortBy: nextSortBy,
+              sortDescending: nextSortDescending,
+            })
           }}
           scroll={{ y: 440 }}
         />
@@ -647,7 +997,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
 
 function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: BatchEditModalProps) {
   const { t } = useTranslation()
-  const [type, setType] = useState<'allocQuantity' | 'importPrice' | 'status'>('allocQuantity')
+  const [type, setType] = useState<BatchEditType>('allocQuantity')
   const [allocQuantity, setAllocQuantity] = useState<number>()
   const [importPrice, setImportPrice] = useState<number>()
   const [isActive, setIsActive] = useState<boolean>(true)
@@ -701,6 +1051,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
           value={type}
           options={[
             { value: 'allocQuantity', label: t('storeOrders.batchAllocQty') },
+            { value: 'copyOrderQuantityToAllocQuantity', label: t('storeOrders.batchCopyOrderQuantityToAllocQuantity') },
             { value: 'importPrice', label: t('storeOrders.batchImportPrice') },
             { value: 'status', label: t('storeOrders.batchStatus') },
           ]}
@@ -745,14 +1096,20 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
 }
 
 export default function StoreOrderDetailPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const route = useStableRouteContext()
   const { active } = useKeepAliveContext()
   const location = useLocation()
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
   const { access, currentUser } = useAuthStore()
-  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  const isWarehouseStaffOnly =
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  // 分店订货写入、状态流转和批量动作统一跟随仓库订货管理权限。
+  const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly
   // 只用于配货单等只读文档入口，不开放订单编辑、状态流转或明细写入能力。
   const canUseStoreOrderDocumentActions = access.isWarehouseStaff
   const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions
@@ -798,10 +1155,10 @@ export default function StoreOrderDetailPage() {
   const [pasteOptimisticPending, setPasteOptimisticPending] = useState<StoreOrderPasteOptimisticPending | null>(null)
   const [refreshImportPriceLoading, setRefreshImportPriceLoading] = useState(false)
   const [detailPage, setDetailPage] = useState(1)
-  const [detailPageSize, setDetailPageSize] = useState(50)
+  const [detailPageSize, setDetailPageSize] = useState(STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
-  const [detailSortField, setDetailSortField] = useState<DetailSortField>(null)
-  const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>(null)
+  const [detailSortField, setDetailSortField] = useState<DetailSortField>('locationCode')
+  const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>('ascend')
   const [headerForm, setHeaderForm] = useState<{
     storeCode?: string
     orderDate?: string
@@ -836,6 +1193,7 @@ export default function StoreOrderDetailPage() {
 
   useDynamicTabTitle(tabTitle)
 
+  // 明细表只请求当前页；翻页、筛选、排序都会带着 pageSize 重新向服务端取数。
   const detailQuery = useMemo<StoreOrderDetailQuery>(
     () => ({
       pageNumber: detailPage,
@@ -1071,8 +1429,19 @@ export default function StoreOrderDetailPage() {
     [detail?.storeName, headerForm.storeCode, stores, t],
   )
 
-  const totalAllocQuantity =
-    detail?.totalAllocQuantity ?? detail?.items?.reduce((sum, item) => sum + (item.allocQuantity || 0), 0) ?? 0
+  const totalAllocQuantity = useMemo(() => {
+    const savedTotal =
+      detail?.totalAllocQuantity ?? detail?.items?.reduce((sum, item) => sum + Number(item.allocQuantity ?? 0), 0) ?? 0
+    const draftDelta =
+      detail?.items?.reduce((sum, item) => {
+        const editedAllocQuantity = editingRows[item.detailGUID]?.allocQuantity
+        if (editedAllocQuantity === undefined) {
+          return sum
+        }
+        return sum + Number(editedAllocQuantity) - Number(item.allocQuantity ?? 0)
+      }, 0) ?? 0
+    return savedTotal + draftDelta
+  }, [detail?.items, detail?.totalAllocQuantity, editingRows])
 
   const totalOrderVolume =
     detail?.totalOrderVolume ??
@@ -1087,16 +1456,21 @@ export default function StoreOrderDetailPage() {
     ) ??
     0
 
-  const totalAllocVolume =
-    detail?.totalAllocVolume ??
-    detail?.items?.reduce(
-      (sum, item) =>
-        sum +
-        (item.allocVolume ??
-          ((item.volume ?? 0) * Number(item.allocQuantity ?? 0))),
-      0,
-    ) ??
-    0
+  const totalAllocVolume = useMemo(() => {
+    const savedTotal =
+      detail?.totalAllocVolume ??
+      detail?.items?.reduce((sum, item) => sum + (item.allocVolume ?? ((item.volume ?? 0) * Number(item.allocQuantity ?? 0))), 0) ??
+      0
+    const draftDelta =
+      detail?.items?.reduce((sum, item) => {
+        const editedAllocQuantity = editingRows[item.detailGUID]?.allocQuantity
+        if (editedAllocQuantity === undefined || item.volume === undefined || item.volume === null) {
+          return sum
+        }
+        return sum + Number(item.volume) * (Number(editedAllocQuantity) - Number(item.allocQuantity ?? 0))
+      }, 0) ?? 0
+    return savedTotal + draftDelta
+  }, [detail?.items, detail?.totalAllocVolume, editingRows])
 
   const estimatedSalesAmount = useMemo(
     () =>
@@ -1107,9 +1481,28 @@ export default function StoreOrderDetailPage() {
     [detail?.items, editingRows],
   )
 
+  const draftTotalImportAmount = useMemo(() => {
+    const savedTotal =
+      detail?.totalImportAmount ??
+      detail?.items.reduce((sum, line) => sum + (line.importAmount ?? Number(line.allocQuantity ?? 0) * Number(line.importPrice ?? 0)), 0) ??
+      0
+    const draftDelta =
+      detail?.items.reduce((sum, line) => {
+        const edited = editingRows[line.detailGUID]
+        if (!edited || (edited.allocQuantity === undefined && edited.importPrice === undefined)) {
+          return sum
+        }
+        const savedAmount = line.importAmount ?? Number(line.allocQuantity ?? 0) * Number(line.importPrice ?? 0)
+        const allocQuantity = edited.allocQuantity ?? line.allocQuantity ?? 0
+        const importPrice = edited.importPrice ?? line.importPrice ?? 0
+        return sum + Number(allocQuantity) * Number(importPrice) - Number(savedAmount)
+      }, 0) ?? 0
+    return savedTotal + draftDelta
+  }, [detail?.items, detail?.totalImportAmount, editingRows])
+
   const gstAmount = useMemo(
-    () => Number((Number(detail?.totalImportAmount ?? 0) * 0.1).toFixed(2)),
-    [detail?.totalImportAmount],
+    () => Number((Number(draftTotalImportAmount) * 0.1).toFixed(2)),
+    [draftTotalImportAmount],
   )
 
   const validPastePreviewCount = useMemo(
@@ -1150,15 +1543,13 @@ export default function StoreOrderDetailPage() {
         return payloads
       }
 
-      if (importPriceChanged && !syncImportPrice && !allocQuantityChanged) {
-        return payloads
-      }
-
       payloads.push({
         detailGUID: line.detailGUID,
         productCode: line.productCode,
         quantity: allocQuantityChanged ? edited.allocQuantity : undefined,
-        importPrice: importPriceChanged && syncImportPrice ? edited.importPrice : undefined,
+        // 进口价本身始终保存到订单明细；syncImportPrice 只控制是否同步商品/分店主档。
+        importPrice: importPriceChanged ? edited.importPrice : undefined,
+        syncImportPrice: importPriceChanged ? syncImportPrice : undefined,
         importPriceChanged,
       })
 
@@ -1419,16 +1810,14 @@ export default function StoreOrderDetailPage() {
       return
     }
 
+    const importPriceChanged = hasImportPriceChanged(line)
     let syncImportPrice = true
-    if (hasImportPriceChanged(line)) {
+    if (importPriceChanged) {
       const syncChoice = await confirmImportPriceSync()
       if (syncChoice === null) {
         return
       }
       syncImportPrice = syncChoice
-      if (!syncImportPrice && (edited?.allocQuantity === undefined || Number(edited.allocQuantity) === Number(line.allocQuantity ?? 0))) {
-        return
-      }
     }
 
     setLineActionLoading(true)
@@ -1437,7 +1826,9 @@ export default function StoreOrderDetailPage() {
         orderGUID: detail.orderGUID,
         productCode: line.productCode,
         allocQuantity,
-        importPrice: syncImportPrice ? importPrice : undefined,
+        // 取消勾选只取消主档同步，不取消订单明细价格保存。
+        importPrice: importPriceChanged ? importPrice : undefined,
+        syncImportPrice: importPriceChanged ? syncImportPrice : undefined,
       })
       message.success(t('storeOrders.detail.lineSaved'))
       await loadDetail(false)
@@ -1476,16 +1867,8 @@ export default function StoreOrderDetailPage() {
         return
       }
       syncImportPrice = syncChoice
-      if (!syncImportPrice) {
-        const nextPayloads = getEditedLinePayloads(syncImportPrice)
-        if (!nextPayloads.length) {
-          return
-        }
-        payloads.splice(0, payloads.length, ...nextPayloads)
-      }
-      if (!syncImportPrice && !payloads.length) {
-        return
-      }
+      const nextPayloads = getEditedLinePayloads(syncImportPrice)
+      payloads.splice(0, payloads.length, ...nextPayloads)
     }
 
     setLineActionLoading(true)
@@ -1493,9 +1876,11 @@ export default function StoreOrderDetailPage() {
       await batchUpdateStoreOrderLines({
         orderGUID: detail.orderGUID,
         items: payloads.map((item) => ({
+          detailGUID: item.detailGUID,
           productCode: item.productCode,
           quantity: item.quantity,
           importPrice: item.importPrice,
+          syncImportPrice: item.syncImportPrice,
         })),
       })
       message.success(t('storeOrders.detail.editedLinesSaved', { count: payloads.length }))
@@ -1561,7 +1946,7 @@ export default function StoreOrderDetailPage() {
   }
 
   const handleBatchConfirm = async (payload: {
-    type: 'allocQuantity' | 'importPrice' | 'status'
+    type: BatchEditType
     allocQuantity?: number
     importPrice?: number
     isActive?: boolean
@@ -1573,13 +1958,77 @@ export default function StoreOrderDetailPage() {
       return
     }
 
+    const copyOrderQuantityPayload =
+      payload.type === 'copyOrderQuantityToAllocQuantity'
+        ? buildBatchCopyOrderQuantityPayload(selectedLines)
+        : null
+    if (copyOrderQuantityPayload?.shouldConfirm) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: t('storeOrders.batchCopyOrderQuantityConfirmTitle'),
+          content: (
+            <Space direction="vertical" size={8}>
+              <Typography.Text>
+                {t('storeOrders.batchCopyOrderQuantityConfirmContent', { count: selectedLines.length })}
+              </Typography.Text>
+              {copyOrderQuantityPayload.overwriteCount > 0 ? (
+                <Typography.Text type="warning">
+                  {t('storeOrders.batchCopyOrderQuantityOverwriteWarning', {
+                    count: copyOrderQuantityPayload.overwriteCount,
+                  })}
+                </Typography.Text>
+              ) : null}
+              {copyOrderQuantityPayload.zeroOrderQuantityCount > 0 ? (
+                <Typography.Text type="danger">
+                  {t('storeOrders.batchCopyOrderQuantityZeroWarning', {
+                    count: copyOrderQuantityPayload.zeroOrderQuantityCount,
+                  })}
+                </Typography.Text>
+              ) : null}
+            </Space>
+          ),
+          okText: t('common.confirm'),
+          cancelText: t('common.cancel'),
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        })
+      })
+
+      if (!shouldSubmitBatchCopyOrderQuantity(copyOrderQuantityPayload, confirmed)) {
+        return
+      }
+    }
+
     setBatchLoading(true)
     try {
+      let successMessage = t('storeOrders.batchUpdateSuccess', { count: selectedLines.length })
+      let successMessageType: 'success' | 'info' = 'success'
       if (payload.type === 'status') {
         await batchUpdateStoreOrderProductStatus({
           productCodes: selectedLines.map((item) => item.productCode),
           isActive: payload.isActive ?? true,
         })
+      } else if (payload.type === 'copyOrderQuantityToAllocQuantity' && copyOrderQuantityPayload) {
+        const changedCopyLines = selectedLines.filter((line) => {
+          const currentAllocQuantity = editingRows[line.detailGUID]?.allocQuantity ?? line.allocQuantity ?? 0
+          return Number(currentAllocQuantity) !== Number(line.quantity ?? 0)
+        })
+        // 批量复制只写入页面草稿，用户确认无误后再通过“整单保存”统一提交后端。
+        setEditingRows((current) => {
+          const next = { ...current }
+          changedCopyLines.forEach((line) => {
+            next[line.detailGUID] = {
+              ...next[line.detailGUID],
+              allocQuantity: Number(line.quantity ?? 0),
+            }
+          })
+          return next
+        })
+        successMessage =
+          changedCopyLines.length > 0
+            ? t('storeOrders.batchCopyOrderQuantityDraftSuccess', { count: changedCopyLines.length })
+            : t('storeOrders.batchCopyOrderQuantityNoChange')
+        successMessageType = changedCopyLines.length > 0 ? 'success' : 'info'
       } else {
         await batchUpdateStoreOrderLines({
           orderGUID: detail.orderGUID,
@@ -1591,16 +2040,30 @@ export default function StoreOrderDetailPage() {
         })
       }
 
-      message.success(t('storeOrders.batchUpdateSuccess', { count: selectedLines.length }))
+      if (successMessageType === 'info') {
+        message.info(successMessage)
+      } else {
+        message.success(successMessage)
+      }
       setBatchModalOpen(false)
       setSelectedLineKeys([])
-      await loadDetail(false)
+      if (payload.type !== 'copyOrderQuantityToAllocQuantity') {
+        await loadDetail(false)
+      }
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('storeOrders.detail.batchUpdateFailed'))
     } finally {
       setBatchLoading(false)
     }
+  }
+
+  const handleResetDetailDefaultSort = () => {
+    // 默认排序与配货单保持一致：空货位在前，再按货位升序查看整单明细。
+    setSelectedLineKeys([])
+    setDetailPage(1)
+    setDetailSortField('locationCode')
+    setDetailSortOrder('ascend')
   }
 
   const handleRefreshImportPricesFromWarehouse = () => {
@@ -1858,7 +2321,9 @@ export default function StoreOrderDetailPage() {
   }
 
   const focusDetailInput = (detailGUID: string, field: DetailEditableField) => {
-    detailInputRefs.current[getDetailInputKey(detailGUID, field)]?.focus?.()
+    const input = detailInputRefs.current[getDetailInputKey(detailGUID, field)]
+    // 方向键切入单元格后全选文本，方便直接覆盖价格或发货数。
+    window.setTimeout(() => input?.focus?.({ cursor: 'all' }), 0)
   }
 
   const handleDetailInputKeyDown = (
@@ -2057,6 +2522,7 @@ export default function StoreOrderDetailPage() {
         <Image
           src={value}
           alt={record.productName}
+          loading="lazy"
           width={30}
           height={30}
           style={{ borderRadius: 4, objectFit: 'cover' }}
@@ -2159,6 +2625,7 @@ export default function StoreOrderDetailPage() {
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
           min={0}
           precision={2}
+          controls={false}
           disabled={!canUseWarehouseManagerActions || isReadonlyOrder || isPasteOptimisticPreviewActive}
           status={isZeroOrEmpty(editingRows[record.detailGUID]?.importPrice ?? value) ? 'error' : undefined}
           style={{ width: 60 }}
@@ -2180,8 +2647,20 @@ export default function StoreOrderDetailPage() {
       title: t('column.importAmount'),
       dataIndex: 'importAmount',
       width: 76,
-      render: (value: number | undefined) =>
-        renderStoreOrderDetailNumericCell(value === undefined || value === null ? renderDangerValue('--') : value === 0 ? renderDangerValue('0.00') : formatAmount(value)),
+      render: (value: number | undefined, record) => {
+        const edited = editingRows[record.detailGUID]
+        const nextValue =
+          edited?.allocQuantity !== undefined || edited?.importPrice !== undefined
+            ? Number(edited.allocQuantity ?? record.allocQuantity ?? 0) * Number(edited.importPrice ?? record.importPrice ?? 0)
+            : value
+        return renderStoreOrderDetailNumericCell(
+          nextValue === undefined || nextValue === null
+            ? renderDangerValue('--')
+            : nextValue === 0
+              ? renderDangerValue('0.00')
+              : formatAmount(nextValue),
+        )
+      },
     },
     {
       title: t('column.orderVolume'),
@@ -2206,12 +2685,16 @@ export default function StoreOrderDetailPage() {
       dataIndex: 'allocVolume',
       width: 76,
       render: (value: number | undefined, record) => {
-        const allocQuantity = editingRows[record.detailGUID]?.allocQuantity ?? record.allocQuantity ?? 0
+        const editedAllocQuantity = editingRows[record.detailGUID]?.allocQuantity
         const nextValue =
-          value ??
-          (record.volume === undefined || record.volume === null
-            ? undefined
-            : Number(record.volume) * Number(allocQuantity))
+          editedAllocQuantity !== undefined
+            ? record.volume === undefined || record.volume === null
+              ? undefined
+              : Number(record.volume) * Number(editedAllocQuantity)
+            : value ??
+              (record.volume === undefined || record.volume === null
+                ? undefined
+                : Number(record.volume) * Number(record.allocQuantity ?? 0))
         return nextValue === undefined || nextValue === null
           ? renderStoreOrderDetailNumericCell(renderDangerValue('--'))
           : nextValue === 0
@@ -2453,7 +2936,7 @@ export default function StoreOrderDetailPage() {
                 <Descriptions.Item label={t('storeOrders.orderVolumeLabel')}>{formatStoreOrderVolume(totalOrderVolume)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.shipVolumeLabel')}>{formatStoreOrderVolume(totalAllocVolume)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderAmountLabel')}>{formatAmount(estimatedSalesAmount)}</Descriptions.Item>
-                <Descriptions.Item label={t('storeOrders.importAmountLabel')}>{formatAmount(detail.totalImportAmount)}</Descriptions.Item>
+                <Descriptions.Item label={t('storeOrders.importAmountLabel')}>{formatAmount(draftTotalImportAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.gstAmountLabel')}>{formatAmount(gstAmount)}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.freightLabel')}>
                   <InputNumber
@@ -2485,18 +2968,21 @@ export default function StoreOrderDetailPage() {
                   />
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.contactEmailLabel')}>
-                  <Input
-                    type="email"
-                    disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
-                    value={headerForm.contactEmail}
-                    onChange={(event) =>
-                      setHeaderForm((current) => ({
-                        ...current,
-                        contactEmail: event.target.value,
-                      }))
-                    }
-                    placeholder={t('storeOrders.contactEmailLabel')}
-                  />
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Input
+                      type="email"
+                      disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
+                      value={headerForm.contactEmail}
+                      onChange={(event) =>
+                        setHeaderForm((current) => ({
+                          ...current,
+                          contactEmail: event.target.value,
+                        }))
+                      }
+                      placeholder={t('storeOrders.contactEmailLabel')}
+                    />
+                    <InvoiceEmailSentStatusText info={detail.invoiceEmailSentInfo} t={t} lng={i18n.language} />
+                  </Space>
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.skuCountLabel')}>{detail.totalSKU ?? detail.items.length}</Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.remarksLabel')} span={3}>
@@ -2567,6 +3053,16 @@ export default function StoreOrderDetailPage() {
                         {t('storeOrders.containerPicker')}
                       </Button>
                     ) : null}
+                    {canUseWarehouseManagerActions ? (
+                      <Button
+                        icon={<CopyOutlined />}
+                        loading={batchLoading}
+                        disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length}
+                        onClick={() => void handleBatchConfirm({ type: 'copyOrderQuantityToAllocQuantity' })}
+                      >
+                        {t('storeOrders.batchCopyOrderQuantityButton')}
+                      </Button>
+                    ) : null}
                     {detail ? (
                       <Button
                         icon={<PrinterOutlined />}
@@ -2617,6 +3113,13 @@ export default function StoreOrderDetailPage() {
                         {t('storeOrders.detail.refreshImportPrices')}
                       </Button>
                     ) : null}
+                    <Button
+                      icon={<SortAscendingOutlined />}
+                      disabled={isPasteOptimisticPreviewActive}
+                      onClick={handleResetDetailDefaultSort}
+                    >
+                      {t('storeOrders.detail.defaultSort')}
+                    </Button>
                     {canUseWarehouseManagerActions ? (
                       <Button disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || !selectedLineKeys.length} onClick={() => setBatchModalOpen(true)}>
                         {t('storeOrders.batchModify')}
@@ -2716,7 +3219,8 @@ export default function StoreOrderDetailPage() {
                   pageSize: detailPageSize,
                   total: detail.itemsTotal ?? detail.items.length,
                   showSizeChanger: true,
-                  pageSizeOptions: ['20', '50', '100', '500'],
+                  // 图片交给浏览器懒加载，表格本身按服务端分页分批请求商品明细。
+                  pageSizeOptions: STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS,
                   onChange: (nextPage, nextPageSize) => {
                     setSelectedLineKeys([])
                     setDetailPage(nextPage)

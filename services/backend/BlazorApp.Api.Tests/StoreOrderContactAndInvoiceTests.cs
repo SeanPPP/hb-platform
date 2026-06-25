@@ -53,13 +53,15 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             typeof(WareHouseOrderDetails),
             typeof(Product),
             typeof(WarehouseProduct),
+            typeof(StoreRetailPrice),
             typeof(DomesticProduct),
             typeof(ProductLocation),
             typeof(Location),
             typeof(ProductGrade),
             typeof(User),
             typeof(UserStore),
-            typeof(InvoiceEmailConfiguration)
+            typeof(InvoiceEmailConfiguration),
+            typeof(StoreOrderInvoiceEmailSendRecord)
         );
     }
 
@@ -104,6 +106,49 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.True(fullResult.Success);
         Assert.Equal("Test Store", fullResult.Data!.StoreName);
         Assert.Equal("store@example.com", fullResult.Data!.StoreContactEmail);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_ReturnsLatestInvoiceEmailSentInfo()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Insertable(
+            new[]
+            {
+                new StoreOrderInvoiceEmailSendRecord
+                {
+                    Id = "record-1",
+                    StoreOrderUuid = "order-1",
+                    ToEmail = "old@example.com",
+                    SentAtUtc = new DateTime(2026, 6, 5, 1, 0, 0, DateTimeKind.Utc),
+                    JobId = "job-old",
+                    CreatedAtUtc = new DateTime(2026, 6, 5, 1, 0, 0, DateTimeKind.Utc),
+                },
+                new StoreOrderInvoiceEmailSendRecord
+                {
+                    Id = "record-2",
+                    StoreOrderUuid = "order-1",
+                    ToEmail = "latest@example.com",
+                    SentAtUtc = new DateTime(2026, 6, 6, 3, 30, 0, DateTimeKind.Utc),
+                    JobId = "job-latest",
+                    CreatedAtUtc = new DateTime(2026, 6, 6, 3, 31, 0, DateTimeKind.Utc),
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateStoreOrderService();
+
+        var detailResult = await service.GetOrderDetailAsync("order-1");
+        var fullResult = await service.GetOrderDetailFullAsync("order-1");
+
+        Assert.True(detailResult.Success);
+        Assert.True(detailResult.Data!.InvoiceEmailSentInfo.HasSent);
+        Assert.Equal(new DateTime(2026, 6, 6, 3, 30, 0, DateTimeKind.Utc), detailResult.Data.InvoiceEmailSentInfo.SentAt);
+        Assert.Equal(DateTimeKind.Utc, detailResult.Data.InvoiceEmailSentInfo.SentAt!.Value.Kind);
+        Assert.Equal("latest@example.com", detailResult.Data.InvoiceEmailSentInfo.ToEmail);
+        Assert.Equal("job-latest", detailResult.Data.InvoiceEmailSentInfo.JobId);
+        Assert.True(fullResult.Success);
+        Assert.True(fullResult.Data!.InvoiceEmailSentInfo.HasSent);
+        Assert.Equal("latest@example.com", fullResult.Data.InvoiceEmailSentInfo.ToEmail);
     }
 
     [Fact]
@@ -154,6 +199,281 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateOrderLineAsync_WhenSyncImportPriceFalse_OnlyUpdatesOrderDetailPrice()
+    {
+        await SeedStoreOrderGraphAsync();
+        await SeedStoreRetailPriceAsync("S001", "P001", purchasePrice: 3m, retailPrice: 9.99m);
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.UpdateOrderLineAsync(
+            new UpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                ProductCode = "P001",
+                Quantity = 4m,
+                ImportPrice = 4.44m,
+                SyncImportPrice = false,
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-1");
+        var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P001");
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P001");
+        var storePrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.StoreCode == "S001" && x.ProductCode == "P001");
+
+        Assert.True(result.Success);
+        Assert.Equal(4.44m, detail.ImportPrice);
+        Assert.Equal(17.76m, detail.ImportAmount);
+        Assert.Equal(3m, product.PurchasePrice);
+        Assert.Equal(3m, warehouseProduct.ImportPrice);
+        Assert.Equal(3m, storePrice.PurchasePrice);
+        Assert.Equal(9.99m, storePrice.StoreRetailPriceValue);
+    }
+
+    [Fact]
+    public async Task UpdateOrderLineAsync_WhenSyncImportPriceTrue_UpdatesProductWarehouseAndStorePurchasePrices()
+    {
+        await SeedStoreOrderGraphAsync();
+        await SeedStoreAsync("store-2", "S002", "Second Store");
+        await SeedStoreRetailPriceAsync("S001", "P001", purchasePrice: 3m, retailPrice: 9.99m);
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.UpdateOrderLineAsync(
+            new UpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                ProductCode = "P001",
+                Quantity = 4m,
+                ImportPrice = 5.55m,
+                SyncImportPrice = true,
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-1");
+        var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P001");
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P001");
+        var storePrices = await _db.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P001" && !x.IsDeleted)
+            .OrderBy(x => x.StoreCode)
+            .ToListAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal(5.55m, detail.ImportPrice);
+        Assert.Equal(22.20m, detail.ImportAmount);
+        Assert.Equal(5.55m, product.PurchasePrice);
+        Assert.Equal(5.55m, warehouseProduct.ImportPrice);
+        Assert.Collection(
+            storePrices,
+            s001 =>
+            {
+                Assert.Equal("S001", s001.StoreCode);
+                Assert.Equal(5.55m, s001.PurchasePrice);
+                Assert.Equal(9.99m, s001.StoreRetailPriceValue);
+                Assert.Equal("tester", s001.UpdatedBy);
+            },
+            s002 =>
+            {
+                Assert.Equal("S002", s002.StoreCode);
+                Assert.Equal("S002P001", s002.StoreProductCode);
+                Assert.Equal(5.55m, s002.PurchasePrice);
+                Assert.Equal(9.99m, s002.StoreRetailPriceValue);
+                Assert.Equal("tester", s002.CreatedBy);
+                Assert.Equal("tester", s002.UpdatedBy);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WhenOnlyImportPriceProvided_PreservesAllocQuantity()
+    {
+        await SeedStoreOrderGraphAsync();
+        await SeedStoreRetailPriceAsync("S001", "P001", purchasePrice: 3m, retailPrice: 9.99m);
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        ProductCode = "P001",
+                        ImportPrice = 6.66m,
+                        SyncImportPrice = false,
+                    },
+                },
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-1");
+        var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P001");
+        var warehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == "P001");
+
+        Assert.True(result.Success);
+        Assert.Equal(4m, detail.AllocQuantity);
+        Assert.Equal(6.66m, detail.ImportPrice);
+        Assert.Equal(26.64m, detail.ImportAmount);
+        Assert.Equal(3m, product.PurchasePrice);
+        Assert.Equal(3m, warehouseProduct.ImportPrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WithDetailGuidQuantity_UpdatesDuplicateProductLines()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Insertable(
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "detail-duplicate",
+                OrderGUID = "order-1",
+                StoreCode = "S001",
+                ProductCode = "P001",
+                Quantity = 9,
+                AllocQuantity = 2,
+                OEMPrice = 7m,
+                OEMAmount = 14m,
+                ImportPrice = 4m,
+                ImportAmount = 8m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "detail-1",
+                        ProductCode = "P001",
+                        Quantity = 6m,
+                    },
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "detail-duplicate",
+                        ProductCode = "P001",
+                        Quantity = 3m,
+                    },
+                },
+            }
+        );
+
+        var details = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(x => x.OrderGUID == "order-1")
+            .OrderBy(x => x.DetailGUID)
+            .ToListAsync();
+        var order = await _db.Queryable<WareHouseOrder>().SingleAsync(x => x.OrderGUID == "order-1");
+
+        Assert.True(result.Success);
+        Assert.Collection(
+            details,
+            detail =>
+            {
+                Assert.Equal("detail-1", detail.DetailGUID);
+                Assert.Equal(5m, detail.Quantity);
+                Assert.Equal(6m, detail.AllocQuantity);
+                Assert.Equal(30m, detail.OEMAmount);
+                Assert.Equal(18m, detail.ImportAmount);
+                Assert.Equal("tester", detail.UpdatedBy);
+            },
+            detail =>
+            {
+                Assert.Equal("detail-duplicate", detail.DetailGUID);
+                Assert.Equal(9m, detail.Quantity);
+                Assert.Equal(3m, detail.AllocQuantity);
+                Assert.Equal(21m, detail.OEMAmount);
+                Assert.Equal(12m, detail.ImportAmount);
+                Assert.Equal("tester", detail.UpdatedBy);
+            }
+        );
+        Assert.Equal(51m, order.OEMTotalAmount);
+        Assert.Equal(30m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WithMissingDetailGuid_ReturnsFailureAndPreservesLine()
+    {
+        await SeedStoreOrderGraphAsync();
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "missing-detail",
+                        ProductCode = "P001",
+                        Quantity = 6m,
+                    },
+                },
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-1");
+
+        Assert.False(result.Success);
+        Assert.Equal("Some order lines were not found", result.Message);
+        Assert.Equal(4m, detail.AllocQuantity);
+        Assert.Equal(12m, detail.ImportAmount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WithDetailGuidQuantityZero_SoftDeletesZeroOrderLine()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Insertable(
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "detail-zero",
+                OrderGUID = "order-1",
+                StoreCode = "S001",
+                ProductCode = "P001",
+                Quantity = 0,
+                AllocQuantity = 8,
+                OEMPrice = 2m,
+                OEMAmount = 16m,
+                ImportPrice = 1.5m,
+                ImportAmount = 12m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "detail-zero",
+                        ProductCode = "P001",
+                        Quantity = 0m,
+                    },
+                },
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-zero");
+        var order = await _db.Queryable<WareHouseOrder>().SingleAsync(x => x.OrderGUID == "order-1");
+
+        Assert.True(result.Success);
+        Assert.True(detail.IsDeleted);
+        Assert.Equal(0m, detail.AllocQuantity);
+        Assert.Equal("tester", detail.UpdatedBy);
+        Assert.Equal(25m, order.OEMTotalAmount);
+        Assert.Equal(12m, order.ImportTotalAmount);
+    }
+
+    [Fact]
     public async Task InvoiceEmailService_WhenSmtpNotConfigured_ReturnsClearFailure()
     {
         var service = new InvoiceEmailService(
@@ -190,7 +510,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
-    public async Task StoreOrderInvoiceEmailJobService_StartsJobAndMarksSucceeded()
+    public async Task StoreOrderInvoiceEmailJobService_StartsJobAndMarksSucceeded_AndWritesSendRecord()
     {
         var request = new SendStoreOrderInvoiceEmailDto
         {
@@ -235,6 +555,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         var started = await jobService.StartJobAsync(request);
         var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+        var sendRecords = await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+            .Where(x => x.StoreOrderUuid == "order-1")
+            .ToListAsync();
 
         Assert.False(string.IsNullOrWhiteSpace(started.JobId));
         Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Succeeded, completed.Status);
@@ -260,6 +583,10 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 attachment.ContentType
             )
         );
+        var sendRecord = Assert.Single(sendRecords);
+        Assert.Equal("customer@example.com", sendRecord.ToEmail);
+        Assert.Equal(started.JobId, sendRecord.JobId);
+        Assert.Equal("order-1", sendRecord.StoreOrderUuid);
     }
 
     [Fact]
@@ -286,6 +613,110 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         invoiceEmailService.Verify(
             item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()),
             Times.Never
+        );
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(x => x.StoreOrderUuid == "order-1")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailJobService_WhenSendFails_DoesNotWriteSendRecord()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+        };
+        var attachmentService = new Mock<IStoreOrderInvoiceAttachmentService>(MockBehavior.Strict);
+        attachmentService
+            .Setup(item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ApiResponse<StoreOrderInvoiceAttachmentBundle>.OK(
+                new StoreOrderInvoiceAttachmentBundle
+                {
+                    OrderGUID = "order-1",
+                    OrderNo = "SO001",
+                    StoreCode = "S001",
+                    Attachments =
+                    {
+                        new StoreOrderInvoiceEmailAttachment
+                        {
+                            FileName = "Invoice_S001_SO001.pdf",
+                            ContentType = "application/pdf",
+                            Bytes = new byte[] { 1, 2, 3, 4 },
+                        },
+                    },
+                }
+            ));
+        var invoiceEmailService = new Mock<IInvoiceEmailService>(MockBehavior.Strict);
+        invoiceEmailService
+            .Setup(item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()))
+            .ReturnsAsync(ApiResponse<bool>.Error("SMTP 发送失败"));
+        var jobService = CreateInvoiceEmailJobService(attachmentService, invoiceEmailService);
+
+        var started = await jobService.StartJobAsync(request);
+        var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+
+        Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Failed, completed.Status);
+        Assert.Equal("SMTP 发送失败", completed.Message);
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(x => x.StoreOrderUuid == "order-1")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceEmailJobService_WhenSendRecordWriteFails_KeepsJobSucceeded()
+    {
+        var request = new SendStoreOrderInvoiceEmailDto
+        {
+            OrderGUID = "order-1",
+            ToEmail = "customer@example.com",
+        };
+        var attachmentService = new Mock<IStoreOrderInvoiceAttachmentService>(MockBehavior.Strict);
+        attachmentService
+            .Setup(item => item.GenerateAttachmentsAsync("order-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ApiResponse<StoreOrderInvoiceAttachmentBundle>.OK(
+                new StoreOrderInvoiceAttachmentBundle
+                {
+                    OrderGUID = "order-1",
+                    OrderNo = "SO001",
+                    StoreCode = "S001",
+                    Attachments =
+                    {
+                        new StoreOrderInvoiceEmailAttachment
+                        {
+                            FileName = "Invoice_S001_SO001.pdf",
+                            ContentType = "application/pdf",
+                            Bytes = new byte[] { 1, 2, 3, 4 },
+                        },
+                    },
+                }
+            ));
+        var invoiceEmailService = new Mock<IInvoiceEmailService>(MockBehavior.Strict);
+        invoiceEmailService
+            .Setup(item => item.SendInvoiceAsync(It.IsAny<StoreOrderInvoiceEmailMessage>()))
+            .ReturnsAsync(ApiResponse<bool>.OK(true, "发票邮件发送成功"));
+        var jobService = CreateInvoiceEmailJobService(
+            attachmentService,
+            invoiceEmailService,
+            registerSqlSugarContext: false
+        );
+
+        var started = await jobService.StartJobAsync(request);
+        var completed = await WaitForInvoiceEmailJobAsync(jobService, started.JobId);
+
+        Assert.Equal(StoreOrderInvoiceEmailJobStatusConstants.Succeeded, completed.Status);
+        Assert.Equal("发票邮件发送成功", completed.Message);
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreOrderInvoiceEmailSendRecord>()
+                .Where(x => x.StoreOrderUuid == "order-1")
+                .CountAsync()
         );
     }
 
@@ -327,7 +758,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Contains("NAME:", pdfText);
                 Assert.Contains("HOT BARGAIN INTERNATIONAL", pdfText);
                 Assert.Contains("BSB:", pdfText);
-                Assert.Contains("12532", pdfText);
+                Assert.Contains("012-532", pdfText);
                 Assert.Contains("ACCOUNT:", pdfText);
                 Assert.Contains("208034605", pdfText);
                 Assert.Contains("All products remain the property of Hot Bargain International Pty Ltd", pdfText);
@@ -689,12 +1120,17 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         );
     }
 
-    private static StoreOrderInvoiceEmailJobService CreateInvoiceEmailJobService(
+    private StoreOrderInvoiceEmailJobService CreateInvoiceEmailJobService(
         Mock<IStoreOrderInvoiceAttachmentService> attachmentService,
-        Mock<IInvoiceEmailService> invoiceEmailService
+        Mock<IInvoiceEmailService> invoiceEmailService,
+        bool registerSqlSugarContext = true
     )
     {
         var services = new ServiceCollection();
+        if (registerSqlSugarContext)
+        {
+            services.AddSingleton(CreateSqlSugarContext(_db));
+        }
         services.AddSingleton(attachmentService.Object);
         services.AddSingleton(invoiceEmailService.Object);
         var provider = services.BuildServiceProvider();
@@ -949,6 +1385,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Barcode = "BAR-001",
                 ProductName = "Product 1",
                 ProductImage = "image.png",
+                LocalSupplierCode = "SUP001",
+                PurchasePrice = 3m,
+                RetailPrice = 9.99m,
                 IsActive = true,
                 IsDeleted = false,
             }
@@ -988,6 +1427,46 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 OEMAmount = 25m,
                 ImportPrice = 3m,
                 ImportAmount = 12m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedStoreAsync(string storeGuid, string storeCode, string storeName)
+    {
+        await _db.Insertable(
+            new Store
+            {
+                StoreGUID = storeGuid,
+                StoreCode = storeCode,
+                StoreName = storeName,
+                Address = $"{storeName} Address",
+                ContactEmail = $"{storeCode.ToLowerInvariant()}@example.com",
+                Phone = "123456",
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedStoreRetailPriceAsync(
+        string storeCode,
+        string productCode,
+        decimal purchasePrice,
+        decimal retailPrice
+    )
+    {
+        await _db.Insertable(
+            new StoreRetailPrice
+            {
+                UUID = $"{storeCode}-{productCode}",
+                StoreCode = storeCode,
+                ProductCode = productCode,
+                StoreProductCode = storeCode + productCode,
+                SupplierCode = "SUP001",
+                PurchasePrice = purchasePrice,
+                StoreRetailPriceValue = retailPrice,
+                IsActive = true,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();

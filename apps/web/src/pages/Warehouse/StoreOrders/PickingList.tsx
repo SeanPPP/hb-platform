@@ -36,7 +36,13 @@ export default function PickingListPage() {
   const [exportingExcel, setExportingExcel] = useState(false)
   const [order, setOrder] = useState<StoreOrderDetail | null>(null)
   const [store, setStore] = useState<StoreDto | null>(null)
-  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  const isWarehouseStaffOnly =
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  // 配货单自动开始配货属于写动作，跟随仓库订货管理权限，纯 WarehouseStaff 只能打印/下载。
+  const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly
   // 打印页日期格式跟随当前语言，但只限定本次需求中的中英文区域设置。
   const printLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
 
@@ -375,10 +381,6 @@ export default function PickingListPage() {
       </div>
       <div className="store-order-picking-meta">
         <div>
-          <strong>{t('warehouse.pickingList.printTime')}</strong>
-          {formatPrintDate(undefined, true, printLocale)}
-        </div>
-        <div>
           <strong>{t('warehouse.pickingList.orderDate')}</strong>
           {formatPrintDate(order.orderDate, false, printLocale)}
         </div>
@@ -446,8 +448,8 @@ export default function PickingListPage() {
                 <td className="col-price">{formatCurrency(item.importPrice)}</td>
                 <td className="col-price">{item.rrp !== undefined && item.rrp !== null ? formatCurrency(item.rrp) : ''}</td>
                 <td className="col-inner-pack">
-                  {/* 内包装数量严格使用订货数量计算，不再回退发货数。 */}
-                  {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
+                  {/* 包数分子与订货数列一致：订货数为空时使用发货数兜底。 */}
+                  {formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity)}
                 </td>
                 <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
               </tr>
@@ -515,7 +517,7 @@ export default function PickingListPage() {
                       <td className="col-price">{item.rrp !== undefined && item.rrp !== null ? formatCurrency(item.rrp) : ''}</td>
                       <td className="col-inner-pack">
                         {/* PDF 分页复用同一套包数计算，避免屏幕和 PDF 内容不一致。 */}
-                        {formatInnerPackCount(item.quantity, item.minOrderQuantity)}
+                        {formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity)}
                       </td>
                       <td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>
                     </tr>

@@ -44,6 +44,7 @@ import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagemen
 import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
+import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
 import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
 import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
 import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
@@ -56,6 +57,8 @@ import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
 import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
+import LocalSupplierInvoiceSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'
+import LocalSupplierPurchaseSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis'
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
@@ -75,6 +78,7 @@ import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
 import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
 import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
 import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
+import StoreOrderImportPriceVariancePage from '../pages/Warehouse/StoreOrderImportPriceVariance'
 import type { AccessControl } from '../types/auth'
 import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
@@ -323,6 +327,16 @@ export const appRoutes: AppRouteItem[] = [
         element: <StoreOrdersPage />,
       },
       {
+        path: '/warehouse/store-order-import-price-variance',
+        meta: {
+          title: 'menu.storeOrderImportPriceVariance',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canManageStoreOrderImportPriceVariance',
+        },
+        element: <StoreOrderImportPriceVariancePage />,
+      },
+      {
         path: '/warehouse/store-order/detail/:id',
         meta: {
           title: 'menu.storeOrderDetail',
@@ -427,7 +441,7 @@ export const appRoutes: AppRouteItem[] = [
     meta: {
       title: 'menu.executiveSalesIntelligence',
       icon: 'BarChartOutlined',
-      accessKey: 'canViewReports',
+      accessKey: 'canViewSalesIntelligence',
     },
     children: [
       {
@@ -449,6 +463,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewReports',
         },
         element: <SalesDetailAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/product-movement-report',
+        meta: {
+          title: 'menu.productMovementReport',
+          icon: 'ReconciliationOutlined',
+          keepAlive: true,
+          accessKey: 'canViewProductMovementReport',
+        },
+        element: <ProductMovementReportPage />,
       },
     ],
   },
@@ -560,6 +584,16 @@ export const appRoutes: AppRouteItem[] = [
         element: <LocalSupplierInvoicesPage />,
       },
       {
+        path: '/pos-admin/local-supplier-purchase-sales-analysis',
+        meta: {
+          title: 'menu.localSupplierPurchaseSalesAnalysis',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canManageLocalPurchase',
+        },
+        element: <LocalSupplierPurchaseSalesAnalysisPage />,
+      },
+      {
         path: '/pos-admin/invoice-detail/:id',
         meta: {
           title: 'menu.invoiceDetail',
@@ -570,6 +604,18 @@ export const appRoutes: AppRouteItem[] = [
           dynamicTitle: () => i18n.t('menu.invoiceDetail'),
         },
         element: <LocalSupplierInvoiceDetailPage />,
+      },
+      {
+        path: '/pos-admin/local-supplier-invoices/:id/sales-analysis',
+        meta: {
+          title: 'menu.localSupplierInvoiceSalesAnalysis',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageLocalPurchase',
+          activeMenu: '/pos-admin/local-supplier-invoices',
+          dynamicTitle: () => i18n.t('menu.localSupplierInvoiceSalesAnalysis', '进货单销量分析'),
+        },
+        element: <LocalSupplierInvoiceSalesAnalysisPage />,
       },
       {
         path: '/pos-admin/local-supplier-invoices/:id',
@@ -709,7 +755,7 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
     return []
   }
 
-  // 仓库员工侧边栏只保留分店订货列表，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
+  // 仓库员工侧边栏只保留分店订货列表；首柜价差异属于仓库管理员报表，不跟随只读订货入口开放。
   return [
     {
       key: '/warehouse',

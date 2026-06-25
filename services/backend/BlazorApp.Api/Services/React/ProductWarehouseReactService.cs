@@ -610,6 +610,7 @@ namespace BlazorApp.Api.Services.React
                 var toUpdateWp = new List<WarehouseProduct>();
                 var toCreateWp = new List<WarehouseProduct>();
                 var codesWithImportPrice = new List<string>();
+                var codesWithStorePurchasePrice = new List<string>();
 
                 foreach (var item in items)
                 {
@@ -675,6 +676,11 @@ namespace BlazorApp.Api.Services.React
                         if (item.ImportPrice.HasValue)
                         {
                             codesWithImportPrice.Add(targetCode!);
+                            if (item.SyncStorePurchasePrice ?? true)
+                            {
+                                // 货柜页字段可选时可关闭分店进货价联动；旧入口不传时保持同步。
+                                codesWithStorePurchasePrice.Add(targetCode!);
+                            }
                         }
                         continue;
                     }
@@ -688,13 +694,22 @@ namespace BlazorApp.Api.Services.React
                         wp.ImportPrice = item.ImportPrice;
                     if (item.Volume.HasValue)
                         wp.Volume = item.Volume;
-                    wp.IsActive = item.IsActive ?? true;
+                    if (item.IsActive.HasValue)
+                    {
+                        // 字段可选更新不传上下架状态时，保留已有仓库状态。
+                        wp.IsActive = item.IsActive.Value;
+                    }
                     wp.UpdatedAt = DateTime.Now;
                     toUpdateWp.Add(wp);
 
                     if (item.ImportPrice.HasValue)
                     {
                         codesWithImportPrice.Add(wp.ProductCode);
+                        if (item.SyncStorePurchasePrice ?? true)
+                        {
+                            // 货柜页字段可选时可关闭分店进货价联动；旧入口不传时保持同步。
+                            codesWithStorePurchasePrice.Add(wp.ProductCode);
+                        }
                     }
                 }
 
@@ -757,13 +772,15 @@ namespace BlazorApp.Api.Services.React
                             .ExecuteCommandAsync();
                     }
 
-                    var storeRetailPrices = await _context
-                        .Db.Queryable<StoreRetailPrice>()
-                        .Where(srp =>
-                            srp.ProductCode != null
-                            && codesWithImportPrice.Contains(srp.ProductCode)
-                        )
-                        .ToListAsync();
+                    var storeRetailPrices = codesWithStorePurchasePrice.Any()
+                        ? await _context
+                            .Db.Queryable<StoreRetailPrice>()
+                            .Where(srp =>
+                                srp.ProductCode != null
+                                && codesWithStorePurchasePrice.Contains(srp.ProductCode)
+                            )
+                            .ToListAsync()
+                        : new List<StoreRetailPrice>();
 
                     foreach (var srp in storeRetailPrices)
                     {

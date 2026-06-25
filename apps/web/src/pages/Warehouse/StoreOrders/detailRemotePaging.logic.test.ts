@@ -47,6 +47,41 @@ async function main() {
   })
   if (remoteQueryFailure) failures.push(remoteQueryFailure)
 
+  const defaultLocationSortFailure = await runTest('详情页默认排序应按货位升序并提供默认排序按钮', () => {
+    assert(
+      detailSource.includes("useState<DetailSortField>('locationCode')") &&
+        detailSource.includes("useState<SortOrder>('ascend')") &&
+        detailSource.includes('const handleResetDetailDefaultSort = () =>') &&
+        detailSource.includes("setDetailSortField('locationCode')") &&
+        detailSource.includes("setDetailSortOrder('ascend')") &&
+        detailSource.includes("t('storeOrders.detail.defaultSort')") &&
+        detailSource.includes('icon={<SortAscendingOutlined />}'),
+      '详情页尚未默认按货位升序，或缺少恢复默认排序按钮',
+    )
+  })
+  if (defaultLocationSortFailure) failures.push(defaultLocationSortFailure)
+
+  const defaultPageSizeFailure = await runTest('详情页主明细默认每页 200 并只提供指定分页选项', () => {
+    assert(
+      detailSource.includes('const STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE = 200') &&
+        detailSource.includes("const STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000']") &&
+        detailSource.includes('useState(STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE)') &&
+        detailSource.includes('pageSizeOptions: STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS') &&
+        !detailSource.includes("pageSizeOptions: ['20', '50', '100', '500']"),
+      '详情页主明细默认分页或分页选项不符合 200 / 50-1000 要求',
+    )
+  })
+  if (defaultPageSizeFailure) failures.push(defaultPageSizeFailure)
+
+  const lazyImageFailure = await runTest('详情页主明细图片应使用浏览器原生懒加载', () => {
+    assert(
+      detailSource.includes('loading="lazy"') &&
+        detailSource.includes('fallback="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="'),
+      '详情页主明细图片列尚未设置 loading="lazy"',
+    )
+  })
+  if (lazyImageFailure) failures.push(lazyImageFailure)
+
   const currentPageDataFailure = await runTest('详情表格应直接使用服务端当前页 items 与 itemsTotal', () => {
     assert(
       detailSource.includes('dataSource={detail.items}') &&

@@ -376,6 +376,11 @@ namespace BlazorApp.Shared.DTOs
         /// 兼容旧调用：当前端仍只传 ProductCodes 时，这里可以为空。
         /// </summary>
         public List<PushProductsToHqItem> Items { get; set; } = new();
+
+        /// <summary>
+        /// 允许更新的 HQ 字段；为空时兼容旧入口，按原逻辑全量更新。
+        /// </summary>
+        public List<string>? UpdateFields { get; set; }
     }
 
     /// <summary>

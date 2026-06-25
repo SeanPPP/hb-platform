@@ -139,6 +139,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.Prices.Modify, "修改价格", "价格管理", "价格管理 - 修改价格"),
                 new(Permissions.Prices.Delete, "删除价格", "价格管理", "价格管理 - 删除价格"),
                 new(Permissions.Reports.View, "查看报表", "报表", "页面 /executive-sales-intelligence - 查看销售看板和销售明细"),
+                new(Permissions.Reports.ProductMovementView, "查看商品经营分析", "报表", "页面 /executive-sales-intelligence/product-movement-report - 查看商品经营分析和店长动作建议"),
                 new(Permissions.Reports.Export, "导出数据", "报表", "页面 /executive-sales-intelligence - 导出销售报表数据"),
                 new(Permissions.StoreProducts.View, "查看分店商品", "分店商品管理", "页面 /pos-admin/store-product-price - 查看分店商品价格"),
                 new(Permissions.StoreProducts.Create, "创建分店商品", "分店商品管理", "页面 /pos-admin/store-product-price - 创建分店商品价格"),
@@ -165,6 +166,7 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.System.ManageSettings, "管理设置", "系统管理", "系统管理 - 管理设置"),
                 // 仅注册权限，不写入角色模板，避免默认扩大 App 下载入口访问面。
                 new(Permissions.System.ViewAppDownloads, "查看 App 下载", "系统管理", "系统管理 - 查看 App 下载页"),
+                new(Permissions.System.ManageAppDownloads, "管理 App 下载", "系统管理", "系统管理 - 登记 OTA 更新和生成回撤命令"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
                 new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
             };

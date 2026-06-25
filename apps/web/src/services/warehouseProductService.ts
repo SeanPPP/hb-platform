@@ -296,6 +296,10 @@ export interface WarehouseProductBatchUpdateItem {
   IsActive?: boolean
 }
 
+export interface WarehouseProductBatchUpdateOptions {
+  syncStorePurchasePrice?: boolean
+}
+
 export interface WarehouseImportListResult<T> {
   success: boolean
   data: T[]
@@ -664,10 +668,16 @@ export async function batchCreateProducts(items: WarehouseProductBatchCreateItem
   return result
 }
 
-export async function batchUpdateWarehouseProducts(items: WarehouseProductBatchUpdateItem[]): Promise<WarehouseImportActionResult> {
+export async function batchUpdateWarehouseProducts(
+  items: WarehouseProductBatchUpdateItem[],
+  options: WarehouseProductBatchUpdateOptions = {},
+): Promise<WarehouseImportActionResult> {
   const response = await request<unknown>(`${API_BASE}/batch-update`, {
     method: 'POST',
-    data: { Items: items },
+    data: {
+      Items: items,
+      ...(options.syncStorePurchasePrice === undefined ? {} : { SyncStorePurchasePrice: options.syncStorePurchasePrice }),
+    },
   })
   const raw = response as { success?: boolean; isSuccess?: boolean; message?: string } | undefined
   ensureApiSuccess(raw?.success ?? raw?.isSuccess, raw?.message, '仓库批量更新失败')

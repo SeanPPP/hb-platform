@@ -18,6 +18,13 @@ import type {
   LocalSupplierInvoiceImportConfirmRequest,
   LocalSupplierInvoiceImportConfirmResponse,
   LocalSupplierInvoiceImportPreviewResponse,
+  LocalSupplierPurchaseSalesAnalysisQueryDto,
+  LocalSupplierPurchaseSalesAnalysisResponseDto,
+  LocalSupplierPurchaseSalesAnalysisRowDto,
+  LocalSupplierPurchaseSalesAnalysisStoreOptionDto,
+  LocalSupplierPurchaseSalesAnalysisSupplierOptionDto,
+  LocalSupplierInvoiceSalesAnalysisItemDto,
+  LocalSupplierInvoiceSalesAnalysisResponseDto,
   LocalSupplierInvoiceDetailDto,
   LocalSupplierInvoiceItemDto,
   LocalSupplierInvoiceListDto,
@@ -37,10 +44,179 @@ import type {
 import request, { RequestError, unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/local-supplier-invoices'
+const PURCHASE_SALES_ANALYSIS_API_BASE = `${API_BASE}/purchase-sales-analysis`
+const PURCHASE_SALES_ANALYSIS_ALLOWED_PAGE_SIZES = new Set([50, 100, 200])
+
+function readNumber(value: unknown, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function readOptionalNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function readString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
 
 function assertApiSuccess<T>(response: ApiResponse<T>, fallbackMessage: string): void {
   if (response.success === false || response.isSuccess === false) {
     throw new RequestError(response.message || fallbackMessage, 200, response)
+  }
+}
+
+function normalizeSalesAnalysisItem(raw: unknown): LocalSupplierInvoiceSalesAnalysisItemDto | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const detailGUID = readString(record.detailGUID ?? record.DetailGUID)
+  if (!detailGUID) {
+    return null
+  }
+
+  return {
+    detailGUID,
+    productCode: readString(record.productCode ?? record.ProductCode),
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
+    barcode: readString(record.barcode ?? record.Barcode),
+    productName: readString(record.productName ?? record.ProductName),
+    productImage: readString(record.productImage ?? record.ProductImage),
+    specification: readString(record.specification ?? record.Specification),
+    unit: readString(record.unit ?? record.Unit),
+    quantity: readOptionalNumber(record.quantity ?? record.Quantity) ?? undefined,
+    purchasePrice: readOptionalNumber(record.purchasePrice ?? record.PurchasePrice) ?? undefined,
+    retailPrice: readOptionalNumber(record.retailPrice ?? record.RetailPrice) ?? undefined,
+    amount: readOptionalNumber(record.amount ?? record.Amount) ?? undefined,
+    salesQty30: readNumber(record.salesQty30 ?? record.SalesQty30),
+    salesQty60: readNumber(record.salesQty60 ?? record.SalesQty60),
+    salesQty90: readNumber(record.salesQty90 ?? record.SalesQty90),
+    previousPurchaseDate: readString(record.previousPurchaseDate ?? record.PreviousPurchaseDate) ?? null,
+    previousToCurrentDays: readOptionalNumber(record.previousToCurrentDays ?? record.PreviousToCurrentDays),
+    salesSincePreviousPurchase: readOptionalNumber(record.salesSincePreviousPurchase ?? record.SalesSincePreviousPurchase),
+    salesSincePreviousPurchase30: readOptionalNumber(record.salesSincePreviousPurchase30 ?? record.SalesSincePreviousPurchase30),
+    salesSincePreviousPurchase60: readOptionalNumber(record.salesSincePreviousPurchase60 ?? record.SalesSincePreviousPurchase60),
+    salesSincePreviousPurchase90: readOptionalNumber(record.salesSincePreviousPurchase90 ?? record.SalesSincePreviousPurchase90),
+    salesStatisticLastUpdate: readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
+  }
+}
+
+function normalizeSalesAnalysisResponse(raw: unknown): LocalSupplierInvoiceSalesAnalysisResponseDto {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const items = Array.isArray(record.items ?? record.Items)
+    ? ((record.items ?? record.Items) as unknown[])
+        .map(normalizeSalesAnalysisItem)
+        .filter((item): item is LocalSupplierInvoiceSalesAnalysisItemDto => item !== null)
+    : []
+
+  return {
+    invoiceGUID: readString(record.invoiceGUID ?? record.InvoiceGUID) ?? '',
+    invoiceNo: readString(record.invoiceNo ?? record.InvoiceNo),
+    storeCode: readString(record.storeCode ?? record.StoreCode),
+    storeName: readString(record.storeName ?? record.StoreName),
+    supplierCode: readString(record.supplierCode ?? record.SupplierCode),
+    supplierName: readString(record.supplierName ?? record.SupplierName),
+    orderDate: readString(record.orderDate ?? record.OrderDate) ?? null,
+    inboundDate: readString(record.inboundDate ?? record.InboundDate) ?? null,
+    analysisDate: readString(record.analysisDate ?? record.AnalysisDate) ?? null,
+    salesStatisticLastUpdate: readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
+    items,
+    calculationNote:
+      readString(record.calculationNote ?? record.CalculationNote) ??
+      '进货后30/60/90天销量从本次进货日期次日开始统计；上次到本次区间销量仍按历史区间显示。',
+  }
+}
+
+function normalizePurchaseSalesAnalysisPageSize(value: unknown) {
+  return typeof value === 'number' && PURCHASE_SALES_ANALYSIS_ALLOWED_PAGE_SIZES.has(value) ? value : 100
+}
+
+function normalizePurchaseSalesAnalysisRow(raw: unknown): LocalSupplierPurchaseSalesAnalysisRowDto | null {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const record = raw as Record<string, unknown>
+  const storeCode = readString(record.storeCode ?? record.StoreCode)
+  const productCode = readString(record.productCode ?? record.ProductCode)
+  const supplierCode = readString(record.supplierCode ?? record.SupplierCode)
+  if (!storeCode || !productCode || !supplierCode) {
+    return null
+  }
+
+  return {
+    storeCode,
+    storeName: readString(record.storeName ?? record.StoreName),
+    productCode,
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
+    barcode: readString(record.barcode ?? record.Barcode),
+    productName: readString(record.productName ?? record.ProductName),
+    productImage: readString(record.productImage ?? record.ProductImage),
+    supplierCode,
+    supplierName: readString(record.supplierName ?? record.SupplierName),
+    latestPurchaseDate: readString(record.latestPurchaseDate ?? record.LatestPurchaseDate) ?? null,
+    latestPurchaseQty: readOptionalNumber(record.latestPurchaseQty ?? record.LatestPurchaseQty),
+    previousPurchaseDate: readString(record.previousPurchaseDate ?? record.PreviousPurchaseDate) ?? null,
+    previousPurchaseQty: readOptionalNumber(record.previousPurchaseQty ?? record.PreviousPurchaseQty),
+    purchaseIntervalDays: readOptionalNumber(record.purchaseIntervalDays ?? record.PurchaseIntervalDays),
+    salesBetweenPurchases: readOptionalNumber(record.salesBetweenPurchases ?? record.SalesBetweenPurchases),
+    salesQty30: readNumber(record.salesQty30 ?? record.SalesQty30),
+    salesQty60: readNumber(record.salesQty60 ?? record.SalesQty60),
+    salesQty90: readNumber(record.salesQty90 ?? record.SalesQty90),
+    salesStatisticLastUpdate:
+      readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
+  }
+}
+
+function normalizePurchaseSalesAnalysisResponse(raw: unknown): LocalSupplierPurchaseSalesAnalysisResponseDto {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const items = Array.isArray(record.items ?? record.Items)
+    ? ((record.items ?? record.Items) as unknown[])
+        .map(normalizePurchaseSalesAnalysisRow)
+        .filter((item): item is LocalSupplierPurchaseSalesAnalysisRowDto => item !== null)
+    : []
+
+  return {
+    items,
+    total: readNumber(record.total ?? record.Total),
+    page: readNumber(record.page ?? record.Page, 1),
+    pageSize: normalizePurchaseSalesAnalysisPageSize(record.pageSize ?? record.PageSize),
+    salesStatisticLastUpdate:
+      readString(record.salesStatisticLastUpdate ?? record.SalesStatisticLastUpdate) ?? null,
+    calculationNote:
+      readString(record.calculationNote ?? record.CalculationNote) ??
+      '进货按订单日期范围过滤、按进货发生日期汇总；最近一次后的30/60/90天销量从最近进货当天开始统计。',
+  }
+}
+
+function normalizePurchaseSalesAnalysisStoreOptions(raw: unknown): LocalSupplierPurchaseSalesAnalysisStoreOptionDto[] {
+  const items = Array.isArray(raw) ? raw : Array.isArray((raw as { data?: unknown[] } | null)?.data) ? (raw as { data: unknown[] }).data : []
+  return items
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+      const record = item as Record<string, unknown>
+      const label = readString(record.label ?? record.Label)
+      const value = readString(record.value ?? record.Value)
+      if (!label || !value) {
+        return null
+      }
+      return { label, value }
+    })
+    .filter((item): item is LocalSupplierPurchaseSalesAnalysisStoreOptionDto => item !== null)
+}
+
+function normalizePurchaseSalesAnalysisSupplierOptions(raw: unknown): LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[] {
+  return normalizePurchaseSalesAnalysisStoreOptions(raw)
+}
+
+function buildPurchaseSalesAnalysisQuery(query: LocalSupplierPurchaseSalesAnalysisQueryDto) {
+  return {
+    ...query,
+    page: typeof query.page === 'number' && query.page > 0 ? query.page : 1,
+    pageSize: normalizePurchaseSalesAnalysisPageSize(query.pageSize),
   }
 }
 
@@ -65,6 +241,57 @@ export async function getInvoiceDetails(invoiceGuid: string): Promise<LocalSuppl
 export async function getInvoiceDetail(invoiceGuid: string): Promise<GetInvoiceDetailResponse> {
   const response = await request.get<ApiResponse<GetInvoiceDetailResponse>>(`${API_BASE}/${invoiceGuid}/full`)
   return unwrapApiData(response)
+}
+
+export async function getInvoiceSalesAnalysis(
+  invoiceGuid: string,
+  signal?: AbortSignal,
+): Promise<LocalSupplierInvoiceSalesAnalysisResponseDto> {
+  const response = await request.get<ApiResponse<LocalSupplierInvoiceSalesAnalysisResponseDto>>(
+    `${API_BASE}/${encodeURIComponent(invoiceGuid)}/sales-analysis`,
+    { signal },
+  )
+  return normalizeSalesAnalysisResponse(unwrapApiData(response))
+}
+
+export async function getLocalSupplierPurchaseSalesAnalysis(
+  query: LocalSupplierPurchaseSalesAnalysisQueryDto,
+  signal?: AbortSignal,
+): Promise<LocalSupplierPurchaseSalesAnalysisResponseDto> {
+  const response = await request.get<
+    ApiResponse<LocalSupplierPurchaseSalesAnalysisResponseDto> | LocalSupplierPurchaseSalesAnalysisResponseDto
+  >(PURCHASE_SALES_ANALYSIS_API_BASE, {
+    params: buildPurchaseSalesAnalysisQuery(query) as Record<string, unknown>,
+    signal,
+  })
+
+  return normalizePurchaseSalesAnalysisResponse(unwrapApiData(response))
+}
+
+export async function getLocalSupplierPurchaseSalesAnalysisStoreOptions(): Promise<LocalSupplierPurchaseSalesAnalysisStoreOptionDto[]> {
+  const response = await request.get<
+    ApiResponse<LocalSupplierPurchaseSalesAnalysisStoreOptionDto[]> | LocalSupplierPurchaseSalesAnalysisStoreOptionDto[]
+  >(`${PURCHASE_SALES_ANALYSIS_API_BASE}/store-options`)
+  return normalizePurchaseSalesAnalysisStoreOptions(unwrapApiData(response))
+}
+
+export async function getLocalSupplierPurchaseSalesAnalysisSupplierOptions(
+  storeCode?: string,
+): Promise<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[]> {
+  const response = await request.get<
+    ApiResponse<LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[]> | LocalSupplierPurchaseSalesAnalysisSupplierOptionDto[]
+  >(`${PURCHASE_SALES_ANALYSIS_API_BASE}/supplier-options`, {
+    params: storeCode ? { storeCode } : undefined,
+  })
+  return normalizePurchaseSalesAnalysisSupplierOptions(unwrapApiData(response))
+}
+
+export const __localSupplierInvoiceServiceTestOnly = {
+  buildPurchaseSalesAnalysisQuery,
+  normalizePurchaseSalesAnalysisResponse,
+  normalizePurchaseSalesAnalysisStoreOptions,
+  normalizePurchaseSalesAnalysisSupplierOptions,
+  normalizePurchaseSalesAnalysisPageSize,
 }
 
 export async function createInvoice(data: {
@@ -293,6 +520,7 @@ export async function batchExecuteActions(data: BatchExecuteActionsRequest): Pro
     expectedActions: data.expectedActions,
     confirmedCreateProductCount: data.confirmedCreateProductCount,
     confirmedAt: data.confirmedAt,
+    newProductProductTypeSelections: data.newProductProductTypeSelections ?? [],
   })
   assertApiSuccess(response, '批量执行操作失败')
   return unwrapApiData(response)

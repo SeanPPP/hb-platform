@@ -76,12 +76,14 @@ export const P = {
   Reports: {
     View: 'Reports.View',
     Export: 'Reports.Export',
+    ProductMovementView: 'Reports.ProductMovement.View',
   },
   System: {
     ViewLogs: 'System.ViewLogs',
     ManageScheduledTasks: 'System.ManageScheduledTasks',
     ManageSettings: 'System.ManageSettings',
     ViewAppDownloads: 'System.ViewAppDownloads',
+    ManageAppDownloads: 'System.ManageAppDownloads',
   },
   DeviceRegistration: {
     View: 'DeviceRegistration.View',

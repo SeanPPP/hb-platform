@@ -300,6 +300,13 @@ namespace BlazorApp.Api.Controllers.React
                 if (request == null || request.Items == null || !request.Items.Any())
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
 
+                if (request.SyncStorePurchasePrice.HasValue)
+                {
+                    // 兼容旧的明细级 DTO，同时允许前端按本次批量动作统一关闭分店进货价同步。
+                    foreach (var item in request.Items)
+                        item.SyncStorePurchasePrice ??= request.SyncStorePurchasePrice;
+                }
+
                 var resp = await _service.BatchUpdateAsync(request.Items);
                 return Ok(
                     new
@@ -797,6 +804,11 @@ namespace BlazorApp.Api.Controllers.React
         public class BatchUpdateRequest
         {
             public List<UpdateItemDto> Items { get; set; } = new();
+
+            /// <summary>
+            /// 是否同步更新分店进货价；为空时保持旧行为。
+            /// </summary>
+            public bool? SyncStorePurchasePrice { get; set; }
         }
 
         public class BatchCreateRequest

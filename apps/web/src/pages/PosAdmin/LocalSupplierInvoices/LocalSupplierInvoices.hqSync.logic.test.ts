@@ -149,6 +149,10 @@ async function main() {
     assert(typeSource.includes('UpdateHqProductsResult'), '应声明字段级更新 HQ 结果类型')
     assert(typeSource.includes('hqRetailPricesUpdated?: number'), '字段级更新 HQ 结果应包含零售价更新计数')
     assert(typeSource.includes('hqDiscountRatesUpdated?: number'), '字段级更新 HQ 结果应包含折扣率更新计数')
+    assert(typeSource.includes('hqProductSetCodesCreated?: number'), '字段级更新 HQ 结果应包含 HQ 一品多码新增计数')
+    assert(typeSource.includes('hqProductSetCodesUpdated?: number'), '字段级更新 HQ 结果应包含 HQ 一品多码更新计数')
+    assert(typeSource.includes('hqStoreMultiCodesCreated?: number'), '字段级更新 HQ 结果应包含 HQ 分店一品多码新增计数')
+    assert(typeSource.includes('hqStoreMultiCodesUpdated?: number'), '字段级更新 HQ 结果应包含 HQ 分店一品多码更新计数')
     assert(typeSource.includes('LocalSupplierInvoiceBatchJobStatus'), '本地进货单批量后台任务应声明状态类型')
     assert(typeSource.includes('UpdateToStorePricesJobResult'), '更新到分店应声明后台任务结果类型')
     assert(typeSource.includes('UpdateHqProductsJobResult'), '更新HQ商品应声明后台任务结果类型')
@@ -159,6 +163,14 @@ async function main() {
     assert(typeSource.includes('result?: CheckProductsResponse'), '商品检测后台任务 result 应复用 CheckProductsResponse')
   })
   if (ensureHqTypeFailure) failures.push(ensureHqTypeFailure)
+
+  const updateHqMultiCodeResultFailure = await runTest('编辑页更新HQ商品结果应展示多码同步统计', () => {
+    assert(editPageSource.includes('result.hqProductSetCodesCreated'), '结果弹窗应展示 HQ 一品多码新增数量')
+    assert(editPageSource.includes('result.hqProductSetCodesUpdated'), '结果弹窗应展示 HQ 一品多码更新数量')
+    assert(editPageSource.includes('result.hqStoreMultiCodesCreated'), '结果弹窗应展示 HQ 分店一品多码新增数量')
+    assert(editPageSource.includes('result.hqStoreMultiCodesUpdated'), '结果弹窗应展示 HQ 分店一品多码更新数量')
+  })
+  if (updateHqMultiCodeResultFailure) failures.push(updateHqMultiCodeResultFailure)
 
   const invoiceDetailKeepAliveFailure = await runTest('分店进货单详情 Tab 切回已有进货单时应跳过自动刷新', () => {
     for (const [pageName, source] of [
@@ -197,6 +209,10 @@ async function main() {
         `${pageName} 后台返回相同订单头和明细时应跳过 setFieldsValue/setDetails，避免相同数据重绘一闪`,
       )
     }
+    assert(
+      editPageSource.includes('additionalBarcodes: item.additionalBarcodes'),
+      '编辑页明细快照应包含 additionalBarcodes，副码变化后粘贴完成 reload 才会刷新表格提示',
+    )
     assert(
       shouldSkipDetailAutoReload({
         requestedDetailId: 'invoice-1',
@@ -847,6 +863,8 @@ async function main() {
     assert(editPageSource.includes("width: 108,\n      fixed: 'left'"), '货号列应固定在左侧并压缩宽度')
     assert(editPageSource.includes('width={36} height={36}'), '图片缩略图应压缩到 36px')
     assert(editPageSource.includes('<BarcodePreview value={v} compactCopy />'), '条码文本不应设置 textMaxWidth 省略隐藏')
+    assert(editPageSource.includes('additionalBarcodeCount'), '条码列应显示副码数量标签')
+    assert(editPageSource.includes('record.additionalBarcodes?.join'), '副码数量标签应悬浮显示完整副码列表')
     assert(editPageSource.includes('formatPricingFloatRate'), '定价浮率应使用专用两位小数格式化')
     assert(!editPageSource.includes('`${(v * 100).toFixed(1)}%`'), '定价浮率不应按百分比展示')
     assert(!editPageSource.includes('\n          bordered\n'), '明细表不应继续使用 bordered 边框')
@@ -946,10 +964,15 @@ async function main() {
     assert(editPageSource.includes('hbweb_rv.localSupplierInvoice.pasteFieldOrder.v1'), '编辑页应使用固定 localStorage key 保存列顺序')
     assert(editPageSource.includes('normalizeRetailPriceOnPaste'), '编辑页应维护零售价小数规范化开关')
     assert(editPageSource.includes('parsePasteText(pasteText, pasteFieldOrder, pasteParseOptions)'), '提交和预览应使用当前列字段映射和粘贴解析选项解析')
+    assert(editPageSource.includes('pasteMultilineCellMode'), '编辑页应维护多行单元格处理模式')
+    assert(editPageSource.includes('pasteMultilineMerge'), '编辑页应提供单元格内合并选项')
+    assert(editPageSource.includes('pasteMultilineSmartSplit'), '编辑页应提供按换行智能拆分选项')
+    assert(editPageSource.includes('pasteMultilineUnsafeWarning'), '编辑页应提示无法安全拆分的记录会自动合并')
     assert(editPageSource.includes('pasteFieldDuplicateWarning'), '编辑页应提供重复字段校验提示')
     assert(editPageSource.includes('pasteRestoreDefaultOrder'), '编辑页应提供恢复默认列顺序入口')
     assert(editPageSource.includes('pasteFieldSkip'), '编辑页应提供跳过列选项')
     assert(editPageSource.includes('getPasteTextMaxColumnCount'), '编辑页应按粘贴内容列数扩展映射位')
+    assert(editPageSource.includes('analyzePasteMultilineCells'), '编辑页应使用共享 helper 分析多行单元格')
     assert(editPageSource.includes("fill('skip')"), '新增的多余列映射应默认设置为跳过')
   })
   if (pasteFieldOrderUiFailure) failures.push(pasteFieldOrderUiFailure)

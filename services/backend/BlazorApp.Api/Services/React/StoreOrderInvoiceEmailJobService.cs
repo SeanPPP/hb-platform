@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models.HBweb;
 
 namespace BlazorApp.Api.Services.React
 {
@@ -123,6 +125,11 @@ namespace BlazorApp.Api.Services.React
                     }
                 );
 
+                if (result.Success)
+                {
+                    await TryPersistSendRecordAsync(scope.ServiceProvider, jobState);
+                }
+
                 CompleteJob(
                     jobState,
                     result.Success
@@ -142,6 +149,36 @@ namespace BlazorApp.Api.Services.React
                     jobState,
                     StoreOrderInvoiceEmailJobStatusConstants.Failed,
                     string.IsNullOrWhiteSpace(ex.Message) ? "发票邮件发送失败" : ex.Message
+                );
+            }
+        }
+
+        private async Task TryPersistSendRecordAsync(IServiceProvider serviceProvider, StoreOrderInvoiceEmailJobState jobState)
+        {
+            try
+            {
+                var context = serviceProvider.GetRequiredService<SqlSugarContext>();
+                var sentAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
+
+                // 邮件发送成功后仅补写本地发送记录；写库失败不能反向影响已发送结果。
+                await context.Db.Insertable(
+                    new StoreOrderInvoiceEmailSendRecord
+                    {
+                        StoreOrderUuid = jobState.OrderGUID,
+                        ToEmail = jobState.ToEmail,
+                        SentAtUtc = sentAtUtc,
+                        JobId = jobState.JobId,
+                        CreatedAtUtc = sentAtUtc,
+                    }
+                ).ExecuteCommandAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "发票邮件已发送，但写入发送记录失败: {JobId}, OrderGUID={OrderGUID}",
+                    jobState.JobId,
+                    jobState.OrderGUID
                 );
             }
         }

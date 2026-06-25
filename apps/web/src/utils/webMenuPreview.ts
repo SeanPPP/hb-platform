@@ -55,11 +55,14 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canManageDomesticPrefixCodes: [P.DomesticPurchase.ManagePrefixCodes],
   canManageDomesticProducts: [P.DomesticPurchase.ManageProducts],
   canManageWarehouseOrders: [P.Warehouse.ManageOrders, P.Warehouse.Manage],
+  canManageStoreOrderImportPriceVariance: [P.Warehouse.ManageOrders, P.Warehouse.Manage],
   canViewContainers: [P.Container.View],
   canManageWarehouseProducts: [P.Warehouse.ManageProducts, P.Warehouse.Manage],
   canManageWarehouseCategories: [P.Warehouse.ManageCategories, P.Warehouse.Manage],
   canManageWarehouseLocations: [P.Warehouse.ManageLocations, P.Warehouse.Manage],
   canViewReports: [P.Reports.View],
+  canViewSalesIntelligence: [P.Reports.View, P.Reports.ProductMovementView],
+  canViewProductMovementReport: [P.Reports.ProductMovementView, P.Reports.View],
   canViewAustralianSuppliers: [P.AustralianSuppliers.View],
   canViewPosProducts: [P.PosProducts.View, P.PosProducts.Manage],
   canManageStoreProducts: [P.StoreProducts.View],
@@ -107,6 +110,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     title: 'menu.warehouse',
     children: [
       { path: '/warehouse/store-orders', title: 'menu.storeOrders', accessKey: 'canManageWarehouseOrders' },
+      { path: '/warehouse/store-order-import-price-variance', title: 'menu.storeOrderImportPriceVariance', accessKey: 'canManageStoreOrderImportPriceVariance' },
       { path: '/warehouse/containers', title: 'menu.containers', accessKey: 'canViewContainers' },
       { path: '/warehouse/products', title: 'menu.warehouseProducts', accessKey: 'canManageWarehouseProducts' },
       { path: '/warehouse/categories', title: 'menu.categories', accessKey: 'canManageWarehouseCategories' },
@@ -117,10 +121,11 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
   {
     path: '/executive-sales-intelligence',
     title: 'menu.executiveSalesIntelligence',
-    accessKey: 'canViewReports',
+    accessKey: 'canViewSalesIntelligence',
     children: [
       { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewReports' },
       { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewReports' },
+      { path: '/executive-sales-intelligence/product-movement-report', title: 'menu.productMovementReport', accessKey: 'canViewProductMovementReport' },
     ],
   },
   {
@@ -141,7 +146,10 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
   },
 ]
 
-const warehouseStaffVisibleMenuPaths = new Set(['/warehouse', '/warehouse/store-orders'])
+const warehouseStaffVisibleMenuPaths = new Set([
+  '/warehouse',
+  '/warehouse/store-orders',
+])
 
 function isWarehouseStaffNavigationLimited(access: AccessControl) {
   return (

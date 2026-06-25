@@ -84,6 +84,12 @@ namespace BlazorApp.Shared.Models
         public string? Barcode { get; set; }
 
         /// <summary>
+        /// 粘贴来源中的副条码列表 JSON；主条码仍保存在 Barcode。
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 4000)]
+        public string? AdditionalBarcodesJson { get; set; }
+
+        /// <summary>
         /// 商品名称
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 200)]

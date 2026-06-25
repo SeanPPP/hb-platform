@@ -187,6 +187,7 @@ async function main() {
         detailSource.includes('disabled={isReadonlyOrder || !canStartPicking}') &&
         detailSource.includes('disabled={!canCompleteOrder}') &&
         detailSource.includes('extra={\n                  canUseWarehouseManagerActions ? (') &&
+        detailSource.includes('const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly') &&
         detailSource.includes('const canUseStoreOrderDocumentActions = access.isWarehouseStaff') &&
         detailSource.includes('const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions') &&
         orderDetailSectionSource.includes('canUseStoreOrderDetailExtraActions ? (\n                  <Space wrap>') &&
@@ -373,7 +374,7 @@ async function main() {
     assert(
       pickingListSource.includes("import { useAuthStore } from '../../../store/auth'") &&
         pickingListSource.includes('const { access } = useAuthStore()') &&
-        pickingListSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager') &&
+        pickingListSource.includes('const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly') &&
         pickingListSource.includes('if (detail.storeCode && canUseWarehouseManagerActions)') &&
         pickingListSource.includes('WarehouseStaff 无需加载完整分店下拉') &&
         pickingListSource.includes('store?.storeName || order.storeName || order.storeCode'),

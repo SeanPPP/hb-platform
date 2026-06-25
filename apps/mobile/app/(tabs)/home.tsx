@@ -13,7 +13,6 @@ import {
   Modal,
   Portal,
   Searchbar,
-  Snackbar,
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -100,7 +99,7 @@ export default function Home() {
   const [selectedGrade, setSelectedGrade] = useState<string | undefined>();
   const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>([]);
   const [pageNumber, setPageNumber] = useState(1);
-  const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [noticeMessage, setNoticeMessage] = useState("");
   const [activeCartMutationProductCode, setActiveCartMutationProductCode] = useState<string | null>(null);
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
@@ -112,6 +111,7 @@ export default function Home() {
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
   const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
+  const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   selectedStoreCodeRef.current = normalizeStoreCode(selectedStoreCode);
 
@@ -150,7 +150,7 @@ export default function Home() {
           return;
         }
 
-        setSnackbarMessage(
+        setNoticeMessage(
           t("messages.addedToCart", { name: product.productName || product.productCode })
         );
       } catch (error) {
@@ -158,7 +158,7 @@ export default function Home() {
           return;
         }
 
-        setSnackbarMessage(getErrorMessage(error, "messages.scanAddFailed"));
+        setNoticeMessage(getErrorMessage(error, "messages.scanAddFailed"));
       } finally {
         if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, expectedStoreCode)) {
           setActiveCartMutationProductCode(null);
@@ -183,6 +183,26 @@ export default function Home() {
       await scanResult.handleBarcode(barcode, "hid");
     },
   });
+  const handleSearchFocus = useCallback(() => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+      resumeHiddenScannerFocusTimerRef.current = null;
+    }
+
+    // 手动输入搜索时暂停隐藏扫码输入，避免它定时抢走搜索框焦点。
+    hidScanner.pauseHiddenInputFocus();
+  }, [hidScanner.pauseHiddenInputFocus]);
+  const handleSearchBlur = useCallback(() => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+    }
+
+    // 给 iOS 输入收尾留出短暂时间，再恢复扫码隐藏输入焦点。
+    resumeHiddenScannerFocusTimerRef.current = setTimeout(() => {
+      resumeHiddenScannerFocusTimerRef.current = null;
+      hidScanner.resumeHiddenInputFocus();
+    }, 250);
+  }, [hidScanner.resumeHiddenInputFocus]);
 
   useFocusEffect(
     useCallback(() => {
@@ -191,6 +211,12 @@ export default function Home() {
       }
     }, [hidScanner.focusHiddenInput]),
   );
+
+  useEffect(() => () => {
+    if (resumeHiddenScannerFocusTimerRef.current) {
+      clearTimeout(resumeHiddenScannerFocusTimerRef.current);
+    }
+  }, []);
 
   const categoriesQuery = useQuery({
     queryKey: ["shopCategories"],
@@ -246,7 +272,7 @@ export default function Home() {
       return;
     }
 
-    setSnackbarMessage(scanResult.feedback.message);
+    setNoticeMessage(scanResult.feedback.message);
   }, [scanResult.feedback.message, scanResult.feedback.status]);
 
   useEffect(() => {
@@ -254,7 +280,7 @@ export default function Home() {
       return;
     }
 
-    setSnackbarMessage(getErrorMessage(storesError, "messages.storesLoadFailed"));
+    setNoticeMessage(getErrorMessage(storesError, "messages.storesLoadFailed"));
   }, [getErrorMessage, storesError, storesLoadFailed]);
 
   useEffect(() => {
@@ -262,8 +288,22 @@ export default function Home() {
       return;
     }
 
-    setSnackbarMessage(getErrorMessage(productsQuery.error, "messages.productsLoadFailed"));
+    setNoticeMessage(getErrorMessage(productsQuery.error, "messages.productsLoadFailed"));
   }, [getErrorMessage, productsQuery.error, productsQuery.isError]);
+
+  useEffect(() => {
+    if (!noticeMessage) {
+      return;
+    }
+
+    const dismissTimer = setTimeout(() => {
+      setNoticeMessage("");
+    }, 2500);
+
+    return () => {
+      clearTimeout(dismissTimer);
+    };
+  }, [noticeMessage]);
 
   const canGoNextPage = useMemo(() => {
     const total = productsQuery.data?.total ?? 0;
@@ -373,11 +413,11 @@ export default function Home() {
     setActiveCartMutationProductCode(product.productCode);
     try {
       await addToCart.mutateAsync({ product });
-      setSnackbarMessage(
+      setNoticeMessage(
         t("messages.addedToCart", { name: product.productName || product.productCode })
       );
     } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.addFailed"));
+      setNoticeMessage(getErrorMessage(error, "messages.addFailed"));
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -401,7 +441,7 @@ export default function Home() {
         product,
       });
     } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
+      setNoticeMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -421,7 +461,7 @@ export default function Home() {
         product,
       });
     } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.updateQtyFailed"));
+      setNoticeMessage(getErrorMessage(error, "messages.updateQtyFailed"));
     } finally {
       if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
         setActiveCartMutationProductCode(null);
@@ -462,6 +502,8 @@ export default function Home() {
             }}
             onSubmitEditing={handleApplySearch}
             onIconPress={handleApplySearch}
+            onFocus={handleSearchFocus}
+            onBlur={handleSearchBlur}
             style={styles.searchInput}
             inputStyle={styles.searchInputText}
           />
@@ -555,6 +597,21 @@ export default function Home() {
           <Text variant="bodySmall" style={styles.scanHintText}>
             {t("scanResultHint")}
           </Text>
+        </View>
+      ) : null}
+      {noticeMessage ? (
+        <View style={styles.headerNotice}>
+          {/* 页头内联提示用于避免遮挡商品数量加减按钮。 */}
+          <Text variant="bodySmall" style={styles.headerNoticeText}>
+            {noticeMessage}
+          </Text>
+          <IconButton
+            icon="close"
+            size={16}
+            accessibilityLabel={t("common:actions.close")}
+            onPress={() => setNoticeMessage("")}
+            style={styles.headerNoticeClose}
+          />
         </View>
       ) : null}
     </View>
@@ -860,9 +917,6 @@ export default function Home() {
         <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
       ) : null}
 
-      <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
-        {snackbarMessage}
-      </Snackbar>
     </SafeAreaView>
   );
 }
@@ -901,6 +955,30 @@ const styles = StyleSheet.create({
   },
   headerSubtitle: {
     color: "#5B6474",
+  },
+  headerNotice: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#B7D6F6",
+    backgroundColor: "#EAF4FF",
+    paddingLeft: 12,
+    paddingRight: 4,
+    paddingVertical: 6,
+  },
+  headerNoticeText: {
+    flex: 1,
+    color: "#174A7C",
+    fontWeight: "600",
+    lineHeight: 18,
+  },
+  headerNoticeClose: {
+    width: 28,
+    height: 28,
+    margin: 0,
   },
   filterToggleButton: {
     margin: 0,

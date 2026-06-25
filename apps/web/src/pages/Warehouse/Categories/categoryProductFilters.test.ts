@@ -1,6 +1,7 @@
 import {
   ALL_PRODUCTS_FILTER_KEY,
   buildFilterCategoryOptions,
+  buildFilterCategoryTreeOptions,
   hasExecutedCategoryProductQuery,
   resolveCategoryProductFilterMode,
   UNCATEGORIZED_PRODUCTS_FILTER_KEY,
@@ -76,5 +77,26 @@ assertEqual(chineseOptions[2]?.label, '家居', '中文语言下分类筛选应�
 assertEqual(chineseOptions[3]?.label, '-- 洗衣', '中文语言下子分类筛选应只显示中文名称并保留层级前缀')
 assertEqual(englishOptions[2]?.label, 'Home', '英文语言下分类筛选应只显示英文名称')
 assertEqual(englishOptions[3]?.label, '-- Laundry', '英文语言下子分类筛选应只显示英文名称并保留层级前缀')
+
+const categoryTreeOptions = buildFilterCategoryTreeOptions(
+  categoryTree,
+  ((key: string, fallback?: string) => fallback ?? key) as never,
+  'zh',
+)
+assertEqual(categoryTreeOptions[0]?.value, ALL_PRODUCTS_FILTER_KEY, '树形分类筛选首项应保留全部商品快捷选项')
+assertEqual(categoryTreeOptions[1]?.value, UNCATEGORIZED_PRODUCTS_FILTER_KEY, '树形分类筛选第二项应保留未分类快捷选项')
+assertEqual(categoryTreeOptions[2]?.title, '家居', '树形分类父级节点应按当前语言显示分类名')
+assertEqual(categoryTreeOptions[2]?.children?.[0]?.title, '洗衣', '树形分类子节点应使用真实 children，不再拼接层级前缀')
+assert(
+  !categoryTreeOptions[2]?.children?.[0]?.title.includes('--'),
+  '树形分类子节点标题不应继续使用 -- 伪缩进',
+)
+assert(
+  categoryTreeOptions[2]?.children?.[0]?.searchText.includes('home') &&
+    categoryTreeOptions[2]?.children?.[0]?.searchText.includes('家居') &&
+    categoryTreeOptions[2]?.children?.[0]?.searchText.includes('laundry') &&
+    categoryTreeOptions[2]?.children?.[0]?.searchText.includes('洗衣'),
+  '树形分类搜索字段应包含父级路径和当前节点中英文名称',
+)
 
 console.log('categoryProductFilters.test: ok')

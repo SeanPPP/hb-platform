@@ -52,6 +52,7 @@ export interface LocalSupplierInvoiceItemDto {
   productCode?: string
   itemNumber?: string
   barcode?: string
+  additionalBarcodes?: string[]
   productName?: string
   specification?: string
   unit?: string
@@ -73,6 +74,101 @@ export interface LocalSupplierInvoiceItemDto {
   oldStoreProductCode?: string
 }
 
+export interface LocalSupplierInvoiceSalesAnalysisItemDto {
+  detailGUID: string
+  productCode?: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  productImage?: string
+  specification?: string
+  unit?: string
+  quantity?: number
+  purchasePrice?: number
+  retailPrice?: number
+  amount?: number
+  salesQty30: number
+  salesQty60: number
+  salesQty90: number
+  previousPurchaseDate?: string | null
+  previousToCurrentDays?: number | null
+  salesSincePreviousPurchase?: number | null
+  salesSincePreviousPurchase30?: number | null
+  salesSincePreviousPurchase60?: number | null
+  salesSincePreviousPurchase90?: number | null
+  salesStatisticLastUpdate?: string | null
+}
+
+export interface LocalSupplierInvoiceSalesAnalysisResponseDto {
+  invoiceGUID: string
+  invoiceNo?: string
+  storeCode?: string
+  storeName?: string
+  supplierCode?: string
+  supplierName?: string
+  orderDate?: string | null
+  inboundDate?: string | null
+  analysisDate?: string | null
+  salesStatisticLastUpdate?: string | null
+  items: LocalSupplierInvoiceSalesAnalysisItemDto[]
+  calculationNote: string
+}
+
+export type LocalSupplierPurchaseSalesAnalysisSortOrder = 'asc' | 'desc'
+
+export interface LocalSupplierPurchaseSalesAnalysisQueryDto {
+  storeCode?: string
+  supplierCode?: string
+  orderDateStart?: string
+  orderDateEnd?: string
+  keyword?: string
+  sortBy?: string
+  sortOrder?: LocalSupplierPurchaseSalesAnalysisSortOrder
+  page?: number
+  pageSize?: number
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisRowDto {
+  storeCode: string
+  storeName?: string
+  productCode: string
+  itemNumber?: string
+  barcode?: string
+  productName?: string
+  productImage?: string
+  supplierCode: string
+  supplierName?: string
+  latestPurchaseDate?: string | null
+  latestPurchaseQty?: number | null
+  previousPurchaseDate?: string | null
+  previousPurchaseQty?: number | null
+  purchaseIntervalDays?: number | null
+  salesBetweenPurchases?: number | null
+  salesQty30: number
+  salesQty60: number
+  salesQty90: number
+  salesStatisticLastUpdate?: string | null
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisResponseDto {
+  items: LocalSupplierPurchaseSalesAnalysisRowDto[]
+  total: number
+  page: number
+  pageSize: number
+  salesStatisticLastUpdate?: string | null
+  calculationNote: string
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisStoreOptionDto {
+  label: string
+  value: string
+}
+
+export interface LocalSupplierPurchaseSalesAnalysisSupplierOptionDto {
+  label: string
+  value: string
+}
+
 export interface UpdateInvoiceRequest {
   storeCode?: string
   supplierCode?: string
@@ -89,6 +185,7 @@ export interface InvoiceDetailUpsertItemDto {
   detailGUID?: string
   itemNumber?: string
   barcode?: string
+  additionalBarcodes?: string[]
   productName?: string
   productCategoryGUID?: string
   storeProductCode?: string
@@ -231,6 +328,10 @@ export interface UpdateHqProductsResult {
   hqAutoPricingUpdated?: number
   hqSpecialProductsUpdated?: number
   hqDiscountRatesUpdated?: number
+  hqProductSetCodesCreated?: number
+  hqProductSetCodesUpdated?: number
+  hqStoreMultiCodesCreated?: number
+  hqStoreMultiCodesUpdated?: number
   errors: EnsureHqProductError[]
 }
 
@@ -409,6 +510,7 @@ export interface PasteDetailsRequest {
   items: {
     itemNumber?: string
     barcode?: string
+    additionalBarcodes?: string[]
     productName?: string
     quantity?: number
     purchasePrice?: number
@@ -452,12 +554,18 @@ export interface BatchExecuteActionsRequest {
   expectedActions: BatchExecuteExpectedAction[]
   confirmedCreateProductCount: number
   confirmedAt: string
+  newProductProductTypeSelections?: BatchExecuteNewProductProductTypeSelection[]
 }
 
 export interface BatchExecuteExpectedAction {
   detailGuid: string
   action: DetailAction
   activityType: DetailAction
+}
+
+export interface BatchExecuteNewProductProductTypeSelection {
+  detailGuid: string
+  productType: 1 | 2
 }
 
 export interface BatchExecuteActionsResult {

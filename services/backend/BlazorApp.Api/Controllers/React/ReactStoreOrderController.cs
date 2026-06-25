@@ -190,6 +190,41 @@ namespace BlazorApp.Api.Controllers.React
             return await HasAnyPermissionAsync(storeCode, checkType, permissions) ? null : Forbid();
         }
 
+        private bool IsWarehouseStaffOnly()
+        {
+            return HasAnyRole("WarehouseStaff", "仓库员工")
+                && !IsRealAdmin()
+                && !HasAnyRole("WarehouseManager", "仓库经理");
+        }
+
+        private async Task<IActionResult?> RequireOrderManagementActionPermissionAsync(
+            params string[] permissions
+        )
+        {
+            if (IsWarehouseStaffOnly())
+            {
+                // 纯 WarehouseStaff 只能查看/打印分店订货文档，不能借旧 Warehouse.Manage 权限执行写动作。
+                return Forbid();
+            }
+
+            return await RequireAnyPermissionAsync(permissions);
+        }
+
+        private async Task<IActionResult?> RequireOrderManagementActionPermissionAsync(
+            string? storeCode,
+            string checkType,
+            params string[] permissions
+        )
+        {
+            if (IsWarehouseStaffOnly())
+            {
+                // 扫码购物车写入同样属于订货写动作，必须和页面按钮权限保持一致。
+                return Forbid();
+            }
+
+            return await RequireAnyPermissionAsync(storeCode, checkType, permissions);
+        }
+
         private async Task<bool> AuthorizePolicyWithCacheAsync(
             string? userId,
             string normalizedStoreCode,
@@ -242,8 +277,8 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<bool> HasGlobalWarehouseOrderScopeAsync()
         {
-            // 仓库总权限或订货管理权限用户可查看全部分店订货；普通订货前台用户仍走分店范围限制。
-            return HasAnyRole(GlobalStoreScopeRoles)
+            // 仅真实管理员或显式仓库订货管理权限拥有全分店订货范围；角色名本身不绕过订单 scope。
+            return IsRealAdmin()
                 || await HasAnyPermissionAsync(new[]
                 {
                     Permissions.Warehouse.ManageOrders,
@@ -258,6 +293,12 @@ namespace BlazorApp.Api.Controllers.React
                 return null;
             }
 
+            if (await HasGlobalWarehouseOrderScopeAsync())
+            {
+                // 分店订货控制器内，仓库订货管理权限可跨分店处理订单，不影响其它模块的分店范围服务。
+                return null;
+            }
+
             return await _storeScopeService.CanAccessStoreCodeAsync(storeCode) ? null : Forbid();
         }
 
@@ -265,6 +306,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             if (!string.IsNullOrWhiteSpace(storeCode))
             {
+                if (await HasGlobalWarehouseOrderScopeAsync())
+                {
+                    // 拥有仓库订货管理权限时无需再落到已分配分店兜底判断。
+                    return null;
+                }
+
                 var userGuid = GetCurrentUserId();
                 var normalizedStoreCode = NormalizeAuthorizationStoreCode(storeCode);
                 var cacheKey = BuildAuthorizationCacheKey(
@@ -366,8 +413,9 @@ namespace BlazorApp.Api.Controllers.React
             BuildScopedSyncRequestAsync(SyncMissingOrdersRequestDto? request)
         {
             var storeCodes = NormalizeSyncRequestStoreCodes(request);
-            if (!IsStoreScopedUser())
+            if (!IsStoreScopedUser() || await HasGlobalWarehouseOrderScopeAsync())
             {
+                // 仓库订货管理权限用户不按店长分店范围收窄同步条件。
                 return (null, request);
             }
 
@@ -434,8 +482,9 @@ namespace BlazorApp.Api.Controllers.React
             BuildScopedHqSyncRequestAsync(StoreOrderHqSyncRequestDto? request)
         {
             var storeCodes = NormalizeHqSyncRequestStoreCodes(request);
-            if (!IsStoreScopedUser())
+            if (!IsStoreScopedUser() || await HasGlobalWarehouseOrderScopeAsync())
             {
+                // 增量 HQ 同步同样以仓库订货管理权限作为全局订货范围。
                 return (null, request);
             }
 
@@ -495,6 +544,12 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<IActionResult?> RequireOrderScopeAsync(string orderGuid)
         {
+            if (await HasGlobalWarehouseOrderScopeAsync())
+            {
+                // 订单 GUID 类写接口同样按仓库订货管理权限放行全局订货范围。
+                return null;
+            }
+
             return await _storeScopeService.CanAccessOrderAsync(orderGuid) ? null : Forbid();
         }
 
@@ -793,7 +848,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireAnyPermissionAsync(
+                    await RequireOrderManagementActionPermissionAsync(
                         request.StoreCode,
                         "scan-order-flow",
                         CartWritePermissions
@@ -862,7 +917,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireAnyPermissionAsync(
+                    await RequireOrderManagementActionPermissionAsync(
                         request.StoreCode,
                         "scan-order-flow",
                         CartWritePermissions
@@ -928,7 +983,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    await RequireOrderManagementActionPermissionAsync(CartWritePermissions)
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
@@ -958,7 +1013,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    await RequireOrderManagementActionPermissionAsync(CartWritePermissions)
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
@@ -992,7 +1047,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(CartWritePermissions)
+                    await RequireOrderManagementActionPermissionAsync(CartWritePermissions)
                     ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
@@ -1113,6 +1168,173 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取首次货柜进货价基准差异统计。
+        /// </summary>
+        [HttpPost("import-price-variance")]
+        public async Task<IActionResult> GetImportPriceVariance(
+            [FromBody] StoreOrderImportPriceVarianceQueryDto query
+        )
+        {
+            try
+            {
+                query ??= new StoreOrderImportPriceVarianceQueryDto();
+
+                // 首柜价差异统计是仓库管理员报表，不能用 WarehouseStaff 的只读订货权限直接查询。
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetImportPriceVarianceAsync(query);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetImportPriceVariance failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取首次货柜进货价基准差异单商品订单明细。
+        /// </summary>
+        [HttpPost("import-price-variance/details")]
+        public async Task<IActionResult> GetImportPriceVarianceDetails(
+            [FromBody] StoreOrderImportPriceVarianceDetailQueryDto query
+        )
+        {
+            try
+            {
+                query ??= new StoreOrderImportPriceVarianceDetailQueryDto();
+
+                // 明细同样会暴露跨分店基准差异，必须和统计页保持仓库管理员权限一致。
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetImportPriceVarianceDetailsAsync(query);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetImportPriceVarianceDetails failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前国内价格。
+        /// </summary>
+        [HttpPost("import-price-variance/domestic-price")]
+        public async Task<IActionResult> UpdateImportPriceVarianceDomesticPrice(
+            [FromBody] StoreOrderImportPriceVarianceDomesticPriceUpdateDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateImportPriceVarianceDomesticPriceAsync(
+                    request ?? new StoreOrderImportPriceVarianceDomesticPriceUpdateDto()
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceDomesticPrice failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        [HttpPost("import-price-variance/warehouse-import-price")]
+        public async Task<IActionResult> UpdateImportPriceVarianceWarehouseImportPrice(
+            [FromBody] StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+                    request ?? new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto()
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceWarehouseImportPrice failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 批量更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        [HttpPost("import-price-variance/warehouse-import-price/batch")]
+        public async Task<IActionResult> UpdateImportPriceVarianceWarehouseImportPriceBatch(
+            [FromBody] StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto request
+        )
+        {
+            try
+            {
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+                    request ?? new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto()
+                );
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UpdateImportPriceVarianceWarehouseImportPriceBatch failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         [HttpGet("detail/{orderGuid}")]
@@ -1192,7 +1414,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID)
                     ?? await RequireStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
@@ -1226,7 +1448,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1257,7 +1479,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1300,7 +1522,7 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(job.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1358,7 +1580,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderCreatePermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderCreatePermissions)
                     ?? await RequireStoreScopeAsync(request.StoreCode);
                 if (forbidden != null)
                 {
@@ -1388,7 +1610,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1418,7 +1640,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1450,7 +1672,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1482,7 +1704,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1520,7 +1742,7 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(job.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1545,7 +1767,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1575,7 +1797,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1607,7 +1829,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -1673,7 +1895,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(OrderEditPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(OrderEditPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1703,7 +1925,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(OrderEditPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(OrderEditPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1732,7 +1954,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGuid);
                 if (forbidden == null)
                 {
@@ -1768,7 +1990,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGuid);
                 if (forbidden != null)
                 {
@@ -1855,7 +2077,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(OrderEditPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(OrderEditPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1926,7 +2148,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderDeletePermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderDeletePermissions)
                     ?? await RequireOrderScopeAsync(orderGuid);
                 if (forbidden != null)
                 {
@@ -1956,7 +2178,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderCreatePermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderCreatePermissions)
                     ?? await RequireOrderScopeAsync(request.SourceOrderGUID)
                     ?? await RequireStoreScopeAsync(request.TargetStoreCode);
                 if (forbidden != null)
@@ -1988,7 +2210,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2020,7 +2242,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2066,7 +2288,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2081,8 +2303,9 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "任务不存在" });
                 }
 
-                if (IsStoreScopedUser())
+                if (IsStoreScopedUser() && !await HasGlobalWarehouseOrderScopeAsync())
                 {
+                    // 仓库订货管理权限创建的全局同步任务，读取状态时也不能再按店长分店范围拦截。
                     if (job.StoreCodes.Count == 0)
                     {
                         return Forbid();
@@ -2160,7 +2383,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2207,7 +2430,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden = await RequireAnyPermissionAsync(WarehouseOrderSyncPermissions);
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2231,8 +2454,9 @@ namespace BlazorApp.Api.Controllers.React
                         : Forbid();
                 }
 
-                if (IsStoreScopedUser())
+                if (IsStoreScopedUser() && !await HasGlobalWarehouseOrderScopeAsync())
                 {
+                    // 增量 HQ 同步 job 状态读取跟随仓库订货管理权限，全量 job 仍由上面的真实 Admin 分支控制。
                     if (job.StoreCodes.Count == 0)
                     {
                         return Forbid();
@@ -2266,7 +2490,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(orderGuid);
                 if (forbidden != null)
                 {
@@ -2296,7 +2520,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(orderGuid);
                 if (forbidden != null)
                 {
@@ -2326,7 +2550,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopeAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
@@ -2356,7 +2580,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireAnyPermissionAsync(OrderEditPermissions)
+                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
                     ?? await RequireOrderScopesAsync(request.OrderGUIDs);
                 if (forbidden != null)
                 {

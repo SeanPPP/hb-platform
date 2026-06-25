@@ -158,6 +158,18 @@ public class ControllerAuthorizationMetadataTests
             nameof(MobileAppBuildsController.History),
             Permissions.System.ViewAppDownloads
         );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.GetOtaUpdates),
+            Permissions.System.ViewAppDownloads
+        );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.UpsertOtaUpdate),
+            Permissions.System.ManageAppDownloads
+        );
+        yield return Policy<MobileAppBuildsController>(
+            nameof(MobileAppBuildsController.CreateOtaRollbackCommand),
+            Permissions.System.ManageAppDownloads
+        );
 
         yield return Policy<DomesticProductsController>(
             nameof(DomesticProductsController.GetDomesticProducts),

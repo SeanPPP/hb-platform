@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Controllers.React;
@@ -785,6 +786,114 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CheckProductsAsync_主商品匹配且有副条码时_默认添加多码()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-add-multi-check", "INV-ADD-MULTI-CHECK", new DateTime(2026, 1, 9));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-add-multi-check",
+                ProductCode = "P-ADD-MULTI-CHECK",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                LocalSupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-add-multi-check",
+                InvoiceGUID = "invoice-add-multi-check",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                Quantity = 48,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-add-multi-check",
+                DetailGuids = new List<string> { "detail-add-multi-check" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-add-multi-check");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("P-ADD-MULTI-CHECK", detail.ProductCode);
+            Assert.Equal((int)DetailAction.AddMultiCode, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task CheckProductsAsync_有副条码但主条码不属于匹配商品时_等待操作()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-add-multi-mismatch-check", "INV-ADD-MULTI-MISMATCH-CHECK", new DateTime(2026, 1, 9));
+            await _db.Insertable(new[]
+            {
+                new Product
+                {
+                    UUID = "product-add-multi-mismatch-target",
+                    ProductCode = "P-ADD-MULTI-MISMATCH-TARGET",
+                    ItemNumber = "88842",
+                    Barcode = "191554882676",
+                    ProductName = "Men Travel Perfume Assorted 35mL",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+                new Product
+                {
+                    UUID = "product-add-multi-mismatch-other",
+                    ProductCode = "P-ADD-MULTI-MISMATCH-OTHER",
+                    ItemNumber = "OTHER-88842",
+                    Barcode = "840417950853",
+                    ProductName = "Other Product",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-add-multi-mismatch-check",
+                InvoiceGUID = "invoice-add-multi-mismatch-check",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "88842",
+                Barcode = "840417950853",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                Quantity = 48,
+                PurchasePrice = 1.6546m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().CheckProductsAsync(new CheckProductsRequest
+            {
+                InvoiceGuid = "invoice-add-multi-mismatch-check",
+                DetailGuids = new List<string> { "detail-add-multi-mismatch-check" },
+            });
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-add-multi-mismatch-check");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("P-ADD-MULTI-MISMATCH-TARGET", detail.ProductCode);
+            Assert.Equal((int)DetailAction.WaitForOperation, detail.ActivityType);
+        }
+
+        [Fact]
         public async Task QueryInChunksParallelAsync_多Chunk查询使用独立连接()
         {
             var service = CreateService();
@@ -818,6 +927,7 @@ namespace BlazorApp.Api.Tests
             Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("ExpectedActions"));
             Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("ConfirmedCreateProductCount"));
             Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("ConfirmedAt"));
+            Assert.NotNull(typeof(BatchExecuteActionsRequestDto).GetProperty("NewProductProductTypeSelections"));
 
             var actionDtoType = typeof(BatchExecuteActionsRequestDto).Assembly.GetType(
                 "BlazorApp.Shared.DTOs.BatchExecuteExpectedActionDto"
@@ -827,6 +937,13 @@ namespace BlazorApp.Api.Tests
             Assert.NotNull(actionDtoType!.GetProperty("DetailGuid"));
             Assert.NotNull(actionDtoType.GetProperty("ActivityType"));
             Assert.NotNull(actionDtoType.GetProperty("Action"));
+
+            var productTypeSelectionDtoType = typeof(BatchExecuteActionsRequestDto).Assembly.GetType(
+                "BlazorApp.Shared.DTOs.BatchExecuteNewProductProductTypeSelectionDto"
+            );
+            Assert.NotNull(productTypeSelectionDtoType);
+            Assert.NotNull(productTypeSelectionDtoType!.GetProperty("DetailGuid"));
+            Assert.NotNull(productTypeSelectionDtoType.GetProperty("ProductType"));
         }
 
         [Fact]
@@ -1311,6 +1428,353 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchExecuteActionsAsync_AddMultiCode_副条码分别写入多码表()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-multi-secondary", "INV-MULTI-SECONDARY", new DateTime(2026, 1, 12));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-multi-secondary",
+                ProductCode = "P-MULTI-SECONDARY",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                LocalSupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-multi-secondary",
+                InvoiceGUID = "invoice-multi-secondary",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-MULTI-SECONDARY",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                PurchasePrice = 1.6546m,
+                ActivityType = (int)DetailAction.AddMultiCode,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-multi-secondary",
+                new List<string> { "detail-multi-secondary" },
+                "tester"
+            );
+
+            var productSetCodes = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == "P-MULTI-SECONDARY")
+                .OrderBy(x => x.SetBarcode)
+                .ToListAsync();
+            var storeMultiCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == "P-MULTI-SECONDARY")
+                .OrderBy(x => x.MultiBarcode)
+                .ToListAsync();
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-multi-secondary");
+            var product = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == "P-MULTI-SECONDARY");
+
+            Assert.True(result.Success, $"{result.ErrorCode} {result.Message}");
+            Assert.Equal(2, result.Data?.AddedMultiCodes);
+            Assert.Equal(2, product.ProductType);
+            Assert.Equal(new[] { "191554882669", "191554882690" }, productSetCodes.Select(x => x.SetBarcode).ToArray());
+            Assert.Equal(new[] { "191554882669", "191554882690" }, storeMultiCodes.Select(x => x.MultiBarcode).ToArray());
+            Assert.Equal(99, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_AddMultiCode_副条码已存在时回滚()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-multi-secondary-dup", "INV-MULTI-SECONDARY-DUP", new DateTime(2026, 1, 12));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-multi-secondary-dup",
+                ProductCode = "P-MULTI-SECONDARY-DUP",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                LocalSupplierCode = "SUP01",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreMultiCodeProduct
+            {
+                UUID = "multi-existing-secondary",
+                StoreCode = "S01",
+                ProductCode = "P-MULTI-SECONDARY-DUP",
+                MultiCodeProductCode = "MULTI-SECONDARY-001",
+                StoreMultiCodeProductCode = "S01MULTI-SECONDARY-001",
+                MultiBarcode = "191554882669",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-multi-secondary-dup",
+                InvoiceGUID = "invoice-multi-secondary-dup",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-MULTI-SECONDARY-DUP",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                PurchasePrice = 1.6546m,
+                ActivityType = (int)DetailAction.AddMultiCode,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-multi-secondary-dup",
+                new List<string> { "detail-multi-secondary-dup" },
+                "tester"
+            );
+
+            var multiCodeCount = await _db.Queryable<StoreMultiCodeProduct>().CountAsync();
+            var productSetCodeCount = await _db.Queryable<ProductSetCode>().CountAsync();
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            var validationDetails = Assert.IsType<BatchExecuteActionsResultDto>(result.Details);
+            Assert.Contains(validationDetails.Errors, error => error.Contains("191554882669", StringComparison.Ordinal));
+            Assert.Equal(1, multiCodeCount);
+            Assert.Equal(0, productSetCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_AddMultiCode_副条码主条码不属于商品时校验失败并回滚()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-multi-secondary-mismatch", "INV-MULTI-SECONDARY-MISMATCH", new DateTime(2026, 1, 12));
+            await _db.Insertable(new[]
+            {
+                new Product
+                {
+                    UUID = "product-multi-secondary-mismatch-target",
+                    ProductCode = "P-MULTI-SECONDARY-MISMATCH-TARGET",
+                    ItemNumber = "88842",
+                    Barcode = "191554882676",
+                    ProductName = "Men Travel Perfume Assorted 35mL",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+                new Product
+                {
+                    UUID = "product-multi-secondary-mismatch-other",
+                    ProductCode = "P-MULTI-SECONDARY-MISMATCH-OTHER",
+                    ItemNumber = "OTHER-88842",
+                    Barcode = "840417950853",
+                    ProductName = "Other Product",
+                    LocalSupplierCode = "SUP01",
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-multi-secondary-mismatch",
+                InvoiceGUID = "invoice-multi-secondary-mismatch",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-MULTI-SECONDARY-MISMATCH-TARGET",
+                ItemNumber = "88842",
+                Barcode = "840417950853",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                PurchasePrice = 1.6546m,
+                ActivityType = (int)DetailAction.AddMultiCode,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-multi-secondary-mismatch",
+                new List<string> { "detail-multi-secondary-mismatch" },
+                "tester"
+            );
+
+            var multiCodeCount = await _db.Queryable<StoreMultiCodeProduct>().CountAsync();
+            var productSetCodeCount = await _db.Queryable<ProductSetCode>().CountAsync();
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            var validationDetails = Assert.IsType<BatchExecuteActionsResultDto>(result.Details);
+            Assert.Contains(validationDetails.Errors, error => error.Contains("主条码未匹配当前商品", StringComparison.Ordinal));
+            Assert.Equal(0, multiCodeCount);
+            Assert.Equal(0, productSetCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_CreateProductWithAdditionalBarcodes_选择多码时写入两张多码表()
+        {
+            await SeedStoreAndSupplierAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-guid-2",
+                StoreCode = "S02",
+                StoreName = "Melbourne Store",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await InsertInvoiceAsync("invoice-create-multicode-product", "INV-CREATE-MULTICODE", new DateTime(2026, 1, 12));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-create-multicode-product",
+                InvoiceGUID = "invoice-create-multicode-product",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "88842",
+                Barcode = "191554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "191554882690",
+                    "191554882669",
+                }),
+                ProductName = "Men Travel Perfume Assorted 35mL",
+                PurchasePrice = 1.6546m,
+                RetailPrice = 3.99m,
+                ActivityType = (int)DetailAction.CreateProduct,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-create-multicode-product",
+                new List<string> { "detail-create-multicode-product" },
+                "tester",
+                new List<BatchExecuteNewProductProductTypeSelectionDto>
+                {
+                    new() { DetailGuid = "detail-create-multicode-product", ProductType = 2 },
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ItemNumber == "88842");
+            var productSetCodes = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .OrderBy(x => x.SetBarcode)
+                .ToListAsync();
+            var storeMultiCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .OrderBy(x => x.StoreCode)
+                .OrderBy(x => x.MultiBarcode)
+                .ToListAsync();
+            var storePriceCount = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .CountAsync();
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.DetailGUID == "detail-create-multicode-product");
+
+            Assert.True(result.Success, $"{result.Code} {result.Message}");
+            Assert.Equal(1, result.Data?.CreatedProducts);
+            Assert.Equal(2, result.Data?.AddedMultiCodes);
+            Assert.Equal(2, product.ProductType);
+            Assert.Equal(2, storePriceCount);
+            Assert.Equal(new[] { "191554882669", "191554882690" }, productSetCodes.Select(x => x.SetBarcode).ToArray());
+            Assert.Equal(4, storeMultiCodes.Count);
+            Assert.Equal(new[] { "S01", "S02" }, storeMultiCodes.Select(x => x.StoreCode).Distinct().OrderBy(x => x).ToArray());
+            Assert.Equal(99, detail.ActivityType);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_CreateProductWithAdditionalBarcodes_选择套装时仍写入副码关系()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-create-set-product", "INV-CREATE-SET", new DateTime(2026, 1, 12));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-create-set-product",
+                InvoiceGUID = "invoice-create-set-product",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "SET-88842",
+                Barcode = "291554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "291554882690",
+                }),
+                ProductName = "Set Product With Additional Barcode",
+                PurchasePrice = 2.00m,
+                RetailPrice = 5.00m,
+                ActivityType = (int)DetailAction.CreateProduct,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-create-set-product",
+                new List<string> { "detail-create-set-product" },
+                "tester",
+                new List<BatchExecuteNewProductProductTypeSelectionDto>
+                {
+                    new() { DetailGuid = "detail-create-set-product", ProductType = 1 },
+                }
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ItemNumber == "SET-88842");
+            var productSetCodeCount = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .CountAsync();
+            var storeMultiCodeCount = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == product.ProductCode)
+                .CountAsync();
+
+            Assert.True(result.Success, $"{result.Code} {result.Message}");
+            Assert.Equal(1, product.ProductType);
+            Assert.Equal(1, result.Data?.AddedMultiCodes);
+            Assert.Equal(1, productSetCodeCount);
+            Assert.Equal(1, storeMultiCodeCount);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_CreateProductWithAdditionalBarcodes_缺少类型选择时回滚()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-create-missing-type", "INV-CREATE-MISSING-TYPE", new DateTime(2026, 1, 12));
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-create-missing-type",
+                InvoiceGUID = "invoice-create-missing-type",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = "MISSING-TYPE",
+                Barcode = "391554882676",
+                AdditionalBarcodesJson = JsonSerializer.Serialize(new[]
+                {
+                    "391554882690",
+                }),
+                ProductName = "Missing Type Product",
+                PurchasePrice = 2.00m,
+                RetailPrice = 5.00m,
+                ActivityType = (int)DetailAction.CreateProduct,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-create-missing-type",
+                new List<string> { "detail-create-missing-type" },
+                "tester"
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            var validationDetails = Assert.IsType<BatchExecuteActionsResultDto>(result.Details);
+            Assert.Contains(validationDetails.Errors, error => error.Contains("必须选择商品类型", StringComparison.Ordinal));
+            Assert.Equal(0, await _db.Queryable<Product>().Where(x => x.ItemNumber == "MISSING-TYPE").CountAsync());
+            Assert.Equal(0, await _db.Queryable<ProductSetCode>().CountAsync());
+            Assert.Equal(0, await _db.Queryable<StoreMultiCodeProduct>().CountAsync());
+        }
+
+        [Fact]
         public async Task BatchUpdateDetailsAsync_只更新勾选字段并允许False和0持久化()
         {
             await SeedStoreAndSupplierAsync();
@@ -1504,6 +1968,91 @@ namespace BlazorApp.Api.Tests
             Assert.True(result.Success, result.Message);
             Assert.True(detail.AutoPricing);
             Assert.Equal(9.99m, detail.RetailPrice);
+        }
+
+        [Fact]
+        public async Task PasteDetailsAsync_多条码单元格保存主条码和副条码()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-paste-multi-barcode", "INV-PASTE-MULTI-BARCODE", new DateTime(2026, 1, 20));
+
+            var result = await CreateService().PasteDetailsAsync(
+                new PasteDetailsRequest
+                {
+                    InvoiceGuid = "invoice-paste-multi-barcode",
+                    Items = new List<PastedDetailItemDto>
+                    {
+                        new()
+                        {
+                            ItemNumber = "88841",
+                            Barcode = "191554890459,191554890480,191554890497,191554890473,191554888418",
+                            ProductName = "Women Travel Perfume Assorted 35mL",
+                            Quantity = 48,
+                            PurchasePrice = 1.6546m,
+                        },
+                    },
+                },
+                "tester"
+            );
+
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(x => x.InvoiceGUID == "invoice-paste-multi-barcode");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal("191554890459", detail.Barcode);
+            Assert.Equal(
+                new[]
+                {
+                    "191554890480",
+                    "191554890497",
+                    "191554890473",
+                    "191554888418",
+                },
+                JsonSerializer.Deserialize<List<string>>(detail.AdditionalBarcodesJson!)!
+            );
+            Assert.Equal(79.4208m, detail.Amount);
+        }
+
+        [Fact]
+        public async Task PasteDetailsAsync_忽略供应商表头行()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-paste-header", "INV-PASTE-HEADER", new DateTime(2026, 1, 21));
+
+            var result = await CreateService().PasteDetailsAsync(
+                new PasteDetailsRequest
+                {
+                    InvoiceGuid = "invoice-paste-header",
+                    Items = new List<PastedDetailItemDto>
+                    {
+                        new()
+                        {
+                            ItemNumber = "Item No.",
+                            Barcode = "Barcode",
+                            ProductName = "Description",
+                        },
+                        new()
+                        {
+                            ItemNumber = "15085-1xLV5085",
+                            Barcode = "840417950853",
+                            ProductName = "Women Perfumen New Crystal Absolute",
+                            Quantity = 6,
+                            PurchasePrice = 2.5000m,
+                        },
+                    },
+                },
+                "tester"
+            );
+
+            var details = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .Where(x => x.InvoiceGUID == "invoice-paste-header")
+                .OrderBy(x => x.ItemNumber)
+                .ToListAsync();
+
+            Assert.True(result.Success, result.Message);
+            Assert.Single(details);
+            Assert.Equal("15085-1xLV5085", details[0].ItemNumber);
+            Assert.Equal(15.0000m, details[0].Amount);
         }
 
         [Fact]

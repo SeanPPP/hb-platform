@@ -162,6 +162,8 @@ try {
         pageNumber: 2,
         pageSize: 20,
         hasMore: true,
+        totalComputed: false,
+        statsComputed: false,
         tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 },
       },
     }), {
@@ -177,6 +179,8 @@ try {
     selectedTags: ['new', 'inactive'],
     sortBy: 'itemNumber',
     sortOrder: 'ascend',
+    includeTotal: false,
+    includeStats: false,
   }, abortController.signal)
 
   assertEqual(
@@ -196,6 +200,8 @@ try {
       selectedTags: ['new', 'inactive'],
       sortBy: 'itemNumber',
       sortOrder: 'ascend',
+      includeTotal: false,
+      includeStats: false,
     },
     'queryContainerProducts 应发送远程查询 body 且保留 containerGuid',
   )
@@ -207,6 +213,8 @@ try {
       pageNumber: 2,
       pageSize: 20,
       hasMore: true,
+      totalComputed: false,
+      statsComputed: false,
       tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 },
     },
     'queryContainerProducts 应返回 data 内的分页明细结果',

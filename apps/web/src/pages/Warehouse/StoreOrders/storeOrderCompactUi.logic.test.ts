@@ -228,6 +228,7 @@ async function main() {
     assert(readNumericValue(locationColumn, /width:\s*(\d+)/) <= 85, '货位列宽应压到 85 以内')
     assert(readNumericValue(allocQuantityColumn, /style=\{\{\s*width:\s*(\d+)/) <= 62, '发货数输入框宽度应压到 62 以内')
     assert(readNumericValue(importPriceColumn, /style=\{\{\s*width:\s*(\d+)/) <= 62, '进口价输入框宽度应压到 62 以内')
+    assert(importPriceColumn.includes('controls={false}'), '进口价输入框应隐藏加减按钮，避免误触改价')
     assert(scrollX >= 1280 && scrollX <= 1320, '主表 scroll.x 应收敛到 1280-1320')
   })
   if (densityFailure) failures.push(densityFailure)
@@ -303,6 +304,7 @@ async function main() {
     assert(detailSource.includes('handleSaveEditedLines'), '详情页缺少整单保存处理函数')
     assert(detailSource.includes('getEditedLinePayloads()'), '整单保存应从已修改行生成 payload')
     assert(detailSource.includes('batchUpdateStoreOrderLines({'), '整单保存应复用明细批量保存接口')
+    assert(detailSource.includes('detailGUID: item.detailGUID'), '整单保存 payload 应携带明细 GUID 以命中后端快路径')
     assert(detailSource.includes("t('storeOrders.detail.saveEditedLines'"), '详情页缺少整单保存按钮文案')
     assert(
       detailSource.includes('disabled={isReadonlyOrder || isPasteOptimisticPreviewActive || editedLineCount === 0}'),
@@ -362,18 +364,23 @@ async function main() {
     ]
 
     assert(
-      storeOrdersSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
-      '列表页应使用仓库管理员操作权限开关',
+      storeOrdersSource.includes('const isWarehouseStaffOnly =') &&
+        storeOrdersSource.includes('const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly') &&
+        storeOrdersSource.includes('const canCreateStoreOrder = access.canWriteOrder || canUseWarehouseManagerActions') &&
+        storeOrdersSource.includes('const canDeleteStoreOrder = access.canDeleteOrder || canUseWarehouseManagerActions'),
+      '列表页应使用仓库订货管理权限开关，并排除纯 WarehouseStaff 写权限',
     )
     assert(
       storeOrdersSource.includes('{canUseWarehouseManagerActions ? (') &&
         storeOrdersSource.includes("t('storeOrders.syncIncrementalOrders')") &&
         storeOrdersSource.includes("t('storeOrders.fixStoreGuid', '修复分店 GUID')") &&
         storeOrdersSource.includes("t('storeOrders.newOrder')") &&
+        storeOrdersSource.includes('disabled={!canCreateStoreOrder}') &&
         storeOrdersSource.includes("t('storeOrders.copyOrder'") &&
         storeOrdersSource.includes("t('storeOrders.batchSubmitted')") &&
-        storeOrdersSource.includes("t('storeOrders.batchCompleted')"),
-      '列表页同步、修复、新建、复制和批量状态按钮应仅仓库管理员可见',
+        storeOrdersSource.includes("t('storeOrders.batchCompleted')") &&
+        storeOrdersSource.includes('{canDeleteStoreOrder ? ('),
+      '列表页同步、修复、新建、复制、删除和批量状态按钮应仅仓库订货管理权限可见',
     )
     assert(
       storeOrdersSource.includes('canUseWarehouseManagerActions && (record.flowStatus === FlowStatus.Submitted || record.flowStatus === FlowStatus.Picking)'),
@@ -384,8 +391,9 @@ async function main() {
       '列表页勾选列应仅仓库管理员可见',
     )
     assert(
-      detailSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
-      '详情页应使用仓库管理员操作权限开关',
+      detailSource.includes('const isWarehouseStaffOnly =') &&
+        detailSource.includes('const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly'),
+      '详情页应使用仓库订货管理权限开关，并排除纯 WarehouseStaff 写权限',
     )
     assert(
       detailSource.includes('const canUseStoreOrderDocumentActions = access.isWarehouseStaff'),
@@ -443,11 +451,48 @@ async function main() {
     assert(detailSource.includes('Checkbox') && detailSource.includes('defaultChecked'), '进口价同步确认应提供默认勾选的 Checkbox')
     assert(detailSource.includes("t('storeOrders.detail.syncImportPriceCheckbox'"), '进口价同步确认缺少勾选文案')
     assert(detailSource.includes('getEditedLinePayloads(syncImportPrice)'), '整单保存应按勾选状态决定是否提交进口价')
-    assert(detailSource.includes('syncImportPrice ? importPrice : undefined'), '单行保存应按勾选状态决定是否提交进口价')
+    assert(detailSource.includes('importPrice: importPriceChanged ? importPrice : undefined'), '单行保存应始终提交已变更的订单明细进口价')
+    assert(detailSource.includes('syncImportPrice: importPriceChanged ? syncImportPrice : undefined'), '单行保存应单独提交商品/分店同步开关')
+    assert(detailSource.includes('importPrice: importPriceChanged ? edited.importPrice : undefined'), '整单保存应始终提交已变更的订单明细进口价')
+    assert(detailSource.includes('syncImportPrice: importPriceChanged ? syncImportPrice : undefined'), '整单保存应单独提交商品/分店同步开关')
     assert(detailSource.includes('hasImportPriceChanged(line)'), '单行保存应判断进口价是否变更')
     assert(detailSource.includes('payloads.some((item) => item.importPriceChanged)'), '整单保存应判断本次是否包含进口价变更')
   })
   if (importPriceConfirmFailure) failures.push(importPriceConfirmFailure)
+
+  const batchCopyOrderQuantityFailure = await runTest('详情页批量修改应支持把订货数量复制给发货数量', () => {
+    const copyBranchStart = detailSource.indexOf("} else if (payload.type === 'copyOrderQuantityToAllocQuantity' && copyOrderQuantityPayload)")
+    const copyBranchEnd = detailSource.indexOf('} else {', copyBranchStart + 1)
+    const copyBranchSource = detailSource.slice(copyBranchStart, copyBranchEnd)
+
+    assert(
+      detailSource.includes('buildBatchCopyOrderQuantityPayload') &&
+        detailSource.includes('shouldSubmitBatchCopyOrderQuantity') &&
+        detailSource.includes("from './batchCopyOrderQuantity'"),
+      '详情页应复用批量复制订货数 helper',
+    )
+    assert(detailSource.includes("'copyOrderQuantityToAllocQuantity'"), '批量修改类型应包含复制订货数量到发货数量')
+    assert(detailSource.includes("t('storeOrders.batchCopyOrderQuantityToAllocQuantity')"), '批量弹窗应展示复制订货数量到发货数量选项')
+    assert(detailSource.includes("payload.type === 'copyOrderQuantityToAllocQuantity'"), '批量确认应处理复制订货数量分支')
+    assert(copyBranchSource.includes('const changedCopyLines = selectedLines.filter'), '复制订货数量分支应计算实际变化行数')
+    assert(copyBranchSource.includes('setEditingRows((current) => {'), '复制订货数量分支应只写页面草稿')
+    assert(copyBranchSource.includes('changedCopyLines.forEach'), '复制订货数量分支应只把实际变化行写入发货数草稿')
+    assert(copyBranchSource.includes('allocQuantity: Number(line.quantity ?? 0)'), '复制订货数量分支应把订货数量写入发货数草稿')
+    assert(!copyBranchSource.includes('batchUpdateStoreOrderLines('), '复制订货数量分支不应立即提交后端')
+    assert(!copyBranchSource.includes('loadDetail('), '复制订货数量分支不应立即刷新后端数据')
+    assert(detailSource.includes("t('storeOrders.batchCopyOrderQuantityDraftSuccess'"), '复制草稿成功后应提示用户点击整单保存')
+    assert(detailSource.includes("t('storeOrders.batchCopyOrderQuantityNoChange')"), '复制后无实际变化时应提示未产生新的发货数变更')
+    assert(detailSource.includes("handleBatchConfirm({ type: 'copyOrderQuantityToAllocQuantity' })"), '页面批量复制按钮应复用同一个批量确认分支')
+    assert(detailSource.includes('detailGUID: line.detailGUID'), '复制订货数量 payload 应携带明细 GUID 以命中后端快路径')
+    assert(detailSource.includes("t('storeOrders.batchCopyOrderQuantityConfirmTitle')"), '风险行应弹出二次确认标题')
+    assert(detailSource.includes("t('storeOrders.batchCopyOrderQuantityButton')"), '详情页应提供批量复制按钮短文案')
+    assert(
+      detailSource.indexOf("t('storeOrders.batchCopyOrderQuantityButton')") <
+        detailSource.indexOf("t('storeOrders.pickingList')"),
+      '批量复制按钮应放在配货单按钮前面',
+    )
+  })
+  if (batchCopyOrderQuantityFailure) failures.push(batchCopyOrderQuantityFailure)
 
   const detailActionButtonColorFailure = await runTest('详情页整单保存和 Excel 粘贴按钮应使用不同颜色', () => {
     assert(detailSource.includes('store-order-excel-paste-button'), 'Excel 粘贴按钮应有专用颜色 class')
@@ -467,6 +512,7 @@ async function main() {
     assert(detailSource.includes("event.key === 'ArrowDown'") && detailSource.includes("event.key === 'Enter'"), '键盘导航应处理 ArrowDown 和 Enter')
     assert(detailSource.includes("event.key === 'ArrowUp'"), '键盘导航应处理 ArrowUp')
     assert(detailSource.includes("field === 'allocQuantity' ? 'importPrice' : 'allocQuantity'"), '左右键应在发货数和进口价之间移动')
+    assert(detailSource.includes("focus?.({ cursor: 'all' })"), '方向键切入输入框后应默认全选文本，方便直接覆盖编辑')
     assert(detailMainTableSource.includes('onKeyDown={(event) => handleDetailInputKeyDown(event, record.detailGUID, \'allocQuantity\')}'), '发货数输入框应绑定键盘导航')
     assert(detailMainTableSource.includes('onKeyDown={(event) => handleDetailInputKeyDown(event, record.detailGUID, \'importPrice\')}'), '进口价输入框应绑定键盘导航')
     assert(!detailKeyboardHandlerSource.includes('updateStoreOrderLine') && !detailKeyboardHandlerSource.includes('batchUpdateStoreOrderLines'), '键盘移动不应自动调用保存接口')
@@ -476,10 +522,15 @@ async function main() {
   const amountLabelsFailure = await runTest('详情页顶部金额应显示预计销售额、订单金额 ex GST 和 GST 10%', () => {
     assert(detailSource.includes('estimatedSalesAmount'), '详情页缺少预计销售额计算')
     assert(detailSource.includes('gstAmount'), '详情页缺少 GST 10% 计算')
+    assert(detailSource.includes('const totalAllocQuantity = useMemo') && detailSource.includes('draftDelta'), '顶部发货数量应按后端总数叠加页面草稿差值')
+    assert(detailSource.includes('const totalAllocVolume = useMemo') && detailSource.includes('Number(item.volume) * (Number(editedAllocQuantity)'), '顶部发货体积应按页面草稿差值更新')
+    assert(detailSource.includes('draftTotalImportAmount') && detailSource.includes('Number(allocQuantity) * Number(importPrice) - Number(savedAmount)'), '订单金额 ex GST 应按页面草稿金额差值更新')
     assert(detailSource.includes('line.price') && detailSource.includes('line.allocQuantity'), '预计销售额应按贴牌价和当前发货数计算')
     assert(detailSource.includes("label={t('storeOrders.orderAmountLabel')}") && detailSource.includes('formatAmount(estimatedSalesAmount)'), '订单金额位置应改为显示预计销售额')
-    assert(detailSource.includes("label={t('storeOrders.importAmountLabel')}") && detailSource.includes('formatAmount(detail.totalImportAmount)'), '订单金额 ex GST 应沿用 totalImportAmount')
+    assert(detailSource.includes("label={t('storeOrders.importAmountLabel')}") && detailSource.includes('formatAmount(draftTotalImportAmount)'), '订单金额 ex GST 应显示草稿总金额')
     assert(detailSource.includes("label={t('storeOrders.gstAmountLabel')}") && detailSource.includes('formatAmount(gstAmount)'), '详情页应新增 GST 10% 显示')
+    assert(detailMainTableSource.includes('Number(edited.allocQuantity ?? record.allocQuantity ?? 0) * Number(edited.importPrice ?? record.importPrice ?? 0)'), '明细进口金额应按当前草稿发货数和进口价显示')
+    assert(detailMainTableSource.includes('editedAllocQuantity !== undefined') && detailMainTableSource.includes('Number(record.volume) * Number(editedAllocQuantity)'), '明细发货体积应按当前草稿发货数显示')
   })
   if (amountLabelsFailure) failures.push(amountLabelsFailure)
 

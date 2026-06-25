@@ -2,7 +2,7 @@
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography, message, notification, } from 'antd';
+import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
@@ -28,7 +28,7 @@ import CategoryTreePicker from './CategoryTreePicker';
 import ImportFromDomesticModal from './ImportFromDomesticModal';
 import ImportNonHbModal from './ImportNonHbModal';
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip, type WarehouseCategoryLookup, } from './categoryPath';
-import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, } from '../Categories/categoryProductFilters';
+import { ALL_PRODUCTS_FILTER_KEY, UNCATEGORIZED_PRODUCTS_FILTER_KEY, buildFilterCategoryOptions, buildFilterCategoryTreeOptions, } from '../Categories/categoryProductFilters';
 import { buildCategoryQueryValue, buildComparableFilterTokens, buildTextFilterTokens, getSingleFilterValue, normalizeTableFilters, parseComparableFilterTokens, parseTextFilterTokens, resolveCategoryFilterValueFromTableFilters, setFilterValues, type ComparableFilterMode, type TextFilterMode, type WarehouseProductColumnFilters, } from './columnFilters';
 interface ProductFormValues {
     supplierCode?: string;
@@ -292,6 +292,9 @@ const WAREHOUSE_PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'warehouse.products.act
 const WAREHOUSE_PRODUCT_HQ_SYNC_OPERATION_ID = 'warehouse-products-hq-sync';
 const WAREHOUSE_PRODUCT_HQ_SYNC_POLL_INTERVAL_MS = 2000;
 const WAREHOUSE_PRODUCT_HQ_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+// 仓库商品主表数据量大，默认展示 100 条并保留大分页选项，继续依赖现有虚拟表格和服务端分页。
+const WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE = 100;
+const WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS = ['50', '100', '200', '500', '1000'];
 const WAREHOUSE_PRODUCT_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.warehouseProducts.columnOrder.v1';
 const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = [
     'rowNumber',
@@ -583,6 +586,8 @@ export default function WarehouseProductsPage() {
     const [categories, setCategories] = useState<WarehouseCategoryNode[]>([]);
     const [categoryLoading, setCategoryLoading] = useState(false);
     const [categoryFilterValue, setCategoryFilterValue] = useState<string>(ALL_PRODUCTS_FILTER_KEY);
+    const [categoryFilterExpandedKeys, setCategoryFilterExpandedKeys] = useState<string[]>([]);
+    const [categoryFilterSearchText, setCategoryFilterSearchText] = useState('');
     const [columnFilters, setColumnFilters] = useState<WarehouseProductColumnFilters>({});
     const [categoryExpandedKeys, setCategoryExpandedKeys] = useState<string[]>([]);
     const [batchCategoryOpen, setBatchCategoryOpen] = useState(false);
@@ -595,7 +600,7 @@ export default function WarehouseProductsPage() {
     const [productType, setProductType] = useState<ProductType>();
     const [isActive, setIsActive] = useState<boolean>();
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(20);
+    const [pageSize, setPageSize] = useState(WAREHOUSE_PRODUCTS_DEFAULT_PAGE_SIZE);
     const [total, setTotal] = useState(0);
     const [sortField, setSortField] = useState('createdAt');
     const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('descend');
@@ -634,6 +639,8 @@ export default function WarehouseProductsPage() {
     const { access } = useAuthStore();
     const canImportNonHbProducts = access.isAdmin || access.isWarehouseManager;
     const categoryFilterOptions = useMemo(() => buildFilterCategoryOptions(categories, t, i18n.language), [categories, i18n.language, t]);
+    const categoryFilterTreeOptions = useMemo(() => buildFilterCategoryTreeOptions(categories, t, i18n.language), [categories, i18n.language, t]);
+    const hasCategoryFilterSearchText = categoryFilterSearchText.trim().length > 0;
     const domesticSupplierFilterOptions = useMemo(() => buildSupplierOptions(suppliers).map((item) => ({
         text: String(item.label),
         value: String(item.value),
@@ -976,7 +983,9 @@ export default function WarehouseProductsPage() {
             getCategoryTree()
                 .then((tree) => {
                 setCategories(tree);
-                setCategoryExpandedKeys(collectCategoryExpandedKeys(tree, 1));
+                const firstLevelExpandedKeys = collectCategoryExpandedKeys(tree, 1);
+                setCategoryExpandedKeys(firstLevelExpandedKeys);
+                setCategoryFilterExpandedKeys(firstLevelExpandedKeys);
             })
                 .catch((error) => {
                 console.error(error);
@@ -1741,7 +1750,32 @@ export default function WarehouseProductsPage() {
             setSupplierCode(value);
             setColumnFilters((current) => setFilterValues(current, 'domesticSupplierCode', value ? [value] : undefined));
         }} options={buildSupplierOptions(suppliers)} placeholder={t('warehouse.allDomesticSuppliers')} style={{ width: 240 }} showSearch filterOption={filterSupplierOption} allowClear/>
-          <Select value={categoryFilterValue} onChange={(value) => setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY)} options={categoryFilterOptions} placeholder={t('warehouse.categories.category', '分类')} style={{ width: 220 }} showSearch optionFilterProp="label" loading={categoryLoading} allowClear/>
+          {/* 顶部筛选使用真实分类树，避免多级分类继续依赖 -- 前缀伪缩进。 */}
+          <TreeSelect
+            value={categoryFilterValue}
+            onChange={(value) => {
+              setCategoryFilterValue(value || ALL_PRODUCTS_FILTER_KEY);
+              setCategoryFilterSearchText('');
+            }}
+            treeData={categoryFilterTreeOptions}
+            placeholder={t('warehouse.categories.category', '分类')}
+            style={{ width: 220 }}
+            showSearch
+            searchValue={categoryFilterSearchText}
+            onSearch={setCategoryFilterSearchText}
+            treeNodeFilterProp="searchText"
+            treeExpandedKeys={hasCategoryFilterSearchText ? undefined : categoryFilterExpandedKeys}
+            onTreeExpand={(keys) => {
+              // 搜索时交给 TreeSelect 自动展开命中路径；非搜索时保留用户手动展开状态。
+              if (!hasCategoryFilterSearchText) {
+                setCategoryFilterExpandedKeys(keys.map(String));
+              }
+            }}
+            popupMatchSelectWidth={320}
+            listHeight={360}
+            allowClear
+            notFoundContent={categoryLoading ? t('common.loading', '加载中') : t('warehouse.categories.noCategoryData', '暂无分类数据')}
+          />
           <Select value={productType} onChange={(value) => {
             setProductType(value);
             setColumnFilters((current) => setFilterValues(current, 'productType', value === undefined ? undefined : [String(value)]));
@@ -1805,6 +1839,7 @@ export default function WarehouseProductsPage() {
                 pageSize,
                 total,
                 showSizeChanger: true,
+                pageSizeOptions: WAREHOUSE_PRODUCTS_PAGE_SIZE_OPTIONS,
             }} onChange={(pagination: TablePaginationConfig, filters: Record<string, FilterValue | null>, sorter: SorterResult<WarehouseProductListItem> | SorterResult<WarehouseProductListItem>[], extra) => {
                 const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter;
                 const nextSortField = typeof nextSorter?.field === 'string' ? nextSorter.field : sortField;

@@ -574,7 +574,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task ScanLookupProducts_ThenAddToCart_ReusesShortTtlAuthorizationAndStoreScopeCache()
+    public async Task ScanLookupProducts_ThenAddToCart_AllowsWarehouseManageOrdersWithoutStoreScope()
     {
         var storeCode = "1024";
         var lookupRequest = new StoreOrderScanLookupRequestDto
@@ -642,10 +642,10 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                     It.IsAny<object?>(),
                     It.IsAny<string>()
                 ),
-            Times.Exactly(4)
+            Times.Exactly(5)
         );
-        scopeService.Verify(item => item.CanAccessStoreCodeAsync(storeCode), Times.Once);
-        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync(storeCode), Times.Never);
+        userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Never);
     }
 
     [Fact]
@@ -727,6 +727,359 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         Assert.IsType<ForbidResult>(result);
         service.VerifyNoOtherCalls();
         userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetImportPriceVariance_ForbidsWarehouseStaffLegacyManagePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetImportPriceVariance(
+            new StoreOrderImportPriceVarianceQueryDto()
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetImportPriceVariance_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceQueryDto();
+        var response = ApiResponse<StoreOrderImportPriceVarianceResultDto>.OK(
+            new StoreOrderImportPriceVarianceResultDto
+            {
+                Items = new List<StoreOrderImportPriceVarianceItemDto>(),
+                Summary = new StoreOrderImportPriceVarianceSummaryDto(),
+                SupplierSummaries = new List<StoreOrderImportPriceVarianceSupplierSummaryDto>(),
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.GetImportPriceVarianceAsync(request)).ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.GetImportPriceVariance(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetImportPriceVarianceDetails_ForbidsWarehouseStaffLegacyManagePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetImportPriceVarianceDetails(
+            new StoreOrderImportPriceVarianceDetailQueryDto { ProductCode = "P1" }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetImportPriceVarianceDetails_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceDetailQueryDto { ProductCode = "P1" };
+        var response = ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>.OK(
+            new StoreOrderImportPriceVarianceDetailResultDto
+            {
+                Items = new List<StoreOrderImportPriceVarianceDetailItemDto>(),
+                Summary = new StoreOrderImportPriceVarianceSummaryDto(),
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.GetImportPriceVarianceDetailsAsync(request)).ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.GetImportPriceVarianceDetails(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPrice_ForbidsOrderReadOnlyUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceDomesticPrice(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPrice_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+        {
+            ProductCode = "P1",
+            DomesticPrice = 12.3m,
+        };
+        var response = ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>.OK(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateImportPriceVarianceDomesticPriceAsync(request))
+            .ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceDomesticPrice(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceDomesticPrice_HidesInternalServiceException()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.UpdateImportPriceVarianceDomesticPriceAsync(
+                    It.IsAny<StoreOrderImportPriceVarianceDomesticPriceUpdateDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("sensitive sql detail"));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceDomesticPrice(
+            new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+            {
+                ProductCode = "P1",
+                DomesticPrice = 12.3m,
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain("sensitive", message);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPrice_ForbidsOrderReadOnlyUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPrice(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPrice_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+        {
+            ProductCode = "P1",
+            WarehouseImportPrice = 12.3m,
+        };
+        var response = ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>.OK(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateImportPriceVarianceWarehouseImportPriceAsync(request))
+            .ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPrice(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPrice_HidesInternalServiceException()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.UpdateImportPriceVarianceWarehouseImportPriceAsync(
+                    It.IsAny<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("sensitive sql detail"));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPrice(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+            {
+                ProductCode = "P1",
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain("sensitive", message);
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceBatch_ForbidsOrderReadOnlyUser()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.View),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPriceBatch(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { "P1" },
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceBatch_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+        {
+            ProductCodes = new List<string> { "P1", "P2" },
+            WarehouseImportPrice = 12.3m,
+        };
+        var response = ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>.OK(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto
+            {
+                UpdatedCount = 2,
+                ProductCodes = new List<string> { "P1", "P2" },
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(request))
+            .ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPriceBatch(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateImportPriceVarianceWarehouseImportPriceBatch_HidesInternalServiceException()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+                    It.IsAny<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("sensitive sql detail"));
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.UpdateImportPriceVarianceWarehouseImportPriceBatch(
+            new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+            {
+                ProductCodes = new List<string> { "P1" },
+                WarehouseImportPrice = 12.3m,
+            }
+        );
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(500, error.StatusCode);
+        var message = error.Value?.GetType().GetProperty("message")?.GetValue(error.Value) as string;
+        Assert.Equal("服务器内部错误", message);
+        Assert.DoesNotContain("sensitive", message);
+        service.VerifyAll();
     }
 
     [Fact]
@@ -829,6 +1182,186 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task WarehouseStaffLegacyManage_ForbidsStoreOrderWriteActions()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        Assert.IsType<ForbidResult>(
+            await controller.CreateOrder(new CreateStoreOrderDto { StoreCode = "S001" })
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.CopyOrder(
+                new CopyOrderDto
+                {
+                    SourceOrderGUID = "order-1",
+                    TargetStoreCode = "S001",
+                }
+            )
+        );
+        Assert.IsType<ForbidResult>(await controller.DeleteOrder("order-1"));
+        Assert.IsType<ForbidResult>(
+            await controller.UpdateOrderStatus(
+                new UpdateOrderStatusDto { OrderGUID = "order-1", NewStatus = 2 }
+            )
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.UpdateOrderOutboundDate(
+                new UpdateOrderOutboundDateDto
+                {
+                    OrderGuid = "order-1",
+                    OutboundDate = new DateTime(2026, 6, 7),
+                    CompleteOrder = true,
+                }
+            )
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.SyncMissingOrders(new SyncMissingOrdersRequestDto())
+        );
+
+        service.VerifyNoOtherCalls();
+        scopeService.Verify(item => item.CanAccessOrderAsync(It.IsAny<string>()), Times.Never);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetOrderList_AllowsWarehouseManageOrdersPermissionWhenStoreScopeRejects()
+    {
+        var expected = new PagedListReactDto<StoreOrderListItemDto>
+        {
+            Items = new List<StoreOrderListItemDto>(),
+            Total = 0,
+            PageNumber = 1,
+            PageSize = 20,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item =>
+                item.GetOrderListAsync(
+                    It.Is<StoreOrderListFilterDto>(filter => filter.StoreCode == "S999")
+                )
+            )
+            .ReturnsAsync(expected);
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.GetOrderList(
+            new StoreOrderListFilterDto { StoreCode = "S999" }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(expected, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateOrder_AllowsWarehouseManageOrdersPermissionWhenStoreScopeRejects()
+    {
+        var request = new CreateStoreOrderDto { StoreCode = "S999" };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.CreateOrderAsync(request))
+            .ReturnsAsync(ApiResponse<string>.OK("created-order"));
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.CreateOrder(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.CreateOrderAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
+    }
+
+    [Fact]
+    public async Task CopyOrder_AllowsWarehouseManageOrdersPermissionWhenOrderAndStoreScopeReject()
+    {
+        var request = new CopyOrderDto
+        {
+            SourceOrderGUID = "order-outside",
+            TargetStoreCode = "S999",
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.CopyOrderAsync(request))
+            .ReturnsAsync(
+                ApiResponse<CopyOrderResultDto>.OK(
+                    new CopyOrderResultDto { OrderGUID = "copy-order", OrderNo = "SO-1" }
+                )
+            );
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-outside")).ReturnsAsync(false);
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.CopyOrder(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.CopyOrderAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessOrderAsync("order-outside"), Times.Never);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
+    }
+
+    [Fact]
+    public async Task UpdateOrderStatus_AllowsWarehouseManageOrdersPermissionWhenOrderScopeRejects()
+    {
+        var request = new UpdateOrderStatusDto
+        {
+            OrderGUID = "order-outside",
+            NewStatus = 2,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateOrderStatusAsync("order-outside", 2))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-outside")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.UpdateOrderStatus(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.UpdateOrderStatusAsync("order-outside", 2), Times.Once);
+        scopeService.Verify(item => item.CanAccessOrderAsync("order-outside"), Times.Never);
+    }
+
+    [Fact]
     public async Task SyncMissingOrders_ForbidsWithoutWarehouseManageOrdersPermission()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
@@ -847,9 +1380,17 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task SyncMissingOrders_ForbidsWhenAnyRequestedStoreIsOutsideCurrentUserScope()
+    public async Task SyncMissingOrders_AllowsWarehouseManageOrdersOutsideRequestedStoreScope()
     {
+        var request = new SyncMissingOrdersRequestDto
+        {
+            StoreCodes = new List<string> { "S001", "S999" },
+        };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.SyncMissingOrdersFromHqAsync(request))
+            .ReturnsAsync(new SyncMissingOrdersResultDto { Success = true });
+
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
 
@@ -860,18 +1401,26 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             new[] { "StoreManager" }
         );
 
-        var result = await controller.SyncMissingOrders(
-            new SyncMissingOrdersRequestDto { StoreCodes = new List<string> { "S001", "S999" } }
-        );
+        var result = await controller.SyncMissingOrders(request);
 
-        Assert.IsType<ForbidResult>(result);
-        service.VerifyNoOtherCalls();
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.SyncMissingOrdersFromHqAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
     }
 
     [Fact]
-    public async Task SyncMissingOrders_ForbidsLegacyStoreCodeWhenStoreCodesAreBlank()
+    public async Task SyncMissingOrders_AllowsWarehouseManageOrdersLegacyStoreCodeWhenStoreCodesAreBlank()
     {
+        var request = new SyncMissingOrdersRequestDto
+        {
+            StoreCode = "S999",
+            StoreCodes = new List<string> { " " },
+        };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.SyncMissingOrdersFromHqAsync(request))
+            .ReturnsAsync(new SyncMissingOrdersResultDto { Success = true });
+
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
 
@@ -882,16 +1431,11 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             new[] { "StoreManager" }
         );
 
-        var result = await controller.SyncMissingOrders(
-            new SyncMissingOrdersRequestDto
-            {
-                StoreCode = "S999",
-                StoreCodes = new List<string> { " " },
-            }
-        );
+        var result = await controller.SyncMissingOrders(request);
 
-        Assert.IsType<ForbidResult>(result);
-        service.VerifyNoOtherCalls();
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.SyncMissingOrdersFromHqAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
     }
 
     [Fact]
@@ -937,8 +1481,9 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task SyncMissingOrders_WhenStoreNotSelectedForScopedUser_PassesAccessibleStores()
+    public async Task SyncMissingOrders_WhenWarehouseManageOrdersAndStoreNotSelected_PassesOriginalRequest()
     {
+        var request = new SyncMissingOrdersRequestDto();
         SyncMissingOrdersRequestDto? capturedRequest = null;
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         service
@@ -966,11 +1511,12 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             new[] { "StoreManager" }
         );
 
-        var result = await controller.SyncMissingOrders(new SyncMissingOrdersRequestDto());
+        var result = await controller.SyncMissingOrders(request);
 
         Assert.IsType<OkObjectResult>(result);
-        Assert.NotNull(capturedRequest);
-        Assert.Equal(new List<string> { "S001", "S002" }, capturedRequest!.StoreCodes);
+        Assert.Same(request, capturedRequest);
+        Assert.Null(capturedRequest!.StoreCodes);
+        scopeService.Verify(item => item.GetScopeAsync(), Times.Never);
     }
 
     [Fact]
@@ -1026,10 +1572,20 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task CreateSyncMissingOrdersJob_ForbidsWhenRequestedStoreIsOutsideCurrentUserScope()
+    public async Task CreateSyncMissingOrdersJob_AllowsWarehouseManageOrdersOutsideRequestedStoreScope()
     {
+        var request = new SyncMissingOrdersRequestDto
+        {
+            StoreCodes = new List<string> { "S001", "S999" },
+        };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         var jobService = new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict);
+        jobService
+            .Setup(item =>
+                item.StartJobAsync("user-1", request, It.IsAny<CancellationToken>())
+            )
+            .ReturnsAsync(new StoreOrderSyncJobDto { JobId = "job-1", Status = "Running" });
+
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
 
@@ -1041,18 +1597,21 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             jobService
         );
 
-        var result = await controller.CreateSyncMissingOrdersJob(
-            new SyncMissingOrdersRequestDto { StoreCodes = new List<string> { "S001", "S999" } }
-        );
+        var result = await controller.CreateSyncMissingOrdersJob(request);
 
-        Assert.IsType<ForbidResult>(result);
-        jobService.VerifyNoOtherCalls();
+        Assert.IsType<OkObjectResult>(result);
+        jobService.Verify(
+            item => item.StartJobAsync("user-1", request, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
         service.VerifyNoOtherCalls();
     }
 
     [Fact]
-    public async Task CreateSyncMissingOrdersJob_WhenStoreNotSelectedForScopedUser_PassesScopedStoresToJobService()
+    public async Task CreateSyncMissingOrdersJob_WhenWarehouseManageOrdersAndStoreNotSelected_PassesOriginalRequest()
     {
+        var request = new SyncMissingOrdersRequestDto();
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         var jobService = new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict);
         SyncMissingOrdersRequestDto? capturedRequest = null;
@@ -1104,13 +1663,14 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             jobService
         );
 
-        var result = await controller.CreateSyncMissingOrdersJob(new SyncMissingOrdersRequestDto());
+        var result = await controller.CreateSyncMissingOrdersJob(request);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         Assert.NotNull(ok.Value);
         Assert.Equal("user-1", capturedUserId);
-        Assert.NotNull(capturedRequest);
-        Assert.Equal(new List<string> { "S001", "S002" }, capturedRequest!.StoreCodes);
+        Assert.Same(request, capturedRequest);
+        Assert.Null(capturedRequest!.StoreCodes);
+        scopeService.Verify(item => item.GetScopeAsync(), Times.Never);
         jobService.VerifyAll();
         service.VerifyNoOtherCalls();
     }
@@ -1158,7 +1718,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task GetSyncMissingOrdersJob_ForbidsWhenJobContainsStoreOutsideCurrentUserScope()
+    public async Task GetSyncMissingOrdersJob_AllowsWarehouseManageOrdersWhenJobContainsStoreOutsideCurrentUserScope()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         var jobService = new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict);
@@ -1186,8 +1746,9 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         var result = await controller.GetSyncMissingOrdersJob("job-1");
 
-        Assert.IsType<ForbidResult>(result);
+        Assert.IsType<OkObjectResult>(result);
         jobService.VerifyAll();
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
         service.VerifyNoOtherCalls();
     }
 
@@ -1234,6 +1795,81 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateStoreOrderHqIncrementalSyncJob_AllowsWarehouseManageOrdersOutsideRequestedStoreScope()
+    {
+        var request = new StoreOrderHqSyncRequestDto
+        {
+            StoreCodes = new List<string> { "S001", "S999" },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var jobService = new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict);
+        jobService
+            .Setup(item =>
+                item.StartHqSyncJobAsync(
+                    "user-1",
+                    StoreOrderHqSyncMode.Incremental,
+                    request,
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(new StoreOrderSyncJobDto { JobId = "hq-job-1", Status = "Running" });
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" },
+            jobService
+        );
+
+        var result = await controller.CreateStoreOrderHqIncrementalSyncJob(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        jobService.VerifyAll();
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetStoreOrderHqSyncJob_AllowsWarehouseManageOrdersWhenIncrementalJobContainsStoreOutsideScope()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var jobService = new Mock<IStoreOrderSyncJobService>(MockBehavior.Strict);
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("S999")).ReturnsAsync(false);
+
+        jobService
+            .Setup(item => item.GetJobAsync("hq-job-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                new StoreOrderSyncJobDto
+                {
+                    JobId = "hq-job-1",
+                    Status = StoreOrderSyncJobStatusConstants.Running,
+                    Mode = StoreOrderHqSyncMode.Incremental.ToString(),
+                    StoreCodes = new List<string> { "S001", "S999" },
+                }
+            );
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" },
+            jobService
+        );
+
+        var result = await controller.GetStoreOrderHqSyncJob("hq-job-1");
+
+        Assert.IsType<OkObjectResult>(result);
+        jobService.VerifyAll();
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("S999"), Times.Never);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task GetOrderDetail_AllowsAuthorizedScopedUser_AndCallsService()
     {
         var service = new Mock<IStoreOrderReactService>();
@@ -1242,7 +1878,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                 item.GetOrderDetailAsync(
                     "order-1",
                     It.Is<StoreOrderDetailQueryDto>(query =>
-                        query.PageNumber == 1 && query.PageSize == 50
+                        query.PageNumber == 1
+                        && query.PageSize == StoreOrderDetailQueryDto.DefaultPageSize
                     )
                 )
             )
@@ -1269,13 +1906,15 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         var result = await controller.GetOrderDetail("order-1", new StoreOrderDetailQueryDto());
 
-        Assert.IsType<OkObjectResult>(result);
+        var okResult = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.True(okResult.StatusCode is null or Microsoft.AspNetCore.Http.StatusCodes.Status200OK);
         service.Verify(
             item =>
                 item.GetOrderDetailAsync(
                     "order-1",
                     It.Is<StoreOrderDetailQueryDto>(query =>
-                        query.PageNumber == 1 && query.PageSize == 50
+                        query.PageNumber == 1
+                        && query.PageSize == StoreOrderDetailQueryDto.DefaultPageSize
                     )
                 ),
             Times.Once
@@ -1321,7 +1960,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                 item.GetOrderDetailAsync(
                     "order-assigned",
                     It.Is<StoreOrderDetailQueryDto>(query =>
-                        query.PageNumber == 1 && query.PageSize == 50
+                        query.PageNumber == 1
+                        && query.PageSize == StoreOrderDetailQueryDto.DefaultPageSize
                     )
                 )
             )
@@ -1354,7 +1994,8 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             new StoreOrderDetailQueryDto()
         );
 
-        Assert.IsType<OkObjectResult>(result);
+        var okResult = Assert.IsAssignableFrom<ObjectResult>(result);
+        Assert.True(okResult.StatusCode is null or Microsoft.AspNetCore.Http.StatusCodes.Status200OK);
         service.VerifyAll();
         userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Once);
     }
@@ -1550,6 +2191,37 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         Assert.IsType<ForbidResult>(result);
         service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateOrderOutboundDate_AllowsWarehouseManageOrdersPermissionWhenOrderScopeRejects()
+    {
+        var request = new UpdateOrderOutboundDateDto
+        {
+            OrderGuid = "order-outside",
+            OutboundDate = new DateTime(2026, 6, 7),
+            CompleteOrder = true,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.UpdateOrderOutboundDateAsync(request))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessOrderAsync("order-outside")).ReturnsAsync(false);
+
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            scopeService,
+            new[] { "StoreManager" }
+        );
+
+        var result = await controller.UpdateOrderOutboundDate(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.UpdateOrderOutboundDateAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessOrderAsync("order-outside"), Times.Never);
     }
 
     [Fact]

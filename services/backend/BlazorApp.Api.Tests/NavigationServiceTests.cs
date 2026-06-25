@@ -40,6 +40,24 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsProductMovementReportWithoutDashboardPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+
+        var menu = _service.BuildMenu(user);
+
+        var salesIntelligence = Assert.Single(menu, item => item.Path == "/executive-sales-intelligence");
+        Assert.Contains(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/product-movement-report"
+        );
+        Assert.DoesNotContain(
+            salesIntelligence.Children!,
+            item => item.Path == "/executive-sales-intelligence/sales-detail-v2"
+        );
+    }
+
+    [Fact]
     public async Task BuildMenu_UsesDatabasePermissionsInsteadOfStalePermissionClaims()
     {
         using var harness = new NavigationTestHarness();
@@ -136,6 +154,30 @@ public class NavigationServiceTests
         var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
         Assert.Contains(posAdmin.Children!, item => item.Path == "/pos-admin/schedule-attendance");
         Assert.DoesNotContain(posAdmin.Children!, item => item.Path == "/pos-admin/sales-orders");
+    }
+
+    [Fact]
+    public void BuildMenu_ShowsLocalSupplierInvoicesWithLocalPurchasePermission()
+    {
+        var user = CreateUser(
+            new Claim("permission", Permissions.Dashboard.View),
+            new Claim("permission", Permissions.LocalPurchase.View)
+        );
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
+        var item = Assert.Single(
+            posAdmin.Children!,
+            child => child.Path == "/pos-admin/local-supplier-invoices"
+        );
+        Assert.Equal(Permissions.LocalPurchase.View, item.Permission);
+
+        var analysisItem = Assert.Single(
+            posAdmin.Children!,
+            child => child.Path == "/pos-admin/local-supplier-purchase-sales-analysis"
+        );
+        Assert.Equal(Permissions.LocalPurchase.View, analysisItem.Permission);
     }
 
     [Fact]
@@ -779,6 +821,23 @@ public class NavigationServiceTests
     }
 
     [Theory]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetSalesAnalysis))]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysis))]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisStoreOptions))]
+    [InlineData(nameof(ReactLocalSupplierInvoiceSalesAnalysisController.GetPurchaseSalesAnalysisSupplierOptions))]
+    public void LocalSupplierInvoiceSalesAnalysisEndpoints_RequireLocalPurchaseViewPermission(
+        string methodName
+    )
+    {
+        var authorizeAttribute = GetMethodAuthorizeAttribute(
+            typeof(ReactLocalSupplierInvoiceSalesAnalysisController),
+            methodName
+        );
+
+        Assert.Equal(Permissions.LocalPurchase.View, authorizeAttribute.Policy);
+    }
+
+    [Theory]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.Create))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.Update))]
     [InlineData(nameof(ReactLocalSupplierInvoicesController.BatchUpsertDetails))]
@@ -856,8 +915,14 @@ public class NavigationServiceTests
         var warehouseMenu = Assert.Single(menu);
         Assert.Equal("/warehouse", warehouseMenu.Path);
 
-        var storeOrderMenu = Assert.Single(warehouseMenu.Children!);
-        Assert.Equal("/warehouse/store-orders", storeOrderMenu.Path);
+        var children = warehouseMenu.Children!;
+        Assert.Equal(
+            new[]
+            {
+                "/warehouse/store-orders",
+            },
+            children.Select(item => item.Path).ToArray()
+        );
         Assert.DoesNotContain(menu, item => item.Path == "/dashboard");
         Assert.DoesNotContain(menu, item => item.Path == "/pos-admin");
         Assert.DoesNotContain(

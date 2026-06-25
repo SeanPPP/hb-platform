@@ -59,12 +59,15 @@ function createEmptyAccess(): AccessControl {
     canManageWarehouse: false,
     canManageStore: false,
     canViewReports: false,
+    canViewSalesIntelligence: false,
+    canViewProductMovementReport: false,
     canExportData: false,
     canModifyPrice: false,
     canDeletePrice: false,
     // 新细粒度权限
     canManageWarehouseProducts: false,
     canManageWarehouseOrders: false,
+    canManageStoreOrderImportPriceVariance: false,
     canManageWarehouseCategories: false,
     canManageWarehouseLocations: false,
     canViewContainers: false,
@@ -101,6 +104,7 @@ function createEmptyAccess(): AccessControl {
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
+    canManageAppDownloads: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
     canViewPosProducts: false,
@@ -153,6 +157,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasRole('WarehouseStaff') ||
     hasRole('仓库员工') ||
     hasRole('WarehouseManager')
+  const isWarehouseStaffOnly =
+    isWarehouseStaff &&
+    !isAdmin &&
+    !isWarehouseManager &&
+    (hasRole('WarehouseStaff') || hasRole('仓库员工'))
   const isStoreStaff = hasRole('StoreStaff') || hasRole('店铺员工')
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager
   const onlyOrder = onlyRole('Order') || hasRole('订货员')
@@ -203,6 +212,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canDeleteProduct = isAdmin || hasPermission(P.Products.Delete)
 
   const canViewReports = isAdmin || hasPermission(P.Reports.View)
+  const canViewProductMovementReport =
+    isAdmin || hasPermission(P.Reports.ProductMovementView) || hasPermission(P.Reports.View)
+  const canViewSalesIntelligence = canViewReports || canViewProductMovementReport
   const canExportData = isAdmin || hasPermission(P.Reports.Export)
   const canModifyPrice = isAdmin || hasPermission(P.Prices.Modify)
   const canDeletePrice = isAdmin || hasPermission(P.Prices.Delete)
@@ -213,6 +225,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     isAdmin || hasPermission(P.Warehouse.ManageProducts) || hasPermission(P.Warehouse.Manage)
   const canManageWarehouseOrders =
     isAdmin || hasPermission(P.Warehouse.ManageOrders) || hasPermission(P.Warehouse.Manage)
+  // 首柜价差异报表暴露全局基准差异和可编辑价格入口，纯 WarehouseStaff 仍只保留分店订货文档入口。
+  const canManageStoreOrderImportPriceVariance =
+    canManageWarehouseOrders && !isWarehouseStaffOnly
   const canManageWarehouseCategories =
     isAdmin || hasPermission(P.Warehouse.ManageCategories) || hasPermission(P.Warehouse.Manage)
   const canManageWarehouseLocations =
@@ -290,6 +305,8 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings)
   // App 下载页只认独立系统权限，非 Admin 需要后台显式分配。
   const canViewAppDownloads = isAdmin || hasPermission(P.System.ViewAppDownloads)
+  // OTA 登记和回撤命令属于发布管理动作，和只读下载页权限分开控制。
+  const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
@@ -328,12 +345,15 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageWarehouse,
     canManageStore,
     canViewReports,
+    canViewSalesIntelligence,
+    canViewProductMovementReport,
     canExportData,
     canModifyPrice,
     canDeletePrice,
     // 新细粒度
     canManageWarehouseProducts,
     canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
     canManageWarehouseCategories,
     canManageWarehouseLocations,
     canViewContainers,
@@ -370,6 +390,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,
+    canManageAppDownloads,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
     canViewPosProducts,

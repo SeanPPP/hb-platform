@@ -114,6 +114,7 @@ namespace BlazorApp.Shared.Constants
         {
             public const string View = "Reports.View";
             public const string Export = "Reports.Export";
+            public const string ProductMovementView = "Reports.ProductMovement.View";
         }
 
         public static class StoreProducts
@@ -159,6 +160,7 @@ namespace BlazorApp.Shared.Constants
             {
                 [LocalPurchase.View] = ["LocalInvocie.View"],
                 [LocalPurchase.Edit] = ["LocalInvocie.Edit"],
+                [Reports.ProductMovementView] = [Reports.View],
             };
 
         public static class AustralianSuppliers
@@ -239,6 +241,7 @@ namespace BlazorApp.Shared.Constants
             public const string ManageScheduledTasks = "System.ManageScheduledTasks";
             public const string ManageSettings = "System.ManageSettings";
             public const string ViewAppDownloads = "System.ViewAppDownloads";
+            public const string ManageAppDownloads = "System.ManageAppDownloads";
         }
 
         public static class Dashboard

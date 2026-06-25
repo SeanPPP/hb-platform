@@ -21,7 +21,8 @@ namespace BlazorApp.Api.Services.React
         private const string WarehouseEmail = "WAREHOUSE EMAIL: dong@hotbargain.com.au";
         private const string PaymentDetailTitle = "PAYMENT DETAIL: DIRECT DEBIT";
         private const string PaymentName = "HOT BARGAIN INTERNATIONAL";
-        private const string PaymentBsb = "12532";
+        // 公司收款 BSB 需保留银行分隔符，PDF/邮件附件与网页发票保持一致。
+        private const string PaymentBsb = "012-532";
         private const string PaymentAccount = "208034605";
         private const string PaymentDisclaimer =
             "All products remain the property of Hot Bargain International Pty Ltd until payment is received in full for the invoiced amount. Payment strictly within 30 days of the invoice date.";

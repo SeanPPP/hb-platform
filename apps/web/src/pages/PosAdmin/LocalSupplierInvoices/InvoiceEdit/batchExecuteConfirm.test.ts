@@ -7,6 +7,7 @@ import {
   buildBatchExecuteConfirmText,
   buildBatchExecuteSnapshot,
   getBatchExecuteErrorFeedback,
+  getNewProductWithAdditionalBarcodesRows,
   constrainSelectedRowKeysToVisibleDetails,
   countSelectedBatchExecuteActions,
 } from './batchExecuteConfirm'
@@ -62,8 +63,57 @@ async function main() {
 
     assertEqual(result.selectedCount, 3, '应统计选中条数')
     assertEqual(result.createProductCount, 2, 'rowActions 应覆盖明细原始操作类型')
+    assertEqual(result.createProductWithAdditionalBarcodesCount, 0, '无副码时不应计入副码新商品数量')
   })
   if (countFailure) failures.push(countFailure)
+
+  const additionalBarcodeRowsFailure = await runTest('有副码新商品应生成类型选择行', () => {
+    const rows = getNewProductWithAdditionalBarcodesRows(
+      ['d1', 'd2', 'd3'],
+      [
+        {
+          detailGUID: 'd1',
+          activityType: DetailAction.CreateProduct,
+          additionalBarcodes: ['191554882690', '191554882669'],
+          itemNumber: '88842',
+          barcode: '191554882676',
+          productName: 'Men Travel Perfume Assorted 35mL',
+        },
+        {
+          detailGUID: 'd2',
+          activityType: DetailAction.CreateProduct,
+          additionalBarcodes: [],
+          itemNumber: '15142',
+          barcode: '752527840019',
+          productName: 'Women Perfume',
+        },
+        {
+          detailGUID: 'd3',
+          activityType: DetailAction.UpdatePurchasePrice,
+          additionalBarcodes: ['副码不应计入'],
+          itemNumber: 'OLD',
+          barcode: 'OLD-BARCODE',
+          productName: 'Old Product',
+        },
+      ],
+      {},
+    )
+
+    assertDeepEqual(
+      rows,
+      [
+        {
+          detailGuid: 'd1',
+          itemNumber: '88842',
+          barcode: '191554882676',
+          productName: 'Men Travel Perfume Assorted 35mL',
+          additionalBarcodeCount: 2,
+        },
+      ],
+      '只有 CreateProduct 且带副码的明细需要进入类型选择',
+    )
+  })
+  if (additionalBarcodeRowsFailure) failures.push(additionalBarcodeRowsFailure)
 
   const snapshotFailure = await runTest('确认时应冻结 batch execute 快照并保留当前 action 与 activityType', () => {
     const selectedRowKeys = ['d1', 'd2']
@@ -86,6 +136,7 @@ async function main() {
 
     assertEqual(snapshot.selectedCount, 2, '快照应保留确认当刻选中条数')
     assertEqual(snapshot.confirmedCreateProductCount, 2, '快照应保留确认当刻新建商品数量')
+    assertDeepEqual(snapshot.newProductProductTypeSelections, [], '无副码新商品时选择契约为空数组')
     assertDeepEqual(
       snapshot.detailGuids,
       ['d1', 'd2'],
@@ -120,6 +171,29 @@ async function main() {
     )
   })
   if (snapshotFailure) failures.push(snapshotFailure)
+
+  const productTypeSelectionSnapshotFailure = await runTest('确认快照应携带新商品副码类型选择', () => {
+    const snapshot = buildBatchExecuteSnapshot({
+      selectedRowKeys: ['d1'],
+      details: [
+        { detailGUID: 'd1', activityType: DetailAction.CreateProduct },
+      ],
+      rowActions: {},
+      newProductProductTypeSelections: [
+        { detailGuid: 'd1', productType: 2 },
+      ],
+      confirmedAt: '2026-06-02T10:00:00.000Z',
+    })
+
+    assertDeepEqual(
+      snapshot.newProductProductTypeSelections,
+      [
+        { detailGuid: 'd1', productType: 2 },
+      ],
+      '新商品副码类型选择应进入批量执行 payload 快照',
+    )
+  })
+  if (productTypeSelectionSnapshotFailure) failures.push(productTypeSelectionSnapshotFailure)
 
   const updateItemNumberSnapshotFailure = await runTest('确认快照应正向携带更新货号操作', () => {
     const snapshot = buildBatchExecuteSnapshot({
@@ -200,6 +274,9 @@ async function main() {
           { detailGuid: 'd2', action: DetailAction.UpdatePurchasePrice, activityType: DetailAction.UpdatePurchasePrice },
         ],
         confirmedCreateProductCount: 1,
+        newProductProductTypeSelections: [
+          { detailGuid: 'd1', productType: 2 },
+        ],
         confirmedAt: '2026-06-02T09:30:00.000Z',
       })
     } finally {
@@ -222,6 +299,9 @@ async function main() {
         ],
         confirmedCreateProductCount: 1,
         confirmedAt: '2026-06-02T09:30:00.000Z',
+        newProductProductTypeSelections: [
+          { detailGuid: 'd1', productType: 2 },
+        ],
       },
       '批量执行应发送确认当刻的 expectedActions 与 confirmedCreateProductCount',
     )
@@ -275,6 +355,7 @@ async function main() {
         ],
         confirmedCreateProductCount: 0,
         confirmedAt: '2026-06-02T09:45:00.000Z',
+        newProductProductTypeSelections: [],
       },
       '批量执行服务应原样发送更新货号动作',
     )

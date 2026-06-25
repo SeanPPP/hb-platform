@@ -25,16 +25,17 @@ function runTest(name: string, execute: () => void) {
 
 // 这里锁定配货单“内包装数量”的业务规则，避免组件里再次出现临时兜底逻辑。
 runTest('minOrderQuantity 有效时应返回纯数字格式的内包装数量', () => {
-  assertEqual(formatInnerPackCount(12, 12), '1', '整除时应显示整数且不带小数')
-  assertEqual(formatInnerPackCount(18, 12), '1.5', '非整除时应保留 1 位小数')
-  assertEqual(formatInnerPackCount(0, 12), '0', '订货数量为 0 时应显示 0')
+  assertEqual(formatInnerPackCount(12, undefined, 12), '1', '整除时应显示整数且不带小数')
+  assertEqual(formatInnerPackCount(18, undefined, 12), '1.5', '非整除时应保留 1 位小数')
+  assertEqual(formatInnerPackCount(0, 12, 12), '1', '订货数量为 0 时应使用发货数兜底计算包数')
+  assertEqual(formatInnerPackCount(0, 18, 12), '1.5', '发货数兜底后非整除时应保留 1 位小数')
 })
 
 runTest('minOrderQuantity 为空 0 1 或无效时应返回空字符串', () => {
-  assertEqual(formatInnerPackCount(24, undefined), '', 'minOrderQuantity 为空时应显示空字符串')
-  assertEqual(formatInnerPackCount(24, 0), '', 'minOrderQuantity 为 0 时应显示空字符串')
-  assertEqual(formatInnerPackCount(24, 1), '', 'minOrderQuantity 为 1 时应显示空字符串')
-  assertEqual(formatInnerPackCount(24, Number.NaN), '', 'minOrderQuantity 非法时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, undefined), '', 'minOrderQuantity 为空时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, 0), '', 'minOrderQuantity 为 0 时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, 1), '', 'minOrderQuantity 为 1 时应显示空字符串')
+  assertEqual(formatInnerPackCount(24, undefined, Number.NaN), '', 'minOrderQuantity 非法时应显示空字符串')
 })
 
 runTest('分店订货体积应统一保留两位小数', () => {
@@ -157,6 +158,16 @@ runTest('配货单 Excel 数据应包含固定列顺序、备注和总计信息'
   const excelData = buildPickingListExcelData(excelOrder, excelItems, excelTexts)
   assertEqual(excelData.sheetName, 'Picking List', 'sheet 名称应来自传入文案')
   assertDeepEqual(
+    excelData.overviewRows,
+    [
+      ['Order No.', 'SO-001'],
+      ['Store', 'ST-01'],
+      ['Order Date', '2026-06-01T00:00:00.000Z'],
+      ['Print Time', ''],
+    ],
+    'Excel 概览仍应保留订单日期和打印时间元数据',
+  )
+  assertDeepEqual(
     excelData.detailHeader,
     ['#', '货号', '货位', '商品名称', '进口价', 'RRP', '内包装数量', '订货数量'],
     '明细列顺序应隐藏发货数列',
@@ -182,6 +193,13 @@ runTest('配货单订货数为空或为 0 时应使用发货数兜底', () => {
   assertEqual(formatPickingOrderQuantity(0, 12), 12, '订货数为 0 时应显示发货数')
   assertEqual(formatPickingOrderQuantity(undefined, 8), 8, '订货数缺失时应显示发货数')
   assertEqual(formatPickingOrderQuantity(0, 0), '', '订货数和发货数都为空时应显示空字符串')
+})
+
+runTest('配货单包数应使用订货数列同口径数量作为分子', () => {
+  assertEqual(formatInnerPackCount(0, 12, 12), '1', 'MC020-16 主动配货 12 且中包数 12 时应显示 1 包')
+  assertEqual(formatInnerPackCount(0, 18, 12), '1.5', '主动配货 18 且中包数 12 时应显示 1.5 包')
+  assertEqual(formatInnerPackCount(undefined, 12, 12), '1', '订货数缺失时也应使用发货数兜底计算包数')
+  assertEqual(formatInnerPackCount(0, 0, 12), '', '订货数和发货数都为空时包数应显示空白')
 })
 
 runTest('配货单打印应取消固定 30 行分页并交给 A4 打印流填满页面', () => {
@@ -319,6 +337,12 @@ runTest('配货单页头应将店名和单号同一行居中放大显示', () =>
   assertEqual(headerSource.includes('className="store-order-picking-store"'), true, '店名应挂载主字号样式')
   assertEqual(headerSource.includes('{displayStoreText}'), true, '主信息行应显示店名')
   assertEqual(headerSource.includes('className="store-order-picking-order-no"'), true, '单号应挂载主字号样式')
+  assertEqual(headerSource.includes('className="store-order-picking-meta"'), true, '页头应显示订单日期容器')
+  assertEqual(headerSource.includes("t('warehouse.pickingList.printTime')"), false, '页头不应继续显示打印时间')
+  assertEqual(headerSource.includes("t('warehouse.pickingList.orderDate')"), true, '页头应显示订货日期')
+  assertEqual(headerSource.includes('formatPrintDate(order.orderDate, false, printLocale)'), true, '页头应格式化订单日期')
+  assertEqual(headerSource.includes('formatPrintDate(undefined, true, printLocale)'), false, '页头不应继续计算打印时间')
+  assertEqual(printCssSource.includes('.store-order-picking-meta'), true, '打印样式应保留订单日期元信息样式')
   assertEqual(headerSource.includes("t('warehouse.pickingList.orderNoLabel')"), false, '主信息行不应继续显示订单号文字标签')
   assertEqual(headerSource.includes('#{orderNoText}'), true, '主信息行应使用 # 前缀显示单号')
   assertEqual(headerSource.includes("t('warehouse.pickingList.storeLabel')"), false, '店名不应继续作为右侧小号元数据显示')
@@ -337,7 +361,7 @@ runTest('配货单页头应将店名和单号同一行居中放大显示', () =>
   assertEqual(/flex:\s*0\s+0\s+auto/.test(orderNoRule), true, '单号不应被长店名挤压收缩')
   assertEqual(/font-weight:\s*800/.test(orderNoRule), true, '单号应加粗突出显示')
   assertEqual(readCssNumber(storeRule, 'font-size') > readCssNumber(metaRule, 'font-size'), true, '店名字号应大于右侧辅助信息')
-  assertEqual(/flex-direction:\s*column/.test(metaRule), true, '右侧辅助信息应改为单列显示')
+  assertEqual(/flex-direction:\s*column/.test(metaRule), true, '右侧辅助信息应保持单列显示')
   assertEqual(/align-items:\s*flex-end/.test(metaRule), true, '右侧辅助信息应右对齐')
 })
 
@@ -477,6 +501,11 @@ runTest('配货单打印表头应将订货数量显示为订货数', () => {
     pickingListSource.includes('<td className="col-qty">{formatPickingOrderQuantity(item.quantity, item.allocQuantity)}</td>'),
     true,
     '订货数单元格应使用发货数兜底显示函数',
+  )
+  assertEqual(
+    pickingListSource.includes('{formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity)}'),
+    true,
+    '包数单元格应传入发货数作为兜底分子',
   )
   assertEqual(pickingListSource.includes('<th className="col-send-qty">'), false, '打印表头不应继续显示发货数列')
   assertEqual(pickingListSource.includes('<td className="col-send-qty">'), false, '明细行不应继续显示发货数单元格')

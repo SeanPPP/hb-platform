@@ -51,7 +51,16 @@ namespace BlazorApp.Shared.DTOs
         public decimal? OEMPrice { get; set; }
         public decimal? ImportPrice { get; set; }
         public decimal? Volume { get; set; }
-        public bool? IsActive { get; set; } = true;
+
+        /// <summary>
+        /// 仓库上下架状态；为空时不修改已有仓库记录，新增仓库记录仍默认上架。
+        /// </summary>
+        public bool? IsActive { get; set; }
+
+        /// <summary>
+        /// 是否把 ImportPrice 同步到所有分店进货价；旧调用默认同步，货柜页字段勾选时可关闭。
+        /// </summary>
+        public bool? SyncStorePurchasePrice { get; set; }
     }
 
     /// <summary>

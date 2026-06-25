@@ -99,6 +99,137 @@ export interface StoreOrderListResult {
   pageSize: number
 }
 
+export type StoreOrderImportPriceVarianceDirection = 'all' | 'increase' | 'decrease'
+
+export interface StoreOrderImportPriceVarianceQuery {
+  keyword?: string
+  storeCode?: string
+  storeCodes?: string[]
+  supplierCode?: string
+  orderNo?: string
+  startDate?: string
+  endDate?: string
+  varianceDirection?: StoreOrderImportPriceVarianceDirection
+  pageNumber: number
+  pageSize: number
+  sortBy?: string
+  sortDescending?: boolean
+}
+
+export interface StoreOrderImportPriceVarianceItem {
+  productCode: string
+  itemNumber?: string
+  productName?: string
+  productImage?: string
+  supplierCode?: string
+  supplierName?: string
+  domesticPrice?: number
+  warehouseImportPrice?: number
+  unitVolume?: number
+  packingQuantity?: number
+  firstContainerImportPrice: number
+  allocQuantityTotal: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  varianceAmountTotal: number
+  detailCount: number
+  firstContainerCode?: string
+  firstContainerNumber?: string
+  firstContainerDate?: string
+}
+
+export interface StoreOrderImportPriceVarianceSummary {
+  totalRows: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  varianceAmountTotal: number
+}
+
+export interface StoreOrderImportPriceVarianceSupplierSummary {
+  supplierCode?: string
+  supplierName?: string
+  productCount: number
+  detailCount: number
+  originalImportAmountTotal: number
+  baselineImportAmountTotal: number
+  increaseVarianceAmountTotal: number
+  decreaseVarianceAmountTotal: number
+  varianceAmountTotal: number
+}
+
+export interface StoreOrderImportPriceVarianceResult {
+  items: StoreOrderImportPriceVarianceItem[]
+  total: number
+  page: number
+  pageSize: number
+  summary: StoreOrderImportPriceVarianceSummary
+  supplierSummaries: StoreOrderImportPriceVarianceSupplierSummary[]
+}
+
+export interface StoreOrderImportPriceVarianceDomesticPriceUpdatePayload {
+  productCode: string
+  domesticPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceDomesticPriceUpdateResult {
+  productCode: string
+  domesticPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceUpdatePayload {
+  productCode: string
+  warehouseImportPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResult {
+  productCode: string
+  warehouseImportPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdatePayload {
+  productCodes: string[]
+  warehouseImportPrice: number
+}
+
+export interface StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResult {
+  updatedCount: number
+  warehouseImportPrice: number
+  productCodes: string[]
+}
+
+export interface StoreOrderImportPriceVarianceDetailQuery extends StoreOrderImportPriceVarianceQuery {
+  productCode: string
+}
+
+export interface StoreOrderImportPriceVarianceDetailItem {
+  orderGUID: string
+  detailGUID: string
+  orderNo?: string
+  orderDate?: string
+  storeCode?: string
+  storeName?: string
+  productCode?: string
+  itemNumber?: string
+  productName?: string
+  orderImportPrice: number
+  firstContainerImportPrice: number
+  allocQuantity: number
+  originalImportAmount: number
+  baselineImportAmount: number
+  varianceAmount: number
+  firstContainerCode?: string
+  firstContainerNumber?: string
+  firstContainerDate?: string
+}
+
+export interface StoreOrderImportPriceVarianceDetailResult {
+  items: StoreOrderImportPriceVarianceDetailItem[]
+  total: number
+  page: number
+  pageSize: number
+  summary: StoreOrderImportPriceVarianceSummary
+}
+
 export interface CreateStoreOrderPayload {
   storeCode: string
   remarks?: string
@@ -250,6 +381,13 @@ export interface StoreOrderDetailLine {
   rrp?: number
 }
 
+export interface StoreOrderInvoiceEmailSentInfo {
+  hasSent: boolean
+  sentAt?: string
+  toEmail?: string
+  jobId?: string
+}
+
 export interface StoreOrderDetail {
   orderGUID: string
   orderNo?: string
@@ -271,6 +409,7 @@ export interface StoreOrderDetail {
   totalAllocQuantity?: number
   totalSKU?: number
   itemsTotal: number
+  invoiceEmailSentInfo?: StoreOrderInvoiceEmailSentInfo
   orderedNotShippedCount?: number
   shippedWithoutOrderCount?: number
   items: StoreOrderDetailLine[]
@@ -289,7 +428,22 @@ export interface StoreOrderProductQuery {
   pageNumber: number
   pageSize: number
   sortBy?: string
+  sortDescending?: boolean
   grade?: string
+  columnFilters?: StoreOrderProductColumnFilters
+}
+
+export interface StoreOrderProductColumnFilters {
+  itemNumber?: string
+  productName?: string
+  supplierKeyword?: string
+  barcode?: string
+  stockQuantityMin?: number
+  stockQuantityMax?: number
+  minOrderQuantityMin?: number
+  minOrderQuantityMax?: number
+  importPriceMin?: number
+  importPriceMax?: number
 }
 
 export interface StoreOrderProductItem {
@@ -358,6 +512,7 @@ export interface StoreOrderCart {
   storeAddress?: string
   storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
+  invoiceEmailSentInfo?: StoreOrderInvoiceEmailSentInfo
   items: StoreOrderCartItem[]
 }
 
@@ -410,6 +565,7 @@ export interface UpdateStoreOrderLinePayload {
   productCode: string
   allocQuantity: number
   importPrice?: number
+  syncImportPrice?: boolean
 }
 
 export interface RemoveStoreOrderLinePayload {
@@ -420,9 +576,11 @@ export interface RemoveStoreOrderLinePayload {
 export interface BatchUpdateStoreOrderLinePayload {
   orderGUID: string
   items: Array<{
+    detailGUID?: string
     productCode: string
     quantity?: number
     importPrice?: number
+    syncImportPrice?: boolean
   }>
 }
 

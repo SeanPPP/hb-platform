@@ -52,12 +52,15 @@ export interface AccessControl {
   canManageWarehouse: boolean
   canManageStore: boolean
   canViewReports: boolean
+  canViewSalesIntelligence: boolean
+  canViewProductMovementReport: boolean
   canExportData: boolean
   canModifyPrice: boolean
   canDeletePrice: boolean
   // 新细粒度权限
   canManageWarehouseProducts: boolean
   canManageWarehouseOrders: boolean
+  canManageStoreOrderImportPriceVariance: boolean
   canManageWarehouseCategories: boolean
   canManageWarehouseLocations: boolean
   canViewContainers: boolean
@@ -94,6 +97,7 @@ export interface AccessControl {
   canManageScheduledTasks: boolean
   canManageSystemSettings: boolean
   canViewAppDownloads: boolean
+  canManageAppDownloads: boolean
   canViewDeviceRegistration: boolean
   canManageDeviceRegistration: boolean
   canViewPosProducts: boolean

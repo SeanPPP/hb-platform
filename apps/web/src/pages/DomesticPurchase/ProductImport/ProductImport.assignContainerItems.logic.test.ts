@@ -37,6 +37,8 @@ function createProduct(overrides: Partial<ProductImportItem>): ProductImportItem
 
 const pageSource = readFileSync('src/pages/DomesticPurchase/ProductImport/index.tsx', 'utf8')
 const pageStyleSource = readFileSync('src/pages/DomesticPurchase/ProductImport/styles.css', 'utf8')
+const zhLocaleSource = readFileSync('src/i18n/locales/zh.json', 'utf8')
+const enLocaleSource = readFileSync('src/i18n/locales/en.json', 'utf8')
 
 assertDeepEqual(
   [
@@ -78,6 +80,27 @@ assertDeepEqual(
   ],
   [true, true, true],
   '商品导入供应商搜索应覆盖编码、名称、店号和完整展示文本',
+)
+
+assertDeepEqual(
+  [
+    pageSource.includes('const deleteAllRows = useCallback(() => {'),
+    pageSource.includes('title: t(\'productImport.deleteAllConfirmTitle\''),
+    pageSource.includes('content: t(\'productImport.deleteAllConfirmContent\''),
+    pageSource.includes('products: []'),
+    pageSource.includes('selectedIds: []'),
+    pageSource.includes('statistics: calculateStatistics([], [])'),
+    pageSource.includes('setShowStatistics(false)'),
+    pageSource.includes('setDuplicateGroups([])'),
+    pageSource.includes('disabled={state.products.length === 0}'),
+    pageSource.includes('productImport.deleteAll'),
+    zhLocaleSource.includes('"deleteAll": "删除全部"'),
+    zhLocaleSource.includes('"deleteAllConfirmTitle": "删除所有表格行"'),
+    enLocaleSource.includes('"deleteAll": "Delete All"'),
+    enLocaleSource.includes('"deleteAllConfirmTitle": "Delete all table rows"'),
+  ],
+  [true, true, true, true, true, true, true, true, true, true, true, true, true, true],
+  '商品导入应提供删除全部表格行按钮，二次确认后清空行、选中和统计状态',
 )
 
 assertDeepEqual(

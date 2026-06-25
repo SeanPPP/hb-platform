@@ -31,6 +31,7 @@
 
 .store-order-picking-header {
   display: grid;
+  /* 右侧只保留订单日期，打印时间已取消，避免打印/PDF 页头信息过密。 */
   grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr) minmax(120px, 1fr);
   align-items: start;
   gap: 12px;

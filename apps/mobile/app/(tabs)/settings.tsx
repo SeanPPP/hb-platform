@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Button, HelperText, Menu, Modal, Portal, Surface, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+  clearSavedReceiptPrinter,
   clearSavedPrinter,
   connectSavedPrinter,
   disconnectCurrentPrinter,
+  hydrateSavedReceiptPrinter,
   scanPrinterDevices,
+  selectReceiptPrinter,
   selectPrinter,
   syncPrinterStatus,
+  testReceiptPrinterConnection,
   testPrinterConnection,
 } from "@/modules/printer/api";
-import { usePrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
+import { usePrinterStore, useReceiptPrinterStore, type PrinterConnectionState } from "@/modules/printer/state";
 import type { PrinterDevice } from "@/modules/printer/types";
 import { setAppLanguage } from "@/shared/i18n/i18n";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
@@ -62,6 +66,111 @@ function resolveDeviceStatusText(
   }
 }
 
+interface CompactSectionProps {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}
+
+function CompactSection({ title, description, children }: CompactSectionProps) {
+  return (
+    <Surface style={styles.card} elevation={1}>
+      <View style={styles.sectionHeader}>
+        <Text variant="titleMedium" style={styles.sectionTitle}>
+          {title}
+        </Text>
+        {description ? (
+          <Text variant="bodySmall" style={styles.meta}>
+            {description}
+          </Text>
+        ) : null}
+      </View>
+      {children}
+    </Surface>
+  );
+}
+
+interface CompactRowProps {
+  label: string;
+  value?: string;
+  meta?: string;
+  action?: ReactNode;
+}
+
+function CompactRow({ label, value, meta, action }: CompactRowProps) {
+  return (
+    <View style={styles.compactRow}>
+      <View style={styles.compactRowText}>
+        <Text variant="bodyMedium" style={styles.compactRowLabel}>
+          {label}
+        </Text>
+        {value ? (
+          <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
+            {value}
+          </Text>
+        ) : null}
+        {meta ? (
+          <Text variant="bodySmall" style={styles.meta} numberOfLines={2}>
+            {meta}
+          </Text>
+        ) : null}
+      </View>
+      {action ? <View style={styles.compactRowAction}>{action}</View> : null}
+    </View>
+  );
+}
+
+interface PrinterDeviceListProps {
+  devices: PrinterDevice[];
+  selectedAddress?: string | null;
+  bondedLabel: string;
+  actionLabel: string;
+  disabled: boolean;
+  onSelect: (printer: PrinterDevice) => void;
+}
+
+function PrinterDeviceList({
+  devices,
+  selectedAddress,
+  bondedLabel,
+  actionLabel,
+  disabled,
+  onSelect,
+}: PrinterDeviceListProps) {
+  return (
+    <View style={styles.printerList}>
+      {devices.map((printer) => {
+        const selected = selectedAddress === printer.address;
+        return (
+          <View key={printer.address} style={styles.printerRow}>
+            <View style={styles.printerMeta}>
+              <Text variant="bodyMedium" style={styles.printerName} numberOfLines={1}>
+                {printer.name || printer.address}
+              </Text>
+              <Text variant="bodySmall" style={styles.meta} numberOfLines={1}>
+                {printer.address}
+              </Text>
+              {printer.bonded ? (
+                <Text variant="bodySmall" style={styles.meta}>
+                  {bondedLabel}
+                </Text>
+              ) : null}
+            </View>
+            <Button
+              compact
+              mode={selected ? "contained-tonal" : "outlined"}
+              onPress={() => onSelect(printer)}
+              disabled={disabled}
+            >
+              {actionLabel}
+            </Button>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 export default function Settings() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["settings", "common"]);
@@ -77,12 +186,18 @@ export default function Settings() {
   const savedPrinter = usePrinterStore((state) => state.savedPrinter);
   const printerStatus = usePrinterStore((state) => state.status);
   const autoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
+  const savedReceiptPrinter = useReceiptPrinterStore((state) => state.savedPrinter);
+  const receiptPrinterStatus = useReceiptPrinterStore((state) => state.status);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [storeMenuVisible, setStoreMenuVisible] = useState(false);
   const [languageMenuVisible, setLanguageMenuVisible] = useState(false);
   const [rawPrinters, setRawPrinters] = useState<PrinterDevice[]>([]);
   const [printerBusy, setPrinterBusy] = useState(false);
+  const [printerScanCompleted, setPrinterScanCompleted] = useState(false);
   const [filterXPOnly, setFilterXPOnly] = useState(true);
+  const [receiptRawPrinters, setReceiptRawPrinters] = useState<PrinterDevice[]>([]);
+  const [receiptPrinterBusy, setReceiptPrinterBusy] = useState(false);
+  const [receiptPrinterScanCompleted, setReceiptPrinterScanCompleted] = useState(false);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(() => getCurrentAppUpdateInfo());
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
@@ -146,6 +261,8 @@ export default function Settings() {
     });
   }, [filterXPOnly, rawPrinters]);
 
+  const visibleReceiptPrinters = useMemo(() => receiptRawPrinters, [receiptRawPrinters]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -173,6 +290,21 @@ export default function Settings() {
       store.setStatus("error");
     });
 
+    void hydrateSavedReceiptPrinter().catch((error) => {
+      if (cancelled) {
+        return;
+      }
+
+      const message = resolveLocalizedErrorMessage(error, {
+        language,
+        t,
+        fallbackKey: "dialogs.refreshFailedMessage",
+      });
+      const store = useReceiptPrinterStore.getState();
+      store.setLastError(message);
+      store.setStatus("error");
+    });
+
     return () => {
       cancelled = true;
     };
@@ -181,6 +313,9 @@ export default function Settings() {
   const isPrinterConnected = printerStatus === "connected";
   const isPrinterConnecting = printerStatus === "connecting";
   const isPrinterReconnecting = printerStatus === "reconnecting";
+  const isReceiptPrinterTesting =
+    receiptPrinterStatus === "connecting" || receiptPrinterStatus === "connected";
+  const printerNativeBusy = printerBusy || receiptPrinterBusy;
 
   const getErrorMessage = (error: unknown, fallbackKey: string) =>
     resolveLocalizedErrorMessage(error, {
@@ -192,22 +327,23 @@ export default function Settings() {
   function resolvePrinterStatusText(
     status: PrinterConnectionState,
     paused: boolean,
+    namespace: "printer" | "receiptPrinter",
     tLabel: (key: string, options?: Record<string, unknown>) => string
   ) {
     if (paused || status === "paused") {
-      return tLabel("printer.statusPaused");
+      return tLabel(`${namespace}.statusPaused`);
     }
     switch (status) {
       case "connected":
-        return tLabel("printer.statusConnected");
+        return tLabel(`${namespace}.statusConnected`);
       case "connecting":
-        return tLabel("printer.statusConnecting");
+        return tLabel(`${namespace}.statusConnecting`);
       case "reconnecting":
-        return tLabel("printer.statusReconnecting");
+        return tLabel(`${namespace}.statusReconnecting`);
       case "error":
-        return tLabel("printer.statusDisconnected");
+        return tLabel(`${namespace}.statusDisconnected`);
       default:
-        return tLabel("printer.statusDisconnected");
+        return tLabel(`${namespace}.statusDisconnected`);
     }
   }
 
@@ -370,6 +506,7 @@ export default function Settings() {
     try {
       const nextPrinters = await scanPrinterDevices();
       setRawPrinters(nextPrinters);
+      setPrinterScanCompleted(true);
     } catch (error) {
       Alert.alert(
         t("dialogs.printerScanFailedTitle"),
@@ -377,6 +514,22 @@ export default function Settings() {
       );
     } finally {
       setPrinterBusy(false);
+    }
+  };
+
+  const handleScanReceiptPrinters = async () => {
+    setReceiptPrinterBusy(true);
+    try {
+      const nextPrinters = await scanPrinterDevices();
+      setReceiptRawPrinters(nextPrinters);
+      setReceiptPrinterScanCompleted(true);
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.receiptPrinterScanFailedTitle"),
+        getErrorMessage(error, "dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setReceiptPrinterBusy(false);
     }
   };
 
@@ -456,6 +609,54 @@ export default function Settings() {
     }
   };
 
+  const handleSaveReceiptPrinter = async (device: PrinterDevice) => {
+    setReceiptPrinterBusy(true);
+    try {
+      await selectReceiptPrinter(device);
+      Alert.alert(
+        t("dialogs.receiptPrinterSavedTitle"),
+        t("dialogs.receiptPrinterSavedMessage", { printer: device.name || device.address })
+      );
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.receiptPrinterConnectFailedTitle"),
+        getErrorMessage(error, "dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setReceiptPrinterBusy(false);
+    }
+  };
+
+  const handleTestReceiptPrinter = async () => {
+    setReceiptPrinterBusy(true);
+    try {
+      await testReceiptPrinterConnection();
+      Alert.alert(t("dialogs.receiptPrinterTestSuccessTitle"), t("dialogs.receiptPrinterTestSuccessMessage"));
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.receiptPrinterTestFailedTitle"),
+        getErrorMessage(error, "dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setReceiptPrinterBusy(false);
+    }
+  };
+
+  const handleClearReceiptPrinter = async () => {
+    setReceiptPrinterBusy(true);
+    try {
+      await clearSavedReceiptPrinter();
+      Alert.alert(t("dialogs.receiptPrinterClearedTitle"), t("dialogs.receiptPrinterClearedMessage"));
+    } catch (error) {
+      Alert.alert(
+        t("dialogs.receiptPrinterDisconnectFailedTitle"),
+        getErrorMessage(error, "dialogs.refreshFailedMessage")
+      );
+    } finally {
+      setReceiptPrinterBusy(false);
+    }
+  };
+
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -463,133 +664,115 @@ export default function Settings() {
           {t("title")}
         </Text>
 
-        <Surface style={styles.card} elevation={1}>
-          <Text variant="titleMedium">{t("account.title")}</Text>
-          <Text variant="bodyLarge" style={styles.value}>
-            {user?.fullName || user?.username || t("common:notLoggedIn")}
-          </Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {user?.email || t("account.guestEmail")}
-          </Text>
-          <Text variant="bodySmall" style={styles.meta}>
-            {user?.roleNames?.length
-              ? t("account.roles", { roles: user.roleNames.join(" / ") })
-              : t("account.deviceMode")}
-          </Text>
-          {showProfileAction ? (
-            <>
-              <Text variant="bodyMedium" style={styles.meta}>
-                {t("account.profileHelper")}
-              </Text>
-              <Button
-                mode="outlined"
-                icon="account-circle-outline"
-                onPress={() => {
-                  router.push("/(tabs)/employee-profile" as unknown as Parameters<typeof router.push>[0]);
-                }}
-                style={styles.secondaryButton}
-              >
-                {t("account.profileButton")}
-              </Button>
-            </>
-          ) : (
-            <Text variant="bodyMedium" style={styles.meta}>
+        <CompactSection title={t("account.title")}>
+          <CompactRow
+            label={user?.fullName || user?.username || t("common:notLoggedIn")}
+            value={user?.email || t("account.guestEmail")}
+            meta={
+              user?.roleNames?.length
+                ? t("account.roles", { roles: user.roleNames.join(" / ") })
+                : t("account.deviceMode")
+            }
+            action={
+              showProfileAction ? (
+                <Button
+                  compact
+                  mode="outlined"
+                  icon="account-circle-outline"
+                  onPress={() => {
+                    router.push("/(tabs)/employee-profile" as unknown as Parameters<typeof router.push>[0]);
+                  }}
+                >
+                  {t("account.profileButton")}
+                </Button>
+              ) : null
+            }
+          />
+          {!showProfileAction ? (
+            <Text variant="bodySmall" style={styles.meta}>
               {t("account.deviceModeHelper")}
             </Text>
-          )}
-        </Surface>
+          ) : null}
+        </CompactSection>
 
-        <Surface style={styles.card} elevation={1}>
-          <Text variant="titleMedium">{t("common:language.title")}</Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {t("language.description")}
-          </Text>
-          <Menu
-            visible={languageMenuVisible}
-            onDismiss={() => setLanguageMenuVisible(false)}
-            anchor={
-              <Button
-                mode="outlined"
-                icon="chevron-down"
-                contentStyle={styles.dropdownButtonContent}
-                style={styles.dropdownButton}
-                onPress={() => setLanguageMenuVisible(true)}
+        <CompactSection title={t("groups.app")}>
+          <CompactRow
+            label={t("common:language.title")}
+            value={language === "en" ? t("common:language.en") : t("common:language.zh")}
+            action={
+              <Menu
+                visible={languageMenuVisible}
+                onDismiss={() => setLanguageMenuVisible(false)}
+                anchor={
+                  <Button
+                    compact
+                    mode="outlined"
+                    icon="chevron-down"
+                    contentStyle={styles.dropdownButtonContent}
+                    onPress={() => setLanguageMenuVisible(true)}
+                  >
+                    {t("common:actions.select")}
+                  </Button>
+                }
               >
-                {language === "en" ? t("common:language.en") : t("common:language.zh")}
+                <Menu.Item title={t("common:language.zh")} onPress={() => void handleLanguageChange("zh")} />
+                <Menu.Item title={t("common:language.en")} onPress={() => void handleLanguageChange("en")} />
+              </Menu>
+            }
+          />
+          <View style={styles.sectionDivider} />
+          <CompactRow
+            label={t("apiHost.title")}
+            value={apiHost}
+            action={
+              <Button compact mode="outlined" icon="server-network" onPress={openApiHostSettings}>
+                {t("apiHost.change")}
               </Button>
             }
-          >
-            <Menu.Item title={t("common:language.zh")} onPress={() => void handleLanguageChange("zh")} />
-            <Menu.Item title={t("common:language.en")} onPress={() => void handleLanguageChange("en")} />
-          </Menu>
-        </Surface>
-
-        <Surface style={styles.card} elevation={1}>
-          <Text variant="titleMedium">{t("apiHost.title")}</Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {t("apiHost.description")}
-          </Text>
-          <View style={styles.apiHostCurrentBox}>
-            <Text variant="labelMedium" style={styles.meta}>
-              {t("apiHost.current")}
-            </Text>
-            <Text variant="bodyLarge" style={styles.value} numberOfLines={1}>
-              {apiHost}
-            </Text>
-          </View>
-          <Button mode="outlined" icon="server-network" onPress={openApiHostSettings} style={styles.secondaryButton}>
-            {t("apiHost.change")}
-          </Button>
-        </Surface>
-
-        <Surface style={styles.card} elevation={1}>
-          <Text variant="titleMedium">{t("updates.title")}</Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {t("updates.description")}
-          </Text>
-          <View style={styles.updateInfoList}>
+          />
+          <View style={styles.sectionDivider} />
+          <CompactRow
+            label={t("updates.title")}
+            value={updateInfo.appVersion ?? t("updates.unknown")}
+            meta={`${t("updates.channel")}: ${updateInfo.channel ?? t("updates.noChannel")}`}
+            action={
+              <Button
+                compact
+                mode="outlined"
+                icon="cloud-download-outline"
+                onPress={handleCheckUpdates}
+                loading={updateBusy}
+                disabled={updateBusy}
+              >
+                {t("updates.check")}
+              </Button>
+            }
+          />
+          <View style={styles.updateInfoCompactList}>
             {updateInfoRows.map((row) => (
               <View key={row.key} style={styles.updateInfoRow}>
                 <Text variant="bodySmall" style={styles.updateInfoLabel}>
                   {t(row.labelKey)}
                 </Text>
-                <Text variant="bodySmall" style={styles.updateInfoValue}>
+                <Text variant="bodySmall" style={styles.updateInfoValue} numberOfLines={1}>
                   {row.value ?? t(row.valueKey ?? "updates.unknown")}
                 </Text>
               </View>
             ))}
           </View>
-          <Button
-            mode="outlined"
-            icon="cloud-download-outline"
-            onPress={handleCheckUpdates}
-            loading={updateBusy}
-            disabled={updateBusy}
-            style={styles.secondaryButton}
-          >
-            {t("updates.check")}
-          </Button>
-        </Surface>
+        </CompactSection>
 
         {canViewDeviceCard ? (
-          <Surface style={styles.card} elevation={1}>
-            <Text variant="titleMedium">{t("device.title")}</Text>
-            <Text variant="bodyMedium" style={styles.meta}>
-              {t("device.description")}
-            </Text>
-
+          <CompactSection title={t("device.title")}>
             <View style={styles.statusBlock}>
-              <Text variant="bodyMedium">{t("device.status", { status: deviceStatusText })}</Text>
-              <Text variant="bodyMedium">
-                {t("device.store", {
-                  store: deviceStoreDisplayName,
-                })}
-              </Text>
-              <Text variant="bodySmall" style={styles.meta}>
-                {t("device.deviceNumber", {
-                  value: deviceSession?.systemDeviceNumber || t("common:na"),
-                })}
-              </Text>
+              <CompactRow label={t("device.statusLabel")} value={deviceStatusText} />
+              <View style={styles.sectionDivider} />
+              <CompactRow label={t("device.storeLabelCompact")} value={deviceStoreDisplayName} />
+              <View style={styles.sectionDivider} />
+              <CompactRow
+                label={t("device.deviceNumberLabel")}
+                value={deviceSession?.systemDeviceNumber || t("common:na")}
+              />
             </View>
 
             {canRegisterDevice ? (
@@ -687,118 +870,203 @@ export default function Settings() {
                 {t("device.ready")}
               </Text>
             ) : null}
-          </Surface>
+          </CompactSection>
         ) : null}
 
-        <Surface style={styles.card} elevation={1}>
-          <Text variant="titleMedium">{t("printer.title")}</Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {t("printer.description")}
-          </Text>
-          <Text variant="bodyLarge" style={styles.value}>
-            {savedPrinter
-              ? t("printer.selected", { printer: savedPrinter.name || savedPrinter.address })
-              : t("printer.notSelected")}
-          </Text>
-          <Text variant="bodySmall" style={styles.meta}>
-            {resolvePrinterStatusText(printerStatus, autoReconnectPaused, t)}
-          </Text>
+        <CompactSection title={t("groups.printers")}>
+          <View style={styles.printerSection}>
+            <View style={styles.printerSectionHeader}>
+              <View style={styles.compactRowText}>
+                <Text variant="titleSmall" style={styles.sectionTitle}>
+                  {t("printer.title")}
+                </Text>
+                <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
+                  {savedPrinter
+                    ? t("printer.selected", { printer: savedPrinter.name || savedPrinter.address })
+                    : t("printer.notSelected")}
+                </Text>
+                <Text variant="bodySmall" style={styles.meta}>
+                  {resolvePrinterStatusText(printerStatus, autoReconnectPaused, "printer", t)}
+                </Text>
+              </View>
+            </View>
 
-          <View style={styles.primaryPrinterActions}>
-            <Button
-              mode="contained"
-              onPress={handleScanPrinters}
-              loading={printerBusy && !isPrinterConnecting}
-              disabled={printerBusy}
-              style={styles.primaryActionButton}
-            >
-              {printerBusy && !isPrinterConnecting ? t("printer.scanning") : t("printer.scan")}
-            </Button>
-            {savedPrinter ? (
-              isPrinterConnected ? (
-                <Button
-                  mode="outlined"
-                  onPress={handleDisconnectPrinter}
-                  disabled={printerBusy}
-                  style={styles.primaryActionButton}
-                >
-                  {t("printer.disconnect")}
-                </Button>
+            <View style={styles.primaryPrinterActions}>
+              <Button
+                compact
+                mode="contained"
+                icon="magnify"
+                onPress={handleScanPrinters}
+                loading={printerBusy && !isPrinterConnecting}
+                disabled={printerNativeBusy}
+                style={styles.primaryActionButton}
+              >
+                {printerBusy && !isPrinterConnecting ? t("printer.scanning") : t("printer.scan")}
+              </Button>
+              {savedPrinter ? (
+                isPrinterConnected ? (
+                  <Button
+                    compact
+                    mode="outlined"
+                    icon="link-off"
+                    onPress={handleDisconnectPrinter}
+                    disabled={printerNativeBusy}
+                    style={styles.primaryActionButton}
+                  >
+                    {t("printer.disconnect")}
+                  </Button>
+                ) : (
+                  <Button
+                    compact
+                    mode="outlined"
+                    icon="bluetooth-connect"
+                    onPress={handleConnectSavedPrinter}
+                    loading={printerBusy && (isPrinterConnecting || isPrinterReconnecting)}
+                    disabled={printerNativeBusy}
+                    style={styles.primaryActionButton}
+                  >
+                    {printerBusy && (isPrinterConnecting || isPrinterReconnecting)
+                      ? t("printer.connecting")
+                      : t("printer.connect")}
+                  </Button>
+                )
+              ) : null}
+            </View>
+
+            <View style={styles.filterRow}>
+              <Text variant="bodySmall">{t("printer.filterXPOnly")}</Text>
+              <Switch value={filterXPOnly} onValueChange={setFilterXPOnly} disabled={printerNativeBusy} />
+            </View>
+
+            {printerScanCompleted ? (
+              visiblePrinters.length ? (
+                <>
+                  <Text variant="labelMedium" style={styles.listLabel}>
+                    {t("printer.available")}
+                  </Text>
+                  <PrinterDeviceList
+                    devices={visiblePrinters}
+                    selectedAddress={savedPrinter?.address}
+                    bondedLabel={t("printer.bonded")}
+                    actionLabel={t("printer.connect")}
+                    disabled={printerNativeBusy}
+                    onSelect={(printer) => void handleConnectPrinter(printer)}
+                  />
+                </>
               ) : (
-                <Button
-                  mode="outlined"
-                  onPress={handleConnectSavedPrinter}
-                  loading={printerBusy && (isPrinterConnecting || isPrinterReconnecting)}
-                  disabled={printerBusy}
-                  style={styles.primaryActionButton}
-                >
-                  {printerBusy && (isPrinterConnecting || isPrinterReconnecting)
-                    ? t("printer.connecting")
-                    : t("printer.connect")}
-                </Button>
+                <HelperText type="info" visible>
+                  {rawPrinters.length && filterXPOnly ? t("printer.emptyFiltered") : t("printer.empty")}
+                </HelperText>
               )
             ) : null}
-          </View>
 
-          <View style={styles.filterRow}>
-            <Text variant="bodyMedium">{t("printer.filterXPOnly")}</Text>
-            <Switch value={filterXPOnly} onValueChange={setFilterXPOnly} disabled={printerBusy} />
-          </View>
-
-          {visiblePrinters.length ? (
-            <View style={styles.printerList}>
-              <Text variant="labelLarge">{t("printer.available")}</Text>
-              {visiblePrinters.map((printer) => {
-                const selected = savedPrinter?.address === printer.address;
-                return (
-                  <Surface key={printer.address} style={styles.printerRow} elevation={0}>
-                    <View style={styles.printerMeta}>
-                      <Text variant="bodyMedium" style={styles.printerName}>
-                        {printer.name || printer.address}
-                      </Text>
-                      <Text variant="bodySmall" style={styles.meta}>
-                        {printer.address}
-                      </Text>
-                      {printer.bonded ? (
-                        <Text variant="bodySmall" style={styles.meta}>
-                          {t("printer.bonded")}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <Button
-                      mode={selected ? "contained-tonal" : "outlined"}
-                      onPress={() => void handleConnectPrinter(printer)}
-                      disabled={printerBusy}
-                    >
-                      {t("printer.connect")}
-                    </Button>
-                  </Surface>
-                );
-              })}
+            <View style={styles.printerActions}>
+              <Button
+                compact
+                mode="outlined"
+                icon="printer-check"
+                onPress={handleTestPrinter}
+                disabled={printerNativeBusy || !savedPrinter || !isPrinterConnected}
+              >
+                {t("printer.test")}
+              </Button>
+              <Button
+                compact
+                mode="text"
+                icon="delete-outline"
+                onPress={handleClearPrinter}
+                disabled={printerNativeBusy || !savedPrinter}
+              >
+                {t("printer.clear")}
+              </Button>
             </View>
-          ) : (
-            <HelperText type="info" visible>
-              {rawPrinters.length && filterXPOnly ? t("printer.emptyFiltered") : t("printer.empty")}
-            </HelperText>
-          )}
-
-          <View style={styles.printerActions}>
-            <Button
-              mode="outlined"
-              onPress={handleTestPrinter}
-              disabled={printerBusy || !savedPrinter || !isPrinterConnected}
-            >
-              {t("printer.test")}
-            </Button>
-            <Button
-              mode="text"
-              onPress={handleClearPrinter}
-              disabled={printerBusy || !savedPrinter}
-            >
-              {t("printer.clear")}
-            </Button>
           </View>
-        </Surface>
+
+          <View style={styles.sectionDivider} />
+
+          <View style={styles.printerSection}>
+            <View style={styles.printerSectionHeader}>
+              <View style={styles.compactRowText}>
+                <Text variant="titleSmall" style={styles.sectionTitle}>
+                  {t("receiptPrinter.title")}
+                </Text>
+                <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
+                  {savedReceiptPrinter
+                    ? t("receiptPrinter.selected", {
+                        printer: savedReceiptPrinter.name || savedReceiptPrinter.address,
+                      })
+                    : t("receiptPrinter.notSelected")}
+                </Text>
+                <Text variant="bodySmall" style={styles.meta}>
+                  {resolvePrinterStatusText(receiptPrinterStatus, false, "receiptPrinter", t)}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.primaryPrinterActions}>
+              <Button
+                compact
+                mode="contained"
+                icon="magnify"
+                onPress={handleScanReceiptPrinters}
+                loading={receiptPrinterBusy && !isReceiptPrinterTesting}
+                disabled={printerNativeBusy}
+                style={styles.primaryActionButton}
+              >
+                {receiptPrinterBusy && !isReceiptPrinterTesting
+                  ? t("receiptPrinter.scanning")
+                  : t("receiptPrinter.scan")}
+              </Button>
+              <Button
+                compact
+                mode="outlined"
+                icon="receipt-text-outline"
+                onPress={handleTestReceiptPrinter}
+                loading={receiptPrinterBusy && isReceiptPrinterTesting}
+                disabled={printerNativeBusy || !savedReceiptPrinter}
+                style={styles.primaryActionButton}
+              >
+                {receiptPrinterBusy && isReceiptPrinterTesting
+                  ? t("receiptPrinter.testing")
+                  : t("receiptPrinter.test")}
+              </Button>
+            </View>
+
+            {receiptPrinterScanCompleted ? (
+              visibleReceiptPrinters.length ? (
+                <>
+                  <Text variant="labelMedium" style={styles.listLabel}>
+                    {t("receiptPrinter.available")}
+                  </Text>
+                  <PrinterDeviceList
+                    devices={visibleReceiptPrinters}
+                    selectedAddress={savedReceiptPrinter?.address}
+                    bondedLabel={t("printer.bonded")}
+                    actionLabel={t("receiptPrinter.save")}
+                    disabled={printerNativeBusy}
+                    onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
+                  />
+                </>
+              ) : (
+                <HelperText type="info" visible>
+                  {t("receiptPrinter.empty")}
+                </HelperText>
+              )
+            ) : null}
+
+            <View style={styles.printerActions}>
+              <Button
+                compact
+                mode="text"
+                icon="delete-outline"
+                onPress={handleClearReceiptPrinter}
+                disabled={printerNativeBusy || !savedReceiptPrinter}
+              >
+                {t("receiptPrinter.clear")}
+              </Button>
+            </View>
+          </View>
+        </CompactSection>
 
         {user ? (
           <Button
@@ -872,12 +1140,38 @@ export default function Settings() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F5F7FA" },
-  content: { paddingHorizontal: 14, paddingTop: 4, paddingBottom: 10, gap: 14 },
-  title: { textAlign: "center", marginBottom: 2 },
-  card: { padding: 22, borderRadius: 18, gap: 12 },
+  content: { paddingHorizontal: 10, paddingTop: 4, paddingBottom: 10, gap: 8 },
+  title: { textAlign: "center", marginBottom: 0 },
+  card: { padding: 12, borderRadius: 8, gap: 8 },
+  sectionHeader: { gap: 2 },
+  sectionTitle: { fontWeight: "700" },
+  compactRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  compactRowText: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  compactRowLabel: {
+    fontWeight: "600",
+  },
+  compactRowValue: {
+    color: "#394150",
+  },
+  compactRowAction: {
+    flexShrink: 0,
+  },
+  sectionDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E5E7EB",
+  },
   value: { marginTop: 8, fontWeight: "600" },
   meta: { color: "#666" },
-  updateInfoList: { gap: 8 },
+  updateInfoCompactList: { gap: 4, marginTop: 2 },
   updateInfoRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -902,10 +1196,10 @@ const styles = StyleSheet.create({
   },
   statusBlock: { gap: 6, marginTop: 4 },
   storePickerWrap: {
-    marginTop: 4,
+    marginTop: 2,
   },
   storePickerLabel: {
-    marginBottom: 8,
+    marginBottom: 6,
   },
   dropdownButton: {
     alignSelf: "stretch",
@@ -919,53 +1213,66 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 4,
+    marginTop: 2,
   },
   primaryPrinterActions: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 4,
+    gap: 8,
+    marginTop: 2,
   },
   primaryActionButton: {
     flex: 1,
   },
-  printerList: {
+  printerSection: {
     gap: 8,
-    marginTop: 4,
+  },
+  printerSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  listLabel: {
+    color: "#4B5563",
+  },
+  printerList: {
+    gap: 6,
   },
   printerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
-    borderRadius: 12,
+    gap: 10,
+    borderRadius: 8,
     backgroundColor: "#F7F8FA",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   printerMeta: {
     flex: 1,
     gap: 2,
+    minWidth: 0,
   },
   printerName: {
     fontWeight: "600",
   },
   printerActions: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 4,
+    gap: 8,
+    marginTop: 2,
   },
   deviceDangerActions: {
-    gap: 10,
-    marginTop: 4,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
   },
   deviceDangerButton: {
-    alignSelf: "stretch",
+    flex: 1,
   },
   modal: {
     backgroundColor: "#FFFFFF",
     margin: 18,
-    borderRadius: 18,
+    borderRadius: 8,
     padding: 18,
     gap: 12,
   },

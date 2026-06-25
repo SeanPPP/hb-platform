@@ -4,6 +4,7 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -14,6 +15,7 @@ namespace BlazorApp.Api.Controllers
     [Authorize]
     public class MobileAppBuildsController : ControllerBase
     {
+        private const int MaxEasWebhookBodyBytes = 256 * 1024;
         private readonly IMobileAppBuildService _service;
         private readonly EasWebhookOptions _options;
         private readonly ILogger<MobileAppBuildsController> _logger;
@@ -31,10 +33,35 @@ namespace BlazorApp.Api.Controllers
 
         [HttpPost("eas-webhook")]
         [AllowAnonymous]
+        [RequestSizeLimit(MaxEasWebhookBodyBytes)]
         public async Task<IActionResult> EasWebhook()
         {
+            if (Request.ContentLength is > MaxEasWebhookBodyBytes)
+            {
+                _logger.LogWarning(
+                    "EAS Webhook 请求体超过限制，ContentLength: {ContentLength}",
+                    Request.ContentLength
+                );
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    ApiResponse<object>.Error("请求体过大", "WEBHOOK_BODY_TOO_LARGE")
+                );
+            }
+
             using var memory = new MemoryStream();
             await Request.Body.CopyToAsync(memory);
+            if (memory.Length > MaxEasWebhookBodyBytes)
+            {
+                _logger.LogWarning(
+                    "EAS Webhook 读取后发现请求体超过限制，Length: {Length}",
+                    memory.Length
+                );
+                return StatusCode(
+                    StatusCodes.Status413PayloadTooLarge,
+                    ApiResponse<object>.Error("请求体过大", "WEBHOOK_BODY_TOO_LARGE")
+                );
+            }
+
             var bodyBytes = memory.ToArray();
 
             if (!IsValidSignature(bodyBytes, Request.Headers["expo-signature"].FirstOrDefault()))
@@ -57,11 +84,128 @@ namespace BlazorApp.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("android-latest")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AndroidLatest([FromQuery] string profile = "production")
+        {
+            var normalizedProfile = NormalizePublicProfile(profile);
+            if (normalizedProfile == null)
+            {
+                // 匿名自更新只开放已知发布轨道，避免 development/internal 等 APK URL 被公网枚举。
+                return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(null));
+            }
+
+            // 移动端未登录时也要能检查是否存在新安装包，但这里只返回当前轨道最新 APK 元数据，不开放历史列表。
+            var result = await _service.GetLatestAsync(normalizedProfile);
+            if (!result.Success)
+            {
+                return Ok(ApiResponse<MobileAppBuildPublicDto?>.Error(result.Message, result.ErrorCode, result.Details));
+            }
+
+            var latest = result.Data == null
+                ? null
+                : new MobileAppBuildPublicDto
+                {
+                    EasBuildId = result.Data.EasBuildId,
+                    BuildProfile = result.Data.BuildProfile,
+                    AppVersion = result.Data.AppVersion,
+                    AppBuildVersion = result.Data.AppBuildVersion,
+                    ArtifactUrl = result.Data.ArtifactUrl,
+                    CosArtifactUrl = result.Data.CosArtifactUrl,
+                };
+
+            return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(latest));
+        }
+
+        [HttpGet("android-latest/download")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AndroidLatestDownload([FromQuery] string profile = "production")
+        {
+            var normalizedProfile = NormalizePublicProfile(profile);
+            if (normalizedProfile == null)
+            {
+                // 匿名下载入口同样只开放公开发布轨道，不允许探测 development/internal 包。
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            var result = await _service.GetLatestAsync(normalizedProfile);
+            if (!result.Success)
+            {
+                return BadRequest(ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details));
+            }
+
+            if (string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl))
+            {
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            // 每次点击都重新解析最新未过期地址，避免旧 OTA 弹窗里持有的 EAS artifact URL 过期。
+            return Redirect(result.Data.ArtifactUrl);
+        }
+
+        [HttpGet("android/{easBuildId}/download")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AndroidBuildDownload(
+            string easBuildId,
+            [FromQuery] string profile = "production"
+        )
+        {
+            var normalizedProfile = NormalizePublicProfile(profile);
+            if (normalizedProfile == null || string.IsNullOrWhiteSpace(easBuildId))
+            {
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            var result = await _service.GetByBuildIdAsync(easBuildId, normalizedProfile);
+            if (!result.Success)
+            {
+                return BadRequest(ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details));
+            }
+
+            if (string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl))
+            {
+                return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
+            }
+
+            // 新安装器绑定到检查时拿到的 buildId，避免最新 APK 后续变化时下载到另一个构建。
+            return Redirect(result.Data.ArtifactUrl);
+        }
+
         [HttpGet]
         [Authorize(Policy = Permissions.System.ViewAppDownloads)]
         public async Task<IActionResult> History([FromQuery] MobileAppBuildQueryDto query)
         {
             var result = await _service.GetHistoryAsync(query);
+            return Ok(result);
+        }
+
+        [HttpGet("ota-updates")]
+        [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+        public async Task<IActionResult> GetOtaUpdates([FromQuery] MobileAppOtaUpdateQueryDto query)
+        {
+            var result = await _service.GetOtaUpdatesAsync(query);
+            return Ok(result);
+        }
+
+        [HttpPost("ota-updates")]
+        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        public async Task<IActionResult> UpsertOtaUpdate([FromBody] MobileAppOtaUpdateUpsertDto dto)
+        {
+            var result = await _service.UpsertOtaUpdateAsync(dto);
+            return Ok(result);
+        }
+
+        [HttpPost("ota-updates/{updateGroupId}/rollback-command")]
+        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        public async Task<IActionResult> CreateOtaRollbackCommand(
+            string updateGroupId,
+            [FromBody] MobileAppOtaRollbackCommandDto? dto
+        )
+        {
+            var result = await _service.CreateOtaRollbackCommandAsync(
+                updateGroupId,
+                dto ?? new MobileAppOtaRollbackCommandDto()
+            );
             return Ok(result);
         }
 
@@ -84,6 +228,15 @@ namespace BlazorApp.Api.Controllers
             // 固定时间比较，避免签名逐字符比较带来的时间侧信道。
             return computedBytes.Length == providedBytes.Length
                 && CryptographicOperations.FixedTimeEquals(computedBytes, providedBytes);
+        }
+
+        private static string? NormalizePublicProfile(string? profile)
+        {
+            var normalized = string.IsNullOrWhiteSpace(profile)
+                ? "production"
+                : profile.Trim().ToLowerInvariant();
+
+            return normalized is "production" or "preview" ? normalized : null;
         }
     }
 }

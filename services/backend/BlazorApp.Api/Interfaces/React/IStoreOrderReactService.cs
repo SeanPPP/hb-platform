@@ -66,6 +66,41 @@ namespace BlazorApp.Api.Interfaces.React
         Task<PagedListReactDto<StoreOrderListItemDto>> GetOrderListAsync(StoreOrderListFilterDto filter);
 
         /// <summary>
+        /// 获取首次货柜进货价基准差异统计。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceResultDto>> GetImportPriceVarianceAsync(
+            StoreOrderImportPriceVarianceQueryDto query
+        );
+
+        /// <summary>
+        /// 获取首次货柜进货价基准差异单商品订单明细。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>> GetImportPriceVarianceDetailsAsync(
+            StoreOrderImportPriceVarianceDetailQueryDto query
+        );
+
+        /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前国内价格。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>> UpdateImportPriceVarianceDomesticPriceAsync(
+            StoreOrderImportPriceVarianceDomesticPriceUpdateDto request
+        );
+
+        /// <summary>
+        /// 更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>> UpdateImportPriceVarianceWarehouseImportPriceAsync(
+            StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto request
+        );
+
+        /// <summary>
+        /// 批量更新首次货柜价差异统计页展示的仓库当前进货价格。
+        /// </summary>
+        Task<ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>> UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(
+            StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto request
+        );
+
+        /// <summary>
         /// 获取订单详情
         /// </summary>
         Task<ApiResponse<StoreOrderDetailDto?>> GetOrderDetailAsync(

@@ -48,6 +48,62 @@ export function generateImageUrl(productCode: string): string {
   return `https://hbimgoss.hbupplier.com/productimg/${productCode}.jpg`
 }
 
+export function parseProductImportPasteText(text: string): string[][] {
+  const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const rows: string[][] = []
+  let currentRow: string[] = []
+  let currentCell = ''
+  let inQuotedCell = false
+
+  for (let index = 0; index < normalizedText.length; index += 1) {
+    const char = normalizedText[index]
+
+    if (inQuotedCell) {
+      if (char === '"') {
+        if (normalizedText[index + 1] === '"') {
+          currentCell += '"'
+          index += 1
+        } else {
+          inQuotedCell = false
+        }
+      } else {
+        currentCell += char
+      }
+      continue
+    }
+
+    if (char === '"' && currentCell.length === 0) {
+      inQuotedCell = true
+      continue
+    }
+
+    if (char === '\t') {
+      currentRow.push(currentCell)
+      currentCell = ''
+      continue
+    }
+
+    if (char === '\n') {
+      // Excel 空单元格会表现为连续换行；这里必须保留空行，避免列粘贴后续数据错位。
+      currentRow.push(currentCell)
+      rows.push(currentRow)
+      currentRow = []
+      currentCell = ''
+      continue
+    }
+
+    currentCell += char
+  }
+
+  // 剪贴板通常以换行结尾，这个结尾只是行终止符，不代表额外空行。
+  if (currentCell.length > 0 || currentRow.length > 0 || (normalizedText.length > 0 && !normalizedText.endsWith('\n'))) {
+    currentRow.push(currentCell)
+    rows.push(currentRow)
+  }
+
+  return rows
+}
+
 export function createEmptyProduct(): ProductImportItem {
   return {
     id: `row_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,

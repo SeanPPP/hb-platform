@@ -105,17 +105,28 @@ function resolveRowsBeforeSummaryPage(
   return summaryRows <= shortSummaryTailRows && remaining <= maxMergedSummaryRows ? remaining : rowsBeforeSummaryPage
 }
 
-// 统一管理配货单的派生展示逻辑，避免组件里散落业务格式化判断。
-export function formatInnerPackCount(orderQuantity: number, minOrderQuantity?: number) {
-  if (!Number.isFinite(orderQuantity)) {
-    return ''
+function resolvePickingDisplayQuantity(quantity: unknown, allocQuantity?: unknown) {
+  const numericQuantity = Number(quantity)
+  if (Number.isFinite(numericQuantity) && numericQuantity > 0) {
+    return numericQuantity
   }
 
+  const numericAllocQuantity = Number(allocQuantity)
+  return Number.isFinite(numericAllocQuantity) && numericAllocQuantity > 0 ? numericAllocQuantity : null
+}
+
+// 统一管理配货单的派生展示逻辑，包数分子必须和“订货数”列的发货数兜底口径一致。
+export function formatInnerPackCount(quantity: unknown, allocQuantity: unknown, minOrderQuantity?: number) {
   if (typeof minOrderQuantity !== 'number' || !Number.isFinite(minOrderQuantity) || minOrderQuantity <= 1) {
     return ''
   }
 
-  const innerPackCount = orderQuantity / minOrderQuantity
+  const displayQuantity = resolvePickingDisplayQuantity(quantity, allocQuantity)
+  if (displayQuantity === null) {
+    return ''
+  }
+
+  const innerPackCount = displayQuantity / minOrderQuantity
   if (!Number.isFinite(innerPackCount)) {
     return ''
   }
@@ -124,14 +135,8 @@ export function formatInnerPackCount(orderQuantity: number, minOrderQuantity?: n
 }
 
 export function formatPickingOrderQuantity(quantity: unknown, allocQuantity?: unknown) {
-  const numericQuantity = Number(quantity)
-  if (Number.isFinite(numericQuantity) && numericQuantity > 0) {
-    return numericQuantity
-  }
-
   // 订货数为空或为 0 时，用发货数兜底显示；兜底值也为空时保持空白。
-  const numericAllocQuantity = Number(allocQuantity)
-  return Number.isFinite(numericAllocQuantity) && numericAllocQuantity > 0 ? numericAllocQuantity : ''
+  return resolvePickingDisplayQuantity(quantity, allocQuantity) ?? ''
 }
 
 export function buildPickingListExcelData(
@@ -176,7 +181,7 @@ export function buildPickingListExcelData(
       item.productName || '',
       formatExcelCurrency(item.importPrice),
       item.rrp === undefined || item.rrp === null ? '' : formatExcelCurrency(item.rrp),
-      formatInnerPackCount(item.quantity, item.minOrderQuantity),
+      formatInnerPackCount(item.quantity, item.allocQuantity, item.minOrderQuantity),
       formatPickingOrderQuantity(item.quantity, item.allocQuantity),
     ]),
     remarksRow: order.remarks ? [texts.remarksLabel, order.remarks] : undefined,
