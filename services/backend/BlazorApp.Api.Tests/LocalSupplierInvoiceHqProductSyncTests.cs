@@ -1388,7 +1388,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         _hqDb.Dispose();
         _localConnection.Dispose();
         _hqConnection.Dispose();
-        if (File.Exists(_localDbPath)) File.Delete(_localDbPath);
-        if (File.Exists(_hqDbPath)) File.Delete(_hqDbPath);
+        if (File.Exists(_localDbPath)) SqliteTempFileCleanup.DeleteIfExists(_localDbPath);
+        if (File.Exists(_hqDbPath)) SqliteTempFileCleanup.DeleteIfExists(_hqDbPath);
     }
 }

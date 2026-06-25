@@ -929,7 +929,7 @@ public sealed class ProductGradeReactServiceTests : IDisposable
         _sqliteConnection.Dispose();
         if (File.Exists(_dbPath))
         {
-            File.Delete(_dbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_dbPath);
         }
     }
 }

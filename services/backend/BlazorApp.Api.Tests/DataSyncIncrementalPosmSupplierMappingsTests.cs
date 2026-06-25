@@ -243,7 +243,7 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
     {
         if (File.Exists(path))
         {
-            File.Delete(path);
+            SqliteTempFileCleanup.DeleteIfExists(path);
         }
     }
 

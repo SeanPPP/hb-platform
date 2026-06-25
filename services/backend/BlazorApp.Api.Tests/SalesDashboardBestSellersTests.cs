@@ -1500,7 +1500,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     {
         _localConnection.Dispose();
         _posmConnection.Dispose();
-        if (File.Exists(_localDbPath)) File.Delete(_localDbPath);
-        if (File.Exists(_posmDbPath)) File.Delete(_posmDbPath);
+        if (File.Exists(_localDbPath)) SqliteTempFileCleanup.DeleteIfExists(_localDbPath);
+        if (File.Exists(_posmDbPath)) SqliteTempFileCleanup.DeleteIfExists(_posmDbPath);
     }
 }

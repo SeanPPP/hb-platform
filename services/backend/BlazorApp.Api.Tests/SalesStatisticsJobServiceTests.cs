@@ -980,9 +980,9 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         _localConnection.Dispose();
         _posmConnection.Dispose();
         if (File.Exists(_localDbPath))
-            File.Delete(_localDbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_localDbPath);
         if (File.Exists(_posmDbPath))
-            File.Delete(_posmDbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_posmDbPath);
     }
 
     private sealed class TestLogger<T> : ILogger<T>

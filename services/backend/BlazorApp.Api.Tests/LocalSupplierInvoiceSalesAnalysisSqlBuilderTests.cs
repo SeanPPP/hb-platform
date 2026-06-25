@@ -6,6 +6,10 @@ namespace BlazorApp.Api.Tests;
 
 public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
 {
+    // 测试 SQL 片段时统一换行，避免 Windows/Unix 换行差异影响断言。
+    private static string NormalizeLineEndings(string value) =>
+        value.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+
     [Fact]
     public void BuildHeader_ShouldJoinRealLocalSupplierTable()
     {
@@ -161,12 +165,13 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
             },
             new[] { "1001", "1002" }
         );
+        var pagedSql = NormalizeLineEndings(sql.PagedSql);
 
         Assert.Contains("SUM(COALESCE(d.Quantity, 0)) AS PurchaseQty", sql.PagedSql, StringComparison.Ordinal);
         Assert.Contains("fi.PurchaseDate AS PurchaseDate", sql.PagedSql, StringComparison.Ordinal);
         Assert.Contains(
             "ROW_NUMBER() OVER (\n            PARTITION BY pda.StoreCode, pda.ProductCode\n            ORDER BY pda.PurchaseDate DESC\n        ) AS PurchaseRank",
-            sql.PagedSql,
+            pagedSql,
             StringComparison.Ordinal
         );
         Assert.Contains("WHERE rp.PurchaseRank = 1", sql.PagedSql, StringComparison.Ordinal);
@@ -362,10 +367,11 @@ public class LocalSupplierInvoiceSalesAnalysisSqlBuilderTests
             },
             null
         );
+        var pagedSql = NormalizeLineEndings(sql.PagedSql);
 
         Assert.Contains(
             "ORDER BY\n    SalesBetweenPurchases ASC, StoreCode ASC, ProductCode ASC",
-            sql.PagedSql,
+            pagedSql,
             StringComparison.Ordinal
         );
         Assert.False(LocalSupplierInvoiceSalesAnalysisSqlBuilder.ContainsWriteKeyword(sql.PagedSql));

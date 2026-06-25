@@ -1217,7 +1217,7 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         _db.Dispose();
         if (File.Exists(_dbPath))
         {
-            File.Delete(_dbPath);
+            SqliteTempFileCleanup.DeleteIfExists(_dbPath);
         }
     }
 
