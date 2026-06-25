@@ -1,5 +1,19 @@
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
   Button,
   Card,
   DatePicker,
@@ -19,7 +33,16 @@ import type {
   TablePaginationConfig,
 } from 'antd/es/table/interface'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  type CSSProperties,
+  type HTMLAttributes,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   getLocalSupplierPurchaseSalesAnalysis,
@@ -46,9 +69,19 @@ import {
   TRANSPARENT_IMAGE_FALLBACK,
   toPurchaseSalesAnalysisSort,
 } from './helpers'
+import {
+  LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_DEFAULT_COLUMN_ORDER,
+  isLocalSupplierPurchaseSalesAnalysisColumnOrderCustomized,
+  mergeLocalSupplierPurchaseSalesAnalysisColumnOrder,
+  moveLocalSupplierPurchaseSalesAnalysisColumnOrder,
+  type LocalSupplierPurchaseSalesAnalysisColumnKey,
+} from './columnOrder'
 
 const { RangePicker } = DatePicker
 const { Text, Title } = Typography
+const LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_COLUMN_ORDER_STORAGE_KEY =
+  'hbweb_rv.localSupplierPurchaseSalesAnalysis.columnOrder.v1'
+const STATIC_PURCHASE_SALES_ANALYSIS_COLUMN_KEYS = new Set(['image', 'itemNumber'])
 
 type DateRangeValue = [Dayjs, Dayjs]
 type SortOrderState = 'asc' | 'desc'
@@ -223,6 +256,44 @@ function ProductImageCell(props: {
   )
 }
 
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+  'data-column-key'?: string
+}
+
+function DraggableHeaderCell({ children, style, ...props }: DraggableHeaderCellProps) {
+  const columnKey = props['data-column-key']
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: columnKey ?? '__local-supplier-purchase-sales-analysis-static-column__',
+    disabled: !columnKey,
+  })
+
+  if (!columnKey) {
+    return <th style={style} {...props}>{children}</th>
+  }
+
+  const headerStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    cursor: 'move',
+    zIndex: isDragging ? 3 : style?.zIndex,
+    opacity: isDragging ? 0.85 : style?.opacity,
+  }
+
+  return (
+    <th ref={setNodeRef} style={headerStyle} {...props} {...attributes} {...listeners}>
+      {children}
+    </th>
+  )
+}
+
 function buildInitialFilters(): SearchFilters {
   return {
     storeCode: undefined,
@@ -262,9 +333,17 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
   const [hasSearched, setHasSearched] = useState(false)
   const [queryVersion, setQueryVersion] = useState(0)
   const [tableScrollY, setTableScrollY] = useState<number>(520)
+  const [columnOrder, setColumnOrder] = useState<LocalSupplierPurchaseSalesAnalysisColumnKey[]>([])
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
+  const columnDragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6,
+      },
+    }),
+  )
 
   const pageSizeOptions = useMemo(
     () => PURCHASE_SALES_ANALYSIS_PAGE_SIZE_OPTIONS.map((item) => String(item)),
@@ -434,7 +513,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
     return () => controller.abort()
   }, [hasRequiredCommittedFilters, hasSearched, loadData, queryVersion])
 
-  const columns = useMemo<ColumnsType<LocalSupplierPurchaseSalesAnalysisRowDto>>(
+  const baseColumns = useMemo<ColumnsType<LocalSupplierPurchaseSalesAnalysisRowDto>>(
     () => [
       {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.image', '图片'),
@@ -478,15 +557,6 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
         ),
       },
       {
-        title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.latestPurchase', '最近进货'),
-        dataIndex: 'latestPurchaseDate',
-        key: 'latestPurchaseDate',
-        width: 130,
-        sorter: true,
-        sortOrder: sortBy === 'latestPurchaseDate' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
-        render: (_value, record) => formatPurchase(record.latestPurchaseDate, record.latestPurchaseQty, 'latest'),
-      },
-      {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.previousPurchase', '上次进货'),
         dataIndex: 'previousPurchaseDate',
         key: 'previousPurchaseDate',
@@ -495,6 +565,15 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
         sortOrder:
           sortBy === 'previousPurchaseDate' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
         render: (_value, record) => formatPurchase(record.previousPurchaseDate, record.previousPurchaseQty, 'previous'),
+      },
+      {
+        title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.latestPurchase', '最近进货'),
+        dataIndex: 'latestPurchaseDate',
+        key: 'latestPurchaseDate',
+        width: 130,
+        sorter: true,
+        sortOrder: sortBy === 'latestPurchaseDate' ? (sortOrder === 'asc' ? 'ascend' : 'descend') : null,
+        render: (_value, record) => formatPurchase(record.latestPurchaseDate, record.latestPurchaseQty, 'latest'),
       },
       {
         title: t('posAdmin.localSupplierPurchaseSalesAnalysis.columns.intervalDays', '间隔天数'),
@@ -558,6 +637,88 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
     ],
     [sortBy, sortOrder, t],
   )
+
+  const draggableColumnKeys = useMemo(() => {
+    const baseColumnKeys = new Set(baseColumns.map((column) => String(column.key)))
+    return LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_DEFAULT_COLUMN_ORDER.filter((key) =>
+      baseColumnKeys.has(key),
+    )
+  }, [baseColumns])
+  const draggableColumnKeySignature = draggableColumnKeys.join('|')
+  const isColumnOrderCustomized = isLocalSupplierPurchaseSalesAnalysisColumnOrderCustomized(
+    columnOrder,
+    draggableColumnKeys,
+  )
+
+  useEffect(() => {
+    setColumnOrder((current) => {
+      let savedOrder: unknown = null
+      if (!current.length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_COLUMN_ORDER_STORAGE_KEY)
+          savedOrder = raw ? JSON.parse(raw) : null
+        } catch {
+          savedOrder = null
+        }
+      }
+
+      // 列顺序只管理右侧业务列；图片和货号名称固定在左侧，避免拖拽破坏阅读锚点。
+      const nextOrder = mergeLocalSupplierPurchaseSalesAnalysisColumnOrder(
+        current.length ? current : savedOrder,
+        draggableColumnKeys,
+      )
+      if (current.length === nextOrder.length && current.every((key, index) => key === nextOrder[index])) {
+        return current
+      }
+      return nextOrder
+    })
+  }, [draggableColumnKeySignature])
+
+  const handleColumnDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    setColumnOrder((current) => {
+      const nextOrder = moveLocalSupplierPurchaseSalesAnalysisColumnOrder(current, active.id, over.id)
+      try {
+        localStorage.setItem(
+          LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_COLUMN_ORDER_STORAGE_KEY,
+          JSON.stringify(nextOrder),
+        )
+      } catch {
+        // localStorage 不可用时不影响当前页面内拖拽排序。
+      }
+      return nextOrder
+    })
+  }
+
+  const handleResetColumnOrder = () => {
+    setColumnOrder(draggableColumnKeys)
+    try {
+      localStorage.removeItem(LOCAL_SUPPLIER_PURCHASE_SALES_ANALYSIS_COLUMN_ORDER_STORAGE_KEY)
+    } catch {
+      // localStorage 不可用时仍恢复当前页面内的默认列顺序。
+    }
+    message.success(t('containers.messages.columnOrderReset', '列设置已恢复默认'))
+  }
+
+  const orderedColumns = useMemo<ColumnsType<LocalSupplierPurchaseSalesAnalysisRowDto>>(() => {
+    const activeOrder = columnOrder.length ? columnOrder : draggableColumnKeys
+    const columnMap = new Map(baseColumns.map((column) => [String(column.key), column]))
+    const fixedColumns = baseColumns.filter((column) =>
+      STATIC_PURCHASE_SALES_ANALYSIS_COLUMN_KEYS.has(String(column.key)),
+    )
+
+    const draggableColumns = activeOrder
+      .map((key) => columnMap.get(key))
+      .filter((column): column is ColumnsType<LocalSupplierPurchaseSalesAnalysisRowDto>[number] => Boolean(column))
+      .map((column) => ({
+        ...column,
+        onHeaderCell: () => ({
+          'data-column-key': String(column.key),
+        }),
+      }))
+
+    return [...fixedColumns, ...draggableColumns] as ColumnsType<LocalSupplierPurchaseSalesAnalysisRowDto>
+  }, [baseColumns, columnOrder, draggableColumnKeySignature])
 
   const handleSearch = () => {
     if (!draftFilters.storeCode || !draftFilters.supplierCode) {
@@ -733,6 +894,13 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
               >
                 {t('posAdmin.localSupplierPurchaseSalesAnalysis.refresh', '刷新')}
               </Button>
+              <Button
+                icon={<ReloadOutlined />}
+                disabled={!isColumnOrderCustomized}
+                onClick={handleResetColumnOrder}
+              >
+                {t('containers.actions.resetColumns', '重置列')}
+              </Button>
             </Space>
           </Card>
         </div>
@@ -755,46 +923,54 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
                 )}
               </Text>
             )}
-            <Table<LocalSupplierPurchaseSalesAnalysisRowDto>
-              size="small"
-              rowKey={(record) =>
-                `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
-              }
-              loading={loading}
-              columns={columns}
-              dataSource={hasSearched ? result?.items ?? [] : []}
-              locale={{
-                emptyText: (
-                  <Empty
-                    description={
-                      hasSearched
-                        ? t(
-                            'posAdmin.localSupplierPurchaseSalesAnalysis.empty',
-                            '当前条件下暂无分店供应商进货销量数据。',
-                          )
-                        : t(
-                            'posAdmin.localSupplierPurchaseSalesAnalysis.emptyBeforeSearch',
-                            '请选择分店和供应商后点击查询。',
-                          )
-                    }
-                  />
-                ),
-              }}
-              scroll={{ x: 1560, y: tableScrollY }}
-              virtual
-              pagination={{
-                current: page,
-                pageSize,
-                total: hasSearched ? result?.total ?? 0 : 0,
-                showSizeChanger: true,
-                pageSizeOptions,
-                showTotal: (total) =>
-                  t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.total', '共 {{count}} 条', {
-                    count: total,
-                  }),
-              }}
-              onChange={handleTableChange}
-            />
+            <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+              <SortableContext
+                items={columnOrder.length ? columnOrder : draggableColumnKeys}
+                strategy={horizontalListSortingStrategy}
+              >
+                <Table<LocalSupplierPurchaseSalesAnalysisRowDto>
+                  size="small"
+                  rowKey={(record) =>
+                    `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`
+                  }
+                  loading={loading}
+                  components={{ header: { cell: DraggableHeaderCell } }}
+                  columns={orderedColumns}
+                  dataSource={hasSearched ? result?.items ?? [] : []}
+                  locale={{
+                    emptyText: (
+                      <Empty
+                        description={
+                          hasSearched
+                            ? t(
+                                'posAdmin.localSupplierPurchaseSalesAnalysis.empty',
+                                '当前条件下暂无分店供应商进货销量数据。',
+                              )
+                            : t(
+                                'posAdmin.localSupplierPurchaseSalesAnalysis.emptyBeforeSearch',
+                                '请选择分店和供应商后点击查询。',
+                              )
+                        }
+                      />
+                    ),
+                  }}
+                  scroll={{ x: 1560, y: tableScrollY }}
+                  virtual
+                  pagination={{
+                    current: page,
+                    pageSize,
+                    total: hasSearched ? result?.total ?? 0 : 0,
+                    showSizeChanger: true,
+                    pageSizeOptions,
+                    showTotal: (total) =>
+                      t('posAdmin.localSupplierPurchaseSalesAnalysis.summary.total', '共 {{count}} 条', {
+                        count: total,
+                      }),
+                  }}
+                  onChange={handleTableChange}
+                />
+              </SortableContext>
+            </DndContext>
           </Space>
         </Card>
       </Space>
