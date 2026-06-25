@@ -363,18 +363,23 @@ async function main() {
     ]
 
     assert(
-      storeOrdersSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
-      '列表页应使用仓库管理员操作权限开关',
+      storeOrdersSource.includes('const isWarehouseStaffOnly =') &&
+        storeOrdersSource.includes('const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly') &&
+        storeOrdersSource.includes('const canCreateStoreOrder = access.canWriteOrder || canUseWarehouseManagerActions') &&
+        storeOrdersSource.includes('const canDeleteStoreOrder = access.canDeleteOrder || canUseWarehouseManagerActions'),
+      '列表页应使用仓库订货管理权限开关，并排除纯 WarehouseStaff 写权限',
     )
     assert(
       storeOrdersSource.includes('{canUseWarehouseManagerActions ? (') &&
         storeOrdersSource.includes("t('storeOrders.syncIncrementalOrders')") &&
         storeOrdersSource.includes("t('storeOrders.fixStoreGuid', '修复分店 GUID')") &&
         storeOrdersSource.includes("t('storeOrders.newOrder')") &&
+        storeOrdersSource.includes('disabled={!canCreateStoreOrder}') &&
         storeOrdersSource.includes("t('storeOrders.copyOrder'") &&
         storeOrdersSource.includes("t('storeOrders.batchSubmitted')") &&
-        storeOrdersSource.includes("t('storeOrders.batchCompleted')"),
-      '列表页同步、修复、新建、复制和批量状态按钮应仅仓库管理员可见',
+        storeOrdersSource.includes("t('storeOrders.batchCompleted')") &&
+        storeOrdersSource.includes('{canDeleteStoreOrder ? ('),
+      '列表页同步、修复、新建、复制、删除和批量状态按钮应仅仓库订货管理权限可见',
     )
     assert(
       storeOrdersSource.includes('canUseWarehouseManagerActions && (record.flowStatus === FlowStatus.Submitted || record.flowStatus === FlowStatus.Picking)'),
@@ -385,8 +390,9 @@ async function main() {
       '列表页勾选列应仅仓库管理员可见',
     )
     assert(
-      detailSource.includes('const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager'),
-      '详情页应使用仓库管理员操作权限开关',
+      detailSource.includes('const isWarehouseStaffOnly =') &&
+        detailSource.includes('const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly'),
+      '详情页应使用仓库订货管理权限开关，并排除纯 WarehouseStaff 写权限',
     )
     assert(
       detailSource.includes('const canUseStoreOrderDocumentActions = access.isWarehouseStaff'),

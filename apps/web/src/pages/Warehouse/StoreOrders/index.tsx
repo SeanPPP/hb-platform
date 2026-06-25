@@ -804,7 +804,15 @@ export default function StoreOrdersPage() {
   const navigate = useNavigate()
   const { message, modal } = AntdApp.useApp()
   const { access, clearAuth } = useAuthStore()
-  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  const isWarehouseStaffOnly =
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  // 分店订货管理动作跟随 Warehouse.ManageOrders 权限；纯 WarehouseStaff 仅保留只读文档入口。
+  const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly
+  const canCreateStoreOrder = access.canWriteOrder || canUseWarehouseManagerActions
+  const canDeleteStoreOrder = access.canDeleteOrder || canUseWarehouseManagerActions
 
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -1706,7 +1714,7 @@ export default function StoreOrdersPage() {
             <Button size="small" type="link" onClick={() => openDetail(record)}>
               {t('common.view')}
             </Button>
-            {access.canDeleteOrder ? (
+            {canDeleteStoreOrder ? (
               <Popconfirm
                 title={t('storeOrders.confirmDeleteOrder', { orderNo: record.orderNo })}
                 okText={t('common.delete')}
@@ -1734,9 +1742,9 @@ export default function StoreOrdersPage() {
       },
     ],
     [
-      access.canDeleteOrder,
       branchMap,
       canUseWarehouseManagerActions,
+      canDeleteStoreOrder,
       columnFilters,
       dateRange,
       i18n.language,
@@ -1852,7 +1860,7 @@ export default function StoreOrdersPage() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              disabled={!access.canWriteOrder}
+              disabled={!canCreateStoreOrder}
               onClick={() => setStorePickerOpen(true)}
             >
               {t('storeOrders.newOrder')}

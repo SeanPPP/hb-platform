@@ -757,7 +757,13 @@ export default function StoreOrderDetailPage() {
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
   const { access, currentUser } = useAuthStore()
-  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  const isWarehouseStaffOnly =
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  // 分店订货写入、状态流转和批量动作统一跟随仓库订货管理权限。
+  const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly
   // 只用于配货单等只读文档入口，不开放订单编辑、状态流转或明细写入能力。
   const canUseStoreOrderDocumentActions = access.isWarehouseStaff
   const canUseStoreOrderDetailExtraActions = canUseWarehouseManagerActions || canUseStoreOrderDocumentActions

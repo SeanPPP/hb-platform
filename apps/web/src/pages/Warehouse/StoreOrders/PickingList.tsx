@@ -36,7 +36,13 @@ export default function PickingListPage() {
   const [exportingExcel, setExportingExcel] = useState(false)
   const [order, setOrder] = useState<StoreOrderDetail | null>(null)
   const [store, setStore] = useState<StoreDto | null>(null)
-  const canUseWarehouseManagerActions = access.isAdmin || access.isWarehouseManager
+  const isWarehouseStaffOnly =
+    access.isWarehouseStaff &&
+    !access.isAdmin &&
+    !access.isWarehouseManager &&
+    (access.hasRole('WarehouseStaff') || access.hasRole('仓库员工'))
+  // 配货单自动开始配货属于写动作，跟随仓库订货管理权限，纯 WarehouseStaff 只能打印/下载。
+  const canUseWarehouseManagerActions = access.canManageWarehouseOrders && !isWarehouseStaffOnly
   // 打印页日期格式跟随当前语言，但只限定本次需求中的中英文区域设置。
   const printLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
 
