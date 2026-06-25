@@ -142,7 +142,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Pos_terminal_scan_command_maps_workflow_result_to_ui_state()
+    public async Task Pos_terminal_scan_command_maps_workflow_result_to_ui_state()
     {
         var cart = new PosCartService();
         var index = new LocalSellableItemIndex();
@@ -170,7 +170,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             IsTouchKeyboardOpen = true
         };
 
-        viewModel.ScanCommand.Execute(null);
+        await viewModel.ScanCommand.ExecuteAsync(null);
 
         Assert.Equal("930101A", workflow.LastProcessScanText);
         Assert.True(workflow.LastProcessScanPreferExactLookup is false);
@@ -3670,6 +3670,17 @@ public sealed class PosTerminalCashPaymentViewModelTests
             LastProcessScanText = scanText;
             LastProcessScanPreferExactLookup = preferExactLookup;
             return ProcessScanResult;
+        }
+
+        public Task<PosTerminalWorkflowResult> ProcessScanAsync(
+            PosSessionState session,
+            string scanText,
+            bool preferExactLookup,
+            string source,
+            string? traceId = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ProcessScan(session, scanText, preferExactLookup, source, traceId));
         }
 
         public PosTerminalWorkflowResult AddSelectedItem(PosSessionState session, SellableItemDto item, bool clearScanText, bool closeMatchesPopup, string operation)

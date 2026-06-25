@@ -132,7 +132,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _workflowService.CatalogReloaded += OnWorkflowCatalogReloaded;
         _rawScannerService?.Subscribe(PageId, OnRawBarcodeScanned);
 
-        ScanCommand = new RelayCommand(SearchAndAdd);
+        ScanCommand = new AsyncRelayCommand(SearchAndAddAsync);
         NumberInputCommand = new RelayCommand<string>(AppendScanText);
         KeypadInputCommand = new RelayCommand<string>(AppendKeypadBuffer);
         ToggleTouchKeyboardCommand = new RelayCommand(ToggleTouchKeyboard);
@@ -170,7 +170,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public ObservableCollection<CartLine> CartLines { get; } = [];
 
-    public IRelayCommand ScanCommand { get; }
+    public IAsyncRelayCommand ScanCommand { get; }
 
     public IRelayCommand<string> NumberInputCommand { get; }
 
@@ -437,7 +437,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     {
         if (value == "Enter")
         {
-            SearchAndAdd();
+            _ = SearchAndAddSafeAsync();
             IsTouchKeyboardOpen = false;
             return;
         }
@@ -535,9 +535,22 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
     }
 
-    private void SearchAndAdd()
+    private async Task SearchAndAddAsync()
     {
-        ExecuteScan(_scanController.CreateManual(ScanText), statusTextOverrideFactory: null);
+        await ExecuteScanAsync(_scanController.CreateManual(ScanText), statusTextOverrideFactory: null);
+    }
+
+    private async Task SearchAndAddSafeAsync()
+    {
+        try
+        {
+            await SearchAndAddAsync();
+        }
+        catch (Exception ex)
+        {
+            // 触摸键盘 Enter 不能 await，异常在后台任务中记录，避免未观察异常。
+            ConsoleLog.Write("PosScan", $"manual async processing failed scanText={ScanText} error={ex.Message}");
+        }
     }
 
     private bool CanAddOpenItem()
@@ -707,15 +720,35 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public bool ProcessScannerBarcode(string barcode, string devicePath, string source)
     {
-        ProcessScannerBarcode(barcode, devicePath, source, null);
+        _ = ProcessScannerBarcodeSafeAsync(barcode, devicePath, source, null);
         return true;
+    }
+
+    private Task ProcessScannerBarcodeAsync(string barcode, string devicePath, string source, DateTimeOffset? scannedAt)
+    {
+        return ExecuteScanAsync(
+            _scanController.CreateScanner(barcode, devicePath, source, scannedAt),
+            result => FormatScannerResultStatus(barcode, result));
     }
 
     private void ProcessScannerBarcode(string barcode, string devicePath, string source, DateTimeOffset? scannedAt)
     {
-        ExecuteScan(
-            _scanController.CreateScanner(barcode, devicePath, source, scannedAt),
-            result => FormatScannerResultStatus(barcode, result));
+        _ = ProcessScannerBarcodeSafeAsync(barcode, devicePath, source, scannedAt);
+    }
+
+    private async Task ProcessScannerBarcodeSafeAsync(string barcode, string devicePath, string source, DateTimeOffset? scannedAt)
+    {
+        try
+        {
+            await ProcessScannerBarcodeAsync(barcode, devicePath, source, scannedAt);
+        }
+        catch (Exception ex)
+        {
+            // 扫描枪入口不能 await，异常必须在后台任务内记录，避免静默吞掉。
+            ConsoleLog.Write(
+                "PosScan",
+                $"scanner async processing failed barcode={barcode} source={source} device={devicePath} error={ex.Message}");
+        }
     }
 
     private void ClearSearch()
@@ -851,7 +884,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
     }
 
-    private void ExecuteScan(
+    private async Task ExecuteScanAsync(
         PosTerminalScanPlan plan,
         Func<PosTerminalWorkflowResult, string?>? statusTextOverrideFactory)
     {
@@ -879,7 +912,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         var applyStopwatch = new Stopwatch();
         try
         {
-            result = _workflowService.ProcessScan(Session, plan.Barcode, plan.PreferExactLookup, plan.Source, plan.TraceId);
+            result = await _workflowService.ProcessScanAsync(
+                Session,
+                plan.Barcode,
+                plan.PreferExactLookup,
+                plan.Source,
+                plan.TraceId);
             workflowStopwatch.Stop();
             applyStopwatch.Start();
             ApplyWorkflowResult(result, statusTextOverrideFactory?.Invoke(result));

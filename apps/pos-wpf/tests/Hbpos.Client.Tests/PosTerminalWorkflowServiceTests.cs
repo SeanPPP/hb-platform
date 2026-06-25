@@ -47,6 +47,144 @@ public sealed class PosTerminalWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Process_scan_async_remote_match_adds_cart_line_after_local_miss()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var remoteItem = CreateItem("SKU-213", "Remote Workflow Juice", "930213", PriceSourceKind.StoreRetailPrice, 6.5m);
+        var lookupCalls = 0;
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (storeCode, lookupCode, _) =>
+            {
+                Assert.Equal("S001", storeCode);
+                Assert.Equal("930213", lookupCode);
+                Interlocked.Increment(ref lookupCalls);
+                return Task.FromResult(new RemoteLookupRefreshResult(storeCode, lookupCode, Found: true, remoteItem, DeletedCount: 0));
+            });
+
+        var result = await service.ProcessScanAsync(Session, "930213", preferExactLookup: true, source: "raw");
+
+        Assert.Equal("pos.status.added", result.StatusKey);
+        Assert.True(result.ClearScanText);
+        Assert.False(result.MatchesPopupOpen);
+        Assert.Same(remoteItem, result.SelectedItem);
+        Assert.Equal(1, Volatile.Read(ref lookupCalls));
+        var line = Assert.Single(cart.Lines);
+        Assert.Same(line, result.SelectedCartLine);
+        Assert.Equal("Remote Workflow Juice", line.DisplayName);
+        Assert.Equal(6.5m, line.UnitPrice);
+        Assert.Same(remoteItem, Assert.Single(index.FindExactMatches("S001", "930213")));
+    }
+
+    [Fact]
+    public async Task Process_scan_async_remote_not_found_keeps_no_local_match_after_local_miss()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (storeCode, lookupCode, _) =>
+                Task.FromResult(new RemoteLookupRefreshResult(storeCode, lookupCode, Found: false, Item: null, DeletedCount: 1)));
+
+        var result = await service.ProcessScanAsync(Session, "930214", preferExactLookup: true, source: "raw");
+
+        Assert.Equal("pos.status.noLocalMatch", result.StatusKey);
+        Assert.False(result.ClearScanText);
+        Assert.False(result.MatchesPopupOpen);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(index.FindExactMatches("S001", "930214"));
+    }
+
+    [Fact]
+    public async Task Process_scan_async_offline_does_not_remote_lookup_after_local_miss()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) => throw new InvalidOperationException("Remote lookup should not run while offline."));
+
+        var result = await service.ProcessScanAsync(
+            Session with { IsOnline = false },
+            "930215",
+            preferExactLookup: true,
+            source: "raw");
+
+        Assert.Equal("pos.status.noLocalMatch", result.StatusKey);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public async Task Process_scan_async_remote_exception_keeps_no_local_match_after_local_miss()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, _) => throw new InvalidOperationException("remote failed"));
+
+        var result = await service.ProcessScanAsync(Session, "930216", preferExactLookup: true, source: "raw");
+
+        Assert.Equal("pos.status.noLocalMatch", result.StatusKey);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(index.FindExactMatches("S001", "930216"));
+    }
+
+    [Fact]
+    public async Task Process_scan_async_remote_canceled_keeps_no_local_match_after_local_miss()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (_, _, cancellationToken) => throw new OperationCanceledException(cancellationToken));
+
+        var result = await service.ProcessScanAsync(Session, "930217", preferExactLookup: true, source: "raw");
+
+        Assert.Equal("pos.status.noLocalMatch", result.StatusKey);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(index.FindExactMatches("S001", "930217"));
+    }
+
+    [Fact]
+    public async Task Process_scan_async_concurrent_same_local_miss_shares_remote_lookup_and_adds_each_scan()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var remoteItem = CreateItem("SKU-218", "Remote Workflow Cola", "930218", PriceSourceKind.StoreRetailPrice, 3.25m);
+        var remoteLookup = new TaskCompletionSource<RemoteLookupRefreshResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookupCalls = 0;
+        var service = new PosTerminalWorkflowService(
+            index,
+            cart,
+            remoteLookupRefreshAsync: (storeCode, lookupCode, _) =>
+            {
+                Interlocked.Increment(ref lookupCalls);
+                return remoteLookup.Task;
+            });
+
+        var first = service.ProcessScanAsync(Session, "930218", preferExactLookup: true, source: "raw");
+        await WaitUntilAsync(() => Volatile.Read(ref lookupCalls) == 1);
+        var second = service.ProcessScanAsync(Session, "930218", preferExactLookup: true, source: "raw");
+
+        remoteLookup.SetResult(new RemoteLookupRefreshResult("S001", "930218", Found: true, remoteItem, DeletedCount: 0));
+        var results = await Task.WhenAll(first, second);
+
+        Assert.All(results, result => Assert.Equal("pos.status.added", result.StatusKey));
+        Assert.Equal(1, Volatile.Read(ref lookupCalls));
+        var line = Assert.Single(cart.Lines);
+        Assert.Equal(2m, line.Quantity);
+        Assert.Equal(6.5m, cart.TotalAmount);
+        Assert.Same(remoteItem, Assert.Single(index.FindExactMatches("S001", "930218")));
+    }
+
+    [Fact]
     public void Modify_selected_line_quantity_rejects_decimal_values()
     {
         var cart = new PosCartService();

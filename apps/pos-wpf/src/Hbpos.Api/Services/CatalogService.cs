@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -65,6 +66,8 @@ public sealed class CatalogService(
     IPriceIndexBuilder priceIndexBuilder,
     ICatalogIndexCache catalogIndexCache) : ICatalogService
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> StoreRetailPriceEnsureLocks = new(StringComparer.Ordinal);
+
     public async Task<IReadOnlyList<StoreDto>> GetStoresAsync(CancellationToken cancellationToken)
     {
         var stores = await dbContext.MainDb.Queryable<Store>()
@@ -125,6 +128,16 @@ public sealed class CatalogService(
         }
 
         var response = index.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
+        if (response is { Found: true, Item.PriceSource: PriceSourceKind.ProductBase })
+        {
+            response = await EnsureStoreRetailPriceAndLookupAsync(
+                index.StoreCode,
+                lookupCode,
+                lookupCodeNormalized,
+                response,
+                cancellationToken);
+        }
+
         stopwatch.Stop();
         Log($"lookup service completed store={storeCode} status=ok found={response.Found} lookupCodeNormalized={response.LookupCodeNormalized} productCode={response.Item?.ProductCode ?? "<null>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
         return response;
@@ -419,6 +432,116 @@ public sealed class CatalogService(
             new CatalogSellableIndex(store.StoreCode, generatedAt, items));
     }
 
+    private async Task<CatalogLookupResponse> EnsureStoreRetailPriceAndLookupAsync(
+        string normalizedStoreCode,
+        string? lookupCode,
+        string? lookupCodeNormalized,
+        CatalogLookupResponse currentResponse,
+        CancellationToken cancellationToken)
+    {
+        var productCode = NormalizeProductCode(currentResponse.Item?.ProductCode);
+        if (string.IsNullOrEmpty(productCode))
+        {
+            return currentResponse;
+        }
+
+        var product = await dbContext.MainDb.Queryable<Product>()
+            .FirstAsync(x => x.ProductCode == productCode && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (product is null)
+        {
+            Log($"lookup store retail ensure skipped store={normalizedStoreCode} product={productCode} reason=product-not-found");
+            return currentResponse;
+        }
+
+        var ensureLock = StoreRetailPriceEnsureLocks.GetOrAdd(
+            StoreRetailPriceEnsureLockKey(normalizedStoreCode, productCode),
+            _ => new SemaphoreSlim(1, 1));
+        await ensureLock.WaitAsync(cancellationToken);
+        try
+        {
+            var now = DateTime.UtcNow;
+            var writeAction = "none";
+            await dbContext.MainDb.Ado.BeginTranAsync();
+            try
+            {
+                var storeRetailPrice = await dbContext.MainDb.Queryable<StoreRetailPrice>()
+                    .FirstAsync(x =>
+                        x.StoreCode == normalizedStoreCode &&
+                        x.ProductCode == productCode &&
+                        !x.IsDeleted,
+                        cancellationToken);
+
+                if (storeRetailPrice is null)
+                {
+                    writeAction = "insert";
+                    // 本地 lookup 命中商品主档但没有分店价时，立即复制主档价格创建分店价，供 POS 本次扫码使用。
+                    storeRetailPrice = new StoreRetailPrice
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = normalizedStoreCode,
+                        ProductCode = productCode,
+                        StoreProductCode = UuidHelper.GenerateUuid7(),
+                        SupplierCode = product.LocalSupplierCode,
+                        PurchasePrice = product.PurchasePrice,
+                        StoreRetailPriceValue = product.RetailPrice ?? 0m,
+                        IsActive = true,
+                        IsAutoPricing = product.IsAutoPricing,
+                        IsSpecialProduct = product.IsSpecialProduct,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = "pos-device",
+                        UpdatedBy = "pos-device",
+                        IsDeleted = false
+                    };
+
+                    await dbContext.MainDb.Insertable(storeRetailPrice).ExecuteCommandAsync();
+                }
+                else if (!storeRetailPrice.IsActive || storeRetailPrice.StoreRetailPriceValue is null)
+                {
+                    writeAction = "update";
+                    // 已有分店价记录但不可用于索引时，补齐主档价格并重新启用，避免继续返回 ProductBase。
+                    storeRetailPrice.SupplierCode ??= product.LocalSupplierCode;
+                    storeRetailPrice.PurchasePrice ??= product.PurchasePrice;
+                    storeRetailPrice.StoreRetailPriceValue = product.RetailPrice ?? 0m;
+                    storeRetailPrice.IsActive = true;
+                    storeRetailPrice.IsAutoPricing = product.IsAutoPricing;
+                    storeRetailPrice.IsSpecialProduct = product.IsSpecialProduct;
+                    storeRetailPrice.UpdatedAt = now;
+                    storeRetailPrice.UpdatedBy = "pos-device";
+
+                    await dbContext.MainDb.Updateable(storeRetailPrice).ExecuteCommandAsync();
+                }
+                else
+                {
+                    // 缓存可能仍停在 ProductBase；即使数据库已有可用分店价，也要重建该店索引后再返回。
+                    writeAction = "refresh";
+                }
+
+                await dbContext.MainDb.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await dbContext.MainDb.Ado.RollbackTranAsync();
+                throw;
+            }
+
+            if (writeAction == "none")
+            {
+                return currentResponse;
+            }
+
+            catalogIndexCache.InvalidateStore(normalizedStoreCode);
+            var refreshedIndex = await BuildSellableIndexAsync(normalizedStoreCode, since: null, cancellationToken);
+            var refreshedResponse = refreshedIndex?.CatalogIndex.Lookup(lookupCode, lookupCodeNormalized);
+            Log($"lookup store retail ensured store={normalizedStoreCode} product={productCode} action={writeAction} refreshed={refreshedResponse?.Found.ToString() ?? "<null>"}");
+            return refreshedResponse ?? currentResponse;
+        }
+        finally
+        {
+            ensureLock.Release();
+        }
+    }
+
     private static DateTimeOffset? ToOffset(DateTime? value)
     {
         return value is null
@@ -434,6 +557,14 @@ public sealed class CatalogService(
     private static string NormalizeProductCode(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static string StoreRetailPriceEnsureLockKey(string storeCode, string productCode)
+    {
+        return string.Concat(
+            NormalizeStoreCode(storeCode).ToUpperInvariant(),
+            "|",
+            NormalizeProductCode(productCode).ToUpperInvariant());
     }
 
     private static void Log(string message)

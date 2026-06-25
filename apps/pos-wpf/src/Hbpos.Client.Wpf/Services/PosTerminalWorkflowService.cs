@@ -46,6 +46,14 @@ public interface IPosTerminalWorkflowService
 
     PosTerminalWorkflowResult ProcessScan(PosSessionState session, string scanText, bool preferExactLookup, string source, string? traceId = null);
 
+    Task<PosTerminalWorkflowResult> ProcessScanAsync(
+        PosSessionState session,
+        string scanText,
+        bool preferExactLookup,
+        string source,
+        string? traceId = null,
+        CancellationToken cancellationToken = default);
+
     PosTerminalWorkflowResult AddSelectedItem(PosSessionState session, SellableItemDto item, bool clearScanText, bool closeMatchesPopup, string operation);
 
     PosTerminalWorkflowResult AddOpenItem(PosSessionState session, string keypadBuffer);
@@ -84,6 +92,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
     private readonly Func<bool> _isCatalogSyncActive;
     private readonly object _remoteLookupGate = new();
     private readonly HashSet<RemoteLookupKey> _pendingRemoteLookups = [];
+    private readonly Dictionary<RemoteLookupKey, Task<RemoteLookupRefreshResult>> _pendingRemoteLookupTasks = [];
 
     public PosTerminalWorkflowService(
         LocalSellableItemIndex priceIndex,
@@ -172,6 +181,23 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             $"{FormatTraceId(traceId)}barcode={submittedScanText} storeCode={session.StoreCode} source={source} hit={matchKind} matchCount={matchCount} autoAdded={FormatBool(autoAdded)} cartLines={_cart.Lines.Count} exactLookupElapsedMs={exactLookupElapsedMs} searchElapsedMs={searchElapsedMs} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
 
         return result;
+    }
+
+    public async Task<PosTerminalWorkflowResult> ProcessScanAsync(
+        PosSessionState session,
+        string scanText,
+        bool preferExactLookup,
+        string source,
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var localResult = ProcessScan(session, scanText, preferExactLookup, source, traceId);
+        if (!IsLocalMiss(localResult))
+        {
+            return localResult;
+        }
+
+        return await TryAddRemoteLookupMissAsync(session, scanText, source, traceId, localResult, cancellationToken);
     }
 
     public PosTerminalWorkflowResult AddSelectedItem(
@@ -449,7 +475,8 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         bool clearScanText,
         bool closeMatchesPopup,
         string operation,
-        string? traceId = null)
+        string? traceId = null,
+        bool refreshRemoteAfterAdd = true)
     {
         var totalStopwatch = Stopwatch.StartNew();
         if (!PosCartService.IsPositiveIntegerQuantity(item.QuantityFactor))
@@ -481,7 +508,11 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         }
         addStopwatch.Stop();
 
-        BeginRemoteLookup(session, line, item);
+        if (refreshRemoteAfterAdd)
+        {
+            BeginRemoteLookup(session, line, item);
+        }
+
         totalStopwatch.Stop();
         ConsoleLog.Write(
             "PosScan",
@@ -493,6 +524,139 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
             MatchesPopupOpen = closeMatchesPopup ? false : null,
             TouchKeyboardOpen = false
         };
+    }
+
+    private static bool IsLocalMiss(PosTerminalWorkflowResult localResult)
+    {
+        return string.Equals(localResult.StatusKey, "pos.status.noLocalMatch", StringComparison.Ordinal) &&
+            localResult.Matches is not null &&
+            localResult.Matches.Count == 0;
+    }
+
+    private async Task<PosTerminalWorkflowResult> TryAddRemoteLookupMissAsync(
+        PosSessionState session,
+        string scanText,
+        string source,
+        string? traceId,
+        PosTerminalWorkflowResult localResult,
+        CancellationToken cancellationToken)
+    {
+        if (!session.IsOnline)
+        {
+            ConsoleLog.Write(
+                "PosScan",
+                $"{FormatTraceId(traceId)}remote lookup skipped after local miss storeCode={session.StoreCode} lookupCode={LogValue(scanText)} source={source} reason=offline");
+            return localResult;
+        }
+
+        if (_remoteLookupRefreshAsync is null)
+        {
+            ConsoleLog.Write(
+                "PosScan",
+                $"{FormatTraceId(traceId)}remote lookup skipped after local miss storeCode={session.StoreCode} lookupCode={LogValue(scanText)} source={source} reason=refresh-handler-missing");
+            return localResult;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var key = new RemoteLookupKey(NormalizeIdentity(session.StoreCode), NormalizeIdentity(scanText));
+        Task<RemoteLookupRefreshResult>? lookupTask = null;
+        var startedLookup = false;
+        try
+        {
+            lock (_remoteLookupGate)
+            {
+                if (!_pendingRemoteLookupTasks.TryGetValue(key, out lookupTask))
+                {
+                    lookupTask = ExecuteRemoteLookupWithTimeoutAsync(session.StoreCode, scanText, cancellationToken);
+                    _pendingRemoteLookupTasks[key] = lookupTask;
+                    startedLookup = true;
+                }
+            }
+
+            ConsoleLog.Write(
+                "PosScan",
+                startedLookup
+                    ? $"{FormatTraceId(traceId)}remote lookup dispatch after local miss storeCode={session.StoreCode} lookupCode={LogValue(scanText)} source={source}"
+                    : $"{FormatTraceId(traceId)}remote lookup joined after local miss storeCode={session.StoreCode} lookupCode={LogValue(scanText)} source={source}");
+
+            var result = await lookupTask.WaitAsync(cancellationToken);
+            stopwatch.Stop();
+
+            if (result.Updated && result.Item is not null)
+            {
+                _priceIndex.Upsert(result.Item);
+                // 本地未命中后远端已返回最新商品，这里直接加购，避免加购后再重复排队远端刷新。
+                var addResult = AddItem(
+                    session,
+                    result.Item,
+                    clearScanText: true,
+                    closeMatchesPopup: false,
+                    "scan-auto-add",
+                    traceId,
+                    refreshRemoteAfterAdd: false);
+                CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
+                ConsoleLog.Write(
+                    "PosScan",
+                    $"{FormatTraceId(traceId)}remote lookup local miss added storeCode={session.StoreCode} lookupCode={LogValue(scanText)} productCode={LogValue(result.Item.ProductCode)} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return addResult with
+                {
+                    Matches = [result.Item],
+                    SelectedItem = result.Item,
+                    MatchesPopupOpen = false
+                };
+            }
+
+            if (result.Deleted)
+            {
+                _priceIndex.RemoveLookup(result.StoreCode, result.LookupCode);
+                CatalogReloaded?.Invoke(this, new PosTerminalCatalogReloadedEventArgs(_priceIndex.Items));
+            }
+
+            ConsoleLog.Write(
+                "PosScan",
+                $"{FormatTraceId(traceId)}remote lookup local miss not found storeCode={session.StoreCode} lookupCode={LogValue(scanText)} deletedCount={result.DeletedCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return localResult;
+        }
+        catch (OperationCanceledException ex)
+        {
+            stopwatch.Stop();
+            ConsoleLog.Write(
+                "PosScan",
+                $"{FormatTraceId(traceId)}remote lookup local miss timeout storeCode={session.StoreCode} lookupCode={LogValue(scanText)} timeoutMs={RemoteLookupTimeout.TotalMilliseconds:0} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            return localResult;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            ConsoleLog.Write(
+                "PosScan",
+                $"{FormatTraceId(traceId)}remote lookup local miss failed storeCode={session.StoreCode} lookupCode={LogValue(scanText)} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            return localResult;
+        }
+        finally
+        {
+            if (startedLookup && lookupTask is not null)
+            {
+                lock (_remoteLookupGate)
+                {
+                    if (_pendingRemoteLookupTasks.TryGetValue(key, out var pendingTask) &&
+                        ReferenceEquals(pendingTask, lookupTask))
+                    {
+                        _pendingRemoteLookupTasks.Remove(key);
+                    }
+                }
+            }
+        }
+    }
+
+    private async Task<RemoteLookupRefreshResult> ExecuteRemoteLookupWithTimeoutAsync(
+        string storeCode,
+        string lookupCode,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(RemoteLookupTimeout);
+        return await _remoteLookupRefreshAsync!(storeCode, lookupCode, timeoutCts.Token);
     }
 
     private PosTerminalWorkflowResult ApplyWholeOrderDiscountAmount(string keypadBuffer)
