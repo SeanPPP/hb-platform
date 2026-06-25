@@ -615,14 +615,21 @@ export default function StoreOrderImportPriceVariancePage() {
           resultPrice = result.warehouseImportPrice
         }
 
-        setItems((current) =>
-          current.map((item) =>
-            item.productCode === resultProductCode ? { ...item, [field]: resultPrice } : item,
-          ),
-        )
         setSelectedProduct((current) =>
           current?.productCode === resultProductCode ? { ...current, [field]: resultPrice } : current,
         )
+
+        const shouldReloadSortedData = sortBy === field
+        if (shouldReloadSortedData) {
+          // 当前排序依赖被编辑价格，保存后必须重新走服务端排序，避免表格停留在旧顺序。
+          await loadData()
+        } else {
+          setItems((current) =>
+            current.map((item) =>
+              item.productCode === resultProductCode ? { ...item, [field]: resultPrice } : item,
+            ),
+          )
+        }
         setEditingPriceKey(null)
         clearPriceDraft(key)
         const successKey =
@@ -630,7 +637,7 @@ export default function StoreOrderImportPriceVariancePage() {
             ? 'storeOrders.importPriceVariance.saveDomesticPriceSuccess'
             : 'storeOrders.importPriceVariance.saveWarehouseImportPriceSuccess'
         void message.success(t(successKey))
-        if (nextRow) {
+        if (!shouldReloadSortedData && nextRow) {
           focusPriceInput(nextRow, field)
         }
         return true
@@ -647,8 +654,10 @@ export default function StoreOrderImportPriceVariancePage() {
     [
       clearPriceDraft,
       focusPriceInput,
+      loadData,
       message,
       priceDrafts,
+      sortBy,
       t,
     ],
   )

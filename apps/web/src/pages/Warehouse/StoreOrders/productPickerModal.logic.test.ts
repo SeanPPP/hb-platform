@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { matchesProductPickerSupplierOption } from './productPickerSupplierFilter'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -40,6 +41,30 @@ async function main() {
     )
   })
   if (supplierFilterFailure) failures.push(supplierFilterFailure)
+
+  const supplierShopNumberFilterFailure = await runTest('国内供应商下拉应按编码、名称和店铺号本地搜索', () => {
+    const supplierOption = {
+      label: '复活节头扣-6022 (022)',
+      value: 'CN-FILTER',
+      supplierCode: 'CN-FILTER',
+      supplierName: '复活节头扣-6022',
+      shopNumber: '022',
+    }
+
+    assert(matchesProductPickerSupplierOption(' cn-filter ', supplierOption), '供应商编码搜索应忽略前后空白和大小写')
+    assert(matchesProductPickerSupplierOption('复活节', supplierOption), '供应商名称搜索应命中')
+    assert(matchesProductPickerSupplierOption('022', supplierOption), '店铺号搜索应命中')
+    assert(!matchesProductPickerSupplierOption('不存在', supplierOption), '无关关键字不应命中')
+    assert(
+      productPickerSource.includes('supplierCode: item.supplierCode') &&
+        productPickerSource.includes('supplierName: item.supplierName') &&
+        productPickerSource.includes('shopNumber: item.shopNumber') &&
+        productPickerSource.includes('filterOption={(input, option) =>') &&
+        productPickerSource.includes('matchesProductPickerSupplierOption(input'),
+      '国内供应商下拉未把供应商编码、名称和店铺号都纳入本地搜索',
+    )
+  })
+  if (supplierShopNumberFilterFailure) failures.push(supplierShopNumberFilterFailure)
 
   const queryFailure = await runTest('商品弹窗搜索应同时支持货号与商品名称', () => {
     assert(
@@ -145,6 +170,62 @@ async function main() {
     )
   })
   if (supplierLazyFailure) failures.push(supplierLazyFailure)
+
+  const columnFilterFailure = await runTest('商品弹窗表头应提供服务端列过滤和排序状态', () => {
+    assert(
+      productPickerSource.includes("const [productSortBy, setProductSortBy] = useState('Default')") &&
+        productPickerSource.includes('const [productSortDescending, setProductSortDescending] = useState(false)') &&
+        productPickerSource.includes('const [columnFilters, setColumnFilters] = useState<StoreOrderProductColumnFilters>({})') &&
+        productPickerSource.includes('cleanProductPickerColumnFilters(nextColumnFilters)') &&
+        productPickerSource.includes('columnFilters: cleanedColumnFilters') &&
+        productPickerSource.includes("productTextFilterProps('itemNumber'") &&
+        productPickerSource.includes("productTextFilterProps('productName'") &&
+        productPickerSource.includes("productTextFilterProps('supplierKeyword'") &&
+        productPickerSource.includes("productTextFilterProps('barcode'") &&
+        productPickerSource.includes("productNumberFilterProps({ min: 'stockQuantityMin', max: 'stockQuantityMax' })") &&
+        productPickerSource.includes("productNumberFilterProps({ min: 'minOrderQuantityMin', max: 'minOrderQuantityMax' })") &&
+        productPickerSource.includes("productNumberFilterProps({ min: 'importPriceMin', max: 'importPriceMax' })") &&
+        productPickerSource.includes("sortOrder: productSortOrder('importPrice')"),
+      '商品弹窗缺少列过滤/排序状态、请求参数或核心列表头过滤配置',
+    )
+  })
+  if (columnFilterFailure) failures.push(columnFilterFailure)
+
+  const columnFilterDraftIsolationFailure = await runTest('商品弹窗表头未应用草稿不应跨列提交', () => {
+    assert(
+      detailSource.includes('function ProductPickerTextFilterDropdown') &&
+        detailSource.includes('const [draft, setDraft] = useState(value ??') &&
+        productPickerSource.includes('applyProductColumnFilterPatch({ [key]: value }, nextConfirm)') &&
+        productPickerSource.includes('每个表头弹层只提交自己的 patch') &&
+        !detailSource.includes('columnFilterDrafts'),
+      '商品弹窗仍可能把其他列未应用的筛选草稿一起提交',
+    )
+  })
+  if (columnFilterDraftIsolationFailure) failures.push(columnFilterDraftIsolationFailure)
+
+  const preservedSelectionFailure = await runTest('商品弹窗跨页选择应缓存已选商品实体', () => {
+    assert(
+      productPickerSource.includes('const [selectedProductsByCode, setSelectedProductsByCode] = useState<Record<string, StoreOrderProductItem>>({})') &&
+        productPickerSource.includes('preserveSelectedRowKeys: true') &&
+        productPickerSource.includes('nextSelectedRows.forEach((product) =>') &&
+        productPickerSource.includes('selectedProductsByCode[String(key)] ?? products.find') &&
+        productPickerSource.includes('setSelectedProductsByCode({})'),
+      '商品弹窗跨页/过滤后选中商品没有实体缓存，确认添加可能丢失非当前页商品',
+    )
+  })
+  if (preservedSelectionFailure) failures.push(preservedSelectionFailure)
+
+  const tableChangeFailure = await runTest('商品弹窗分页排序应统一走表格 onChange 并忽略本地 filter action', () => {
+    assert(
+      productPickerSource.includes("if (extra.action === 'filter')") &&
+        productPickerSource.includes("extra.action === 'sort' ? 1 : pagination.current || 1") &&
+        productPickerSource.includes("nextSortBy = 'Default'") &&
+        productPickerSource.includes('sortDescending: nextSortDescending') &&
+        !productPickerSource.includes('onChange: (nextPage, nextPageSize) =>\n              void loadProducts'),
+      '商品弹窗分页/排序没有统一使用 Table onChange，或未避免 filter action 重复触发',
+    )
+  })
+  if (tableChangeFailure) failures.push(tableChangeFailure)
 
   const quickAddFailure = await runTest('快速添加请求仍保持原始查询结构', () => {
     assert(

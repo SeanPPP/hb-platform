@@ -90,7 +90,7 @@ EasWebhook__AcceptedProfiles__0=preview
 EasWebhook__AcceptedProfiles__1=production
 ```
 
-数据库需先执行 `services/backend/BlazorApp.Api/Data/Migrations/20260615_CreateMobileAppBuild.sql`，确认 `MobileAppBuild` 表和两个 `IX_MobileAppBuild_*` 索引存在后，后台 App 下载页才会从空态或最新构建记录开始正常展示。旧库升级需再执行 `services/backend/BlazorApp.Api/Data/Migrations/20260623_AddMobileAppBuildCosMirrorFields.sql`；服务启动时也会补齐缺失的 COS 镜像字段。
+服务启动时会兜底检查并创建 `MobileAppBuild` / `MobileAppOtaUpdate` 基础表、索引和缺失的 COS 镜像字段。手动迁移 SQL 仍保留在 `services/backend/BlazorApp.Api/Data/Migrations/`，用于发布前审查或紧急手工补库。
 
 ### 本地 mock 验证
 
@@ -115,11 +115,11 @@ curl -X POST "http://localhost:5002/api/mobile-app-builds/eas-webhook" \
 4. 调用最新 APK 信息接口确认写入结果：
 
 ```bash
-curl "http://localhost:5002/api/mobile-app-builds/latest"
+curl "http://localhost:5002/api/mobile-app-builds/android-latest?profile=production"
 ```
 
 验证通过的判断标准：
 
 - webhook POST 返回成功状态。
-- `/api/mobile-app-builds/latest` 返回的 profile、项目和 APK 下载地址与 mock payload 一致；COS 未完成时会临时使用未过期的 EAS artifact，COS 成功后优先返回 COS 地址。
+- `/api/mobile-app-builds/android-latest?profile=production` 返回的 profile 和 APK 下载地址与 mock payload 一致；COS 未完成时会临时使用未过期的 EAS artifact，COS 成功后优先返回 COS 地址。
 - 不匹配的 secret、非 Android 构建、非成功构建、非允许账号/项目/profile 的 payload 不应更新“App 下载”页。

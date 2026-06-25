@@ -6,6 +6,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
@@ -52,7 +53,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             typeof(ChinaSupplier),
             typeof(CPT_DIC_外购客户信息表),
             typeof(ProductLocation),
-            typeof(Location)
+            typeof(Location),
+            typeof(StoreOrderInvoiceEmailSendRecord)
         );
         _db.Ado.ExecuteCommand("DROP TABLE ProductGrade");
         _db.Ado.ExecuteCommand(
@@ -407,6 +409,434 @@ public sealed class StoreOrderProductListTests : IDisposable
         var item = Assert.Single(result.Items);
         Assert.Equal("P-NAME", item.ProductCode);
         Assert.Equal("Kids Chair + Table", item.ProductName);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerColumnFilters_FilterByCoreColumnsAndSupplier()
+    {
+        await SeedChinaSupplierAsync("CN-FILTER", "义乌筛选供应商", shopNumber: "022");
+        await SeedChinaSupplierAsync("CN-OTHER", "其他供应商");
+        await SeedProductAsync("P-FILTER-OK", "HB-FILTER-001", barcode: "BAR-FILTER-001", productName: "Filter Chair");
+        await SeedWarehouseProductAsync(
+            "P-FILTER-OK",
+            importPrice: 5.5m,
+            stockQuantity: 8,
+            minOrderQuantity: 3
+        );
+        await SeedDomesticProductAsync("P-FILTER-OK", 0.1m, 12, supplierCode: "CN-FILTER");
+        await SeedProductAsync("P-FILTER-STOCK", "HB-FILTER-002", barcode: "BAR-FILTER-002", productName: "Filter Chair");
+        await SeedWarehouseProductAsync(
+            "P-FILTER-STOCK",
+            importPrice: 5.5m,
+            stockQuantity: 2,
+            minOrderQuantity: 3
+        );
+        await SeedDomesticProductAsync("P-FILTER-STOCK", 0.1m, 12, supplierCode: "CN-FILTER");
+        await SeedProductAsync("P-FILTER-SUPPLIER", "HB-FILTER-003", barcode: "BAR-FILTER-003", productName: "Filter Chair");
+        await SeedWarehouseProductAsync(
+            "P-FILTER-SUPPLIER",
+            importPrice: 5.5m,
+            stockQuantity: 8,
+            minOrderQuantity: 3
+        );
+        await SeedDomesticProductAsync("P-FILTER-SUPPLIER", 0.1m, 12, supplierCode: "CN-OTHER");
+
+        var supplierOnly = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "CN-FILTER",
+            },
+        });
+        Assert.True(
+            supplierOnly.Items.Count == 2,
+            "供应商过滤单独应命中两条 CN-FILTER 记录。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var shopNumberOnly = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "022",
+            },
+        });
+        Assert.True(
+            shopNumberOnly.Items.Count == 2,
+            "供应商店铺号过滤应命中两条 CN-FILTER 记录。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var textOnly = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                ItemNumber = "HB-FILTER",
+                ProductName = "chair",
+                Barcode = "BAR-FILTER",
+            },
+        });
+        Assert.True(
+            textOnly.Items.Count == 3,
+            "文本列过滤应先命中三条候选。实际商品："
+                + string.Join(",", textOnly.Items.Select(item => item.ProductCode))
+                + "。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var stockOnly = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                StockQuantityMin = 5,
+            },
+        });
+        Assert.True(
+            stockOnly.Items.Count == 2,
+            "库存下限过滤应命中两条候选。实际商品："
+                + string.Join(",", stockOnly.Items.Select(item => item.ProductCode))
+                + "。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var minOrderOnly = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                MinOrderQuantityMax = 3,
+            },
+        });
+        Assert.True(
+            minOrderOnly.Items.Count == 3,
+            "最小订货上限过滤应命中三条候选。实际商品："
+                + string.Join(",", minOrderOnly.Items.Select(item => item.ProductCode))
+                + "。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var importPriceOnly = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                ImportPriceMin = 5m,
+                ImportPriceMax = 6m,
+            },
+        });
+        Assert.True(
+            importPriceOnly.Items.Count == 3,
+            "导入价范围过滤应命中三条候选。实际商品："
+                + string.Join(",", importPriceOnly.Items.Select(item => item.ProductCode))
+                + "。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var withoutSupplier = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                ItemNumber = "HB-FILTER",
+                ProductName = "chair",
+                Barcode = "BAR-FILTER",
+                StockQuantityMin = 5,
+                MinOrderQuantityMax = 3,
+                ImportPriceMin = 5m,
+                ImportPriceMax = 6m,
+            },
+        });
+        Assert.True(
+            withoutSupplier.Items.Count == 2,
+            "普通列过滤不含供应商时应命中库存和供应商两条候选。实际商品："
+                + string.Join(",", withoutSupplier.Items.Select(item => item.ProductCode))
+                + "。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 1,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                ItemNumber = "HB-FILTER",
+                ProductName = "chair",
+                SupplierKeyword = "CN-FILTER",
+                Barcode = "BAR-FILTER",
+                StockQuantityMin = 5,
+                MinOrderQuantityMax = 3,
+                ImportPriceMin = 5m,
+                ImportPriceMax = 6m,
+            },
+        });
+
+        Assert.True(
+            result.Items.Count == 1,
+            "商品列过滤应只保留一条记录。最近 SQL:\n"
+                + string.Join("\n---\n", _sqlLogs.TakeLast(8))
+        );
+        var item = Assert.Single(result.Items);
+        Assert.Equal(1, result.Total);
+        Assert.Equal("P-FILTER-OK", item.ProductCode);
+        Assert.Equal("CN-FILTER", item.DomesticSupplierCode);
+        Assert.Equal("义乌筛选供应商", item.DomesticSupplierName);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerColumnFilters_IgnoresMissingOrDeletedChinaSupplier()
+    {
+        await SeedChinaSupplierAsync("CN-DELETED", "已删除供应商", isDeleted: true, shopNumber: "099");
+        await SeedChinaSupplierAsync("CN-DISABLED", "已禁用供应商", shopNumber: "088", status: 0);
+        await SeedProductAsync("P-FILTER-MISSING-SUPPLIER", "SUP-MISSING");
+        await SeedWarehouseProductAsync("P-FILTER-MISSING-SUPPLIER", importPrice: 5.5m);
+        await SeedDomesticProductAsync(
+            "P-FILTER-MISSING-SUPPLIER",
+            0.1m,
+            12,
+            supplierCode: "CN-MISSING"
+        );
+        await SeedProductAsync("P-FILTER-DELETED-SUPPLIER", "SUP-DELETED");
+        await SeedWarehouseProductAsync("P-FILTER-DELETED-SUPPLIER", importPrice: 5.5m);
+        await SeedDomesticProductAsync(
+            "P-FILTER-DELETED-SUPPLIER",
+            0.1m,
+            12,
+            supplierCode: "CN-DELETED"
+        );
+        await SeedProductAsync("P-FILTER-DISABLED-SUPPLIER", "SUP-DISABLED");
+        await SeedWarehouseProductAsync("P-FILTER-DISABLED-SUPPLIER", importPrice: 5.5m);
+        await SeedDomesticProductAsync(
+            "P-FILTER-DISABLED-SUPPLIER",
+            0.1m,
+            12,
+            supplierCode: "CN-DISABLED"
+        );
+
+        var missingSupplier = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "CN-MISSING",
+            },
+        });
+        var deletedSupplierCode = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "CN-DELETED",
+            },
+        });
+        var deletedSupplierName = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "已删除供应商",
+            },
+        });
+        var deletedSupplierShopNumber = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "099",
+            },
+        });
+        var disabledSupplierShopNumber = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "088",
+            },
+        });
+
+        Assert.Empty(missingSupplier.Items);
+        Assert.Empty(deletedSupplierCode.Items);
+        Assert.Empty(deletedSupplierName.Items);
+        Assert.Empty(deletedSupplierShopNumber.Items);
+        Assert.Empty(disabledSupplierShopNumber.Items);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_DefaultWarehouseColumnFilters_FilterSupplierByShopNumber()
+    {
+        await SeedChinaSupplierAsync("CN-WH-SHOP", "普通仓库供应商", shopNumber: "W022");
+        await SeedChinaSupplierAsync("CN-WH-DELETED", "普通仓库删除供应商", isDeleted: true, shopNumber: "W099");
+        await SeedChinaSupplierAsync("CN-WH-DISABLED", "普通仓库禁用供应商", shopNumber: "W088", status: 0);
+        await SeedProductAsync("P-WH-SHOP", "HB-WH-SHOP-001");
+        await SeedWarehouseProductAsync("P-WH-SHOP");
+        await SeedDomesticProductAsync("P-WH-SHOP", 0.1m, 12, supplierCode: "CN-WH-SHOP");
+        await SeedProductAsync("P-WH-DELETED", "HB-WH-SHOP-002");
+        await SeedWarehouseProductAsync("P-WH-DELETED");
+        await SeedDomesticProductAsync("P-WH-DELETED", 0.1m, 12, supplierCode: "CN-WH-DELETED");
+        await SeedProductAsync("P-WH-DISABLED", "HB-WH-SHOP-003");
+        await SeedWarehouseProductAsync("P-WH-DISABLED");
+        await SeedDomesticProductAsync("P-WH-DISABLED", 0.1m, 12, supplierCode: "CN-WH-DISABLED");
+
+        var shopNumberResult = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "W022",
+            },
+        });
+        var deletedShopNumberResult = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "W099",
+            },
+        });
+        var disabledShopNumberResult = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "W088",
+            },
+        });
+
+        var item = Assert.Single(shopNumberResult.Items);
+        Assert.Equal("P-WH-SHOP", item.ProductCode);
+        Assert.Empty(deletedShopNumberResult.Items);
+        Assert.Empty(disabledShopNumberResult.Items);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_ProductMasterColumnFilters_FilterSupplierByShopNumber()
+    {
+        await SeedChinaSupplierAsync("CN-MASTER-SHOP", "商品主档供应商", shopNumber: "M022");
+        await SeedChinaSupplierAsync("CN-MASTER-DELETED", "商品主档删除供应商", isDeleted: true, shopNumber: "M099");
+        await SeedChinaSupplierAsync("CN-MASTER-DISABLED", "商品主档禁用供应商", shopNumber: "M088", status: 0);
+        await SeedProductAsync("P-MASTER-SHOP", "HB-MASTER-SHOP-001", purchasePrice: 4.5m);
+        await SeedDomesticProductAsync("P-MASTER-SHOP", 0.1m, 12, supplierCode: "CN-MASTER-SHOP");
+        await SeedProductAsync("P-MASTER-DELETED", "HB-MASTER-SHOP-002", purchasePrice: 4.5m);
+        await SeedDomesticProductAsync("P-MASTER-DELETED", 0.1m, 12, supplierCode: "CN-MASTER-DELETED");
+        await SeedProductAsync("P-MASTER-DISABLED", "HB-MASTER-SHOP-003", purchasePrice: 4.5m);
+        await SeedDomesticProductAsync("P-MASTER-DISABLED", 0.1m, 12, supplierCode: "CN-MASTER-DISABLED");
+
+        var shopNumberResult = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeExistingWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "M022",
+            },
+        });
+        var deletedShopNumberResult = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeExistingWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "M099",
+            },
+        });
+        var disabledShopNumberResult = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeExistingWarehouseProducts = true,
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "itemNumber",
+            ColumnFilters = new StoreOrderProductColumnFiltersDto
+            {
+                SupplierKeyword = "M088",
+            },
+        });
+
+        var item = Assert.Single(shopNumberResult.Items);
+        Assert.Equal("P-MASTER-SHOP", item.ProductCode);
+        Assert.Empty(deletedShopNumberResult.Items);
+        Assert.Empty(disabledShopNumberResult.Items);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_OrderPickerColumnSort_AppliesBeforePaging()
+    {
+        await SeedProductAsync("P-LOW", "SORT-LOW");
+        await SeedWarehouseProductAsync("P-LOW", importPrice: 2m);
+        await SeedProductAsync("P-HIGH", "SORT-HIGH");
+        await SeedWarehouseProductAsync("P-HIGH", importPrice: 9m);
+        await SeedProductAsync("P-MID", "SORT-MID");
+        await SeedWarehouseProductAsync("P-MID", importPrice: 5m);
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ExcludeOrderGUID = "ORDER-PICKER",
+            PageNumber = 1,
+            PageSize = 2,
+            SortBy = "importPrice",
+            SortDescending = true,
+        });
+
+        Assert.Equal(3, result.Total);
+        Assert.Equal(new[] { "P-HIGH", "P-MID" }, result.Items.Select(item => item.ProductCode));
     }
 
     [Fact]
@@ -1945,7 +2375,9 @@ public sealed class StoreOrderProductListTests : IDisposable
         bool isDeleted = false,
         decimal oemPrice = 10m,
         decimal importPrice = 7m,
-        bool isActive = true
+        bool isActive = true,
+        int stockQuantity = 20,
+        int minOrderQuantity = 1
     )
     {
         await _db.Insertable(new WarehouseProduct
@@ -1953,8 +2385,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             ProductCode = productCode,
             OEMPrice = oemPrice,
             ImportPrice = importPrice,
-            StockQuantity = 20,
-            MinOrderQuantity = 1,
+            StockQuantity = stockQuantity,
+            MinOrderQuantity = minOrderQuantity,
             IsActive = isActive,
             IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
@@ -2124,15 +2556,22 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedChinaSupplierAsync(string supplierCode, string supplierName)
+    private async Task SeedChinaSupplierAsync(
+        string supplierCode,
+        string supplierName,
+        bool isDeleted = false,
+        string? shopNumber = null,
+        int status = 1
+    )
     {
         await _db.Insertable(new ChinaSupplier
         {
             Guid = $"{supplierCode}-guid",
             SupplierCode = supplierCode,
             SupplierName = supplierName,
-            Status = 1,
-            IsDeleted = false,
+            ShopNumber = shopNumber,
+            Status = status,
+            IsDeleted = isDeleted,
         }).ExecuteCommandAsync();
     }
 

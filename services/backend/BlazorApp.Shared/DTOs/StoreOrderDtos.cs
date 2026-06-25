@@ -111,7 +111,34 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public string SortBy { get; set; } = "Default";
 
+    /// <summary>
+    /// 列排序方向；旧调用未传时保持升序默认，PriceDesc 等兼容排序仍按原语义处理。
+    /// </summary>
+    public bool SortDescending { get; set; }
+
     public string? Grade { get; set; }
+
+    /// <summary>
+    /// 商品选择弹窗列头筛选条件。
+    /// </summary>
+    public StoreOrderProductColumnFiltersDto? ColumnFilters { get; set; }
+  }
+
+  /// <summary>
+  /// 订货页面商品列表列头筛选条件。
+  /// </summary>
+  public class StoreOrderProductColumnFiltersDto
+  {
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public string? SupplierKeyword { get; set; }
+    public string? Barcode { get; set; }
+    public int? StockQuantityMin { get; set; }
+    public int? StockQuantityMax { get; set; }
+    public int? MinOrderQuantityMin { get; set; }
+    public int? MinOrderQuantityMax { get; set; }
+    public decimal? ImportPriceMin { get; set; }
+    public decimal? ImportPriceMax { get; set; }
   }
 
   /// <summary>
@@ -828,6 +855,7 @@ namespace BlazorApp.Shared.DTOs
 
   public class BatchUpdateItemDto
   {
+    public string? DetailGUID { get; set; }
     public string ProductCode { get; set; } = string.Empty;
     public decimal? Quantity { get; set; }
     public decimal? ImportPrice { get; set; }

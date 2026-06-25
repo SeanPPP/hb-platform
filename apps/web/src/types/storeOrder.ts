@@ -428,7 +428,22 @@ export interface StoreOrderProductQuery {
   pageNumber: number
   pageSize: number
   sortBy?: string
+  sortDescending?: boolean
   grade?: string
+  columnFilters?: StoreOrderProductColumnFilters
+}
+
+export interface StoreOrderProductColumnFilters {
+  itemNumber?: string
+  productName?: string
+  supplierKeyword?: string
+  barcode?: string
+  stockQuantityMin?: number
+  stockQuantityMax?: number
+  minOrderQuantityMin?: number
+  minOrderQuantityMax?: number
+  importPriceMin?: number
+  importPriceMax?: number
 }
 
 export interface StoreOrderProductItem {
@@ -561,6 +576,7 @@ export interface RemoveStoreOrderLinePayload {
 export interface BatchUpdateStoreOrderLinePayload {
   orderGUID: string
   items: Array<{
+    detailGUID?: string
     productCode: string
     quantity?: number
     importPrice?: number

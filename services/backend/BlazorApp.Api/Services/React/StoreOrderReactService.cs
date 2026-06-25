@@ -297,28 +297,8 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.SortBy))
-            {
-                switch (filter.SortBy.ToLower())
-                {
-                    case "priceasc":
-                        q = q.OrderBy((p, wp, wc, ls) => wp.OEMPrice, OrderByType.Asc);
-                        break;
-                    case "pricedesc":
-                        q = q.OrderBy((p, wp, wc, ls) => wp.OEMPrice, OrderByType.Desc);
-                        break;
-                    case "name":
-                        q = q.OrderBy((p, wp, wc, ls) => p.ProductName, OrderByType.Asc);
-                        break;
-                    default:
-                        q = q.OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
-                        break;
-                }
-            }
-            else
-            {
-                q = q.OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc);
-            }
+            q = ApplyWarehouseProductColumnFilters(q, filter.ColumnFilters);
+            q = ApplyWarehouseProductSort(q, filter);
 
             var countSw = Stopwatch.StartNew();
             var total = await q.CountAsync();
@@ -585,28 +565,8 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.SortBy))
-            {
-                switch (filter.SortBy.ToLower())
-                {
-                    case "priceasc":
-                        q = q.OrderBy((p, wc, ls) => p.PurchasePrice, OrderByType.Asc);
-                        break;
-                    case "pricedesc":
-                        q = q.OrderBy((p, wc, ls) => p.PurchasePrice, OrderByType.Desc);
-                        break;
-                    case "name":
-                        q = q.OrderBy((p, wc, ls) => p.ProductName, OrderByType.Asc);
-                        break;
-                    default:
-                        q = q.OrderBy((p, wc, ls) => p.ItemNumber, OrderByType.Asc);
-                        break;
-                }
-            }
-            else
-            {
-                q = q.OrderBy((p, wc, ls) => p.ItemNumber, OrderByType.Asc);
-            }
+            q = ApplyProductMasterColumnFilters(q, filter.ColumnFilters);
+            q = ApplyProductMasterSort(q, filter);
 
             var total = await q.CountAsync();
             var items = await q.Select(
@@ -758,28 +718,8 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (!string.IsNullOrWhiteSpace(filter.SortBy))
-            {
-                switch (filter.SortBy.ToLower())
-                {
-                    case "priceasc":
-                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc);
-                        break;
-                    case "pricedesc":
-                        q = q.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc);
-                        break;
-                    case "name":
-                        q = q.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc);
-                        break;
-                    default:
-                        q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
-                        break;
-                }
-            }
-            else
-            {
-                q = q.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc);
-            }
+            q = ApplyWarehouseProductColumnFilters(q, filter.ColumnFilters);
+            q = ApplyWarehouseProductSort(q, filter);
 
             var total = await q.CountAsync();
             var items = await q.Select(
@@ -1121,7 +1061,503 @@ namespace BlazorApp.Api.Services.React
                     string.IsNullOrWhiteSpace(filter.SortBy)
                     || filter.SortBy.Equals("default", StringComparison.OrdinalIgnoreCase)
                 )
+                && !filter.SortDescending
+                && filter.ColumnFilters == null
                 && normalizedGrades.Count == 0;
+        }
+
+        private static string? NormalizeColumnFilterText(string? value)
+        {
+            var trimmed = value?.Trim().ToLower();
+            return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+        }
+
+        private static bool NumberRangeAllowsValue(int? min, int? max, int value)
+        {
+            return (!min.HasValue || value >= min.Value) && (!max.HasValue || value <= max.Value);
+        }
+
+        private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
+            ApplyWarehouseProductColumnFilters(
+                ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier> query,
+                StoreOrderProductColumnFiltersDto? filters
+            )
+        {
+            if (filters == null)
+            {
+                return query;
+            }
+
+            var itemNumber = NormalizeColumnFilterText(filters.ItemNumber);
+            if (itemNumber != null)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        p.ItemNumber != null && p.ItemNumber.ToLower().Contains(itemNumber)
+                );
+            }
+
+            var productName = NormalizeColumnFilterText(filters.ProductName);
+            if (productName != null)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(productName)
+                );
+            }
+
+            var barcode = NormalizeColumnFilterText(filters.Barcode);
+            if (barcode != null)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) => p.Barcode != null && p.Barcode.ToLower().Contains(barcode)
+                );
+            }
+
+            var supplierKeyword = NormalizeColumnFilterText(filters.SupplierKeyword);
+            if (supplierKeyword != null)
+            {
+                // 国内供应商是后置补齐字段，列过滤必须按国内商品表的多键匹配逻辑执行。
+                // 与后置显示保持一致：只有能关联到有效 ChinaSupplier 的国内商品才参与供应商筛选。
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        SqlFunc.Subqueryable<DomesticProduct>()
+                            .Where(dp =>
+                                !dp.IsDeleted
+                                && SqlFunc.Subqueryable<ChinaSupplier>()
+                                    .Where(cs =>
+                                        cs.SupplierCode == dp.SupplierCode
+                                        && !cs.IsDeleted
+                                        && cs.Status == 1
+                                        && (
+                                            (
+                                                cs.SupplierCode != null
+                                                && cs.SupplierCode.ToLower().Contains(supplierKeyword)
+                                            )
+                                            || (
+                                                cs.SupplierName != null
+                                                && cs.SupplierName.ToLower().Contains(supplierKeyword)
+                                            )
+                                            || (
+                                                cs.ShopNumber != null
+                                                && cs.ShopNumber.ToLower().Contains(supplierKeyword)
+                                            )
+                                        )
+                                    )
+                                    .Any()
+                                && (
+                                    dp.ProductCode == p.ProductCode
+                                    || (
+                                        dp.HBProductNo != null
+                                        && p.ItemNumber != null
+                                        && dp.HBProductNo == p.ItemNumber
+                                    )
+                                    || (
+                                        dp.Barcode != null
+                                        && p.Barcode != null
+                                        && dp.Barcode == p.Barcode
+                                    )
+                                )
+                            )
+                            .Any()
+                );
+            }
+
+            if (filters.StockQuantityMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) => (wp.StockQuantity ?? 0) >= filters.StockQuantityMin.Value
+                );
+            }
+
+            if (filters.StockQuantityMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) => (wp.StockQuantity ?? 0) <= filters.StockQuantityMax.Value
+                );
+            }
+
+            if (filters.MinOrderQuantityMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        (wp.MinOrderQuantity ?? 1) >= filters.MinOrderQuantityMin.Value
+                );
+            }
+
+            if (filters.MinOrderQuantityMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        (wp.MinOrderQuantity ?? 1) <= filters.MinOrderQuantityMax.Value
+                );
+            }
+
+            if (filters.ImportPriceMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        wp.ImportPrice.HasValue && wp.ImportPrice.Value >= filters.ImportPriceMin.Value
+                );
+            }
+
+            if (filters.ImportPriceMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        wp.ImportPrice.HasValue && wp.ImportPrice.Value <= filters.ImportPriceMax.Value
+                );
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory>
+            ApplyWarehouseProductColumnFilters(
+                ISugarQueryable<Product, WarehouseProduct, WarehouseCategory> query,
+                StoreOrderProductColumnFiltersDto? filters
+            )
+        {
+            if (filters == null)
+            {
+                return query;
+            }
+
+            var itemNumber = NormalizeColumnFilterText(filters.ItemNumber);
+            if (itemNumber != null)
+            {
+                query = query.Where(
+                    (p, wp, wc) =>
+                        p.ItemNumber != null && p.ItemNumber.ToLower().Contains(itemNumber)
+                );
+            }
+
+            var productName = NormalizeColumnFilterText(filters.ProductName);
+            if (productName != null)
+            {
+                query = query.Where(
+                    (p, wp, wc) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(productName)
+                );
+            }
+
+            var barcode = NormalizeColumnFilterText(filters.Barcode);
+            if (barcode != null)
+            {
+                query = query.Where(
+                    (p, wp, wc) => p.Barcode != null && p.Barcode.ToLower().Contains(barcode)
+                );
+            }
+
+            var supplierKeyword = NormalizeColumnFilterText(filters.SupplierKeyword);
+            if (supplierKeyword != null)
+            {
+                // 订单选择弹窗供应商列来自国内商品匹配，过滤也要走同一套多键兜底。
+                // 与后置显示保持一致：只有能关联到有效 ChinaSupplier 的国内商品才参与供应商筛选。
+                query = query.Where(
+                    (p, wp, wc) =>
+                        SqlFunc.Subqueryable<DomesticProduct>()
+                            .Where(dp =>
+                                !dp.IsDeleted
+                                && SqlFunc.Subqueryable<ChinaSupplier>()
+                                    .Where(cs =>
+                                        cs.SupplierCode == dp.SupplierCode
+                                        && !cs.IsDeleted
+                                        && cs.Status == 1
+                                        && (
+                                            (
+                                                cs.SupplierCode != null
+                                                && cs.SupplierCode.ToLower().Contains(supplierKeyword)
+                                            )
+                                            || (
+                                                cs.SupplierName != null
+                                                && cs.SupplierName.ToLower().Contains(supplierKeyword)
+                                            )
+                                            || (
+                                                cs.ShopNumber != null
+                                                && cs.ShopNumber.ToLower().Contains(supplierKeyword)
+                                            )
+                                        )
+                                    )
+                                    .Any()
+                                && (
+                                    dp.ProductCode == p.ProductCode
+                                    || (
+                                        dp.HBProductNo != null
+                                        && p.ItemNumber != null
+                                        && dp.HBProductNo == p.ItemNumber
+                                    )
+                                    || (
+                                        dp.Barcode != null
+                                        && p.Barcode != null
+                                        && dp.Barcode == p.Barcode
+                                    )
+                                )
+                            )
+                            .Any()
+                );
+            }
+
+            if (filters.StockQuantityMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc) => (wp.StockQuantity ?? 0) >= filters.StockQuantityMin.Value
+                );
+            }
+
+            if (filters.StockQuantityMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc) => (wp.StockQuantity ?? 0) <= filters.StockQuantityMax.Value
+                );
+            }
+
+            if (filters.MinOrderQuantityMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc) => (wp.MinOrderQuantity ?? 1) >= filters.MinOrderQuantityMin.Value
+                );
+            }
+
+            if (filters.MinOrderQuantityMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc) => (wp.MinOrderQuantity ?? 1) <= filters.MinOrderQuantityMax.Value
+                );
+            }
+
+            if (filters.ImportPriceMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc) =>
+                        wp.ImportPrice.HasValue && wp.ImportPrice.Value >= filters.ImportPriceMin.Value
+                );
+            }
+
+            if (filters.ImportPriceMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wp, wc) =>
+                        wp.ImportPrice.HasValue && wp.ImportPrice.Value <= filters.ImportPriceMax.Value
+                );
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Product, WarehouseCategory, HBLocalSupplier>
+            ApplyProductMasterColumnFilters(
+                ISugarQueryable<Product, WarehouseCategory, HBLocalSupplier> query,
+                StoreOrderProductColumnFiltersDto? filters
+            )
+        {
+            if (filters == null)
+            {
+                return query;
+            }
+
+            var itemNumber = NormalizeColumnFilterText(filters.ItemNumber);
+            if (itemNumber != null)
+            {
+                query = query.Where(
+                    (p, wc, ls) =>
+                        p.ItemNumber != null && p.ItemNumber.ToLower().Contains(itemNumber)
+                );
+            }
+
+            var productName = NormalizeColumnFilterText(filters.ProductName);
+            if (productName != null)
+            {
+                query = query.Where(
+                    (p, wc, ls) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(productName)
+                );
+            }
+
+            var barcode = NormalizeColumnFilterText(filters.Barcode);
+            if (barcode != null)
+            {
+                query = query.Where(
+                    (p, wc, ls) => p.Barcode != null && p.Barcode.ToLower().Contains(barcode)
+                );
+            }
+
+            var supplierKeyword = NormalizeColumnFilterText(filters.SupplierKeyword);
+            if (supplierKeyword != null)
+            {
+                // 商品主档分支没有库存行，供应商列同样依赖有效国内供应商的后置匹配。
+                query = query.Where(
+                    (p, wc, ls) =>
+                        SqlFunc.Subqueryable<DomesticProduct>()
+                            .Where(dp =>
+                                !dp.IsDeleted
+                                && SqlFunc.Subqueryable<ChinaSupplier>()
+                                    .Where(cs =>
+                                        cs.SupplierCode == dp.SupplierCode
+                                        && !cs.IsDeleted
+                                        && cs.Status == 1
+                                        && (
+                                            (
+                                                cs.SupplierCode != null
+                                                && cs.SupplierCode.ToLower().Contains(supplierKeyword)
+                                            )
+                                            || (
+                                                cs.SupplierName != null
+                                                && cs.SupplierName.ToLower().Contains(supplierKeyword)
+                                            )
+                                            || (
+                                                cs.ShopNumber != null
+                                                && cs.ShopNumber.ToLower().Contains(supplierKeyword)
+                                            )
+                                        )
+                                    )
+                                    .Any()
+                                && (
+                                    dp.ProductCode == p.ProductCode
+                                    || (
+                                        dp.HBProductNo != null
+                                        && p.ItemNumber != null
+                                        && dp.HBProductNo == p.ItemNumber
+                                    )
+                                    || (
+                                        dp.Barcode != null
+                                        && p.Barcode != null
+                                        && dp.Barcode == p.Barcode
+                                    )
+                                )
+                            )
+                            .Any()
+                );
+            }
+
+            if (!NumberRangeAllowsValue(filters.StockQuantityMin, filters.StockQuantityMax, 0))
+            {
+                query = query.Where((p, wc, ls) => false);
+            }
+
+            if (!NumberRangeAllowsValue(filters.MinOrderQuantityMin, filters.MinOrderQuantityMax, 1))
+            {
+                query = query.Where((p, wc, ls) => false);
+            }
+
+            if (filters.ImportPriceMin.HasValue)
+            {
+                query = query.Where(
+                    (p, wc, ls) =>
+                        p.PurchasePrice.HasValue
+                        && p.PurchasePrice.Value >= filters.ImportPriceMin.Value
+                );
+            }
+
+            if (filters.ImportPriceMax.HasValue)
+            {
+                query = query.Where(
+                    (p, wc, ls) =>
+                        p.PurchasePrice.HasValue
+                        && p.PurchasePrice.Value <= filters.ImportPriceMax.Value
+                );
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
+            ApplyWarehouseProductSort(
+                ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier> query,
+                StoreOrderFilterDto filter
+            )
+        {
+            var sortBy = (filter.SortBy ?? "default").Trim().ToLower();
+            var orderType = filter.SortDescending ? OrderByType.Desc : OrderByType.Asc;
+
+            return sortBy switch
+            {
+                "priceasc" => query.OrderBy((p, wp, wc, ls) => wp.OEMPrice, OrderByType.Asc)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "pricedesc" => query.OrderBy((p, wp, wc, ls) => wp.OEMPrice, OrderByType.Desc)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "name" => query.OrderBy((p, wp, wc, ls) => p.ProductName, OrderByType.Asc)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "productname" => query.OrderBy((p, wp, wc, ls) => p.ProductName, orderType)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "barcode" => query.OrderBy((p, wp, wc, ls) => p.Barcode, orderType)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "stockquantity" => query.OrderBy((p, wp, wc, ls) => wp.StockQuantity ?? 0, orderType)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "minorderquantity" => query
+                    .OrderBy((p, wp, wc, ls) => wp.MinOrderQuantity ?? 1, orderType)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "importprice" => query.OrderBy((p, wp, wc, ls) => wp.ImportPrice ?? 0, orderType)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "itemnumber" => query.OrderBy((p, wp, wc, ls) => p.ItemNumber, orderType)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+                _ => query.OrderBy((p, wp, wc, ls) => p.ItemNumber, OrderByType.Asc)
+                    .OrderBy((p, wp, wc, ls) => p.ProductCode, OrderByType.Asc),
+            };
+        }
+
+        private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory>
+            ApplyWarehouseProductSort(
+                ISugarQueryable<Product, WarehouseProduct, WarehouseCategory> query,
+                StoreOrderFilterDto filter
+            )
+        {
+            var sortBy = (filter.SortBy ?? "default").Trim().ToLower();
+            var orderType = filter.SortDescending ? OrderByType.Desc : OrderByType.Asc;
+
+            return sortBy switch
+            {
+                "priceasc" => query.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Asc)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "pricedesc" => query.OrderBy((p, wp, wc) => wp.OEMPrice, OrderByType.Desc)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "name" => query.OrderBy((p, wp, wc) => p.ProductName, OrderByType.Asc)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "productname" => query.OrderBy((p, wp, wc) => p.ProductName, orderType)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "barcode" => query.OrderBy((p, wp, wc) => p.Barcode, orderType)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "stockquantity" => query.OrderBy((p, wp, wc) => wp.StockQuantity ?? 0, orderType)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "minorderquantity" => query.OrderBy((p, wp, wc) => wp.MinOrderQuantity ?? 1, orderType)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "importprice" => query.OrderBy((p, wp, wc) => wp.ImportPrice ?? 0, orderType)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                "itemnumber" => query.OrderBy((p, wp, wc) => p.ItemNumber, orderType)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+                _ => query.OrderBy((p, wp, wc) => p.ItemNumber, OrderByType.Asc)
+                    .OrderBy((p, wp, wc) => p.ProductCode, OrderByType.Asc),
+            };
+        }
+
+        private static ISugarQueryable<Product, WarehouseCategory, HBLocalSupplier>
+            ApplyProductMasterSort(
+                ISugarQueryable<Product, WarehouseCategory, HBLocalSupplier> query,
+                StoreOrderFilterDto filter
+            )
+        {
+            var sortBy = (filter.SortBy ?? "default").Trim().ToLower();
+            var orderType = filter.SortDescending ? OrderByType.Desc : OrderByType.Asc;
+
+            return sortBy switch
+            {
+                "priceasc" => query.OrderBy((p, wc, ls) => p.PurchasePrice, OrderByType.Asc)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "pricedesc" => query.OrderBy((p, wc, ls) => p.PurchasePrice, OrderByType.Desc)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "name" => query.OrderBy((p, wc, ls) => p.ProductName, OrderByType.Asc)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "productname" => query.OrderBy((p, wc, ls) => p.ProductName, orderType)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "barcode" => query.OrderBy((p, wc, ls) => p.Barcode, orderType)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "importprice" => query.OrderBy((p, wc, ls) => p.PurchasePrice ?? 0, orderType)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                "itemnumber" => query.OrderBy((p, wc, ls) => p.ItemNumber, orderType)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+                _ => query.OrderBy((p, wc, ls) => p.ItemNumber, OrderByType.Asc)
+                    .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
+            };
         }
 
         private static bool ShouldIncludeInactiveWarehouseProductsForQuickAdd(
@@ -5554,6 +5990,11 @@ FinalRows AS (
                     };
                 }
 
+                if (CanUseDetailGuidQuantityBatchUpdate(request))
+                {
+                    return await BatchUpdateOrderLineByDetailGuidAsync(order, request);
+                }
+
                 _db.Ado.BeginTran();
                 try
                 {
@@ -5594,6 +6035,101 @@ FinalRows AS (
                 _logger.LogError(ex, "BatchUpdateOrderLineAsync failed");
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
+        }
+
+        private static bool CanUseDetailGuidQuantityBatchUpdate(BatchUpdateOrderLineDto request)
+        {
+            return request.Items.Count > 0
+                && request.Items.All(item =>
+                    !string.IsNullOrWhiteSpace(item.DetailGUID)
+                    && item.Quantity.HasValue
+                    && !item.ImportPrice.HasValue
+                    && item.SyncImportPrice != true
+                );
+        }
+
+        private async Task<ApiResponse<bool>> BatchUpdateOrderLineByDetailGuidAsync(
+            WareHouseOrder order,
+            BatchUpdateOrderLineDto request
+        )
+        {
+            var detailGuids = request.Items
+                .Select(item => item.DetailGUID!.Trim())
+                .ToList();
+
+            if (detailGuids.Count != detailGuids.Distinct(StringComparer.OrdinalIgnoreCase).Count())
+            {
+                return new ApiResponse<bool>
+                {
+                    Success = false,
+                    Message = "Duplicate order line detailGUID",
+                };
+            }
+
+            if (request.Items.Any(item => item.Quantity.GetValueOrDefault() < 0))
+            {
+                return new ApiResponse<bool>
+                {
+                    Success = false,
+                    Message = "Quantity cannot be negative",
+                };
+            }
+
+            var details = await _db.Queryable<WareHouseOrderDetails>()
+                .Where(detail =>
+                    detail.OrderGUID == order.OrderGUID
+                    && detailGuids.Contains(detail.DetailGUID)
+                    && !detail.IsDeleted
+                )
+                .ToListAsync();
+
+            if (details.Count != detailGuids.Count)
+            {
+                return new ApiResponse<bool>
+                {
+                    Success = false,
+                    Message = "Some order lines were not found",
+                };
+            }
+
+            var now = DateTime.Now;
+            var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+            var detailMap = details.ToDictionary(
+                detail => detail.DetailGUID,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            foreach (var item in request.Items)
+            {
+                var detail = detailMap[item.DetailGUID!.Trim()];
+                var allocQuantity = item.Quantity!.Value;
+                detail.AllocQuantity = allocQuantity;
+                detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
+                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                detail.UpdatedAt = now;
+                detail.UpdatedBy = currentUser;
+
+                // 复制 0 发货数后，订货和发货都为 0 的明细沿用原批量更新规则做软删除。
+                if ((detail.Quantity ?? 0) <= 0 && allocQuantity <= 0)
+                {
+                    detail.IsDeleted = true;
+                }
+            }
+
+            _db.Ado.BeginTran();
+            try
+            {
+                await _db.Updateable(details).ExecuteCommandAsync();
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                _db.Ado.CommitTran();
+            }
+            catch
+            {
+                _db.Ado.RollbackTran();
+                throw;
+            }
+
+            return new ApiResponse<bool> { Success = true, Data = true };
         }
 
         public async Task<ApiResponse<RefreshStoreOrderImportPricesResultDto>> RefreshOrderLineImportPricesAsync(

@@ -31,18 +31,45 @@ public sealed class StartupSchemaMigratorStartupContractTests
             StringComparison.Ordinal
         );
         var mobileBuildIndex = migrator.IndexOf(
-            "await EnsureMobileAppBuildCosMirrorColumnsAsync(db, logger);",
+            "await EnsureMobileAppBuildSchemaAsync(db, logger);",
             StringComparison.Ordinal
         );
 
-        // 关键位置：统一 migrator 必须先保留既有 LocalSupplier 兜底，再补 APK 镜像字段。
-        Assert.True(localSupplierIndex >= 0);
-        Assert.True(mobileBuildIndex > localSupplierIndex);
+        // 关键位置：统一 migrator 必须先保留既有 LocalSupplier 兜底，再补移动端 APK/OTA 表结构。
+        Assert.True(localSupplierIndex >= 0, "统一启动迁移必须继续保留 LocalSupplier 发票表兜底。");
+        Assert.True(
+            mobileBuildIndex > localSupplierIndex,
+            "移动端 APK/OTA 表结构迁移必须在 LocalSupplier 兜底之后执行。"
+        );
+        Assert.Contains("IF OBJECT_ID('MobileAppBuild', 'U') IS NULL", migrator);
+        Assert.Contains("IF OBJECT_ID('MobileAppOtaUpdate', 'U') IS NULL", migrator);
+        Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppBuild_EasBuildId]", migrator);
+        Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_Group_Platform]", migrator);
+        Assert.Contains("IF COL_LENGTH('MobileAppBuild', 'CosArtifactUrl') IS NULL", migrator);
     }
 
     private static string FindRepoRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            var programPath = Path.Combine(
+                directory.FullName,
+                "services/backend/BlazorApp.Api/Program.cs"
+            );
+            if (
+                (Directory.Exists(Path.Combine(directory.FullName, ".git"))
+                    || Directory.Exists(Path.Combine(directory.FullName, ".gitnexus")))
+                && File.Exists(programPath)
+            )
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory != null)
         {
             var programPath = Path.Combine(

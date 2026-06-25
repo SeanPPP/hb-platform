@@ -83,6 +83,46 @@ try {
 }
 
 try {
+  let capturedBody: unknown = null
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedBody = init?.body ? JSON.parse(String(init.body)) : null
+
+    return new Response(JSON.stringify({ success: true, data: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  await batchUpdateStoreOrderLines({
+    orderGUID: 'order-1',
+    items: [
+      {
+        detailGUID: 'detail-1',
+        productCode: 'product-1',
+        quantity: 12,
+      },
+    ],
+  })
+
+  assertDeepEqual(
+    capturedBody,
+    {
+      orderGUID: 'order-1',
+      items: [
+        {
+          detailGUID: 'detail-1',
+          productCode: 'product-1',
+          quantity: 12,
+        },
+      ],
+    },
+    '批量保存应保留 detailGUID 以支持明细级快路径',
+  )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
   let capturedUrl = ''
   let capturedMethod = ''
   let capturedBody: unknown = null
@@ -398,7 +438,14 @@ try {
       excludeOrderGUID: 'order-1',
       pageNumber: 1,
       pageSize: 100,
-      sortBy: 'Default',
+      sortBy: 'importPrice',
+      sortDescending: true,
+      columnFilters: {
+        itemNumber: 'HB137',
+        supplierKeyword: '义乌',
+        stockQuantityMin: 1,
+        importPriceMax: 9.5,
+      },
     },
     controller.signal,
   )
@@ -414,9 +461,16 @@ try {
       excludeOrderGUID: 'order-1',
       pageNumber: 1,
       pageSize: 100,
-      sortBy: 'Default',
+      sortBy: 'importPrice',
+      sortDescending: true,
+      columnFilters: {
+        itemNumber: 'HB137',
+        supplierKeyword: '义乌',
+        stockQuantityMin: 1,
+        importPriceMax: 9.5,
+      },
     },
-    '商品选择查询接口应发送原始查询条件',
+    '商品选择查询接口应发送原始查询、列排序和列过滤条件',
   )
   assertDeepEqual(
     result,

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Shared.DTOs;
@@ -86,7 +87,9 @@ namespace BlazorApp.Api.Cache
                 IncludeInactiveWarehouseProducts = false,
                 ExcludeOrderGUID = null,
                 SortBy = "Default",
+                SortDescending = false,
                 Grade = null,
+                ColumnFilters = null,
             };
             return Products(filter);
         }
@@ -140,7 +143,9 @@ namespace BlazorApp.Api.Cache
                 filter.Grade ?? "null",
                 filter.PageNumber.ToString(),
                 filter.PageSize.ToString(),
-                filter.SortBy ?? "Default"
+                filter.SortBy ?? "Default",
+                filter.SortDescending ? "sort-desc" : "sort-asc",
+                BuildColumnFiltersKey(filter.ColumnFilters)
             };
 
             var combined = string.Join("|", parts);
@@ -159,6 +164,30 @@ namespace BlazorApp.Api.Cache
             }
 
             return hash;
+        }
+
+        private static string BuildColumnFiltersKey(StoreOrderProductColumnFiltersDto? filters)
+        {
+            if (filters == null)
+            {
+                return "column-filters:null";
+            }
+
+            // 列头筛选会直接影响商品池，必须写进缓存键避免不同筛选共用同一页缓存。
+            return string.Join(
+                ";",
+                "column-filters",
+                filters.ItemNumber ?? "null",
+                filters.ProductName ?? "null",
+                filters.SupplierKeyword ?? "null",
+                filters.Barcode ?? "null",
+                filters.StockQuantityMin?.ToString(CultureInfo.InvariantCulture) ?? "null",
+                filters.StockQuantityMax?.ToString(CultureInfo.InvariantCulture) ?? "null",
+                filters.MinOrderQuantityMin?.ToString(CultureInfo.InvariantCulture) ?? "null",
+                filters.MinOrderQuantityMax?.ToString(CultureInfo.InvariantCulture) ?? "null",
+                filters.ImportPriceMin?.ToString(CultureInfo.InvariantCulture) ?? "null",
+                filters.ImportPriceMax?.ToString(CultureInfo.InvariantCulture) ?? "null"
+            );
         }
     }
 }

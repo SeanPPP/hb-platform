@@ -319,6 +319,161 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateOrderLineAsync_WithDetailGuidQuantity_UpdatesDuplicateProductLines()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Insertable(
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "detail-duplicate",
+                OrderGUID = "order-1",
+                StoreCode = "S001",
+                ProductCode = "P001",
+                Quantity = 9,
+                AllocQuantity = 2,
+                OEMPrice = 7m,
+                OEMAmount = 14m,
+                ImportPrice = 4m,
+                ImportAmount = 8m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "detail-1",
+                        ProductCode = "P001",
+                        Quantity = 6m,
+                    },
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "detail-duplicate",
+                        ProductCode = "P001",
+                        Quantity = 3m,
+                    },
+                },
+            }
+        );
+
+        var details = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(x => x.OrderGUID == "order-1")
+            .OrderBy(x => x.DetailGUID)
+            .ToListAsync();
+        var order = await _db.Queryable<WareHouseOrder>().SingleAsync(x => x.OrderGUID == "order-1");
+
+        Assert.True(result.Success);
+        Assert.Collection(
+            details,
+            detail =>
+            {
+                Assert.Equal("detail-1", detail.DetailGUID);
+                Assert.Equal(5m, detail.Quantity);
+                Assert.Equal(6m, detail.AllocQuantity);
+                Assert.Equal(30m, detail.OEMAmount);
+                Assert.Equal(18m, detail.ImportAmount);
+                Assert.Equal("tester", detail.UpdatedBy);
+            },
+            detail =>
+            {
+                Assert.Equal("detail-duplicate", detail.DetailGUID);
+                Assert.Equal(9m, detail.Quantity);
+                Assert.Equal(3m, detail.AllocQuantity);
+                Assert.Equal(21m, detail.OEMAmount);
+                Assert.Equal(12m, detail.ImportAmount);
+                Assert.Equal("tester", detail.UpdatedBy);
+            }
+        );
+        Assert.Equal(51m, order.OEMTotalAmount);
+        Assert.Equal(30m, order.ImportTotalAmount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WithMissingDetailGuid_ReturnsFailureAndPreservesLine()
+    {
+        await SeedStoreOrderGraphAsync();
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "missing-detail",
+                        ProductCode = "P001",
+                        Quantity = 6m,
+                    },
+                },
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-1");
+
+        Assert.False(result.Success);
+        Assert.Equal("Some order lines were not found", result.Message);
+        Assert.Equal(4m, detail.AllocQuantity);
+        Assert.Equal(12m, detail.ImportAmount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WithDetailGuidQuantityZero_SoftDeletesZeroOrderLine()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Insertable(
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "detail-zero",
+                OrderGUID = "order-1",
+                StoreCode = "S001",
+                ProductCode = "P001",
+                Quantity = 0,
+                AllocQuantity = 8,
+                OEMPrice = 2m,
+                OEMAmount = 16m,
+                ImportPrice = 1.5m,
+                ImportAmount = 12m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        DetailGUID = "detail-zero",
+                        ProductCode = "P001",
+                        Quantity = 0m,
+                    },
+                },
+            }
+        );
+
+        var detail = await _db.Queryable<WareHouseOrderDetails>().SingleAsync(x => x.DetailGUID == "detail-zero");
+        var order = await _db.Queryable<WareHouseOrder>().SingleAsync(x => x.OrderGUID == "order-1");
+
+        Assert.True(result.Success);
+        Assert.True(detail.IsDeleted);
+        Assert.Equal(0m, detail.AllocQuantity);
+        Assert.Equal("tester", detail.UpdatedBy);
+        Assert.Equal(25m, order.OEMTotalAmount);
+        Assert.Equal(12m, order.ImportTotalAmount);
+    }
+
+    [Fact]
     public async Task InvoiceEmailService_WhenSmtpNotConfigured_ReturnsClearFailure()
     {
         var service = new InvoiceEmailService(
