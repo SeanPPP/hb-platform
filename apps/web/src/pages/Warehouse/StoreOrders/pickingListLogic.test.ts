@@ -158,6 +158,16 @@ runTest('配货单 Excel 数据应包含固定列顺序、备注和总计信息'
   const excelData = buildPickingListExcelData(excelOrder, excelItems, excelTexts)
   assertEqual(excelData.sheetName, 'Picking List', 'sheet 名称应来自传入文案')
   assertDeepEqual(
+    excelData.overviewRows,
+    [
+      ['Order No.', 'SO-001'],
+      ['Store', 'ST-01'],
+      ['Order Date', '2026-06-01T00:00:00.000Z'],
+      ['Print Time', ''],
+    ],
+    'Excel 概览仍应保留订单日期和打印时间元数据',
+  )
+  assertDeepEqual(
     excelData.detailHeader,
     ['#', '货号', '货位', '商品名称', '进口价', 'RRP', '内包装数量', '订货数量'],
     '明细列顺序应隐藏发货数列',
@@ -321,12 +331,16 @@ runTest('配货单页头应将店名和单号同一行居中放大显示', () =>
   const primaryLineRule = readCssRule(printCssSource, '.store-order-picking-primary-line')
   const storeRule = readCssRule(printCssSource, '.store-order-picking-store')
   const orderNoRule = readCssRule(printCssSource, '.store-order-picking-order-no')
-  const metaRule = readCssRule(printCssSource, '.store-order-picking-meta')
 
   assertEqual(headerSource.includes('className="store-order-picking-primary-line"'), true, '页头应有店名和单号同一行主信息容器')
   assertEqual(headerSource.includes('className="store-order-picking-store"'), true, '店名应挂载主字号样式')
   assertEqual(headerSource.includes('{displayStoreText}'), true, '主信息行应显示店名')
   assertEqual(headerSource.includes('className="store-order-picking-order-no"'), true, '单号应挂载主字号样式')
+  assertEqual(headerSource.includes('className="store-order-picking-meta"'), false, '页头不应继续显示打印时间和订货日期容器')
+  assertEqual(headerSource.includes("t('warehouse.pickingList.printTime')"), false, '页头不应继续显示打印时间')
+  assertEqual(headerSource.includes("t('warehouse.pickingList.orderDate')"), false, '页头不应继续显示订货日期')
+  assertEqual(headerSource.includes('formatPrintDate('), false, '页头不应继续计算日期显示')
+  assertEqual(printCssSource.includes('.store-order-picking-meta'), false, '打印样式不应保留已删除的日期元信息样式')
   assertEqual(headerSource.includes("t('warehouse.pickingList.orderNoLabel')"), false, '主信息行不应继续显示订单号文字标签')
   assertEqual(headerSource.includes('#{orderNoText}'), true, '主信息行应使用 # 前缀显示单号')
   assertEqual(headerSource.includes("t('warehouse.pickingList.storeLabel')"), false, '店名不应继续作为右侧小号元数据显示')
@@ -344,9 +358,6 @@ runTest('配货单页头应将店名和单号同一行居中放大显示', () =>
   assertEqual(readCssNumber(orderNoRule, 'font-size'), 28, '单号字号应放大到 28px')
   assertEqual(/flex:\s*0\s+0\s+auto/.test(orderNoRule), true, '单号不应被长店名挤压收缩')
   assertEqual(/font-weight:\s*800/.test(orderNoRule), true, '单号应加粗突出显示')
-  assertEqual(readCssNumber(storeRule, 'font-size') > readCssNumber(metaRule, 'font-size'), true, '店名字号应大于右侧辅助信息')
-  assertEqual(/flex-direction:\s*column/.test(metaRule), true, '右侧辅助信息应改为单列显示')
-  assertEqual(/align-items:\s*flex-end/.test(metaRule), true, '右侧辅助信息应右对齐')
 })
 
 runTest('配货单打印行高和字体应按 9mm 明细行稳定分页', () => {

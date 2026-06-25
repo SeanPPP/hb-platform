@@ -373,16 +373,6 @@ export default function PickingListPage() {
           </span>
         </div>
       </div>
-      <div className="store-order-picking-meta">
-        <div>
-          <strong>{t('warehouse.pickingList.printTime')}</strong>
-          {formatPrintDate(undefined, true, printLocale)}
-        </div>
-        <div>
-          <strong>{t('warehouse.pickingList.orderDate')}</strong>
-          {formatPrintDate(order.orderDate, false, printLocale)}
-        </div>
-      </div>
     </div>
   )
 

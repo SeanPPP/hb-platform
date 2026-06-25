@@ -31,6 +31,7 @@
 
 .store-order-picking-header {
   display: grid;
+  /* 右侧日期信息已取消，保留三栏骨架避免店名和单号在打印/PDF 中偏移。 */
   grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr) minmax(120px, 1fr);
   align-items: start;
   gap: 12px;
@@ -75,16 +76,6 @@
   font-size: 28px;
   font-weight: 800;
   line-height: 1.15;
-}
-
-.store-order-picking-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-  font-size: 12px;
-  line-height: 1.15;
-  text-align: right;
 }
 
 .store-order-picking-table {
