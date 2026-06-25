@@ -730,6 +730,97 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetImportPriceVariance_ForbidsWarehouseStaffLegacyManagePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetImportPriceVariance(
+            new StoreOrderImportPriceVarianceQueryDto()
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetImportPriceVariance_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceQueryDto();
+        var response = ApiResponse<StoreOrderImportPriceVarianceResultDto>.OK(
+            new StoreOrderImportPriceVarianceResultDto
+            {
+                Items = new List<StoreOrderImportPriceVarianceItemDto>(),
+                Summary = new StoreOrderImportPriceVarianceSummaryDto(),
+                SupplierSummaries = new List<StoreOrderImportPriceVarianceSupplierSummaryDto>(),
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.GetImportPriceVarianceAsync(request)).ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.GetImportPriceVariance(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task GetImportPriceVarianceDetails_ForbidsWarehouseStaffLegacyManagePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetImportPriceVarianceDetails(
+            new StoreOrderImportPriceVarianceDetailQueryDto { ProductCode = "P1" }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetImportPriceVarianceDetails_AllowsWarehouseManageOrdersPermission()
+    {
+        var request = new StoreOrderImportPriceVarianceDetailQueryDto { ProductCode = "P1" };
+        var response = ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>.OK(
+            new StoreOrderImportPriceVarianceDetailResultDto
+            {
+                Items = new List<StoreOrderImportPriceVarianceDetailItemDto>(),
+                Summary = new StoreOrderImportPriceVarianceSummaryDto(),
+            }
+        );
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.GetImportPriceVarianceDetailsAsync(request)).ReturnsAsync(response);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.ManageOrders),
+            CreateScopeService()
+        );
+
+        var result = await controller.GetImportPriceVarianceDetails(request);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(response.Data, ok.Value?.GetType().GetProperty("data")?.GetValue(ok.Value));
+        service.VerifyAll();
+    }
+
+    [Fact]
     public async Task UpdateImportPriceVarianceDomesticPrice_ForbidsOrderReadOnlyUser()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);

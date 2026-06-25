@@ -1179,22 +1179,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 query ??= new StoreOrderImportPriceVarianceQueryDto();
 
-                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
-                if (forbidden == null)
-                {
-                    forbidden = await RequireAssignedStoreScopeAsync(query.StoreCode);
-                }
-                if (forbidden == null && query.StoreCodes != null)
-                {
-                    foreach (var storeCode in query.StoreCodes)
-                    {
-                        forbidden = await RequireStoreScopeAsync(storeCode);
-                        if (forbidden != null)
-                        {
-                            break;
-                        }
-                    }
-                }
+                // 首柜价差异统计是仓库管理员报表，不能用 WarehouseStaff 的只读订货权限直接查询。
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1227,22 +1213,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 query ??= new StoreOrderImportPriceVarianceDetailQueryDto();
 
-                var forbidden = await RequireAnyPermissionAsync(OrderReadPermissions);
-                if (forbidden == null)
-                {
-                    forbidden = await RequireAssignedStoreScopeAsync(query.StoreCode);
-                }
-                if (forbidden == null && query.StoreCodes != null)
-                {
-                    foreach (var storeCode in query.StoreCodes)
-                    {
-                        forbidden = await RequireStoreScopeAsync(storeCode);
-                        if (forbidden != null)
-                        {
-                            break;
-                        }
-                    }
-                }
+                // 明细同样会暴露跨分店基准差异，必须和统计页保持仓库管理员权限一致。
+                var forbidden = await RequireOrderManagementActionPermissionAsync(WarehouseOrderSyncPermissions);
                 if (forbidden != null)
                 {
                     return forbidden;

@@ -920,7 +920,6 @@ public class NavigationServiceTests
             new[]
             {
                 "/warehouse/store-orders",
-                "/warehouse/store-order-import-price-variance",
             },
             children.Select(item => item.Path).ToArray()
         );

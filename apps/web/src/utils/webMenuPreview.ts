@@ -55,6 +55,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canManageDomesticPrefixCodes: [P.DomesticPurchase.ManagePrefixCodes],
   canManageDomesticProducts: [P.DomesticPurchase.ManageProducts],
   canManageWarehouseOrders: [P.Warehouse.ManageOrders, P.Warehouse.Manage],
+  canManageStoreOrderImportPriceVariance: [P.Warehouse.ManageOrders, P.Warehouse.Manage],
   canViewContainers: [P.Container.View],
   canManageWarehouseProducts: [P.Warehouse.ManageProducts, P.Warehouse.Manage],
   canManageWarehouseCategories: [P.Warehouse.ManageCategories, P.Warehouse.Manage],
@@ -109,7 +110,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     title: 'menu.warehouse',
     children: [
       { path: '/warehouse/store-orders', title: 'menu.storeOrders', accessKey: 'canManageWarehouseOrders' },
-      { path: '/warehouse/store-order-import-price-variance', title: 'menu.storeOrderImportPriceVariance', accessKey: 'canManageWarehouseOrders' },
+      { path: '/warehouse/store-order-import-price-variance', title: 'menu.storeOrderImportPriceVariance', accessKey: 'canManageStoreOrderImportPriceVariance' },
       { path: '/warehouse/containers', title: 'menu.containers', accessKey: 'canViewContainers' },
       { path: '/warehouse/products', title: 'menu.warehouseProducts', accessKey: 'canManageWarehouseProducts' },
       { path: '/warehouse/categories', title: 'menu.categories', accessKey: 'canManageWarehouseCategories' },
@@ -148,7 +149,6 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
 const warehouseStaffVisibleMenuPaths = new Set([
   '/warehouse',
   '/warehouse/store-orders',
-  '/warehouse/store-order-import-price-variance',
 ])
 
 function isWarehouseStaffNavigationLimited(access: AccessControl) {

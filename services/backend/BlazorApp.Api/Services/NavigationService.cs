@@ -352,7 +352,7 @@ namespace BlazorApp.Api.Services
                 return new List<NavigationMenuDto>();
             }
 
-            // 仓库员工桌面端只暴露分店订货相关入口，避免旧 Warehouse.Manage 权限把其它仓库/收银菜单带出来。
+            // 仓库员工桌面端只暴露分店订货列表；首柜价差异报表属于仓库管理员权限，不跟随只读入口开放。
             return new List<NavigationMenuDto>
             {
                 new()
@@ -367,13 +367,6 @@ namespace BlazorApp.Api.Services
                             Path = "/warehouse/store-orders",
                             TitleKey = "menu.storeOrders",
                             Icon = "ReconciliationOutlined",
-                            Permission = Permissions.Warehouse.ManageOrders,
-                        },
-                        new()
-                        {
-                            Path = "/warehouse/store-order-import-price-variance",
-                            TitleKey = "menu.storeOrderImportPriceVariance",
-                            Icon = "BarChartOutlined",
                             Permission = Permissions.Warehouse.ManageOrders,
                         },
                     },

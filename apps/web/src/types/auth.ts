@@ -60,6 +60,7 @@ export interface AccessControl {
   // 新细粒度权限
   canManageWarehouseProducts: boolean
   canManageWarehouseOrders: boolean
+  canManageStoreOrderImportPriceVariance: boolean
   canManageWarehouseCategories: boolean
   canManageWarehouseLocations: boolean
   canViewContainers: boolean

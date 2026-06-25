@@ -332,7 +332,7 @@ export const appRoutes: AppRouteItem[] = [
           title: 'menu.storeOrderImportPriceVariance',
           icon: 'BarChartOutlined',
           keepAlive: true,
-          accessKey: 'canManageWarehouseOrders',
+          accessKey: 'canManageStoreOrderImportPriceVariance',
         },
         element: <StoreOrderImportPriceVariancePage />,
       },
@@ -755,7 +755,7 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
     return []
   }
 
-  // 仓库员工侧边栏只保留分店订货相关入口，旧 Warehouse.Manage 仍可用于接口权限但不展开其它导航。
+  // 仓库员工侧边栏只保留分店订货列表；首柜价差异属于仓库管理员报表，不跟随只读订货入口开放。
   return [
     {
       key: '/warehouse',
@@ -766,11 +766,6 @@ function buildWarehouseStaffMenus(access: AccessControl): MenuProps['items'] {
           key: '/warehouse/store-orders',
           icon: iconMap.ReconciliationOutlined,
           label: i18n.t('menu.storeOrders'),
-        },
-        {
-          key: '/warehouse/store-order-import-price-variance',
-          icon: iconMap.BarChartOutlined,
-          label: i18n.t('menu.storeOrderImportPriceVariance'),
         },
       ],
     },

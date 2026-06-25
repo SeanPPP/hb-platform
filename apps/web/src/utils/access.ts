@@ -67,6 +67,7 @@ function createEmptyAccess(): AccessControl {
     // 新细粒度权限
     canManageWarehouseProducts: false,
     canManageWarehouseOrders: false,
+    canManageStoreOrderImportPriceVariance: false,
     canManageWarehouseCategories: false,
     canManageWarehouseLocations: false,
     canViewContainers: false,
@@ -156,6 +157,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     hasRole('WarehouseStaff') ||
     hasRole('仓库员工') ||
     hasRole('WarehouseManager')
+  const isWarehouseStaffOnly =
+    isWarehouseStaff &&
+    !isAdmin &&
+    !isWarehouseManager &&
+    (hasRole('WarehouseStaff') || hasRole('仓库员工'))
   const isStoreStaff = hasRole('StoreStaff') || hasRole('店铺员工')
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager
   const onlyOrder = onlyRole('Order') || hasRole('订货员')
@@ -219,6 +225,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     isAdmin || hasPermission(P.Warehouse.ManageProducts) || hasPermission(P.Warehouse.Manage)
   const canManageWarehouseOrders =
     isAdmin || hasPermission(P.Warehouse.ManageOrders) || hasPermission(P.Warehouse.Manage)
+  // 首柜价差异报表暴露全局基准差异和可编辑价格入口，纯 WarehouseStaff 仍只保留分店订货文档入口。
+  const canManageStoreOrderImportPriceVariance =
+    canManageWarehouseOrders && !isWarehouseStaffOnly
   const canManageWarehouseCategories =
     isAdmin || hasPermission(P.Warehouse.ManageCategories) || hasPermission(P.Warehouse.Manage)
   const canManageWarehouseLocations =
@@ -344,6 +353,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     // 新细粒度
     canManageWarehouseProducts,
     canManageWarehouseOrders,
+    canManageStoreOrderImportPriceVariance,
     canManageWarehouseCategories,
     canManageWarehouseLocations,
     canViewContainers,

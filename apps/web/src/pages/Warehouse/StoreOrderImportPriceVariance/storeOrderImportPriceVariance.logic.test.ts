@@ -185,7 +185,10 @@ const routeBlock = routeSource.slice(routeStart, routeEnd)
 assert(routeStart >= 0 && routeEnd > routeStart, '路由必须注册首次货柜价差异统计页')
 assert(routeBlock.includes("title: 'menu.storeOrderImportPriceVariance'"), '路由标题 key 必须符合菜单契约')
 assert(routeBlock.includes("icon: 'BarChartOutlined'"), '路由图标应使用 BarChartOutlined')
-assert(routeBlock.includes("accessKey: 'canManageWarehouseOrders'"), '路由权限必须沿用仓库订单管理权限')
+assert(
+  routeBlock.includes("accessKey: 'canManageStoreOrderImportPriceVariance'"),
+  '路由权限必须收束到首柜价差异专用仓库管理员权限',
+)
 
 const fallbackStart = routeSource.indexOf('function buildWarehouseStaffMenus')
 const fallbackEnd = routeSource.indexOf('export function buildMenus', fallbackStart)
@@ -193,8 +196,8 @@ const fallbackBlock = routeSource.slice(fallbackStart, fallbackEnd)
 
 assert(
   fallbackBlock.includes("key: '/warehouse/store-orders'") &&
-    fallbackBlock.includes("key: '/warehouse/store-order-import-price-variance'"),
-  '仓库员工 fallback 菜单必须同时包含分店订货列表和统计页',
+    !fallbackBlock.includes("key: '/warehouse/store-order-import-price-variance'"),
+  '仓库员工 fallback 菜单只能保留分店订货列表，不能暴露首柜价差异统计页',
 )
 
 assert(
