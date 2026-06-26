@@ -62,6 +62,45 @@ public sealed class SettingsViewModelTests
         Assert.False(viewModel.DownloadCatalogCommand.CanExecute(null));
         Assert.False(viewModel.ResetCatalogCommand.CanExecute(null));
         Assert.False(viewModel.ReregisterDeviceCommand.CanExecute(null));
+        Assert.False(viewModel.CheckForAppUpdateCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task CheckForAppUpdateCommand_calls_injected_update_delegate()
+    {
+        var checkCallCount = 0;
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            checkForAppUpdateAsync: cancellationToken =>
+            {
+                Assert.False(cancellationToken.IsCancellationRequested);
+                checkCallCount++;
+                return Task.FromResult(AppUpdateCoordinatorResult.NoUpdate());
+            });
+
+        await viewModel.CheckForAppUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, checkCallCount);
+        Assert.Equal("Current version is already up to date.", viewModel.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData(AppUpdateCoordinatorStatus.AlreadyRunning, "Software update check is already running.")]
+    [InlineData(AppUpdateCoordinatorStatus.OptionalDeclined, "Software update was skipped.")]
+    [InlineData(AppUpdateCoordinatorStatus.CheckFailed, "Software update check failed. Please try again later.")]
+    [InlineData(AppUpdateCoordinatorStatus.PolicyFailed, "Update policy is unavailable. Please contact an administrator.")]
+    public async Task CheckForAppUpdateCommand_uses_coordinator_result_status(
+        AppUpdateCoordinatorStatus status,
+        string expectedStatus)
+    {
+        var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            checkForAppUpdateAsync: _ => Task.FromResult(AppUpdateCoordinatorResult.FromStatus(status)));
+
+        await viewModel.CheckForAppUpdateCommand.ExecuteAsync(null);
+
+        Assert.Equal(expectedStatus, viewModel.StatusMessage);
+        Assert.NotEqual("Checking for software updates...", viewModel.StatusMessage);
     }
 
     [Fact]

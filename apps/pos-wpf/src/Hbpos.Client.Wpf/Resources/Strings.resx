@@ -744,4 +744,37 @@
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>The previous Square card payment was not completed: {0}. The order has been restored. Select a payment method again.</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>The payment amount returned by Square does not match the order amount. The order was not saved automatically. Ask a supervisor to confirm.</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>The previous Square card payment was successful. The order has been recovered and saved automatically.</value></data>
+  <data name="settings.section.appUpdate.title" xml:space="preserve"><value>Software update</value></data>
+  <data name="settings.section.appUpdate.description" xml:space="preserve"><value>Check for a new WPF POS installer without interrupting the current checkout flow.</value></data>
+  <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>Channel</value></data>
+  <data name="settings.section.appUpdate.action" xml:space="preserve"><value>Check update</value></data>
+  <data name="settings.status.appUpdateNotConfigured" xml:space="preserve"><value>Software update check is not configured.</value></data>
+  <data name="settings.status.appUpdateChecking" xml:space="preserve"><value>Checking for software updates...</value></data>
+  <data name="settings.status.appUpdateLatest" xml:space="preserve"><value>Current version is already up to date.</value></data>
+  <data name="settings.status.appUpdateAlreadyRunning" xml:space="preserve"><value>Software update check is already running.</value></data>
+  <data name="settings.status.appUpdateCheckFailed" xml:space="preserve"><value>Software update check failed. Please try again later.</value></data>
+  <data name="settings.status.appUpdatePolicyFailed" xml:space="preserve"><value>Update policy is unavailable. Please contact an administrator.</value></data>
+  <data name="settings.status.appUpdateOptionalDeclined" xml:space="preserve"><value>Software update was skipped.</value></data>
+  <data name="settings.status.appUpdateReady" xml:space="preserve"><value>Software update is ready to install.</value></data>
+  <data name="settings.status.appUpdateForceReady" xml:space="preserve"><value>Required software update is ready.</value></data>
+  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>Software update download failed. {0}</value></data>
+  <data name="settings.status.appUpdateInstallFailed" xml:space="preserve"><value>Software update installer failed to start. {0}</value></data>
+  <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>Starting software update installer...</value></data>
+  <data name="appUpdate.prompt.title" xml:space="preserve"><value>Software update</value></data>
+  <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>Version {0} is available. Download and install now?</value></data>
+  <data name="appUpdate.optional.title" xml:space="preserve"><value>Update ready</value></data>
+  <data name="appUpdate.optional.ready" xml:space="preserve"><value>New version has been downloaded. Install when the terminal is idle.</value></data>
+  <data name="appUpdate.force.title" xml:space="preserve"><value>Update required</value></data>
+  <data name="appUpdate.force.action" xml:space="preserve"><value>Install update</value></data>
+  <data name="appUpdate.force.downloading" xml:space="preserve"><value>Downloading required update. Please wait.</value></data>
+  <data name="appUpdate.force.ready" xml:space="preserve"><value>Install this required update before continuing checkout.</value></data>
+  <data name="appUpdate.force.minimumRequired" xml:space="preserve"><value>This terminal is below the minimum supported version ({0}). Install the required update before continuing checkout.</value></data>
+  <data name="appUpdate.force.rollbackReady" xml:space="preserve"><value>Roll back to version {0} before continuing checkout.</value></data>
+  <data name="appUpdate.force.downloadFailed" xml:space="preserve"><value>Required update failed: {0}</value></data>
+  <data name="appUpdate.force.downloadFailedDefault" xml:space="preserve"><value>Update download failed. Contact an administrator.</value></data>
+  <data name="appUpdate.startup.checkFailed" xml:space="preserve"><value>Software update check failed during startup: {0}</value></data>
+  <data name="appUpdate.force.retry" xml:space="preserve"><value>Retry</value></data>
+  <data name="appUpdate.force.exit" xml:space="preserve"><value>Exit</value></data>
+  <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>Complete or clear the current transaction before installing the update.</value></data>
+  <data name="appUpdate.install.failed" xml:space="preserve"><value>Could not start the update installer. {0}</value></data>
 </root>

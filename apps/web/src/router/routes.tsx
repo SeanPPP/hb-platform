@@ -7,6 +7,7 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   DollarOutlined,
+  DownloadOutlined,
   EnvironmentOutlined,
   FileDoneOutlined,
   FileTextOutlined,
@@ -64,6 +65,7 @@ import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
 import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
 import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
+import SystemWpfVersionsPage from '../pages/System/WpfVersions'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemEmployeeProfilesPage from '../pages/System/EmployeeProfiles'
@@ -104,6 +106,7 @@ const iconMap = {
   CalendarOutlined: <CalendarOutlined />,
   DatabaseOutlined: <DatabaseOutlined />,
   DollarOutlined: <DollarOutlined />,
+  DownloadOutlined: <DownloadOutlined />,
   EnvironmentOutlined: <EnvironmentOutlined />,
   FileDoneOutlined: <FileDoneOutlined />,
   FileTextOutlined: <FileTextOutlined />,
@@ -247,6 +250,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewAppDownloads',
         },
         element: <SystemAppDownloadsPage />,
+      },
+      {
+        path: '/system/wpf-versions',
+        meta: {
+          title: 'menu.wpfVersions',
+          icon: 'DownloadOutlined',
+          keepAlive: true,
+          accessKey: 'canViewAppDownloads',
+        },
+        element: <SystemWpfVersionsPage />,
       },
     ],
   },

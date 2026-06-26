@@ -76,6 +76,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
     private readonly ScreenNavigator _screenNavigator;
     private readonly IWindowOwnerProvider? _windowOwnerProvider;
+    private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
+    private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
     private readonly CustomerDisplayShellController _customerDisplayShellController;
     private readonly DeviceReregistrationCoordinator _deviceReregistrationCoordinator;
     private readonly CatalogStartupCoordinator _catalogStartupCoordinator;
@@ -112,6 +114,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public PaymentViewModel? CachedCashPaymentScreen => _screenNavigator.CachedCashPaymentScreen;
 
     public SpecialProductsViewModel? CachedSpecialProductsScreen => _screenNavigator.CachedSpecialProductsScreen;
+
+    public AppUpdateState AppUpdate { get; }
 
     [ObservableProperty]
     private string _selectedCultureName = LocalizationService.DefaultCultureName;
@@ -334,7 +338,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ICashDrawerService? cashDrawerService = null,
         IInstallmentOrderService? installmentOrderService = null,
         ITestSalesDataResetService? testSalesDataResetService = null,
-        IWindowOwnerProvider? windowOwnerProvider = null)
+        IWindowOwnerProvider? windowOwnerProvider = null,
+        AppUpdateState? appUpdateState = null,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
+        IAppUpdateChannelProvider? appUpdateChannelProvider = null)
     {
         _core = core;
         _infra = infra;
@@ -389,6 +396,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cardRecoveryResultDialogService = paymentTerminal.CardRecoveryResultDialogService;
         _linklyFallbackPromptCoordinator = paymentTerminal.LinklyFallbackPromptCoordinator;
         _windowOwnerProvider = windowOwnerProvider;
+        AppUpdate = appUpdateState ?? new AppUpdateState();
+        _checkForAppUpdateAsync = checkForAppUpdateAsync;
+        _appUpdateChannelProvider = appUpdateChannelProvider;
         _posTerminalWorkflowFactory = posTerminalWorkflowFactory;
         _mainChildViewModelFactory = CreateMainChildViewModelFactory();
 
@@ -486,7 +496,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _dailyClosePrintService,
             _userFeedbackService,
             _receiptPrintService,
-            _cardRecoveryResultDialogService);
+            _cardRecoveryResultDialogService,
+            _checkForAppUpdateAsync,
+            _appUpdateChannelProvider);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(
@@ -553,6 +565,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _linklyFallbackPromptCoordinator,
             SyncCatalogAndReloadAsync,
             ResetCatalogAndReloadAsync,
+            _checkForAppUpdateAsync,
             BeginDeviceReregistrationAsync,
             () => _cardRecoveryPresenter!.RecoverActiveCardPaymentSessionFromPaymentAsync(),
             setScreen: OnScreenChanged,

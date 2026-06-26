@@ -46,4 +46,84 @@ public sealed class KeyboardScannerFallbackBufferTests
             expected,
             MainWindow.ShouldBlockKeyboardScannerFallback(isTextInputFocused, isFocusedElementVisible));
     }
+
+    [Theory]
+    [InlineData(true, false, false, true)]
+    [InlineData(false, false, false, false)]
+    public void ShouldBlockKeyboardScannerFallback_blocks_when_force_update_overlay_is_active(
+        bool isForceUpdateBlocking,
+        bool isTextInputFocused,
+        bool isFocusedElementVisible,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            MainWindow.ShouldBlockKeyboardScannerFallback(
+                isForceUpdateBlocking,
+                isTextInputFocused,
+                isFocusedElementVisible));
+    }
+
+    [Theory]
+    [InlineData(true, 0x00FF, true)]
+    [InlineData(true, 0x0100, false)]
+    [InlineData(false, 0x00FF, false)]
+    public void ShouldBlockKeyboardScannerFallback_blocks_raw_scanner_window_message_when_force_update_overlay_is_active(
+        bool isForceUpdateBlocking,
+        int messageId,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            MainWindow.ShouldBlockRawScannerWindowMessage(isForceUpdateBlocking, messageId));
+    }
+
+    [Fact]
+    public void ProcessRawScannerWindowMessage_marks_handled_and_skips_dispatch_when_force_update_overlay_is_active()
+    {
+        var handled = false;
+        var dispatchCalled = false;
+
+        var result = MainWindow.ProcessRawScannerWindowMessage(
+            isForceUpdateBlocking: true,
+            messageId: 0x00FF,
+            hwnd: IntPtr.Zero,
+            wParam: IntPtr.Zero,
+            lParam: IntPtr.Zero,
+            processWindowMessage: (IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool nextHandled) =>
+            {
+                dispatchCalled = true;
+                return new IntPtr(42);
+            },
+            handled: ref handled);
+
+        Assert.Equal(IntPtr.Zero, result);
+        Assert.True(handled);
+        Assert.False(dispatchCalled);
+    }
+
+    [Fact]
+    public void ProcessRawScannerWindowMessage_dispatches_non_blocked_messages_to_raw_scanner()
+    {
+        var handled = false;
+        var dispatchCalled = false;
+
+        var result = MainWindow.ProcessRawScannerWindowMessage(
+            isForceUpdateBlocking: false,
+            messageId: 0x00FF,
+            hwnd: IntPtr.Zero,
+            wParam: IntPtr.Zero,
+            lParam: IntPtr.Zero,
+            processWindowMessage: (IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool nextHandled) =>
+            {
+                dispatchCalled = true;
+                nextHandled = true;
+                return new IntPtr(42);
+            },
+            handled: ref handled);
+
+        Assert.Equal(new IntPtr(42), result);
+        Assert.True(handled);
+        Assert.True(dispatchCalled);
+    }
 }

@@ -112,6 +112,24 @@ public static class ServiceRegistration
         services.AddSingleton<IShellCatalogService, ShellCatalogService>();
         services.AddSingleton<IMainShellStartupService, MainShellStartupService>();
         services.AddSingleton<IShellSyncCenterService, ShellSyncCenterService>();
+        services.AddSingleton<AppUpdateState>();
+        services.AddSingleton<IAppVersionProvider, AppVersionProvider>();
+        services.AddSingleton<IAppUpdateChannelProvider, AppUpdateChannelProvider>();
+        services.AddHttpClient<IAppUpdateApiClient, AppUpdateApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddHttpClient<IAppUpdateDownloadService, AppUpdateDownloadService>(client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(5);
+        });
+        services.AddSingleton<IAppUpdateDownloadDirectoryProvider, AppUpdateDownloadDirectoryProvider>();
+        services.AddSingleton<IProcessLauncher, ProcessLauncher>();
+        services.AddSingleton<IAppUpdateInstallSafetyGuard, ShellAppUpdateInstallSafetyGuard>();
+        services.AddSingleton<IAppUpdateInstallerLauncher, AppUpdateInstallerLauncher>();
+        services.AddSingleton<IAppUpdatePromptService, WpfAppUpdatePromptService>();
+        services.AddSingleton<IAppUpdateCoordinator, AppUpdateCoordinator>();
         services.AddSingleton<ICashPaymentWorkflowService, CashPaymentWorkflowService>();
         services.AddSingleton<CardPaymentRecoveryService>();
         services.AddSingleton<ISquarePaymentRecoveryService, SquarePaymentRecoveryService>();
@@ -276,7 +294,9 @@ public static class ServiceRegistration
             cashDrawerService: sp.GetRequiredService<ICashDrawerService>(),
             installmentOrderService: sp.GetRequiredService<IInstallmentOrderService>(),
             testSalesDataResetService: sp.GetRequiredService<ITestSalesDataResetService>(),
-            windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>()));
+            windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>(),
+            appUpdateState: sp.GetRequiredService<AppUpdateState>(),
+            checkForAppUpdateAsync: cancellationToken => sp.GetRequiredService<IAppUpdateCoordinator>().CheckForUpdatesAsync(manual: true, cancellationToken)));
         services.AddSingleton<MainWindow>();
 
         return services;

@@ -34,6 +34,8 @@ internal sealed class MainChildViewModelFactory
     private readonly IUserFeedbackService? _userFeedbackService;
     private readonly IReceiptPrintService? _receiptPrintService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+    private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
+    private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -59,7 +61,9 @@ internal sealed class MainChildViewModelFactory
         IDailyClosePrintService dailyClosePrintService,
         IUserFeedbackService? userFeedbackService = null,
         IReceiptPrintService? receiptPrintService = null,
-        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null)
+        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
+        IAppUpdateChannelProvider? appUpdateChannelProvider = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -85,6 +89,8 @@ internal sealed class MainChildViewModelFactory
         _userFeedbackService = userFeedbackService;
         _receiptPrintService = receiptPrintService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
+        _checkForAppUpdateAsync = checkForAppUpdateAsync;
+        _appUpdateChannelProvider = appUpdateChannelProvider;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -269,7 +275,8 @@ internal sealed class MainChildViewModelFactory
         Func<Task<DeviceReregistrationStartResult>>? reregisterDeviceAsync = null,
         Action? returnToPos = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
-        Func<bool>? confirmResetTestSalesData = null)
+        Func<bool>? confirmResetTestSalesData = null,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null)
     {
         return new SettingsViewModel(
             _cardTerminalSetupService!,
@@ -282,7 +289,9 @@ internal sealed class MainChildViewModelFactory
             _receiptPrintService,
             resetTestSalesDataAsync: resetTestSalesDataAsync,
             confirmResetTestSalesData: confirmResetTestSalesData,
-            cardRecoveryResultDialogService: _cardRecoveryResultDialogService);
+            cardRecoveryResultDialogService: _cardRecoveryResultDialogService,
+            checkForAppUpdateAsync: checkForAppUpdateAsync ?? _checkForAppUpdateAsync,
+            appUpdateChannel: _appUpdateChannelProvider?.CurrentChannel);
     }
 
     public CustomerDisplayViewModel CreateCustomerDisplayViewModel()

@@ -178,6 +178,53 @@
                             </DockPanel>
                         </Border>
 
+                        <Border Style="{StaticResource SettingsActionCardStyle}" Margin="0,0,0,16">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Left"
+                                        Width="42"
+                                        Height="42"
+                                        Background="#FFE8F7F1"
+                                        CornerRadius="8"
+                                        Margin="0,0,14,0">
+                                    <materialDesign:PackIcon Kind="Update"
+                                                             Width="24"
+                                                             Height="24"
+                                                             Foreground="#FF047857"
+                                                             HorizontalAlignment="Center"
+                                                             VerticalAlignment="Center" />
+                                </Border>
+                                <Button DockPanel.Dock="Right"
+                                        Command="{Binding CheckForAppUpdateCommand}"
+                                        Style="{StaticResource PosSecondaryButtonStyle}"
+                                        Height="42"
+                                        MinWidth="138"
+                                        Margin="18,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="Update" Width="18" Height="18" Margin="0,0,8,0" />
+                                        <TextBlock Text="{loc:Loc settings.section.appUpdate.action}" />
+                                    </StackPanel>
+                                </Button>
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc settings.section.appUpdate.title}"
+                                               FontSize="18"
+                                               FontWeight="Black"
+                                               Foreground="{StaticResource PosTextBrush}" />
+                                    <TextBlock Text="{loc:Loc settings.section.appUpdate.description}"
+                                               FontSize="12"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,5,0,0" />
+                                    <TextBlock FontSize="11"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,5,0,0">
+                                        <Run Text="{loc:Loc settings.section.appUpdate.channel}" />
+                                        <Run Text=": " />
+                                        <Run Text="{Binding AppUpdateChannelText}" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
                         <Border Style="{StaticResource SettingsActionCardStyle}"
                                 Visibility="{Binding IsDebugTestSalesDataResetVisible, Converter={StaticResource BoolToVis}}">
                             <DockPanel>

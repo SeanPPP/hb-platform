@@ -161,6 +161,8 @@ namespace BlazorApp.Shared.Constants
                 [LocalPurchase.View] = ["LocalInvocie.View"],
                 [LocalPurchase.Edit] = ["LocalInvocie.Edit"],
                 [Reports.ProductMovementView] = [Reports.View],
+                // 管理下载权限天然包含查看下载，保证菜单可见性和列表 GET 授权一致。
+                [System.ViewAppDownloads] = [System.ManageAppDownloads],
             };
 
         public static class AustralianSuppliers

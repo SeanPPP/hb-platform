@@ -58,6 +58,32 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsSystemNavigationWithViewAppDownloadsWithoutDashboardPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.System.ViewAppDownloads));
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        Assert.Contains(systemMenu.Children!, item => item.Path == "/system/app-downloads");
+        Assert.Contains(systemMenu.Children!, item => item.Path == "/system/wpf-versions");
+        Assert.DoesNotContain(menu, item => item.Path == "/dashboard");
+    }
+
+    [Fact]
+    public void BuildMenu_ShowsSystemNavigationWithManageAppDownloadsWithoutDashboardPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.System.ManageAppDownloads));
+
+        var menu = _service.BuildMenu(user);
+
+        var systemMenu = Assert.Single(menu, item => item.Path == "/system");
+        Assert.Contains(systemMenu.Children!, item => item.Path == "/system/app-downloads");
+        Assert.Contains(systemMenu.Children!, item => item.Path == "/system/wpf-versions");
+        Assert.DoesNotContain(menu, item => item.Path == "/dashboard");
+    }
+
+    [Fact]
     public async Task BuildMenu_UsesDatabasePermissionsInsteadOfStalePermissionClaims()
     {
         using var harness = new NavigationTestHarness();
@@ -134,6 +160,7 @@ public class NavigationServiceTests
 
         var systemMenu = Assert.Single(menu, item => item.Path == "/system");
         Assert.Contains(systemMenu.Children!, item => item.Path == "/system/employee-profiles");
+        Assert.Contains(systemMenu.Children!, item => item.Path == "/system/wpf-versions");
 
         var posAdminMenu = Assert.Single(menu, item => item.Path == "/pos-admin");
         Assert.Contains(posAdminMenu.Children!, item => item.Path == "/pos-admin/products");
@@ -280,6 +307,9 @@ public class NavigationServiceTests
         var systemMenu = Assert.Single(menu, item => item.Path == "/system");
         var item = Assert.Single(systemMenu.Children!, child => child.Path == "/system/app-downloads");
         Assert.Equal(Permissions.System.ViewAppDownloads, item.Permission);
+
+        var wpfVersions = Assert.Single(systemMenu.Children!, child => child.Path == "/system/wpf-versions");
+        Assert.Equal(Permissions.System.ViewAppDownloads, wpfVersions.Permission);
     }
 
     [Fact]
@@ -294,6 +324,7 @@ public class NavigationServiceTests
 
         var systemMenu = Assert.Single(menu, item => item.Path == "/system");
         Assert.DoesNotContain(systemMenu.Children!, child => child.Path == "/system/app-downloads");
+        Assert.DoesNotContain(systemMenu.Children!, child => child.Path == "/system/wpf-versions");
     }
 
     [Fact]

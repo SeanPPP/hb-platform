@@ -64,6 +64,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly Func<CancellationToken, Task>? _resetTestSalesDataAsync;
     private readonly Func<bool>? _confirmResetTestSalesData;
     private readonly Func<Task<DeviceReregistrationStartResult>>? _reregisterDeviceAsync;
+    private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly Action? _returnToPos;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly IReceiptPrintService? _receiptPrintService;
@@ -184,6 +185,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _receiptPrinterTestStatusMessage = string.Empty;
 
+    public string AppUpdateChannelText { get; }
+
     public SettingsViewModel(
         ICardTerminalSetupService setupService,
         ILocalizationService? localization = null,
@@ -195,7 +198,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         IReceiptPrintService? receiptPrintService = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
         Func<bool>? confirmResetTestSalesData = null,
-        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null)
+        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
+        string? appUpdateChannel = null)
     {
         _setupService = setupService;
         _localization = localization;
@@ -204,10 +209,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _resetTestSalesDataAsync = resetTestSalesDataAsync;
         _confirmResetTestSalesData = confirmResetTestSalesData;
         _reregisterDeviceAsync = reregisterDeviceAsync;
+        _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _returnToPos = returnToPos;
         _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         _receiptPrintService = receiptPrintService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
+        AppUpdateChannelText = string.IsNullOrWhiteSpace(appUpdateChannel)
+            ? "production"
+            : appUpdateChannel.Trim();
         _dataMaintenanceSection = new DataMaintenanceSection(new DataMaintenanceContext(
             IsBusy: () => IsBusy,
             DownloadCatalogAsync: _downloadCatalogAsync,
@@ -215,8 +224,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             ResetTestSalesDataAsync: _resetTestSalesDataAsync,
             ConfirmResetTestSalesData: _confirmResetTestSalesData,
             ReregisterDeviceAsync: _reregisterDeviceAsync,
+            CheckForAppUpdateAsync: _checkForAppUpdateAsync,
             RunBusyAsync: (action, operationName) => RunBusyAsync(action, operationName),
-            SetStatus: key => SetStatus(key),
+            SetStatus: (key, args) => SetStatus(key, args),
             SetStatusOverride: SetStatusOverride));
         _receiptPrinterSection = new ReceiptPrinterSection(new ReceiptPrinterContext(
             SettingsStore: _receiptPrinterSettingsStore,
@@ -287,6 +297,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ResetCatalogCommand = new AsyncRelayCommand(ResetCatalogAsync, CanResetCatalog);
         ResetTestSalesDataCommand = new AsyncRelayCommand(ResetTestSalesDataAsync, CanResetTestSalesData);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync, CanReregisterDevice);
+        CheckForAppUpdateCommand = new AsyncRelayCommand(CheckForAppUpdateAsync, CanCheckForAppUpdate);
         TestLinklyTransactionStatusCommand = new AsyncRelayCommand(TestLinklyTransactionStatusAsync, CanTestLinklyTransactionStatus);
         BackCommand = new RelayCommand(ReturnToPos, () => _returnToPos is not null);
         ResetLinklyModePriority(CardTerminalConfiguration.Default.LinklyConnectionModePriority);
@@ -378,6 +389,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand ResetTestSalesDataCommand { get; }
 
     public IAsyncRelayCommand ReregisterDeviceCommand { get; }
+
+    public IAsyncRelayCommand CheckForAppUpdateCommand { get; }
 
     public IRelayCommand BackCommand { get; }
 
@@ -753,6 +766,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         await _dataMaintenanceSection.ReregisterDeviceAsync();
     }
 
+    private async Task CheckForAppUpdateAsync(CancellationToken cancellationToken)
+    {
+        await _dataMaintenanceSection.CheckForAppUpdateAsync(cancellationToken);
+    }
+
     private bool CanLoadLocations()
     {
         return !IsBusy;
@@ -855,6 +873,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool CanReregisterDevice()
     {
         return _dataMaintenanceSection.CanReregisterDevice();
+    }
+
+    private bool CanCheckForAppUpdate()
+    {
+        return _dataMaintenanceSection.CanCheckForAppUpdate();
     }
 
     private void ReturnToPos()
@@ -1271,6 +1294,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ResetCatalogCommand.NotifyCanExecuteChanged();
         ResetTestSalesDataCommand.NotifyCanExecuteChanged();
         ReregisterDeviceCommand.NotifyCanExecuteChanged();
+        CheckForAppUpdateCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanSaveLinklyCloudCredentialFromView));
         OnPropertyChanged(nameof(CanPairLinklyCloudFromView));
         OnPropertyChanged(nameof(CanCancelLinklyCloudPairingFromView));

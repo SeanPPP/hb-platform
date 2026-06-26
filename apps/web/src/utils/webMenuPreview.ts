@@ -46,7 +46,7 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canViewSystemLogs: [P.System.ViewLogs],
   canManageScheduledTasks: [P.System.ManageScheduledTasks],
   canManageSystemSettings: [P.System.ManageSettings],
-  canViewAppDownloads: [P.System.ViewAppDownloads],
+  canViewAppDownloads: [P.System.ViewAppDownloads, P.System.ManageAppDownloads],
   canReadUser: [P.Users.View],
   canReadRole: [P.Roles.View],
   canViewDeviceRegistration: [P.DeviceRegistration.View, P.DeviceRegistration.Manage],
@@ -92,6 +92,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
       { path: '/system/permissions', title: 'menu.systemPermissions', accessKey: 'canReadRole' },
       { path: '/system/device-registration', title: 'menu.deviceRegistration', accessKey: 'canViewDeviceRegistration' },
       { path: '/system/app-downloads', title: 'menu.appDownloads', accessKey: 'canViewAppDownloads' },
+      { path: '/system/wpf-versions', title: 'menu.wpfVersions', accessKey: 'canViewAppDownloads' },
     ],
   },
   {
@@ -177,12 +178,26 @@ function buildAddPermissionCodes(
     return []
   }
 
-  const nextCodes = [permissionCodes[0]]
+  // 中文注释：菜单添加只补最小可见权限，避免只读入口把角色提升成管理权限。
+  const primaryPermissionCode = permissionCodes[0]
+  const nextCodes = [primaryPermissionCode]
   if (route.path !== '/dashboard' && !explicitPermissionCodeSet.has(P.Dashboard.View)) {
     nextCodes.push(P.Dashboard.View)
   }
 
   return nextCodes
+}
+
+function buildRemovePermissionCodes(
+  route: WebMenuPreviewRoute,
+  permissionCodes: string[],
+): string[] {
+  if (route.path === '/system/wpf-versions' && permissionCodes.length) {
+    // 中文注释：WPF 版本页移除只撤销只读入口，不连带删除发布管理权限。
+    return [permissionCodes[0]]
+  }
+
+  return permissionCodes
 }
 
 function buildPreviewNodes(
@@ -215,6 +230,7 @@ function buildPreviewNodes(
 
     const permissionCodes = route.accessKey ? getAccessKeyPermissionCodes(route.accessKey) : []
     const addPermissionCodes = buildAddPermissionCodes(route, permissionCodes, explicitPermissionCodeSet)
+    const removePermissionCodes = buildRemovePermissionCodes(route, permissionCodes)
     const isEditableRoute = permissionCodes.length > 0
     const isReadOnly = Boolean(options.readOnly)
 
@@ -230,7 +246,7 @@ function buildPreviewNodes(
         isReadOnly,
         isFixed: false,
         addPermissionCodes,
-        removePermissionCodes: permissionCodes,
+        removePermissionCodes,
         reason: isReadOnly ? 'read-only' : (!isEditableRoute ? 'group' : undefined),
       },
     }

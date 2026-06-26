@@ -1142,6 +1142,242 @@
                 </Grid>
             </Border>
         </Grid>
+
+        <Border Grid.Row="1"
+                Panel.ZIndex="95"
+                Width="540"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,20,20"
+                Padding="16"
+                Background="{StaticResource PosSurfaceBrush}"
+                BorderBrush="#FF93C5FD"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding AppUpdate.IsOptionalUpdateReady, Converter={StaticResource BoolToVis}}">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.16" />
+            </Border.Effect>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <materialDesign:PackIcon Kind="Update"
+                                         Width="24"
+                                         Height="24"
+                                         Foreground="{StaticResource PosPrimaryBrush}"
+                                         Margin="0,0,12,0" />
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="{loc:Loc appUpdate.optional.title}"
+                               FontSize="14"
+                               FontWeight="Black"
+                               Foreground="{StaticResource PosTextBrush}" />
+                    <TextBlock Text="{Binding AppUpdate.StatusMessage}"
+                               FontSize="12"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+                <Button Grid.Column="2"
+                        Command="{Binding AppUpdate.InstallUpdateCommand}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        MinWidth="112"
+                        Height="36"
+                        Margin="12,0,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="Update" Width="16" Height="16" Margin="0,0,6,0" />
+                        <TextBlock Text="{loc:Loc appUpdate.force.action}" FontWeight="Bold" />
+                    </StackPanel>
+                </Button>
+                <Button Grid.Column="3"
+                        Command="{Binding AppUpdate.DismissOptionalUpdateCommand}"
+                        Style="{StaticResource TitleBarButtonStyle}"
+                        ToolTip="{loc:Loc shell.window.close}"
+                        Margin="12,0,0,0">
+                    <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                </Button>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1"
+                Panel.ZIndex="96"
+                Width="560"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,20,20"
+                Padding="18"
+                Background="{StaticResource PosSurfaceBrush}"
+                BorderBrush="#FFF0B56B"
+                BorderThickness="1"
+                CornerRadius="8"
+                Visibility="{Binding AppUpdate.IsForceUpdatePendingInstall, Converter={StaticResource BoolToVis}}">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.16" />
+            </Border.Effect>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Border Width="36"
+                        Height="36"
+                        Background="#FFFFF4DE"
+                        CornerRadius="10"
+                        Margin="0,0,12,0">
+                    <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                             Width="20"
+                                             Height="20"
+                                             Foreground="#FF8F4E00"
+                                             HorizontalAlignment="Center"
+                                             VerticalAlignment="Center" />
+                </Border>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="{loc:Loc appUpdate.force.title}"
+                               FontSize="14"
+                               FontWeight="Black"
+                               Foreground="{StaticResource PosTextBrush}" />
+                    <TextBlock Text="{Binding AppUpdate.StatusMessage}"
+                               FontSize="12"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+                <Button Grid.Column="2"
+                        Command="{Binding AppUpdate.InstallUpdateCommand}"
+                        Style="{StaticResource PosSecondaryButtonStyle}"
+                        MinWidth="118"
+                        Height="36"
+                        Margin="12,0,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="Update" Width="16" Height="16" Margin="0,0,6,0" />
+                        <TextBlock Text="{loc:Loc appUpdate.force.action}" FontWeight="Bold" />
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- 强制更新全局遮罩：打开后覆盖整个 MainWindow，只保留继续更新按钮。 -->
+        <Border Grid.RowSpan="3"
+                Panel.ZIndex="100"
+                Background="#99000000"
+                Visibility="{Binding AppUpdate.IsForceUpdateBlocking, Converter={StaticResource BoolToVis}}">
+            <Border Width="560"
+                    Padding="26"
+                    Background="{StaticResource PosSurfaceBrush}"
+                    CornerRadius="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.22" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,18">
+                        <Border Width="54"
+                                Height="54"
+                                Background="#FFFFF4DE"
+                                CornerRadius="12"
+                                Margin="0,0,14,0">
+                            <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                     Width="34"
+                                                     Height="34"
+                                                     Foreground="#FF8F4E00"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center" />
+                        </Border>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{loc:Loc appUpdate.force.title}"
+                                       FontSize="22"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosTextBrush}" />
+                            <TextBlock Text="{Binding AppUpdate.TargetVersion, StringFormat={}{0}}"
+                                       FontSize="12"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       Margin="0,4,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="1"
+                               Text="{Binding AppUpdate.StatusMessage}"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,12" />
+
+                    <TextBlock Grid.Row="2"
+                               Text="{Binding AppUpdate.ReleaseNotes}"
+                               FontSize="12"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               TextWrapping="Wrap"
+                               MaxHeight="110"
+                               Margin="0,0,0,18" />
+
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <StackPanel Width="170"
+                                    Margin="0,0,14,0"
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding AppUpdate.IsDownloading, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding AppUpdate.DownloadProgressText}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       TextAlignment="Right"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="0,0,0,5" />
+                            <ProgressBar Height="6"
+                                         Minimum="0"
+                                         Maximum="100"
+                                         Value="{Binding AppUpdate.DownloadProgressPercent}"
+                                         Foreground="{StaticResource PosPrimaryBrush}"
+                                         Background="#FFE8F0FE"
+                                         BorderThickness="0" />
+                        </StackPanel>
+                        <Button Command="{Binding AppUpdate.RetryForceUpdateCommand}"
+                                MinWidth="104"
+                                Height="44"
+                                Margin="0,0,10,0"
+                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                Visibility="{Binding AppUpdate.IsForceUpdateError, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="Refresh" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc appUpdate.force.retry}" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                        <Button Command="{Binding AppUpdate.ExitApplicationCommand}"
+                                MinWidth="104"
+                                Height="44"
+                                Margin="0,0,10,0"
+                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                Visibility="{Binding AppUpdate.IsForceUpdateError, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="ExitToApp" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc appUpdate.force.exit}" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                        <Button Command="{Binding AppUpdate.InstallUpdateCommand}"
+                                MinWidth="148"
+                                Height="44"
+                                Style="{StaticResource PosPrimaryButtonStyle}"
+                                Visibility="{Binding AppUpdate.IsInstallerReady, Converter={StaticResource BoolToVis}}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="Update" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
+                                <TextBlock Text="{loc:Loc appUpdate.force.action}" Foreground="White" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Border>
     </Grid>
 </Window>
 

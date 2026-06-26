@@ -2114,4 +2114,37 @@
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>上一笔 Square 刷卡未完成：{0}。订单已恢复，请重新选择付款方式。</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>Square 返回的付款金额与订单金额不一致。订单未自动保存，请联系主管确认。</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>上一笔 Square 刷卡已成功，订单已自动恢复并保存。</value></data>
+  <data name="settings.section.appUpdate.title" xml:space="preserve"><value>软件更新</value></data>
+  <data name="settings.section.appUpdate.description" xml:space="preserve"><value>检查 WPF 收银端安装包更新，不中断当前收银主流程。</value></data>
+  <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>通道</value></data>
+  <data name="settings.section.appUpdate.action" xml:space="preserve"><value>检查更新</value></data>
+  <data name="settings.status.appUpdateNotConfigured" xml:space="preserve"><value>软件更新检查未配置。</value></data>
+  <data name="settings.status.appUpdateChecking" xml:space="preserve"><value>正在检查软件更新...</value></data>
+  <data name="settings.status.appUpdateLatest" xml:space="preserve"><value>当前已经是最新版本。</value></data>
+  <data name="settings.status.appUpdateAlreadyRunning" xml:space="preserve"><value>软件更新检查正在进行中。</value></data>
+  <data name="settings.status.appUpdateCheckFailed" xml:space="preserve"><value>检查更新失败，请稍后重试。</value></data>
+  <data name="settings.status.appUpdatePolicyFailed" xml:space="preserve"><value>更新策略异常，请联系管理员。</value></data>
+  <data name="settings.status.appUpdateOptionalDeclined" xml:space="preserve"><value>已跳过本次软件更新。</value></data>
+  <data name="settings.status.appUpdateReady" xml:space="preserve"><value>软件更新已准备好，可安装。</value></data>
+  <data name="settings.status.appUpdateForceReady" xml:space="preserve"><value>必须安装的软件更新已准备好。</value></data>
+  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>软件更新下载失败。{0}</value></data>
+  <data name="settings.status.appUpdateInstallFailed" xml:space="preserve"><value>软件更新安装器启动失败。{0}</value></data>
+  <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>正在启动软件更新安装器...</value></data>
+  <data name="appUpdate.prompt.title" xml:space="preserve"><value>软件更新</value></data>
+  <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>发现版本 {0}，是否现在下载并安装？</value></data>
+  <data name="appUpdate.optional.title" xml:space="preserve"><value>更新已准备好</value></data>
+  <data name="appUpdate.optional.ready" xml:space="preserve"><value>新版本已下载完成，可在空闲时安装。</value></data>
+  <data name="appUpdate.force.title" xml:space="preserve"><value>必须更新</value></data>
+  <data name="appUpdate.force.action" xml:space="preserve"><value>安装更新</value></data>
+  <data name="appUpdate.force.downloading" xml:space="preserve"><value>正在下载必须安装的更新，请稍候。</value></data>
+  <data name="appUpdate.force.ready" xml:space="preserve"><value>必须安装此更新后才能继续收银。</value></data>
+  <data name="appUpdate.force.minimumRequired" xml:space="preserve"><value>当前终端低于最低支持版本（{0}），必须安装更新后才能继续收银。</value></data>
+  <data name="appUpdate.force.rollbackReady" xml:space="preserve"><value>必须回退到版本 {0} 后才能继续收银。</value></data>
+  <data name="appUpdate.force.downloadFailed" xml:space="preserve"><value>必须更新失败：{0}</value></data>
+  <data name="appUpdate.force.downloadFailedDefault" xml:space="preserve"><value>更新下载失败，请联系管理员。</value></data>
+  <data name="appUpdate.startup.checkFailed" xml:space="preserve"><value>启动时检查软件更新失败：{0}</value></data>
+  <data name="appUpdate.force.retry" xml:space="preserve"><value>重试</value></data>
+  <data name="appUpdate.force.exit" xml:space="preserve"><value>退出</value></data>
+  <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>请先完成或清空当前交易，再重试安装更新。</value></data>
+  <data name="appUpdate.install.failed" xml:space="preserve"><value>无法启动更新安装器。{0}</value></data>
 </root>
