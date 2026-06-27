@@ -87,6 +87,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
       { path: '/system/center-logs', title: 'menu.systemCenterLogs', accessKey: 'canViewSystemLogs' },
       { path: '/system/scheduled-statistics', title: 'menu.scheduledStatistics', accessKey: 'canManageScheduledTasks' },
       { path: '/system/invoice-email-settings', title: 'menu.invoiceEmailSettings', accessKey: 'canManageSystemSettings' },
+      { path: '/system/payment-terminal-settings', title: 'menu.paymentTerminalSettings', accessKey: 'canManageSystemSettings' },
       { path: '/system/users', title: 'menu.systemUsers', accessKey: 'canReadUser' },
       { path: '/system/roles', title: 'menu.systemRoles', accessKey: 'canReadRole' },
       { path: '/system/permissions', title: 'menu.systemPermissions', accessKey: 'canReadRole' },

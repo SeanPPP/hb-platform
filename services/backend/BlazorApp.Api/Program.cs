@@ -464,6 +464,7 @@ builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection
 builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
+builder.Services.AddScoped<PaymentTerminalSettingsService>();
 builder.Services.AddHttpClient<TencentCosMobileAppBuildArtifactMirror>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<IMobileAppBuildArtifactMirror>(sp =>
@@ -722,6 +723,7 @@ try
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
         dbContext.EnsureLoginSessionSchema();
         await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
+        await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         // dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");

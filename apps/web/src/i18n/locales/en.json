@@ -35,6 +35,7 @@
     "systemCenterLogs": "Center Logs",
     "scheduledStatistics": "Scheduled Statistics",
     "invoiceEmailSettings": "Invoice Email Settings",
+    "paymentTerminalSettings": "Payment Terminal Settings",
     "employeeProfiles": "Employee Profiles",
     "systemUsers": "Users",
     "systemRoles": "Roles",
@@ -566,6 +567,33 @@
       "email": "Please enter a valid email address",
       "maxAttachmentBytes": "Please enter the max attachment size",
       "testToEmail": "Please enter the test recipient email"
+    }
+  },
+  "paymentTerminalSettings": {
+    "title": "Payment Terminal Settings",
+    "subtitle": "Manage Square and Linkly Cloud credentials for production and sandbox.",
+    "squareTitle": "Square Token",
+    "linklyTitle": "Linkly Cloud Credential",
+    "store": "Store",
+    "username": "Username",
+    "password": "Password",
+    "accessToken": "Access token",
+    "clearToken": "Clear saved token",
+    "clearCredential": "Clear saved credential",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "updatedAt": "Updated",
+    "saveSuccess": "Payment terminal settings saved",
+    "saveFailed": "Failed to save payment terminal settings",
+    "loadFailed": "Failed to load payment terminal settings",
+    "noPermission": "The current account does not have permission to manage system settings.",
+    "selectStoreRequired": "Please select a store first",
+    "environments": {
+      "Production": "Production",
+      "Sandbox": "Sandbox"
+    },
+    "validation": {
+      "username": "Please enter the Linkly username"
     }
   },
   "column": {

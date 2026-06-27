@@ -35,6 +35,7 @@
     "systemCenterLogs": "中心日志",
     "scheduledStatistics": "定时统计任务",
     "invoiceEmailSettings": "发票邮箱配置",
+    "paymentTerminalSettings": "支付终端配置",
     "employeeProfiles": "员工个人信息维护",
     "systemUsers": "用户管理",
     "systemRoles": "角色管理",
@@ -566,6 +567,33 @@
       "email": "请输入有效的邮箱地址",
       "maxAttachmentBytes": "请输入附件大小上限",
       "testToEmail": "请输入测试收件邮箱"
+    }
+  },
+  "paymentTerminalSettings": {
+    "title": "支付终端配置",
+    "subtitle": "管理 Square 和 Linkly Cloud 的生产/沙盒凭据。",
+    "squareTitle": "Square Token",
+    "linklyTitle": "Linkly Cloud Credential",
+    "store": "门店",
+    "username": "用户名",
+    "password": "密码",
+    "accessToken": "Access token",
+    "clearToken": "清除已保存 token",
+    "clearCredential": "清除已保存凭据",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "updatedAt": "更新时间",
+    "saveSuccess": "支付终端配置已保存",
+    "saveFailed": "保存支付终端配置失败",
+    "loadFailed": "加载支付终端配置失败",
+    "noPermission": "当前账号没有系统设置管理权限。",
+    "selectStoreRequired": "请先选择门店",
+    "environments": {
+      "Production": "生产",
+      "Sandbox": "沙盒"
+    },
+    "validation": {
+      "username": "请输入 Linkly 用户名"
     }
   },
   "column": {

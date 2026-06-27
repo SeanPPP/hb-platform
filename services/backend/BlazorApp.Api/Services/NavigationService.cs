@@ -77,6 +77,7 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/system/roles",    TitleKey = "menu.systemRoles",       Icon = "TeamOutlined",     Permission = Permissions.Roles.View },
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
                     new() { Path = "/system/invoice-email-settings", TitleKey = "menu.invoiceEmailSettings", Icon = "SettingOutlined", Permission = Permissions.System.ManageSettings },
+                    new() { Path = "/system/payment-terminal-settings", TitleKey = "menu.paymentTerminalSettings", Icon = "WalletOutlined", Permission = Permissions.System.ManageSettings },
                     new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.DeviceRegistration.View },
                     new() { Path = "/system/app-downloads", TitleKey = "menu.appDownloads", Icon = "QrcodeOutlined", Permission = Permissions.System.ViewAppDownloads },
                     new() { Path = "/system/wpf-versions", TitleKey = "menu.wpfVersions", Icon = "DownloadOutlined", Permission = Permissions.System.ViewAppDownloads },
@@ -474,6 +475,7 @@ namespace BlazorApp.Api.Services
                 context,
                 Permissions.Dashboard.View,
                 Permissions.Reports.ProductMovementView,
+                Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads
             );

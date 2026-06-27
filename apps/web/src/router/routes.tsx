@@ -64,6 +64,7 @@ import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
 import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
+import PaymentTerminalSettingsPage from '../pages/System/PaymentTerminalSettings'
 import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
 import SystemWpfVersionsPage from '../pages/System/WpfVersions'
 import SystemRolesPage from '../pages/System/Roles'
@@ -200,6 +201,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageSystemSettings',
         },
         element: <InvoiceEmailSettingsPage />,
+      },
+      {
+        path: '/system/payment-terminal-settings',
+        meta: {
+          title: 'menu.paymentTerminalSettings',
+          icon: 'WalletOutlined',
+          keepAlive: true,
+          accessKey: 'canManageSystemSettings',
+        },
+        element: <PaymentTerminalSettingsPage />,
       },
       {
         path: '/system/users',
