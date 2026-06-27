@@ -27,8 +27,17 @@ public sealed class ShellCatalogService(
     LocalSellableItemIndex priceIndex,
     ILocalCatalogRepository catalogRepository,
     ILocalCatalogSyncService catalogSync,
+    PosCartService cart,
     IUiPriorityCoordinator? uiPriorityCoordinator = null) : IShellCatalogService
 {
+    public ShellCatalogService(
+        LocalSellableItemIndex priceIndex,
+        ILocalCatalogRepository catalogRepository,
+        ILocalCatalogSyncService catalogSync)
+        : this(priceIndex, catalogRepository, catalogSync, new PosCartService(), null)
+    {
+    }
+
     private readonly object _syncStateGate = new();
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly List<CancellationTokenSource> _regularSyncCts = [];
@@ -53,7 +62,9 @@ public sealed class ShellCatalogService(
         string storeCode,
         CancellationToken cancellationToken = default)
     {
-        return await LoadAndReplaceLocalCatalogOnBackgroundAsync(storeCode, cancellationToken);
+        var result = await LoadAndReplaceLocalCatalogOnBackgroundAsync(storeCode, cancellationToken);
+        ApplyPromotionRules(result.PromotionRules);
+        return result.Items;
     }
 
     public async Task<IReadOnlyList<SellableItemDto>> SyncCatalogAndReloadAsync(
@@ -157,13 +168,13 @@ public sealed class ShellCatalogService(
         }
     }
 
-    private Task<IReadOnlyList<SellableItemDto>> RunSyncAndReloadOnBackgroundAsync(
+    private async Task<IReadOnlyList<SellableItemDto>> RunSyncAndReloadOnBackgroundAsync(
         string storeCode,
         bool forceFullDownload,
         IProgress<CatalogSyncProgress>? progress,
         CancellationToken cancellationToken)
     {
-        return Task.Run(async () =>
+        var result = await Task.Run(async () =>
         {
             Interlocked.Increment(ref _activeSyncCount);
             try
@@ -178,9 +189,12 @@ public sealed class ShellCatalogService(
                 Interlocked.Decrement(ref _activeSyncCount);
             }
         }, cancellationToken);
+
+        ApplyPromotionRules(result.PromotionRules);
+        return result.Items;
     }
 
-    private Task<IReadOnlyList<SellableItemDto>> LoadAndReplaceLocalCatalogOnBackgroundAsync(
+    private Task<LocalCatalogReloadResult> LoadAndReplaceLocalCatalogOnBackgroundAsync(
         string storeCode,
         CancellationToken cancellationToken)
     {
@@ -189,7 +203,7 @@ public sealed class ShellCatalogService(
             cancellationToken);
     }
 
-    private async Task<IReadOnlyList<SellableItemDto>> LoadAndReplaceLocalCatalogAsync(
+    private async Task<LocalCatalogReloadResult> LoadAndReplaceLocalCatalogAsync(
         string storeCode,
         CancellationToken cancellationToken)
     {
@@ -200,6 +214,18 @@ public sealed class ShellCatalogService(
         await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken)
             .ConfigureAwait(false);
         priceIndex.ReplaceAll(cachedItems);
-        return cachedItems;
+        var promotionRules = await catalogRepository.LoadPromotionRulesAsync(storeCode, cancellationToken)
+            .ConfigureAwait(false);
+        return new LocalCatalogReloadResult(cachedItems, promotionRules);
     }
+
+    private void ApplyPromotionRules(IReadOnlyList<CatalogPromotionRuleDto> promotionRules)
+    {
+        // 满减规则会触发购物车事件，必须回到调用方上下文后再应用，避免后台线程更新 WPF 绑定集合。
+        cart.SetAutomaticPromotionRules(promotionRules);
+    }
+
+    private sealed record LocalCatalogReloadResult(
+        IReadOnlyList<SellableItemDto> Items,
+        IReadOnlyList<CatalogPromotionRuleDto> PromotionRules);
 }

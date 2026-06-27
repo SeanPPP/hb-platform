@@ -8,6 +8,7 @@ public sealed class PosCartService
 {
     private readonly List<CartLine> _lines = [];
     private readonly List<OrderReturnPaymentCapacityDto> _returnPaymentCapacities = [];
+    private IReadOnlyList<CatalogPromotionRuleDto> _automaticPromotionRules = [];
 
     public IReadOnlyList<CartLine> Lines => _lines;
 
@@ -29,6 +30,16 @@ public sealed class PosCartService
 
     public event EventHandler? CartChanged;
 
+    public void SetAutomaticPromotionRules(IEnumerable<CatalogPromotionRuleDto> rules)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+        _automaticPromotionRules = rules
+            .Where(rule => rule.Products.Count > 0)
+            .ToArray();
+        RefreshAutomaticPromotionDiscounts();
+        OnCartChanged();
+    }
+
     public CartLine AddItem(SellableItemDto item)
     {
         if (!IsPositiveIntegerQuantity(item.QuantityFactor))
@@ -46,13 +57,13 @@ public sealed class PosCartService
             }
 
             existing.Increase(item.QuantityFactor);
-            OnCartChanged();
+            RefreshDiscountsAndNotify();
             return existing;
         }
 
         var line = new CartLine(item);
         _lines.Add(line);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return line;
     }
 
@@ -78,14 +89,14 @@ public sealed class PosCartService
             }
 
             lastLine.Increase(item.QuantityFactor);
-            OnCartChanged();
+            RefreshDiscountsAndNotify();
             return lastLine;
         }
 
         // 最后一行不匹配时必须新建购物车行，保留扫码顺序。
         var line = new CartLine(item);
         _lines.Add(line);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return line;
     }
 
@@ -103,7 +114,7 @@ public sealed class PosCartService
 
         var line = new CartLine(item, CartLineKind.OpenItem, unitPrice);
         _lines.Add(line);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return line;
     }
 
@@ -118,13 +129,13 @@ public sealed class PosCartService
         if (existing is not null)
         {
             existing.IncreaseReturnQuantity(request.Quantity);
-            OnCartChanged();
+            RefreshDiscountsAndNotify();
             return existing;
         }
 
         var line = new CartLine(request);
         _lines.Add(line);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return line;
     }
 
@@ -195,7 +206,7 @@ public sealed class PosCartService
         }
 
         line.UpdateFrom(item);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -207,7 +218,7 @@ public sealed class PosCartService
         }
 
         line.UpdateFrom(item);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -221,7 +232,7 @@ public sealed class PosCartService
         }
 
         _lines.Remove(line);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -237,7 +248,7 @@ public sealed class PosCartService
             _returnPaymentCapacities.Clear();
         }
 
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -249,7 +260,7 @@ public sealed class PosCartService
         }
 
         line.Increase(1m);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -269,7 +280,7 @@ public sealed class PosCartService
             }
         }
 
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -281,7 +292,7 @@ public sealed class PosCartService
         }
 
         line.SetQuantity(quantity);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -293,7 +304,7 @@ public sealed class PosCartService
         }
 
         line.SetUnitPrice(unitPrice);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -305,7 +316,7 @@ public sealed class PosCartService
         }
 
         line.SetDiscountAmount(discountAmount);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -317,7 +328,7 @@ public sealed class PosCartService
         }
 
         line.SetDiscountPercent(discountPercent);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -329,7 +340,7 @@ public sealed class PosCartService
         }
 
         ApplyOrderDiscountAmount(discountAmount);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -342,7 +353,7 @@ public sealed class PosCartService
 
         var discountAmount = decimal.Round(TotalAmount * discountPercent / 100m, 2, MidpointRounding.AwayFromZero);
         ApplyOrderDiscountAmount(discountAmount);
-        OnCartChanged();
+        RefreshDiscountsAndNotify();
         return true;
     }
 
@@ -385,7 +396,8 @@ public sealed class PosCartService
                 line.ReturnSourceKey,
                 line.OriginalOrderGuid,
                 line.OriginalOrderLineGuid,
-                line.ReturnReason))
+                line.ReturnReason,
+                line.IsAutomaticPromotionDiscount))
             .ToArray());
     }
 
@@ -429,6 +441,10 @@ public sealed class PosCartService
                 {
                     line.SetDiscountPercent(discountPercent);
                 }
+                else if (snapshotLine.IsAutomaticPromotionDiscount)
+                {
+                    line.SetAutomaticPromotionDiscountAmount(snapshotLine.DiscountAmount);
+                }
                 else
                 {
                     line.SetDiscountAmount(snapshotLine.DiscountAmount);
@@ -444,6 +460,10 @@ public sealed class PosCartService
                 {
                     line.SetDiscountPercent(discountPercent);
                 }
+                else if (snapshotLine.IsAutomaticPromotionDiscount)
+                {
+                    line.SetAutomaticPromotionDiscountAmount(snapshotLine.DiscountAmount);
+                }
                 else
                 {
                     line.SetDiscountAmount(snapshotLine.DiscountAmount);
@@ -453,6 +473,7 @@ public sealed class PosCartService
             _lines.Add(line);
         }
 
+        // 快照用于挂单和支付恢复，必须保留当时金额；后续编辑或规则刷新再重新计算满减。
         OnCartChanged();
     }
 
@@ -484,6 +505,165 @@ public sealed class PosCartService
         return quantity > 0m && decimal.Truncate(quantity) == quantity;
     }
 
+    private void RefreshDiscountsAndNotify()
+    {
+        RefreshAutomaticPromotionDiscounts();
+        OnCartChanged();
+    }
+
+    private void RefreshAutomaticPromotionDiscounts()
+    {
+        foreach (var line in _lines)
+        {
+            line.ClearAutomaticPromotionDiscount();
+        }
+
+        if (_automaticPromotionRules.Count == 0 || _lines.Count == 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var candidates = _automaticPromotionRules
+            .Where(rule =>
+                rule.ApplyQuantity > 0 &&
+                rule.FixedPrice >= 0m &&
+                rule.EffectiveStart <= now &&
+                rule.EffectiveEnd >= now &&
+                rule.Products.Count > 0)
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        // 后端促销评估：存在互斥促销时，只取优先级最高的一条，保持收银端和后台一致。
+        if (candidates.Any(rule => rule.IsExclusive))
+        {
+            candidates = candidates
+                .Where(rule => rule.IsExclusive)
+                .OrderByDescending(rule => rule.Priority)
+                .Take(1)
+                .ToList();
+        }
+
+        var automaticDiscounts = new Dictionary<CartLine, decimal>();
+        foreach (var rule in candidates)
+        {
+            ApplyAutomaticPromotionRule(rule, automaticDiscounts);
+        }
+
+        foreach (var (line, discountAmount) in automaticDiscounts)
+        {
+            var amount = Math.Clamp(
+                decimal.Round(discountAmount, 2, MidpointRounding.AwayFromZero),
+                0m,
+                line.GrossAmount);
+            if (amount > 0m)
+            {
+                line.SetAutomaticPromotionDiscountAmount(amount);
+            }
+        }
+    }
+
+    private void ApplyAutomaticPromotionRule(
+        CatalogPromotionRuleDto rule,
+        Dictionary<CartLine, decimal> automaticDiscounts)
+    {
+        var productWeights = rule.Products
+            .GroupBy(product => NormalizeProductCode(product.ProductCode), StringComparer.OrdinalIgnoreCase)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .ToDictionary(
+                group => group.Key,
+                group => Math.Max(1, group.Last().UnitWeight),
+                StringComparer.OrdinalIgnoreCase);
+        if (productWeights.Count == 0)
+        {
+            return;
+        }
+
+        var cartUnits = new List<PromotionCartUnit>();
+        foreach (var line in _lines)
+        {
+            if (!IsAutomaticPromotionLineEligible(line) ||
+                !productWeights.TryGetValue(NormalizeProductCode(line.ProductCode), out var unitWeight))
+            {
+                continue;
+            }
+
+            var quantity = (int)line.Quantity;
+            for (var i = 0; i < quantity * unitWeight; i++)
+            {
+                cartUnits.Add(new PromotionCartUnit(line, line.UnitPrice));
+            }
+        }
+
+        var bundles = cartUnits.Count / rule.ApplyQuantity;
+        if (rule.MaxApplicationsPerOrder is int maxApplications)
+        {
+            bundles = Math.Min(bundles, maxApplications);
+        }
+
+        if (bundles <= 0)
+        {
+            return;
+        }
+
+        var remainingUnits = bundles * rule.ApplyQuantity;
+        var index = 0;
+        while (remainingUnits > 0 && index < cartUnits.Count)
+        {
+            var take = Math.Min(remainingUnits, rule.ApplyQuantity);
+            var group = cartUnits.Skip(index).Take(take).ToArray();
+            ApplyPromotionBundle(rule, group, automaticDiscounts);
+            index += take;
+            remainingUnits -= take;
+        }
+    }
+
+    private static void ApplyPromotionBundle(
+        CatalogPromotionRuleDto rule,
+        IReadOnlyList<PromotionCartUnit> group,
+        Dictionary<CartLine, decimal> automaticDiscounts)
+    {
+        var grossAmount = group.Sum(unit => unit.UnitPrice);
+        var bundleDiscount = decimal.Round(grossAmount - rule.FixedPrice, 2, MidpointRounding.AwayFromZero);
+        if (bundleDiscount <= 0m)
+        {
+            return;
+        }
+
+        var remainingDiscount = bundleDiscount;
+        for (var i = 0; i < group.Count; i++)
+        {
+            var unit = group[i];
+            var unitDiscount = i == group.Count - 1
+                ? remainingDiscount
+                : decimal.Round(bundleDiscount * unit.UnitPrice / grossAmount, 2, MidpointRounding.AwayFromZero);
+            unitDiscount = Math.Clamp(unitDiscount, 0m, remainingDiscount);
+            if (unitDiscount > 0m)
+            {
+                automaticDiscounts[unit.Line] = automaticDiscounts.GetValueOrDefault(unit.Line) + unitDiscount;
+                remainingDiscount -= unitDiscount;
+            }
+        }
+    }
+
+    private static bool IsAutomaticPromotionLineEligible(CartLine line)
+    {
+        return
+            !line.IsReturnLine &&
+            !line.IsOpenItem &&
+            !line.HasManualDiscount &&
+            line.GrossAmount > 0m &&
+            IsPositiveIntegerQuantity(line.Quantity);
+    }
+
+    private static string NormalizeProductCode(string? value)
+    {
+        return (value ?? string.Empty).Trim();
+    }
+
     private void ApplyOrderDiscountAmount(decimal discountAmount)
     {
         var totalGrossAmount = TotalAmount;
@@ -510,6 +690,8 @@ public sealed class PosCartService
             remainingDiscount -= lineDiscount;
         }
     }
+
+    private sealed record PromotionCartUnit(CartLine Line, decimal UnitPrice);
 }
 
 public sealed record PosCartSnapshot(IReadOnlyList<PosCartLineSnapshot> Lines);
@@ -532,4 +714,5 @@ public sealed record PosCartLineSnapshot(
     string ReturnSourceKey = "",
     Guid? OriginalOrderGuid = null,
     Guid? OriginalOrderLineGuid = null,
-    string? ReturnReason = null);
+    string? ReturnReason = null,
+    bool IsAutomaticPromotionDiscount = false);

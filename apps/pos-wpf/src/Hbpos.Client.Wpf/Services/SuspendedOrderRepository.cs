@@ -60,8 +60,8 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             command.Transaction = transaction;
             command.CommandText = """
                 INSERT INTO SuspendedOrderLines
-                (SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason)
-                VALUES ($SuspendedOrderLineGuid, $SuspendedOrderGuid, $StoreCode, $ProductCode, $ReferenceCode, $DisplayName, $LookupCode, $ItemNumber, $ProductImage, $Quantity, $UnitPrice, $DiscountAmount, $DiscountPercent, $ActualAmount, $PriceSource, $PriceSourceLabel, $Kind, $ReturnSourceKey, $OriginalOrderGuid, $OriginalOrderDetailGuid, $ReturnReason);
+                (SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason)
+                VALUES ($SuspendedOrderLineGuid, $SuspendedOrderGuid, $StoreCode, $ProductCode, $ReferenceCode, $DisplayName, $LookupCode, $ItemNumber, $ProductImage, $Quantity, $UnitPrice, $DiscountAmount, $DiscountPercent, $IsAutomaticPromotionDiscount, $ActualAmount, $PriceSource, $PriceSourceLabel, $Kind, $ReturnSourceKey, $OriginalOrderGuid, $OriginalOrderDetailGuid, $ReturnReason);
                 """;
             command.Parameters.AddWithValue("$SuspendedOrderLineGuid", line.SuspendedOrderLineGuid.ToString());
             command.Parameters.AddWithValue("$SuspendedOrderGuid", line.SuspendedOrderGuid.ToString());
@@ -76,6 +76,7 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             command.Parameters.AddWithValue("$UnitPrice", line.UnitPrice);
             command.Parameters.AddWithValue("$DiscountAmount", line.DiscountAmount);
             command.Parameters.AddWithValue("$DiscountPercent", (object?)line.DiscountPercent ?? DBNull.Value);
+            command.Parameters.AddWithValue("$IsAutomaticPromotionDiscount", line.IsAutomaticPromotionDiscount ? 1 : 0);
             command.Parameters.AddWithValue("$ActualAmount", line.ActualAmount);
             command.Parameters.AddWithValue("$PriceSource", (int)line.PriceSource);
             command.Parameters.AddWithValue("$PriceSourceLabel", line.PriceSourceLabel);
@@ -256,7 +257,7 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason
+            SELECT SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode, DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount, DiscountPercent, IsAutomaticPromotionDiscount, ActualAmount, PriceSource, PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason
             FROM SuspendedOrderLines
             WHERE SuspendedOrderGuid = $SuspendedOrderGuid
             ORDER BY rowid;
@@ -287,6 +288,7 @@ public sealed class SuspendedOrderRepository(LocalSqliteStore store) : ISuspende
             {
                 Kind = (CartLineKind)reader.GetInt32(reader.GetOrdinal("Kind")),
                 ReturnSourceKey = ReadNullableString(reader, "ReturnSourceKey") ?? string.Empty,
+                IsAutomaticPromotionDiscount = reader.GetInt32(reader.GetOrdinal("IsAutomaticPromotionDiscount")) != 0,
                 OriginalOrderGuid = ReadNullableGuid(reader, "OriginalOrderGuid"),
                 OriginalOrderDetailGuid = ReadNullableGuid(reader, "OriginalOrderDetailGuid"),
                 ReturnReason = ReadNullableString(reader, "ReturnReason")

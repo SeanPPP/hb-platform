@@ -48,6 +48,9 @@ public sealed record SuspendedOrderLine(
 
     public string ReturnSourceKey { get; init; } = string.Empty;
 
+    // 自动满减折扣标记必须随挂单保存，取单后才会继续按规则重算。
+    public bool IsAutomaticPromotionDiscount { get; init; }
+
     public Guid? OriginalOrderGuid { get; init; }
 
     public Guid? OriginalOrderDetailGuid { get; init; }

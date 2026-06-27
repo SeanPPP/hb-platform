@@ -407,6 +407,40 @@ public sealed class LocalCatalogRepositoryTests
     }
 
     [Fact]
+    public async Task ReplacePromotionRulesAsync_replaces_rules_for_store()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            await repository.ReplacePromotionRulesAsync(
+                "S001",
+                [CreatePromotionRule("PROMO-OLD", "SKU-OLD")]);
+            await repository.ReplacePromotionRulesAsync(
+                "S002",
+                [CreatePromotionRule("PROMO-OTHER", "SKU-OTHER")]);
+
+            await repository.ReplacePromotionRulesAsync(
+                "S001",
+                [CreatePromotionRule("PROMO-NEW", "SKU-NEW", unitWeight: 2)]);
+
+            var s001Rules = await repository.LoadPromotionRulesAsync("S001");
+            var s002Rules = await repository.LoadPromotionRulesAsync("S002");
+            var s001Rule = Assert.Single(s001Rules);
+            Assert.Equal("PROMO-NEW", s001Rule.PromotionId);
+            var product = Assert.Single(s001Rule.Products);
+            Assert.Equal("SKU-NEW", product.ProductCode);
+            Assert.Equal(2, product.UnitWeight);
+            Assert.Equal("PROMO-OTHER", Assert.Single(s002Rules).PromotionId);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task LocalSqliteStore_OpenConnectionAsync_EnablesWalAndBusyTimeout()
     {
         var databasePath = CreateTempDatabasePath();
@@ -489,6 +523,25 @@ public sealed class LocalCatalogRepositoryTests
             ProductImage: productImage,
             DiscountRate: discountRate,
             IsSpecialProduct: isSpecialProduct);
+    }
+
+    private static CatalogPromotionRuleDto CreatePromotionRule(
+        string promotionId,
+        string productCode,
+        int unitWeight = 1)
+    {
+        return new CatalogPromotionRuleDto(
+            promotionId,
+            "Quantity discount",
+            IsExclusive: true,
+            Priority: 10,
+            ApplyQuantity: 2,
+            FixedPrice: 15m,
+            MaxApplicationsPerOrder: null,
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1),
+            DateTimeOffset.UtcNow,
+            [new CatalogPromotionProductDto(productCode, unitWeight)]);
     }
 
     private static string CreateTempDatabasePath()

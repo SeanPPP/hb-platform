@@ -121,6 +121,34 @@ public sealed class CatalogController(ICatalogService catalogService) : Controll
             : Ok(ApiResult<CatalogCompareResponse>.Ok(response));
     }
 
+    [HttpGet("promotions")]
+    public async Task<ActionResult<ApiResult<CatalogPromotionsResponse>>> GetPromotionRules(
+        [FromQuery] string storeCode,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(storeCode))
+        {
+            return BadRequest(ApiResult<CatalogPromotionsResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(storeCode))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<CatalogPromotionsResponse>("Device is not authorized for this store.");
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        Log($"promotions request store={storeCode}");
+        var response = await catalogService.GetPromotionRulesAsync(storeCode, cancellationToken);
+        stopwatch.Stop();
+        Log(response is null
+            ? $"promotions response store={storeCode} status=404 elapsedMs={stopwatch.ElapsedMilliseconds}"
+            : $"promotions response store={response.StoreCode} status=200 rules={response.Promotions.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
+
+        return response is null
+            ? NotFound(ApiResult<CatalogPromotionsResponse>.Fail("STORE_NOT_FOUND", "store was not found or inactive"))
+            : Ok(ApiResult<CatalogPromotionsResponse>.Ok(response));
+    }
+
     [HttpGet("sellable-items/lookup")]
     public async Task<ActionResult<ApiResult<CatalogLookupResponse>>> LookupSellableItem(
         [FromQuery] string storeCode,

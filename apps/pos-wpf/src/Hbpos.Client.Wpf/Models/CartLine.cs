@@ -41,6 +41,7 @@ public sealed class CartLine : ObservableObject
     private decimal _unitPrice;
     private decimal _discountAmount;
     private decimal? _discountPercent;
+    private bool _isAutomaticPromotionDiscount;
     private PriceSourceKind _priceSource;
     private string _priceSourceLabel = string.Empty;
     private CartLineKind _kind = CartLineKind.Sale;
@@ -190,6 +191,10 @@ public sealed class CartLine : ObservableObject
 
     public bool HasDiscount => DiscountAmount > 0m && PositiveGrossAmount > 0m;
 
+    public bool IsAutomaticPromotionDiscount => _isAutomaticPromotionDiscount;
+
+    public bool HasManualDiscount => HasDiscount && !IsAutomaticPromotionDiscount;
+
     public bool HasZeroUnitPrice => UnitPrice == 0m;
 
     public string DiscountRateText
@@ -316,6 +321,7 @@ public sealed class CartLine : ObservableObject
     public void SetDiscountAmount(decimal discountAmount)
     {
         ThrowIfLocked();
+        SetAutomaticPromotionDiscountFlag(false);
         _discountPercent = null;
         DiscountAmount = ClampDiscountAmount(discountAmount);
     }
@@ -323,8 +329,29 @@ public sealed class CartLine : ObservableObject
     public void SetDiscountPercent(decimal discountPercent)
     {
         ThrowIfLocked();
+        SetAutomaticPromotionDiscountFlag(false);
         _discountPercent = Math.Clamp(discountPercent, 0m, 100m);
         DiscountAmount = CalculateDiscountAmount(_discountPercent.Value);
+    }
+
+    public void SetAutomaticPromotionDiscountAmount(decimal discountAmount)
+    {
+        ThrowIfLocked();
+        _discountPercent = null;
+        DiscountAmount = ClampDiscountAmount(discountAmount);
+        SetAutomaticPromotionDiscountFlag(DiscountAmount > 0m);
+    }
+
+    public void ClearAutomaticPromotionDiscount()
+    {
+        if (!IsAutomaticPromotionDiscount)
+        {
+            return;
+        }
+
+        _discountPercent = null;
+        DiscountAmount = 0m;
+        SetAutomaticPromotionDiscountFlag(false);
     }
 
     public void UpdateFrom(SellableItemDto item)
@@ -358,6 +385,7 @@ public sealed class CartLine : ObservableObject
         OnPropertyChanged(nameof(GrossAmount));
         OnPropertyChanged(nameof(ActualAmount));
         OnPropertyChanged(nameof(HasDiscount));
+        OnPropertyChanged(nameof(HasManualDiscount));
         OnPropertyChanged(nameof(DiscountRateText));
     }
 
@@ -376,6 +404,18 @@ public sealed class CartLine : ObservableObject
     private decimal ClampDiscountAmount(decimal discountAmount)
     {
         return Math.Clamp(decimal.Round(discountAmount, 2, MidpointRounding.AwayFromZero), 0m, PositiveGrossAmount);
+    }
+
+    private void SetAutomaticPromotionDiscountFlag(bool value)
+    {
+        if (_isAutomaticPromotionDiscount == value)
+        {
+            return;
+        }
+
+        _isAutomaticPromotionDiscount = value;
+        OnPropertyChanged(nameof(IsAutomaticPromotionDiscount));
+        OnPropertyChanged(nameof(HasManualDiscount));
     }
 
     private decimal PositiveGrossAmount => decimal.Round(Quantity * UnitPrice, 2, MidpointRounding.AwayFromZero);

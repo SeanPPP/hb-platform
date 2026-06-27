@@ -21,6 +21,10 @@ public interface ICatalogApiClient
         CatalogCompareRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<CatalogPromotionsResponse> GetPromotionRulesAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default);
+
     Task<CatalogSpecialProductsPageResponse> GetSpecialProductsPageAsync(
         string storeCode,
         string? cursor,
@@ -95,6 +99,32 @@ public sealed class CatalogApiClient(HttpClient httpClient) : ICatalogApiClient
         {
             stopwatch.Stop();
             Log($"POST {requestUri} failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            throw;
+        }
+    }
+
+    public async Task<CatalogPromotionsResponse> GetPromotionRulesAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var requestUri = BuildUri(
+            "api/v1/catalog/promotions",
+            ("storeCode", storeCode));
+
+        var stopwatch = Stopwatch.StartNew();
+        Log($"GET {requestUri} start base={httpClient.BaseAddress}");
+        try
+        {
+            using var response = await httpClient.GetAsync(requestUri, cancellationToken);
+            var result = await ReadApiResultAsync<CatalogPromotionsResponse>(response, cancellationToken);
+            stopwatch.Stop();
+            Log($"GET {requestUri} completed status={(int)response.StatusCode} promotions={result.Promotions.Count} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            Log($"GET {requestUri} failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
             throw;
         }
     }

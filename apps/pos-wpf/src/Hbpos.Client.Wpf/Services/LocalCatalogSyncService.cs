@@ -276,6 +276,17 @@ public sealed class LocalCatalogSyncService(
                 }
             }
 
+            await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+            var promotionStopwatch = Stopwatch.StartNew();
+            var promotionResponse = await catalogApiClient.GetPromotionRulesAsync(storeCode, cancellationToken);
+            await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+            await localCatalogRepository.ReplacePromotionRulesAsync(
+                storeCode,
+                promotionResponse.Promotions,
+                cancellationToken);
+            promotionStopwatch.Stop();
+            Log($"promotions synced store={storeCode} rules={promotionResponse.Promotions.Count} elapsedMs={promotionStopwatch.ElapsedMilliseconds}");
+
             totalStopwatch.Stop();
             Log($"full sync completed store={storeCode} comparePages={comparePages} remotePages={remotePages} upserted={upsertedCount} deleted={deletedCount} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
             ReportProgress(

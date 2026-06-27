@@ -141,6 +141,37 @@ public sealed class CatalogSyncServiceTests
     }
 
     [Fact]
+    public async Task FullSyncAsync_ReplacesPromotionRulesAfterCatalogDownload()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 0));
+        apiClient.PromotionResponses.Enqueue(new CatalogPromotionsResponse(
+            "S01",
+            Timestamp,
+            [CreatePromotionRule("PROMO-001", "SKU-001")]));
+        var service = new LocalCatalogSyncService(repository, apiClient);
+
+        await service.FullSyncAsync("S01");
+
+        Assert.Equal(["S01"], apiClient.PromotionRequests);
+        var replaceCall = Assert.Single(repository.PromotionReplaceCalls);
+        Assert.Equal("S01", replaceCall.StoreCode);
+        var rule = Assert.Single(replaceCall.Rules);
+        Assert.Equal("PROMO-001", rule.PromotionId);
+        Assert.Equal("SKU-001", Assert.Single(rule.Products).ProductCode);
+    }
+
+    [Fact]
     public async Task FullSyncAsync_WhenLocalMatchesRemoteAndCompareHasNoChanges_SkipsFullDownload()
     {
         var repository = new FakeLocalCatalogRepository();
@@ -578,6 +609,31 @@ public sealed class CatalogSyncServiceTests
     }
 
     [Fact]
+    public async Task CatalogApiClient_GetPromotionRulesAsync_GetsJsonAndUnwrapsApiResult()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var expected = new CatalogPromotionsResponse(
+            "S01",
+            Timestamp,
+            [CreatePromotionRule("PROMO-001", "SKU-001")]);
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequest = request;
+            return JsonResponse(ApiResult<CatalogPromotionsResponse>.Ok(expected));
+        });
+        var client = new CatalogApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5000/")
+        });
+
+        var response = await client.GetPromotionRulesAsync("S01");
+
+        Assert.Equal(HttpMethod.Get, capturedRequest?.Method);
+        Assert.Equal("http://localhost:5000/api/v1/catalog/promotions?storeCode=S01", capturedRequest?.RequestUri?.ToString());
+        Assert.Equal("PROMO-001", Assert.Single(response.Promotions).PromotionId);
+    }
+
+    [Fact]
     public async Task DeviceAuthorizationMessageHandler_AddsBearerAndDeviceHeaders()
     {
         HttpRequestMessage? capturedRequest = null;
@@ -753,6 +809,22 @@ public sealed class CatalogSyncServiceTests
             UpdatedAt: Timestamp);
     }
 
+    private static CatalogPromotionRuleDto CreatePromotionRule(string promotionId, string productCode)
+    {
+        return new CatalogPromotionRuleDto(
+            promotionId,
+            "Quantity discount",
+            IsExclusive: true,
+            Priority: 10,
+            ApplyQuantity: 2,
+            FixedPrice: 15m,
+            MaxApplicationsPerOrder: null,
+            Timestamp.AddDays(-1),
+            Timestamp.AddDays(1),
+            Timestamp,
+            [new CatalogPromotionProductDto(productCode, UnitWeight: 1)]);
+    }
+
     private static HttpResponseMessage JsonResponse<T>(T value, HttpStatusCode statusCode = HttpStatusCode.OK)
     {
         return new HttpResponseMessage(statusCode)
@@ -781,6 +853,8 @@ public sealed class CatalogSyncServiceTests
         public List<IReadOnlyList<SellableItemDto>> StagedBatches { get; } = [];
 
         public int StoreReplaceCommitCount { get; private set; }
+
+        public List<(string StoreCode, IReadOnlyList<CatalogPromotionRuleDto> Rules)> PromotionReplaceCalls { get; } = [];
 
         public Action? StageStarted { get; set; }
 
@@ -884,6 +958,24 @@ public sealed class CatalogSyncServiceTests
             return Task.FromResult<IReadOnlyList<SellableItemDto>>(LoadSellableItems(storeCode));
         }
 
+        public Task ReplacePromotionRulesAsync(
+            string storeCode,
+            IEnumerable<CatalogPromotionRuleDto> rules,
+            CancellationToken cancellationToken = default)
+        {
+            PromotionReplaceCalls.Add((storeCode, rules.ToArray()));
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<CatalogPromotionRuleDto>> LoadPromotionRulesAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            var call = PromotionReplaceCalls.LastOrDefault(entry =>
+                string.Equals(entry.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
+            return Task.FromResult(call.Rules ?? []);
+        }
+
         public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
             string storeCode,
             CancellationToken cancellationToken = default)
@@ -970,7 +1062,11 @@ public sealed class CatalogSyncServiceTests
 
         public Queue<CatalogSpecialProductsPageResponse> SpecialProductsPageResponses { get; } = new();
 
+        public Queue<CatalogPromotionsResponse> PromotionResponses { get; } = new();
+
         public List<(string StoreCode, string? Cursor, int PageSize)> PageRequests { get; } = [];
+
+        public List<string> PromotionRequests { get; } = [];
 
         public Exception? CompareException { get; init; }
 
@@ -1034,6 +1130,16 @@ public sealed class CatalogSyncServiceTests
             return LookupException is not null
                 ? Task.FromException<CatalogLookupResponse?>(LookupException)
                 : Task.FromResult(LookupResponse);
+        }
+
+        public Task<CatalogPromotionsResponse> GetPromotionRulesAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            PromotionRequests.Add(storeCode);
+            return PromotionResponses.Count > 0
+                ? Task.FromResult(PromotionResponses.Dequeue())
+                : Task.FromResult(new CatalogPromotionsResponse(storeCode, Timestamp, []));
         }
 
         public Task<CatalogSpecialProductMarkResponse> MarkSpecialProductAsync(

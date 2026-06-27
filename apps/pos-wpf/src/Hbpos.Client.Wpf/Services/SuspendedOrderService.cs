@@ -60,6 +60,7 @@ public sealed class SuspendedOrderService(
             {
                 Kind = line.Kind,
                 ReturnSourceKey = line.ReturnSourceKey,
+                IsAutomaticPromotionDiscount = line.IsAutomaticPromotionDiscount,
                 OriginalOrderGuid = line.OriginalOrderGuid,
                 OriginalOrderDetailGuid = line.OriginalOrderLineGuid,
                 ReturnReason = line.ReturnReason
@@ -139,7 +140,8 @@ public sealed class SuspendedOrderService(
                 line.ReturnSourceKey,
                 line.OriginalOrderGuid,
                 line.OriginalOrderDetailGuid,
-                line.ReturnReason))
+                line.ReturnReason,
+                line.IsAutomaticPromotionDiscount))
             .ToArray()));
         cart.AddReturnPaymentCapacities(order.ReturnPaymentCapacities);
         await repository.MarkStatusAsync(suspendedOrderGuid, SuspendedOrderStatus.Recalled, cancellationToken);
