@@ -7,6 +7,8 @@ import {
   canSubmitWpfPolicy,
   getEffectiveWpfMinimumSupportedVersion,
   getWpfVersionErrorMessage,
+  getWpfCurrentVersionText,
+  getWpfPolicySummary,
   getWpfPolicyRangeError,
   isWpfRollbackTarget,
   isSupportedWpfInstallerFile,
@@ -146,6 +148,44 @@ assertEqual(
   ]),
   true,
   'When a current release row carries targetVersion metadata, rollback checks should prioritize the current policy target',
+)
+
+assertEqual(
+  getWpfCurrentVersionText([
+    { version: '1.3.0', isCurrent: false, targetVersion: '1.2.0' },
+    { version: '1.1.0', isCurrent: false, targetVersion: '1.2.0' },
+  ]),
+  '1.2.0',
+  'Summary should show policy target version when the current release is not in the page',
+)
+
+assertEqual(
+  getWpfCurrentVersionText([
+    { version: '1.3.0', isCurrent: false, targetVersion: null },
+    { version: '1.1.0', isCurrent: false, targetVersion: null },
+  ]),
+  null,
+  'Summary should not infer current version from the first paged release without policy metadata',
+)
+
+assertDeepEqual(
+  getWpfPolicySummary([
+    {
+      channel: 'Production',
+      version: '1.3.0',
+      isCurrent: false,
+      targetVersion: '1.2.0',
+      minimumSupportedVersion: '1.0.0',
+      forceUpdate: true,
+    },
+  ]),
+  {
+    channel: 'production',
+    targetVersion: '1.2.0',
+    minimumSupportedVersion: '1.0.0',
+    forceUpdate: true,
+  },
+  'Policy summary should preserve force-update metadata when the current target is not in the page',
 )
 
 assertEqual(

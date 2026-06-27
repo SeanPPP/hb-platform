@@ -611,6 +611,29 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SetPolicyAsync_missing_minimum_supported_version_returns_required_error()
+    {
+        var service = CreateService();
+        await CreateRelease("production", "1.2.0");
+
+        var result = await service.SetPolicyAsync(
+            new WpfUpdatePolicyRequest
+            {
+                Channel = "production",
+                TargetVersion = "1.2.0",
+                MinimumSupportedVersion = " ",
+                ForceUpdate = true,
+            },
+            "admin"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("MINIMUM_SUPPORTED_VERSION_REQUIRED", result.Code);
+        Assert.Null(result.Data);
+        Assert.Equal(0, await _db.Queryable<WpfUpdatePolicy>().CountAsync());
+    }
+
+    [Fact]
     public async Task SetPolicyAsync_allows_minimum_supported_version_equal_to_target()
     {
         var service = CreateService();
@@ -709,6 +732,35 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReleasesAsync_分页未包含当前目标时仍返回策略强更字段()
+    {
+        var service = CreateService();
+        await CreateRelease("production", "1.2.0");
+        await SetPolicy("production", "1.2.0", "1.0.0", forceUpdate: true);
+        await CreateRelease("production", "1.3.0");
+        var newerRelease = await _db.Queryable<WpfAppRelease>().SingleAsync(x => x.Version == "1.3.0");
+        newerRelease.PublishedAt = DateTime.UtcNow.AddDays(1);
+        await _db.Updateable(newerRelease).ExecuteCommandAsync();
+
+        var result = await service.GetReleasesAsync(
+            new WpfAppReleaseQuery
+            {
+                Channel = "production",
+                Page = 1,
+                PageSize = 1,
+            }
+        );
+
+        Assert.True(result.Success);
+        var item = Assert.Single(result.Data!.Items!);
+        Assert.Equal("1.3.0", item.Version);
+        Assert.False(item.IsCurrent);
+        Assert.Equal("1.2.0", item.TargetVersion);
+        Assert.Equal("1.0.0", item.MinimumSupportedVersion);
+        Assert.True(item.ForceUpdate);
+    }
+
+    [Fact]
     public async Task GetReleasesAsync_无策略时不标记回退()
     {
         var service = CreateService();
@@ -801,6 +853,7 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
         {
             Channel = "production",
             TargetVersion = "1.2.0",
+            MinimumSupportedVersion = "1.2.0",
             ForceUpdate = true,
         }, "admin");
 
@@ -830,6 +883,7 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
         {
             Channel = "production",
             TargetVersion = "1.2.0",
+            MinimumSupportedVersion = "1.2.0",
             ForceUpdate = true,
         }, "admin");
 
@@ -1140,6 +1194,40 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateReleaseAsync_rejects_restoring_duplicate_active_version()
+    {
+        var service = CreateService();
+        await CreateRelease("production", "1.2.0");
+        var inactiveDuplicate = new WpfAppRelease
+        {
+            Id = Guid.NewGuid(),
+            Channel = "production",
+            Version = "v1.2.0",
+            FileName = "hbpos-v1.2.0.exe",
+            FileSize = 100,
+            Sha256 = new string('b', 64),
+            DownloadUrl = "https://example.test/production/v1.2.0.exe",
+            CosObjectKey = "wpf-releases/production/1.2.0/hbpos-v1.2.0.exe",
+            InstallerType = "exe",
+            IsActive = false,
+            PublishedAt = DateTime.UtcNow.AddMinutes(-1),
+            CreatedAt = DateTime.UtcNow.AddMinutes(-1),
+            CreatedBy = "migration",
+        };
+        await _db.Insertable(inactiveDuplicate).ExecuteCommandAsync();
+
+        var result = await service.UpdateReleaseAsync(
+            inactiveDuplicate.Id,
+            new WpfAppReleaseUpdateRequest { IsActive = true },
+            "admin"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("WPF_RELEASE_EXISTS", result.Code);
+        Assert.False((await _db.Queryable<WpfAppRelease>().SingleAsync(x => x.Id == inactiveDuplicate.Id)).IsActive);
+    }
+
+    [Fact]
     public async Task CreateUploadInitAsync_rejects_duplicate_version_when_prefix_differs()
     {
         await CreateRelease("production", "1.2.3");
@@ -1343,6 +1431,7 @@ public sealed class WpfAppReleaseServiceTests : IDisposable
             {
                 Channel = "production",
                 TargetVersion = "1.2.0",
+                MinimumSupportedVersion = "1.2.0",
                 ForceUpdate = true,
             },
             "admin"

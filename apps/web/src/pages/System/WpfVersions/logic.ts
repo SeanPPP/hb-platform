@@ -106,6 +106,44 @@ export function isWpfRollbackTarget(
   return comparison !== null && comparison < 0
 }
 
+export function getWpfCurrentVersionText(
+  releases: Array<Pick<WpfAppRelease, 'version' | 'isCurrent' | 'targetVersion'>>,
+) {
+  // 当前策略目标可能不在当前分页内，摘要优先展示后端附带的 targetVersion，不能退回分页第一行。
+  const policyTarget = releases.find((item) => item.targetVersion?.trim())?.targetVersion?.trim()
+  if (policyTarget) {
+    return policyTarget
+  }
+
+  return releases.find((item) => item.isCurrent)?.version ?? null
+}
+
+export function getWpfPolicySummary(
+  releases: Array<Pick<WpfAppRelease, 'channel' | 'version' | 'isCurrent' | 'targetVersion' | 'minimumSupportedVersion' | 'forceUpdate'>>,
+) {
+  // 策略元数据由后端随每行返回；当前目标不在当前分页时，不能用第一页发布行本身推断策略。
+  const policyCarrier = releases.find((item) => item.targetVersion?.trim())
+    ?? releases.find((item) => item.isCurrent)
+  if (!policyCarrier) {
+    return null
+  }
+
+  const targetVersion = policyCarrier.targetVersion?.trim()
+    || (policyCarrier.isCurrent ? policyCarrier.version.trim() : '')
+  if (!targetVersion) {
+    return null
+  }
+
+  const currentRelease = releases.find((item) => item.isCurrent || item.version.trim() === targetVersion)
+
+  return {
+    channel: normalizeWpfReleaseChannel((currentRelease ?? policyCarrier).channel),
+    targetVersion,
+    minimumSupportedVersion: policyCarrier.minimumSupportedVersion?.trim() || targetVersion,
+    forceUpdate: Boolean(policyCarrier.forceUpdate || currentRelease?.forceUpdate),
+  }
+}
+
 function compareWpfVersion(left: string, right: string) {
   const leftParts = parseWpfVersion(left)
   const rightParts = parseWpfVersion(right)

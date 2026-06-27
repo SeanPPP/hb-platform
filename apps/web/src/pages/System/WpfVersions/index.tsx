@@ -48,6 +48,8 @@ import {
   calculateFileSha256,
   canSubmitWpfPolicy,
   getEffectiveWpfMinimumSupportedVersion,
+  getWpfCurrentVersionText,
+  getWpfPolicySummary,
   getWpfPolicyRangeError,
   getWpfVersionErrorMessage,
   inferWpfInstallerType,
@@ -155,13 +157,13 @@ export default function WpfVersionsPage() {
       setPage(result.page)
       setPageSize(result.pageSize)
 
-      const currentRelease = result.items.find((item) => item.isCurrent) ?? result.items[0]
-      if (currentRelease) {
+      const policySummary = getWpfPolicySummary(result.items)
+      if (policySummary) {
         policyForm.setFieldsValue({
-          channel: normalizeWpfReleaseChannel(currentRelease.channel),
-          targetVersion: currentRelease.targetVersion || currentRelease.version,
-          minimumSupportedVersion: currentRelease.minimumSupportedVersion || currentRelease.version,
-          forceUpdate: currentRelease.forceUpdate,
+          channel: policySummary.channel,
+          targetVersion: policySummary.targetVersion,
+          minimumSupportedVersion: policySummary.minimumSupportedVersion,
+          forceUpdate: policySummary.forceUpdate,
         })
       } else {
         policyForm.setFieldsValue({
@@ -190,11 +192,8 @@ export default function WpfVersionsPage() {
     [releases],
   )
 
-  const currentRelease = useMemo(
-    () => releases.find((item) => item.isCurrent)
-      ?? releases.find((item) => item.version === policyForm.getFieldValue('targetVersion')),
-    [policyForm, releases],
-  )
+  const policySummary = useMemo(() => getWpfPolicySummary(releases), [releases])
+  const currentVersionText = useMemo(() => getWpfCurrentVersionText(releases), [releases])
 
   const validatePolicyPayload = useCallback((input: WpfReleasePolicyRequest) => {
     const payload = buildWpfPolicyPayload({ ...input })
@@ -515,8 +514,10 @@ export default function WpfVersionsPage() {
       title: t('system.wpfVersions.forceStatus', '强制状态'),
       dataIndex: 'forceUpdate',
       width: 120,
-      render: (value: boolean) => (
-        value ? <Tag color="red">{t('common.enabled', '已启用')}</Tag> : <Tag>{t('common.disabled', '未启用')}</Tag>
+      render: (value: boolean, record) => (
+        record.isCurrent && value
+          ? <Tag color="red">{t('common.enabled', '已启用')}</Tag>
+          : <Tag>{t('common.disabled', '未启用')}</Tag>
       ),
     },
     {
@@ -634,13 +635,13 @@ export default function WpfVersionsPage() {
         ) : null}
         <Descriptions bordered size="small" column={{ xs: 1, md: 2, xl: 4 }}>
           <Descriptions.Item label={t('system.wpfVersions.currentVersion', '当前版本')}>
-            {currentRelease?.version ?? '-'}
+            {currentVersionText ?? '-'}
           </Descriptions.Item>
           <Descriptions.Item label={t('system.wpfVersions.minimumSupportedVersion', '最低支持版本')}>
-            {currentRelease?.minimumSupportedVersion ?? '-'}
+            {policySummary?.minimumSupportedVersion ?? '-'}
           </Descriptions.Item>
           <Descriptions.Item label={t('system.wpfVersions.forceUpdate', '强制更新')}>
-            {currentRelease?.forceUpdate ? t('common.yes', '是') : t('common.no', '否')}
+            {policySummary?.forceUpdate ? t('common.yes', '是') : t('common.no', '否')}
           </Descriptions.Item>
           <Descriptions.Item label={t('system.wpfVersions.objectKeyPrefix', 'COS 路径')}>
             <Text code>wpf-releases/{channel}/{'{version}'}/{'{fileName}'}</Text>

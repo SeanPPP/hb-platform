@@ -313,6 +313,25 @@ namespace BlazorApp.Api.Services
                         );
                     }
                 }
+                else if (!entity.IsActive && request.IsActive.Value)
+                {
+                    var activeReleases = await _db
+                        .Queryable<WpfAppRelease>()
+                        .Where(x => x.Channel == entity.Channel && x.IsActive && !x.IsDeleted)
+                        .ToListAsync();
+                    if (
+                        activeReleases.Any(
+                            x => x.Id != entity.Id && VersionsEqual(x.Version, entity.Version)
+                        )
+                    )
+                    {
+                        // 恢复旧数据里的禁用重复版本前先做业务查重，避免直接撞上数据库唯一索引变成 500。
+                        return ApiResponse<WpfAppReleaseDto>.Error(
+                            "WPF release version already exists.",
+                            "WPF_RELEASE_EXISTS"
+                        );
+                    }
+                }
 
                 entity.IsActive = request.IsActive.Value;
             }
@@ -366,12 +385,16 @@ namespace BlazorApp.Api.Services
                 );
             }
 
-            if (
-                !TryNormalizeOptionalVersion(
-                    request.MinimumSupportedVersion,
-                    out var minimumVersion
-                )
-            )
+            if (string.IsNullOrWhiteSpace(request.MinimumSupportedVersion))
+            {
+                // 更新策略必须带最低支持版本，否则直调接口会写入没有强更下限的发布策略。
+                return ApiResponse<WpfUpdatePolicyDto>.Error(
+                    "Minimum supported version is required.",
+                    "MINIMUM_SUPPORTED_VERSION_REQUIRED"
+                );
+            }
+
+            if (!TryNormalizeVersion(request.MinimumSupportedVersion, out var minimumVersion))
             {
                 return ApiResponse<WpfUpdatePolicyDto>.Error(
                     "Version must match v?major.minor.patch[.build].",
@@ -381,8 +404,7 @@ namespace BlazorApp.Api.Services
 
             WpfVersion parsedMinimumVersion = default;
             var hasTargetVersion = TryParseVersion(targetVersion, out var parsedTargetVersion);
-            var hasMinimumVersion =
-                minimumVersion == null || TryParseVersion(minimumVersion, out parsedMinimumVersion);
+            var hasMinimumVersion = TryParseVersion(minimumVersion, out parsedMinimumVersion);
             if (!hasTargetVersion || !hasMinimumVersion)
             {
                 return ApiResponse<WpfUpdatePolicyDto>.Error(
@@ -391,7 +413,7 @@ namespace BlazorApp.Api.Services
                 );
             }
 
-            if (minimumVersion != null && parsedMinimumVersion.CompareTo(parsedTargetVersion) > 0)
+            if (parsedMinimumVersion.CompareTo(parsedTargetVersion) > 0)
             {
                 // minimumSupportedVersion 高于 targetVersion 会让强更判断出现反常区间。
                 return ApiResponse<WpfUpdatePolicyDto>.Error(
@@ -409,17 +431,14 @@ namespace BlazorApp.Api.Services
                 );
             }
 
-            if (minimumVersion != null)
+            var minimumRelease = await FindActiveReleaseAsync(channel, minimumVersion);
+            if (minimumRelease == null)
             {
-                var minimumRelease = await FindActiveReleaseAsync(channel, minimumVersion);
-                if (minimumRelease == null)
-                {
-                    // 中文注释：minimumSupportedVersion 不能引用不存在或已禁用的版本，否则强更下限会和实际可下载版本脱节。
-                    return ApiResponse<WpfUpdatePolicyDto>.Error(
-                        "Minimum supported release is not registered or is inactive.",
-                        "MINIMUM_SUPPORTED_RELEASE_NOT_FOUND"
-                    );
-                }
+                // minimumSupportedVersion 不能引用不存在或已禁用的版本，否则强更下限会和实际可下载版本脱节。
+                return ApiResponse<WpfUpdatePolicyDto>.Error(
+                    "Minimum supported release is not registered or is inactive.",
+                    "MINIMUM_SUPPORTED_RELEASE_NOT_FOUND"
+                );
             }
 
             var targetObjectKey = NormalizeOptional(target.CosObjectKey)
@@ -802,7 +821,8 @@ namespace BlazorApp.Api.Services
                 IsCurrent = isCurrent,
                 // 列表页把低于当前策略目标的版本标成回退候选，避免后台策略链路和前端标记脱节。
                 IsRollback = isRollback,
-                ForceUpdate = isCurrent && policy?.ForceUpdate == true,
+                // 强更开关属于当前策略，不属于单个发布行；每行都带上策略值，分页没包含当前目标时前端仍能恢复表单状态。
+                ForceUpdate = policy?.ForceUpdate == true,
                 MinimumSupportedVersion = NormalizeOptionalVersionOrOriginal(
                     policy?.MinimumSupportedVersion
                 ),

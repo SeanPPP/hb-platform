@@ -74,7 +74,7 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? Channel { get; set; } = "production";
         public string TargetVersion { get; set; } = string.Empty;
-        public string? MinimumSupportedVersion { get; set; }
+        public string MinimumSupportedVersion { get; set; } = string.Empty;
         public bool ForceUpdate { get; set; }
         public bool RollbackConfirmed { get; set; }
     }
