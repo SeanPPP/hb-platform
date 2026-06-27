@@ -13,6 +13,7 @@ namespace Hbpos.Client.Wpf;
 public partial class MainWindow : Window
 {
     private static readonly TimeSpan StartupUpdateRetryDelay = TimeSpan.FromSeconds(5);
+    private const string UnconfiguredAppUpdateCenterErrorCode = "APP_UPDATE_CENTER_NOT_CONFIGURED";
     private const int RawInputMessageId = 0x00FF;
 
     internal delegate IntPtr WindowMessageProcessor(
@@ -197,6 +198,12 @@ public partial class MainWindow : Window
         try
         {
             var result = await checkAsync();
+            if (IsUnconfiguredAppUpdateCenter(result))
+            {
+                // 中文注释：未配置更新中心是本机部署缺口，不能把门店 POS 阻断在启动页；其他检查失败仍走重试和阻断。
+                return result;
+            }
+
             if (result.Status is AppUpdateCoordinatorStatus.CheckFailed or AppUpdateCoordinatorStatus.PolicyFailed)
             {
                 // 启动阶段的检查失败和策略失败都不能直接放行，只安排一次短延迟重试。
@@ -216,16 +223,29 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             reportException(ex);
-            return AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.CheckFailed);
+            return AppUpdateCoordinatorResult.CheckFailed();
         }
     }
 
     internal static bool ShouldContinueStartupAfterAppUpdateCheck(AppUpdateCoordinatorResult result)
     {
-        return result.Status is AppUpdateCoordinatorStatus.NoUpdate
-            or AppUpdateCoordinatorStatus.OptionalDeclined
-            or AppUpdateCoordinatorStatus.OptionalReady
-            or AppUpdateCoordinatorStatus.InstallFailed;
+        return result.Status switch
+        {
+            AppUpdateCoordinatorStatus.NoUpdate
+                or AppUpdateCoordinatorStatus.OptionalDeclined
+                or AppUpdateCoordinatorStatus.OptionalReady
+                or AppUpdateCoordinatorStatus.InstallFailed => true,
+            _ => IsUnconfiguredAppUpdateCenter(result)
+        };
+    }
+
+    private static bool IsUnconfiguredAppUpdateCenter(AppUpdateCoordinatorResult result)
+    {
+        return result.Status == AppUpdateCoordinatorStatus.CheckFailed &&
+            string.Equals(
+                result.ErrorCode,
+                UnconfiguredAppUpdateCenterErrorCode,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FormatAppUpdateStatus(AppUpdateCoordinatorResult result)

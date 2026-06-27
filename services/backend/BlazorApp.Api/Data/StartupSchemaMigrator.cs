@@ -348,7 +348,7 @@ BEGIN
     END;
 END;
 
--- 关键位置：旧库可能存在重复的 Channel+Version，先按启用状态和创建时间挑出保留行，其余行统一失活，避免唯一索引阻断启动。
+-- 关键位置：旧库可能存在重复的 Channel+Version，先保留未删除、启用且较新的行，其余行统一失活，避免唯一索引阻断启动。
 IF OBJECT_ID('WpfAppRelease', 'U') IS NOT NULL
 BEGIN
     -- 关键位置：先把 WPF 发布历史数据规范成业务层可比较的渠道和版本，避免大小写和 v 前缀把重复版本漏过去。
@@ -379,6 +379,7 @@ BEGIN
             [Id],
             ROW_NUMBER() OVER (PARTITION BY [NormalizedChannel], [NormalizedVersion]
                 ORDER BY
+                    CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END,
                     CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
                     [CreatedAt] DESC,
                     [Id] DESC
@@ -397,7 +398,8 @@ BEGIN
                     ELSE LTRIM(RTRIM([Version]))
                 END AS [NormalizedVersion],
                 [IsActive],
-                [CreatedAt]
+                [CreatedAt],
+                [IsDeleted]
             FROM [WpfAppRelease]
         ) AS [NormalizedWpfAppReleaseRows]
     )
@@ -514,7 +516,7 @@ BEGIN
     END;
 END;
 
--- 关键位置：策略表每个 Channel 只能保留一条最新配置，启动迁移先删除旧重复行，再补唯一索引。
+-- 关键位置：策略表每个 Channel 只能保留一条配置，启动迁移先保留未删除且最新的策略，再补唯一索引。
 IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NOT NULL
 BEGIN
     -- 关键位置：策略表也要先按业务层语义规范化渠道和版本，避免引用不到已规范化的发布版本。
@@ -557,6 +559,7 @@ BEGIN
             [Id],
             ROW_NUMBER() OVER (PARTITION BY [NormalizedChannel]
                 ORDER BY
+                    CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END,
                     [LastChangedAt] DESC,
                     [CreatedAt] DESC,
                     [Id] DESC
@@ -569,7 +572,8 @@ BEGIN
                     ELSE LOWER(LTRIM(RTRIM([Channel])))
                 END AS [NormalizedChannel],
                 ISNULL([UpdatedAt], [CreatedAt]) AS [LastChangedAt],
-                [CreatedAt]
+                [CreatedAt],
+                [IsDeleted]
             FROM [WpfUpdatePolicy]
         ) AS [NormalizedWpfUpdatePolicyRows]
     )

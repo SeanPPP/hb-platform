@@ -27,6 +27,32 @@ public sealed record AppUpdateCoordinatorResult(
 {
     public static AppUpdateCoordinatorResult NoUpdate() => FromStatus(AppUpdateCoordinatorStatus.NoUpdate);
 
+    public string? ErrorCode { get; init; }
+
+    public string? ErrorMessage { get; init; }
+
+    public static AppUpdateCoordinatorResult CheckFailed(
+        string? errorCode = null,
+        string? errorMessage = null)
+    {
+        return FromStatus(AppUpdateCoordinatorStatus.CheckFailed) with
+        {
+            ErrorCode = NormalizeDetail(errorCode),
+            ErrorMessage = NormalizeDetail(errorMessage)
+        };
+    }
+
+    public static AppUpdateCoordinatorResult PolicyFailed(
+        string? errorCode = null,
+        string? errorMessage = null)
+    {
+        return FromStatus(AppUpdateCoordinatorStatus.PolicyFailed) with
+        {
+            ErrorCode = NormalizeDetail(errorCode),
+            ErrorMessage = NormalizeDetail(errorMessage)
+        };
+    }
+
     public static AppUpdateCoordinatorResult FromStatus(
         AppUpdateCoordinatorStatus status,
         params object[] args)
@@ -51,6 +77,12 @@ public sealed record AppUpdateCoordinatorResult(
             AppUpdateCoordinatorStatus.Installed => "settings.status.appUpdateInstalling",
             _ => "settings.status.appUpdateCheckFailed"
         };
+    }
+
+    private static string? NormalizeDetail(string? value)
+    {
+        var normalized = value?.Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
     }
 }
 
@@ -121,7 +153,7 @@ public sealed class AppUpdateCoordinator(
                 state.SetStatus("settings.status.appUpdateCheckFailed");
             }
 
-            return AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.CheckFailed);
+            return AppUpdateCoordinatorResult.CheckFailed();
         }
 
         if (update.CheckFailed)
@@ -133,7 +165,7 @@ public sealed class AppUpdateCoordinator(
                     state.SetStatus("settings.status.appUpdatePolicyFailed");
                 }
 
-                return AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.PolicyFailed);
+                return AppUpdateCoordinatorResult.PolicyFailed(update.ErrorCode, update.ErrorMessage);
             }
 
             // 中文注释：本地 API / 更新中心的 HTTP、空响应、合同校验失败都属于“检查失败”，必须保留给启动重试逻辑识别。
@@ -142,7 +174,7 @@ public sealed class AppUpdateCoordinator(
                 state.SetStatus("settings.status.appUpdateCheckFailed");
             }
 
-            return AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.CheckFailed);
+            return AppUpdateCoordinatorResult.CheckFailed(update.ErrorCode, update.ErrorMessage);
         }
 
         if (!update.UpdateAvailable)

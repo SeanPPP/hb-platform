@@ -228,6 +228,60 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task StartupSchemaMigrator_WpfDuplicateCleanup_prefers_non_deleted_rows()
+    {
+        var repoRoot = FindRepoRoot();
+        var migratorPath = Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+        );
+
+        var migrator = await File.ReadAllTextAsync(migratorPath);
+
+        Assert.DoesNotContain(
+            migrator.Split(Environment.NewLine),
+            line => line.TrimStart().StartsWith("--", StringComparison.Ordinal) &&
+                (line.Contains("IF OBJECT_ID('WpfAppRelease'", StringComparison.Ordinal) ||
+                    line.Contains("IF OBJECT_ID('WpfUpdatePolicy'", StringComparison.Ordinal))
+        );
+        Assert.Contains("CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END", migrator);
+
+        var releaseDeletedPreferenceIndex = migrator.IndexOf(
+            "CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END",
+            StringComparison.Ordinal
+        );
+        var releaseActivePreferenceIndex = migrator.IndexOf(
+            "CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END",
+            StringComparison.Ordinal
+        );
+        Assert.True(
+            releaseDeletedPreferenceIndex >= 0 &&
+                releaseDeletedPreferenceIndex < releaseActivePreferenceIndex,
+            "WpfAppRelease duplicate cleanup must prefer non-deleted rows before active/newer rows."
+        );
+
+        var policyDedupIndex = migrator.IndexOf(
+            "ROW_NUMBER() OVER (PARTITION BY [NormalizedChannel]",
+            StringComparison.Ordinal
+        );
+        var policyDeletedPreferenceIndex = migrator.IndexOf(
+            "CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END",
+            policyDedupIndex,
+            StringComparison.Ordinal
+        );
+        var policyLastChangedPreferenceIndex = migrator.IndexOf(
+            "[LastChangedAt] DESC",
+            policyDedupIndex,
+            StringComparison.Ordinal
+        );
+        Assert.True(
+            policyDeletedPreferenceIndex >= 0 &&
+                policyDeletedPreferenceIndex < policyLastChangedPreferenceIndex,
+            "WpfUpdatePolicy duplicate cleanup must prefer non-deleted rows before newer rows."
+        );
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_EnsuresNullableMinimumSupportedVersionBeforePolicyNormalization()
     {
         var repoRoot = FindRepoRoot();

@@ -511,6 +511,27 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
+    public async Task CheckForUpdatesAsync_unconfigured_center_preserves_error_code_for_startup_policy()
+    {
+        var response = AppUpdateCheckResponse.Failed(
+            "1.0.0",
+            "APP_UPDATE_CENTER_NOT_CONFIGURED",
+            "App update center base URL is not configured.");
+        var coordinator = CreateCoordinator(
+            response,
+            new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe")),
+            new CapturingInstallerLauncher(),
+            new CapturingPromptService(),
+            new AppUpdateState());
+
+        var result = await coordinator.CheckForUpdatesAsync(manual: false);
+
+        Assert.Equal(AppUpdateCoordinatorStatus.CheckFailed, result.Status);
+        Assert.Equal("APP_UPDATE_CENTER_NOT_CONFIGURED", result.ErrorCode);
+        Assert.Equal("App update center base URL is not configured.", result.ErrorMessage);
+    }
+
+    [Fact]
     public async Task CheckForUpdatesAsync_optional_install_retry_success_clears_ready_state()
     {
         var release = CreateRelease(force: false);

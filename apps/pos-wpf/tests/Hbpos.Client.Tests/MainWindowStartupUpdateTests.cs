@@ -99,6 +99,36 @@ public sealed class MainWindowStartupUpdateTests
     }
 
     [Fact]
+    public async Task RunStartupAppUpdateCheckCoreAsync_allows_unconfigured_center_without_retry()
+    {
+        var checkCallCount = 0;
+        var delays = new List<TimeSpan>();
+        var reportedResults = new List<AppUpdateCoordinatorResult>();
+
+        var result = await MainWindow.RunStartupAppUpdateCheckCoreAsync(
+            () =>
+            {
+                checkCallCount++;
+                return Task.FromResult(AppUpdateCoordinatorResult.CheckFailed(
+                    "APP_UPDATE_CENTER_NOT_CONFIGURED",
+                    "App update center base URL is not configured."));
+            },
+            delay =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            },
+            ex => throw new InvalidOperationException("Unexpected startup update exception.", ex),
+            reportedResults.Add);
+
+        Assert.Equal(1, checkCallCount);
+        Assert.Empty(delays);
+        Assert.Empty(reportedResults);
+        Assert.Equal(AppUpdateCoordinatorStatus.CheckFailed, result.Status);
+        Assert.True(MainWindow.ShouldContinueStartupAfterAppUpdateCheck(result));
+    }
+
+    [Fact]
     public async Task RunStartupAppUpdateCheckCoreAsync_reports_exception_and_returns_check_failed()
     {
         var checkCallCount = 0;
