@@ -59,6 +59,104 @@ namespace BlazorApp.Shared.Constants
             public const string Manage = "PosProducts.Manage";
         }
 
+        public static class PosTerminal
+        {
+            public static class Sales
+            {
+                public const string View = "Permissions.PosTerminal.Sales.View";
+                public const string AddItem = "Permissions.PosTerminal.Sales.AddItem";
+                public const string AddOpenItem = "Permissions.PosTerminal.Sales.AddOpenItem";
+                public const string RemoveLine = "Permissions.PosTerminal.Sales.RemoveLine";
+                public const string ChangeQuantity = "Permissions.PosTerminal.Sales.ChangeQuantity";
+                public const string ChangePrice = "Permissions.PosTerminal.Sales.ChangePrice";
+                public const string LineDiscount = "Permissions.PosTerminal.Sales.LineDiscount";
+                public const string OrderDiscount = "Permissions.PosTerminal.Sales.OrderDiscount";
+                public const string ClearCart = "Permissions.PosTerminal.Sales.ClearCart";
+                public const string HoldOrder = "Permissions.PosTerminal.Sales.HoldOrder";
+                public const string RecallOrder = "Permissions.PosTerminal.Sales.RecallOrder";
+            }
+
+            public static class Payment
+            {
+                public const string View = "Permissions.PosTerminal.Payment.View";
+                public const string TakeCash = "Permissions.PosTerminal.Payment.TakeCash";
+                public const string TakeCard = "Permissions.PosTerminal.Payment.TakeCard";
+                public const string TakeVoucher = "Permissions.PosTerminal.Payment.TakeVoucher";
+                public const string RemoveTender = "Permissions.PosTerminal.Payment.RemoveTender";
+                public const string Confirm = "Permissions.PosTerminal.Payment.Confirm";
+            }
+
+            public static class Returns
+            {
+                public const string View = "Permissions.PosTerminal.Returns.View";
+                public const string AddReceiptLine = "Permissions.PosTerminal.Returns.AddReceiptLine";
+                public const string AddNoReceiptItem = "Permissions.PosTerminal.Returns.AddNoReceiptItem";
+                public const string Confirm = "Permissions.PosTerminal.Returns.Confirm";
+            }
+
+            public static class SpecialProducts
+            {
+                public const string View = "Permissions.PosTerminal.SpecialProducts.View";
+                public const string AddToCart = "Permissions.PosTerminal.SpecialProducts.AddToCart";
+                public const string Manage = "Permissions.PosTerminal.SpecialProducts.Manage";
+            }
+
+            public static class History
+            {
+                public const string View = "Permissions.PosTerminal.History.View";
+                public const string Recall = "Permissions.PosTerminal.History.Recall";
+                public const string Reprint = "Permissions.PosTerminal.History.Reprint";
+            }
+
+            public static class DailyClose
+            {
+                public const string View = "Permissions.PosTerminal.DailyClose.View";
+                public const string Save = "Permissions.PosTerminal.DailyClose.Save";
+                public const string Reprint = "Permissions.PosTerminal.DailyClose.Reprint";
+            }
+
+            public static class Installments
+            {
+                public const string View = "Permissions.PosTerminal.Installments.View";
+                public const string Create = "Permissions.PosTerminal.Installments.Create";
+                public const string AddRepayment = "Permissions.PosTerminal.Installments.AddRepayment";
+                public const string Cancel = "Permissions.PosTerminal.Installments.Cancel";
+                public const string ConfirmPickup = "Permissions.PosTerminal.Installments.ConfirmPickup";
+            }
+
+            public static class Settings
+            {
+                public const string View = "Permissions.PosTerminal.Settings.View";
+                public const string PaymentTerminal = "Permissions.PosTerminal.Settings.PaymentTerminal";
+                public const string ReceiptPrinter = "Permissions.PosTerminal.Settings.ReceiptPrinter";
+                public const string CatalogDownload = "Permissions.PosTerminal.Settings.CatalogDownload";
+                public const string CatalogReset = "Permissions.PosTerminal.Settings.CatalogReset";
+                public const string TestDataReset = "Permissions.PosTerminal.Settings.TestDataReset";
+                public const string DeviceRegistration = "Permissions.PosTerminal.Settings.DeviceRegistration";
+                public const string AppUpdate = "Permissions.PosTerminal.Settings.AppUpdate";
+            }
+
+            public static class CashDrawer
+            {
+                public const string Open = "Permissions.PosTerminal.CashDrawer.Open";
+            }
+
+            public static class Receipt
+            {
+                public const string PrintLast = "Permissions.PosTerminal.Receipt.PrintLast";
+            }
+
+            public static class CustomerDisplay
+            {
+                public const string Manage = "Permissions.PosTerminal.CustomerDisplay.Manage";
+            }
+
+            public static class System
+            {
+                public const string Sync = "Permissions.PosTerminal.System.Sync";
+            }
+        }
+
         public static class Orders
         {
             public const string View = "Orders.View";

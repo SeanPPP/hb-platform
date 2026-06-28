@@ -31,6 +31,9 @@ public static class ServiceRegistration
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+        services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
+        services.AddSingleton<EmergencyOverridePasswordService>();
+        services.AddSingleton<ICashierLoginService, CashierLoginService>();
         services.AddSingleton<IScannerBindingService, ScannerBindingService>();
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
@@ -61,6 +64,12 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(3);
         });
+        services.AddHttpClient<ICashierLoginApiClient, CashierLoginApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IAdvertisementApiClient, AdvertisementApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -296,7 +305,11 @@ public static class ServiceRegistration
             testSalesDataResetService: sp.GetRequiredService<ITestSalesDataResetService>(),
             windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>(),
             appUpdateState: sp.GetRequiredService<AppUpdateState>(),
-            checkForAppUpdateAsync: cancellationToken => sp.GetRequiredService<IAppUpdateCoordinator>().CheckForUpdatesAsync(manual: true, cancellationToken)));
+            checkForAppUpdateAsync: cancellationToken => sp.GetRequiredService<IAppUpdateCoordinator>().CheckForUpdatesAsync(manual: true, cancellationToken),
+            cashierSessionContext: sp.GetRequiredService<ICashierSessionContext>(),
+            cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
+            emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
+            enforceCashierPermissions: true));
         services.AddSingleton<MainWindow>();
 
         return services;

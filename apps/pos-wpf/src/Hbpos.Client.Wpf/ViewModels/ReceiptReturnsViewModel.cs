@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -28,6 +29,8 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
     private readonly ILocalizationService? _localization;
     private readonly Action _onBack;
     private readonly Action<CartLine>? _onReturnLineAdded;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private ReceiptReturnOrder? _currentOrder;
 
     [ObservableProperty]
@@ -69,7 +72,9 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         Action onBack,
         Action<CartLine>? onReturnLineAdded = null,
         IRawScannerService? rawScannerService = null,
-        ILocalizationService? localization = null)
+        ILocalizationService? localization = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _workflowService = workflowService;
         _session = session;
@@ -77,6 +82,13 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         _onReturnLineAdded = onReturnLineAdded;
         _rawScannerService = rawScannerService;
         _localization = localization;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RefreshLocalizedState();
@@ -167,6 +179,14 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
     partial void OnScanTextChanged(string value)
     {
         LookupCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnSessionChanged(PosSessionState value)
+    {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
     }
 
     partial void OnIsBusyChanged(bool value)
@@ -270,6 +290,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     private void AddNoReceiptProduct(string query)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddNoReceiptItem))
+        {
+            return;
+        }
+
         var result = _workflowService.LookupNoReceiptProduct(Session, query);
         StatusMessage = result.StatusMessage;
         if (result.Item is null)
@@ -304,6 +329,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     private void OpenNoReceiptOpenItemDialog()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddNoReceiptItem))
+        {
+            return;
+        }
+
         if (!CanOpenNoReceiptOpenItemDialog())
         {
             return;
@@ -414,6 +444,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     private void ConfirmNoReceiptOpenItem()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddNoReceiptItem))
+        {
+            return;
+        }
+
         if (!CanConfirmNoReceiptOpenItem() ||
             !TryParsePositiveAmount(OpenItemUnitPriceText, out var unitPrice))
         {
@@ -440,6 +475,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     private void AddReceiptLine(ReceiptReturnOrderLineViewModel? line)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Returns.AddReceiptLine))
+        {
+            return;
+        }
+
         if (line is null || line.AvailableRemaining <= 0m)
         {
             return;
@@ -524,6 +564,11 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
 
     private void ConfirmToCart()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Returns.Confirm))
+        {
+            return;
+        }
+
         if (PendingLines.Count == 0)
         {
             return;
@@ -582,6 +627,18 @@ public sealed partial class ReceiptReturnsViewModel : ObservableObject, IScanner
         OpenItemDisplayName = string.Empty;
         OpenItemUnitPriceText = string.Empty;
         OpenItemKeyboardTarget = OpenItemKeyboardTarget.Description;
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        StatusMessage = message;
+        return false;
     }
 
     private void RefreshLocalizedState()

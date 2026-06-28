@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -15,6 +16,8 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     private readonly Action _backToPayment;
     private readonly ILocalizationService? _localization;
     private readonly ICardTerminalClient? _cardTerminalClient;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
@@ -38,7 +41,9 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         Func<PosCartServiceSnapshot?, Task> showCreateAsync,
         Action backToPayment,
         ILocalizationService? localization = null,
-        ICardTerminalClient? cardTerminalClient = null)
+        ICardTerminalClient? cardTerminalClient = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _installmentOrderService = installmentOrderService;
         _session = session;
@@ -46,6 +51,13 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         _backToPayment = backToPayment;
         _localization = localization;
         _cardTerminalClient = cardTerminalClient;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         if (_localization is not null)
         {
             _onCultureChanged = (_, _) => RaiseLocalizedProperties();
@@ -124,6 +136,13 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
     partial void OnRepaymentMethodChanged(PaymentMethodKind value) => RaiseSelectionStateChanged();
     partial void OnRepaymentReferenceChanged(string value) => RaiseSelectionStateChanged();
     partial void OnRepaymentVoucherTokenChanged(string value) => RaiseSelectionStateChanged();
+    partial void OnSessionChanged(PosSessionState value)
+    {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+    }
 
     public async Task LoadAsync() => await LoadCoreAsync(() => _installmentOrderService.GetOrdersAsync(Session), "installment.center.status.loaded", "Loaded {0} installment orders.");
     public async Task SearchAsync() => await LoadCoreAsync(() => _installmentOrderService.SearchAsync(Session, SearchText), "installment.center.status.searched", "Found {0} installment orders.");
@@ -199,7 +218,15 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         }
     }
 
-    private Task CreateInstallmentAsync() => _showCreateAsync(CartSnapshot);
+    private async Task CreateInstallmentAsync()
+    {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Create))
+        {
+            return;
+        }
+
+        await _showCreateAsync(CartSnapshot);
+    }
     private bool CanCreateInstallment()
     {
         // 中文说明：创建入口只要求当前有可分期订单；提交阶段会继续校验在线状态并给出明确提示。
@@ -208,6 +235,11 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
 
     private async Task AddRepaymentAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.AddRepayment))
+        {
+            return;
+        }
+
         if (SelectedOrder is null) return;
 
         var payment = new InstallmentPaymentDraft(
@@ -250,12 +282,60 @@ public sealed partial class InstallmentCenterViewModel : ObservableObject, IDisp
         RepaymentAmount <= SelectedOrder.OutstandingAmount &&
         (RepaymentMethod != PaymentMethodKind.Card || _cardTerminalClient is not null) &&
         (RepaymentMethod != PaymentMethodKind.Voucher || (!string.IsNullOrWhiteSpace(RepaymentReference) && !string.IsNullOrWhiteSpace(RepaymentVoucherToken)));
-    private Task CancelWithRefundAsync() => SelectedOrder is null ? Task.CompletedTask : RunOrderActionAsync(() => _installmentOrderService.CancelWithRefundAsync(SelectedOrder.OrderId, Session));
+    private async Task CancelWithRefundAsync()
+    {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Cancel))
+        {
+            return;
+        }
+
+        if (SelectedOrder is not null)
+        {
+            await RunOrderActionAsync(() => _installmentOrderService.CancelWithRefundAsync(SelectedOrder.OrderId, Session));
+        }
+    }
+
     private bool CanCancelWithRefund() => !IsBusy && !IsOffline && SelectedOrder is { CanCancelWithRefund: true };
-    private Task VoidCancelAsync() => SelectedOrder is null ? Task.CompletedTask : RunOrderActionAsync(() => _installmentOrderService.VoidCancelAsync(SelectedOrder.OrderId, Session, VoidReason));
+    private async Task VoidCancelAsync()
+    {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Cancel))
+        {
+            return;
+        }
+
+        if (SelectedOrder is not null)
+        {
+            await RunOrderActionAsync(() => _installmentOrderService.VoidCancelAsync(SelectedOrder.OrderId, Session, VoidReason));
+        }
+    }
+
     private bool CanVoidCancel() => !IsBusy && !IsOffline && SelectedOrder is { CanVoidCancel: true };
-    private Task ConfirmPickupAsync() => SelectedOrder is null ? Task.CompletedTask : RunOrderActionAsync(() => _installmentOrderService.ConfirmPickupAsync(SelectedOrder.OrderId, Session));
+    private async Task ConfirmPickupAsync()
+    {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.ConfirmPickup))
+        {
+            return;
+        }
+
+        if (SelectedOrder is not null)
+        {
+            await RunOrderActionAsync(() => _installmentOrderService.ConfirmPickupAsync(SelectedOrder.OrderId, Session));
+        }
+    }
+
     private bool CanConfirmPickup() => !IsBusy && !IsOffline && SelectedOrder is { CanConfirmPickup: true };
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        SetLiteralStatus(message);
+        return false;
+    }
 
     private async Task RunOrderActionAsync(Func<Task<InstallmentOrderActionResult>> action)
     {

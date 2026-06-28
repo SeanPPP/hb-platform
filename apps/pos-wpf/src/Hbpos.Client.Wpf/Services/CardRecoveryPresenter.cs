@@ -30,6 +30,7 @@ internal sealed class CardRecoveryPresenter
     private readonly Action? _onCardRecoveryDraftRestored;
     private readonly Func<Task>? _refreshPendingSyncAsync;
     private readonly Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? _printReceiptAsync;
+    private readonly Func<bool>? _canPrintReceipt;
     private readonly Action? _notifyShowCashPaymentCanExecuteChanged;
     private readonly Action? _notifyPrintRecoveredReceiptCanExecuteChanged;
     private readonly Action<string>? _notifyPropertyChanged;
@@ -56,6 +57,7 @@ internal sealed class CardRecoveryPresenter
         Action? onCardRecoveryDraftRestored = null,
         Func<Task>? refreshPendingSyncAsync = null,
         Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? printReceiptAsync = null,
+        Func<bool>? canPrintReceipt = null,
         Action? notifyShowCashPaymentCanExecuteChanged = null,
         Action? notifyPrintRecoveredReceiptCanExecuteChanged = null,
         Action<string>? notifyPropertyChanged = null)
@@ -78,6 +80,7 @@ internal sealed class CardRecoveryPresenter
         _onCardRecoveryDraftRestored = onCardRecoveryDraftRestored;
         _refreshPendingSyncAsync = refreshPendingSyncAsync;
         _printReceiptAsync = printReceiptAsync;
+        _canPrintReceipt = canPrintReceipt;
         _notifyShowCashPaymentCanExecuteChanged = notifyShowCashPaymentCanExecuteChanged;
         _notifyPrintRecoveredReceiptCanExecuteChanged = notifyPrintRecoveredReceiptCanExecuteChanged;
         _notifyPropertyChanged = notifyPropertyChanged;
@@ -343,7 +346,7 @@ internal sealed class CardRecoveryPresenter
             details?.ResponseText ?? GetCardRecoveryResponseText(result.Order),
             details?.Timestamp ?? DateTimeOffset.Now,
             previewRows,
-            canPrintReceipt: true,
+            canPrintReceipt: CanUsePrintReceiptPermission(),
             printButtonText: _localization.T("cardRecovery.dialog.action.printReceipt")));
     }
 
@@ -410,7 +413,14 @@ internal sealed class CardRecoveryPresenter
     private bool CanPrintRecoveredReceipt()
     {
         return CardRecoveryResultDialog?.CanPrintReceipt == true &&
-            _cardRecoveryDialogReceipt is not null;
+            _cardRecoveryDialogReceipt is not null &&
+            CanUsePrintReceiptPermission();
+    }
+
+    private bool CanUsePrintReceiptPermission()
+    {
+        // 关键逻辑：恢复弹窗可能在主页面之外出现，打印按钮也必须服从当前收银员权限。
+        return _canPrintReceipt?.Invoke() ?? true;
     }
 
     private async Task PrintRecoveredReceiptAsync()

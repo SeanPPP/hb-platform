@@ -193,8 +193,47 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding StoreInfo}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,12,0" />
-                    <TextBlock Text="{Binding CashierInfo}" Foreground="{StaticResource PosMutedForegroundBrush}" FontSize="11" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <TextBlock Text="{Binding StoreInfo}"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               FontSize="11"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"
+                               MaxWidth="180"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding CashierInfo}"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               FontSize="11"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0"
+                               MaxWidth="150"
+                               TextTrimming="CharacterEllipsis" />
+                    <PasswordBox x:Name="CashierBarcodePasswordBox"
+                                 Width="150"
+                                 Height="30"
+                                 Padding="8,0"
+                                 FontSize="11"
+                                 VerticalContentAlignment="Center"
+                                 materialDesign:HintAssist.Hint="{loc:Loc shell.cashierLogin.inputHint}"
+                                 ToolTip="{loc:Loc shell.cashierLogin.tooltip}"
+                                 Margin="0,0,4,0"
+                                 PasswordChanged="CashierBarcodePasswordBoxPasswordChanged"
+                                 KeyDown="CashierBarcodePasswordBoxKeyDown" />
+                    <Button Command="{Binding LoginCashierCommand}"
+                            Width="34"
+                            Height="30"
+                            Padding="0"
+                            Background="#FFE8F0FE"
+                            Foreground="{StaticResource PosPrimaryBrush}"
+                            Style="{StaticResource PosShellNavButtonStyle}"
+                            ToolTip="{loc:Loc shell.cashierLogin.tooltip}"
+                            Click="CashierLoginButtonClick"
+                            Margin="0,0,8,0">
+                        <materialDesign:PackIcon Kind="Login"
+                                                 Width="16"
+                                                 Height="16"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center" />
+                    </Button>
                     <Button Content="{loc:Loc shell.languageToggle}"
                             Command="{Binding ToggleCultureCommand}"
                             Width="72"

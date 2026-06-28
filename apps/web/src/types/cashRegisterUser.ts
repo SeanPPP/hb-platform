@@ -3,6 +3,10 @@ export interface CashRegisterUserListDto {
   hGuid: string
   storeCode?: string
   storeName?: string
+  legacyStoreCode?: string
+  userGUID?: string
+  username?: string
+  userFullName?: string
   operatorUser?: string
   userBarcode?: string
   loginRole?: string
@@ -19,6 +23,10 @@ export interface CashRegisterUserDetailDto {
   hGuid: string
   storeCode?: string
   storeName?: string
+  legacyStoreCode?: string
+  userGUID?: string
+  username?: string
+  userFullName?: string
   operatorUser?: string
   userBarcode?: string
   loginRole?: string
@@ -31,8 +39,15 @@ export interface CashRegisterUserDetailDto {
   lastModifyDate: string
 }
 
+export interface CashRegisterUserUserOptionDto {
+  userGUID: string
+  username: string
+  userFullName?: string
+}
+
 export interface CreateCashRegisterUserDto {
   storeCode?: string
+  userGUID?: string
   operatorUser?: string
   userBarcode?: string
   loginRole?: string

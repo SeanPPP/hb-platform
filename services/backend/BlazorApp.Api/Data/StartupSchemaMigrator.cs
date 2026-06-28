@@ -14,8 +14,164 @@ namespace BlazorApp.Api.Data
 
             // 关键位置：统一串起所有启动兜底迁移，避免 Program.cs 只接入其中一条补列链路。
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
+            await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureCashRegisterUsersSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql =
+                @"
+IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('CashRegisterUsers', 'UserGUID') IS NULL
+    BEGIN
+        ALTER TABLE [CashRegisterUsers]
+        ADD [UserGUID] nvarchar(50) NULL;
+    END;
+
+    IF COL_LENGTH('CashRegisterUsers', 'UserGUID') IS NOT NULL
+    BEGIN
+        UPDATE [CashRegisterUsers]
+        SET [UserGUID] = LTRIM(RTRIM([UserGUID]))
+        WHERE [UserGUID] IS NOT NULL
+          AND [UserGUID] <> LTRIM(RTRIM([UserGUID]));
+
+        UPDATE [CashRegisterUsers]
+        SET [UserGUID] = NULL
+        WHERE [UserGUID] IS NOT NULL
+          AND LTRIM(RTRIM([UserGUID])) = '';
+
+        IF COL_LENGTH('CashRegisterUsers', 'OperatorUser') IS NOT NULL
+           AND OBJECT_ID('User', 'U') IS NOT NULL
+        BEGIN
+            -- 关键位置：老数据若 OperatorUser 已经保存后台 UserGUID，则自动回填；姓名/旧编号不猜测，避免错误授权。
+            UPDATE [cashier]
+            SET [UserGUID] = [linkedUser].[UserGUID]
+            FROM [CashRegisterUsers] AS [cashier]
+            INNER JOIN [User] AS [linkedUser]
+                ON [linkedUser].[UserGUID] = LTRIM(RTRIM([cashier].[OperatorUser]))
+            WHERE NULLIF(LTRIM(RTRIM([cashier].[UserGUID])), '') IS NULL
+              AND NULLIF(LTRIM(RTRIM([cashier].[OperatorUser])), '') IS NOT NULL
+              AND [linkedUser].[IsActive] = 1
+              AND ISNULL([linkedUser].[IsDeleted], 0) = 0;
+        END;
+
+        IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+        BEGIN
+            UPDATE [CashRegisterUsers]
+            SET [UserBarcode] = LTRIM(RTRIM([UserBarcode]))
+            WHERE [UserBarcode] IS NOT NULL
+              AND [UserBarcode] <> LTRIM(RTRIM([UserBarcode]));
+
+            IF COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+            BEGIN
+                -- 关键位置：空白条码不能继续保持有效，否则空输入可能命中历史脏数据；只失效记录以兼容旧表非空约束。
+                UPDATE [CashRegisterUsers]
+                SET [Status] = 0
+                WHERE [Status] = 1
+                  AND ([UserBarcode] IS NULL OR LTRIM(RTRIM([UserBarcode])) = '');
+            END;
+        END;
+
+        IF COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+        BEGIN
+            -- 关键位置：旧库可能缺少排序/状态列，只有列齐全时才做去重，避免启动迁移被极旧表结构阻断。
+            ;WITH [CashRegisterUserActiveDuplicates] AS (
+                SELECT
+                    [Id],
+                    ROW_NUMBER() OVER (PARTITION BY [UserGUID]
+                        ORDER BY
+                            [LastModifyDate] DESC,
+                            [CreateDate] DESC,
+                            [Id] DESC
+                    ) AS [RowNumber]
+                FROM [CashRegisterUsers]
+                WHERE [Status] = 1
+                  AND [UserGUID] IS NOT NULL
+            )
+            UPDATE [CashRegisterUsers]
+            SET [Status] = 0
+            WHERE [Id] IN (
+                SELECT [Id]
+                FROM [CashRegisterUserActiveDuplicates]
+                WHERE [RowNumber] > 1
+            );
+        END;
+
+        IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+        BEGIN
+            ;WITH [CashRegisterBarcodeActiveDuplicates] AS (
+                SELECT
+                    [Id],
+                    ROW_NUMBER() OVER (PARTITION BY [UserBarcode]
+                        ORDER BY
+                            [LastModifyDate] DESC,
+                            [CreateDate] DESC,
+                            [Id] DESC
+                    ) AS [RowNumber]
+                FROM [CashRegisterUsers]
+                WHERE [Status] = 1
+                  AND NULLIF(LTRIM(RTRIM([UserBarcode])), '') IS NOT NULL
+            )
+            UPDATE [CashRegisterUsers]
+            SET [Status] = 0
+            WHERE [Id] IN (
+                SELECT [Id]
+                FROM [CashRegisterBarcodeActiveDuplicates]
+                WHERE [RowNumber] > 1
+            );
+        END;
+    END;
+
+    IF NOT EXISTS (
+        SELECT *
+        FROM sys.indexes
+        WHERE name = 'IX_CashRegisterUsers_UserGUID_Active'
+          AND object_id = OBJECT_ID('CashRegisterUsers')
+    )
+       AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+    BEGIN
+        CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserGUID_Active]
+        ON [CashRegisterUsers]([UserGUID])
+        WHERE [Status] = 1 AND [UserGUID] IS NOT NULL;
+    END;
+
+    IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+       AND NOT EXISTS (
+            SELECT *
+            FROM sys.indexes
+            WHERE name = 'IX_CashRegisterUsers_UserBarcode_Active'
+              AND object_id = OBJECT_ID('CashRegisterUsers')
+        )
+    BEGIN
+        CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserBarcode_Active]
+        ON [CashRegisterUsers]([UserBarcode])
+        WHERE [Status] = 1 AND [UserBarcode] IS NOT NULL AND [UserBarcode] <> '';
+    END;
+END;";
+
+            // 关键逻辑：老表只补 nullable 关联列，StoreCode 继续保留兼容显示；有效条码唯一性按 UserGUID 和 UserBarcode 双重兜底。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("CashRegisterUsers.UserGUID 列与有效条码唯一索引检查完成");
         }
 
         private static async Task EnsureMobileAppBuildSchemaAsync(
