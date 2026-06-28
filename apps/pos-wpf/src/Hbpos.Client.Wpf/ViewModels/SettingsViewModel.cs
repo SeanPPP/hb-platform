@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Threading;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -69,6 +70,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly IReceiptPrintService? _receiptPrintService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private readonly DataMaintenanceSection _dataMaintenanceSection;
     private readonly ReceiptPrinterSection _receiptPrinterSection;
     private CardTerminalConfiguration _loadedConfiguration = CardTerminalConfiguration.Default;
@@ -200,7 +203,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         Func<bool>? confirmResetTestSalesData = null,
         ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
-        string? appUpdateChannel = null)
+        string? appUpdateChannel = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _setupService = setupService;
         _localization = localization;
@@ -214,6 +219,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
         _receiptPrintService = receiptPrintService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
         AppUpdateChannelText = string.IsNullOrWhiteSpace(appUpdateChannel)
             ? "production"
             : appUpdateChannel.Trim();
@@ -271,9 +278,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         SelectDataMaintenanceCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.DataMaintenance);
-        SelectPaymentTerminalCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.PaymentTerminal);
-        SelectReceiptPrinterCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.ReceiptPrinter);
-        SelectDeviceRegistrationCommand = new RelayCommand(() => SelectedCategory = SettingsCategory.DeviceRegistration);
+        SelectPaymentTerminalCommand = new RelayCommand(() => SelectCategory(SettingsCategory.PaymentTerminal, Permissions.PosTerminal.Settings.PaymentTerminal));
+        SelectReceiptPrinterCommand = new RelayCommand(() => SelectCategory(SettingsCategory.ReceiptPrinter, Permissions.PosTerminal.Settings.ReceiptPrinter));
+        SelectDeviceRegistrationCommand = new RelayCommand(() => SelectCategory(SettingsCategory.DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration));
         LoadCommand = new AsyncRelayCommand(LoadAsync);
         LoadLocationsCommand = new AsyncRelayCommand(LoadLocationsAsync, CanLoadLocations);
         LoadDevicesCommand = new AsyncRelayCommand(LoadDevicesAsync, CanLoadDevices);
@@ -572,42 +579,77 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task LoadLocationsAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         await _squareCoordinator.LoadLocationsAsync(SquareLocations, SquareDevices, SquareDeviceCodes, _squareState);
         SyncSquareState();
     }
 
     private async Task LoadDevicesAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         await _squareCoordinator.LoadDevicesAsync(SquareDevices, _squareState);
         SyncSquareState();
     }
 
     private async Task SaveSquareAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         await _squareCoordinator.SaveAsync(SquareLocations, SquareDevices, _squareState, LinklyHostText, LinklyPortText, TimeoutSecondsText);
         SyncSquareState();
     }
 
     private async Task LoadDeviceCodesAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         await _squareCoordinator.LoadDeviceCodesAsync(SquareDeviceCodes, _squareState);
         SyncSquareState();
     }
 
     private async Task CreateDeviceCodeAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         await _squareCoordinator.CreateDeviceCodeAsync(SquareDeviceCodes, _squareState);
         SyncSquareState();
     }
 
     private async Task RefreshDeviceCodeStatusAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         await _squareCoordinator.RefreshDeviceCodeStatusAsync(SquareDevices, SquareDeviceCodes, _squareState);
         SyncSquareState();
     }
 
     private async Task TestLinklyAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         SyncLinklyInputs();
         await _linklyCoordinator.TestAsync(_linklyState);
         SyncLinklyState();
@@ -659,6 +701,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task TestLinklyTransactionStatusAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         SyncLinklyInputs();
         await _linklyCoordinator.TestTransactionStatusAsync(_linklyState);
         SyncLinklyState();
@@ -671,6 +718,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public async Task PairLinklyCloudAsync(string password)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         SyncLinklyInputs();
         await _linklyCoordinator.PairCloudAsync(password, _linklyState);
         SyncLinklyState();
@@ -717,6 +769,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public async Task SaveLinklyCloudCredentialAsync(string password)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         SyncLinklyInputs();
         await _linklyCoordinator.SaveCloudCredentialAsync(password, _linklyState);
         SyncLinklyState();
@@ -731,6 +788,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task SaveLinklyAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.PaymentTerminal))
+        {
+            return;
+        }
+
         SyncLinklyInputs();
         await _linklyCoordinator.SaveAsync(_linklyState, LinklyModePriorityItems);
         SyncLinklyState();
@@ -738,36 +800,71 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task SaveReceiptPrinterAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.ReceiptPrinter))
+        {
+            return;
+        }
+
         await _receiptPrinterSection.SaveAsync();
     }
 
     private async Task TestReceiptPrinterAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.ReceiptPrinter))
+        {
+            return;
+        }
+
         await _receiptPrinterSection.TestAsync();
     }
 
     private async Task DownloadCatalogAsync(CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.CatalogDownload))
+        {
+            return;
+        }
+
         await _dataMaintenanceSection.DownloadCatalogAsync(cancellationToken);
     }
 
     private async Task ResetCatalogAsync(CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.CatalogReset))
+        {
+            return;
+        }
+
         await _dataMaintenanceSection.ResetCatalogAsync(cancellationToken);
     }
 
     private async Task ResetTestSalesDataAsync(CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.TestDataReset))
+        {
+            return;
+        }
+
         await _dataMaintenanceSection.ResetTestSalesDataAsync(cancellationToken);
     }
 
     private async Task ReregisterDeviceAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.DeviceRegistration))
+        {
+            return;
+        }
+
         await _dataMaintenanceSection.ReregisterDeviceAsync();
     }
 
     private async Task CheckForAppUpdateAsync(CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.AppUpdate))
+        {
+            return;
+        }
+
         await _dataMaintenanceSection.CheckForAppUpdateAsync(cancellationToken);
     }
 
@@ -883,6 +980,28 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private void ReturnToPos()
     {
         _returnToPos?.Invoke();
+    }
+
+    private void SelectCategory(SettingsCategory category, string permissionCode)
+    {
+        if (!TryRequirePermission(permissionCode))
+        {
+            return;
+        }
+
+        SelectedCategory = category;
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        StatusMessage = message;
+        return false;
     }
 
     private async Task RunBusyAsync(Func<Task> action, string? operationName = null)

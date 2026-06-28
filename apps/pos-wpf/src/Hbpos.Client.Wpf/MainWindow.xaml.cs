@@ -64,6 +64,50 @@ public partial class MainWindow : Window
         Closed += MainWindowClosed;
     }
 
+    private void CashierBarcodePasswordBoxPasswordChanged(object sender, RoutedEventArgs e)
+    {
+        if (sender is PasswordBox passwordBox)
+        {
+            _viewModel.CashierBarcodeInput = passwordBox.Password;
+        }
+    }
+
+    private void CashierBarcodePasswordBoxKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        ExecuteCashierLoginCommandFromPasswordBox();
+    }
+
+    private void CashierLoginButtonClick(object sender, RoutedEventArgs e)
+    {
+        ClearCashierBarcodePasswordBoxAfterLogin();
+    }
+
+    private void ExecuteCashierLoginCommandFromPasswordBox()
+    {
+        var command = _viewModel.LoginCashierCommand;
+        if (!command.CanExecute(null))
+        {
+            return;
+        }
+
+        command.Execute(null);
+        ClearCashierBarcodePasswordBoxAfterLogin();
+    }
+
+    private void ClearCashierBarcodePasswordBoxAfterLogin()
+    {
+        // 关键逻辑：PasswordBox 不能普通绑定，登录命令清空 VM 后还要同步清掉屏幕上的敏感输入。
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() => CashierBarcodePasswordBox.Clear()));
+    }
+
     private async void MainWindowLoaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindowLoaded;

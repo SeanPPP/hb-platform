@@ -831,6 +831,12 @@
   <data name="shell.languageToggle" xml:space="preserve">
     <value>中 / EN</value>
   </data>
+  <data name="shell.cashierLogin.inputHint" xml:space="preserve">
+    <value>收银员条码</value>
+  </data>
+  <data name="shell.cashierLogin.tooltip" xml:space="preserve">
+    <value>扫描或输入收银员条码 / 超级密码</value>
+  </data>
   <data name="shell.scannerBinding" xml:space="preserve">
     <value>扫码枪</value>
   </data>

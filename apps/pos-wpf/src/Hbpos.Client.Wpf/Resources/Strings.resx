@@ -299,6 +299,8 @@
   <data name="customerDisplay.window.noSecondDisplay" xml:space="preserve"><value>No second display detected. Customer display was not opened.</value></data>
   <data name="shell.customerDisplayWindow" xml:space="preserve"><value>Customer display window</value></data>
   <data name="shell.languageToggle" xml:space="preserve"><value>中 / EN</value></data>
+  <data name="shell.cashierLogin.inputHint" xml:space="preserve"><value>Cashier barcode</value></data>
+  <data name="shell.cashierLogin.tooltip" xml:space="preserve"><value>Scan or enter cashier barcode / emergency password</value></data>
   <data name="shell.scannerBinding" xml:space="preserve"><value>Scanner</value></data>
   <data name="shell.scannerBinding.resetTooltip" xml:space="preserve"><value>Reset scanner binding</value></data>
   <data name="shell.window.minimize" xml:space="preserve"><value>Minimize</value></data>

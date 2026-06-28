@@ -54,13 +54,13 @@ internal sealed class PosTerminalScanController
         {
             ConsoleLog.Write(
                 "PosScan",
-                $"traceId={plan.TraceId} {plan.Source} scanner event received barcode={plan.Barcode} devicePath={plan.DevicePath} eventAgeMs={FormatElapsedSince(plan.ScannedAt)} cartLinesBefore={plan.CartLinesBefore}");
+                $"traceId={plan.TraceId} {plan.Source} scanner event received barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)} devicePath={plan.DevicePath} eventAgeMs={FormatElapsedSince(plan.ScannedAt)} cartLinesBefore={plan.CartLinesBefore}");
             return;
         }
 
         ConsoleLog.Write(
             "PosScan",
-            $"traceId={plan.TraceId} manual scan flow start barcode={plan.Barcode} storeCode={storeCode} cartLinesBefore={plan.CartLinesBefore}");
+            $"traceId={plan.TraceId} manual scan flow start barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)} storeCode={storeCode} cartLinesBefore={plan.CartLinesBefore}");
     }
 
     public void LogInputApplied(PosTerminalScanPlan plan, long setInputElapsedMs)
@@ -72,7 +72,7 @@ internal sealed class PosTerminalScanController
 
         ConsoleLog.Write(
             "PosScan",
-            $"traceId={plan.TraceId} scanner ui input applied barcode={plan.Barcode} setInputElapsedMs={setInputElapsedMs}");
+            $"traceId={plan.TraceId} scanner ui input applied barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)} setInputElapsedMs={setInputElapsedMs}");
     }
 
     public void LogFinished(
@@ -85,8 +85,8 @@ internal sealed class PosTerminalScanController
         long totalElapsedMs)
     {
         var message = plan.ApplyBarcodeToScanText
-            ? $"traceId={plan.TraceId} scanner flow end barcode={plan.Barcode} statusKey={statusKey ?? "<null>"} autoAdded={FormatBool(autoAdded)} cartLinesBefore={plan.CartLinesBefore} cartLinesAfter={cartLinesAfter} workflowElapsedMs={workflowElapsedMs} applyResultElapsedMs={applyResultElapsedMs} totalElapsedMs={totalElapsedMs}"
-            : $"traceId={plan.TraceId} manual scan flow end barcode={plan.Barcode} statusKey={statusKey ?? "<null>"} autoAdded={FormatBool(autoAdded)} cartLinesBefore={plan.CartLinesBefore} cartLinesAfter={cartLinesAfter} workflowElapsedMs={workflowElapsedMs} applyResultElapsedMs={applyResultElapsedMs} totalElapsedMs={totalElapsedMs}";
+            ? $"traceId={plan.TraceId} scanner flow end barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)} statusKey={statusKey ?? "<null>"} autoAdded={FormatBool(autoAdded)} cartLinesBefore={plan.CartLinesBefore} cartLinesAfter={cartLinesAfter} workflowElapsedMs={workflowElapsedMs} applyResultElapsedMs={applyResultElapsedMs} totalElapsedMs={totalElapsedMs}"
+            : $"traceId={plan.TraceId} manual scan flow end barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)} statusKey={statusKey ?? "<null>"} autoAdded={FormatBool(autoAdded)} cartLinesBefore={plan.CartLinesBefore} cartLinesAfter={cartLinesAfter} workflowElapsedMs={workflowElapsedMs} applyResultElapsedMs={applyResultElapsedMs} totalElapsedMs={totalElapsedMs}";
         ConsoleLog.Write("PosScan", message);
     }
 

@@ -7,7 +7,13 @@ public sealed record CashierBarcodeLoginRequest(
 
 public sealed record CashierSessionDto(
     string CashierId,
+    string UserGuid,
     string CashierName,
     string StoreCode,
     string DeviceCode,
-    string[] Roles);
+    string[] Roles,
+    string[] PermissionCodes,
+    string[] AllowedStoreCodes,
+    bool IsSuperAdmin,
+    bool IsOfflineCached,
+    bool IsEmergencyOverride);

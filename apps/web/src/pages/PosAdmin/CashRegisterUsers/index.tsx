@@ -24,6 +24,7 @@ import {
   createCashRegisterUser,
   deleteCashRegisterUser,
   getCashRegisterUserGrid,
+  getCashRegisterUserUserOptions,
   updateCashRegisterUser,
 } from '../../../services/cashRegisterUserService'
 import { getActiveStores } from '../../../services/storeService'
@@ -66,6 +67,7 @@ export default function CashRegisterUsersPage() {
   const [storeCode, setStoreCode] = useState<string | undefined>(undefined)
   const [status, setStatus] = useState<boolean | undefined>(undefined)
   const [storeOptions, setStoreOptions] = useState<{ label: string; value: string }[]>([])
+  const [userOptions, setUserOptions] = useState<{ label: string; value: string }[]>([])
   const [createVisible, setCreateVisible] = useState(false)
   const [editVisible, setEditVisible] = useState(false)
   const [editForm] = Form.useForm()
@@ -124,6 +126,19 @@ export default function CashRegisterUsersPage() {
     })()
   }, [currentUser?.stores, managedStoreCodeKey, storeCode])
 
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const users = await getCashRegisterUserUserOptions()
+        setUserOptions(users
+          .map((user) => ({
+            label: user.userFullName ? `${user.userFullName} (${user.username})` : user.username,
+            value: user.userGUID,
+          })))
+      } catch { /* ignore */ }
+    })()
+  }, [])
+
   useEffect(() => { loadData() }, [keyword, storeCode, status, page, pageSize, managedStoreCodeKey])
 
   const handleCreate = async () => {
@@ -135,6 +150,7 @@ export default function CashRegisterUsersPage() {
       }
       await createCashRegisterUser({
         storeCode: values.storeCode, operatorUser: values.operatorUser,
+        userGUID: values.userGUID,
         userBarcode: values.userBarcode, loginRole: values.loginRole,
         remark: values.remark ?? '', status: values.status ?? true,
       })
@@ -146,14 +162,10 @@ export default function CashRegisterUsersPage() {
   }
 
   const handleEdit = (record: CashRegisterUserListDto) => {
-    if (!isStoreCodeInManagedScope(record.storeCode, managedStoreCodes)) {
-      message.error(t('message.noPermission', '无权操作该数据'))
-      return
-    }
-
     setEditingRecord(record)
     editForm.setFieldsValue({
-      storeCode: record.storeCode, operatorUser: record.operatorUser,
+      storeCode: record.legacyStoreCode ?? record.storeCode, operatorUser: record.operatorUser,
+      userGUID: record.userGUID,
       userBarcode: record.userBarcode, loginRole: record.loginRole,
       remark: record.remark, status: record.status,
     })
@@ -162,11 +174,6 @@ export default function CashRegisterUsersPage() {
 
   const handleUpdate = async () => {
     if (!editingRecord) return
-    if (!isStoreCodeInManagedScope(editingRecord.storeCode, managedStoreCodes)) {
-      message.error(t('message.noPermission', '无权操作该数据'))
-      return
-    }
-
     try {
       const values = await editForm.validateFields()
       if (!isStoreCodeInManagedScope(values.storeCode, managedStoreCodes)) {
@@ -175,6 +182,7 @@ export default function CashRegisterUsersPage() {
       }
       await updateCashRegisterUser(editingRecord.hGuid, {
         storeCode: values.storeCode, operatorUser: values.operatorUser,
+        userGUID: values.userGUID,
         userBarcode: values.userBarcode, loginRole: values.loginRole,
         remark: values.remark ?? '', status: values.status,
       })
@@ -187,11 +195,6 @@ export default function CashRegisterUsersPage() {
   }
 
   const handleDelete = async (record: CashRegisterUserListDto) => {
-    if (!isStoreCodeInManagedScope(record.storeCode, managedStoreCodes)) {
-      message.error(t('message.noPermission', '无权操作该数据'))
-      return
-    }
-
     Modal.confirm({
       title: t('message.confirmDelete'),
       content: t('posAdmin.cashierUsers.confirmDeleteUser', { name: record.operatorUser || record.userBarcode }),
@@ -208,11 +211,6 @@ export default function CashRegisterUsersPage() {
 
   const handleBatchDelete = async () => {
     if (!selectedRows.length) { message.warning(t('message.pleaseSelect')); return }
-    if (selectedRows.some((row) => !isStoreCodeInManagedScope(row.storeCode, managedStoreCodes))) {
-      message.error(t('message.noPermission', '无权操作该数据'))
-      return
-    }
-
     Modal.confirm({
       title: t('posAdmin.cashierUsers.confirmBatchDelete', '确认批量删除'),
       content: t('message.batchDeleteConfirm', { count: selectedRows.length }),
@@ -235,6 +233,7 @@ export default function CashRegisterUsersPage() {
       render: (_, __, index) => (page - 1) * pageSize + index + 1,
     },
     { title: t('posAdmin.cashierUsers.store'), dataIndex: 'storeName', sorter: (a, b) => (a.storeName || '').localeCompare(b.storeName || ''), render: (v: string) => <span style={{ color: getColorFromString(v) }}>{v}</span> },
+    { title: t('posAdmin.cashierUsers.linkedUser', '关联后台用户'), dataIndex: 'username', render: (_, record) => record.userFullName || record.username || record.userGUID },
     { title: t('posAdmin.cashierUsers.operator'), dataIndex: 'operatorUser', sorter: (a, b) => (a.operatorUser || '').localeCompare(b.operatorUser || ''), render: (v: string) => <span style={{ color: getColorFromString(v) }}>{v}</span> },
     { title: t('posAdmin.cashierUsers.barcode'), dataIndex: 'userBarcode', width: 250, render: (text: string) => text ? <BarcodePreview value={text} showCopy /> : null },
     {
@@ -264,6 +263,9 @@ export default function CashRegisterUsersPage() {
     <Form form={formInstance} layout="vertical">
       <Form.Item name="storeCode" label={t('posAdmin.cashierUsers.store')} rules={[{ required: true, message: t('form.pleaseSelectStore') }]}>
         <Select placeholder={t('form.pleaseSelectStore')} options={storeOptions} showSearch optionFilterProp="label" />
+      </Form.Item>
+      <Form.Item name="userGUID" label={t('posAdmin.cashierUsers.linkedUser', '关联后台用户')} rules={[{ required: true, message: t('posAdmin.cashierUsers.userRequired', '请选择启用的后台用户') }]}>
+        <Select placeholder={t('posAdmin.cashierUsers.userRequired', '请选择启用的后台用户')} options={userOptions} showSearch optionFilterProp="label" />
       </Form.Item>
       <Form.Item name="operatorUser" label={t('posAdmin.cashierUsers.operator')} rules={[{ max: 100 }]}><Input placeholder={t('posAdmin.cashierUsers.operatorName')} /></Form.Item>
       <Form.Item label={t('posAdmin.cashierUsers.barcode')} required>

@@ -18,7 +18,8 @@ public sealed class RawScannerServiceTests
 
         Assert.NotNull(received);
         Assert.Equal("930110", received.Barcode);
-        Assert.Contains(logs.Lines, line => line.Contains("scan accepted barcode=930110", StringComparison.Ordinal));
+        Assert.Contains(logs.Lines, line => line.Contains("scan accepted barcodeInfo=length=6", StringComparison.Ordinal));
+        Assert.DoesNotContain(logs.Lines, line => line.Contains("barcode=930110", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -32,7 +33,8 @@ public sealed class RawScannerServiceTests
         service.DispatchResultForDiagnostics(new RawScannerInputResult("930111", "scanner-device", RawScannerCompletionKind.Enter));
 
         Assert.False(called);
-        Assert.Contains(logs.Lines, line => line.Contains("scan ignored because no active handler page=<none> barcode=930111", StringComparison.Ordinal));
+        Assert.Contains(logs.Lines, line => line.Contains("scan ignored because no active handler page=<none> barcodeInfo=length=6", StringComparison.Ordinal));
+        Assert.DoesNotContain(logs.Lines, line => line.Contains("barcode=930111", StringComparison.Ordinal));
     }
 
     [Fact]

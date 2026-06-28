@@ -72,6 +72,30 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("IF COL_LENGTH('WpfUpdatePolicy', 'TargetVersion') IS NULL", migrator);
         Assert.Contains("IF COL_LENGTH('WpfUpdatePolicy', 'MinimumSupportedVersion') IS NULL", migrator);
         Assert.Contains("IF COL_LENGTH('WpfUpdatePolicy', 'ForceUpdate') IS NULL", migrator);
+        Assert.Contains("IF COL_LENGTH('CashRegisterUsers', 'UserGUID') IS NULL", migrator);
+        Assert.Contains("ADD [UserGUID] nvarchar(50) NULL", migrator);
+        Assert.Contains("SET [UserGUID] = LTRIM(RTRIM([UserGUID]))", migrator);
+        Assert.Contains("INNER JOIN [User] AS [linkedUser]", migrator);
+        Assert.Contains(
+            "ON [linkedUser].[UserGUID] = LTRIM(RTRIM([cashier].[OperatorUser]))",
+            migrator
+        );
+        Assert.Contains("CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserGUID_Active]", migrator);
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [UserGUID]", migrator);
+        Assert.Contains("CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserBarcode_Active]", migrator);
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY [UserBarcode]", migrator);
+        Assert.Contains("COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL", migrator);
+        Assert.Contains("COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL", migrator);
+        Assert.Contains("COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL", migrator);
+        Assert.Contains("COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL", migrator);
+        Assert.Contains(
+            "AND ([UserBarcode] IS NULL OR LTRIM(RTRIM([UserBarcode])) = '')",
+            migrator
+        );
+        Assert.Contains(
+            "WHERE [Status] = 1 AND [UserBarcode] IS NOT NULL AND [UserBarcode] <> ''",
+            migrator
+        );
 
         var wpfReleaseColumnBackfillIndex = migrator.IndexOf(
             "IF COL_LENGTH('WpfAppRelease', 'PublishedAt') IS NULL",
@@ -89,6 +113,34 @@ public sealed class StartupSchemaMigratorStartupContractTests
             "CREATE UNIQUE INDEX [IX_WpfUpdatePolicy_Channel]",
             StringComparison.Ordinal
         );
+        var cashierUserGuidColumnIndex = migrator.IndexOf(
+            "ADD [UserGUID] nvarchar(50) NULL",
+            StringComparison.Ordinal
+        );
+        var cashierUserGuidNormalizeIndex = migrator.IndexOf(
+            "SET [UserGUID] = LTRIM(RTRIM([UserGUID]))",
+            StringComparison.Ordinal
+        );
+        var cashierUserGuidBackfillIndex = migrator.IndexOf(
+            "INNER JOIN [User] AS [linkedUser]",
+            StringComparison.Ordinal
+        );
+        var cashierDuplicateCleanupIndex = migrator.IndexOf(
+            "ROW_NUMBER() OVER (PARTITION BY [UserGUID]",
+            StringComparison.Ordinal
+        );
+        var cashierUniqueIndex = migrator.IndexOf(
+            "CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserGUID_Active]",
+            StringComparison.Ordinal
+        );
+        var cashierBarcodeDuplicateCleanupIndex = migrator.IndexOf(
+            "ROW_NUMBER() OVER (PARTITION BY [UserBarcode]",
+            StringComparison.Ordinal
+        );
+        var cashierBarcodeUniqueIndex = migrator.IndexOf(
+            "CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserBarcode_Active]",
+            StringComparison.Ordinal
+        );
 
         // 关键位置：旧表缺列时必须先补齐索引依赖列，再创建索引，否则启动迁移会在补列前失败。
         Assert.True(
@@ -98,6 +150,30 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.True(
             wpfPolicyIndex > wpfPolicyColumnBackfillIndex,
             "WPF 策略表唯一索引必须晚于 Channel 等缺列补齐。"
+        );
+        Assert.True(
+            cashierUserGuidNormalizeIndex > cashierUserGuidColumnIndex,
+            "收银条码 UserGUID 必须先 trim 规范化，避免空格绕过有效唯一约束。"
+        );
+        Assert.True(
+            cashierUserGuidBackfillIndex > cashierUserGuidNormalizeIndex,
+            "收银条码 UserGUID 规范化后才能从旧 OperatorUser 的确定后台 UserGUID 做兼容回填。"
+        );
+        Assert.True(
+            cashierDuplicateCleanupIndex > cashierUserGuidBackfillIndex,
+            "收银条码有效唯一索引前必须先补齐 UserGUID 并清理历史重复有效条码。"
+        );
+        Assert.True(
+            cashierUniqueIndex > cashierDuplicateCleanupIndex,
+            "收银条码 UserGUID+Status 过滤唯一索引必须晚于重复数据清理 SQL。"
+        );
+        Assert.True(
+            cashierBarcodeDuplicateCleanupIndex > cashierUserGuidColumnIndex,
+            "收银条码 UserBarcode 过滤唯一索引前必须先清理历史重复有效条码。"
+        );
+        Assert.True(
+            cashierBarcodeUniqueIndex > cashierBarcodeDuplicateCleanupIndex,
+            "收银条码 UserBarcode+Status 过滤唯一索引必须晚于重复条码清理 SQL。"
         );
     }
 
@@ -327,6 +403,7 @@ public sealed class StartupSchemaMigratorStartupContractTests
             );
             if (
                 (Directory.Exists(Path.Combine(directory.FullName, ".git"))
+                    || File.Exists(Path.Combine(directory.FullName, ".git"))
                     || Directory.Exists(Path.Combine(directory.FullName, ".gitnexus")))
                 && File.Exists(programPath)
             )
