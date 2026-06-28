@@ -724,7 +724,7 @@ try
         dbContext.EnsureLoginSessionSchema();
         await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
         await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
-        // dbContext.CreateTable();
+         dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 
