@@ -633,7 +633,7 @@ public sealed class LinklyBackendTerminalClient(
             status = await PresentStatusAsync(settings, status, message: null, cancellationToken, MarkManualCancelRequested, MarkSignatureDeclineRequested, signatureSlipPrintState);
         }
 
-        if (string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) &&
+        if (IsCompletedOrPendingSuccess(status) &&
             !HasReceipt(status))
         {
             for (var attempt = 0; attempt < 3 && !HasReceipt(status); attempt++)
@@ -1711,7 +1711,7 @@ public sealed class LinklyBackendTerminalClient(
         var amount = transactionResult.Amount ?? requestedAmount;
         var receiptText = ReadReceiptText(status, suppressPrintedReceipt);
         var transaction = ToCardTransaction(transactionResult, amount, receiptText);
-        var approved = string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) &&
+        var approved = IsCompletedOrPendingSuccess(status) &&
             transactionResult.Succeeded;
         var reference = LinklyBackendPaymentReference.Format(
             transaction.TxnRef ?? transactionResult.SessionId,
@@ -2303,7 +2303,55 @@ public sealed class LinklyBackendTerminalClient(
         return string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase) ||
-            IsCancelledStatus(status.Status);
+            IsCancelledStatus(status.Status) ||
+            HasOfficialPendingSuccess(status);
+    }
+
+    private static bool IsCompletedOrPendingSuccess(LinklyCloudBackendSessionResponse status)
+    {
+        return string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+            HasOfficialPendingSuccess(status);
+    }
+
+    private static bool HasOfficialPendingSuccess(LinklyCloudBackendSessionResponse status)
+    {
+        // Pending 但已有官方交易成功证据时，必须收尾成功交易，避免终端已批准而 WPF 继续等待。
+        return string.Equals(status.Status, StatusPending, StringComparison.OrdinalIgnoreCase) &&
+            HasOfficialSuccessEvidence(status);
+    }
+
+    private static bool HasOfficialSuccessEvidence(LinklyCloudBackendSessionResponse status)
+    {
+        if (status.TransactionSuccess == false)
+        {
+            return false;
+        }
+
+        if (status.TransactionSuccess == true ||
+            LinklyApprovalResponseCodes.IsApproved(NormalizeOptional(status.ResponseCode)))
+        {
+            return true;
+        }
+
+        var notification = (status.Notifications ?? []).LastOrDefault(IsTransactionNotification);
+        if (notification is null || string.IsNullOrWhiteSpace(notification.PayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(notification.PayloadJson);
+            var response = ReadResponse(document.RootElement);
+            return IsSuccessfulTransaction(
+                status.TransactionSuccess,
+                ReadString(response, "ResponseCode"),
+                ReadBool(response, "Success"));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool IsCancelledStatus(string? status)

@@ -603,6 +603,33 @@ namespace Hbpos.Api.Tests;
     }
 
     [Fact]
+    public async Task GetActiveSessionAsync_returns_completed_unacknowledged_session_to_block_new_payment()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "completed-unacknowledged",
+            Status = "Completed",
+            TxnRef = "TXN-COMPLETE",
+            TransactionSuccess = true,
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var response = await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal("completed-unacknowledged", response!.SessionId);
+        Assert.Equal("Completed", response.Status);
+        Assert.Null(response.ClientAcknowledgedAt);
+    }
+
+    [Fact]
     public async Task GetResumableSessionAsync_returns_active_session_before_completed_unacknowledged()
     {
         var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
@@ -1108,7 +1135,10 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("Completed", response.Status);
         Assert.Equal("Completed", persisted?.Status);
         Assert.Equal("00", persisted?.ResponseCode);
-        Assert.Null(await repository.GetActiveSessionAsync("Sandbox", "S01", "POS-01", CancellationToken.None));
+        var blockingSession = await repository.GetActiveSessionAsync("Sandbox", "S01", "POS-01", CancellationToken.None);
+        Assert.NotNull(blockingSession);
+        Assert.Equal(response.SessionId, blockingSession!.SessionId);
+        Assert.False(blockingSession.IsActive);
     }
 
     [Fact]
@@ -1590,6 +1620,68 @@ namespace Hbpos.Api.Tests;
     }
 
     [Fact]
+    public async Task RunStatusTestAsync_falls_back_to_latest_resumable_txn_ref_when_status_response_omits_txn_ref()
+    {
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.OK,
+            """
+            {
+              "Response": {
+                "Success": true,
+                "ResponseCode": "T0",
+                "ResponseText": "APPROVED"
+              }
+            }
+            """);
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var service = CreateService(transport, tokenProvider);
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "last-success",
+            Status = "Completed",
+            TxnRef = "LAST-TXN-44",
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var response = await service.RunStatusTestAsync("S01", "POS-01", "sandbox", CancellationToken.None);
+
+        Assert.True(response.Succeeded);
+        Assert.Equal("LAST-TXN-44", response.ResponseTxnRef);
+        Assert.Equal(("Sandbox", "S01", "POS-01"), Assert.Single(tokenProvider.Calls));
+    }
+
+    [Fact]
+    public void StatusTestResponse_serializes_txn_ref_alias_with_response_txn_ref()
+    {
+        var response = new LinklyCloudBackendStatusTestResponse(
+            "Sandbox",
+            "S01",
+            "POS-01",
+            "status-session",
+            DateTimeOffset.Parse("2026-06-29T00:00:00+00:00"),
+            200,
+            true,
+            "T0",
+            "APPROVED",
+            "LAST-TXN-44",
+            null,
+            null,
+            "ANZ Linkly Cloud transaction status test succeeded.");
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(response, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+        var root = document.RootElement;
+        Assert.Equal("LAST-TXN-44", root.GetProperty("responseTxnRef").GetString());
+        Assert.Equal("LAST-TXN-44", root.GetProperty("txnRef").GetString());
+    }
+
+    [Fact]
     public async Task GetHealthAsync_reports_not_ready_without_calling_active_session_when_configuration_is_incomplete()
     {
         var service = CreateService(
@@ -2026,7 +2118,10 @@ namespace Hbpos.Api.Tests;
         status = await service.GetStatusAsync("S01", "POS-01", "Sandbox", session.SessionId, CancellationToken.None);
         Assert.Equal("Completed", status?.Status);
         Assert.Equal("00", status?.ResponseCode);
-        Assert.Null(await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
+        var blockingSession = await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+        Assert.NotNull(blockingSession);
+        Assert.Equal(session.SessionId, blockingSession!.SessionId);
+        Assert.Equal("Completed", blockingSession.Status);
     }
 
     [Fact]

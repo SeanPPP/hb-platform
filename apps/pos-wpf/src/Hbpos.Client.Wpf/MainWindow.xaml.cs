@@ -85,7 +85,7 @@ public partial class MainWindow : Window
 
     private void CashierLoginButtonClick(object sender, RoutedEventArgs e)
     {
-        ClearCashierBarcodePasswordBoxAfterLogin();
+        ClearCashierBarcodePasswordBoxesAfterLogin();
     }
 
     private void ExecuteCashierLoginCommandFromPasswordBox()
@@ -97,15 +97,36 @@ public partial class MainWindow : Window
         }
 
         command.Execute(null);
-        ClearCashierBarcodePasswordBoxAfterLogin();
+        ClearCashierBarcodePasswordBoxesAfterLogin();
     }
 
-    private void ClearCashierBarcodePasswordBoxAfterLogin()
+    private void ClearCashierBarcodePasswordBoxesAfterLogin()
     {
         // 关键逻辑：PasswordBox 不能普通绑定，登录命令清空 VM 后还要同步清掉屏幕上的敏感输入。
         _ = Dispatcher.BeginInvoke(
             DispatcherPriority.Background,
-            new Action(() => CashierBarcodePasswordBox.Clear()));
+            new Action(() =>
+            {
+                CashierBarcodePasswordBox.Clear();
+                CashierLoginOverlayPasswordBox.Clear();
+            }));
+    }
+
+    private void CashierLoginOverlayIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is not true)
+        {
+            return;
+        }
+
+        // 关键逻辑：遮盖打开后立即把焦点交给扫码输入框，扫码枪可直接录入收银员条码。
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() =>
+            {
+                CashierLoginOverlayPasswordBox.Focus();
+                Keyboard.Focus(CashierLoginOverlayPasswordBox);
+            }));
     }
 
     private async void MainWindowLoaded(object sender, RoutedEventArgs e)

@@ -37,6 +37,30 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_uses_terminal_scope_when_attempt_cashier_differs_from_current_session()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-EMERGENCY",
+            txnRef: "TXN-EMERGENCY",
+            cashierId: "EMERGENCY");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus("Completed", sessionId: "SESSION-EMERGENCY", txnRef: "TXN-EMERGENCY", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Null(attempts.LastCashierId);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal("SESSION-EMERGENCY", backend.AcknowledgedSessionId);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_approved_acknowledge_failure_still_returns_completed_order_without_retrying_save()
     {
         var attempt = CreateAttempt(sessionId: "SESSION-001", txnRef: "TXN-001");
@@ -683,7 +707,8 @@ public sealed class CardPaymentRecoveryServiceTests
         string? sessionId,
         string? txnRef,
         LocalCardPaymentAttemptStatus status = LocalCardPaymentAttemptStatus.SessionStarted,
-        DateTimeOffset? acknowledgedAt = null)
+        DateTimeOffset? acknowledgedAt = null,
+        string cashierId = "C001")
     {
         var now = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
         return new LocalCardPaymentAttempt(
@@ -699,7 +724,7 @@ public sealed class CardPaymentRecoveryServiceTests
             JsonSerializer.Serialize(CreateDraft(), JsonOptions),
             "S001",
             "POS-01",
-            "C001",
+            cashierId,
             null,
             null,
             null,
@@ -850,6 +875,8 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public DateTimeOffset? AcknowledgedAt => _attempt?.AcknowledgedAt;
 
+        public string? LastCashierId { get; private set; }
+
         public Task CreateAsync(LocalCardPaymentAttempt attempt, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
@@ -922,10 +949,11 @@ public sealed class CardPaymentRecoveryServiceTests
         public Task<LocalCardPaymentAttempt?> GetLatestOpenAttemptAsync(
             string storeCode,
             string deviceCode,
-            string cashierId,
+            string? cashierId,
             string environment,
             CancellationToken cancellationToken = default)
         {
+            LastCashierId = cashierId;
             return Task.FromResult<LocalCardPaymentAttempt?>(_attempt);
         }
 

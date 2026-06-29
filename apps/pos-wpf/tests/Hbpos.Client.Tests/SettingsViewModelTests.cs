@@ -28,6 +28,23 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void Settings_view_binds_app_update_channel_as_one_way_display_text()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "SettingsView.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("<Run Text=\"{Binding AppUpdateChannelText, Mode=OneWay}\" />", xaml);
+    }
+
+    [Fact]
     public void Category_commands_switch_selected_category()
     {
         var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService());
@@ -1998,5 +2015,22 @@ public sealed class SettingsViewModelTests
             RequestedDialogs.Add(dialog);
             DialogRequested?.Invoke(this, dialog);
         }
+    }
+
+    private static string FindRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (Directory.Exists(Path.Combine(current.FullName, ".git")) ||
+                File.Exists(Path.Combine(current.FullName, "hb-platform.sln")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Unable to find repository root.");
     }
 }

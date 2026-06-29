@@ -178,6 +178,42 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
+    public async Task StartupSchemaMigrator_UserGuidBackfillUsesSeparateBatchAfterAddingColumn()
+    {
+        var repoRoot = FindRepoRoot();
+        var migratorPath = Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+        );
+
+        var migrator = await File.ReadAllTextAsync(migratorPath);
+
+        var addColumnIndex = migrator.IndexOf(
+            "ADD [UserGUID] nvarchar(50) NULL",
+            StringComparison.Ordinal
+        );
+        var normalizeIndex = migrator.IndexOf(
+            "SET [UserGUID] = LTRIM(RTRIM([UserGUID]))",
+            StringComparison.Ordinal
+        );
+
+        Assert.True(addColumnIndex >= 0, "收银条码迁移必须先补齐 UserGUID 列。");
+        Assert.True(normalizeIndex > addColumnIndex, "UserGUID 清理必须晚于补列。");
+
+        var executeAfterAddIndex = migrator.IndexOf(
+            "await db.Ado.ExecuteCommandAsync",
+            addColumnIndex,
+            StringComparison.Ordinal
+        );
+
+        // 关键位置：SQL Server 会先编译整个 batch，同一 batch 中 ADD 后再静态引用新列会触发 Invalid column name。
+        Assert.True(
+            executeAfterAddIndex > addColumnIndex && executeAfterAddIndex < normalizeIndex,
+            "CashRegisterUsers.UserGUID 补列必须先作为独立 batch 执行，再执行引用 UserGUID 的清理/回填 SQL。"
+        );
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_唯一索引前先清理Wpf重复数据()
     {
         var repoRoot = FindRepoRoot();

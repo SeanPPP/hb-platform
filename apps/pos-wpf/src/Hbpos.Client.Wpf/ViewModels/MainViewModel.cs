@@ -683,6 +683,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         !IsCashPaymentScreenActive &&
         !IsSpecialProductsScreenActive;
 
+    public bool IsCashierLoginOverlayOpen =>
+        CurrentScreen is not null &&
+        !ReferenceEquals(CurrentScreen, DeviceRegistration) &&
+        !IsDeviceReregistrationDialogOpen &&
+        Session.CashierSession is null;
+
     public string ActivePageTitleText => GetActivePageTitleText();
 
     private static readonly ObservableCollection<SyncQueueListItem> _emptySyncOrders = [];
@@ -1107,6 +1113,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _screenNavigator.Session = value;
         RefreshLocalizedShell();
         _screenNavigator.ApplySessionToScreens();
+        OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
     }
 
     partial void OnCashierBarcodeInputChanged(string value)
@@ -1127,6 +1134,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         RaiseScreenHostStateChanged();
+        OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
         _rawScannerService.SetActivePage((screen as IScannerInputTarget)?.ScannerPageId);
     }
 
@@ -1146,6 +1154,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnCustomerDisplayWindowModeChanged(CustomerDisplayWindowMode value)
     {
         IsCustomerDisplayOpen = value != CustomerDisplayWindowMode.Closed;
+    }
+
+    partial void OnIsDeviceReregistrationDialogOpenChanged(bool value)
+    {
+        // 关键逻辑：设备重注册弹窗优先级更高，打开或关闭时都要重新计算收银员登录遮盖。
+        OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
     }
 
     partial void OnSelectedCultureNameChanged(string value)
@@ -1767,7 +1781,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task<ReceiptPrintResult> PrintReceiptWithShellPermissionAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
     {
-        if (!TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
+        // 关键逻辑：自动卡支付/恢复小票是系统完成交易流程，不等同于人工补打上一张。
+        if (reason != ReceiptPrintReason.CardAuto &&
+            !TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
         {
             return new ReceiptPrintResult(false, StatusMessage, receipt.OrderGuid);
         }

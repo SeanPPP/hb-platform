@@ -340,6 +340,51 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task GetLatestOpenAttemptAsync_without_cashier_filter_returns_latest_open_attempt_for_terminal()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var baseTime = DateTimeOffset.Parse("2026-06-29T10:30:00+10:00");
+            var currentCashierAttempt = CreateAttempt(
+                attemptGuid: Guid.Parse("aaaaaaaa-1111-1111-1111-111111111111"),
+                cashierId: "C001",
+                status: LocalCardPaymentAttemptStatus.Pending,
+                updatedAt: baseTime);
+            var emergencyAttempt = CreateAttempt(
+                attemptGuid: Guid.Parse("aaaaaaaa-2222-2222-2222-222222222222"),
+                cashierId: "EMERGENCY",
+                status: LocalCardPaymentAttemptStatus.SessionStarted,
+                updatedAt: baseTime.AddMinutes(1));
+            var otherTerminalAttempt = CreateAttempt(
+                attemptGuid: Guid.Parse("aaaaaaaa-3333-3333-3333-333333333333"),
+                deviceCode: "POS-02",
+                cashierId: "EMERGENCY",
+                status: LocalCardPaymentAttemptStatus.Recovering,
+                updatedAt: baseTime.AddMinutes(2));
+
+            await schema.InitializeAsync();
+            await repository.CreateAsync(currentCashierAttempt);
+            await repository.CreateAsync(emergencyAttempt);
+            await repository.CreateAsync(otherTerminalAttempt);
+
+            var saved = await repository.GetLatestOpenAttemptAsync("S001", "POS-01", null, "sandbox");
+
+            Assert.NotNull(saved);
+            Assert.Equal(emergencyAttempt.AttemptGuid, saved.AttemptGuid);
+            Assert.Equal("EMERGENCY", saved.CashierId);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task GetLatestOpenAttemptAsync_returns_requires_review_attempt()
     {
         var databasePath = CreateTempDatabasePath();

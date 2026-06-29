@@ -75,7 +75,8 @@ public sealed class CardPaymentRecoveryService(
         var attempt = await attemptRepository.GetLatestOpenAttemptAsync(
             session.StoreCode,
             session.DeviceCode,
-            session.CashierId,
+            // 中文注释：断电/退出恢复属于同一终端安全检查，不能被重启后的当前收银员阻断。
+            cashierId: null,
             settings.Environment.ToString(),
             cancellationToken);
         LogRecoveryScan(settings, session, attempt);
@@ -809,6 +810,8 @@ public sealed class CardPaymentRecoveryService(
                 storeCode = session.StoreCode,
                 deviceCode = session.DeviceCode,
                 cashierId = session.CashierId,
+                requestedCashierId = (string?)null,
+                attemptCashierId = attempt?.CashierId,
                 selectedEnvironment = settings.Environment.ToString(),
                 certCase = "4.1.1",
                 transactionReference = NormalizeOptional(attempt?.SessionId) ?? NormalizeOptional(attempt?.TxnRef),

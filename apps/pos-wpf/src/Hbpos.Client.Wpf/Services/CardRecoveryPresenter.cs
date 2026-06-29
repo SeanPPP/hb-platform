@@ -425,12 +425,14 @@ internal sealed class CardRecoveryPresenter
 
     private async Task PrintRecoveredReceiptAsync()
     {
-        if (_cardRecoveryDialogReceipt is null)
+        // 关键逻辑：命令可能被测试或脚本直接调用，不能只依赖按钮禁用来拦截无权限手动打印。
+        var receipt = _cardRecoveryDialogReceipt;
+        if (receipt is null || !CanPrintRecoveredReceipt())
         {
             return;
         }
 
-        await PrintReceiptAsync(_cardRecoveryDialogReceipt, ReceiptPrintReason.CardAuto);
+        await PrintReceiptAsync(receipt, ReceiptPrintReason.CardAuto);
     }
 
     private async Task<IReadOnlyList<ReceiptPreviewRow>> BuildReceiptPreviewRowsAsync(ReceiptDetails receipt)

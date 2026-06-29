@@ -42,6 +42,36 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Cashier_login_overlay_stays_open_until_cashier_session_exists()
+    {
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.True(viewModel.IsCashierLoginOverlayOpen);
+
+        viewModel.CashierBarcodeInput = "BAR-1";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+    }
+
+    [Fact]
+    public async Task Cashier_login_overlay_does_not_cover_device_reregistration_dialog()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.IsDeviceReregistrationDialogOpen = true;
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+    }
+
+    [Fact]
     public async Task Active_page_title_uses_payment_mode_for_payment_screen()
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -284,7 +314,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_payment_completion_auto_print_requires_receipt_permission()
+    public async Task Card_payment_completion_auto_prints_without_receipt_permission()
     {
         var printService = new RecordingReceiptPrintService();
         var cashierContext = new CashierSessionContext();
@@ -299,11 +329,11 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
-        await Task.Delay(50);
-        Assert.Empty(printService.Calls);
-        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out var deniedMessage));
-        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
     }
 
     [Fact]
@@ -2770,7 +2800,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_payment_recovery_completed_requires_receipt_permission_for_auto_and_manual_print()
+    public async Task Card_payment_recovery_completed_auto_prints_without_receipt_permission_but_manual_print_stays_blocked()
     {
         var printService = new RecordingReceiptPrintService();
         var cashierContext = new CashierSessionContext();
@@ -2792,16 +2822,17 @@ public sealed class MainViewModelScannerTests
         var recovered = await InvokeRecoverCardPaymentAttemptAsync(viewModel, navigateToPaymentOnDraft: false);
 
         Assert.True(recovered);
-        Assert.Empty(printService.Calls);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
         Assert.True(viewModel.IsCardRecoveryResultDialogOpen);
         Assert.NotNull(viewModel.CardRecoveryResultDialog);
         Assert.False(viewModel.CardRecoveryResultDialog!.CanPrintReceipt);
-        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out var deniedMessage));
-        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
 
         await viewModel.PrintRecoveredReceiptCommand.ExecuteAsync(null);
         await Task.Delay(50);
-        Assert.Empty(printService.Calls);
+        Assert.Single(printService.Calls);
     }
 
     [Fact]
@@ -3099,6 +3130,7 @@ public sealed class MainViewModelScannerTests
         PosCartService? cart = null,
         IRawScannerService? rawScannerService = null,
         ICashierSessionContext? cashierSessionContext = null,
+        ICashierLoginService? cashierLoginService = null,
         bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -3149,6 +3181,7 @@ public sealed class MainViewModelScannerTests
             orderUploadExecutionService: orderUploadExecutionService,
             cashDrawerService: cashDrawerService,
             cashierSessionContext: cashierSessionContext,
+            cashierLoginService: cashierLoginService,
             enforceCashierPermissions: enforceCashierPermissions);
     }
 
@@ -3553,6 +3586,18 @@ public sealed class MainViewModelScannerTests
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeCashierLoginService(CashierSessionDto session) : ICashierLoginService
+    {
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CashierLoginResult.Success(session));
         }
     }
 

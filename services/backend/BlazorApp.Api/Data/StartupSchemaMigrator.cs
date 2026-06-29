@@ -24,7 +24,7 @@ namespace BlazorApp.Api.Data
             ILogger logger
         )
         {
-            const string sql =
+            const string addUserGuidColumnSql =
                 @"
 IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
 BEGIN
@@ -33,7 +33,15 @@ BEGIN
         ALTER TABLE [CashRegisterUsers]
         ADD [UserGUID] nvarchar(50) NULL;
     END;
+END;";
 
+            // 关键位置：SQL Server 同一 batch 中 ADD 后再静态引用新列会先编译失败，补列必须先单独执行。
+            await db.Ado.ExecuteCommandAsync(addUserGuidColumnSql);
+
+            const string sql =
+                @"
+IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
+BEGIN
     IF COL_LENGTH('CashRegisterUsers', 'UserGUID') IS NOT NULL
     BEGIN
         UPDATE [CashRegisterUsers]

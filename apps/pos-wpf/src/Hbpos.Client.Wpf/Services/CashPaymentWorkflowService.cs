@@ -62,7 +62,8 @@ public sealed class CashPaymentWorkflowService(
     ICardTerminalSettingsProvider? cardTerminalSettingsProvider = null,
     ILocalSquarePaymentAttemptRepository? squarePaymentAttemptRepository = null,
     ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null,
-    ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null) : ICashPaymentWorkflowService
+    ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null,
+    ILinklyBackendTerminalClient? linklyBackendTerminalClient = null) : ICashPaymentWorkflowService
 {
     private static readonly JsonSerializerOptions CardAttemptJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -928,6 +929,52 @@ public sealed class CashPaymentWorkflowService(
                 attemptGuid,
                 DateTimeOffset.UtcNow,
                 cancellationToken);
+            await AcknowledgeCompletedCardAttemptAsync(attemptGuid, cancellationToken);
+        }
+    }
+
+    private async Task AcknowledgeCompletedCardAttemptAsync(
+        Guid attemptGuid,
+        CancellationToken cancellationToken)
+    {
+        if (linklyBackendTerminalClient is null || cardTerminalSettingsProvider is null)
+        {
+            return;
+        }
+
+        var attempt = await cardPaymentAttemptRepository!.GetAttemptAsync(attemptGuid, cancellationToken);
+        if (attempt is null ||
+            attempt.AcknowledgedAt is not null ||
+            string.IsNullOrWhiteSpace(attempt.SessionId))
+        {
+            return;
+        }
+
+        var settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
+        if (settings.Processor != CardProcessorKind.Linkly ||
+            CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode) != LinklyConnectionMode.CloudBackendAsync ||
+            !Enum.TryParse<CardTerminalEnvironment>(attempt.Environment, ignoreCase: true, out var environment))
+        {
+            return;
+        }
+
+        try
+        {
+            // 订单已经落地后才确认 Linkly session，避免恢复列表提前丢失成功交易。
+            await linklyBackendTerminalClient.AcknowledgeSessionAsync(
+                settings with { Environment = environment },
+                attempt.SessionId,
+                cancellationToken);
+            await cardPaymentAttemptRepository.MarkAcknowledgedAsync(
+                attemptGuid,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"payment completion acknowledge failed attemptGuid={attemptGuid} sessionId={attempt.SessionId} error={ex.GetType().Name}");
         }
     }
 

@@ -1,6 +1,7 @@
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 using System.Text.Json;
 
@@ -363,6 +364,7 @@ public sealed class CashPaymentWorkflowServiceTests
                 Assert.Equal("TXN-1", attempt.TxnRef);
                 Assert.Equal(LocalCardPaymentAttemptStatus.SessionStarted, attempt.Status);
             });
+        var backend = new RecordingLinklyBackendTerminalClient();
         var workflow = new CashPaymentWorkflowService(
             new CashCheckoutService(),
             orders,
@@ -370,7 +372,8 @@ public sealed class CashPaymentWorkflowServiceTests
             cardTerminalClient: terminal,
             cardPaymentAttemptRepository: attempts,
             cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
-            linklyPaymentAttemptContextAccessor: linklyAttemptContextAccessor);
+            linklyPaymentAttemptContextAccessor: linklyAttemptContextAccessor,
+            linklyBackendTerminalClient: backend);
         var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
         var tenderResult = await workflow.AddTenderAsync(
@@ -391,6 +394,9 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal("backend-session-1", attempts.Attempts.Single().SessionId);
         Assert.Equal("TXN-1", attempts.Attempts.Single().TxnRef);
         Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Attempts.Single().Status);
+        Assert.NotNull(attempts.Attempts.Single().AcknowledgedAt);
+        Assert.Equal("backend-session-1", backend.AcknowledgedSessionId);
+        Assert.Equal(CardTerminalEnvironment.Sandbox, backend.AcknowledgedSettings?.Environment);
         var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(
             attempts.Attempts.Single().OrderDraftJson,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -1428,7 +1434,7 @@ public sealed class CashPaymentWorkflowServiceTests
         public Task<LocalCardPaymentAttempt?> GetLatestOpenAttemptAsync(
             string storeCode,
             string deviceCode,
-            string cashierId,
+            string? cashierId,
             string environment,
             CancellationToken cancellationToken = default)
         {
@@ -1665,6 +1671,71 @@ public sealed class CashPaymentWorkflowServiceTests
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
+        }
+    }
+
+    private sealed class RecordingLinklyBackendTerminalClient : ILinklyBackendTerminalClient
+    {
+        public string? AcknowledgedSessionId { get; private set; }
+
+        public CardTerminalSettings? AcknowledgedSettings { get; private set; }
+
+        public Task<LinklyConnectionTestResult> TestConnectionAsync(
+            CardTerminalEnvironment environment,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<LinklyConnectionTestResult> TestTransactionStatusAsync(
+            CardTerminalEnvironment environment,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<PaymentAuthorizationResult> PurchaseAsync(
+            decimal amount,
+            PosSessionState session,
+            CardTerminalSettings settings,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            CardTerminalSettings settings,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<LinklyCloudBackendSessionResponse?> GetResumableSessionAsync(
+            CardTerminalSettings settings,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<LinklyCloudBackendSessionResponse> RecoverSessionAsync(
+            CardTerminalSettings settings,
+            string sessionId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<LinklyCloudBackendSessionResponse> ResumeSessionUntilFinalAsync(
+            CardTerminalSettings settings,
+            LinklyCloudBackendSessionResponse activeStatus,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<LinklyCloudBackendSessionResponse> GetSessionStatusAsync(
+            CardTerminalSettings settings,
+            string sessionId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task AcknowledgeSessionAsync(
+            CardTerminalSettings settings,
+            string sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            AcknowledgedSettings = settings;
+            AcknowledgedSessionId = sessionId;
+            return Task.CompletedTask;
         }
     }
 

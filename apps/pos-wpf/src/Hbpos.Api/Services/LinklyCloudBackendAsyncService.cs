@@ -823,6 +823,12 @@ public class LinklyCloudBackendAsyncService(
             out var responseTxnRef,
             out var responseDate,
             out var responseTime);
+        var resolvedResponseTxnRef = await ResolveStatusTestTxnRefAsync(
+            responseTxnRef,
+            normalizedEnvironment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken);
         var succeeded = transportResponse.StatusCode == HttpStatusCode.OK &&
             status &&
             IsSuccessfulStatusTestResponse(responseCode);
@@ -837,7 +843,7 @@ public class LinklyCloudBackendAsyncService(
             succeeded,
             responseCode,
             responseText,
-            responseTxnRef,
+            resolvedResponseTxnRef,
             responseDate,
             responseTime,
             message);
@@ -858,6 +864,7 @@ public class LinklyCloudBackendAsyncService(
                 result.HttpStatus,
                 result.ResponseCode,
                 result.ResponseText,
+                result.TxnRef,
                 result.ResponseTxnRef,
                 result.ResponseDate,
                 result.ResponseTime
@@ -867,6 +874,28 @@ public class LinklyCloudBackendAsyncService(
                 result.RequestedAt
             });
         return result;
+    }
+
+    private async Task<string?> ResolveStatusTestTxnRefAsync(
+        string? responseTxnRef,
+        string normalizedEnvironment,
+        string normalizedStoreCode,
+        string normalizedDeviceCode,
+        CancellationToken cancellationToken)
+    {
+        var normalizedResponseTxnRef = NormalizeOptional(responseTxnRef);
+        if (normalizedResponseTxnRef is not null)
+        {
+            return normalizedResponseTxnRef;
+        }
+
+        // 3.1.1/3.1.2 的 Status 请求不能带 TxnRef；终端回包省略时，用本机最近未确认交易补齐响应证据。
+        var latestSession = await repository.GetResumableSessionAsync(
+            normalizedEnvironment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken);
+        return NormalizeOptional(latestSession?.TxnRef);
     }
 
     public async Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
@@ -3739,8 +3768,16 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
     {
         lock (_gate)
         {
-            var session = _sessions.Values.FirstOrDefault(existing =>
-                existing.IsActive && SameTerminal(existing, environment, storeCode, deviceCode));
+            var session = _sessions.Values
+                .Where(existing =>
+                    SameTerminal(existing, environment, storeCode, deviceCode) &&
+                    (existing.IsActive ||
+                        IsFinalForClientRecovery(existing) && existing.ClientAcknowledgedAt is null))
+                // 未确认的最终交易也要挡住新支付，避免成功收尾前重复刷卡覆盖上一笔。
+                .OrderBy(existing => existing.IsActive ? 0 : 1)
+                .ThenByDescending(existing => existing.UpdatedAt)
+                .ThenByDescending(existing => existing.Id)
+                .FirstOrDefault();
             return Task.FromResult(session is null ? null : Clone(session));
         }
     }
@@ -4143,8 +4180,14 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [DeviceCode] = @DeviceCode
-              AND [IsActive] = 1
-            ORDER BY [UpdatedAt] DESC, [Id] DESC;
+              AND (
+                    [IsActive] = 1
+                    OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
+                  )
+            ORDER BY
+                CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
+                [UpdatedAt] DESC,
+                [Id] DESC;
             """;
 
         return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendSessionRecord>(

@@ -219,7 +219,7 @@
                                                Margin="0,5,0,0">
                                         <Run Text="{loc:Loc settings.section.appUpdate.channel}" />
                                         <Run Text=": " />
-                                        <Run Text="{Binding AppUpdateChannelText}" />
+                                        <Run Text="{Binding AppUpdateChannelText, Mode=OneWay}" />
                                     </TextBlock>
                                 </StackPanel>
                             </DockPanel>

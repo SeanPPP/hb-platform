@@ -113,7 +113,7 @@ public interface ILocalCardPaymentAttemptRepository
     Task<LocalCardPaymentAttempt?> GetLatestOpenAttemptAsync(
         string storeCode,
         string deviceCode,
-        string cashierId,
+        string? cashierId,
         string environment,
         CancellationToken cancellationToken = default);
 
@@ -309,7 +309,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
     public async Task<LocalCardPaymentAttempt?> GetLatestOpenAttemptAsync(
         string storeCode,
         string deviceCode,
-        string cashierId,
+        string? cashierId,
         string environment,
         CancellationToken cancellationToken = default)
     {
@@ -340,7 +340,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             FROM LocalCardPaymentAttempts
             WHERE StoreCode = $StoreCode
               AND DeviceCode = $DeviceCode
-              AND CashierId = $CashierId
+              -- 中文注释：启动恢复按终端兜底查询，手动传入 cashier 时仍保留原过滤。
+              AND ($CashierId IS NULL OR CashierId = $CashierId)
               AND Environment = $Environment
               AND (
                     Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
@@ -351,7 +352,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             """;
         command.Parameters.AddWithValue("$StoreCode", storeCode);
         command.Parameters.AddWithValue("$DeviceCode", deviceCode);
-        command.Parameters.AddWithValue("$CashierId", cashierId);
+        command.Parameters.AddWithValue("$CashierId", (object?)cashierId ?? DBNull.Value);
         command.Parameters.AddWithValue("$Environment", environment);
         for (var i = 0; i < TerminalStatuses.Length; i++)
         {

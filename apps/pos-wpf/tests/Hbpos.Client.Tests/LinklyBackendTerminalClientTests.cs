@@ -206,6 +206,7 @@ public sealed class LinklyBackendTerminalClientTests
         using var responseLog = FindLinklyLog(logs.Lines, "transaction-status-test", "response");
         Assert.Equal(200, responseLog.RootElement.GetProperty("httpStatus").GetInt32());
         Assert.Equal("LAST-TXN-1", responseLog.RootElement.GetProperty("details").GetProperty("txnRef").GetString());
+        Assert.Equal("LAST-TXN-1", responseLog.RootElement.GetProperty("details").GetProperty("responseTxnRef").GetString());
         Assert.Equal("DECLINED", responseLog.RootElement.GetProperty("response").GetProperty("body").GetProperty("data").GetProperty("responseText").GetString());
     }
 
@@ -2745,6 +2746,55 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Equal(1, dialog.CloseCallCount);
         var closeTokenWasCancelled = Assert.Single(dialog.CloseTokenCancellationStates);
         Assert.False(closeTokenWasCancelled);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_completes_when_pending_status_has_official_success_evidence()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "pending-approved-session",
+                        "status": "Pending",
+                        "txnRef": "260601120134",
+                        "responseCode": "00",
+                        "responseText": "APPROVED",
+                        "transactionSuccess": true,
+                        "displayText": "APPROVED",
+                        "receiptText": "PENDING SUCCESS RECEIPT",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException("Official success evidence should complete without another status poll.")
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.Equal("PENDING SUCCESS RECEIPT", Assert.Single(result.CardTransactions!).ReceiptText);
+        Assert.Equal(1, dialog.CloseCallCount);
+        Assert.DoesNotContain(requests, request =>
+            request.RequestUri!.AbsolutePath.Contains("/pending-approved-session", StringComparison.Ordinal));
     }
 
     [Fact]

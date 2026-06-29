@@ -831,6 +831,15 @@
   <data name="shell.languageToggle" xml:space="preserve">
     <value>中 / EN</value>
   </data>
+  <data name="shell.cashierLogin.overlayTitle" xml:space="preserve">
+    <value>请先扫码登录收银员</value>
+  </data>
+  <data name="shell.cashierLogin.overlayMessage" xml:space="preserve">
+    <value>扫描员工条码后才能继续使用收银主界面。</value>
+  </data>
+  <data name="shell.cashierLogin.overlayAction" xml:space="preserve">
+    <value>登录收银员</value>
+  </data>
   <data name="shell.cashierLogin.inputHint" xml:space="preserve">
     <value>收银员条码</value>
   </data>
