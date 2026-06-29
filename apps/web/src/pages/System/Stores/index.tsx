@@ -379,6 +379,12 @@ export default function SystemStoresPage() {
       render: renderBrandName,
     },
     {
+      title: t('system.stores.abn'),
+      dataIndex: 'abn',
+      width: 130,
+      render: (value?: string) => value || '--',
+    },
+    {
       title: t('system.stores.contactPhone'),
       dataIndex: 'contactPhone',
       width: 130,
@@ -491,7 +497,7 @@ export default function SystemStoresPage() {
           dataSource={data}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1350 }}
+          scroll={{ x: 1480 }}
           onChange={handleTableChange}
           pagination={{
             current: page,
@@ -545,6 +551,7 @@ export default function SystemStoresPage() {
               <Descriptions.Item label={t('system.stores.storeName')}>{detailStore.storeName}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.storeCode')}>{detailStore.storeCode}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.brandName')}>{detailStore.brandName || '--'}</Descriptions.Item>
+              <Descriptions.Item label={t('system.stores.abn')}>{detailStore.abn || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.contactPhone')}>{detailStore.contactPhone || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.contactEmail')}>{detailStore.contactEmail || '--'}</Descriptions.Item>
               <Descriptions.Item label={t('system.stores.cashRegisterEnabled')}>
@@ -620,6 +627,9 @@ export default function SystemStoresPage() {
           <Form.Item label={t('system.stores.brandName')} name="brandName" rules={[{ max: 100, message: t('system.stores.brandNameMaxLength') }]}>
             <Input autoComplete="off" />
           </Form.Item>
+          <Form.Item label={t('system.stores.abn')} name="abn" rules={[{ max: 20, message: t('system.stores.abnMaxLength') }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
           <Form.Item label={t('system.stores.contactPhone')} name="contactPhone" rules={[{ max: 20, message: t('system.stores.contactPhoneMaxLength') }]}>
             <Input autoComplete="off" />
           </Form.Item>
@@ -674,6 +684,9 @@ export default function SystemStoresPage() {
             <Input />
           </Form.Item>
           <Form.Item label={t('system.stores.brandName')} name="brandName" rules={[{ max: 100, message: t('system.stores.brandNameMaxLength') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item label={t('system.stores.abn')} name="abn" rules={[{ max: 20, message: t('system.stores.abnMaxLength') }]}>
             <Input />
           </Form.Item>
           <Form.Item label={t('system.stores.contactPhone')} name="contactPhone" rules={[{ max: 20, message: t('system.stores.contactPhoneMaxLength') }]}>
