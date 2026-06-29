@@ -95,6 +95,7 @@ export default function Home() {
   const [autoAddWhenSingle, setAutoAddWhenSingle] = useState(true);
   const [keyword, setKeyword] = useState("");
   const [scannedProducts, setScannedProducts] = useState<StoreOrderProductItem[] | null>(null);
+  const [scannedProductTraceIds, setScannedProductTraceIds] = useState<Record<string, string>>({});
   const [selectedCategoryGUID, setSelectedCategoryGUID] = useState<string | undefined>();
   const [selectedGrade, setSelectedGrade] = useState<string | undefined>();
   const [expandedCategoryGUIDs, setExpandedCategoryGUIDs] = useState<string[]>([]);
@@ -132,6 +133,7 @@ export default function Home() {
       setSearchInput("");
       setKeyword("");
       setScannedProducts([product]);
+      setScannedProductTraceIds(scanTraceId ? { [product.productCode]: scanTraceId } : {});
       setSelectedCategoryGUID(undefined);
       setSelectedGrade(undefined);
 
@@ -260,6 +262,7 @@ export default function Home() {
   useEffect(() => {
     // 门店切换后清空旧门店扫码结果，避免迟到的加购反馈落到新门店界面。
     setScannedProducts(null);
+    setScannedProductTraceIds({});
   }, [selectedStoreCode]);
 
   useEffect(() => {
@@ -348,10 +351,12 @@ export default function Home() {
   }, [cartSummary?.items, productsQuery.dynamicDataMap, scannedProducts]);
   const handleApplySearch = useCallback(() => {
     setScannedProducts(null);
+    // 搜索框可能接收到同一扫码枪输入，保留商品 trace 让同商品数量调整继续走 scan-update。
     setKeyword(searchInput.trim());
   }, [searchInput]);
   const handleClearSearchAndScan = useCallback(() => {
       setScannedProducts(null);
+      setScannedProductTraceIds({});
       setSearchInput("");
       setKeyword("");
       setSelectedGrade(undefined);
@@ -412,7 +417,11 @@ export default function Home() {
     const mutationStoreCode = selectedStoreCodeRef.current;
     setActiveCartMutationProductCode(product.productCode);
     try {
-      await addToCart.mutateAsync({ product });
+      await addToCart.mutateAsync({
+        product,
+        // 扫码结果手动加购继续透传 trace，方便后端日志串起同一次扫码链路。
+        scanTraceId: scannedProductTraceIds[product.productCode],
+      });
       setNoticeMessage(
         t("messages.addedToCart", { name: product.productName || product.productCode })
       );
@@ -439,6 +448,7 @@ export default function Home() {
       await updateCartQuantity.mutateAsync({
         nextQuantity,
         product,
+        scanTraceId: scannedProductTraceIds[product.productCode],
       });
     } catch (error) {
       setNoticeMessage(getErrorMessage(error, "messages.updateQtyFailed"));
@@ -459,6 +469,7 @@ export default function Home() {
       await updateCartQuantity.mutateAsync({
         nextQuantity,
         product,
+        scanTraceId: scannedProductTraceIds[product.productCode],
       });
     } catch (error) {
       setNoticeMessage(getErrorMessage(error, "messages.updateQtyFailed"));

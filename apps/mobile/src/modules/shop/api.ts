@@ -375,8 +375,9 @@ export async function addToCart(
   payload: AddToCartPayload,
   scanTraceId?: string
 ): Promise<StoreOrderCart | null> {
+  const path = scanTraceId ? "/react/v1/store-order/cart/scan-add" : "/react/v1/store-order/cart/add";
   const response = await apiClient.post(
-    "/react/v1/store-order/cart/add",
+    path,
     payload,
     buildScanTraceHeaders(scanTraceId)
   );
@@ -387,8 +388,9 @@ export async function updateCartQuantity(
   payload: UpdateCartQuantityPayload,
   scanTraceId?: string
 ): Promise<StoreOrderCart | null> {
+  const path = scanTraceId ? "/react/v1/store-order/cart/scan-update" : "/react/v1/store-order/cart/update";
   const response = await apiClient.post(
-    "/react/v1/store-order/cart/update",
+    path,
     payload,
     buildScanTraceHeaders(scanTraceId)
   );
