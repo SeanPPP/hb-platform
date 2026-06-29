@@ -39,6 +39,7 @@ import dayjs from 'dayjs'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import ProductPicker from './ProductPicker'
+import { getPromotionEditorStoreCodes } from './promotionStoreScope'
 
 type DataType = PromotionListDto & { key: string }
 
@@ -56,6 +57,7 @@ export default function PromotionsPage() {
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editorForm] = Form.useForm()
+  const selectedEditorStores = Form.useWatch('stores', editorForm) as string[] | undefined
   const inFlightRef = useRef(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [productInfoMap, setProductInfoMap] = useState<Record<string, PosProductDto>>({})
@@ -124,7 +126,7 @@ export default function PromotionsPage() {
         effectiveEnd: dto.effectiveEnd ? dayjs(dto.effectiveEnd) : null,
         applyQuantity: dto.applyQuantity, fixedPrice: dto.fixedPrice,
         maxApplicationsPerOrder: dto.maxApplicationsPerOrder ?? undefined,
-        stores: dto.stores.map((s) => s.storeCode),
+        stores: getPromotionEditorStoreCodes(dto),
         products: dto.products.map((p) => ({ id: p.id, productCode: p.productCode, unitWeight: p.unitWeight ?? 1 })),
       })
       loadSupplierNames()
@@ -226,6 +228,8 @@ export default function PromotionsPage() {
 
   useEffect(() => { loadData() }, [page, pageSize, sortField, sortOrder])
 
+  const editorUsesAllStoresScope = !selectedEditorStores?.length
+
   return (
     <Card title={t('posAdmin.promotions.title', '促销管理（满减/固定组合价）')} extra={<Button type="primary" onClick={openCreate}>{t('posAdmin.promotions.createPromotion', '新建促销')}</Button>}>
       <Form form={form} layout="inline" onFinish={loadData} style={{ marginBottom: 16 }}>
@@ -256,10 +260,15 @@ export default function PromotionsPage() {
           </Space>
           <Form.Item label={t('posAdmin.promotions.applicableStores', '适用分店')}>
             <Space wrap>
-              <Form.Item name="stores" noStyle><Select mode="multiple" options={storeOptions} showSearch optionFilterProp="label" allowClear style={{ minWidth: 360 }} /></Form.Item>
+              <Form.Item name="stores" noStyle><Select mode="multiple" options={storeOptions} showSearch optionFilterProp="label" allowClear placeholder={t('posAdmin.promotions.allStoresPlaceholder', '全部分店')} style={{ minWidth: 360 }} /></Form.Item>
               <Button onClick={() => editorForm.setFieldsValue({ stores: storeOptions.map((x) => x.value) })}>{t('posAdmin.promotions.selectAll')}</Button>
-              <Button onClick={() => editorForm.setFieldsValue({ stores: [] })}>{t('posAdmin.promotions.clearAll')}</Button>
+              <Button onClick={() => editorForm.setFieldsValue({ stores: [] })}>{t('posAdmin.promotions.setAllStores')}</Button>
             </Space>
+            {editorUsesAllStoresScope ? (
+              <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
+                {t('posAdmin.promotions.allStoresScopeHint', '未选择具体分店时，促销适用于全部分店。')}
+              </div>
+            ) : null}
           </Form.Item>
           <Form.List name="products">
             {(fields, { add: _add, remove }) => {
