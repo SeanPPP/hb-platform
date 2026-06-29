@@ -44,7 +44,9 @@ public sealed record CatalogSyncProgress(
 public sealed class LocalCatalogSyncService(
     ILocalCatalogRepository localCatalogRepository,
     ICatalogApiClient catalogApiClient,
-    IUiPriorityCoordinator? uiPriorityCoordinator = null) : ILocalCatalogSyncService
+    IUiPriorityCoordinator? uiPriorityCoordinator = null,
+    ILocalPromotionRepository? localPromotionRepository = null,
+    IPromotionApiClient? promotionApiClient = null) : ILocalCatalogSyncService
 {
     private const int ComparePageSize = 2000;
     private const int DownloadPageSize = 5000;
@@ -276,16 +278,43 @@ public sealed class LocalCatalogSyncService(
                 }
             }
 
-            await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
-            var promotionStopwatch = Stopwatch.StartNew();
-            var promotionResponse = await catalogApiClient.GetPromotionRulesAsync(storeCode, cancellationToken);
-            await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
-            await localCatalogRepository.ReplacePromotionRulesAsync(
-                storeCode,
-                promotionResponse.Promotions,
-                cancellationToken);
-            promotionStopwatch.Stop();
-            Log($"promotions synced store={storeCode} rules={promotionResponse.Promotions.Count} elapsedMs={promotionStopwatch.ElapsedMilliseconds}");
+            try
+            {
+                // 中文注释：旧 catalog 促销缓存只在商品同步成功后刷新；失败时保留旧缓存。
+                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                var promotionStopwatch = Stopwatch.StartNew();
+                var promotionResponse = await catalogApiClient.GetPromotionRulesAsync(storeCode, cancellationToken);
+                await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                await localCatalogRepository.ReplacePromotionRulesAsync(
+                    storeCode,
+                    promotionResponse.Promotions,
+                    cancellationToken);
+                promotionStopwatch.Stop();
+                Log($"promotions synced store={storeCode} rules={promotionResponse.Promotions.Count} elapsedMs={promotionStopwatch.ElapsedMilliseconds}");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log($"promotion sync failed store={storeCode} error={ex.Message}");
+            }
+
+            if (localPromotionRepository is not null && promotionApiClient is not null)
+            {
+                try
+                {
+                    // 中文注释：新 promotion rules 缓存供 POS 端重算使用，失败同样只降级不阻断商品同步。
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    var promotionStopwatch = Stopwatch.StartNew();
+                    var promotionResponse = await promotionApiClient.GetRulesAsync(storeCode, asOf: null, cancellationToken);
+                    await _uiPriorityCoordinator.WaitForUiIdleAsync(cancellationToken);
+                    await localPromotionRepository.ReplaceStoreRulesAsync(storeCode, promotionResponse, cancellationToken);
+                    promotionStopwatch.Stop();
+                    Log($"promotion rules synced store={storeCode} rules={promotionResponse.Rules.Count} elapsedMs={promotionStopwatch.ElapsedMilliseconds}");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log($"promotion sync failed store={storeCode} error={ex.Message}");
+                }
+            }
 
             totalStopwatch.Stop();
             Log($"full sync completed store={storeCode} comparePages={comparePages} remotePages={remotePages} upserted={upsertedCount} deleted={deletedCount} elapsedMs={totalStopwatch.ElapsedMilliseconds}");

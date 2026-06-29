@@ -96,4 +96,15 @@ public sealed class ServiceRegistrationTests
 
         Assert.Equal(TimeSpan.FromSeconds(15), factory.CreateClient(nameof(ILocalAppUpdateService)).Timeout);
     }
+
+    [Fact]
+    public void AddHbposApiServices_RegistersPromotionRuleService()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        var descriptor = Assert.Single(services, x => x.ServiceType == typeof(IPromotionRuleService));
+        Assert.Equal(typeof(PromotionRuleService), descriptor.ImplementationType);
+    }
 }

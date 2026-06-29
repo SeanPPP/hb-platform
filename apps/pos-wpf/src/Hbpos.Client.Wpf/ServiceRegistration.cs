@@ -37,6 +37,8 @@ public static class ServiceRegistration
         services.AddSingleton<IScannerBindingService, ScannerBindingService>();
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
+        services.AddSingleton<ILocalPromotionRepository, LocalPromotionRepository>();
+        services.AddSingleton<IPromotionEvaluationService, PromotionEvaluationService>();
         services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
         services.AddSingleton<ILocalCardPaymentAttemptRepository, LocalCardPaymentAttemptRepository>();
         services.AddSingleton<ILinklyPaymentAttemptContextAccessor, LinklyPaymentAttemptContextAccessor>();
@@ -71,6 +73,12 @@ public static class ServiceRegistration
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IAdvertisementApiClient, AdvertisementApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IPromotionApiClient, PromotionApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
@@ -296,6 +304,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<PosTerminalWorkflowFactory>(),
             sp.GetRequiredService<ISuspendedOrderService>(),
             sp.GetRequiredService<IRemoteOrderHistoryService>(),
+            promotionEvaluationService: sp.GetRequiredService<IPromotionEvaluationService>(),
             receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>(),
             orderUploadExecutionService: sp.GetRequiredService<IOrderUploadExecutionService>(),
             dailyCloseService: sp.GetRequiredService<IDailyCloseService>(),

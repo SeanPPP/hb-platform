@@ -64,6 +64,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IDeviceRegistrationWorkflowService _deviceRegistrationWorkflowService;
     private readonly ISpecialProductsWorkflowService _specialProductsWorkflowService;
     private readonly IReceiptReturnsWorkflowService _receiptReturnsWorkflowService;
+    private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
     private readonly ICashDrawerService _cashDrawerService;
@@ -340,6 +341,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PosTerminalWorkflowFactory posTerminalWorkflowFactory,
         ISuspendedOrderService? suspendedOrderService = null,
         IRemoteOrderHistoryService? remoteOrderHistoryService = null,
+        IPromotionEvaluationService? promotionEvaluationService = null,
         IReceiptReturnsWorkflowService? receiptReturnsWorkflowService = null,
         IOrderUploadExecutionService? orderUploadExecutionService = null,
         IDailyCloseService? dailyCloseService = null,
@@ -391,6 +393,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cardTerminalSetupService = paymentTerminal.CardTerminalSetupService;
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _specialProductsWorkflowService = specialProductsWorkflowService;
+        _promotionEvaluationService = promotionEvaluationService;
         _receiptReturnsWorkflowService = receiptReturnsWorkflowService ?? new ReceiptReturnsWorkflowService(
             _receiptQueryService,
             _orderRepository,
@@ -513,6 +516,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _dailyCloseService,
             _dailyClosePrintService,
             _userFeedbackService,
+            _promotionEvaluationService,
             _receiptPrintService,
             _cardRecoveryResultDialogService,
             _cashierSessionContext,

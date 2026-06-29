@@ -38,6 +38,7 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         services.AddScoped<ICashierService, CashierService>();
         services.AddScoped<ICatalogService, CatalogService>();
+        services.AddScoped<IPromotionRuleService, PromotionRuleService>();
         services.AddScoped<IAdvertisementPlaybackService, AdvertisementPlaybackService>();
         services.AddScoped<IStoreSchemaSqlExecutor, SqlSugarStoreSchemaSqlExecutor>();
         services.AddScoped<IStoreSchemaInitializer, SqlSugarStoreSchemaInitializer>();

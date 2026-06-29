@@ -292,6 +292,64 @@ public sealed class PosCartServiceTests
     }
 
     [Fact]
+    public void ApplyPromotionDiscounts_preserves_manual_discounts_and_replaces_old_promotion_discounts()
+    {
+        var cart = new PosCartService();
+        var manualLine = cart.AddItem(CreateItem(productCode: "SKU-MANUAL", lookupCode: "MANUAL-001", price: 20m));
+        var stalePromotionLine = cart.AddItem(CreateItem(productCode: "SKU-PROMO-OLD", lookupCode: "PROMO-OLD-001", price: 10m));
+        var freshPromotionLine = cart.AddItem(CreateItem(productCode: "SKU-PROMO-NEW", lookupCode: "PROMO-NEW-001", price: 8m));
+
+        Assert.True(cart.SetLineDiscountAmount(manualLine, 3m));
+        stalePromotionLine.SetPromotionDiscountAmount(2m);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(manualLine, 9m),
+            new PromotionLineDiscount(freshPromotionLine, 20m)
+        ]);
+
+        Assert.Equal(3m, manualLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, manualLine.DiscountSource);
+
+        Assert.Equal(0m, stalePromotionLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.None, stalePromotionLine.DiscountSource);
+
+        Assert.Equal(8m, freshPromotionLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, freshPromotionLine.DiscountSource);
+    }
+
+    [Fact]
+    public void SetLineDiscountAmount_zero_resets_manual_source_and_allows_future_promotion()
+    {
+        var cart = new PosCartService();
+        var amountLine = cart.AddItem(CreateItem(productCode: "SKU-RESET-AMOUNT", lookupCode: "RESET-001", price: 10m));
+        var percentLine = cart.AddItem(CreateItem(productCode: "SKU-RESET-PERCENT", lookupCode: "RESET-002", price: 10m));
+
+        Assert.True(cart.SetLineDiscountAmount(amountLine, 2m));
+        Assert.Equal(CartLineDiscountSource.Manual, amountLine.DiscountSource);
+
+        Assert.True(cart.SetLineDiscountAmount(amountLine, 0m));
+        Assert.Equal(CartLineDiscountSource.None, amountLine.DiscountSource);
+
+        Assert.True(cart.SetLineDiscountPercent(percentLine, 10m));
+        Assert.Equal(CartLineDiscountSource.Manual, percentLine.DiscountSource);
+
+        Assert.True(cart.SetLineDiscountPercent(percentLine, 0m));
+        Assert.Equal(CartLineDiscountSource.None, percentLine.DiscountSource);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(amountLine, 4m),
+            new PromotionLineDiscount(percentLine, 5m)
+        ]);
+
+        Assert.Equal(4m, amountLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, amountLine.DiscountSource);
+        Assert.Equal(5m, percentLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, percentLine.DiscountSource);
+    }
+
+    [Fact]
     public void SetLineDiscountPercent_recalculates_after_quantity_changes()
     {
         var cart = new PosCartService();
@@ -557,6 +615,7 @@ public sealed class PosCartServiceTests
         Assert.Equal(3m, line.Quantity);
         Assert.Equal(12m, line.UnitPrice);
         Assert.Equal(3.78m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, line.DiscountSource);
         Assert.Equal("ITEM-01", line.ItemNumber);
         Assert.Equal(" look-01 ", line.LookupCode);
         Assert.Equal("LOOK-01", line.LookupCodeNormalized);
@@ -582,6 +641,7 @@ public sealed class PosCartServiceTests
 
         line = Assert.Single(cart.Lines);
         Assert.Equal(4m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, line.DiscountSource);
 
         Assert.True(cart.SetLineQuantity(line, 3m));
         Assert.Equal(4m, line.DiscountAmount);
@@ -611,7 +671,34 @@ public sealed class PosCartServiceTests
         line = Assert.Single(restoredCart.Lines);
         Assert.True(line.IsAutomaticPromotionDiscount);
         Assert.Equal(5m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
         Assert.Equal(15m, restoredCart.ActualAmount);
+    }
+
+    [Fact]
+    public void Snapshot_and_restore_keep_promotion_discount_source_so_reapply_replaces_old_promotion_discount()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(productCode: "SKU-RESTORE-PROMO", lookupCode: "look-promo", price: 10m));
+        Assert.True(cart.SetLineQuantity(line, 2m));
+        line.SetPromotionDiscountAmount(4m);
+
+        var snapshot = cart.CreateSnapshot();
+        cart.Clear();
+
+        cart.RestoreSnapshot(snapshot);
+
+        line = Assert.Single(cart.Lines);
+        Assert.Equal(4m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(line, 6m)
+        ]);
+
+        Assert.Equal(6m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
     }
 
     private static SellableItemDto CreateItem(

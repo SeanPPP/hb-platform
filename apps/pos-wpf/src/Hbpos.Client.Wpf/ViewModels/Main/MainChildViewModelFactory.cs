@@ -32,6 +32,7 @@ internal sealed class MainChildViewModelFactory
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
     private readonly IUserFeedbackService? _userFeedbackService;
+    private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly IReceiptPrintService? _receiptPrintService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
     private readonly ICashierSessionContext? _cashierSessionContext;
@@ -62,6 +63,7 @@ internal sealed class MainChildViewModelFactory
         IDailyCloseService dailyCloseService,
         IDailyClosePrintService dailyClosePrintService,
         IUserFeedbackService? userFeedbackService = null,
+        IPromotionEvaluationService? promotionEvaluationService = null,
         IReceiptPrintService? receiptPrintService = null,
         ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
         ICashierSessionContext? cashierSessionContext = null,
@@ -91,6 +93,7 @@ internal sealed class MainChildViewModelFactory
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
         _userFeedbackService = userFeedbackService;
+        _promotionEvaluationService = promotionEvaluationService;
         _receiptPrintService = receiptPrintService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
         _cashierSessionContext = cashierSessionContext;
@@ -202,6 +205,7 @@ internal sealed class MainChildViewModelFactory
             onOpenSpecialProductsAsync,
             _localization,
             userFeedbackService: _userFeedbackService,
+            promotionEvaluationService: _promotionEvaluationService,
             onHoldOrderAsync: onHoldOrderAsync,
             onRecallOrderAsync: onRecallOrderAsync,
             onOpenHistoryAsync: onOpenHistoryAsync,
