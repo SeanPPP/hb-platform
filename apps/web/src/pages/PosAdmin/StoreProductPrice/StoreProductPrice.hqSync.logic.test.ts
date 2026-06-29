@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { formatPaginationTotalText, getPaginationTotalPages } from './pagination'
-import { getStoreProductPriceGrid, syncFromHq } from '../../../services/storeProductPriceService'
+import {
+  getStorePriceTransferJob,
+  getStoreProductPriceGrid,
+  startStorePriceTransferJob,
+  syncFromHq,
+} from '../../../services/storeProductPriceService'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -55,6 +60,22 @@ async function main() {
     )
   })
   if (typeFailure) failures.push(typeFailure)
+
+  const transferTypeFailure = await runTest('StorePriceTransferRequest 应声明方向、表和字段选择', () => {
+    assert(
+      typeSource.includes("export type StorePriceTransferDirection = 'HqToLocal' | 'LocalToHq'"),
+      '双向价格同步类型应限制方向枚举',
+    )
+    assert(
+      typeSource.includes('syncRetailPrices: boolean') && typeSource.includes('syncMultiCodePrices: boolean'),
+      '双向价格同步请求应包含价格表和多码表选择',
+    )
+    assert(
+      typeSource.includes('syncPurchasePrice: boolean') && typeSource.includes('syncRetailPrice: boolean'),
+      '双向价格同步请求应包含价格字段选择',
+    )
+  })
+  if (transferTypeFailure) failures.push(transferTypeFailure)
 
   const pagePayloadFailure = await runTest('页面应同时传递 startDate 和 endDate', () => {
     assert(
@@ -123,6 +144,31 @@ async function main() {
     )
   })
   if (pageErrorFailure) failures.push(pageErrorFailure)
+
+  const priceTransferPageFailure = await runTest('页面应新增独立 HQ/本地价格同步 job 弹窗', () => {
+    assert(
+      pageSource.includes("t('posAdmin.productPrice.priceTransfer', 'HQ/本地价格同步')"),
+      '页面应显示独立的 HQ/本地价格同步入口',
+    )
+    assert(
+      pageSource.includes("direction: 'HqToLocal'"),
+      '弹窗默认方向应为 HQ -> 本地',
+    )
+    assert(
+      pageSource.includes('startStorePriceTransferJob(dto)'),
+      '页面提交应走后台 job 创建接口',
+    )
+    assert(
+      pageSource.includes('createHqSyncJobPoller<StorePriceTransferJobDto>'),
+      '页面应复用 2 秒轮询 job 工具',
+    )
+    assert(
+      pageSource.includes('syncRetailPrices: !!values.syncRetailPrices') &&
+        pageSource.includes('syncMultiCodePrices: !!values.syncMultiCodePrices'),
+      '页面 payload 应包含同步表选择',
+    )
+  })
+  if (priceTransferPageFailure) failures.push(priceTransferPageFailure)
 
   const validationErrorFailure = await runTest('表单校验失败不应弹出同步失败全局提示', () => {
     assert(
@@ -218,6 +264,93 @@ async function main() {
     )
   })
   if (httpFailure) failures.push(httpFailure)
+
+  const priceTransferStartFailure = await runTest('startStorePriceTransferJob 应 POST 到后台任务接口并归一化返回', async () => {
+    globalThis.fetch = (async (input, init) => {
+      assertEqual(String(input), '/api/react/v1/store-product-prices/store-price-transfer-jobs', '创建任务接口路径应正确')
+      const body = JSON.parse(String(init?.body || '{}'))
+      assertEqual(body.direction, 'HqToLocal', '创建任务 payload 应包含方向')
+      assertEqual(body.syncMultiCodePrices, true, '创建任务 payload 应包含多码表选择')
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'job-1',
+          status: 'Running',
+          isDuplicateRequest: true,
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const job = await startStorePriceTransferJob({
+      direction: 'HqToLocal',
+      sourceStoreCode: 'S01',
+      targetStoreCode: 'T01',
+      syncRetailPrices: true,
+      syncMultiCodePrices: true,
+      syncPurchasePrice: true,
+      syncRetailPrice: true,
+      syncDiscountRate: false,
+      syncIsAutoPricing: false,
+      syncIsSpecialProduct: false,
+    })
+
+    assertEqual(job.jobId, 'job-1', '创建任务应返回 jobId')
+    assertEqual(job.status, 'Running', '创建任务应归一化运行中状态')
+    assertEqual(job.isDuplicateRequest, true, '创建任务应保留重复提交标记')
+  })
+  if (priceTransferStartFailure) failures.push(priceTransferStartFailure)
+
+  const priceTransferGetFailure = await runTest('getStorePriceTransferJob 应 GET 任务状态并归一化统计', async () => {
+    globalThis.fetch = (async (input) => {
+      assertEqual(String(input), '/api/react/v1/store-product-prices/store-price-transfer-jobs/job-1', '查询任务接口路径应正确')
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          jobId: 'job-1',
+          status: 'Succeeded',
+          result: {
+            totalProcessed: 4,
+            insertedCount: 2,
+            updatedCount: 2,
+            retailPriceInserted: 1,
+            multiCodeInserted: 1,
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const job = await getStorePriceTransferJob('job-1')
+    assertEqual(job.status, 'Succeeded', '查询任务应归一化成功状态')
+    assertEqual(job.result?.totalProcessed, 4, '查询任务应归一化总处理数')
+    assertEqual(job.result?.retailPriceInserted, 1, '查询任务应归一化价格表新增数')
+    assertEqual(job.result?.multiCodeInserted, 1, '查询任务应归一化多码表新增数')
+  })
+  if (priceTransferGetFailure) failures.push(priceTransferGetFailure)
+
+  const priceTransferMissingStatusFailure = await runTest('getStorePriceTransferJob 缺少状态时应暴露契约错误', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      data: {
+        jobId: 'job-missing-status',
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch
+
+    await assertRejects(
+      () => getStorePriceTransferJob('job-missing-status'),
+      '分店价格同步任务缺少状态',
+      '缺少 status 时不应被默认为 Running',
+    )
+  })
+  if (priceTransferMissingStatusFailure) failures.push(priceTransferMissingStatusFailure)
 
   globalThis.fetch = originalFetch
 

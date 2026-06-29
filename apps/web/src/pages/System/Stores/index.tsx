@@ -1,4 +1,4 @@
-import { EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { CloudSyncOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import {
   Button,
   Card,
@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next'
 import { HasPermission } from '../../../components/Access'
 import PageContainer from '../../../components/PageContainer'
 import { P } from '../../../types/permissions'
-import { createStore, getNextStoreCode, getStoreByGuid, getStores, updateStore } from '../../../services/storeService'
+import { createStore, getNextStoreCode, getStoreByGuid, getStores, syncStoreToHq, updateStore } from '../../../services/storeService'
 import type { CreateStoreDto, StoreDetailDto, StoreDto, UpdateStoreDto } from '../../../types/store'
 import { RequestError } from '../../../utils/request'
 import StoreUserManagement from './StoreUserManagement'
@@ -101,6 +101,7 @@ export default function SystemStoresPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createSaving, setCreateSaving] = useState(false)
   const [storeCodeLoading, setStoreCodeLoading] = useState(false)
+  const [syncingStoreGuids, setSyncingStoreGuids] = useState<Set<string>>(() => new Set())
   const [storeUserOpen, setStoreUserOpen] = useState(false)
   const [storeUserTarget, setStoreUserTarget] = useState<StoreDto | null>(null)
   const [form] = Form.useForm<UpdateStoreDto>()
@@ -276,6 +277,28 @@ export default function SystemStoresPage() {
     setStoreUserOpen(true)
   }
 
+  const handleSyncStoreToHq = async (store: StoreDto) => {
+    setSyncingStoreGuids((previous) => {
+      const next = new Set(previous)
+      next.add(store.storeGUID)
+      return next
+    })
+    try {
+      // 手动同步当前选中的分店，避免HQ短暂不可用影响普通创建/编辑保存。
+      await syncStoreToHq(store.storeGUID)
+      message.success(t('system.stores.syncHqSuccess'))
+    } catch (error) {
+      console.error(error)
+      message.error(error instanceof Error ? error.message : t('system.stores.syncHqFailed'))
+    } finally {
+      setSyncingStoreGuids((previous) => {
+        const next = new Set(previous)
+        next.delete(store.storeGUID)
+        return next
+      })
+    }
+  }
+
   const brandFilterOptions = useMemo(() => {
     const brands = new Set<string>()
     data.forEach((store) => {
@@ -406,16 +429,27 @@ export default function SystemStoresPage() {
     {
       title: t('column.action'),
       key: 'action',
-      width: 132,
+      width: 220,
       render: (_, record) => (
         <Space size={4}>
           <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => void handleViewDetail(record)}>
             {t('common.view')}
           </Button>
           <HasPermission code={P.Stores.Edit}>
-            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
-              {t('common.edit')}
-            </Button>
+            <Space size={4}>
+              <Button size="small" type="link" icon={<EditOutlined />} onClick={() => void handleEdit(record)}>
+                {t('common.edit')}
+              </Button>
+              <Button
+                size="small"
+                type="link"
+                icon={<CloudSyncOutlined />}
+                loading={syncingStoreGuids.has(record.storeGUID)}
+                onClick={() => void handleSyncStoreToHq(record)}
+              >
+                {t('system.stores.syncHq')}
+              </Button>
+            </Space>
           </HasPermission>
         </Space>
       ),
@@ -457,7 +491,7 @@ export default function SystemStoresPage() {
           dataSource={data}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1260 }}
+          scroll={{ x: 1350 }}
           onChange={handleTableChange}
           pagination={{
             current: page,
@@ -480,9 +514,18 @@ export default function SystemStoresPage() {
         extra={
           detailStore ? (
             <HasPermission code={P.Stores.Edit}>
-              <Button type="primary" onClick={() => handleOpenStoreUsers(detailStore)}>
-                {t('system.stores.manageUsers')}
-              </Button>
+              <Space>
+                <Button
+                  icon={<CloudSyncOutlined />}
+                  loading={syncingStoreGuids.has(detailStore.storeGUID)}
+                  onClick={() => void handleSyncStoreToHq(detailStore)}
+                >
+                  {t('system.stores.syncHq')}
+                </Button>
+                <Button type="primary" onClick={() => handleOpenStoreUsers(detailStore)}>
+                  {t('system.stores.manageUsers')}
+                </Button>
+              </Space>
             </HasPermission>
           ) : null
         }

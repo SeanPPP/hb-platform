@@ -88,6 +88,14 @@ export async function updateStore(guid: string, payload: UpdateStoreDto): Promis
   return mapStoreDetail(unwrapApiData(response))
 }
 
+export async function syncStoreToHq(guid: string): Promise<boolean> {
+  const response = await request.post<ApiResponse<boolean>>(`/api/stores/guid/${guid}/sync-hq`)
+  if (response.success === false) {
+    throw new RequestError(response.message || '同步HQ分店失败', 400, response)
+  }
+  return unwrapApiData(response)
+}
+
 export async function getStoreUsers(params: {
   storeGuid: string
   query?: StoreUserQueryDto

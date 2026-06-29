@@ -12,6 +12,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -28,6 +29,9 @@ namespace BlazorApp.Api.Tests
         private readonly string _dbPath;
         private readonly SqliteConnection _sqliteConnection;
         private readonly SqlSugarClient _db;
+        private readonly string _hqDbPath;
+        private readonly SqliteConnection _hqSqliteConnection;
+        private readonly SqlSugarClient _hqDb;
 
         public UserStoreManagementRelationTests()
         {
@@ -45,6 +49,23 @@ namespace BlazorApp.Api.Tests
 
             _db.CodeFirst.InitTables<User, Store, UserStore, Role, UserRole>();
             _db.CodeFirst.InitTables<RefreshToken>();
+
+            _hqDbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+            _hqSqliteConnection = new SqliteConnection($"Data Source={_hqDbPath}");
+            _hqSqliteConnection.Open();
+
+            _hqDb = new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString = _hqSqliteConnection.ConnectionString,
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = false,
+                InitKeyType = InitKeyType.Attribute,
+            });
+            _hqDb.CodeFirst.InitTables<HqBranch>();
+            // 测试库按HQ业务键建唯一索引，覆盖重复同步时的数据库约束行为。
+            _hqDb.Ado.ExecuteCommand(
+                "CREATE UNIQUE INDEX IX_HqBranch_BranchCode ON \"DIC_分店信息表\" (\"H分店代码\")"
+            );
         }
 
         [Fact]
@@ -326,6 +347,139 @@ namespace BlazorApp.Api.Tests
                 .Where(store => store.StoreCode == "1044")
                 .CountAsync();
             Assert.Equal(1, count);
+        }
+
+        [Fact]
+        public async Task SyncStoreToHqAsync_WhenStoreMissing_ReturnsStoreNotFound()
+        {
+            var service = CreateStoreServiceWithHq();
+
+            var result = await service.SyncStoreToHqAsync("missing-store");
+
+            Assert.False(result.Success);
+            Assert.Equal("STORE_NOT_FOUND", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task SyncStoreToHqAsync_WhenBranchMissing_InsertsHqBranch()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-sync-new",
+                StoreCode = "1077",
+                StoreName = "Sync New Store",
+                ABN = "11 222 333 444",
+                Phone = "02 1111 2222",
+                Address = "1 Sync Street",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+            var service = CreateStoreServiceWithHq();
+
+            var result = await service.SyncStoreToHqAsync("store-sync-new");
+
+            Assert.True(result.Success);
+            var branch = await _hqDb.Queryable<HqBranch>()
+                .SingleAsync(item => item.BranchCode == "1077");
+            Assert.Equal("Sync New Store", branch.BranchName);
+            Assert.Equal("11 222 333 444", branch.BusinessNumber);
+            Assert.Equal("02 1111 2222", branch.Phone);
+            Assert.Equal("1 Sync Street", branch.Address);
+        }
+
+        [Fact]
+        public async Task SyncStoreToHqAsync_WhenBranchExists_UpdatesMappedFieldsOnly()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-sync-existing",
+                StoreCode = "1088",
+                StoreName = "Updated Store",
+                ABN = "55 666 777 888",
+                Phone = "02 3333 4444",
+                Address = "8 Updated Road",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+            await _hqDb.Insertable(new HqBranch
+            {
+                BranchCode = "1088",
+                BranchName = "Old Store",
+                BusinessNumber = "old-abn",
+                Phone = "old-phone",
+                ManagerName = "HQ Manager",
+                Address = "Old Address",
+            }).ExecuteCommandAsync();
+            var service = CreateStoreServiceWithHq();
+
+            var result = await service.SyncStoreToHqAsync("store-sync-existing");
+
+            Assert.True(result.Success);
+            var branch = await _hqDb.Queryable<HqBranch>()
+                .SingleAsync(item => item.BranchCode == "1088");
+            Assert.Equal("Updated Store", branch.BranchName);
+            Assert.Equal("55 666 777 888", branch.BusinessNumber);
+            Assert.Equal("02 3333 4444", branch.Phone);
+            Assert.Equal("8 Updated Road", branch.Address);
+            Assert.Equal("HQ Manager", branch.ManagerName);
+            Assert.Equal(1, await _hqDb.Queryable<HqBranch>().CountAsync());
+        }
+
+        [Fact]
+        public async Task SyncStoreToHqAsync_WhenSameBranchSyncedConcurrently_RemainsSingleHqBranch()
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-sync-concurrent",
+                StoreCode = "1099",
+                StoreName = "Concurrent Store",
+                ABN = "99 888 777 666",
+                Phone = "02 5555 6666",
+                Address = "9 Concurrent Way",
+                IsActive = true,
+            }).ExecuteCommandAsync();
+            var clients = Enumerable.Range(0, 8)
+                .Select(_ => new
+                {
+                    Local = CreateSqliteSqlSugarClient(_sqliteConnection.ConnectionString),
+                    Hq = CreateSqliteSqlSugarClient(_hqSqliteConnection.ConnectionString),
+                })
+                .ToList();
+
+            try
+            {
+                var tasks = clients
+                    .Select(client =>
+                    {
+                        var service = new StoreService(
+                            CreateSqlSugarContext(client.Local),
+                            NullLogger<StoreService>.Instance,
+                            CreateHqSqlSugarContext(client.Hq)
+                        );
+                        return service.SyncStoreToHqAsync("store-sync-concurrent");
+                    })
+                    .ToArray();
+
+                var results = await Task.WhenAll(tasks);
+
+                Assert.All(results, result => Assert.True(result.Success));
+                var count = await _hqDb.Queryable<HqBranch>()
+                    .Where(item => item.BranchCode == "1099")
+                    .CountAsync();
+                Assert.Equal(1, count);
+                var branch = await _hqDb.Queryable<HqBranch>()
+                    .SingleAsync(item => item.BranchCode == "1099");
+                Assert.Equal("Concurrent Store", branch.BranchName);
+                Assert.Equal("99 888 777 666", branch.BusinessNumber);
+                Assert.Equal("02 5555 6666", branch.Phone);
+                Assert.Equal("9 Concurrent Way", branch.Address);
+            }
+            finally
+            {
+                foreach (var client in clients)
+                {
+                    client.Local.Dispose();
+                    client.Hq.Dispose();
+                }
+            }
         }
 
         [Fact]
@@ -861,6 +1015,13 @@ namespace BlazorApp.Api.Tests
 
         public void Dispose()
         {
+            _hqDb.Dispose();
+            _hqSqliteConnection.Dispose();
+            if (File.Exists(_hqDbPath))
+            {
+                SqliteTempFileCleanup.DeleteIfExists(_hqDbPath);
+            }
+
             _db.Dispose();
             _sqliteConnection.Dispose();
             if (File.Exists(_dbPath))
@@ -883,6 +1044,37 @@ namespace BlazorApp.Api.Tests
         private StoreService CreateStoreService()
         {
             return new StoreService(CreateSqlSugarContext(_db), NullLogger<StoreService>.Instance);
+        }
+
+        private StoreService CreateStoreServiceWithHq()
+        {
+            return new StoreService(
+                CreateSqlSugarContext(_db),
+                NullLogger<StoreService>.Instance,
+                CreateHqSqlSugarContext(_hqDb)
+            );
+        }
+
+        private static HqSqlSugarContext CreateHqSqlSugarContext(ISqlSugarClient db)
+        {
+            var context = (HqSqlSugarContext)RuntimeHelpers.GetUninitializedObject(
+                typeof(HqSqlSugarContext)
+            );
+            typeof(HqSqlSugarContext)
+                .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(context, db);
+            return context;
+        }
+
+        private static SqlSugarClient CreateSqliteSqlSugarClient(string connectionString)
+        {
+            return new SqlSugarClient(new ConnectionConfig
+            {
+                ConnectionString = connectionString,
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+            });
         }
 
         private async Task SeedUsersAndStoresAsync()

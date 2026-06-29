@@ -21,18 +21,21 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IStoreRetailPriceReactService _retailPriceService;
         private readonly IUserService _userService;
         private readonly ILogger<ReactStoreProductPricesController> _logger;
+        private readonly IStorePriceTransferJobService _storePriceTransferJobService;
 
         public ReactStoreProductPricesController(
             IStoreProductPriceReactService service,
             IStoreRetailPriceReactService retailPriceService,
             IUserService userService,
-            ILogger<ReactStoreProductPricesController> logger
+            ILogger<ReactStoreProductPricesController> logger,
+            IStorePriceTransferJobService storePriceTransferJobService
         )
         {
             _service = service;
             _retailPriceService = retailPriceService;
             _userService = userService;
             _logger = logger;
+            _storePriceTransferJobService = storePriceTransferJobService;
         }
 
         [HttpPost("grid")]
@@ -221,6 +224,43 @@ namespace BlazorApp.Api.Controllers.React
                 request.EndDate
             );
             return result.Success ? Ok(result) : BadRequest(result);
+        }
+
+        [HttpPost("store-price-transfer-jobs")]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> StartStorePriceTransferJob(
+            [FromBody] StorePriceTransferRequest request,
+            CancellationToken cancellationToken = default
+        )
+        {
+            var updatedBy = User.Identity?.Name ?? "system";
+            var job = await _storePriceTransferJobService.StartJobAsync(
+                request,
+                updatedBy,
+                cancellationToken
+            );
+            return Ok(ApiResponse<StorePriceTransferJobDto>.OK(job, job.Message ?? "分店价格同步任务已提交"));
+        }
+
+        [HttpGet("store-price-transfer-jobs/{jobId}")]
+        [Authorize(Roles = "Admin,管理员")]
+        public async Task<IActionResult> GetStorePriceTransferJob(
+            string jobId,
+            CancellationToken cancellationToken = default
+        )
+        {
+            var job = await _storePriceTransferJobService.GetJobAsync(jobId, cancellationToken);
+            if (job == null)
+            {
+                return NotFound(
+                    ApiResponse<StorePriceTransferJobDto>.Error(
+                        "任务不存在或已过期",
+                        "JOB_NOT_FOUND"
+                    )
+                );
+            }
+
+            return Ok(ApiResponse<StorePriceTransferJobDto>.OK(job, "获取分店价格同步任务成功"));
         }
 
         private async Task<bool> CanAccessSyncStoresAsync(string? sourceStoreCode, IEnumerable<string>? targetStoreCodes)

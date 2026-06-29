@@ -105,3 +105,50 @@ export interface SyncFromHqResult {
   durationMs: number
   errors: string[]
 }
+
+export type StorePriceTransferDirection = 'HqToLocal' | 'LocalToHq'
+
+export type StorePriceTransferJobStatus = 'Running' | 'Succeeded' | 'Failed' | string
+
+export interface StorePriceTransferRequest {
+  direction: StorePriceTransferDirection
+  sourceStoreCode: string
+  targetStoreCode: string
+  syncRetailPrices: boolean
+  syncMultiCodePrices: boolean
+  syncPurchasePrice: boolean
+  syncRetailPrice: boolean
+  syncDiscountRate: boolean
+  syncIsAutoPricing: boolean
+  syncIsSpecialProduct: boolean
+}
+
+export interface StorePriceTransferResult {
+  totalProcessed: number
+  insertedCount: number
+  updatedCount: number
+  skippedCount: number
+  failedCount: number
+  retailPriceInserted: number
+  retailPriceUpdated: number
+  retailPriceSkipped: number
+  multiCodeInserted: number
+  multiCodeUpdated: number
+  multiCodeSkipped: number
+  errors: string[]
+}
+
+export interface StorePriceTransferJobDto {
+  jobId: string
+  operationId?: string
+  status: StorePriceTransferJobStatus
+  isDuplicateRequest?: boolean
+  request?: StorePriceTransferRequest
+  result?: StorePriceTransferResult
+  message?: string
+  errors?: string[]
+  createdAt?: string
+  startedAt?: string
+  completedAt?: string
+  expiresAt?: string
+}

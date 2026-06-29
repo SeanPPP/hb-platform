@@ -59,6 +59,11 @@ namespace BlazorApp.Api.Interfaces
         Task<ApiResponse<bool>> UpdateStoreStatusByGuidAsync(string guid, bool isActive);
 
         /// <summary>
+        /// 将分店信息同步到HQ分店表
+        /// </summary>
+        Task<ApiResponse<bool>> SyncStoreToHqAsync(string guid);
+
+        /// <summary>
         /// 获取分店用户列表
         /// </summary>
         Task<ApiResponse<PagedResult<StoreUserDto>>> GetStoreUsersAsync(string storeGuid, UserQueryDto query);
