@@ -98,6 +98,40 @@ public sealed class TencentCosMobileAppBuildArtifactMirrorTests
         Assert.Null(uploadHandler.Request);
     }
 
+    [Fact]
+    public async Task MirrorAsync_Artifact重定向到EasCdn_允许上传到Cos()
+    {
+        var artifactHandler = new StubHttpMessageHandler(request =>
+            request.RequestUri?.Host == "expo.dev"
+                ? new HttpResponseMessage(HttpStatusCode.Redirect)
+                {
+                    Headers =
+                    {
+                        Location = new Uri("https://wf-artifacts.eascdn.net/build-123.apk"),
+                    },
+                }
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent([1, 2, 3, 4]),
+                }
+        );
+        var uploadHandler = new CaptureHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var mirror = CreateMirror(artifactHandler, uploadHandler);
+
+        var result = await mirror.MirrorAsync(
+            CreateBuild("https://expo.dev/artifacts/eas/build-redirect.apk")
+        );
+
+        Assert.Equal(2, artifactHandler.Calls);
+        Assert.NotNull(uploadHandler.Request);
+        Assert.Equal(HttpMethod.Put, uploadHandler.Request.Method);
+        Assert.Equal(
+            "hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
+            uploadHandler.Request.RequestUri?.Host
+        );
+        Assert.Equal("mobile-app-builds/production/build-123.apk", result.ObjectKey);
+    }
+
     private static TencentCosMobileAppBuildArtifactMirror CreateMirror(
         HttpMessageHandler artifactHandler,
         HttpMessageHandler uploadHandler
