@@ -402,8 +402,9 @@ export async function registerOtaUpdate(payload) {
   };
 }
 
-function getRequiredRegistrationGaps(payload) {
-  const requiredFields = ["updateGroupId", "androidUpdateId"];
+export function getRequiredRegistrationGaps(payload) {
+  // EAS 某些 JSON 形态只返回 update group；后端以 group+platform 幂等，Android update ID 允许为空。
+  const requiredFields = ["updateGroupId"];
   return requiredFields.filter((field) => !payload[field]);
 }
 
