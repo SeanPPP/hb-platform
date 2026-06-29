@@ -523,12 +523,20 @@ public sealed class CatalogSyncServiceTests
         {
             Exception = new CatalogApiException("promotion sync failed")
         };
+        var logs = new ConcurrentQueue<string>();
         var service = new LocalCatalogSyncService(repository, apiClient, null, promotionRepository, promotionApiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
 
-        await Assert.ThrowsAsync<CatalogApiException>(() => service.FullSyncAsync("S01"));
+        using var logCapture = CaptureClientLog(logs);
 
+        var result = await service.FullSyncAsync("S01", progress: progress);
+
+        Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 0, RemotePages: 1, UpsertedCount: 0, DeletedCount: 0), result);
         Assert.Equal(["PROMO-OLD"], promotionRepository.LoadStoreRuleIds("S01"));
         Assert.Empty(promotionRepository.ReplaceCalls);
+        Assert.Contains(progressReports, report => report.Stage == CatalogSyncProgressStage.Completed);
+        Assert.True(HasLog(logs, "promotion sync failed"));
     }
 
     [Fact]

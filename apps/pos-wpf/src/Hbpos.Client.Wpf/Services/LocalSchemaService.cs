@@ -248,6 +248,12 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         {
             await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN ReturnReason TEXT NULL;", cancellationToken);
         }
+
+        if (!columns.Contains("DiscountSource"))
+        {
+            // 中文注释：旧挂单默认没有折扣来源，只能按 None 恢复；新挂单会保存 Manual/Promotion。
+            await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN DiscountSource INTEGER NOT NULL DEFAULT 0;", cancellationToken);
+        }
     }
 
     private static async Task EnsureLocalCardTransactionColumnsAsync(
@@ -684,6 +690,7 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             UnitPrice TEXT NOT NULL,
             DiscountAmount TEXT NOT NULL,
             DiscountPercent TEXT NULL,
+            DiscountSource INTEGER NOT NULL DEFAULT 0,
             ActualAmount TEXT NOT NULL,
             PriceSource INTEGER NOT NULL,
             PriceSourceLabel TEXT NOT NULL,

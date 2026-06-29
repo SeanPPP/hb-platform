@@ -56,6 +56,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private long _cartChangedSequence;
     private bool _isPromotionEvaluationRunning;
     private string? _queuedPromotionEvaluationReason;
+    private Task _pendingPromotionEvaluationTask = Task.CompletedTask;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -165,7 +166,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         ApplyQuickDiscountPercentCommand = new RelayCommand<string>(ApplyQuickDiscountPercent);
         ClearSearchCommand = new RelayCommand(ClearSearch, () => !string.IsNullOrWhiteSpace(ScanText));
         ClearCartCommand = new RelayCommand(ClearCart, () => !_cart.IsEmpty);
-        OpenPaymentCommand = new RelayCommand(OpenPayment, () => !_cart.IsEmpty);
+        OpenPaymentCommand = new AsyncRelayCommand(OpenPaymentAsync, () => !_cart.IsEmpty);
         OpenReturnsCommand = new RelayCommand(OpenReturns);
         OpenSpecialProductsCommand = new AsyncRelayCommand(OpenSpecialProductsAsync);
         HoldOrderCommand = new AsyncRelayCommand(HoldOrderAsync, () => !_cart.IsEmpty);
@@ -822,8 +823,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         ApplyWorkflowResult(_workflowService.ClearCart());
     }
 
-    private void OpenPayment()
+    private async Task OpenPaymentAsync()
     {
+        // 等待当前促销重算链路彻底跑完，再进入支付，确保持久化金额使用最新结果。
+        await WaitForPendingPromotionEvaluationAsync();
+
         var stopwatch = Stopwatch.StartNew();
         var result = _workflowService.GuardPayment();
         ApplyWorkflowResult(result);
@@ -854,6 +858,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task HoldOrderAsync()
     {
+        // 挂单前也要等本轮促销尝试结束，但平时扫码仍保持异步，不在这里之前阻塞输入。
+        await WaitForPendingPromotionEvaluationAsync();
+
         if (_onHoldOrderAsync is not null)
         {
             await _onHoldOrderAsync();
@@ -1090,7 +1097,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             return;
         }
 
-        _ = RunPromotionEvaluationLoopAsync(promotionReason);
+        _pendingPromotionEvaluationTask = RunPromotionEvaluationLoopAsync(promotionReason);
     }
 
     private async Task RunPromotionEvaluationLoopAsync(string promotionReason)
@@ -1109,6 +1116,24 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         finally
         {
             _isPromotionEvaluationRunning = false;
+        }
+    }
+
+    private async Task WaitForPendingPromotionEvaluationAsync()
+    {
+        while (true)
+        {
+            var pendingTask = _pendingPromotionEvaluationTask;
+            if (pendingTask.IsCompleted)
+            {
+                return;
+            }
+
+            await pendingTask;
+            if (ReferenceEquals(pendingTask, _pendingPromotionEvaluationTask))
+            {
+                return;
+            }
         }
     }
 

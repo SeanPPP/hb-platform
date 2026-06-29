@@ -31,7 +31,7 @@ public sealed class PromotionEvaluationServiceTests
     }
 
     [Fact]
-    public async Task EvaluateAsync_supports_multi_product_unit_weights()
+    public async Task EvaluateAsync_uses_unit_weight_only_for_threshold_count_not_group_total()
     {
         var repository = new FakeLocalPromotionRepository();
         var asOf = DateTimeOffset.Parse("2026-06-13T12:00:00Z");
@@ -53,9 +53,9 @@ public sealed class PromotionEvaluationServiceTests
         var discounts = await service.EvaluateAsync(cart.Lines, "S001", asOf);
 
         Assert.Equal(2, discounts.Count);
-        Assert.Equal(12m, Assert.Single(discounts, item => ReferenceEquals(item.Line, weightedLine)).DiscountAmount);
-        Assert.Equal(3m, Assert.Single(discounts, item => ReferenceEquals(item.Line, regularLine)).DiscountAmount);
-        Assert.Equal(15m, discounts.Sum(item => item.DiscountAmount));
+        Assert.Equal(2m, Assert.Single(discounts, item => ReferenceEquals(item.Line, weightedLine)).DiscountAmount);
+        Assert.Equal(1m, Assert.Single(discounts, item => ReferenceEquals(item.Line, regularLine)).DiscountAmount);
+        Assert.Equal(3m, discounts.Sum(item => item.DiscountAmount));
     }
 
     [Fact]

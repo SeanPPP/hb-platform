@@ -440,7 +440,8 @@ public sealed class PosCartService
                 line.ReturnSourceKey,
                 line.OriginalOrderGuid,
                 line.OriginalOrderLineGuid,
-                line.ReturnReason))
+                line.ReturnReason,
+                MapSnapshotDiscountSource(line.DiscountSource)))
             .ToArray());
     }
 
@@ -480,15 +481,8 @@ public sealed class PosCartService
                 var item = CreateSnapshotItem(snapshotLine);
                 line = new CartLine(item, CartLineKind.OpenItem, snapshotLine.UnitPrice);
                 line.SetQuantity(snapshotLine.Quantity);
-                // 挂单/快照里带回来的既有折扣默认按手工折扣恢复，避免后续自动促销把它清掉。
-                if (snapshotLine.DiscountPercent is decimal discountPercent && discountPercent > 0m)
-                {
-                    line.SetDiscountPercent(discountPercent);
-                }
-                else if (snapshotLine.DiscountAmount > 0m)
-                {
-                    line.SetDiscountAmount(snapshotLine.DiscountAmount);
-                }
+                // 中文注释：开单品恢复时复用统一折扣恢复逻辑，按快照里的来源还原。
+                RestoreSnapshotDiscount(line, snapshotLine);
             }
             else
             {
@@ -496,15 +490,8 @@ public sealed class PosCartService
                 line = new CartLine(item);
                 line.SetQuantity(snapshotLine.Quantity);
                 line.SetUnitPrice(snapshotLine.UnitPrice);
-                // 挂单/快照里带回来的既有折扣默认按手工折扣恢复，避免后续自动促销把它清掉。
-                if (snapshotLine.DiscountPercent is decimal discountPercent && discountPercent > 0m)
-                {
-                    line.SetDiscountPercent(discountPercent);
-                }
-                else if (snapshotLine.DiscountAmount > 0m)
-                {
-                    line.SetDiscountAmount(snapshotLine.DiscountAmount);
-                }
+                // 中文注释：销售行恢复时同样按快照来源还原，避免促销来源丢失。
+                RestoreSnapshotDiscount(line, snapshotLine);
             }
 
             _lines.Add(line);
@@ -539,6 +526,39 @@ public sealed class PosCartService
     public static bool IsPositiveIntegerQuantity(decimal quantity)
     {
         return quantity > 0m && decimal.Truncate(quantity) == quantity;
+    }
+
+    private static void RestoreSnapshotDiscount(CartLine line, PosCartLineSnapshot snapshotLine)
+    {
+        // 中文注释：恢复快照时必须保留折扣来源，后续促销重算才不会把旧促销当成手工折扣。
+        if (snapshotLine.DiscountPercent is decimal discountPercent && discountPercent > 0m)
+        {
+            line.SetDiscountPercent(discountPercent);
+            return;
+        }
+
+        if (snapshotLine.DiscountAmount <= 0m)
+        {
+            return;
+        }
+
+        if (snapshotLine.DiscountSource == PosCartLineDiscountSource.Promotion)
+        {
+            line.SetPromotionDiscountAmount(snapshotLine.DiscountAmount);
+            return;
+        }
+
+        line.SetDiscountAmount(snapshotLine.DiscountAmount);
+    }
+
+    private static PosCartLineDiscountSource MapSnapshotDiscountSource(CartLineDiscountSource source)
+    {
+        return source switch
+        {
+            CartLineDiscountSource.Manual => PosCartLineDiscountSource.Manual,
+            CartLineDiscountSource.Promotion => PosCartLineDiscountSource.Promotion,
+            _ => PosCartLineDiscountSource.None
+        };
     }
 
     private void ApplyOrderDiscountAmount(decimal discountAmount)
@@ -589,4 +609,5 @@ public sealed record PosCartLineSnapshot(
     string ReturnSourceKey = "",
     Guid? OriginalOrderGuid = null,
     Guid? OriginalOrderLineGuid = null,
-    string? ReturnReason = null);
+    string? ReturnReason = null,
+    PosCartLineDiscountSource DiscountSource = PosCartLineDiscountSource.None);

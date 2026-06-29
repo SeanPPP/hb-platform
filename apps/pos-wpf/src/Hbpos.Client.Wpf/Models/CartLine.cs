@@ -10,6 +10,13 @@ public enum CartLineKind
     OpenItem = 2
 }
 
+public enum PosCartLineDiscountSource
+{
+    None = 0,
+    Manual = 1,
+    Promotion = 2
+}
+
 internal enum CartLineDiscountSource
 {
     None = 0,

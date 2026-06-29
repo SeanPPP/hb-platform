@@ -233,6 +233,109 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Pos_terminal_open_payment_waits_for_pending_promotion_evaluation()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-PAY", "Promo Payment Tea", "930PROMO-PAY", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var evaluationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueSync(lines => []);
+        promotionService.EnqueueAsync(async lines =>
+        {
+            await evaluationGate.Task;
+            return [new PromotionLineDiscount(Assert.Single(lines), 5m)];
+        });
+
+        var openedPayment = false;
+        var discountWhenOpenedPayment = -1m;
+        var actualAmountWhenOpenedPayment = -1m;
+        PosTerminalViewModel? viewModel = null;
+        viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: () =>
+            {
+                openedPayment = true;
+                discountWhenOpenedPayment = Assert.Single(viewModel!.CartLines).DiscountAmount;
+                actualAmountWhenOpenedPayment = viewModel.ActualAmount;
+            },
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO-PAY";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 1);
+
+        viewModel.ScanText = "930PROMO-PAY";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 2);
+
+        viewModel.OpenPaymentCommand.Execute(null);
+
+        Assert.False(openedPayment);
+
+        evaluationGate.SetResult();
+
+        await WaitUntilAsync(() => openedPayment);
+        Assert.Equal(5m, discountWhenOpenedPayment);
+        Assert.Equal(15m, actualAmountWhenOpenedPayment);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_hold_order_waits_for_pending_promotion_evaluation()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-HOLD", "Promo Hold Tea", "930PROMO-HOLD", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var evaluationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueSync(lines => []);
+        promotionService.EnqueueAsync(async lines =>
+        {
+            await evaluationGate.Task;
+            return [new PromotionLineDiscount(Assert.Single(lines), 5m)];
+        });
+
+        var heldOrder = false;
+        var discountWhenHeldOrder = -1m;
+        var actualAmountWhenHeldOrder = -1m;
+        PosTerminalViewModel? viewModel = null;
+        viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            onHoldOrderAsync: () =>
+            {
+                heldOrder = true;
+                discountWhenHeldOrder = Assert.Single(viewModel!.CartLines).DiscountAmount;
+                actualAmountWhenHeldOrder = viewModel.ActualAmount;
+                return Task.CompletedTask;
+            },
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO-HOLD";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 1);
+
+        viewModel.ScanText = "930PROMO-HOLD";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 2);
+
+        var holdTask = viewModel.HoldOrderCommand.ExecuteAsync(null);
+
+        Assert.False(heldOrder);
+
+        evaluationGate.SetResult();
+
+        await holdTask;
+        Assert.True(heldOrder);
+        Assert.Equal(5m, discountWhenHeldOrder);
+        Assert.Equal(15m, actualAmountWhenHeldOrder);
+    }
+
+    [Fact]
     public void Pos_terminal_selects_the_latest_added_cart_line()
     {
         var cart = new PosCartService();

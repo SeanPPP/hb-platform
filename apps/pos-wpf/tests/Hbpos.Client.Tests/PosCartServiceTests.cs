@@ -554,6 +554,32 @@ public sealed class PosCartServiceTests
         Assert.Equal(4m, line.DiscountAmount);
     }
 
+    [Fact]
+    public void Snapshot_and_restore_keep_promotion_discount_source_so_reapply_replaces_old_promotion_discount()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(productCode: "SKU-RESTORE-PROMO", lookupCode: "look-promo", price: 10m));
+        Assert.True(cart.SetLineQuantity(line, 2m));
+        line.SetPromotionDiscountAmount(4m);
+
+        var snapshot = cart.CreateSnapshot();
+        cart.Clear();
+
+        cart.RestoreSnapshot(snapshot);
+
+        line = Assert.Single(cart.Lines);
+        Assert.Equal(4m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(line, 6m)
+        ]);
+
+        Assert.Equal(6m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
+    }
+
     private static SellableItemDto CreateItem(
         string storeCode = "S001",
         string productCode = "SKU-001",

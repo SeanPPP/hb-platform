@@ -175,6 +175,44 @@ public sealed class SuspendedOrderServiceTests
     }
 
     [Fact]
+    public async Task RecallOrderAsync_preserves_promotion_discount_source_so_future_promotions_replace_it()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+            var session = CreateSession();
+
+            await schema.InitializeAsync();
+            var line = cart.AddItem(CreateItem(productCode: "SKU-PROMO-HOLD-01", lookupCode: "promo-hold-01", price: 10m));
+            cart.ApplyPromotionDiscounts([new PromotionLineDiscount(line, 3m)]);
+
+            var suspended = await service.SuspendCurrentOrderAsync(session);
+            var saved = await repository.GetAsync(suspended.SuspendedOrderGuid);
+            Assert.Equal(PosCartLineDiscountSource.Promotion, Assert.Single(saved!.Lines).DiscountSource);
+
+            await service.RecallOrderAsync(suspended.SuspendedOrderGuid);
+
+            var recalledLine = Assert.Single(cart.Lines);
+            Assert.Equal(3m, recalledLine.DiscountAmount);
+
+            // 中文注释：召回后的自动促销折扣仍应保持 Promotion 来源，后续重算才能替换旧金额。
+            cart.ApplyPromotionDiscounts([new PromotionLineDiscount(recalledLine, 5m)]);
+
+            Assert.Equal(5m, recalledLine.DiscountAmount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task RecallOrderAsync_restores_return_line_context_and_card_refund_capacity()
     {
         var databasePath = CreateTempDatabasePath();

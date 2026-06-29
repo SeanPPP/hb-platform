@@ -42,7 +42,8 @@ public sealed record SuspendedOrderLine(
     decimal? DiscountPercent,
     decimal ActualAmount,
     PriceSourceKind PriceSource,
-    string PriceSourceLabel)
+    string PriceSourceLabel,
+    PosCartLineDiscountSource DiscountSource = PosCartLineDiscountSource.None)
 {
     public CartLineKind Kind { get; init; } = CartLineKind.Sale;
 

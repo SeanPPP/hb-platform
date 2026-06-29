@@ -183,38 +183,79 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         IReadOnlyList<RuleUnit> selectedUnits,
         decimal fixedPrice)
     {
-        var groupTotal = decimal.Round(selectedUnits.Sum(unit => unit.UnitPrice), 2, MidpointRounding.AwayFromZero);
+        var groupedLineUnits = selectedUnits
+            .GroupBy(unit => new RuleUnitGroupKey(unit.Line, unit.SortOrder))
+            .Select(group => new
+            {
+                group.Key.Line,
+                group.Key.SortOrder,
+                Amount = decimal.Round(group.First().UnitPrice, 2, MidpointRounding.AwayFromZero)
+            })
+            .OrderBy(group => group.SortOrder)
+            .ToArray();
+
+        var groupTotal = decimal.Round(groupedLineUnits.Sum(unit => unit.Amount), 2, MidpointRounding.AwayFromZero);
         var groupDiscount = decimal.Round(groupTotal - fixedPrice, 2, MidpointRounding.AwayFromZero);
         if (groupDiscount <= 0m)
         {
             return;
         }
 
-        var groupedLines = selectedUnits
+        var groupedLines = groupedLineUnits
             .GroupBy(unit => unit.Line)
             .Select(group => new
             {
                 Line = group.Key,
-                Amount = decimal.Round(group.Sum(unit => unit.UnitPrice), 2, MidpointRounding.AwayFromZero),
-                SortOrder = group.Min(unit => unit.SortOrder)
+                Amount = decimal.Round(group.Sum(unit => unit.Amount), 2, MidpointRounding.AwayFromZero),
+                SortOrder = group.Min(unit => unit.SortOrder),
+                MaxAdditionalDiscount = GetRemainingLineDiscountCapacity(discountsByLine, group.Key)
             })
+            .Where(group => group.MaxAdditionalDiscount > 0m)
             .OrderBy(group => group.SortOrder)
             .ToArray();
+        if (groupedLines.Length == 0)
+        {
+            return;
+        }
 
         var remainingDiscount = groupDiscount;
-        for (var index = 0; index < groupedLines.Length; index++)
+        for (var index = 0; index < groupedLines.Length && remainingDiscount > 0m; index++)
         {
             var group = groupedLines[index];
+            var remainingAmount = decimal.Round(
+                groupedLines.Skip(index).Sum(item => item.Amount),
+                2,
+                MidpointRounding.AwayFromZero);
+            if (remainingAmount <= 0m)
+            {
+                break;
+            }
+
             var lineDiscount = index == groupedLines.Length - 1
                 ? remainingDiscount
-                : decimal.Round(groupDiscount * group.Amount / groupTotal, 2, MidpointRounding.AwayFromZero);
-            lineDiscount = Math.Clamp(lineDiscount, 0m, remainingDiscount);
+                : decimal.Round(remainingDiscount * group.Amount / remainingAmount, 2, MidpointRounding.AwayFromZero);
+            lineDiscount = Math.Clamp(lineDiscount, 0m, Math.Min(remainingDiscount, group.MaxAdditionalDiscount));
+            if (lineDiscount <= 0m)
+            {
+                continue;
+            }
 
             discountsByLine[group.Line] = discountsByLine.TryGetValue(group.Line, out var currentDiscount)
                 ? decimal.Round(currentDiscount + lineDiscount, 2, MidpointRounding.AwayFromZero)
                 : lineDiscount;
             remainingDiscount -= lineDiscount;
         }
+    }
+
+    private static decimal GetRemainingLineDiscountCapacity(
+        IReadOnlyDictionary<CartLine, decimal> discountsByLine,
+        CartLine line)
+    {
+        var currentDiscount = discountsByLine.TryGetValue(line, out var value)
+            ? value
+            : 0m;
+        // 中文注释：自动促销对同一行的累计折扣不能超过该行真实金额，避免 UnitWeight 把折扣上限放大。
+        return Math.Max(0m, decimal.Round(line.GrossAmount - currentDiscount, 2, MidpointRounding.AwayFromZero));
     }
 
     private static string NormalizeProductCode(string? productCode)
@@ -229,4 +270,8 @@ public sealed class PromotionEvaluationService(ILocalPromotionRepository localPr
         decimal UnitPrice,
         int SortOrder,
         int ExpandedIndex);
+
+    private sealed record RuleUnitGroupKey(
+        CartLine Line,
+        int SortOrder);
 }

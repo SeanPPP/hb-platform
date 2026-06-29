@@ -282,9 +282,17 @@ public sealed class LocalCatalogSyncService(
             if (localPromotionRepository is not null && promotionApiClient is not null)
             {
                 // 促销缓存只在商品同步成功后刷新，这样促销接口或落库失败时，旧缓存仍然可用。
-                var promotionResponse = await promotionApiClient.GetRulesAsync(storeCode, cancellationToken: cancellationToken);
-                await localPromotionRepository.ReplaceStoreRulesAsync(storeCode, promotionResponse, cancellationToken);
-                Log($"promotion sync completed store={storeCode} rules={promotionResponse.Rules.Count}");
+                try
+                {
+                    // 促销刷新失败时保留旧缓存，只记录日志，不影响商品同步主流程成功。
+                    var promotionResponse = await promotionApiClient.GetRulesAsync(storeCode, cancellationToken: cancellationToken);
+                    await localPromotionRepository.ReplaceStoreRulesAsync(storeCode, promotionResponse, cancellationToken);
+                    Log($"promotion sync completed store={storeCode} rules={promotionResponse.Rules.Count}");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log($"promotion sync failed store={storeCode} error={ex.Message}");
+                }
             }
 
             totalStopwatch.Stop();
