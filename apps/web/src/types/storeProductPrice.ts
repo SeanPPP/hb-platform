@@ -124,6 +124,9 @@ export interface StorePriceTransferRequest {
 }
 
 export interface StorePriceTransferResult {
+  totalCount: number
+  retailPriceTotal: number
+  multiCodeTotal: number
   totalProcessed: number
   insertedCount: number
   updatedCount: number

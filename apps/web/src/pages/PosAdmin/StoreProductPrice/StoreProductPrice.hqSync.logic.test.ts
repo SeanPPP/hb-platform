@@ -183,6 +183,50 @@ async function main() {
   })
   if (priceTransferPageFailure) failures.push(priceTransferPageFailure)
 
+  const priceTransferSameStoreFailure = await runTest('HQ/本地价格同步应允许源目标分店同名', () => {
+    assert(
+      !pageSource.includes('sourceTargetDifferent') && !pageSource.includes('源分店和目标分店不能相同'),
+      'HQ/本地跨数据域同步不应拦截同名源/目标分店',
+    )
+  })
+  if (priceTransferSameStoreFailure) failures.push(priceTransferSameStoreFailure)
+
+  const priceTransferProgressFailure = await runTest('HQ/本地价格同步进度应使用后端真实 totalCount', () => {
+    assert(
+      typeSource.includes('totalCount: number') &&
+        typeSource.includes('retailPriceTotal: number') &&
+        typeSource.includes('multiCodeTotal: number'),
+      'StorePriceTransferResult 类型应声明后端进度总数字段',
+    )
+    assert(
+      pageSource.includes('function getPriceTransferProgressPercent(job: StorePriceTransferJobDto)'),
+      '页面应使用独立函数计算价格同步进度',
+    )
+    assert(
+      pageSource.includes('result.totalProcessed + result.skippedCount') &&
+        pageSource.includes('job.result?.totalCount ?? 0'),
+      'Running 进度应按已处理/总量计算',
+    )
+    assert(
+      !pageSource.includes("? 100 : 50"),
+      'Running 进度不应继续硬编码为 50%',
+    )
+    assert(
+      pageSource.includes("t('posAdmin.productPrice.processedProgress', '已处理')"),
+      '弹窗应显示已处理 X / Y',
+    )
+    assert(
+      pageSource.includes('const totalProcessed = getPriceTransferHandledCount(completedJob.result)'),
+      '完成提示应复用已处理数量，避免漏算 skippedCount',
+    )
+    assert(
+      pageSource.includes('const nextJob = await getStorePriceTransferJob(jobId)') &&
+        pageSource.includes('setPriceTransferJob(nextJob)'),
+      '轮询到 Running 快照时应立即刷新弹窗进度',
+    )
+  })
+  if (priceTransferProgressFailure) failures.push(priceTransferProgressFailure)
+
   const validationErrorFailure = await runTest('表单校验失败不应弹出同步失败全局提示', () => {
     assert(
       pageSource.includes('function isFormValidationError(error: unknown): error is { errorFields: unknown[] }'),

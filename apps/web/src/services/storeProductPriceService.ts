@@ -89,6 +89,9 @@ function normalizeStorePriceTransferStatus(status: unknown, payload: unknown) {
 function normalizeStorePriceTransferResult(value: unknown): StorePriceTransferResult {
   const raw = isRecord(value) ? value : {}
   return {
+    totalCount: readNumber(raw, 'totalCount', 'TotalCount'),
+    retailPriceTotal: readNumber(raw, 'retailPriceTotal', 'RetailPriceTotal'),
+    multiCodeTotal: readNumber(raw, 'multiCodeTotal', 'MultiCodeTotal'),
     totalProcessed: readNumber(raw, 'totalProcessed', 'TotalProcessed'),
     insertedCount: readNumber(raw, 'insertedCount', 'InsertedCount'),
     updatedCount: readNumber(raw, 'updatedCount', 'UpdatedCount'),

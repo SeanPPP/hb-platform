@@ -44,6 +44,12 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class StorePriceTransferResult
     {
+        public int TotalCount { get; set; }
+
+        public int RetailPriceTotal { get; set; }
+
+        public int MultiCodeTotal { get; set; }
+
         public int TotalProcessed { get; set; }
 
         public int InsertedCount { get; set; }

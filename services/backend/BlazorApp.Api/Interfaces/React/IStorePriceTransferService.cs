@@ -9,7 +9,8 @@ namespace BlazorApp.Api.Interfaces.React
     {
         Task<ApiResponse<StorePriceTransferResult>> TransferAsync(
             StorePriceTransferRequest request,
-            string updatedBy
+            string updatedBy,
+            Action<StorePriceTransferResult>? progressCallback = null
         );
     }
 }

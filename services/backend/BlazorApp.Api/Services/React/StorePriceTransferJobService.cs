@@ -99,7 +99,11 @@ namespace BlazorApp.Api.Services.React
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var service = scope.ServiceProvider.GetRequiredService<IStorePriceTransferService>();
-                var response = await service.TransferAsync(CloneRequest(jobState.Request), jobState.UpdatedBy);
+                var response = await service.TransferAsync(
+                    CloneRequest(jobState.Request),
+                    jobState.UpdatedBy,
+                    progress => UpdateProgress(jobState, progress)
+                );
                 var status = response.Success
                     ? StorePriceTransferJobStatusConstants.Succeeded
                     : StorePriceTransferJobStatusConstants.Failed;
@@ -137,7 +141,7 @@ namespace BlazorApp.Api.Services.React
                     jobState.Status = status;
                     jobState.CompletedAt = completedAt;
                     jobState.ExpiresAt = completedAt.Add(_completedRetention);
-                    jobState.Result = result;
+                    jobState.Result = CloneResult(result);
                     jobState.Message = message;
                 }
 
@@ -207,7 +211,7 @@ namespace BlazorApp.Api.Services.React
                     Status = jobState.Status,
                     IsDuplicateRequest = isDuplicateRequest,
                     Request = CloneRequest(jobState.Request),
-                    Result = jobState.Result,
+                    Result = CloneResult(jobState.Result),
                     Message = jobState.Message,
                     CreatedAt = jobState.CreatedAt,
                     StartedAt = jobState.StartedAt,
@@ -244,6 +248,56 @@ namespace BlazorApp.Api.Services.React
             }
 
             return result;
+        }
+
+        private void UpdateProgress(StorePriceTransferJobState jobState, StorePriceTransferResult progress)
+        {
+            lock (jobState.SyncRoot)
+            {
+                if (jobState.Status != StorePriceTransferJobStatusConstants.Running)
+                {
+                    return;
+                }
+
+                // 关键位置：运行中的 job 也保存 result 快照，前端轮询时才能显示真实批次进度。
+                jobState.Result = CloneResult(progress);
+                jobState.Message = BuildProgressMessage(progress);
+            }
+        }
+
+        private static string BuildProgressMessage(StorePriceTransferResult result)
+        {
+            var handledCount = result.TotalProcessed + result.SkippedCount;
+            return result.TotalCount > 0
+                ? $"分店价格同步处理中：{handledCount}/{result.TotalCount}"
+                : "分店价格同步处理中";
+        }
+
+        private static StorePriceTransferResult? CloneResult(StorePriceTransferResult? result)
+        {
+            if (result == null)
+            {
+                return null;
+            }
+
+            return new StorePriceTransferResult
+            {
+                TotalCount = result.TotalCount,
+                RetailPriceTotal = result.RetailPriceTotal,
+                MultiCodeTotal = result.MultiCodeTotal,
+                TotalProcessed = result.TotalProcessed,
+                InsertedCount = result.InsertedCount,
+                UpdatedCount = result.UpdatedCount,
+                SkippedCount = result.SkippedCount,
+                FailedCount = result.FailedCount,
+                RetailPriceInserted = result.RetailPriceInserted,
+                RetailPriceUpdated = result.RetailPriceUpdated,
+                RetailPriceSkipped = result.RetailPriceSkipped,
+                MultiCodeInserted = result.MultiCodeInserted,
+                MultiCodeUpdated = result.MultiCodeUpdated,
+                MultiCodeSkipped = result.MultiCodeSkipped,
+                Errors = result.Errors.ToList(),
+            };
         }
 
         private static string BuildOperationId(StorePriceTransferRequest request)

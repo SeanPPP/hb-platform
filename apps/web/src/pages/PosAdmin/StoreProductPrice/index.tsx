@@ -46,6 +46,7 @@ import type {
   StoreProductPriceQueryDto,
   StorePriceTransferJobDto,
   StorePriceTransferRequest,
+  StorePriceTransferResult,
   SyncFromHqRequest,
   SyncToOtherStoresDto,
 } from '../../../types/storeProductPrice'
@@ -74,6 +75,18 @@ function isFormValidationError(error: unknown): error is { errorFields: unknown[
 
 function getPriceTransferErrors(job: StorePriceTransferJobDto) {
   return Array.from(new Set([...(job.errors ?? []), ...(job.result?.errors ?? [])]))
+}
+
+function getPriceTransferHandledCount(result?: StorePriceTransferResult) {
+  return result ? result.totalProcessed + result.skippedCount : 0
+}
+
+function getPriceTransferProgressPercent(job: StorePriceTransferJobDto) {
+  if (job.status === 'Succeeded' || job.status === 'Failed') return 100
+  const totalCount = job.result?.totalCount ?? 0
+  if (totalCount <= 0) return 0
+  const percent = Math.floor((getPriceTransferHandledCount(job.result) / totalCount) * 100)
+  return Math.max(0, Math.min(99, percent))
 }
 
 export default function StoreProductPricePage() {
@@ -430,11 +443,6 @@ export default function StoreProductPricePage() {
       const hasSelectedTable = !!values.syncRetailPrices || !!values.syncMultiCodePrices
       const hasSelectedField = !!values.syncPurchasePrice || !!values.syncRetailPrice || !!values.syncDiscountRate || !!values.syncIsAutoPricing || !!values.syncIsSpecialProduct
 
-      if (values.sourceStoreCode === values.targetStoreCode) {
-        message.warning(t('posAdmin.productPrice.sourceTargetDifferent', '源分店和目标分店不能相同'))
-        return
-      }
-
       if (!hasSelectedTable) {
         message.warning(t('posAdmin.productPrice.selectSyncTable', '请至少选择一个同步表'))
         return
@@ -467,7 +475,11 @@ export default function StoreProductPricePage() {
 
       const poller = createHqSyncJobPoller<StorePriceTransferJobDto>({
         jobId: job.jobId,
-        getJob: getStorePriceTransferJob,
+        getJob: async (jobId) => {
+          const nextJob = await getStorePriceTransferJob(jobId)
+          setPriceTransferJob(nextJob)
+          return nextJob
+        },
         timeoutMs: PRICE_TRANSFER_POLL_TIMEOUT_MS,
       })
       activePoller = poller
@@ -481,7 +493,7 @@ export default function StoreProductPricePage() {
         return
       }
 
-      const totalProcessed = completedJob.result?.totalProcessed ?? 0
+      const totalProcessed = getPriceTransferHandledCount(completedJob.result)
       message.success(t('posAdmin.productPrice.priceTransferComplete', '分店价格同步完成，处理 {{count}} 条', { count: totalProcessed }))
       if (dto.targetStoreCode === selectedStoreCode) {
         await loadData()
@@ -1058,13 +1070,15 @@ export default function StoreProductPricePage() {
                 <span>{priceTransferJob.message || t('posAdmin.productPrice.priceTransferRunning', '分店价格同步任务处理中')}</span>
               </Space>
               <Progress
-                percent={priceTransferJob.status === 'Succeeded' || priceTransferJob.status === 'Failed' ? 100 : 50}
+                percent={getPriceTransferProgressPercent(priceTransferJob)}
                 status={priceTransferJob.status === 'Failed' ? 'exception' : priceTransferJob.status === 'Succeeded' ? 'success' : 'active'}
               />
               {priceTransferJob.result && (
                 <div style={{ color: '#666', fontSize: 12 }}>
                   <div>
-                    {t('posAdmin.productPrice.totalProcessed', '总处理')}：{priceTransferJob.result.totalProcessed}，
+                    {t('posAdmin.productPrice.processedProgress', '已处理')}：
+                    {getPriceTransferHandledCount(priceTransferJob.result)}
+                    {priceTransferJob.result.totalCount > 0 ? ` / ${priceTransferJob.result.totalCount}` : ''}，
                     {t('posAdmin.productPrice.added', '新增')}：{priceTransferJob.result.insertedCount}，
                     {t('posAdmin.productPrice.updated', '更新')}：{priceTransferJob.result.updatedCount}，
                     {t('posAdmin.productPrice.skipped', '跳过')}：{priceTransferJob.result.skippedCount}

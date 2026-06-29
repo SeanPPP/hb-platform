@@ -667,7 +667,7 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger(); // 启用Swagger JSON端点
     app.UseSwaggerUI(); // 启用Swagger UI界面（通常在 /swagger 路径）
-    // 🔗 访问地址：https://localhost:7171/swagger
+    // 🔗 访问地址：http://localhost:5002/swagger
 }
 
 // 🔒 HTTPS重定向中间件（当前已禁用）
