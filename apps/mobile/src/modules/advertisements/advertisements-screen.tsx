@@ -30,6 +30,13 @@ import {
 } from "@/components/ui/SelectionListModal";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
+  applyUploadedAssetToDraft,
+  getAdvertisementUploadFeedback,
+  resolveAdvertisementUploadErrorStatus,
+  type AdvertisementUploadFeedbackStatus,
+  type AdvertisementUploadSource,
+} from "@/modules/advertisements/advertisement-upload-feedback";
+import {
   createAdvertisement,
   createAdvertisementUploadSignature,
   deleteAdvertisement,
@@ -54,7 +61,6 @@ import { useAuthStore } from "@/store/auth-store";
 const PAGE_SIZE = 20;
 
 type FilterEnabledValue = "all" | "enabled" | "disabled";
-type UploadSource = "library" | "cameraPhoto" | "cameraVideo";
 
 function createEmptyDraft(): AdvertisementDraft {
   return {
@@ -235,6 +241,10 @@ export function AdvertisementsScreen() {
   const [draft, setDraft] = useState<AdvertisementDraft>(createEmptyDraft);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [snackbar, setSnackbar] = useState("");
+  const [uploadFeedbackState, setUploadFeedbackState] = useState<{
+    status: AdvertisementUploadFeedbackStatus;
+    source?: AdvertisementUploadSource | null;
+  }>({ status: "idle" });
   const deviceBoundStoreCode = getDeviceBoundStoreCode({ isDeviceMode, selectedStoreCode });
   const effectiveFilterStoreCode = deviceBoundStoreCode ?? filterStoreCode;
   const canUseAllStoreScope = !deviceBoundStoreCode && managedStoreCodes === null;
@@ -339,7 +349,7 @@ export function AdvertisementsScreen() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async (source: UploadSource) => {
+    mutationFn: async (source: AdvertisementUploadSource) => {
       const ImagePicker = await import("expo-image-picker");
       const permission =
         source === "library"
@@ -392,40 +402,65 @@ export function AdvertisementsScreen() {
         fileSize,
       };
     },
-    onSuccess: (result) => {
+    onSuccess: (result, source) => {
       if (!result) {
+        setUploadFeedbackState({ status: "canceled", source });
+        setSnackbar(t("messages.uploadCanceled"));
         return;
       }
 
       setDraft((current) => {
-        const nextMediaType = result.asset.type === "video" ? "video" : "image";
-        const mediaUrl = uploadedOrCurrent(result.uploaded.mediaUrl, current.mediaUrl);
-        return {
-          ...current,
-          mediaType: nextMediaType,
-          mediaUrl,
-          thumbnailUrl:
-            nextMediaType === "image"
-              ? mediaUrl
-              : current.thumbnailUrl,
-          objectKey: result.uploaded.objectKey,
-          originalFileName: result.fileName,
+        return applyUploadedAssetToDraft({
+          draft: current,
+          uploadedAsset: result.uploaded,
+          assetType: result.asset.type === "video" ? "video" : "image",
+          fileName: result.fileName,
           contentType: result.contentType,
-          fileSize: String(result.fileSize),
-        };
+          fileSize: result.fileSize,
+        });
       });
+      setUploadFeedbackState({ status: "uploaded", source });
       setSnackbar(t("messages.uploadSuccess"));
     },
-    onError: (error) => {
+    onError: (error, source) => {
+      const nextStatus = resolveAdvertisementUploadErrorStatus(error);
+      setUploadFeedbackState({ status: nextStatus, source });
       const message =
-        error instanceof Error && error.message === "permission-denied"
+        nextStatus === "permissionDenied"
           ? t("messages.permissionDenied")
-          : error instanceof Error && error.message === "camera-permission-denied"
+          : nextStatus === "cameraPermissionDenied"
             ? t("messages.cameraPermissionDenied")
             : t("messages.uploadFailed");
       setSnackbar(message);
     },
   });
+
+  const currentUploadStatus = uploadMutation.isPending
+    ? "uploading"
+    : uploadFeedbackState.status;
+  const uploadFeedback = useMemo(
+    () =>
+      getAdvertisementUploadFeedback({
+        status: currentUploadStatus,
+        source: uploadFeedbackState.source,
+        mediaType: draft.mediaType,
+        fileName: draft.originalFileName,
+      }),
+    [
+      currentUploadStatus,
+      draft.mediaType,
+      draft.originalFileName,
+      uploadFeedbackState.source,
+    ]
+  );
+  const uploadStatusTone =
+    currentUploadStatus === "failed" ||
+    currentUploadStatus === "permissionDenied" ||
+    currentUploadStatus === "cameraPermissionDenied"
+      ? styles.uploadStatusError
+      : currentUploadStatus === "uploaded"
+        ? styles.uploadStatusSuccess
+        : undefined;
 
   const errors = useMemo(
     () => validateDraft(draft, { allowAllStoreScope: canUseAllStoreScope }),
@@ -468,6 +503,7 @@ export function AdvertisementsScreen() {
           ? managedStoreCodes
           : [],
     });
+    setUploadFeedbackState({ status: "idle" });
     setSubmitAttempted(false);
   }
 
@@ -479,6 +515,7 @@ export function AdvertisementsScreen() {
   function openEditEditor(item: AdvertisementItem) {
     setEditingId(item.id);
     setDraft(bindAdvertisementDraftStoreCodes(mapAdvertisementToDraft(item), deviceBoundStoreCode));
+    setUploadFeedbackState({ status: "idle" });
     setSubmitAttempted(false);
     setEditorVisible(true);
   }
@@ -520,6 +557,12 @@ export function AdvertisementsScreen() {
       return;
     }
     saveMutation.mutate(buildPayloadFromDraft(bindAdvertisementDraftStoreCodes(draft, deviceBoundStoreCode)));
+  }
+
+  function startUpload(source: AdvertisementUploadSource) {
+    // 上传状态先于异步流程更新，避免用户选图、签名和直传阶段没有明确反馈。
+    setUploadFeedbackState({ status: "uploading", source });
+    uploadMutation.mutate(source);
   }
 
   const items = advertisementsQuery.data?.items ?? [];
@@ -794,7 +837,7 @@ export function AdvertisementsScreen() {
               <Button
                 mode="contained"
                 icon="upload"
-                onPress={() => uploadMutation.mutate("library")}
+                onPress={() => startUpload("library")}
                 loading={uploadMutation.isPending}
                 disabled={uploadMutation.isPending}
               >
@@ -803,7 +846,7 @@ export function AdvertisementsScreen() {
               <Button
                 mode="outlined"
                 icon="camera"
-                onPress={() => uploadMutation.mutate("cameraPhoto")}
+                onPress={() => startUpload("cameraPhoto")}
                 disabled={uploadMutation.isPending}
               >
                 {t("actions.capturePhoto")}
@@ -811,7 +854,7 @@ export function AdvertisementsScreen() {
               <Button
                 mode="outlined"
                 icon="video"
-                onPress={() => uploadMutation.mutate("cameraVideo")}
+                onPress={() => startUpload("cameraVideo")}
                 disabled={uploadMutation.isPending}
               >
                 {t("actions.recordVideo")}
@@ -820,6 +863,26 @@ export function AdvertisementsScreen() {
                 {draft.originalFileName || t("labels.noFileSelected")}
               </Text>
             </View>
+
+            <Surface style={[styles.uploadStatusBlock, uploadStatusTone]}>
+              <View style={styles.uploadStatusHeader}>
+                <Text variant="titleSmall">{t(uploadFeedback.titleKey)}</Text>
+                {uploadMutation.isPending ? <ActivityIndicator size="small" /> : null}
+              </View>
+              <Text variant="bodySmall" style={styles.cardMeta}>
+                {t(uploadFeedback.descriptionKey)}
+              </Text>
+              {draft.originalFileName ? (
+                <Text variant="bodySmall" style={styles.uploadMetaText}>
+                  {draft.originalFileName}
+                </Text>
+              ) : null}
+              {draft.objectKey ? (
+                <Text variant="bodySmall" style={styles.uploadMetaText}>
+                  {draft.objectKey}
+                </Text>
+              ) : null}
+            </Surface>
 
             {draft.mediaType === "image" && draft.mediaUrl ? (
               <Image source={{ uri: draft.mediaUrl }} style={styles.previewImage} resizeMode="cover" />
@@ -975,7 +1038,7 @@ export function AdvertisementsScreen() {
                 mode="contained"
                 onPress={onSubmit}
                 loading={saveMutation.isPending}
-                disabled={saveMutation.isPending}
+                disabled={saveMutation.isPending || uploadMutation.isPending}
               >
                 {t("common:actions.save")}
               </Button>
@@ -1019,10 +1082,6 @@ export function AdvertisementsScreen() {
       </Snackbar>
     </SafeAreaView>
   );
-}
-
-function uploadedOrCurrent(nextValue: string, currentValue: string) {
-  return nextValue.trim() ? nextValue : currentValue;
 }
 
 const styles = StyleSheet.create({
@@ -1175,6 +1234,28 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 12,
+  },
+  uploadMetaText: {
+    color: "#333333",
+    marginTop: 4,
+  },
+  uploadStatusBlock: {
+    borderColor: "#D0D7DE",
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 12,
+  },
+  uploadStatusError: {
+    borderColor: "#D32F2F",
+  },
+  uploadStatusHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "space-between",
+  },
+  uploadStatusSuccess: {
+    borderColor: "#2E7D32",
   },
   videoPlaceholder: {
     alignItems: "center",
