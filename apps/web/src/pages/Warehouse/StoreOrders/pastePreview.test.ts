@@ -95,7 +95,7 @@ const existingLines: ExistingStoreOrderPasteLine[] = [
 async function main() {
   const failures: string[] = []
 
-  const parseFailure = await runTest('粘贴解析应把空数量按 1 处理并保留其他格式错误异常行', () => {
+  const parseFailure = await runTest('粘贴解析应把普通空数量按 0 处理并保留其他格式错误异常行', () => {
     const rows = parseStoreOrderPasteRows('HB001\t10\nHB002\t\nHB003\t0\nHB004\t-2\nHB005\tabc\nHB006\t12abc\nHB007\t1.5', {
       itemNumber: 0,
       quantity: 1,
@@ -104,9 +104,9 @@ async function main() {
 
     assertEqual(rows.length, 7, '解析应保留全部非空货号行')
     assertEqual(rows[0].quantityValid, true, '正数数量应有效')
-    assertEqual(rows[1].quantity, 1, '空数量应默认 1')
-    assertEqual(rows[1].quantityValid, true, '空数量应按默认 1 视为有效')
-    assertEqual(rows[2].quantityValid, false, '0 数量应无效')
+    assertEqual(rows[1].quantity, 0, '普通模式空数量应按 0 解析')
+    assertEqual(rows[1].quantityValid, true, '普通模式空数量应可写入 0')
+    assertEqual(rows[2].quantityValid, true, '0 数量应有效')
     assertEqual(rows[3].quantityValid, false, '负数数量应无效')
     assertEqual(rows[4].quantityValid, false, '非数字数量应无效')
     assertEqual(rows[5].quantityValid, false, '带数字前缀的格式错误数量应无效')
@@ -128,7 +128,7 @@ async function main() {
   })
   if (leadingEmptyColumnFailure) failures.push(leadingEmptyColumnFailure)
 
-  const missingQuantityDefaultFailure = await runTest('只有货号没有数量列内容时应默认数量 1 并可导入', () => {
+  const missingQuantityZeroFailure = await runTest('普通模式只有货号没有数量列内容时应写入 0 到已有明细', () => {
     const rows = parseStoreOrderPasteRows('HB001', {
       itemNumber: 0,
       quantity: 1,
@@ -137,19 +137,53 @@ async function main() {
     const preview = createPastePreviewItems(rows, lookupRows, existingLines)
 
     assertEqual(rows.length, 1, '只有货号的行也应被解析')
-    assertEqual(rows[0].quantity, 1, '缺失数量列内容应默认 1')
+    assertEqual(rows[0].quantity, 0, '缺失数量列内容应写入 0')
     assertEqual(rows[0].quantityValid, true, '缺失数量应视为有效')
-    assertEqual(preview[0].valid, true, '匹配到商品后应可导入')
+    assertEqual(preview[0].valid, true, '已有明细匹配到商品后应可导入 0')
+    assertDeepEqual(
+      buildPasteSubmitItems(preview),
+      [{ productCode: 'P001', quantity: 0, action: 'replace' }],
+      '提交 payload 应使用数量 0',
+    )
+  })
+  if (missingQuantityZeroFailure) failures.push(missingQuantityZeroFailure)
+
+  const disabledQuantityColumnFailure = await runTest('数量列选择无时应默认数量 1 并可导入', () => {
+    const rows = parseStoreOrderPasteRows('HB001', {
+      itemNumber: 0,
+      quantity: -1,
+      price: -1,
+    })
+    const preview = createPastePreviewItems(rows, lookupRows, existingLines)
+
+    assertEqual(rows[0].quantity, 1, '数量列选择无时应默认 1')
+    assertEqual(rows[0].quantityValid, true, '数量列选择无应视为有效')
     assertDeepEqual(
       buildPasteSubmitItems(preview),
       [{ productCode: 'P001', quantity: 1, action: 'replace' }],
       '提交 payload 应使用默认数量 1',
     )
   })
-  if (missingQuantityDefaultFailure) failures.push(missingQuantityDefaultFailure)
+  if (disabledQuantityColumnFailure) failures.push(disabledQuantityColumnFailure)
 
-  const quantityDisplayFailure = await runTest('异常数量预览应展示原始 Excel 单元格值，空数量显示默认 1', () => {
-    const rows = parseStoreOrderPasteRows('HB001\tabc\nHB002\t0\nHB003\t', {
+  const newZeroQuantityFailure = await runTest('新商品数量 0 不应进入提交 payload', () => {
+    const rows = parseStoreOrderPasteRows('HB002\t0', {
+      itemNumber: 0,
+      quantity: 1,
+      price: -1,
+    })
+    const preview = createPastePreviewItems(rows, lookupRows, existingLines)
+
+    assertEqual(rows[0].quantity, 0, '显式 0 应按 0 解析')
+    assertEqual(rows[0].quantityValid, true, '显式 0 本身是有效数量')
+    assertEqual(preview[0].valid, false, '新商品 0 不应导入空明细')
+    assertEqual(preview[0].status, 'invalidQuantity', '新商品 0 应提示为不可导入数量')
+    assertDeepEqual(buildPasteSubmitItems(preview), [], '新商品 0 不应进入提交 payload')
+  })
+  if (newZeroQuantityFailure) failures.push(newZeroQuantityFailure)
+
+  const quantityDisplayFailure = await runTest('异常数量预览应展示原始 Excel 单元格值，普通空数量显示 0', () => {
+    const rows = parseStoreOrderPasteRows('HB001\tabc\nHB002\t-2\nHB003\t', {
       itemNumber: 0,
       quantity: 1,
       price: -1,
@@ -157,13 +191,13 @@ async function main() {
     const preview = createPastePreviewItems(rows, lookupRows, existingLines)
 
     assertEqual(formatPastePreviewQuantity(preview[0]), 'abc', '非数字异常应展示原始值')
-    assertEqual(formatPastePreviewQuantity(preview[1]), '0', '0 数量异常应展示原始值')
-    assertEqual(formatPastePreviewQuantity(preview[2]), 1, '空数量应显示默认 1')
+    assertEqual(formatPastePreviewQuantity(preview[1]), '-2', '负数异常应展示原始值')
+    assertEqual(formatPastePreviewQuantity(preview[2]), 0, '普通空数量应显示 0')
   })
   if (quantityDisplayFailure) failures.push(quantityDisplayFailure)
 
   const previewFailure = await runTest('预览应标记新增、已存在、数量异常和未匹配状态', () => {
-    const parsedRows = parseStoreOrderPasteRows('HB001\t10\nHB002\t4\nHB003\t0\nHB404\t7', {
+    const parsedRows = parseStoreOrderPasteRows('HB001\t10\nHB002\t4\nHB003\t-2\nHB404\t7', {
       itemNumber: 0,
       quantity: 1,
       price: -1,
@@ -182,7 +216,7 @@ async function main() {
   if (previewFailure) failures.push(previewFailure)
 
   const filterFailure = await runTest('预览筛选应支持全部、可导入、异常、未匹配、已存在', () => {
-    const parsedRows = parseStoreOrderPasteRows('HB001\t10\nHB002\t4\nHB003\t0\nHB404\t7', {
+    const parsedRows = parseStoreOrderPasteRows('HB001\t10\nHB002\t4\nHB003\t-2\nHB404\t7', {
       itemNumber: 0,
       quantity: 1,
       price: -1,
@@ -259,7 +293,7 @@ async function main() {
       itemNumber: 0,
       quantity: 1,
       price: -1,
-    })
+    }, 'inner')
     const preview = createPastePreviewItems(
       parsedRows,
       [
@@ -287,6 +321,24 @@ async function main() {
     assertEqual(formatPastePreviewQuantity(preview[0], 'inner'), 12, 'inner 模式预览应显示默认 1 换算后的最终数量')
   })
   if (innerMissingQuantitySubmitFailure) failures.push(innerMissingQuantitySubmitFailure)
+
+  const innerExplicitZeroFailure = await runTest('inner 模式显式 0 应按 0 保留，不回退默认 1', () => {
+    const parsedRows = parseStoreOrderPasteRows('HB001\t0', {
+      itemNumber: 0,
+      quantity: 1,
+      price: -1,
+    }, 'inner')
+    const preview = createPastePreviewItems(parsedRows, lookupRows, existingLines)
+
+    assertEqual(parsedRows[0].quantity, 0, 'inner 模式显式 0 应保持 0')
+    assertDeepEqual(
+      buildPasteSubmitItems(preview, { quantityMode: 'inner' }),
+      [{ productCode: 'P001', quantity: 0, action: 'replace' }],
+      '已有明细显式 0 应提交 0',
+    )
+    assertEqual(formatPastePreviewQuantity(preview[0], 'inner'), 0, 'inner 显式 0 预览也应显示 0')
+  })
+  if (innerExplicitZeroFailure) failures.push(innerExplicitZeroFailure)
 
   const innerQuantityFallbackFailure = await runTest('inner 模式遇到无效中包数应按 1 回退', () => {
     const baseItem: Omit<StoreOrderPastePreviewItem, 'product'> = {
@@ -505,9 +557,11 @@ async function main() {
   })
   if (innerTargetUiFailure) failures.push(innerTargetUiFailure)
 
-  const defaultQuantityCopyFailure = await runTest('中英文粘贴文案应说明空数量默认 1', () => {
-    assert(zhLocaleSource.includes('数量为空时默认 1'), '中文文案应说明空数量默认 1')
-    assert(enLocaleSource.includes('blank quantity defaults to 1'), '英文文案应说明 blank quantity defaults to 1')
+  const defaultQuantityCopyFailure = await runTest('中英文粘贴文案应说明普通空数量写入 0 且 inner 空数量默认 1', () => {
+    assert(zhLocaleSource.includes('数量列为空写入 0'), '中文文案应说明普通空数量写入 0')
+    assert(zhLocaleSource.includes('数量列为空时按 1 再乘商品中包数'), '中文文案应说明 inner 空数量默认 1 后换算')
+    assert(enLocaleSource.includes('blank cells in the quantity column write 0'), '英文文案应说明 blank cells write 0')
+    assert(enLocaleSource.includes('default to 1 before multiplying'), '英文文案应说明 inner blank cells default to 1 before multiplying')
   })
   if (defaultQuantityCopyFailure) failures.push(defaultQuantityCopyFailure)
 

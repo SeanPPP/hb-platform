@@ -6796,7 +6796,8 @@ FinalRows AS (
             var importableItems = items
                 .Where(item =>
                     !string.IsNullOrWhiteSpace(item.ProductCode)
-                    && item.Quantity > 0
+                    // Excel 粘贴允许 0 写入已有明细用于清零；负数仍过滤。
+                    && item.Quantity >= 0
                     && !string.Equals(
                         NormalizePasteAction(item.Action),
                         StoreOrderPasteActions.Skip,

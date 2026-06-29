@@ -51,29 +51,35 @@ function normalizeLookupKey(value: string | undefined) {
   return value?.trim().toLowerCase() ?? ''
 }
 
-function parseQuantity(rawQuantity: string | undefined, quantityColumnEnabled: boolean) {
+function parseQuantity(
+  rawQuantity: string | undefined,
+  quantityColumnEnabled: boolean,
+  quantityMode: StoreOrderPasteQuantityMode,
+) {
   if (!quantityColumnEnabled) {
     return { quantity: 1, quantityValid: true }
   }
 
   const normalized = rawQuantity?.trim() ?? ''
   if (!normalized) {
-    // 数量列存在但为空时按 1 处理，方便只粘贴货号或漏填数量的常见导入场景。
-    return { quantity: 1, quantityValid: true }
+    // 数量列为空时，普通写入用于清零；inner 写入仍按 1 个中包换算。
+    return { quantity: quantityMode === 'inner' ? 1 : 0, quantityValid: true }
   }
 
-  const quantity = /^[1-9]\d*$/.test(normalized) ? Number.parseInt(normalized, 10) : 0
+  const isNonNegativeInteger = /^\d+$/.test(normalized)
+  const quantity = isNonNegativeInteger ? Number.parseInt(normalized, 10) : 0
 
   return {
     quantity,
     quantityRaw: rawQuantity,
-    quantityValid: quantity > 0,
+    quantityValid: isNonNegativeInteger,
   }
 }
 
 export function parseStoreOrderPasteRows(
   pasteData: string,
   columnMapping: StoreOrderPasteColumnMapping,
+  quantityMode: StoreOrderPasteQuantityMode = 'direct',
 ): ParsedStoreOrderPasteItem[] {
   return pasteData
     .split(/\r?\n/)
@@ -93,6 +99,7 @@ export function parseStoreOrderPasteRows(
       const quantityResult = parseQuantity(
         columnMapping.quantity >= 0 ? cols[columnMapping.quantity] : undefined,
         columnMapping.quantity >= 0,
+        quantityMode,
       )
       const rawPrice = columnMapping.price >= 0 ? cols[columnMapping.price] : undefined
       const parsedPrice = rawPrice === undefined ? Number.NaN : Number.parseFloat(rawPrice)
@@ -136,18 +143,20 @@ export function createPastePreviewItems(
   return parsedItems.map((item) => {
     const product = productMap.get(normalizeLookupKey(item.itemNumber))
     const existingLine = product?.productCode ? existingMap.get(normalizeLookupKey(product.productCode)) : undefined
-    const status: StoreOrderPastePreviewStatus = !item.quantityValid
+    const isNewZeroQuantity = Boolean(product) && !existingLine && item.quantity === 0
+    const status: StoreOrderPastePreviewStatus = !item.quantityValid || isNewZeroQuantity
       ? 'invalidQuantity'
       : product
         ? existingLine
           ? 'existing'
           : 'new'
         : 'unmatched'
+    const canImportQuantity = item.quantityValid && (item.quantity > 0 || Boolean(existingLine))
 
     return {
       ...item,
       product,
-      valid: Boolean(product) && item.quantityValid,
+      valid: Boolean(product) && canImportQuantity,
       status,
       // 默认覆盖，用户可在预览中批量或逐条改成追加/跳过。
       action: 'replace',

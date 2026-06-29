@@ -73,7 +73,7 @@ namespace BlazorApp.Api.Services.React
                     return Task.FromResult(duplicate);
                 }
 
-                // 关键位置：先登记运行中 operation，再启动后台任务，避免重复点击造成同一目标双写。
+                // 关键位置：按目标分店登记运行中任务，避免不同来源同时写同一个目标。
                 _jobs[jobState.JobId] = jobState;
                 _runningOperationJobIds[operationId] = jobState.JobId;
             }
@@ -250,17 +250,9 @@ namespace BlazorApp.Api.Services.React
         {
             return string.Join(
                 "|",
-                "store-price-transfer",
+                "store-price-transfer-target",
                 NormalizeCode(request.Direction)?.ToUpperInvariant() ?? string.Empty,
-                NormalizeCode(request.SourceStoreCode)?.ToUpperInvariant() ?? string.Empty,
-                NormalizeCode(request.TargetStoreCode)?.ToUpperInvariant() ?? string.Empty,
-                request.SyncRetailPrices,
-                request.SyncMultiCodePrices,
-                request.SyncPurchasePrice,
-                request.SyncRetailPrice,
-                request.SyncDiscountRate,
-                request.SyncIsAutoPricing,
-                request.SyncIsSpecialProduct
+                NormalizeCode(request.TargetStoreCode)?.ToUpperInvariant() ?? string.Empty
             );
         }
 

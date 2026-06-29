@@ -56,6 +56,7 @@ import { useAuthStore } from '../../../store/auth'
 import { formatPaginationTotalText } from './pagination'
 
 type DataType = StoreProductPriceListDto & { key: string }
+const PRICE_TRANSFER_POLL_TIMEOUT_MS = 45 * 60 * 1000
 
 const productTypeMap: Record<number, { labelKey: string; color: string }> = {
   0: { labelKey: 'posAdmin.productPrice.normalProduct', color: 'default' },
@@ -461,12 +462,13 @@ export default function StoreProductPricePage() {
       const job = await startStorePriceTransferJob(dto)
       setPriceTransferJob(job)
       if (job.isDuplicateRequest) {
-        message.info(t('posAdmin.productPrice.priceTransferDuplicate', '相同同步任务正在执行，已切换到已有任务'))
+        message.info(t('posAdmin.productPrice.priceTransferDuplicate', '目标分店同步任务正在执行，已切换到已有任务'))
       }
 
       const poller = createHqSyncJobPoller<StorePriceTransferJobDto>({
         jobId: job.jobId,
         getJob: getStorePriceTransferJob,
+        timeoutMs: PRICE_TRANSFER_POLL_TIMEOUT_MS,
       })
       activePoller = poller
       priceTransferPollerRef.current = poller
@@ -488,7 +490,7 @@ export default function StoreProductPricePage() {
       if (isFormValidationError(error)) return
       if (error instanceof HqProductSyncPollingCancelledError) return
       if (error instanceof HqProductSyncPollingTimeoutError) {
-        message.error(t('posAdmin.productPrice.priceTransferTimeout', '分店价格同步任务轮询超时'))
+        message.error(t('posAdmin.productPrice.priceTransferTimeout', '分店价格同步任务轮询超时，任务可能仍在后台执行，请稍后刷新或重新查询'))
         return
       }
       message.error(error instanceof Error ? error.message : t('posAdmin.productPrice.priceTransferFailed', '分店价格同步失败'))

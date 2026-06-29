@@ -300,7 +300,7 @@ public sealed class StorePriceTransferJobServiceTests
     }
 
     [Fact]
-    public async Task StartJobAsync_相同Operation运行中时复用同一个任务()
+    public async Task StartJobAsync_相同方向目标运行中时复用同一个任务()
     {
         var release = new TaskCompletionSource<ApiResponse<StorePriceTransferResult>>(
             TaskCreationOptions.RunContinuationsAsynchronously
@@ -311,8 +311,11 @@ public sealed class StorePriceTransferJobServiceTests
             .Returns(release.Task);
         var service = CreateJobService(transferService);
 
-        var first = await service.StartJobAsync(BuildRequest(), "admin");
-        var duplicate = await service.StartJobAsync(BuildRequest(), "admin");
+        var first = await service.StartJobAsync(BuildRequest(sourceStoreCode: "S01", targetStoreCode: "T01"), "admin");
+        var duplicate = await service.StartJobAsync(
+            BuildRequest(sourceStoreCode: "S02", targetStoreCode: "T01", syncRetailPrice: false),
+            "admin"
+        );
 
         Assert.Equal(first.JobId, duplicate.JobId);
         Assert.True(duplicate.IsDuplicateRequest);
@@ -321,6 +324,76 @@ public sealed class StorePriceTransferJobServiceTests
         var completed = await WaitForJobAsync(service, first.JobId);
         Assert.Equal(StorePriceTransferJobStatusConstants.Succeeded, completed.Status);
         transferService.Verify(service => service.TransferAsync(It.IsAny<StorePriceTransferRequest>(), "admin"), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartJobAsync_不同目标分店允许并行创建任务()
+    {
+        var release = new TaskCompletionSource<ApiResponse<StorePriceTransferResult>>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var transferService = new Mock<IStorePriceTransferService>();
+        transferService
+            .Setup(service => service.TransferAsync(It.IsAny<StorePriceTransferRequest>(), It.IsAny<string>()))
+            .Returns(release.Task);
+        var service = CreateJobService(transferService);
+
+        var first = await service.StartJobAsync(BuildRequest(targetStoreCode: "T01"), "admin");
+        var second = await service.StartJobAsync(BuildRequest(targetStoreCode: "T02"), "admin");
+
+        Assert.NotEqual(first.JobId, second.JobId);
+        Assert.False(second.IsDuplicateRequest);
+
+        release.SetResult(ApiResponse<StorePriceTransferResult>.OK(new StorePriceTransferResult { TotalProcessed = 1 }));
+        Assert.Equal(StorePriceTransferJobStatusConstants.Succeeded, (await WaitForJobAsync(service, first.JobId)).Status);
+        Assert.Equal(StorePriceTransferJobStatusConstants.Succeeded, (await WaitForJobAsync(service, second.JobId)).Status);
+        transferService.Verify(service => service.TransferAsync(It.IsAny<StorePriceTransferRequest>(), "admin"), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task TransferAsync_失败且已有提交时返回部分提交提示()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        InitLocalTables(localDb);
+        InitHqTables(hqDb);
+        localDb.Ado.ExecuteCommand(
+            """
+            CREATE TRIGGER StoreRetailPrice_Fail_P02
+            BEFORE INSERT ON StoreRetailPrice
+            WHEN NEW.ProductCode = 'P02'
+            BEGIN
+                SELECT RAISE(ABORT, 'P02 insert failed');
+            END;
+            """
+        );
+        await hqDb.Insertable(new[]
+        {
+            BuildHqRetail(1, "S01", "P01", 5m, 9m, 0.25m, true, true),
+            BuildHqRetail(2, "S01", "P02", 6m, 10m, 0.35m, true, false),
+        }).ExecuteCommandAsync();
+        var service = CreateTransferService(localDb, hqDb);
+
+        var result = await service.TransferAsync(new StorePriceTransferRequest
+        {
+            Direction = StorePriceTransferDirectionConstants.HqToLocal,
+            SourceStoreCode = "S01",
+            TargetStoreCode = "T01",
+            SyncRetailPrices = true,
+            SyncMultiCodePrices = false,
+            SyncPurchasePrice = true,
+            SyncRetailPrice = true,
+        }, "tester");
+
+        Assert.False(result.Success);
+        var details = Assert.IsType<StorePriceTransferResult>(result.Details);
+        Assert.Equal(1, details.TotalProcessed);
+        Assert.Contains("已提交 1 条，已提交批次不会自动回滚", result.Message);
+        Assert.Contains("已提交 1 条，已提交批次不会自动回滚", details.Errors.Single());
     }
 
     [Fact]
@@ -375,15 +448,41 @@ public sealed class StorePriceTransferJobServiceTests
         jobService.VerifyAll();
     }
 
-    private static StorePriceTransferRequest BuildRequest() => new()
+    [Fact]
+    public async Task ReactStoreProductPricesController_空请求直接返回BadRequest且不启动Job()
+    {
+        var jobService = new Mock<IStorePriceTransferJobService>(MockBehavior.Strict);
+        var controller = CreateController(jobService.Object);
+
+        var response = await controller.StartStorePriceTransferJob(null);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response);
+        var body = Assert.IsType<ApiResponse<StorePriceTransferJobDto>>(badRequest.Value);
+        Assert.False(body.Success);
+        Assert.Equal("INVALID_REQUEST", body.ErrorCode);
+        jobService.Verify(
+            service => service.StartJobAsync(
+                It.IsAny<StorePriceTransferRequest>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()
+            ),
+            Times.Never
+        );
+    }
+
+    private static StorePriceTransferRequest BuildRequest(
+        string sourceStoreCode = "S01",
+        string targetStoreCode = "T01",
+        bool syncRetailPrice = true
+    ) => new()
     {
         Direction = StorePriceTransferDirectionConstants.HqToLocal,
-        SourceStoreCode = "S01",
-        TargetStoreCode = "T01",
+        SourceStoreCode = sourceStoreCode,
+        TargetStoreCode = targetStoreCode,
         SyncRetailPrices = true,
         SyncMultiCodePrices = true,
         SyncPurchasePrice = true,
-        SyncRetailPrice = true,
+        SyncRetailPrice = syncRetailPrice,
     };
 
     private static StorePriceTransferService CreateTransferService(ISqlSugarClient localDb, ISqlSugarClient hqDb)

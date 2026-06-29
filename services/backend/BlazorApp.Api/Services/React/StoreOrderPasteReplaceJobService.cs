@@ -178,7 +178,8 @@ namespace BlazorApp.Api.Services.React
         {
             return items.Count(item =>
                 !string.IsNullOrWhiteSpace(item.ProductCode)
-                && item.Quantity > 0
+                // 与实际粘贴写入规则一致：0 可用于清零已有明细，负数才跳过。
+                && item.Quantity >= 0
                 && !string.Equals(
                     item.Action,
                     StoreOrderPasteActions.Skip,

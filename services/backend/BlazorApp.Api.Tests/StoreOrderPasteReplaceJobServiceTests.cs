@@ -83,6 +83,9 @@ public sealed class StoreOrderPasteReplaceJobServiceTests : IDisposable
         await SeedProductAsync("P-SKIP", "ITEM-SKIP");
         await SeedWarehouseProductAsync("P-SKIP");
         await SeedOrderDetailAsync("ORDER-JOB", "P-SKIP", quantity: 8m, allocQuantity: 3m);
+        await SeedProductAsync("P-ZERO", "ITEM-ZERO");
+        await SeedWarehouseProductAsync("P-ZERO");
+        await SeedOrderDetailAsync("ORDER-JOB", "P-ZERO", quantity: 9m, allocQuantity: 4m);
         await SeedProductAsync("P-NEW", "ITEM-NEW");
         await SeedWarehouseProductAsync("P-NEW");
 
@@ -107,8 +110,14 @@ public sealed class StoreOrderPasteReplaceJobServiceTests : IDisposable
                 },
                 new()
                 {
-                    ProductCode = "P-NEW",
+                    ProductCode = "P-ZERO",
                     Quantity = 0m,
+                    Action = StoreOrderPasteActions.Replace,
+                },
+                new()
+                {
+                    ProductCode = "P-NEW",
+                    Quantity = -1m,
                     Action = StoreOrderPasteActions.Append,
                 },
             },
@@ -123,8 +132,8 @@ public sealed class StoreOrderPasteReplaceJobServiceTests : IDisposable
         var completed = await WaitForTerminalJobAsync(jobService, started.JobId);
 
         Assert.Equal(StoreOrderPasteReplaceJobStatusConstants.Succeeded, completed.Status);
-        Assert.Equal(3, completed.TotalCount);
-        Assert.Equal(1, completed.ImportedCount);
+        Assert.Equal(4, completed.TotalCount);
+        Assert.Equal(2, completed.ImportedCount);
         Assert.Equal(2, completed.SkippedCount);
 
         var replaced = await _db.Queryable<WareHouseOrderDetails>()
@@ -133,12 +142,16 @@ public sealed class StoreOrderPasteReplaceJobServiceTests : IDisposable
         var skipped = await _db.Queryable<WareHouseOrderDetails>()
             .Where(item => item.OrderGUID == "ORDER-JOB" && item.ProductCode == "P-SKIP")
             .FirstAsync();
+        var zeroed = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-JOB" && item.ProductCode == "P-ZERO")
+            .FirstAsync();
         var newLine = await _db.Queryable<WareHouseOrderDetails>()
             .Where(item => item.OrderGUID == "ORDER-JOB" && item.ProductCode == "P-NEW")
             .FirstAsync();
 
         Assert.Equal(6m, replaced.Quantity);
         Assert.Equal(8m, skipped.Quantity);
+        Assert.Equal(0m, zeroed.Quantity);
         Assert.Null(newLine);
     }
 

@@ -229,10 +229,20 @@ namespace BlazorApp.Api.Controllers.React
         [HttpPost("store-price-transfer-jobs")]
         [Authorize(Roles = "Admin,管理员")]
         public async Task<IActionResult> StartStorePriceTransferJob(
-            [FromBody] StorePriceTransferRequest request,
+            [FromBody] StorePriceTransferRequest? request,
             CancellationToken cancellationToken = default
         )
         {
+            if (request == null)
+            {
+                return BadRequest(
+                    ApiResponse<StorePriceTransferJobDto>.Error(
+                        "请求不能为空",
+                        "INVALID_REQUEST"
+                    )
+                );
+            }
+
             var updatedBy = User.Identity?.Name ?? "system";
             var job = await _storePriceTransferJobService.StartJobAsync(
                 request,

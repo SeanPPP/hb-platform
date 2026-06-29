@@ -98,9 +98,12 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 result.FailedCount++;
-                result.Errors.Add(ex.Message);
+                var failureMessage = result.TotalProcessed > 0
+                    ? $"分店价格同步失败: {ex.Message}。已提交 {result.TotalProcessed} 条，已提交批次不会自动回滚"
+                    : $"分店价格同步失败: {ex.Message}";
+                result.Errors.Add(failureMessage);
                 return ApiResponse<StorePriceTransferResult>.Error(
-                    $"分店价格同步失败: {ex.Message}",
+                    failureMessage,
                     TransferFailedCode,
                     result
                 );

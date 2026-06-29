@@ -163,6 +163,19 @@ async function main() {
       '页面应复用 2 秒轮询 job 工具',
     )
     assert(
+      pageSource.includes('const PRICE_TRANSFER_POLL_TIMEOUT_MS = 45 * 60 * 1000') &&
+        pageSource.includes('timeoutMs: PRICE_TRANSFER_POLL_TIMEOUT_MS'),
+      '20w 行价格同步应使用 45 分钟专属轮询超时',
+    )
+    assert(
+      pageSource.includes("目标分店同步任务正在执行，已切换到已有任务"),
+      '重复任务提示应说明是目标分店同步任务正在执行',
+    )
+    assert(
+      pageSource.includes('任务可能仍在后台执行，请稍后刷新或重新查询'),
+      '轮询超时提示应说明后台任务可能仍在执行',
+    )
+    assert(
       pageSource.includes('syncRetailPrices: !!values.syncRetailPrices') &&
         pageSource.includes('syncMultiCodePrices: !!values.syncMultiCodePrices'),
       '页面 payload 应包含同步表选择',
