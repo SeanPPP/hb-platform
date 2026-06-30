@@ -6,6 +6,7 @@ import {
   calculateFileSha256,
   canSubmitWpfPolicy,
   getEffectiveWpfMinimumSupportedVersion,
+  getDefaultWpfInstallerArguments,
   getWpfVersionErrorMessage,
   getWpfCurrentVersionText,
   getWpfPolicySummary,
@@ -62,6 +63,16 @@ assertEqual(normalizeWpfReleaseChannel(''), 'production', 'Empty channel should 
 assertEqual(isSupportedWpfInstallerFile('hbpos-1.2.3.msi'), true, 'MSI installers should be accepted')
 assertEqual(isSupportedWpfInstallerFile('hbpos-1.2.3.exe'), true, 'EXE installers should be accepted')
 assertEqual(isSupportedWpfInstallerFile('hbpos-1.2.3.zip'), false, 'Unsupported installer extensions should be rejected')
+assertEqual(
+  getDefaultWpfInstallerArguments('hbpos-1.2.3.msi'),
+  '/qn /norestart',
+  'MSI releases should default to msiexec silent arguments',
+)
+assertEqual(
+  getDefaultWpfInstallerArguments('hbpos-1.2.3.exe'),
+  '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /NORESTARTAPPLICATIONS',
+  'Inno EXE releases should default to Inno silent arguments',
+)
 
 if (!globalThis.crypto?.subtle) {
   Object.defineProperty(globalThis, 'crypto', {

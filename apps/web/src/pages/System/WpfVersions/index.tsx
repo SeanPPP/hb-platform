@@ -48,6 +48,7 @@ import {
   calculateFileSha256,
   canSubmitWpfPolicy,
   getEffectiveWpfMinimumSupportedVersion,
+  getDefaultWpfInstallerArguments,
   getWpfCurrentVersionText,
   getWpfPolicySummary,
   getWpfPolicyRangeError,
@@ -359,7 +360,11 @@ export default function WpfVersionsPage() {
     setCalculatedSha256('')
     setSha256Error(null)
     setSha256Calculating(true)
-    uploadForm.setFieldsValue({ fileSize: file.size, sha256: '' })
+    uploadForm.setFieldsValue({
+      fileSize: file.size,
+      installerArguments: getDefaultWpfInstallerArguments(file.name),
+      sha256: '',
+    })
 
     try {
       // 中文注释：只使用浏览器现场计算出的 SHA-256，避免人工粘贴校验值和上传文件不一致。
@@ -731,7 +736,7 @@ export default function WpfVersionsPage() {
         <Form<UploadFormValues>
           form={uploadForm}
           layout="vertical"
-          initialValues={{ channel, installerArguments: '/quiet' }}
+          initialValues={{ channel, installerArguments: getDefaultWpfInstallerArguments('hbpos.exe') }}
           onFinish={(values) => void handleUploadFinish(values)}
         >
           <Form.Item label={t('system.wpfVersions.installer', '安装包')} required>
@@ -777,7 +782,7 @@ export default function WpfVersionsPage() {
             <Input placeholder="SHA-256" readOnly />
           </Form.Item>
           <Form.Item name="installerArguments" label={t('system.wpfVersions.installerArguments', '安装参数')}>
-            <Input placeholder="/quiet" />
+            <Input placeholder="/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART" />
           </Form.Item>
           <Form.Item name="releaseNotes" label={t('system.wpfVersions.releaseNotes', '发布说明')}>
             <Input.TextArea rows={5} />

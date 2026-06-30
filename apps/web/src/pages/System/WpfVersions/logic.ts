@@ -24,6 +24,12 @@ export function inferWpfInstallerType(fileName: string) {
   return normalized.endsWith('.msi') ? 'msi' : 'exe'
 }
 
+export function getDefaultWpfInstallerArguments(fileName: string) {
+  return inferWpfInstallerType(fileName) === 'msi'
+    ? '/qn /norestart'
+    : '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /NORESTARTAPPLICATIONS'
+}
+
 export async function calculateFileSha256(file: Blob): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     throw new Error('SHA-256 calculation is not available in this browser')
