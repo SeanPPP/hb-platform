@@ -30,6 +30,7 @@ export interface StoreOrderCart extends BaseStoreOrderCart {
 export interface StoreOrderCartMutationSummary {
   orderGUID: string;
   storeCode?: string;
+  cartRevision?: number;
   totalAmount: number;
   totalImportAmount: number;
   totalQuantity: number;

@@ -690,6 +690,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         Assert.IsType<OkObjectResult>(addResult);
         service.Verify(item => item.ScanLookupProductsAsync(lookupRequest), Times.Once);
         service.Verify(item => item.AddToCartMutationAsync(addRequest), Times.Once);
+        // 权限 policy 与门店无关，lookup 已查过 Warehouse.ManageOrders，scan-add 复用缓存。
         authorizationService.Verify(
             item =>
                 item.AuthorizeAsync(
@@ -697,7 +698,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                     It.IsAny<object?>(),
                     It.IsAny<string>()
                 ),
-            Times.Exactly(5)
+            Times.Exactly(4)
         );
         scopeService.Verify(item => item.CanAccessStoreCodeAsync(storeCode), Times.Never);
         userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Never);

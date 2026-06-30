@@ -64,6 +64,7 @@ namespace BlazorApp.Api.Services.React
 
         private sealed class StoreOrderCartMutationSummaryRow
         {
+            public long CartRevision { get; set; }
             public decimal TotalAmount { get; set; }
             public decimal TotalImportAmount { get; set; }
             public decimal TotalQuantity { get; set; }
@@ -2845,7 +2846,7 @@ namespace BlazorApp.Api.Services.React
                         detailWriteSw.Stop();
 
                         var totalUpdateSw = Stopwatch.StartNew();
-                        var summaryRow = await UpdateOrderTotalAsync(order.OrderGUID);
+                        var summaryRow = await UpdateOrderTotalAsync(order.OrderGUID, order.UpdatedAt);
                         totalUpdateSw.Stop();
 
                         var payloadSw = Stopwatch.StartNew();
@@ -3208,7 +3209,7 @@ namespace BlazorApp.Api.Services.React
                 detailWriteSw.Stop();
 
                 var totalUpdateSw = Stopwatch.StartNew();
-                var summaryRow = await UpdateOrderTotalAsync(order.OrderGUID);
+                var summaryRow = await UpdateOrderTotalAsync(order.OrderGUID, order.UpdatedAt);
                 totalUpdateSw.Stop();
 
                 var payloadSw = Stopwatch.StartNew();
@@ -3313,6 +3314,7 @@ namespace BlazorApp.Api.Services.React
                     TotalImportAmount = summaryRow?.TotalImportAmount ?? 0,
                     TotalQuantity = (int)(summaryRow?.TotalQuantity ?? 0),
                     TotalSku = summaryRow?.TotalSku ?? 0,
+                    CartRevision = summaryRow?.CartRevision ?? 0,
                 },
                 ChangedItem = changedItem,
             };
@@ -3555,7 +3557,31 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        private async Task<StoreOrderCartMutationSummaryRow?> UpdateOrderTotalAsync(string orderGuid)
+        private static (DateTime RevisionAt, long CartRevision) ResolveNextCartRevision(
+            DateTime? previousUpdatedAt,
+            DateTime? nowOverride = null
+        )
+        {
+            var now = nowOverride ?? DateTime.Now;
+            var nowRevision = ToCartRevision(now);
+            var previousRevision = previousUpdatedAt.HasValue ? ToCartRevision(previousUpdatedAt.Value) : 0;
+            var nextRevision = Math.Max(nowRevision, previousRevision + 1);
+
+            return (
+                DateTimeOffset.FromUnixTimeMilliseconds(nextRevision).LocalDateTime,
+                nextRevision
+            );
+        }
+
+        private static long ToCartRevision(DateTime revisionAt)
+        {
+            return new DateTimeOffset(revisionAt).ToUnixTimeMilliseconds();
+        }
+
+        private async Task<StoreOrderCartMutationSummaryRow?> UpdateOrderTotalAsync(
+            string orderGuid,
+            DateTime? previousUpdatedAt = null
+        )
         {
             // 同一次聚合同时产出主表金额和轻量购物车摘要，避免 mutation 响应再查一遍明细汇总。
             var summaryRow = await _db.Queryable<WareHouseOrderDetails>()
@@ -3571,13 +3597,19 @@ namespace BlazorApp.Api.Services.React
 
             var totalOEM = summaryRow?.TotalAmount ?? 0;
             var totalImport = summaryRow?.TotalImportAmount ?? 0;
+            // ponytail: 复用订单头 UpdatedAt 做同购物车提交序号；需要跨表审计时再加独立 revision 列。
+            var (revisionAt, cartRevision) = ResolveNextCartRevision(previousUpdatedAt);
+            if (summaryRow != null)
+            {
+                summaryRow.CartRevision = cartRevision;
+            }
 
             await _db.Updateable<WareHouseOrder>()
                 .SetColumns(o => new WareHouseOrder
                 {
                     OEMTotalAmount = totalOEM,
                     ImportTotalAmount = totalImport,
-                    UpdatedAt = DateTime.Now,
+                    UpdatedAt = revisionAt,
                 })
                 .Where(o => o.OrderGUID == orderGuid)
                 .ExecuteCommandAsync();

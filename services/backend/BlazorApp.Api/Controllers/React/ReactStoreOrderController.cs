@@ -166,11 +166,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             var userId = GetCurrentUserId();
             var normalizedStoreCode = NormalizeAuthorizationStoreCode(storeCode);
+            // 权限 policy 不依赖门店；门店范围由 assigned-store-scope 另行缓存，扫码热路径才能复用商品页预热结果。
             var permissionsCacheKey = BuildAuthorizationCacheKey(
                 "permissions",
                 userId,
-                normalizedStoreCode,
-                checkType,
+                "any",
+                "any",
                 string.Join("|", permissions)
             );
 
@@ -315,8 +316,8 @@ namespace BlazorApp.Api.Controllers.React
             var cacheKey = BuildAuthorizationCacheKey(
                 "policy",
                 userId,
-                normalizedStoreCode,
-                checkType,
+                "any",
+                "any",
                 permission
             );
             if (_cache.TryGetValue<bool>(cacheKey, out var cachedResult))

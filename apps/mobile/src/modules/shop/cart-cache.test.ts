@@ -8,6 +8,7 @@ import {
   mergeChangedCartQuantityIntoDynamicData,
   mergeCartQuantityIntoDynamicData,
   reserveCartMutationOperationId,
+  resolveCartMutationBatchCache,
   resolveCartMutationCache,
   snapshotCartMutationCache,
   syncCartMutationCache,
@@ -357,6 +358,70 @@ const afterSecondOperationSucceeded = resolveCartMutationCache(
 assertEqual(afterSecondOperationSucceeded?.totalQuantity, 4, "后续成功操作使用服务端购物车校准汇总数量");
 queryClient.clear();
 
+const batchClient = new QueryClient();
+const batchStoreCode = "S-BATCH";
+batchClient.setQueryData(["cartSummary", batchStoreCode], originalCart);
+const firstBatchSnapshot = snapshotCartMutationCache(batchClient, batchStoreCode, {
+  product: {
+    productCode: "P003",
+    productName: "批量后端商品",
+    oemPrice: 8,
+    importPrice: 6,
+    minOrderQuantity: 1,
+  },
+  quantity: 1,
+  type: "add",
+});
+const secondBatchSnapshot = snapshotCartMutationCache(batchClient, batchStoreCode, {
+  product: {
+    productCode: "P003",
+    productName: "批量后端商品",
+    oemPrice: 8,
+    importPrice: 6,
+    minOrderQuantity: 1,
+  },
+  quantity: 1,
+  type: "add",
+});
+const optimisticBatchCart = getOptimisticCartMutationCache(batchClient, batchStoreCode);
+assertEqual(optimisticBatchCart?.totalQuantity, 4, "批量提交前本地购物车先增加两次数量");
+const afterBatchConfirmation = resolveCartMutationBatchCache(
+  batchClient,
+  batchStoreCode,
+  [firstBatchSnapshot, secondBatchSnapshot],
+  {
+    productCode: "P003",
+    removed: false,
+    summary: {
+      orderGUID: "cart-1",
+      storeCode: batchStoreCode,
+      cartRevision: 300,
+      totalAmount: 22,
+      totalImportAmount: 20,
+      totalQuantity: 4,
+      totalSku: 2,
+    },
+    changedItem: {
+      detailGUID: "D003",
+      productCode: "P003",
+      quantity: 2,
+      price: 8,
+      amount: 16,
+      importPrice: 6,
+      importAmount: 12,
+      minOrderQuantity: 1,
+      isActive: true,
+    },
+  }
+);
+assertEqual(afterBatchConfirmation?.totalQuantity, 4, "批量确认不能把同批本地操作重复叠加");
+assertEqual(
+  afterBatchConfirmation?.items.find((item) => item.productCode === "P003")?.quantity,
+  2,
+  "批量确认后当前 SKU 使用后端聚合数量"
+);
+batchClient.clear();
+
 const outOfOrderClient = new QueryClient();
 outOfOrderClient.setQueryData(["cartSummary", queryStoreCode], originalCart);
 const olderAddOperation = snapshotCartMutationCache(outOfOrderClient, queryStoreCode, {
@@ -635,6 +700,149 @@ assertEqual(
   "冷扫码同 SKU 旧确认不能把当前行数量回退"
 );
 staleSameSkuClient.clear();
+
+const serverRevisionOrderClient = new QueryClient();
+const revisionStoreCode = "S-REVISION";
+serverRevisionOrderClient.setQueryData(["cartSummary", revisionStoreCode], originalCart);
+const lowerLocalId = reserveCartMutationOperationId();
+const higherLocalId = reserveCartMutationOperationId();
+const lowerLocalSnapshot = snapshotCartMutationCache(
+  serverRevisionOrderClient,
+  revisionStoreCode,
+  {
+    product: {
+      productCode: "P003",
+      productName: "后提交同 SKU",
+      oemPrice: 8,
+      importPrice: 6,
+      minOrderQuantity: 1,
+    },
+    quantity: 1,
+    type: "add",
+  },
+  lowerLocalId
+);
+const higherLocalSnapshot = snapshotCartMutationCache(
+  serverRevisionOrderClient,
+  revisionStoreCode,
+  {
+    product: {
+      productCode: "P003",
+      productName: "先提交同 SKU",
+      oemPrice: 8,
+      importPrice: 6,
+      minOrderQuantity: 1,
+    },
+    quantity: 1,
+    type: "add",
+  },
+  higherLocalId
+);
+resolveCartMutationCache(serverRevisionOrderClient, revisionStoreCode, higherLocalSnapshot, {
+  productCode: "P003",
+  removed: false,
+  summary: {
+    orderGUID: "cart-1",
+    storeCode: revisionStoreCode,
+    cartRevision: 100,
+    totalAmount: 16,
+    totalImportAmount: 12,
+    totalQuantity: 3,
+    totalSku: 2,
+  },
+  changedItem: {
+    detailGUID: "D003",
+    productCode: "P003",
+    quantity: 1,
+    price: 8,
+    amount: 8,
+    importPrice: 6,
+    importAmount: 6,
+    minOrderQuantity: 1,
+    isActive: true,
+  },
+});
+const afterServerRevisionConfirmation = resolveCartMutationCache(
+  serverRevisionOrderClient,
+  revisionStoreCode,
+  lowerLocalSnapshot,
+  {
+    productCode: "P003",
+    removed: false,
+    summary: {
+      orderGUID: "cart-1",
+      storeCode: revisionStoreCode,
+      cartRevision: 200,
+      totalAmount: 24,
+      totalImportAmount: 18,
+      totalQuantity: 4,
+      totalSku: 2,
+    },
+    changedItem: {
+      detailGUID: "D003",
+      productCode: "P003",
+      quantity: 2,
+      price: 8,
+      amount: 16,
+      importPrice: 6,
+      importAmount: 12,
+      minOrderQuantity: 1,
+      isActive: true,
+    },
+  }
+);
+assertEqual(
+  afterServerRevisionConfirmation?.items.find((item) => item.productCode === "P003")?.quantity,
+  2,
+  "服务端 revision 更大时低本地序号的同 SKU 响应也要更新数量"
+);
+assertEqual(afterServerRevisionConfirmation?.totalQuantity, 4, "服务端 revision 应接管整车摘要新旧判断");
+const revisionlessSnapshot = snapshotCartMutationCache(serverRevisionOrderClient, revisionStoreCode, {
+  product: {
+    productCode: "P004",
+    productName: "旧合同无 revision",
+    oemPrice: 9,
+    importPrice: 7,
+    minOrderQuantity: 1,
+  },
+  quantity: 1,
+  type: "add",
+});
+const afterRevisionlessConfirmation = resolveCartMutationCache(
+  serverRevisionOrderClient,
+  revisionStoreCode,
+  revisionlessSnapshot,
+  {
+    productCode: "P004",
+    removed: false,
+    summary: {
+      orderGUID: "cart-1",
+      storeCode: revisionStoreCode,
+      totalAmount: 9,
+      totalImportAmount: 7,
+      totalQuantity: 1,
+      totalSku: 1,
+    },
+    changedItem: {
+      detailGUID: "D004",
+      productCode: "P004",
+      quantity: 1,
+      price: 9,
+      amount: 9,
+      importPrice: 7,
+      importAmount: 7,
+      minOrderQuantity: 1,
+      isActive: true,
+    },
+  }
+);
+assertEqual(afterRevisionlessConfirmation?.totalQuantity, 4, "见过服务端 revision 后无 revision 响应不能回退摘要");
+assertEqual(
+  afterRevisionlessConfirmation?.items.some((item) => item.productCode === "P004"),
+  false,
+  "见过服务端 revision 后无 revision 响应不能混用本地序号复活旧行"
+);
+serverRevisionOrderClient.clear();
 
 const staleAddAfterDeleteClient = new QueryClient();
 staleAddAfterDeleteClient.setQueryData(["cartSummary", queryStoreCode], originalCart);

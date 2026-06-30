@@ -53,3 +53,4 @@ This project is indexed by GitNexus as **hb-platform**. Use the GitNexus MCP too
 ## Notes
 
 - 提交添加 reasonix
+- 子代理默认使用 GPT-5.5；复杂任务、验证和代码审查使用 GPT-5.5 high。

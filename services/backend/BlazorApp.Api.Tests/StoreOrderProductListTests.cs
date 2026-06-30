@@ -959,6 +959,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal("P-SCAN-ADD", item.ProductCode);
         Assert.NotNull(result.Data.Cart);
         Assert.Equal("P-SCAN-ADD", result.Data.Cart!.ProductCode);
+        Assert.True(result.Data.Cart.Summary.CartRevision > 0);
         Assert.Equal(3, result.Data.Cart.Summary.TotalQuantity);
         Assert.Equal(12m, result.Data.Cart.Summary.TotalAmount);
         Assert.Equal(6m, result.Data.Cart.Summary.TotalImportAmount);
@@ -969,6 +970,54 @@ public sealed class StoreOrderProductListTests : IDisposable
         );
         Assert.Equal(0, _sqlLogs.Count(IsStandaloneProductPriceLookupSql));
         Assert.Equal(1, _sqlLogs.Count(IsCartSummaryAggregateSql));
+    }
+
+    [Fact]
+    public void CartRevision_同毫秒内严格递增()
+    {
+        var method = typeof(StoreOrderReactService).GetMethod(
+            "ResolveNextCartRevision",
+            BindingFlags.Static | BindingFlags.NonPublic
+        );
+        Assert.NotNull(method);
+
+        var previous = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Local).AddTicks(2_000);
+        var now = previous.AddTicks(1);
+        var previousRevision = new DateTimeOffset(previous).ToUnixTimeMilliseconds();
+        Assert.Equal(previousRevision, new DateTimeOffset(now).ToUnixTimeMilliseconds());
+
+        var result = (ValueTuple<DateTime, long>)method.Invoke(null, new object?[] { previous, now })!;
+
+        Assert.Equal(previousRevision + 1, result.Item2);
+        Assert.Equal(result.Item2, new DateTimeOffset(result.Item1).ToUnixTimeMilliseconds());
+    }
+
+    [Fact]
+    public async Task AddToCartMutationAsync_同购物车Revision单调递增()
+    {
+        await SeedProductAsync("P-REVISION", "ITEM-REVISION");
+        await SeedWarehouseProductAsync("P-REVISION", oemPrice: 3m, importPrice: 2m);
+        await SeedStoreOrderAsync("ORDER-REVISION", flowStatus: 0);
+        var service = CreateService();
+
+        var first = await service.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-REVISION",
+            Quantity = 1,
+        });
+        var second = await service.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-REVISION",
+            Quantity = 1,
+        });
+
+        Assert.True(first.Success, first.Message);
+        Assert.True(second.Success, second.Message);
+        Assert.True(first.Data!.Summary.CartRevision > 0);
+        Assert.True(second.Data!.Summary.CartRevision > first.Data.Summary.CartRevision);
+        Assert.Equal(2, second.Data.Summary.TotalQuantity);
     }
 
     [Fact]

@@ -267,6 +267,7 @@ namespace BlazorApp.Shared.DTOs
   {
     public string OrderGUID { get; set; } = string.Empty;
     public string StoreCode { get; set; } = string.Empty;
+    public long CartRevision { get; set; }
     public decimal TotalAmount { get; set; }
     public decimal TotalImportAmount { get; set; }
     public int TotalQuantity { get; set; }

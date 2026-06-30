@@ -305,6 +305,7 @@ function normalizeCartMutationResult(payload: ApiItem | null | undefined): Store
     summary: {
       orderGUID: getStringValue(summary.orderGUID, summary.OrderGUID) ?? "",
       storeCode: getStringValue(summary.storeCode, summary.StoreCode),
+      cartRevision: getFiniteNumber(summary.cartRevision, summary.CartRevision),
       totalAmount: getFiniteNumber(summary.totalAmount, summary.TotalAmount) ?? 0,
       totalImportAmount:
         getFiniteNumber(summary.totalImportAmount, summary.TotalImportAmount) ?? 0,
