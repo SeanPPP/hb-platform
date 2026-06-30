@@ -1,9 +1,11 @@
 using System.Reflection;
 using System.Security.Claims;
+using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Xunit;
@@ -168,6 +170,22 @@ public class ControllerAuthorizationMetadataTests
         );
         yield return Policy<MobileAppBuildsController>(
             nameof(MobileAppBuildsController.CreateOtaRollbackCommand),
+            Permissions.System.ManageAppDownloads
+        );
+        yield return Policy<ServiceApiTokensController>(
+            nameof(ServiceApiTokensController.List),
+            Permissions.System.ManageAppDownloads
+        );
+        yield return Policy<ServiceApiTokensController>(
+            nameof(ServiceApiTokensController.Create),
+            Permissions.System.ManageAppDownloads
+        );
+        yield return Policy<ServiceApiTokensController>(
+            nameof(ServiceApiTokensController.Revoke),
+            Permissions.System.ManageAppDownloads
+        );
+        yield return Policy<ServiceApiTokensController>(
+            nameof(ServiceApiTokensController.Current),
             Permissions.System.ManageAppDownloads
         );
 
@@ -518,6 +536,7 @@ public class ControllerAuthorizationMetadataTests
     [InlineData(typeof(DomesticProductCreationController))]
     [InlineData(typeof(ReactCashRegisterUserController))]
     [InlineData(typeof(ReactDeviceRegistrationController))]
+    [InlineData(typeof(ServiceApiTokensController))]
     public void TargetControllers_DoNotUseLegacyRoleGates(Type controllerType)
     {
         AssertNoRoleGate(
@@ -613,6 +632,80 @@ public class ControllerAuthorizationMetadataTests
 
         Assert.Null(authorizeAttribute.Policy);
         Assert.True(string.IsNullOrWhiteSpace(authorizeAttribute.Roles));
+    }
+
+    [Fact]
+    public void ServiceApiTokensController_ManagementEndpointsRequireJwtBearerOnly()
+    {
+        foreach (var methodName in new[]
+                 {
+                     nameof(ServiceApiTokensController.List),
+                     nameof(ServiceApiTokensController.Create),
+                     nameof(ServiceApiTokensController.Revoke),
+                 })
+        {
+            var authorizeAttribute = Assert.Single(
+                GetDeclaredMethod(typeof(ServiceApiTokensController), methodName)
+                    .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            );
+
+            Assert.Equal(Permissions.System.ManageAppDownloads, authorizeAttribute.Policy);
+            Assert.Equal(JwtBearerDefaults.AuthenticationScheme, authorizeAttribute.AuthenticationSchemes);
+        }
+    }
+
+    [Fact]
+    public void ServiceApiTokensController_CurrentRequiresServiceApiTokenScheme()
+    {
+        var authorizeAttribute = Assert.Single(
+            GetDeclaredMethod(typeof(ServiceApiTokensController), nameof(ServiceApiTokensController.Current))
+                .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+        );
+
+        Assert.Equal(Permissions.System.ManageAppDownloads, authorizeAttribute.Policy);
+        Assert.Equal(
+            ServiceApiTokenAuthenticationDefaults.AuthenticationScheme,
+            authorizeAttribute.AuthenticationSchemes
+        );
+    }
+
+    [Fact]
+    public void MobileAppBuildsController_OtaUpsertAllowsExplicitBearerOrServiceTokenScheme()
+    {
+        var authorizeAttribute = Assert.Single(
+            GetDeclaredMethod(typeof(MobileAppBuildsController), nameof(MobileAppBuildsController.UpsertOtaUpdate))
+                .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+        );
+
+        Assert.Equal(Permissions.System.ManageAppDownloads, authorizeAttribute.Policy);
+        Assert.Equal(
+            ServiceApiTokenAuthenticationDefaults.PolicyScheme,
+            authorizeAttribute.AuthenticationSchemes
+        );
+    }
+
+    [Theory]
+    [InlineData(typeof(ContainerController), nameof(ContainerController.GetContainers))]
+    [InlineData(typeof(ContainerController), nameof(ContainerController.UpdateContainer))]
+    public void PlainAuthorizeBusinessEndpoints_DoNotOptIntoServiceTokenScheme(
+        Type controllerType,
+        string methodName
+    )
+    {
+        var authorizeAttributes = controllerType
+            .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            .Concat(
+                GetDeclaredMethod(controllerType, methodName)
+                    .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
+            )
+            .ToList();
+
+        Assert.Contains(authorizeAttributes, attribute => string.IsNullOrWhiteSpace(attribute.Policy));
+        Assert.DoesNotContain(
+            authorizeAttributes,
+            attribute => attribute.AuthenticationSchemes == ServiceApiTokenAuthenticationDefaults.PolicyScheme
+                || attribute.AuthenticationSchemes == ServiceApiTokenAuthenticationDefaults.AuthenticationScheme
+        );
     }
 
     [Theory]

@@ -50,19 +50,8 @@ import {
   type AppDownloadMirrorStatus,
   type AppDownloadProfile,
 } from './logic'
-
-function formatDateTime(value?: string | null) {
-  if (!value) {
-    return '--'
-  }
-
-  const timestamp = Date.parse(value)
-  if (Number.isNaN(timestamp)) {
-    return value
-  }
-
-  return new Date(timestamp).toLocaleString()
-}
+import { formatAppDownloadLocalDateTime } from './time'
+import ServiceApiTokensPanel from './ServiceApiTokensPanel'
 
 function formatVersion(build?: MobileAppBuild | null) {
   if (!build) {
@@ -350,13 +339,13 @@ export default function AppDownloadsPage() {
         title: t('system.appDownloads.completedAt'),
         dataIndex: 'completedAt',
         width: 190,
-        render: (value: string | null | undefined) => formatDateTime(value),
+        render: (value: string | null | undefined) => formatAppDownloadLocalDateTime(value),
       },
       {
         title: t('system.appDownloads.expirationDate'),
         dataIndex: 'expirationDate',
         width: 190,
-        render: (value: string | null | undefined) => formatDateTime(value),
+        render: (value: string | null | undefined) => formatAppDownloadLocalDateTime(value),
       },
       {
         title: t('system.appDownloads.downloadSource'),
@@ -514,7 +503,7 @@ export default function AppDownloadsPage() {
         title: t('system.appDownloads.ota.publishedAt'),
         dataIndex: 'publishedAt',
         width: 190,
-        render: (value: string | null | undefined) => formatDateTime(value),
+        render: (value: string | null | undefined) => formatAppDownloadLocalDateTime(value),
       },
       {
         title: t('system.appDownloads.ota.type'),
@@ -669,10 +658,10 @@ export default function AppDownloadsPage() {
                 {latest.runtimeVersion || '--'}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.appDownloads.completedAt')}>
-                {formatDateTime(latest.completedAt)}
+                {formatAppDownloadLocalDateTime(latest.completedAt)}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.appDownloads.expirationDate')}>
-                {formatDateTime(latest.expirationDate)}
+                {formatAppDownloadLocalDateTime(latest.expirationDate)}
               </Descriptions.Item>
               <Descriptions.Item label={t('system.appDownloads.downloadSource')}>
                 <Tag>{t(`system.appDownloads.downloadSources.${resolveAppDownloadSource(latest)}`)}</Tag>
@@ -771,6 +760,8 @@ export default function AppDownloadsPage() {
           }}
         />
       </Card>
+
+      {canManageAppDownloads ? <ServiceApiTokensPanel /> : null}
 
       <Modal
         open={!!qrBuild}

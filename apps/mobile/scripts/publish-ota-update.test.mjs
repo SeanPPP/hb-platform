@@ -3,9 +3,12 @@ import assert from "node:assert/strict";
 import {
   buildOtaRegistrationPayload,
   buildRegistrationUrl,
+  buildTokenPreflightUrl,
   getRequiredRegistrationGaps,
   parseEasUpdateOutput,
+  preflightOtaRegistration,
   registerOtaUpdate,
+  runPublishOtaUpdate,
 } from "./publish-ota-update.mjs";
 
 const sampleOutput = `
@@ -178,15 +181,263 @@ assert.equal(
   buildRegistrationUrl("https://hotbargain.vip/api"),
   "https://hotbargain.vip/api/mobile-app-builds/ota-updates"
 );
+assert.equal(
+  buildTokenPreflightUrl("https://hotbargain.vip/api"),
+  "https://hotbargain.vip/api/Auth/current"
+);
+assert.equal(
+  buildTokenPreflightUrl("https://hotbargain.vip/api", "hbsvc_abcdefghijklmnopqrstuvwxyz"),
+  "https://hotbargain.vip/api/service-api-tokens/current"
+);
 
 const originalFetch = globalThis.fetch;
 const originalBaseUrl = process.env.HBWEB_API_BASE_URL;
 const originalToken = process.env.HBWEB_API_TOKEN;
+const silentLogger = {
+  log() {},
+  warn() {},
+};
+const publishOptions = {
+  channel: "preview",
+  profile: "preview",
+  runtimeVersion: "1.0.1",
+  message: "JSON OTA 发布",
+};
 
 process.env.HBWEB_API_BASE_URL = "https://hotbargain.vip";
 process.env.HBWEB_API_TOKEN = "test-token";
 
 try {
+  let easRunCount = 0;
+  delete process.env.HBWEB_API_BASE_URL;
+  delete process.env.HBWEB_API_TOKEN;
+
+  await runPublishOtaUpdate(
+    { ...publishOptions, dryRun: true },
+    {
+      createDryRunOutputFn: async () => jsonOutput,
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    },
+  );
+  assert.equal(easRunCount, 0);
+
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /发布 OTA 前必须配置 HBWEB_API_BASE_URL 和 HBWEB_API_TOKEN/,
+  );
+  assert.equal(easRunCount, 0);
+
+  process.env.HBWEB_API_BASE_URL = "https://hotbargain.vip";
+  process.env.HBWEB_API_TOKEN = "invalid-token";
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    statusText: "Unauthorized",
+    text: async () => "invalid token",
+  });
+
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /后台 token 验证失败：HTTP 401 Unauthorized - invalid token/,
+  );
+  assert.equal(easRunCount, 0);
+
+  process.env.HBWEB_API_TOKEN = "readonly-token";
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => JSON.stringify({ success: true, data: { permissions: ["System.ViewAppDownloads"] } }),
+  });
+
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /后台 token 验证失败：缺少 System.ManageAppDownloads 权限/,
+  );
+  assert.equal(easRunCount, 0);
+
+  process.env.HBWEB_API_TOKEN = "admin-token";
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        success: true,
+        data: { roles: [{ roleName: "Admin" }], permissions: [] },
+      }),
+  });
+
+  await preflightOtaRegistration();
+
+  process.env.HBWEB_API_TOKEN = "hbsvc_missing_scope";
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        success: true,
+        data: { scopes: ["System.ViewAppDownloads"] },
+      }),
+  });
+
+  await assert.rejects(
+    preflightOtaRegistration(),
+    /后台 token 验证失败：缺少 System.ManageAppDownloads scope/,
+  );
+
+  const serviceTokenPreflightCalls = [];
+  process.env.HBWEB_API_TOKEN = "hbsvc_valid_token";
+  globalThis.fetch = async (url, init) => {
+    serviceTokenPreflightCalls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          success: true,
+          data: { scopes: ["System.ManageAppDownloads"] },
+        }),
+    };
+  };
+
+  await preflightOtaRegistration();
+  assert.equal(serviceTokenPreflightCalls[0].url, "https://hotbargain.vip/api/service-api-tokens/current");
+  assert.equal(serviceTokenPreflightCalls[0].init.method, "GET");
+  assert.equal(serviceTokenPreflightCalls[0].init.headers.Authorization, "Bearer hbsvc_valid_token");
+
+  const preflightCalls = [];
+  process.env.HBWEB_API_TOKEN = "test-token";
+  globalThis.fetch = async (url, init) => {
+    preflightCalls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          success: true,
+          data: { permissions: ["System.ManageAppDownloads"] },
+        }),
+    };
+  };
+
+  await preflightOtaRegistration();
+  assert.equal(preflightCalls[0].url, "https://hotbargain.vip/api/Auth/current");
+  assert.equal(preflightCalls[0].init.method, "GET");
+  assert.equal(preflightCalls[0].init.headers.Authorization, "Bearer test-token");
+
+  const publishFetchCalls = [];
+  globalThis.fetch = async (url, init) => {
+    publishFetchCalls.push({ url, init });
+    if (init.method === "GET") {
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            data: { permissions: ["System.ManageAppDownloads"] },
+          }),
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          success: true,
+          data: {
+            updateGroupId: payload.updateGroupId,
+          },
+        }),
+    };
+  };
+
+  await runPublishOtaUpdate(publishOptions, {
+    logger: silentLogger,
+    runCommandFn: async () => {
+      easRunCount += 1;
+      return { stdout: jsonOutput };
+    },
+  });
+  assert.equal(easRunCount, 1);
+  assert.equal(publishFetchCalls[0].url, "https://hotbargain.vip/api/Auth/current");
+  assert.equal(publishFetchCalls[0].init.headers.Authorization, "Bearer test-token");
+  assert.equal(publishFetchCalls[1].url, "https://hotbargain.vip/api/mobile-app-builds/ota-updates");
+  assert.equal(publishFetchCalls[1].init.headers.Authorization, "Bearer test-token");
+
+  const serviceTokenPublishFetchCalls = [];
+  process.env.HBWEB_API_TOKEN = "hbsvc_publish_token";
+  globalThis.fetch = async (url, init) => {
+    serviceTokenPublishFetchCalls.push({ url, init });
+    if (init.method === "GET") {
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            data: { scopes: ["System.ManageAppDownloads"] },
+          }),
+      };
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          success: true,
+          data: {
+            updateGroupId: payload.updateGroupId,
+          },
+        }),
+    };
+  };
+
+  await runPublishOtaUpdate(publishOptions, {
+    logger: silentLogger,
+    runCommandFn: async () => {
+      easRunCount += 1;
+      return { stdout: jsonOutput };
+    },
+  });
+  assert.equal(easRunCount, 2);
+  assert.equal(serviceTokenPublishFetchCalls[0].url, "https://hotbargain.vip/api/service-api-tokens/current");
+  assert.equal(serviceTokenPublishFetchCalls[0].init.headers.Authorization, "Bearer hbsvc_publish_token");
+  assert.equal(serviceTokenPublishFetchCalls[1].url, "https://hotbargain.vip/api/mobile-app-builds/ota-updates");
+  assert.equal(serviceTokenPublishFetchCalls[1].init.headers.Authorization, "Bearer hbsvc_publish_token");
+
   globalThis.fetch = async () => ({
     ok: true,
     status: 200,

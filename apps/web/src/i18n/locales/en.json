@@ -3317,6 +3317,40 @@
         "rollbackCommandGenerated": "Rollback command generated",
         "rollbackCommandFailed": "Failed to generate rollback command",
         "rollbackCommandCopySuccess": "Rollback command copied"
+      },
+      "serviceTokens": {
+        "title": "Service API Tokens",
+        "empty": "No service API tokens",
+        "loadFailed": "Failed to load service API tokens",
+        "create": "Create Token",
+        "createTitle": "Create Service API Token",
+        "createSuccess": "Service API token created",
+        "createFailed": "Failed to create service API token",
+        "name": "Name",
+        "namePlaceholder": "Example: OTA automation",
+        "nameRequired": "Enter a token name",
+        "tokenPrefix": "Token Prefix",
+        "scopes": "Scopes",
+        "status": "Status",
+        "statuses": {
+          "active": "Active",
+          "revoked": "Revoked",
+          "expired": "Expired"
+        },
+        "createdAt": "Created At",
+        "lastUsedAt": "Last Used",
+        "lastUsedIp": "Last IP",
+        "revokedAt": "Revoked At",
+        "revoke": "Revoke",
+        "revokeConfirm": "Revoke this service API token?",
+        "revokeSuccess": "Service API token revoked",
+        "revokeFailed": "Failed to revoke service API token",
+        "oneTimeToken": "Plaintext Token",
+        "oneTimeWarning": "The plaintext token is shown only once. Save it now.",
+        "envSnippet": "Environment Variables",
+        "copyEnv": "Copy Environment Variables",
+        "copyEnvSuccess": "Environment variables copied",
+        "copyFailed": "Copy failed"
       }
     }
   },

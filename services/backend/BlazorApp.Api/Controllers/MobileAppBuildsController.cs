@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
@@ -188,7 +189,10 @@ namespace BlazorApp.Api.Controllers
         }
 
         [HttpPost("ota-updates")]
-        [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+        [Authorize(
+            AuthenticationSchemes = ServiceApiTokenAuthenticationDefaults.PolicyScheme,
+            Policy = Permissions.System.ManageAppDownloads
+        )]
         public async Task<IActionResult> UpsertOtaUpdate([FromBody] MobileAppOtaUpdateUpsertDto dto)
         {
             var result = await _service.UpsertOtaUpdateAsync(dto);

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Authorization;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
@@ -165,6 +166,56 @@ public class PermissionAuthorizationHandlerTests
         roleService.Verify(service => service.UserHasRoleAsync("user-1", "Admin"), Times.Once);
         roleService.Verify(
             service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task ServiceApiTokenScope_AllowsMatchingAppDownloadPermissionWithoutRoleLookup()
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.System.ManageAppDownloads);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateServiceTokenUser(Permissions.System.ManageAppDownloads),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
+        );
+        roleService.Verify(
+            service => service.UserHasRoleAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task ServiceApiTokenScope_DoesNotUnlockOtherPermissionsOrRoleFallback()
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.System.ViewAppDownloads);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateServiceTokenUser(Permissions.System.ManageAppDownloads),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.False(context.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync(It.IsAny<string>(), It.IsAny<string>()),
+            Times.Never
+        );
+        roleService.Verify(
+            service => service.UserHasRoleAsync(It.IsAny<string>(), It.IsAny<string>()),
             Times.Never
         );
     }
@@ -348,5 +399,19 @@ public class PermissionAuthorizationHandlerTests
         var allClaims = new List<Claim> { new(ClaimTypes.NameIdentifier, "user-1") };
         allClaims.AddRange(claims);
         return new ClaimsPrincipal(new ClaimsIdentity(allClaims, "TestAuth"));
+    }
+
+    private static ClaimsPrincipal CreateServiceTokenUser(string scope)
+    {
+        return new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim(ServiceApiTokenAuthenticationDefaults.TokenTypeClaim, "true"),
+                    new Claim(ServiceApiTokenAuthenticationDefaults.ScopeClaim, scope),
+                },
+                ServiceApiTokenAuthenticationDefaults.AuthenticationScheme
+            )
+        );
     }
 }

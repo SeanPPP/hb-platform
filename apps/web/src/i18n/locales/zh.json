@@ -3317,6 +3317,40 @@
         "rollbackCommandGenerated": "回撤命令已生成",
         "rollbackCommandFailed": "生成回撤命令失败",
         "rollbackCommandCopySuccess": "回撤命令已复制"
+      },
+      "serviceTokens": {
+        "title": "服务 API Token",
+        "empty": "暂无服务 API Token",
+        "loadFailed": "加载服务 API Token 失败",
+        "create": "创建 Token",
+        "createTitle": "创建服务 API Token",
+        "createSuccess": "Service API Token 已创建",
+        "createFailed": "创建 Service API Token 失败",
+        "name": "名称",
+        "namePlaceholder": "例如 OTA 自动发布",
+        "nameRequired": "请输入 Token 名称",
+        "tokenPrefix": "Token 前缀",
+        "scopes": "Scopes",
+        "status": "状态",
+        "statuses": {
+          "active": "有效",
+          "revoked": "已撤销",
+          "expired": "已过期"
+        },
+        "createdAt": "创建时间",
+        "lastUsedAt": "最后使用",
+        "lastUsedIp": "最后 IP",
+        "revokedAt": "撤销时间",
+        "revoke": "撤销",
+        "revokeConfirm": "确认撤销这个 Service API Token？",
+        "revokeSuccess": "Service API Token 已撤销",
+        "revokeFailed": "撤销 Service API Token 失败",
+        "oneTimeToken": "明文 Token",
+        "oneTimeWarning": "明文 Token 只显示这一次，请立即保存。",
+        "envSnippet": "环境变量",
+        "copyEnv": "复制环境变量",
+        "copyEnvSuccess": "环境变量已复制",
+        "copyFailed": "复制失败"
       }
     }
   },

@@ -3,6 +3,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Text; // 字符串编码
 using AutoMapper; // AutoMapper映射服务
+using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Data; // 数据访问层
 using BlazorApp.Api.Filters;
 using BlazorApp.Api.Interfaces; // 数据模型
@@ -21,6 +22,7 @@ using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.IdentityModel.Tokens; // JWT令牌验证
@@ -243,20 +245,29 @@ var key = Encoding.UTF8.GetBytes(jwtSettings!.Key);
 
 // 🏗️ 配置ASP.NET Core认证服务，使用JWT Bearer认证方案
 // Bearer认证：客户端在HTTP请求头中携带"Bearer {token}"进行认证
-builder
-    .Services.AddAuthentication(options =>
-    {
-        // 🎯 设置默认认证方案为JWT Bearer
-        // 当需要验证用户身份时，系统将使用JWT令牌进行验证
-        // 这告诉ASP.NET Core如何处理认证请求
-        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+var authenticationBuilder = builder.Services.AddAuthentication(options =>
+{
+    // 默认认证保持 JWT，service token 只能在显式声明的自动化端点使用，避免越权访问普通 [Authorize]。
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+});
 
-        // 🚫 设置默认挑战方案为JWT Bearer
-        // 当用户未认证时，系统将要求提供JWT令牌
-        // 这决定了如何响应未认证的请求（返回401状态码）
-        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-    })
-    .AddJwtBearer(options =>
+authenticationBuilder.AddPolicyScheme(
+    ServiceApiTokenAuthenticationDefaults.PolicyScheme,
+    "Bearer JWT or Service API Token",
+    options =>
+    {
+        options.ForwardDefaultSelector = context =>
+            ServiceApiTokenAuthenticationDefaults.RequestHasServiceApiToken(context.Request)
+                ? ServiceApiTokenAuthenticationDefaults.AuthenticationScheme
+                : JwtBearerDefaults.AuthenticationScheme;
+    }
+);
+authenticationBuilder.AddScheme<AuthenticationSchemeOptions, ServiceApiTokenAuthenticationHandler>(
+    ServiceApiTokenAuthenticationDefaults.AuthenticationScheme,
+    ConfigureServiceApiTokenAuthentication
+);
+authenticationBuilder.AddJwtBearer(options =>
     {
         // 🔧 配置JWT令牌验证参数
         // 这些参数决定了如何验证传入的JWT令牌
@@ -453,6 +464,7 @@ builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 builder.Services.AddScoped<IAuthService, AuthService>(); // 认证服务
 builder.Services.AddScoped<IAuthSessionValidator, AuthSessionValidator>(); // access token 会话有效性校验
 builder.Services.AddSingleton<IClientIpResolver, ClientIpResolver>(); // 登录公网 IP 解析
+builder.Services.AddScoped<IServiceApiTokenService, ServiceApiTokenService>(); // 后台自动化 service API token
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
 builder.Services.AddScoped<IEmployeeProfileService, EmployeeProfileService>(); // 员工个人信息服务
 builder.Services.AddScoped<IRoleService, RoleService>(); // 角色管理服务
@@ -827,6 +839,11 @@ catch (Exception ex)
  */
 // 启动Web应用
 app.Run();
+
+static void ConfigureServiceApiTokenAuthentication(AuthenticationSchemeOptions options)
+{
+    // service token handler 不需要额外 options，保留显式方法避免链式注册里的 lambda 解析歧义。
+}
 
 static void MapTencentCloudEnvironmentVariables(ConfigurationManager configuration)
 {

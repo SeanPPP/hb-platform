@@ -9,6 +9,11 @@ const VALID_CHANNELS = new Set(["preview", "production"]);
 const VALID_PROFILES = new Set(["preview", "production"]);
 const PLATFORM = "android";
 const REGISTRATION_PATH = "/api/mobile-app-builds/ota-updates";
+const CURRENT_USER_PATH = "/api/Auth/current";
+const SERVICE_TOKEN_CURRENT_PATH = "/api/service-api-tokens/current";
+const SERVICE_API_TOKEN_PREFIX = "hbsvc_";
+const MANAGE_APP_DOWNLOADS_PERMISSION = "System.ManageAppDownloads";
+const SUPER_ADMIN_ROLE_NAMES = new Set(["Admin", "管理员"]);
 
 const HELP_TEXT = `
 用法：
@@ -250,17 +255,33 @@ export function buildOtaRegistrationPayload(parsed, options, publishedAt = new D
   };
 }
 
-export function buildRegistrationUrl(baseUrl) {
+function buildBackendApiUrl(baseUrl, apiPath) {
   const url = new URL(baseUrl.trim());
   const normalizedPath = url.pathname.replace(/\/+$/, "");
-  const registrationPath = normalizedPath.endsWith("/api")
-    ? REGISTRATION_PATH.replace(/^\/api/, "")
-    : REGISTRATION_PATH;
+  const requestPath = normalizedPath.endsWith("/api")
+    ? apiPath.replace(/^\/api/, "")
+    : apiPath;
 
-  url.pathname = `${normalizedPath}${registrationPath}`;
+  url.pathname = `${normalizedPath}${requestPath}`;
   url.search = "";
   url.hash = "";
   return url.toString();
+}
+
+export function buildRegistrationUrl(baseUrl) {
+  return buildBackendApiUrl(baseUrl, REGISTRATION_PATH);
+}
+
+function isServiceApiToken(token) {
+  return token.startsWith(SERVICE_API_TOKEN_PREFIX);
+}
+
+export function buildTokenPreflightUrl(baseUrl, token = "") {
+  // hbsvc_ 是后台自动化 token；普通后台登录 token 仍走用户 current 接口。
+  const path = isServiceApiToken(token.trim())
+    ? SERVICE_TOKEN_CURRENT_PATH
+    : CURRENT_USER_PATH;
+  return buildBackendApiUrl(baseUrl, path);
 }
 
 function buildEasCommand(options) {
@@ -295,9 +316,9 @@ function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function printManualRegistrationJson(payload) {
-  console.log("\n可手动补录的 OTA JSON：");
-  console.log(JSON.stringify(payload, null, 2));
+function printManualRegistrationJson(payload, logger = console) {
+  logger.log("\n可手动补录的 OTA JSON：");
+  logger.log(JSON.stringify(payload, null, 2));
 }
 
 function runCommand({ command, args, env }) {
@@ -357,9 +378,93 @@ function describeBackendFailure(payload) {
     .join(" / ");
 }
 
+function extractRoleNames(data) {
+  const roleNames = getResponseField(data, "roleNames");
+  if (Array.isArray(roleNames)) {
+    return roleNames;
+  }
+
+  const roles = getResponseField(data, "roles");
+  if (!Array.isArray(roles)) {
+    return [];
+  }
+
+  return roles
+    .map((role) => getResponseField(role, "roleName"))
+    .filter((roleName) => typeof roleName === "string");
+}
+
+function readRegistrationConfig() {
+  return {
+    baseUrl: process.env.HBWEB_API_BASE_URL?.trim() || "",
+    token: process.env.HBWEB_API_TOKEN?.trim() || "",
+  };
+}
+
+function requireRegistrationConfig() {
+  const config = readRegistrationConfig();
+  if (!config.baseUrl || !config.token) {
+    throw new Error("发布 OTA 前必须配置 HBWEB_API_BASE_URL 和 HBWEB_API_TOKEN");
+  }
+
+  return config;
+}
+
+export async function preflightOtaRegistration(fetchFn = globalThis.fetch) {
+  const { baseUrl, token } = requireRegistrationConfig();
+  const url = buildTokenPreflightUrl(baseUrl, token);
+  const serviceToken = isServiceApiToken(token);
+  let response;
+
+  try {
+    // 非 dry-run 必须先验证后台 token 和权限，避免 OTA 已发布后才发现无权登记。
+    response = await fetchFn(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (error) {
+    throw new Error(`后台 token 验证失败：${error.message}`);
+  }
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`后台 token 验证失败：HTTP ${response.status} ${response.statusText}${responseText ? ` - ${responseText}` : ""}`);
+  }
+
+  const responseText = await response.text();
+  const responsePayload = responseText ? parseJsonSafely(responseText) : null;
+  const success = getResponseField(responsePayload, "success") ?? getResponseField(responsePayload, "isSuccess");
+  const data = getResponseField(responsePayload, "data");
+  if (success !== true) {
+    const failureReason = describeBackendFailure(responsePayload) || "响应 success=false";
+    throw new Error(`后台 token 验证失败：${failureReason}`);
+  }
+
+  if (serviceToken) {
+    const scopes = getResponseField(data, "scopes");
+    if (!Array.isArray(scopes) || !scopes.includes(MANAGE_APP_DOWNLOADS_PERMISSION)) {
+      throw new Error(`后台 token 验证失败：缺少 ${MANAGE_APP_DOWNLOADS_PERMISSION} scope`);
+    }
+
+    return { url };
+  }
+
+  const permissions = getResponseField(data, "permissions");
+  const roleNames = extractRoleNames(data);
+  const hasManagePermission = Array.isArray(permissions)
+    && permissions.includes(MANAGE_APP_DOWNLOADS_PERMISSION);
+  const isSuperAdmin = roleNames.some((roleName) => SUPER_ADMIN_ROLE_NAMES.has(roleName));
+  if (!hasManagePermission && !isSuperAdmin) {
+    throw new Error(`后台 token 验证失败：缺少 ${MANAGE_APP_DOWNLOADS_PERMISSION} 权限`);
+  }
+
+  return { url };
+}
+
 export async function registerOtaUpdate(payload) {
-  const baseUrl = process.env.HBWEB_API_BASE_URL?.trim();
-  const token = process.env.HBWEB_API_TOKEN?.trim();
+  const { baseUrl, token } = readRegistrationConfig();
 
   if (!baseUrl || !token) {
     return {
@@ -425,50 +530,67 @@ async function main() {
     return;
   }
 
+  await runPublishOtaUpdate(options);
+}
+
+export async function runPublishOtaUpdate(
+  options,
+  {
+    createDryRunOutputFn = createDryRunOutput,
+    logger = console,
+    preflightOtaRegistrationFn = preflightOtaRegistration,
+    registerOtaUpdateFn = registerOtaUpdate,
+    runCommandFn = runCommand,
+  } = {},
+) {
   validateOptions(options);
 
   const easCommand = buildEasCommand(options);
   const printableCommand = [easCommand.command, ...easCommand.args].map(shellQuote).join(" ");
 
-  console.log(`OTA 平台固定为 ${PLATFORM}`);
-  console.log(`执行命令：${printableCommand}`);
-  console.log("本次 OTA 环境变量：");
-  console.log(`- EXPO_PUBLIC_APP_BUILD_PROFILE=${options.profile}`);
-  console.log("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false");
-  console.log(`- EXPO_PUBLIC_RUNTIME_VERSION=${options.runtimeVersion}`);
+  if (!options.dryRun) {
+    await preflightOtaRegistrationFn();
+  }
+
+  logger.log(`OTA 平台固定为 ${PLATFORM}`);
+  logger.log(`执行命令：${printableCommand}`);
+  logger.log("本次 OTA 环境变量：");
+  logger.log(`- EXPO_PUBLIC_APP_BUILD_PROFILE=${options.profile}`);
+  logger.log("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false");
+  logger.log(`- EXPO_PUBLIC_RUNTIME_VERSION=${options.runtimeVersion}`);
 
   const stdout = options.dryRun
-    ? await createDryRunOutput(options)
-    : (await runCommand(easCommand)).stdout;
+    ? await createDryRunOutputFn(options)
+    : (await runCommandFn(easCommand)).stdout;
 
   const parsed = parseEasUpdateOutput(stdout);
   const payload = buildOtaRegistrationPayload(parsed, options);
 
   if (options.dryRun) {
-    console.log("\n--dry-run 已启用：未发布 OTA，也不会登记后台。");
-    printManualRegistrationJson(payload);
+    logger.log("\n--dry-run 已启用：未发布 OTA，也不会登记后台。");
+    printManualRegistrationJson(payload, logger);
     return;
   }
 
   const gaps = getRequiredRegistrationGaps(payload);
   if (gaps.length) {
-    console.warn(`\nWARNING: OTA 已发布，但 EAS 输出缺少字段：${gaps.join(", ")}；已跳过自动登记。`);
-    printManualRegistrationJson(payload);
+    logger.warn(`\nWARNING: OTA 已发布，但 EAS 输出缺少字段：${gaps.join(", ")}；已跳过自动登记。`);
+    printManualRegistrationJson(payload, logger);
     return;
   }
 
   try {
-    const result = await registerOtaUpdate(payload);
+    const result = await registerOtaUpdateFn(payload);
     if (result.skipped) {
-      console.warn(`\nWARNING: OTA 已发布，但${result.reason}；已跳过自动登记。`);
-      printManualRegistrationJson(payload);
+      logger.warn(`\nWARNING: OTA 已发布，但${result.reason}；已跳过自动登记。`);
+      printManualRegistrationJson(payload, logger);
       return;
     }
 
-    console.log(`\nOTA 数据库记录已登记：${result.url}`);
+    logger.log(`\nOTA 数据库记录已登记：${result.url}`);
   } catch (error) {
-    console.warn(`\nWARNING: OTA 已发布，但自动登记失败：${error.message}`);
-    printManualRegistrationJson(payload);
+    logger.warn(`\nWARNING: OTA 已发布，但自动登记失败：${error.message}`);
+    printManualRegistrationJson(payload, logger);
   }
 }
 

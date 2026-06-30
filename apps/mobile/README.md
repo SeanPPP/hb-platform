@@ -43,16 +43,16 @@ EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false
 EXPO_PUBLIC_RUNTIME_VERSION=1.0.1
 ```
 
-只有通过这个新脚本发布 OTA，脚本才会在 EAS 发布成功后解析输出并尝试登记 OTA 数据库记录。通过 Expo 控制台发布，或直接裸跑 `eas update` / `npx eas-cli@latest update`，不会自动入库。
+只有通过这个新脚本发布 OTA，脚本才会先验证后台 Bearer token 和 App 下载管理权限，再在 EAS 发布成功后解析输出并登记 OTA 数据库记录。通过 Expo 控制台发布，或直接裸跑 `eas update` / `npx eas-cli@latest update`，不会自动入库。
 
-自动登记需要在发布命令所在 shell 中配置后台私密环境变量：
+发布 OTA 前，必须在发布命令所在 shell 中配置带 `System.ManageAppDownloads` 权限的后台 Bearer token。推荐使用后台生成的 `hbsvc_` service API token；也可以临时使用具备同权限的后台登录 token：
 
 ```bash
 HBWEB_API_BASE_URL=https://<backend-domain>
-HBWEB_API_TOKEN=<backend-bearer-token>
+HBWEB_API_TOKEN=<hbsvc-service-token-or-backend-bearer-token>
 ```
 
-`HBWEB_API_BASE_URL` 可以是站点根地址，也可以是带 `/api` 的 API base URL。脚本会 POST 到 `/api/mobile-app-builds/ota-updates`，请求头使用 `Authorization: Bearer <token>`。如果未配置 base URL/token，或后台登记失败，OTA 发布结果不会被回滚；脚本会输出 warning 和可手动补录的 JSON。
+`HBWEB_API_BASE_URL` 可以是站点根地址，也可以是带 `/api` 的 API base URL。非 `--dry-run` 发布时，脚本会先用 `Authorization: Bearer <token>` 验证 token 和权限：`hbsvc_` token 调用 `GET /api/service-api-tokens/current`，普通后台登录 token 调用 `GET /api/Auth/current`。缺少 base URL/token 或验证失败时会直接退出，不会先发布 OTA。验证通过后，脚本会继续发布 EAS Update，并 POST 到 `/api/mobile-app-builds/ota-updates` 登记，登记请求仍使用同一个 Bearer token。`--dry-run` 只打印命令和补录 JSON，不要求配置 token。
 
 发布前需确认后端已通过 EAS Webhook 收到对应 profile 的最新 APK 记录，否则旧 APK 不会弹出下载提示。
 

@@ -340,6 +340,8 @@ namespace BlazorApp.Api.Data
             new SimpleClient<MobileAppBuild>(_db);
         public SimpleClient<MobileAppOtaUpdate> MobileAppOtaUpdateDb =>
             new SimpleClient<MobileAppOtaUpdate>(_db);
+        public SimpleClient<ServiceApiToken> ServiceApiTokenDb =>
+            new SimpleClient<ServiceApiToken>(_db);
 
         // 节日商品相关实体
         public SimpleClient<HolidayProduct> HolidayProductDb =>
@@ -479,6 +481,7 @@ namespace BlazorApp.Api.Data
                 typeof(ApplicationLog),
                 typeof(MobileAppBuild),
                 typeof(MobileAppOtaUpdate),
+                typeof(ServiceApiToken),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
@@ -1246,6 +1249,10 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Group_Platform\" ON \"MobileAppOtaUpdate\" (\"UpdateGroupId\", \"Platform\")",
                 ["IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt\" ON \"MobileAppOtaUpdate\" (\"Channel\", \"RuntimeVersion\", \"PublishedAt\")",
+                ["IX_ServiceApiToken_TokenHash"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ServiceApiToken_TokenHash\" ON \"ServiceApiToken\" (\"TokenHash\")",
+                ["IX_ServiceApiToken_CreatedAt"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_ServiceApiToken_CreatedAt\" ON \"ServiceApiToken\" (\"CreatedAt\")",
             };
 
             foreach (var indexCheck in indexStatements)
@@ -1675,6 +1682,9 @@ namespace BlazorApp.Api.Data
                 // MobileAppOtaUpdate表的索引，支撑 OTA group 幂等登记和渠道/runtime 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE UNIQUE INDEX IX_MobileAppOtaUpdate_Group_Platform ON [MobileAppOtaUpdate](UpdateGroupId, Platform)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE INDEX IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt ON [MobileAppOtaUpdate](Channel, RuntimeVersion, PublishedAt)",
+                // ServiceApiToken 只按哈希查验明文 token，列表按创建时间倒序展示。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ServiceApiToken_TokenHash' AND object_id = OBJECT_ID('ServiceApiToken')) CREATE UNIQUE INDEX IX_ServiceApiToken_TokenHash ON [ServiceApiToken](TokenHash)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ServiceApiToken_CreatedAt' AND object_id = OBJECT_ID('ServiceApiToken')) CREATE INDEX IX_ServiceApiToken_CreatedAt ON [ServiceApiToken](CreatedAt)",
             };
 
             foreach (var sql in normalIndexStatements)

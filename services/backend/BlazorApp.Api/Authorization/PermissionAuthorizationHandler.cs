@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
 using Microsoft.AspNetCore.Authorization;
@@ -26,6 +27,17 @@ namespace BlazorApp.Api.Authorization
             PermissionRequirement requirement
         )
         {
+            if (IsServiceApiToken(context.User))
+            {
+                // 关键位置：service token 只认认证 handler 写入的专用 scope，不能回落到用户角色或普通 permission claim。
+                if (HasServiceApiScope(context.User, requirement.Permission))
+                {
+                    context.Succeed(requirement);
+                }
+
+                return;
+            }
+
             var userId =
                 context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                 ?? context.User.FindFirst("userId")?.Value
@@ -92,6 +104,21 @@ namespace BlazorApp.Api.Authorization
             }
 
             return false;
+        }
+
+        private static bool IsServiceApiToken(ClaimsPrincipal user)
+        {
+            return user.HasClaim(
+                ServiceApiTokenAuthenticationDefaults.TokenTypeClaim,
+                "true"
+            );
+        }
+
+        private static bool HasServiceApiScope(ClaimsPrincipal user, string permission)
+        {
+            return user
+                .FindAll(ServiceApiTokenAuthenticationDefaults.ScopeClaim)
+                .Any(claim => string.Equals(claim.Value, permission, StringComparison.OrdinalIgnoreCase));
         }
     }
 }

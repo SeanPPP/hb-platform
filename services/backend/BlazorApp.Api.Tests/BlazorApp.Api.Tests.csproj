@@ -94,6 +94,8 @@
     <Compile Include="ApplicationLogServiceTests.cs" />
     <Compile Include="ApplicationLogQueueTests.cs" />
     <Compile Include="ApplicationLogBackgroundServiceTests.cs" />
+    <Compile Include="ServiceApiTokenAuthenticationHandlerTests.cs" />
+    <Compile Include="ServiceApiTokenServiceTests.cs" />
     <Compile Include="TencentCloudUploadServiceTests.cs" />
     <Compile Include="TencentCosMobileAppBuildArtifactMirrorTests.cs" />
     <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />
