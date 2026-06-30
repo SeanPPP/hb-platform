@@ -2339,8 +2339,6 @@ export default function StoreOrderDetailPage() {
     field: DetailEditableField,
   ) => {
     if (
-      event.key !== 'ArrowRight' &&
-      event.key !== 'ArrowLeft' &&
       event.key !== 'ArrowDown' &&
       event.key !== 'ArrowUp' &&
       event.key !== 'Enter'
@@ -2348,6 +2346,7 @@ export default function StoreOrderDetailPage() {
       return
     }
 
+    // 只接管上下换行和 Enter；左右键保留输入框原生光标移动。
     event.preventDefault()
     event.stopPropagation()
 
@@ -2357,30 +2356,14 @@ export default function StoreOrderDetailPage() {
       return
     }
 
-    let nextIndex = currentIndex
-    let nextField: DetailEditableField = field
-
-    if (event.key === 'ArrowRight') {
-      nextField = field === 'allocQuantity' ? 'importPrice' : 'allocQuantity'
-      nextIndex = field === 'allocQuantity' ? currentIndex : currentIndex + 1
-    }
-    if (event.key === 'ArrowLeft') {
-      nextField = field === 'importPrice' ? 'allocQuantity' : 'importPrice'
-      nextIndex = field === 'importPrice' ? currentIndex : currentIndex - 1
-    }
-    if (event.key === 'ArrowDown' || event.key === 'Enter') {
-      nextIndex = currentIndex + 1
-    }
-    if (event.key === 'ArrowUp') {
-      nextIndex = currentIndex - 1
-    }
+    const nextIndex = event.key === 'ArrowUp' ? currentIndex - 1 : currentIndex + 1
 
     const nextRow = rows[nextIndex]
     if (!nextRow) {
       return
     }
 
-    focusDetailInput(nextRow.detailGUID, nextField)
+    focusDetailInput(nextRow.detailGUID, field)
   }
 
   const handleCompleteOrder = async () => {
