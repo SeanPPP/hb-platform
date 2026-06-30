@@ -24,6 +24,13 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 扫码查询并加购：单命中直接返回轻量购物车变更，0/多命中只返回候选。
+        /// </summary>
+        Task<ApiResponse<StoreOrderScanLookupAddResultDto>> ScanLookupAndAddToCartMutationAsync(
+            StoreOrderScanLookupAddRequestDto request
+        );
+
+        /// <summary>
         /// 获取分店当前的购物车 (FlowStatus=0)
         /// </summary>
         Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartAsync(string storeCode);

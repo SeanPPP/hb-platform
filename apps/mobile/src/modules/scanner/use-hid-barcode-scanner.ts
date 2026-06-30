@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { NativeSyntheticEvent, TextInputSubmitEditingEventData, TextInput } from "react-native";
 import { getItemAsync, setItemAsync } from "expo-secure-store";
-import { createHidBarcodeKeyBuffer, normalizeHidBarcode, type HidBarcodeKeyEvent } from "./hid-barcode-buffer";
+import {
+  createHidBarcodeKeyBuffer,
+  extractNewHidBarcodeSegment,
+  normalizeHidBarcode,
+  type HidBarcodeKeyEvent,
+} from "./hid-barcode-buffer";
 import { createHiddenInputFocusController, type HiddenInputFocusController } from "./hid-hidden-input-focus";
 
 interface UseHidBarcodeScannerOptions {
@@ -13,6 +18,7 @@ interface UseHidBarcodeScannerOptions {
 }
 
 const STORAGE_KEY = "hid_scanner_force_text_input";
+const DUPLICATE_TEXT_INPUT_SUPPRESS_MS = 100;
 
 let nativeModuleRef: any = null;
 let cachedForceTextInput: boolean | null = null;
@@ -81,6 +87,7 @@ export function useHidBarcodeScanner({
   const [forceTextInput, setForceTextInput] = useState<boolean>(cachedForceTextInput === true);
   const lastSubmittedRef = useRef("");
   const lastSubmittedTimeRef = useRef(0);
+  const lastSubmittedRawValueRef = useRef("");
 
   const switchToTextInputMode = useCallback(() => {
     if (cachedForceTextInput === true) {
@@ -111,17 +118,20 @@ export function useHidBarcodeScanner({
 
   const submitBarcode = useCallback(
     (rawValue: string) => {
-      const barcode = normalizeHidBarcode(rawValue);
+      const normalizedRawValue = normalizeHidBarcode(rawValue);
+      const barcode = extractNewHidBarcodeSegment(normalizedRawValue, lastSubmittedRawValueRef.current);
       if (!barcode || barcode.length < minLength) {
         return;
       }
 
       const now = Date.now();
-      if (barcode === lastSubmittedRef.current && now - lastSubmittedTimeRef.current < 2000) {
+      if (barcode === lastSubmittedRef.current && now - lastSubmittedTimeRef.current < DUPLICATE_TEXT_INPUT_SUPPRESS_MS) {
+        lastSubmittedRawValueRef.current = normalizedRawValue;
         return;
       }
       lastSubmittedRef.current = barcode;
       lastSubmittedTimeRef.current = now;
+      lastSubmittedRawValueRef.current = normalizedRawValue;
 
       onScanRef.current?.(barcode);
     },

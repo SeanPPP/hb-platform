@@ -994,6 +994,78 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 扫码查询并加购：单命中时一次请求完成加购，0/多命中只返回候选。
+        /// </summary>
+        [HttpPost("cart/scan-lookup-add")]
+        public async Task<IActionResult> ScanLookupAndAddToCart(
+            [FromBody] StoreOrderScanLookupAddRequestDto request
+        )
+        {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
+            try
+            {
+                var permissionSw = Stopwatch.StartNew();
+                var forbidden = await RequireCartWritePermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
+                permissionSw.Stop();
+                if (forbidden != null)
+                {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.controller.forbidden storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} permissionMs={PermissionMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        GetBarcodeTail(request.Barcode),
+                        GetBarcodeLength(request.Barcode),
+                        permissionSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return forbidden;
+                }
+
+                var serviceSw = Stopwatch.StartNew();
+                var result = await _service.ScanLookupAndAddToCartMutationAsync(request);
+                serviceSw.Stop();
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.controller.done storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} success={Success} itemCount={ItemCount} added={Added} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(request.Barcode),
+                    GetBarcodeLength(request.Barcode),
+                    result.Success,
+                    result.Data?.Items?.Count ?? 0,
+                    result.Data?.Added ?? false,
+                    permissionSw.ElapsedMilliseconds,
+                    serviceSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
+
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.controller.error storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(request.Barcode),
+                    GetBarcodeLength(request.Barcode),
+                    totalSw.ElapsedMilliseconds
+                );
+                _logger.LogError(ex, "ScanLookupAndAddToCart failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取分店当前的购物车
         /// </summary>
         [HttpGet("cart/{storeCode}")]

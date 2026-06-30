@@ -880,7 +880,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         var item = Assert.Single(result.Data!.Items);
         Assert.Equal("P-ITEM", item.ProductCode);
         Assert.Equal("fallback", result.Data.MatchType);
-        Assert.Equal(2, _sqlLogs.Count);
+        Assert.Equal(3, _sqlLogs.Count);
         Assert.DoesNotContain(
             _sqlLogs,
             sql => sql.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
@@ -903,11 +903,143 @@ public sealed class StoreOrderProductListTests : IDisposable
         var item = Assert.Single(result.Data!.Items);
         Assert.Equal("SCAN-003", item.ProductCode);
         Assert.Equal("fallback", result.Data.MatchType);
-        Assert.Equal(3, _sqlLogs.Count);
+        Assert.Equal(4, _sqlLogs.Count);
         Assert.DoesNotContain(
             _sqlLogs,
             sql => sql.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
         );
+    }
+
+    [Fact]
+    public async Task ScanLookupProductsAsync_主查询不Join等级并批量补Grade()
+    {
+        await SeedProductWithGradesAsync("P-GRADE", "ITEM-GRADE", "A", "B");
+        _sqlLogs.Clear();
+
+        var result = await CreateService().ScanLookupProductsAsync(new StoreOrderScanLookupRequestDto
+        {
+            Barcode = "ITEM-GRADE-BAR",
+        });
+
+        Assert.True(result.Success, result.Message);
+        var item = Assert.Single(result.Data!.Items);
+        Assert.Equal("P-GRADE", item.ProductCode);
+        Assert.Equal("A", item.Grade);
+        Assert.NotEmpty(_sqlLogs);
+        Assert.DoesNotContain(
+            "ProductGrade",
+            _sqlLogs[0],
+            StringComparison.OrdinalIgnoreCase
+        );
+        Assert.Contains(
+            _sqlLogs.Skip(1),
+            log => log.Contains("ProductGrade", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task ScanLookupAndAddToCartMutationAsync_单命中时查询并加购轻量返回()
+    {
+        await SeedProductAsync("P-SCAN-ADD", "ITEM-SCAN-ADD", barcode: "SCAN-ADD-001");
+        await SeedWarehouseProductAsync("P-SCAN-ADD", oemPrice: 4m, importPrice: 2m, minOrderQuantity: 3);
+        _sqlLogs.Clear();
+
+        var result = await CreateService().ScanLookupAndAddToCartMutationAsync(
+            new StoreOrderScanLookupAddRequestDto
+            {
+                StoreCode = "S001",
+                Barcode = "SCAN-ADD-001",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.True(result.Data!.Added);
+        var item = Assert.Single(result.Data.Items);
+        Assert.Equal("P-SCAN-ADD", item.ProductCode);
+        Assert.NotNull(result.Data.Cart);
+        Assert.Equal("P-SCAN-ADD", result.Data.Cart!.ProductCode);
+        Assert.Equal(3, result.Data.Cart.Summary.TotalQuantity);
+        Assert.Equal(12m, result.Data.Cart.Summary.TotalAmount);
+        Assert.Equal(6m, result.Data.Cart.Summary.TotalImportAmount);
+        Assert.DoesNotContain(
+            "\"items\"",
+            JsonSerializer.Serialize(result.Data.Cart),
+            StringComparison.OrdinalIgnoreCase
+        );
+        Assert.Equal(0, _sqlLogs.Count(IsStandaloneProductPriceLookupSql));
+        Assert.Equal(1, _sqlLogs.Count(IsCartSummaryAggregateSql));
+    }
+
+    [Fact]
+    public async Task ScanLookupAndAddToCartMutationAsync_本地热路径2秒内完成()
+    {
+        const int noiseCount = 1200;
+        var noiseProducts = Enumerable.Range(0, noiseCount)
+            .Select(index => new Product
+            {
+                UUID = $"scan-noise-{index}-uuid",
+                ProductCode = $"P-SCAN-NOISE-{index:D4}",
+                ProductName = $"扫码噪音商品 {index:D4}",
+                ItemNumber = $"ITEM-SCAN-NOISE-{index:D4}",
+                Barcode = $"SCAN-NOISE-{index:D4}",
+                IsActive = true,
+                IsDeleted = false,
+            })
+            .ToList();
+        var noiseWarehouseProducts = Enumerable.Range(0, noiseCount)
+            .Select(index => new WarehouseProduct
+            {
+                ProductCode = $"P-SCAN-NOISE-{index:D4}",
+                OEMPrice = 4m,
+                ImportPrice = 2m,
+                StockQuantity = 20,
+                MinOrderQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            })
+            .ToList();
+        await _db.Insertable(noiseProducts).ExecuteCommandAsync();
+        await _db.Insertable(noiseWarehouseProducts).ExecuteCommandAsync();
+        await SeedProductAsync("P-SCAN-SLA", "ITEM-SCAN-SLA", barcode: "SCAN-SLA-001");
+        await SeedWarehouseProductAsync("P-SCAN-SLA", oemPrice: 4m, importPrice: 2m, minOrderQuantity: 1);
+
+        // 本地 smoke 只防慢链路回退；生产 2 秒 SLA 仍以 shop-scan-perf 真机日志为准。
+        var result = await CreateService().ScanLookupAndAddToCartMutationAsync(
+            new StoreOrderScanLookupAddRequestDto
+            {
+                StoreCode = "S001",
+                Barcode = "SCAN-SLA-001",
+            }
+        ).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.Data?.Added);
+        Assert.Equal(1, result.Data?.Cart?.Summary.TotalQuantity);
+    }
+
+    [Fact]
+    public async Task ScanLookupAndAddToCartMutationAsync_多命中时只返回候选不写购物车()
+    {
+        await SeedProductAsync("P-MULTI-1", "ITEM-MULTI-1", barcode: "SCAN-MULTI");
+        await SeedWarehouseProductAsync("P-MULTI-1");
+        await SeedProductAsync("P-MULTI-2", "ITEM-MULTI-2", barcode: "SCAN-MULTI");
+        await SeedWarehouseProductAsync("P-MULTI-2");
+
+        var result = await CreateService().ScanLookupAndAddToCartMutationAsync(
+            new StoreOrderScanLookupAddRequestDto
+            {
+                StoreCode = "S001",
+                Barcode = "SCAN-MULTI",
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data!.Added);
+        Assert.Null(result.Data.Cart);
+        Assert.Equal(2, result.Data.Items.Count);
+        Assert.Empty(await _db.Queryable<WareHouseOrderDetails>().ToListAsync());
     }
 
     [Fact]
@@ -1320,6 +1452,122 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(5, result.Data.Summary.TotalQuantity);
         Assert.Equal(15m, result.Data.Summary.TotalAmount);
         Assert.Equal(5m, result.Data.ChangedItem?.Quantity);
+    }
+
+    [Fact]
+    public async Task AddToCartMutationAsync_并发同Sku累加不丢数量且不产生重复明细()
+    {
+        const int scanCount = 20;
+        await SeedProductAsync("P-CONCURRENT", "ITEM-CONCURRENT");
+        await SeedWarehouseProductAsync("P-CONCURRENT", oemPrice: 3m, importPrice: 2m);
+        await SeedStoreOrderAsync("ORDER-CONCURRENT", flowStatus: 0);
+        await SeedOrderDetailOnlyAsync("ORDER-CONCURRENT", "P-CONCURRENT", quantity: 0, allocQuantity: 0);
+        var service = CreateService();
+
+        var results = await Task.WhenAll(
+            Enumerable.Range(0, scanCount)
+                .Select(_ => service.AddToCartMutationAsync(new AddToCartRequestDto
+                {
+                    StoreCode = "S001",
+                    ProductCode = "P-CONCURRENT",
+                    Quantity = 1,
+                }))
+        );
+
+        Assert.All(results, result => Assert.True(result.Success, result.Message));
+        var details = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-CONCURRENT" && item.ProductCode == "P-CONCURRENT" && !item.IsDeleted)
+            .ToListAsync();
+        var detail = Assert.Single(details);
+        Assert.Equal(scanCount, detail.Quantity);
+        Assert.Equal(scanCount * 3m, detail.OEMAmount);
+    }
+
+    [Fact]
+    public async Task AddToCartMutationAsync_并发同Sku无现存明细只插入一条()
+    {
+        const int scanCount = 20;
+        await SeedProductAsync("P-CONCURRENT-NEW", "ITEM-CONCURRENT-NEW");
+        await SeedWarehouseProductAsync("P-CONCURRENT-NEW", oemPrice: 3m, importPrice: 2m);
+        await SeedStoreOrderAsync("ORDER-CONCURRENT-NEW", flowStatus: 0);
+        var service = CreateService();
+
+        var results = await Task.WhenAll(
+            Enumerable.Range(0, scanCount)
+                .Select(_ => service.AddToCartMutationAsync(new AddToCartRequestDto
+                {
+                    StoreCode = "S001",
+                    ProductCode = "P-CONCURRENT-NEW",
+                    Quantity = 1,
+                }))
+        );
+
+        Assert.All(results, result => Assert.True(result.Success, result.Message));
+        var details = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.OrderGUID == "ORDER-CONCURRENT-NEW" && item.ProductCode == "P-CONCURRENT-NEW" && !item.IsDeleted)
+            .ToListAsync();
+        var detail = Assert.Single(details);
+        Assert.Equal(scanCount, detail.Quantity);
+        Assert.Equal(scanCount * 3m, detail.OEMAmount);
+    }
+
+    [Fact]
+    public void 购物车写入路径使用共享事务和SqlServer应用锁()
+    {
+        var source = File.ReadAllText(ResolveStoreOrderReactServicePath());
+        var sharedLockBody = ExtractMethodBody(
+            source,
+            "private async Task<T> RunCartMutationLockedAsync<T>"
+        );
+        var coreBody = ExtractMethodBody(
+            source,
+            "private async Task<ApiResponse<StoreOrderCartMutationResultDto?>> AddToCartMutationCoreAsync"
+        );
+        var updateBody = ExtractMethodBody(
+            source,
+            "public async Task<ApiResponse<StoreOrderCartMutationResultDto?>> UpdateCartItemMutationAsync"
+        );
+        var submitBody = ExtractMethodBody(
+            source,
+            "public async Task<ApiResponse<bool>> SubmitOrderAsync"
+        );
+        var lockBody = ExtractMethodBody(
+            source,
+            "private static async Task AcquireCartMutationDatabaseLockAsync"
+        );
+
+        AssertInOrder(
+            sharedLockBody,
+            "BeginTranAsync",
+            "AcquireCartMutationDatabaseLockAsync",
+            "CommitTranAsync"
+        );
+        Assert.Contains("RollbackTranAsync", sharedLockBody);
+        Assert.Contains("ShouldRollbackCartMutationResult", sharedLockBody);
+        Assert.Contains("RunCartMutationLockedAsync(request.StoreCode", coreBody);
+        Assert.Contains("RunCartMutationLockedAsync(request.StoreCode", updateBody);
+        Assert.Contains("RunCartMutationLockedAsync(request.StoreCode", submitBody);
+        Assert.Contains("sys.sp_getapplock", lockBody);
+        Assert.Contains("@LockOwner = N'Transaction'", lockBody);
+    }
+
+    [Fact]
+    public async Task UpdateCartItemMutationAsync_空车正数量回退加购不死锁()
+    {
+        await SeedProductAsync("P-FALLBACK", "ITEM-FALLBACK");
+        await SeedWarehouseProductAsync("P-FALLBACK", oemPrice: 3m, importPrice: 2m);
+        var service = CreateService();
+
+        var result = await service.UpdateCartItemMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-FALLBACK",
+            Quantity = 2,
+        }).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, result.Data?.Summary.TotalQuantity);
+        Assert.Equal("P-FALLBACK", result.Data?.ChangedItem?.ProductCode);
     }
 
     [Fact]
@@ -3054,6 +3302,81 @@ public sealed class StoreOrderProductListTests : IDisposable
         }
 
         return result;
+    }
+
+    private static bool IsStandaloneProductPriceLookupSql(string sql)
+    {
+        // 扫码合并接口单命中时已拿到价格，不能再执行 AddToCartMutation 的独立价格查询。
+        return sql.Contains("Product", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("WarehouseProduct", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("OEMPrice", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("ImportPrice", StringComparison.OrdinalIgnoreCase)
+            && !sql.Contains("ProductName", StringComparison.OrdinalIgnoreCase)
+            && !sql.Contains("WarehouseCategory", StringComparison.OrdinalIgnoreCase)
+            && !sql.Contains("WareHouseOrderDetails", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCartSummaryAggregateSql(string sql)
+    {
+        // 一次加购后摘要聚合应由 UpdateOrderTotalAsync 产出，payload 阶段不再重复聚合。
+        return sql.Contains("WareHouseOrderDetails", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("SUM", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("COUNT", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("TotalQuantity", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("TotalSku", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveStoreOrderReactServicePath([CallerFilePath] string testFilePath = "")
+    {
+        var testDirectory = Path.GetDirectoryName(testFilePath)!;
+        return Path.GetFullPath(
+            Path.Combine(
+                testDirectory,
+                "..",
+                "BlazorApp.Api",
+                "Services",
+                "React",
+                "StoreOrderReactService.cs"
+            )
+        );
+    }
+
+    private static string ExtractMethodBody(string source, string methodSignature)
+    {
+        var methodIndex = source.IndexOf(methodSignature, StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0, $"找不到方法 {methodSignature}");
+        var bodyStart = source.IndexOf('{', methodIndex);
+        Assert.True(bodyStart >= 0, $"找不到方法 {methodSignature} 的方法体");
+
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source[bodyStart..(index + 1)];
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"方法 {methodSignature} 的方法体未闭合");
+    }
+
+    private static void AssertInOrder(string source, params string[] fragments)
+    {
+        var cursor = 0;
+        foreach (var fragment in fragments)
+        {
+            var index = source.IndexOf(fragment, cursor, StringComparison.Ordinal);
+            Assert.True(index >= 0, $"找不到顺序片段 {fragment}");
+            cursor = index + fragment.Length;
+        }
     }
 
     private async Task SeedLocalSupplierAsync(string code, string name)

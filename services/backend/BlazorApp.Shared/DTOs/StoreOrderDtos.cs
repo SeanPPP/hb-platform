@@ -285,6 +285,32 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 扫码查询并加购请求。只用于 scan-lookup-add 合并接口，普通加购接口不受影响。
+  /// </summary>
+  public class StoreOrderScanLookupAddRequestDto
+  {
+    [Required]
+    public string StoreCode { get; set; } = string.Empty;
+
+    [Required]
+    public string Barcode { get; set; } = string.Empty;
+
+    public decimal? Quantity { get; set; }
+  }
+
+  /// <summary>
+  /// 扫码查询并加购响应：0/多命中只返回候选，单命中才返回轻量购物车变更。
+  /// </summary>
+  public class StoreOrderScanLookupAddResultDto
+  {
+    public string Barcode { get; set; } = string.Empty;
+    public string? MatchType { get; set; }
+    public List<StoreOrderProductDto> Items { get; set; } = new();
+    public bool Added { get; set; }
+    public StoreOrderCartMutationResultDto? Cart { get; set; }
+  }
+
+  /// <summary>
   /// 订货明细交互页查询参数。
   /// </summary>
   public class StoreOrderDetailQueryDto

@@ -27,13 +27,17 @@ interface AddToCartVariables {
   scanTraceId?: string;
 }
 
-export function useAddToCart(storeCode?: string | null) {
+interface UseAddToCartOptions {
+  concurrent?: boolean;
+}
+
+export function useAddToCart(storeCode?: string | null, options: UseAddToCartOptions = {}) {
   const queryClient = useQueryClient();
   const setCartSummary = useCartStore((state) => state.setCartSummary);
 
   return useMutation({
     mutationKey: ["cartMutation", storeCode ?? null],
-    scope: { id: `cart:${storeCode ?? "none"}` },
+    scope: options.concurrent ? undefined : { id: `cart:${storeCode ?? "none"}` },
     mutationFn: async ({ product, quantity, scanTraceId }: AddToCartVariables) => {
       if (!storeCode) {
         throw new Error(i18n.t("common:errors.selectStoreFirst"));

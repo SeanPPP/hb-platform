@@ -169,9 +169,22 @@ export default function Home() {
     },
     [addToCart, autoAddWhenSingle, getErrorMessage, t]
   );
+  const handleScanAddedProduct = useCallback(
+    (product: StoreOrderProductItem, _barcode?: string, _source?: unknown, scanTraceId?: string) => {
+      setSearchInput("");
+      setKeyword("");
+      setScannedProducts([product]);
+      setScannedProductTraceIds(scanTraceId ? { [product.productCode]: scanTraceId } : {});
+      setSelectedCategoryGUID(undefined);
+      setSelectedGrade(undefined);
+      setNoticeMessage(t("messages.addedToCart", { name: product.productName || product.productCode }));
+    },
+    [t]
+  );
   const scanResult = useScanResult({
     autoAddWhenSingle,
-    mode: "lookup",
+    mode: autoAddWhenSingle ? "add-to-cart" : "lookup",
+    onAddedToCart: handleScanAddedProduct,
     onProductFound: handleScanLookupProduct,
     storeCode: selectedStoreCode,
   });

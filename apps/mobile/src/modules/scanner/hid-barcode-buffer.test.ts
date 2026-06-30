@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { createHidBarcodeKeyBuffer, isHidNativeTextInputFallbackEvent } from "./hid-barcode-buffer";
+import {
+  createHidBarcodeKeyBuffer,
+  extractNewHidBarcodeSegment,
+  isHidNativeTextInputFallbackEvent,
+} from "./hid-barcode-buffer";
 
 class FakeTimers {
   private nextId = 1;
@@ -97,13 +101,48 @@ function createBuffer(options?: {
   }
   buffer.handleKeyPress({ key: "Enter" });
 
-  currentTime += 500;
+  currentTime += 50;
   for (const character of "HB313129") {
     buffer.handleKeyPress({ key: character, character });
   }
   buffer.handleKeyPress({ key: "Enter" });
 
-  assert.deepEqual(scans, ["HB313129"], "2 秒内重复同条码不应重复触发");
+  assert.deepEqual(scans, ["HB313129"], "极短时间内重复同条码不应重复触发");
+}
+
+{
+  let currentTime = 1000;
+  const { buffer, scans } = createBuffer({ now: () => currentTime });
+  for (const character of "HB313129") {
+    buffer.handleKeyPress({ key: character, character });
+  }
+  buffer.handleKeyPress({ key: "Enter" });
+
+  currentTime += 150;
+  for (const character of "HB313129") {
+    buffer.handleKeyPress({ key: character, character });
+  }
+  buffer.handleKeyPress({ key: "Enter" });
+
+  assert.deepEqual(scans, ["HB313129", "HB313129"], "真实连续扫同条码应允许累计加购");
+}
+
+{
+  assert.equal(
+    extractNewHidBarcodeSegment("93000000000019300000000002", "9300000000001"),
+    "9300000000002",
+    "隐藏输入框累计旧值时只提交新增条码段"
+  );
+  assert.equal(
+    extractNewHidBarcodeSegment("9300000000001", "9300000000001"),
+    "9300000000001",
+    "输入框已清空后的同条码不应被当成旧前缀吃掉"
+  );
+  assert.equal(
+    extractNewHidBarcodeSegment("93000000000012", "9300000000001"),
+    "93000000000012",
+    "新条码以前条码为前缀时不能截成尾段"
+  );
 }
 
 {

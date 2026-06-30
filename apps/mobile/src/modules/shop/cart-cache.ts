@@ -21,6 +21,7 @@ interface CartCacheProduct {
 
 export interface CartMutationCacheSnapshot {
   operationId: number;
+  operationType: CartOptimisticOperation["type"];
   previousDynamicCartQuantity?: number;
   productCode: string;
   storeKey: string;
@@ -43,11 +44,20 @@ type CartOptimisticOperation =
 interface CartOptimisticState {
   baseCart: StoreOrderCart | null;
   lastConfirmedOperationId: number;
+  lastConfirmedProductOperationIds: Map<string, number>;
+  lastConfirmedProductSetOperationIds: Map<string, number>;
   operations: CartOptimisticOperation[];
 }
 
 let nextOptimisticOperationId = 1;
 const optimisticStates = new Map<string, CartOptimisticState>();
+const lastConfirmedOperationIds = new Map<string, number>();
+const lastConfirmedProductOperationIds = new Map<string, Map<string, number>>();
+const lastConfirmedProductSetOperationIds = new Map<string, Map<string, number>>();
+
+export function reserveCartMutationOperationId() {
+  return nextOptimisticOperationId++;
+}
 
 function normalizeStoreCode(storeCode?: string | null) {
   const normalized = storeCode?.trim();
@@ -222,6 +232,64 @@ export function applyCartMutationResultToCart(
   };
 }
 
+function mergeCartMutationChangedItem(
+  currentCart: StoreOrderCart | null,
+  result: StoreOrderCartMutationResult
+) {
+  if (!currentCart || result.removed || !result.changedItem) {
+    return currentCart;
+  }
+
+  const alreadyHasChangedItem = currentCart.items.some((item) => {
+    const isSameDetail = result.changedItem?.detailGUID && item.detailGUID === result.changedItem.detailGUID;
+    return isSameDetail || item.productCode === result.changedItem?.productCode;
+  });
+
+  // ponytail: 旧确认只补缺失行，不替换已有行；有服务端 revision 后替换这层客户端顺序保护。
+  return alreadyHasChangedItem
+    ? currentCart
+    : withQuantityTotals(currentCart, [result.changedItem, ...currentCart.items]);
+}
+
+function applyCartMutationChangedItemLocally(
+  currentCart: StoreOrderCart | null,
+  result: StoreOrderCartMutationResult
+) {
+  if (!currentCart) {
+    return currentCart;
+  }
+
+  const productCode = result.productCode || result.changedItem?.productCode || "";
+  if (result.removed) {
+    return withQuantityTotals(
+      currentCart,
+      currentCart.items.filter((item) => item.productCode !== productCode)
+    );
+  }
+
+  if (!result.changedItem) {
+    return currentCart;
+  }
+
+  let found = false;
+  const items = currentCart.items.map((item) => {
+    const isSameDetail = result.changedItem?.detailGUID && item.detailGUID === result.changedItem.detailGUID;
+    const isSameProduct = item.productCode === result.changedItem?.productCode;
+    if (!isSameDetail && !isSameProduct) {
+      return item;
+    }
+
+    found = true;
+    return result.changedItem!;
+  });
+
+  if (!found) {
+    items.unshift(result.changedItem);
+  }
+
+  return withQuantityTotals(currentCart, items);
+}
+
 function getOrCreateOptimisticState(storeCode: string, currentCart: StoreOrderCart | null | undefined) {
   const storeKey = getStoreKey(storeCode);
   const existingState = optimisticStates.get(storeKey);
@@ -231,11 +299,49 @@ function getOrCreateOptimisticState(storeCode: string, currentCart: StoreOrderCa
 
   const state: CartOptimisticState = {
     baseCart: currentCart ?? null,
-    lastConfirmedOperationId: 0,
+    lastConfirmedOperationId: lastConfirmedOperationIds.get(storeKey) ?? 0,
+    lastConfirmedProductOperationIds: new Map(lastConfirmedProductOperationIds.get(storeKey) ?? []),
+    lastConfirmedProductSetOperationIds: new Map(lastConfirmedProductSetOperationIds.get(storeKey) ?? []),
     operations: [],
   };
   optimisticStates.set(storeKey, state);
   return { state, storeKey };
+}
+
+function recordConfirmedProductOperation(
+  state: CartOptimisticState,
+  storeKey: string,
+  productCode: string,
+  operationId: number
+) {
+  if (!productCode) {
+    return;
+  }
+
+  const nextOperationId = Math.max(
+    state.lastConfirmedProductOperationIds.get(productCode) ?? 0,
+    operationId
+  );
+  state.lastConfirmedProductOperationIds.set(productCode, nextOperationId);
+  lastConfirmedProductOperationIds.set(storeKey, new Map(state.lastConfirmedProductOperationIds));
+}
+
+function recordConfirmedProductSetOperation(
+  state: CartOptimisticState,
+  storeKey: string,
+  productCode: string,
+  operationId: number
+) {
+  if (!productCode) {
+    return;
+  }
+
+  const nextOperationId = Math.max(
+    state.lastConfirmedProductSetOperationIds.get(productCode) ?? 0,
+    operationId
+  );
+  state.lastConfirmedProductSetOperationIds.set(productCode, nextOperationId);
+  lastConfirmedProductSetOperationIds.set(storeKey, new Map(state.lastConfirmedProductSetOperationIds));
 }
 
 function applyCartOptimisticOperations(baseCart: StoreOrderCart | null, operations: CartOptimisticOperation[]) {
@@ -327,7 +433,8 @@ export function applyCartQuantityOptimisticUpdate(
 export function snapshotCartMutationCache(
   queryClient: QueryClient,
   storeCode: string,
-  operation: Omit<CartOptimisticOperation, "id">
+  operation: Omit<CartOptimisticOperation, "id">,
+  operationId = reserveCartMutationOperationId()
 ): CartMutationCacheSnapshot {
   const currentCart = queryClient.getQueryData<StoreOrderCart | null>(["cartSummary", storeCode]);
   const { state, storeKey } = getOrCreateOptimisticState(storeCode, currentCart);
@@ -337,7 +444,8 @@ export function snapshotCartMutationCache(
     operation.product.productCode
   );
   const snapshot: CartMutationCacheSnapshot = {
-    operationId: nextOptimisticOperationId++,
+    operationId,
+    operationType: operation.type,
     productCode: operation.product.productCode,
     storeKey,
   };
@@ -360,14 +468,46 @@ export function resolveCartMutationCache(
   snapshot: CartMutationCacheSnapshot,
   confirmedCart?: StoreOrderCart | StoreOrderCartMutationResult | null
 ) {
-  const { state, storeKey } = getOrCreateOptimisticState(storeCode, undefined);
+  const { state, storeKey } = getOrCreateOptimisticState(
+    storeCode,
+    queryClient.getQueryData(["cartSummary", storeCode])
+  );
   state.operations = state.operations.filter((operation) => operation.id !== snapshot.operationId);
-  // 同门店购物车 mutation 已用 TanStack scope 串行；这里仅防止异常旧响应覆盖较新的确认基准。
-  if (confirmedCart !== undefined && snapshot.operationId >= state.lastConfirmedOperationId) {
-    state.baseCart = isCartMutationResult(confirmedCart)
+  if (confirmedCart !== undefined) {
+    const confirmedProductCode = isCartMutationResult(confirmedCart)
+      ? confirmedCart.productCode || confirmedCart.changedItem?.productCode || snapshot.productCode
+      : snapshot.productCode;
+    if (snapshot.operationType === "set") {
+      recordConfirmedProductSetOperation(state, storeKey, snapshot.productCode, snapshot.operationId);
+      state.operations = state.operations.filter(
+        (operation) => operation.id > snapshot.operationId || operation.product.productCode !== snapshot.productCode
+      );
+    }
+
+    const confirmedBaseCart = isCartMutationResult(confirmedCart)
       ? applyCartMutationResultToCart(state.baseCart, confirmedCart)
       : confirmedCart;
-    state.lastConfirmedOperationId = snapshot.operationId;
+    const supersededBySet =
+      snapshot.operationId < (state.lastConfirmedProductSetOperationIds.get(snapshot.productCode) ?? 0);
+    const shouldAcceptConfirmedCart = snapshot.operationId >= state.lastConfirmedOperationId;
+
+    // 扫码加购已允许并发；旧 add 只补当前行，不能用过期整车 summary 覆盖新状态。
+    if (shouldAcceptConfirmedCart) {
+      state.baseCart = confirmedBaseCart;
+      state.lastConfirmedOperationId = Math.max(state.lastConfirmedOperationId, snapshot.operationId);
+      lastConfirmedOperationIds.set(storeKey, state.lastConfirmedOperationId);
+      recordConfirmedProductOperation(state, storeKey, confirmedProductCode, snapshot.operationId);
+    } else if (
+      isCartMutationResult(confirmedCart)
+      && snapshot.operationType === "set"
+      && (state.lastConfirmedProductOperationIds.get(snapshot.productCode) ?? 0) <= snapshot.operationId
+    ) {
+      state.baseCart = applyCartMutationChangedItemLocally(state.baseCart, confirmedCart);
+      recordConfirmedProductOperation(state, storeKey, confirmedProductCode, snapshot.operationId);
+    } else if (isCartMutationResult(confirmedCart) && snapshot.operationType === "add" && !supersededBySet) {
+      state.baseCart = mergeCartMutationChangedItem(state.baseCart, confirmedCart);
+      recordConfirmedProductOperation(state, storeKey, confirmedProductCode, snapshot.operationId);
+    }
   }
 
   const nextCart = applyCartOptimisticOperations(state.baseCart, state.operations);

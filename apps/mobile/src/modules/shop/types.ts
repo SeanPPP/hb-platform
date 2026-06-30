@@ -43,6 +43,14 @@ export interface StoreOrderCartMutationResult {
   removed: boolean;
 }
 
+export interface StoreOrderScanLookupAddResult {
+  barcode: string;
+  matchType?: string;
+  items: StoreOrderProductItem[];
+  added: boolean;
+  cart: StoreOrderCartMutationResult | null;
+}
+
 export interface StoreOrderProductQuery {
   storeCode?: string;
   itemNumber?: string;

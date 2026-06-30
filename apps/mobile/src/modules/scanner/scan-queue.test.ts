@@ -6,6 +6,11 @@ import {
   enqueueScanJob,
   startScanJob,
 } from "./scan-queue";
+import {
+  createScanLookupCache,
+  getCachedScanLookupProduct,
+  rememberScanLookupProduct,
+} from "./scan-lookup-cache";
 
 const options = {
   duplicateWindowMs: 250,
@@ -69,6 +74,35 @@ function run() {
     canCompleteScanJob(staleStoreQueue, staleStoreQueue.active!, 2, 2),
     true,
     "当前 generation 的 active 任务完成时才允许推进队列"
+  );
+
+  const lookupCache = createScanLookupCache(500);
+  rememberScanLookupProduct(
+    lookupCache,
+    "S001",
+    "8058617603635",
+    {
+      productCode: "P-CACHED",
+      minOrderQuantity: 1,
+      stockQuantity: 12,
+      isInStock: true,
+    },
+    3_000
+  );
+  assert.equal(
+    getCachedScanLookupProduct(lookupCache, "S001", "8058617603635", 3_300)?.productCode,
+    "P-CACHED",
+    "短 TTL 内同门店同条码应命中缓存"
+  );
+  assert.equal(
+    getCachedScanLookupProduct(lookupCache, "S002", "8058617603635", 3_300),
+    null,
+    "不同门店不能复用条码命中缓存"
+  );
+  assert.equal(
+    getCachedScanLookupProduct(lookupCache, "S001", "8058617603635", 3_600),
+    null,
+    "超过 TTL 后应重新走冷扫码合并接口"
   );
 
   console.log("scan-queue.test.ts: ok");

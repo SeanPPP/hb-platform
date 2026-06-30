@@ -9,6 +9,7 @@ import type {
   StoreOrderProductQuery,
   StoreOrderProductListResult,
   StoreOrderScanLookupResult,
+  StoreOrderScanLookupAddResult,
   AddToCartPayload,
   UpdateCartQuantityPayload,
   StoreOrderCart,
@@ -314,6 +315,13 @@ function normalizeCartMutationResult(payload: ApiItem | null | undefined): Store
   };
 }
 
+function normalizeScanLookupItems(data: ApiItem | null | undefined) {
+  const items = data?.items ?? data?.Items;
+  return Array.isArray(items)
+    ? items.map((item) => transformProductItem(item as unknown as ApiItem))
+    : [];
+}
+
 export async function getStoresByUserGuid(userGuid: string): Promise<Store[]> {
   const stores = await getUserStoresApi(userGuid);
 
@@ -448,11 +456,28 @@ export async function lookupProductsByBarcode(
   const data = response.data as Partial<StoreOrderScanLookupResult> | null | undefined;
 
   return {
-    barcode: data?.barcode ?? barcode,
-    items: Array.isArray(data?.items)
-      ? data.items.map((item) => transformProductItem(item as unknown as ApiItem))
-      : Array.isArray((data as { Items?: ApiItem[] } | null | undefined)?.Items)
-        ? ((data as { Items?: ApiItem[] }).Items ?? []).map(transformProductItem)
-        : [],
+    barcode: data?.barcode ?? (data as { Barcode?: string } | null | undefined)?.Barcode ?? barcode,
+    items: normalizeScanLookupItems(data as ApiItem | null | undefined),
+  };
+}
+
+export async function scanLookupAndAddToCart(
+  barcode: string,
+  storeCode: string,
+  scanTraceId?: string
+): Promise<StoreOrderScanLookupAddResult> {
+  const response = await apiClient.post(
+    "/react/v1/store-order/cart/scan-lookup-add",
+    buildScanLookupPayload(barcode, storeCode),
+    buildScanTraceHeaders(scanTraceId)
+  );
+  const data = response.data as ApiItem | null | undefined;
+
+  return {
+    barcode: getStringValue(data?.barcode, data?.Barcode) ?? barcode,
+    matchType: getStringValue(data?.matchType, data?.MatchType),
+    items: normalizeScanLookupItems(data),
+    added: Boolean(data?.added ?? data?.Added ?? false),
+    cart: normalizeCartMutationResult((data?.cart ?? data?.Cart) as ApiItem | null | undefined),
   };
 }

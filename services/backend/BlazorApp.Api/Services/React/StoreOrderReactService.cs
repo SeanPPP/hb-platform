@@ -6,6 +6,7 @@ using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
@@ -20,6 +21,8 @@ namespace BlazorApp.Api.Services.React
         private const int HomePageWarmUpCommandTimeoutSeconds = 30;
         private const int OrderListAggregateChunkSize = 500;
         private const int ImportPriceVarianceWarehouseImportPriceBatchLimit = 500;
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> CartMutationLocks = new();
+        private static readonly AsyncLocal<HashSet<string>?> CartMutationLockScope = new();
         private readonly ISqlSugarClient _db;
         private readonly ILogger<StoreOrderReactService> _logger;
         private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _httpContextAccessor;
@@ -67,6 +70,16 @@ namespace BlazorApp.Api.Services.React
             public int TotalSku { get; set; }
         }
 
+        private sealed class StoreOrderScanLookupCoreResult
+        {
+            public string Barcode { get; init; } = string.Empty;
+            public string? MatchType { get; init; }
+            public List<StoreOrderProductDto> Items { get; init; } = new();
+            public int RawCount { get; init; }
+            public long ExactQueryMs { get; init; }
+            public long BuildMs { get; init; }
+        }
+
         private sealed class StoreOrderImportPriceVarianceSummarySqlRow
         {
             public int TotalRows { get; set; }
@@ -105,6 +118,115 @@ namespace BlazorApp.Api.Services.React
         private static int GetBarcodeLength(string? barcode)
         {
             return barcode?.Trim().Length ?? 0;
+        }
+
+        private static string GetCartMutationLockKey(string? storeCode)
+        {
+            var normalized = storeCode?.Trim();
+            return string.IsNullOrWhiteSpace(normalized)
+                ? "unknown"
+                : normalized.ToUpperInvariant();
+        }
+
+        private static bool ShouldRollbackCartMutationResult<T>(T result)
+        {
+            // ponytail: 只识别本服务的购物车 ApiResponse；失败响应不提交前面可能创建的空订单。
+            return result switch
+            {
+                ApiResponse<StoreOrderCartDto?> response => !response.Success,
+                ApiResponse<StoreOrderCartMutationResultDto?> response => !response.Success,
+                ApiResponse<bool> response => !response.Success,
+                _ => false,
+            };
+        }
+
+        private async Task<T> RunCartMutationLockedAsync<T>(
+            string? storeCode,
+            Func<Task<T>> action
+        )
+        {
+            var lockKey = GetCartMutationLockKey(storeCode);
+            var heldLocks = CartMutationLockScope.Value;
+            if (heldLocks?.Contains(lockKey) == true)
+            {
+                return await action();
+            }
+
+            var gate = CartMutationLocks.GetOrAdd(lockKey, _ => new SemaphoreSlim(1, 1));
+
+            // ponytail: 进程内同店锁，跨实例时用数据库行锁/唯一约束升级。
+            await gate.WaitAsync();
+            var previousLocks = CartMutationLockScope.Value;
+            var nextLocks = previousLocks == null
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(previousLocks, StringComparer.OrdinalIgnoreCase);
+            nextLocks.Add(lockKey);
+            CartMutationLockScope.Value = nextLocks;
+            try
+            {
+                var transactionStarted = false;
+                try
+                {
+                    await _db.Ado.BeginTranAsync();
+                    transactionStarted = true;
+                    // ponytail: 同店购物车写入统一进数据库应用锁；跨实例也按门店串行。
+                    await AcquireCartMutationDatabaseLockAsync(_db, storeCode);
+                    var result = await action();
+                    if (ShouldRollbackCartMutationResult(result))
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        transactionStarted = false;
+                        return result;
+                    }
+
+                    await _db.Ado.CommitTranAsync();
+                    transactionStarted = false;
+                    return result;
+                }
+                catch
+                {
+                    if (transactionStarted)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                    }
+
+                    throw;
+                }
+            }
+            finally
+            {
+                CartMutationLockScope.Value = previousLocks;
+                gate.Release();
+            }
+        }
+
+        private static async Task AcquireCartMutationDatabaseLockAsync(
+            ISqlSugarClient db,
+            string? storeCode
+        )
+        {
+            if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return;
+            }
+
+            var lockResult = await db.Ado.SqlQuerySingleAsync<int>(
+                """
+                DECLARE @Result INT;
+                EXEC @Result = sys.sp_getapplock
+                    @Resource = @Resource,
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = 2000;
+                SELECT @Result;
+                """,
+                new SugarParameter("@Resource", $"StoreOrderCart:{GetCartMutationLockKey(storeCode)}")
+            );
+
+            if (lockResult < 0)
+            {
+                throw new InvalidOperationException("购物车正在更新，请稍后重试");
+            }
         }
 
         public StoreOrderReactService(
@@ -1855,55 +1977,10 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                var lookupCodes = new[] { barcode, barcode.ToUpperInvariant(), barcode.ToLowerInvariant() }
-                    .Distinct(StringComparer.Ordinal)
-                    .ToList();
-                var useSqlServerCaseInsensitiveCollation =
-                    _db.CurrentConnectionConfig.DbType == DbType.SqlServer;
-
-                var exactQuerySw = Stopwatch.StartNew();
-                var allMatches = await QueryScanLookupMatchesAsync(
-                    barcode,
-                    lookupCodes,
-                    "barcode",
-                    useSqlServerCaseInsensitiveCollation
-                );
-                var matchType = allMatches.Count > 0 ? "barcode" : null;
-
-                if (allMatches.Count == 0)
-                {
-                    allMatches = await QueryScanLookupMatchesAsync(
-                        barcode,
-                        lookupCodes,
-                        "itemNumber",
-                        useSqlServerCaseInsensitiveCollation
-                    );
-                    matchType = allMatches.Count > 0 ? "fallback" : null;
-                }
-
-                if (allMatches.Count == 0)
-                {
-                    allMatches = await QueryScanLookupMatchesAsync(
-                        barcode,
-                        lookupCodes,
-                        "productCode",
-                        useSqlServerCaseInsensitiveCollation
-                    );
-                    matchType = allMatches.Count > 0 ? "fallback" : null;
-                }
-                exactQuerySw.Stop();
+                var lookupResult = await LookupScanProductsCoreAsync(barcode);
 
                 // 保持数据库字段可走索引：扫码只做精确匹配，不再对字段执行 ToLower() 兜底。
                 long fallbackQueryMs = 0;
-
-                var buildSw = Stopwatch.StartNew();
-                // ProductGrade 可能存在多行，扫码候选按商品去重，避免前端弹出重复商品。
-                var distinctMatches = allMatches
-                    .GroupBy(p => p.ProductCode, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
-                    .ToList();
-
-                buildSw.Stop();
 
                 _logger.LogInformation(
                     "[shop-scan-perf] traceId={TraceId} stage=scan.lookup.service.done storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} matchType={MatchType} rawCount={RawCount} itemCount={ItemCount} exactQueryMs={ExactQueryMs} fallbackQueryMs={FallbackQueryMs} buildMs={BuildMs} totalMs={TotalMs}",
@@ -1911,12 +1988,12 @@ namespace BlazorApp.Api.Services.React
                     request.StoreCode,
                     GetBarcodeTail(barcode),
                     GetBarcodeLength(barcode),
-                    matchType ?? "none",
-                    allMatches.Count,
-                    distinctMatches.Count,
-                    exactQuerySw.ElapsedMilliseconds,
+                    lookupResult.MatchType ?? "none",
+                    lookupResult.RawCount,
+                    lookupResult.Items.Count,
+                    lookupResult.ExactQueryMs,
                     fallbackQueryMs,
-                    buildSw.ElapsedMilliseconds,
+                    lookupResult.BuildMs,
                     totalSw.ElapsedMilliseconds
                 );
 
@@ -1926,8 +2003,8 @@ namespace BlazorApp.Api.Services.React
                     Data = new StoreOrderScanLookupResultDto
                     {
                         Barcode = barcode,
-                        MatchType = matchType,
-                        Items = distinctMatches,
+                        MatchType = lookupResult.MatchType,
+                        Items = lookupResult.Items,
                     },
                 };
             }
@@ -1951,6 +2028,189 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreOrderScanLookupAddResultDto>> ScanLookupAndAddToCartMutationAsync(
+            StoreOrderScanLookupAddRequestDto request
+        )
+        {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
+            try
+            {
+                var barcode = request.Barcode?.Trim();
+                if (string.IsNullOrWhiteSpace(barcode))
+                {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.service.invalid storeCode={StoreCode} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return new ApiResponse<StoreOrderScanLookupAddResultDto>
+                    {
+                        Success = false,
+                        Message = "Barcode is required.",
+                    };
+                }
+
+                var lookupStartedAt = Stopwatch.StartNew();
+                var lookupResult = await LookupScanProductsCoreAsync(barcode);
+                lookupStartedAt.Stop();
+
+                var response = new StoreOrderScanLookupAddResultDto
+                {
+                    Barcode = barcode,
+                    MatchType = lookupResult.MatchType,
+                    Items = lookupResult.Items,
+                    Added = false,
+                    Cart = null,
+                };
+
+                if (lookupResult.Items.Count != 1)
+                {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.service.done storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} matchType={MatchType} itemCount={ItemCount} added={Added} lookupMs={LookupMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        GetBarcodeTail(barcode),
+                        GetBarcodeLength(barcode),
+                        lookupResult.MatchType ?? "none",
+                        lookupResult.Items.Count,
+                        false,
+                        lookupStartedAt.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return ApiResponse<StoreOrderScanLookupAddResultDto>.OK(response);
+                }
+
+                var product = lookupResult.Items[0];
+                var quantity = request.Quantity.GetValueOrDefault();
+                if (quantity <= 0)
+                {
+                    quantity = product.MinOrderQuantity > 0 ? product.MinOrderQuantity : 1;
+                }
+
+                var addStartedAt = Stopwatch.StartNew();
+                var cartResult = await AddToCartMutationCoreAsync(
+                    new AddToCartRequestDto
+                    {
+                        StoreCode = request.StoreCode,
+                        ProductCode = product.ProductCode,
+                        Quantity = quantity,
+                        ImportPrice = product.ImportPrice,
+                    },
+                    product
+                );
+                addStartedAt.Stop();
+
+                if (!cartResult.Success)
+                {
+                    return new ApiResponse<StoreOrderScanLookupAddResultDto>
+                    {
+                        Success = false,
+                        Message = cartResult.Message,
+                    };
+                }
+
+                response.Added = true;
+                response.Cart = cartResult.Data;
+
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.service.done storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} matchType={MatchType} itemCount={ItemCount} added={Added} productCode={ProductCode} quantity={Quantity} lookupMs={LookupMs} addMs={AddMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(barcode),
+                    GetBarcodeLength(barcode),
+                    lookupResult.MatchType ?? "none",
+                    lookupResult.Items.Count,
+                    true,
+                    product.ProductCode,
+                    quantity,
+                    lookupStartedAt.ElapsedMilliseconds,
+                    addStartedAt.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
+
+                return ApiResponse<StoreOrderScanLookupAddResultDto>.OK(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=scan.lookup-add.service.error storeCode={StoreCode} barcodeTail={BarcodeTail} barcodeLength={BarcodeLength} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    GetBarcodeTail(request.Barcode),
+                    GetBarcodeLength(request.Barcode),
+                    totalSw.ElapsedMilliseconds
+                );
+                return new ApiResponse<StoreOrderScanLookupAddResultDto>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
+        private async Task<StoreOrderScanLookupCoreResult> LookupScanProductsCoreAsync(string barcode)
+        {
+            var lookupCodes = new[] { barcode, barcode.ToUpperInvariant(), barcode.ToLowerInvariant() }
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var useSqlServerCaseInsensitiveCollation =
+                _db.CurrentConnectionConfig.DbType == DbType.SqlServer;
+
+            var exactQuerySw = Stopwatch.StartNew();
+            var allMatches = await QueryScanLookupMatchesAsync(
+                barcode,
+                lookupCodes,
+                "barcode",
+                useSqlServerCaseInsensitiveCollation
+            );
+            var matchType = allMatches.Count > 0 ? "barcode" : null;
+
+            if (allMatches.Count == 0)
+            {
+                allMatches = await QueryScanLookupMatchesAsync(
+                    barcode,
+                    lookupCodes,
+                    "itemNumber",
+                    useSqlServerCaseInsensitiveCollation
+                );
+                matchType = allMatches.Count > 0 ? "fallback" : null;
+            }
+
+            if (allMatches.Count == 0)
+            {
+                allMatches = await QueryScanLookupMatchesAsync(
+                    barcode,
+                    lookupCodes,
+                    "productCode",
+                    useSqlServerCaseInsensitiveCollation
+                );
+                matchType = allMatches.Count > 0 ? "fallback" : null;
+            }
+            exactQuerySw.Stop();
+
+            var buildSw = Stopwatch.StartNew();
+            // ProductGrade 可能存在多行，先按商品去重，再按候选批量补等级，避免主查询被等级表放大。
+            var distinctMatches = allMatches
+                .GroupBy(p => p.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
+            await FillProductGradesAsync(distinctMatches, new List<string>());
+            buildSw.Stop();
+
+            return new StoreOrderScanLookupCoreResult
+            {
+                Barcode = barcode,
+                MatchType = matchType,
+                Items = distinctMatches,
+                RawCount = allMatches.Count,
+                ExactQueryMs = exactQuerySw.ElapsedMilliseconds,
+                BuildMs = buildSw.ElapsedMilliseconds,
+            };
+        }
+
         private async Task<List<StoreOrderProductDto>> QueryScanLookupMatchesAsync(
             string barcode,
             List<string> lookupCodes,
@@ -1963,11 +2223,8 @@ namespace BlazorApp.Api.Services.React
                 .LeftJoin<WarehouseCategory>(
                     (p, wp, wc) => p.WarehouseCategoryGUID == wc.CategoryGUID
                 )
-                .LeftJoin<ProductGrade>(
-                    (p, wp, wc, pg) => p.ProductCode == pg.ProductCode && !pg.IsDeleted
-                )
                 .Where(
-                    (p, wp, wc, pg) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
+                    (p, wp, wc) => p.IsActive && !p.IsDeleted && !wp.IsDeleted && wp.IsActive
                 );
 
             query = matchField switch
@@ -1975,34 +2232,34 @@ namespace BlazorApp.Api.Services.React
                 "barcode" => query
                     .WhereIF(
                         useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
+                        (p, wp, wc) =>
                             // 生产库字段本身已是 CI 排序规则，直接等值比较才能稳定走条码索引。
                             p.Barcode != null && p.Barcode == barcode
                     )
                     .WhereIF(
                         !useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) => p.Barcode != null && lookupCodes.Contains(p.Barcode)
+                        (p, wp, wc) => p.Barcode != null && lookupCodes.Contains(p.Barcode)
                     ),
                 "itemNumber" => query
                     .WhereIF(
                         useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
+                        (p, wp, wc) =>
                             p.ItemNumber != null && p.ItemNumber == barcode
                     )
                     .WhereIF(
                         !useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
+                        (p, wp, wc) =>
                             p.ItemNumber != null && lookupCodes.Contains(p.ItemNumber)
                     ),
                 "productCode" => query
                     .WhereIF(
                         useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
+                        (p, wp, wc) =>
                             p.ProductCode != null && p.ProductCode == barcode
                     )
                     .WhereIF(
                         !useSqlServerCaseInsensitiveCollation,
-                        (p, wp, wc, pg) =>
+                        (p, wp, wc) =>
                             p.ProductCode != null && lookupCodes.Contains(p.ProductCode)
                     ),
                 _ => throw new ArgumentOutOfRangeException(nameof(matchField), matchField, null),
@@ -2010,7 +2267,7 @@ namespace BlazorApp.Api.Services.React
 
             return await query
                 .Select(
-                    (p, wp, wc, pg) =>
+                    (p, wp, wc) =>
                         new StoreOrderProductDto
                         {
                             ProductCode = p.ProductCode ?? string.Empty,
@@ -2025,7 +2282,6 @@ namespace BlazorApp.Api.Services.React
                             StockQuantity = wp.StockQuantity ?? 0,
                             PackQty = p.MiddlePackageQuantity,
                             ImportPrice = wp.ImportPrice,
-                            Grade = pg.Grade,
                         }
                 )
                 .ToListAsync();
@@ -2260,6 +2516,8 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                return await RunCartMutationLockedAsync(request.StoreCode, async () =>
+                {
                 var now = DateTime.Now;
                 var currentUser =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
@@ -2404,6 +2662,7 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 return cartResult;
+                });
             }
             catch (Exception ex)
             {
@@ -2425,172 +2684,203 @@ namespace BlazorApp.Api.Services.React
             AddToCartRequestDto request
         )
         {
+            return await AddToCartMutationCoreAsync(request);
+        }
+
+        private async Task<ApiResponse<StoreOrderCartMutationResultDto?>> AddToCartMutationCoreAsync(
+            AddToCartRequestDto request,
+            StoreOrderProductDto? lookupProduct = null
+        )
+        {
             var totalSw = Stopwatch.StartNew();
             var traceId = GetScanTraceId();
             try
             {
-                var now = DateTime.Now;
-                var currentUser =
-                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
-
-                var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
-                    .Where(o =>
-                        o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
-
-                if (order == null)
+                return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
-                    order = new WareHouseOrder
-                    {
-                        OrderGUID = UuidHelper.GenerateUuid7(),
-                        StoreCode = request.StoreCode,
-                        OrderDate = now,
-                        FlowStatus = 0,
-                        IsDeleted = false,
-                        CreatedAt = now,
-                        UpdatedAt = now,
-                        UpdatedBy = currentUser,
-                        OEMTotalAmount = 0,
-                        ImportTotalAmount = 0,
-                        ShippingFee = 0,
-                    };
-                    await _db.Insertable(order).ExecuteCommandAsync();
-                }
-                orderSw.Stop();
+                        var now = DateTime.Now;
+                        var currentUser =
+                            _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
-                var productSw = Stopwatch.StartNew();
-                var productInfo = await _db.Queryable<Product>()
-                    .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
-                    .Where((p, wp) => p.ProductCode == request.ProductCode)
-                    .Select((p, wp) => new
-                    {
-                        wp.OEMPrice,
-                        wp.ImportPrice,
-                    })
-                    .FirstAsync();
-                productSw.Stop();
+                        var orderSw = Stopwatch.StartNew();
+                        var order = await _db.Queryable<WareHouseOrder>()
+                            .Where(o =>
+                                o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
+                            )
+                            .FirstAsync();
 
-                if (productInfo == null)
-                {
-                    _logger.LogInformation(
-                        "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
-                        traceId,
-                        request.StoreCode,
-                        request.ProductCode,
-                        request.Quantity,
-                        orderSw.ElapsedMilliseconds,
-                        productSw.ElapsedMilliseconds,
-                        totalSw.ElapsedMilliseconds
-                    );
-                    return new ApiResponse<StoreOrderCartMutationResultDto?>
-                    {
-                        Success = false,
-                        Message = "商品不存在",
-                    };
-                }
-
-                var price = productInfo.OEMPrice ?? 0;
-                var importPrice = productInfo.ImportPrice ?? 0;
-
-                var detailLookupSw = Stopwatch.StartNew();
-                var detail = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d =>
-                        d.OrderGUID == order.OrderGUID
-                        && d.ProductCode == request.ProductCode
-                        && !d.IsDeleted
-                    )
-                    .FirstAsync();
-                detailLookupSw.Stop();
-
-                var removed = false;
-                string? detailGuid = detail?.DetailGUID;
-                var detailWriteSw = Stopwatch.StartNew();
-                if (detail == null)
-                {
-                    if (request.Quantity <= 0)
-                    {
-                        // 扫码轻量接口遇到无存量的非正数加购时，不创建无效明细，只返回空变更行。
-                        removed = true;
-                    }
-                    else
-                    {
-                        detail = new WareHouseOrderDetails
+                        if (order == null)
                         {
-                            DetailGUID = UuidHelper.GenerateUuid7(),
-                            OrderGUID = order.OrderGUID,
-                            StoreCode = request.StoreCode,
-                            ProductCode = request.ProductCode,
-                            Quantity = request.Quantity,
-                            OEMPrice = price,
-                            OEMAmount = price * request.Quantity,
-                            ImportPrice = importPrice,
-                            ImportAmount = importPrice * request.Quantity,
-                            IsDeleted = false,
-                            CreatedAt = now,
-                            UpdatedAt = now,
-                            CreatedBy = currentUser,
-                            UpdatedBy = currentUser,
-                        };
-                        detailGuid = detail.DetailGUID;
-                        await _db.Insertable(detail).ExecuteCommandAsync();
-                    }
-                }
-                else
-                {
-                    detail.Quantity += request.Quantity;
-                    if (detail.Quantity <= 0)
-                    {
-                        removed = true;
-                        await SoftDeleteOrderDetailAsync(detail, currentUser, now);
-                    }
-                    else
-                    {
-                        detail.OEMAmount = detail.Quantity * detail.OEMPrice;
-                        detail.ImportAmount = detail.Quantity * detail.ImportPrice;
-                        detail.UpdatedAt = now;
-                        detail.UpdatedBy = currentUser;
-                        await _db.Updateable(detail).ExecuteCommandAsync();
-                    }
-                }
-                detailWriteSw.Stop();
+                            order = new WareHouseOrder
+                            {
+                                OrderGUID = UuidHelper.GenerateUuid7(),
+                                StoreCode = request.StoreCode,
+                                OrderDate = now,
+                                FlowStatus = 0,
+                                IsDeleted = false,
+                                CreatedAt = now,
+                                UpdatedAt = now,
+                                UpdatedBy = currentUser,
+                                OEMTotalAmount = 0,
+                                ImportTotalAmount = 0,
+                                ShippingFee = 0,
+                            };
+                            await _db.Insertable(order).ExecuteCommandAsync();
+                        }
+                        orderSw.Stop();
 
-                var totalUpdateSw = Stopwatch.StartNew();
-                await UpdateOrderTotalAsync(order.OrderGUID);
-                totalUpdateSw.Stop();
+                        var productSw = Stopwatch.StartNew();
+                        decimal price;
+                        decimal importPrice;
+                        if (
+                            lookupProduct != null
+                            && string.Equals(
+                                lookupProduct.ProductCode,
+                                request.ProductCode,
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                        {
+                            // 扫码合并接口已经查过 Product + WarehouseProduct，单命中直接复用价格。
+                            price = lookupProduct.OEMPrice ?? 0;
+                            importPrice = lookupProduct.ImportPrice ?? 0;
+                            productSw.Stop();
+                        }
+                        else
+                        {
+                            var productInfo = await _db.Queryable<Product>()
+                                .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                                .Where((p, wp) => p.ProductCode == request.ProductCode)
+                                .Select((p, wp) => new
+                                {
+                                    wp.OEMPrice,
+                                    wp.ImportPrice,
+                                })
+                                .FirstAsync();
+                            productSw.Stop();
 
-                var payloadSw = Stopwatch.StartNew();
-                var result = await BuildCartMutationResultAsync(
-                    order.OrderGUID,
-                    request.StoreCode,
-                    request.ProductCode,
-                    detailGuid,
-                    removed,
-                    traceId
-                );
-                payloadSw.Stop();
+                            if (productInfo == null)
+                            {
+                                _logger.LogInformation(
+                                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
+                                    traceId,
+                                    request.StoreCode,
+                                    request.ProductCode,
+                                    request.Quantity,
+                                    orderSw.ElapsedMilliseconds,
+                                    productSw.ElapsedMilliseconds,
+                                    totalSw.ElapsedMilliseconds
+                                );
+                                return new ApiResponse<StoreOrderCartMutationResultDto?>
+                                {
+                                    Success = false,
+                                    Message = "商品不存在",
+                                };
+                            }
 
-                _logger.LogInformation(
-                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} removed={Removed} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} productMs={ProductMs} detailLookupMs={DetailLookupMs} detailWriteMs={DetailWriteMs} recalculateMs={RecalculateMs} mutationPayloadMs={MutationPayloadMs} totalMs={TotalMs}",
-                    traceId,
-                    request.StoreCode,
-                    request.ProductCode,
-                    request.Quantity,
-                    result.Success,
-                    result.Data?.Removed ?? false,
-                    result.Data?.Summary.TotalQuantity ?? 0,
-                    result.Data?.Summary.TotalSku ?? 0,
-                    orderSw.ElapsedMilliseconds,
-                    productSw.ElapsedMilliseconds,
-                    detailLookupSw.ElapsedMilliseconds,
-                    detailWriteSw.ElapsedMilliseconds,
-                    totalUpdateSw.ElapsedMilliseconds,
-                    payloadSw.ElapsedMilliseconds,
-                    totalSw.ElapsedMilliseconds
-                );
+                            price = productInfo.OEMPrice ?? 0;
+                            importPrice = productInfo.ImportPrice ?? 0;
+                        }
 
-                return result;
+                        var detailLookupSw = Stopwatch.StartNew();
+                        var detail = await _db.Queryable<WareHouseOrderDetails>()
+                            .Where(d =>
+                                d.OrderGUID == order.OrderGUID
+                                && d.ProductCode == request.ProductCode
+                                && !d.IsDeleted
+                            )
+                            .FirstAsync();
+                        detailLookupSw.Stop();
+
+                        var removed = false;
+                        string? detailGuid = detail?.DetailGUID;
+                        var detailWriteSw = Stopwatch.StartNew();
+                        if (detail == null)
+                        {
+                            if (request.Quantity <= 0)
+                            {
+                                // 扫码轻量接口遇到无存量的非正数加购时，不创建无效明细，只返回空变更行。
+                                removed = true;
+                            }
+                            else
+                            {
+                                detail = new WareHouseOrderDetails
+                                {
+                                    DetailGUID = UuidHelper.GenerateUuid7(),
+                                    OrderGUID = order.OrderGUID,
+                                    StoreCode = request.StoreCode,
+                                    ProductCode = request.ProductCode,
+                                    Quantity = request.Quantity,
+                                    OEMPrice = price,
+                                    OEMAmount = price * request.Quantity,
+                                    ImportPrice = importPrice,
+                                    ImportAmount = importPrice * request.Quantity,
+                                    IsDeleted = false,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                    CreatedBy = currentUser,
+                                    UpdatedBy = currentUser,
+                                };
+                                detailGuid = detail.DetailGUID;
+                                await _db.Insertable(detail).ExecuteCommandAsync();
+                            }
+                        }
+                        else
+                        {
+                            detail.Quantity += request.Quantity;
+                            if (detail.Quantity <= 0)
+                            {
+                                removed = true;
+                                await SoftDeleteOrderDetailAsync(detail, currentUser, now);
+                            }
+                            else
+                            {
+                                detail.OEMAmount = detail.Quantity * detail.OEMPrice;
+                                detail.ImportAmount = detail.Quantity * detail.ImportPrice;
+                                detail.UpdatedAt = now;
+                                detail.UpdatedBy = currentUser;
+                                await _db.Updateable(detail).ExecuteCommandAsync();
+                            }
+                        }
+                        detailWriteSw.Stop();
+
+                        var totalUpdateSw = Stopwatch.StartNew();
+                        var summaryRow = await UpdateOrderTotalAsync(order.OrderGUID);
+                        totalUpdateSw.Stop();
+
+                        var payloadSw = Stopwatch.StartNew();
+                        var result = await BuildCartMutationResultAsync(
+                            order.OrderGUID,
+                            request.StoreCode,
+                            request.ProductCode,
+                            detailGuid,
+                            removed,
+                            traceId,
+                            summaryRow
+                        );
+                        payloadSw.Stop();
+
+                        _logger.LogInformation(
+                            "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} removed={Removed} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} productMs={ProductMs} detailLookupMs={DetailLookupMs} detailWriteMs={DetailWriteMs} recalculateMs={RecalculateMs} mutationPayloadMs={MutationPayloadMs} totalMs={TotalMs}",
+                            traceId,
+                            request.StoreCode,
+                            request.ProductCode,
+                            request.Quantity,
+                            result.Success,
+                            result.Data?.Removed ?? false,
+                            result.Data?.Summary.TotalQuantity ?? 0,
+                            result.Data?.Summary.TotalSku ?? 0,
+                            orderSw.ElapsedMilliseconds,
+                            productSw.ElapsedMilliseconds,
+                            detailLookupSw.ElapsedMilliseconds,
+                            detailWriteSw.ElapsedMilliseconds,
+                            totalUpdateSw.ElapsedMilliseconds,
+                            payloadSw.ElapsedMilliseconds,
+                            totalSw.ElapsedMilliseconds
+                        );
+
+                        return result;
+                });
             }
             catch (Exception ex)
             {
@@ -2618,6 +2908,8 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                return await RunCartMutationLockedAsync(request.StoreCode, async () =>
+                {
                 var now = DateTime.Now;
                 var currentUser =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
@@ -2754,6 +3046,7 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 return cartResult;
+                });
             }
             catch (Exception ex)
             {
@@ -2779,6 +3072,8 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                return await RunCartMutationLockedAsync(request.StoreCode, async () =>
+                {
                 var now = DateTime.Now;
                 var currentUser =
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
@@ -2913,7 +3208,7 @@ namespace BlazorApp.Api.Services.React
                 detailWriteSw.Stop();
 
                 var totalUpdateSw = Stopwatch.StartNew();
-                await UpdateOrderTotalAsync(order.OrderGUID);
+                var summaryRow = await UpdateOrderTotalAsync(order.OrderGUID);
                 totalUpdateSw.Stop();
 
                 var payloadSw = Stopwatch.StartNew();
@@ -2923,7 +3218,8 @@ namespace BlazorApp.Api.Services.React
                     request.ProductCode,
                     detailGuid,
                     removed,
-                    traceId
+                    traceId,
+                    summaryRow
                 );
                 payloadSw.Stop();
 
@@ -2947,6 +3243,7 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 return result;
+                });
             }
             catch (Exception ex)
             {
@@ -2974,20 +3271,25 @@ namespace BlazorApp.Api.Services.React
             string productCode,
             string? detailGuid,
             bool removed,
-            string traceId
+            string traceId,
+            StoreOrderCartMutationSummaryRow? knownSummaryRow = null
         )
         {
             var summarySw = Stopwatch.StartNew();
-            var summaryRow = await _db.Queryable<WareHouseOrderDetails>()
-                .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted)
-                .Select(d => new StoreOrderCartMutationSummaryRow
-                {
-                    TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0),
-                    TotalSku = SqlFunc.AggregateDistinctCount(d.ProductCode),
-                    TotalAmount = SqlFunc.AggregateSum(d.OEMAmount ?? 0),
-                    TotalImportAmount = SqlFunc.AggregateSum(d.ImportAmount ?? 0),
-                })
-                .FirstAsync();
+            var summaryRow = knownSummaryRow;
+            if (summaryRow == null)
+            {
+                summaryRow = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted)
+                    .Select(d => new StoreOrderCartMutationSummaryRow
+                    {
+                        TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0),
+                        TotalSku = SqlFunc.AggregateDistinctCount(d.ProductCode),
+                        TotalAmount = SqlFunc.AggregateSum(d.OEMAmount ?? 0),
+                        TotalImportAmount = SqlFunc.AggregateSum(d.ImportAmount ?? 0),
+                    })
+                    .FirstAsync();
+            }
             summarySw.Stop();
 
             StoreOrderCartItemDto? changedItem = null;
@@ -3112,9 +3414,24 @@ namespace BlazorApp.Api.Services.React
                     };
                 }
 
-                var orderGuid = detail.OrderGUID;
+                return await RunCartMutationLockedAsync(detail.StoreCode, async () =>
+                {
+                var lockedDetail = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d => d.DetailGUID == request.DetailGUID && !d.IsDeleted)
+                    .FirstAsync();
+
+                if (lockedDetail == null)
+                {
+                    return new ApiResponse<bool>
+                    {
+                        Success = false,
+                        Message = "Cart item not found",
+                    };
+                }
+
+                var orderGuid = lockedDetail.OrderGUID;
                 await SoftDeleteOrderDetailAsync(
-                    detail,
+                    lockedDetail,
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System",
                     DateTime.Now
                 );
@@ -3126,6 +3443,7 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 return new ApiResponse<bool> { Success = true, Data = true };
+                });
             }
             catch (Exception ex)
             {
@@ -3138,6 +3456,8 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                return await RunCartMutationLockedAsync(storeCode, async () =>
+                {
                 var cart = await _db.Queryable<WareHouseOrder>()
                     .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
                     .FirstAsync();
@@ -3168,6 +3488,7 @@ namespace BlazorApp.Api.Services.React
                     Data = null,
                     Message = "Cart cleared successfully",
                 };
+                });
             }
             catch (Exception ex)
             {
@@ -3184,6 +3505,8 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                return await RunCartMutationLockedAsync(request.StoreCode, async () =>
+                {
                 var order = await _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
@@ -3223,6 +3546,7 @@ namespace BlazorApp.Api.Services.React
                 await _db.Updateable(order).ExecuteCommandAsync();
 
                 return new ApiResponse<bool> { Success = true, Data = true };
+                });
             }
             catch (Exception ex)
             {
@@ -3231,20 +3555,22 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        private async Task UpdateOrderTotalAsync(string orderGuid)
+        private async Task<StoreOrderCartMutationSummaryRow?> UpdateOrderTotalAsync(string orderGuid)
         {
-            // 只需要主表汇总时直接在数据库聚合，避免加购后把整车明细拉回内存。
-            var totals = await _db.Queryable<WareHouseOrderDetails>()
+            // 同一次聚合同时产出主表金额和轻量购物车摘要，避免 mutation 响应再查一遍明细汇总。
+            var summaryRow = await _db.Queryable<WareHouseOrderDetails>()
                 .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted)
-                .Select(d => new
+                .Select(d => new StoreOrderCartMutationSummaryRow
                 {
-                    TotalOEM = SqlFunc.AggregateSum(d.OEMAmount),
-                    TotalImport = SqlFunc.AggregateSum(d.ImportAmount),
+                    TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0),
+                    TotalSku = SqlFunc.AggregateDistinctCount(d.ProductCode),
+                    TotalAmount = SqlFunc.AggregateSum(d.OEMAmount ?? 0),
+                    TotalImportAmount = SqlFunc.AggregateSum(d.ImportAmount ?? 0),
                 })
                 .FirstAsync();
 
-            var totalOEM = totals?.TotalOEM ?? 0;
-            var totalImport = totals?.TotalImport ?? 0;
+            var totalOEM = summaryRow?.TotalAmount ?? 0;
+            var totalImport = summaryRow?.TotalImportAmount ?? 0;
 
             await _db.Updateable<WareHouseOrder>()
                 .SetColumns(o => new WareHouseOrder
@@ -3255,6 +3581,8 @@ namespace BlazorApp.Api.Services.React
                 })
                 .Where(o => o.OrderGUID == orderGuid)
                 .ExecuteCommandAsync();
+
+            return summaryRow;
         }
 
         public async Task<ApiResponse<List<StoreOrderDynamicDataDto>>> GetProductsDynamicDataAsync(

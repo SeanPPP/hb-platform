@@ -13,11 +13,32 @@ interface HidBarcodeKeyBufferOptions {
   clearTimeoutFn?: typeof clearTimeout;
 }
 
-const DUPLICATE_SUPPRESS_MS = 2000;
+const DUPLICATE_SUPPRESS_MS = 100;
 const END_KEYS = new Set(["Enter", "NumpadEnter", "Tab"]);
 
 export function normalizeHidBarcode(rawValue: string) {
   return rawValue.replace(/[\r\n\t]/g, "").trim();
+}
+
+export function extractNewHidBarcodeSegment(rawValue: string, lastSubmittedRawValue?: string | null) {
+  const barcode = normalizeHidBarcode(rawValue);
+  const submittedPrefix = normalizeHidBarcode(lastSubmittedRawValue ?? "");
+  if (
+    !barcode ||
+    !submittedPrefix ||
+    barcode.length <= submittedPrefix.length ||
+    !barcode.startsWith(submittedPrefix)
+  ) {
+    return barcode;
+  }
+
+  const tail = normalizeHidBarcode(barcode.slice(submittedPrefix.length));
+  if (tail.length < submittedPrefix.length) {
+    return barcode;
+  }
+
+  // 隐藏 TextInput 在部分 TC26 上会把下一次扫码追加到旧值后面；只提交新增尾段。
+  return tail;
 }
 
 export function isHidNativeTextInputFallbackEvent(event: HidBarcodeKeyEvent) {
