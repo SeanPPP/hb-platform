@@ -42,7 +42,8 @@ public sealed record LocalCardPaymentAttempt(
 
 public sealed record LinklyPaymentAttemptContext(
     Guid AttemptGuid,
-    Func<string, string?, DateTimeOffset, CancellationToken, Task> BindSessionAsync);
+    Func<string, string?, DateTimeOffset, CancellationToken, Task> BindSessionAsync,
+    string? TxnRef = null);
 
 public interface ILinklyPaymentAttemptContextAccessor
 {

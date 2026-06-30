@@ -885,6 +885,26 @@ public sealed class CardTerminalSetupServiceTests
             throw new NotSupportedException();
         }
 
+        public Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(
+            decimal amount,
+            Hbpos.Client.Wpf.Models.PosSessionState session,
+            CardTerminalSettings settings,
+            string txnRef,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
+            decimal amount,
+            Hbpos.Client.Wpf.Models.PosSessionState session,
+            CardTerminalSettings settings,
+            string txnRef,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
         public Task<PaymentAuthorizationResult> RefundAsync(
             decimal amount,
             Hbpos.Client.Wpf.Models.PosSessionState session,

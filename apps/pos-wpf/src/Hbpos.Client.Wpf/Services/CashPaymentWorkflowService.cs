@@ -468,7 +468,8 @@ public sealed class CashPaymentWorkflowService(
                         sessionId,
                         txnRef,
                         updatedAt,
-                        bindCancellationToken)));
+                        bindCancellationToken),
+                attempt.TxnRef));
         using var squareAttemptScope = squareAttempt is null || squarePaymentAttemptContextAccessor is null
             ? null
             : squarePaymentAttemptContextAccessor.Begin(new SquarePaymentAttemptContext(squareAttempt.AttemptGuid, squareAttempt.IdempotencyKey));
@@ -643,8 +644,9 @@ public sealed class CashPaymentWorkflowService(
         }
 
         var settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
         if (settings.Processor != CardProcessorKind.Linkly ||
-            CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode) != LinklyConnectionMode.CloudBackendAsync)
+            (mode != LinklyConnectionMode.CloudBackendAsync && (mode != LinklyConnectionMode.LocalIp || isRefund)))
         {
             return null;
         }
@@ -663,10 +665,11 @@ public sealed class CashPaymentWorkflowService(
         var attempt = new LocalCardPaymentAttempt(
             Guid.NewGuid(),
             null,
-            null,
+            // LocalIp 没有后端 session，必须在发起 socket 请求前持久化 TxnRef，供重启 GetLast 精确恢复。
+            mode == LinklyConnectionMode.LocalIp ? LinklyTerminalClient.BuildTxnRef(session) : null,
             settings.Processor.ToString(),
             settings.Environment.ToString(),
-            CardTerminalSettings.FormatLinklyConnectionMode(settings.LinklyConnectionMode),
+            CardTerminalSettings.FormatLinklyConnectionMode(mode),
             isRefund ? "R" : "P",
             amount,
             LocalCardPaymentAttemptStatus.Pending,
@@ -803,7 +806,10 @@ public sealed class CashPaymentWorkflowService(
         var firstTransaction = authorization.CardTransactions?.FirstOrDefault();
         var status = statusOverride ?? (authorization.Approved
             ? LocalCardPaymentAttemptStatus.Approved
-            : MapCardAttemptFailureStatus(authorization.Message, firstTransaction?.ResponseText));
+            : MapCardAttemptFailureStatus(
+                authorization.Message,
+                firstTransaction?.ResponseText,
+                firstTransaction?.ResponseCode ?? authorization.ResponseCode));
         await cardPaymentAttemptRepository!.UpdateOutcomeAsync(
             attemptGuid,
             status,
@@ -816,8 +822,24 @@ public sealed class CashPaymentWorkflowService(
 
     private static LocalCardPaymentAttemptStatus MapCardAttemptFailureStatus(
         string? message,
-        string? responseText)
+        string? responseText,
+        string? responseCode)
     {
+        if (IsTimeoutResponseCode(responseCode))
+        {
+            return LocalCardPaymentAttemptStatus.TimedOut;
+        }
+
+        if (IsCancelResponseCode(responseCode))
+        {
+            return LocalCardPaymentAttemptStatus.Cancelled;
+        }
+
+        if (IsDeclineResponseCode(responseCode))
+        {
+            return LocalCardPaymentAttemptStatus.Declined;
+        }
+
         var text = $"{message} {responseText}".ToUpperInvariant();
         if (text.Contains("TIMEOUT", StringComparison.Ordinal))
         {
@@ -835,6 +857,40 @@ public sealed class CashPaymentWorkflowService(
         }
 
         return LocalCardPaymentAttemptStatus.Failed;
+    }
+
+    private static bool IsDeclineResponseCode(string? responseCode)
+    {
+        return !string.IsNullOrWhiteSpace(responseCode) &&
+            !LinklyApprovalResponseCodes.IsApproved(responseCode) &&
+            !IsCancelResponseCode(responseCode) &&
+            !IsTimeoutResponseCode(responseCode);
+    }
+
+    private static bool IsCancelResponseCode(string? responseCode)
+    {
+        return string.Equals(responseCode, "C0", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CA", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CANCEL", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CANCELED", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTimeoutResponseCode(string? responseCode)
+    {
+        return string.Equals(responseCode, "TO", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "TIMEOUT", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static LinklyConnectionMode ResolveAttemptConnectionMode(
+        LocalCardPaymentAttempt attempt,
+        LinklyConnectionMode fallback)
+    {
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(attempt.ConnectionMode, fallback);
+        // LocalIp 没有 backend session；若 attempt 已绑定 SessionId，说明实际已 fallback 到后端异步链路。
+        return mode == LinklyConnectionMode.LocalIp && !string.IsNullOrWhiteSpace(attempt.SessionId)
+            ? LinklyConnectionMode.CloudBackendAsync
+            : mode;
     }
 
     private static LocalSquarePaymentAttemptStatus MapSquareAuthorizationFailureStatus(
@@ -951,8 +1007,11 @@ public sealed class CashPaymentWorkflowService(
         }
 
         var settings = await cardTerminalSettingsProvider.GetSettingsAsync(cancellationToken);
+        var mode = ResolveAttemptConnectionMode(
+            attempt,
+            CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode));
         if (settings.Processor != CardProcessorKind.Linkly ||
-            CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode) != LinklyConnectionMode.CloudBackendAsync ||
+            mode != LinklyConnectionMode.CloudBackendAsync ||
             !Enum.TryParse<CardTerminalEnvironment>(attempt.Environment, ignoreCase: true, out var environment))
         {
             return;

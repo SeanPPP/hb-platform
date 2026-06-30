@@ -405,6 +405,59 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Local_ip_card_tender_creates_recoverable_attempt_before_terminal_request_and_reuses_txn_ref()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-397", "Local Recoverable Tea", "930397", 10m));
+        var orders = new RecordingOrderRepository();
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var linklyAttemptContextAccessor = new LinklyPaymentAttemptContextAccessor();
+        var terminal = new LocalReferenceCardTerminalClient(
+            linklyAttemptContextAccessor,
+            () =>
+            {
+                var attempt = Assert.Single(attempts.Attempts);
+                Assert.Equal(LocalCardPaymentAttemptStatus.Pending, attempt.Status);
+                Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), attempt.ConnectionMode);
+                Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
+                Assert.Contains("\"cardAmount\":10", attempt.OrderDraftJson, StringComparison.OrdinalIgnoreCase);
+            });
+        var backend = new RecordingLinklyBackendTerminalClient();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()),
+            linklyPaymentAttemptContextAccessor: linklyAttemptContextAccessor,
+            linklyBackendTerminalClient: backend);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tenderResult = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cancellationToken: CancellationToken.None,
+            cartSnapshot: cart.CreateSnapshot());
+        var completion = await workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [tenderResult.Tender!],
+            cashTenderedAmount: 0m);
+
+        var attemptAfterCompletion = Assert.Single(attempts.Attempts);
+        Assert.True(tenderResult.Succeeded);
+        Assert.Equal(attemptAfterCompletion.TxnRef, terminal.SeenTxnRef);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attemptAfterCompletion.Status);
+        Assert.Null(attemptAfterCompletion.AcknowledgedAt);
+        Assert.Null(backend.AcknowledgedSessionId);
+        Assert.Equal($"ANZ:{attemptAfterCompletion.TxnRef}", completion.Order.Payments.Single().Reference);
+    }
+
+    [Fact]
     public async Task Square_card_tender_creates_dedicated_attempt_and_marks_order_completed_after_save()
     {
         var cart = new PosCartService();
@@ -1195,6 +1248,21 @@ public sealed class CashPaymentWorkflowServiceTests
             LinklyConnectionMode.CloudBackendAsync);
     }
 
+    private static CardTerminalSettings CreateLocalLinklySettings()
+    {
+        return new CardTerminalSettings(
+            CardProcessorKind.Linkly,
+            CardTerminalEnvironment.Sandbox,
+            "127.0.0.1",
+            2011,
+            null,
+            null,
+            null,
+            CardTerminalSettings.GetSquareApiBaseUrl(CardTerminalEnvironment.Sandbox),
+            TimeSpan.FromSeconds(90),
+            LinklyConnectionMode.LocalIp);
+    }
+
     private static CardTerminalSettings CreateSquareSettings()
     {
         return new CardTerminalSettings(
@@ -1662,6 +1730,63 @@ public sealed class CashPaymentWorkflowServiceTests
                 cancellationToken);
             afterBind();
             return result;
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class LocalReferenceCardTerminalClient(
+        ILinklyPaymentAttemptContextAccessor accessor,
+        Action beforeResult) : ICardTerminalClient
+    {
+        public string? SeenTxnRef { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            beforeResult();
+            var context = accessor.Current;
+            Assert.NotNull(context);
+            Assert.False(string.IsNullOrWhiteSpace(context!.TxnRef));
+            SeenTxnRef = context.TxnRef;
+            return Task.FromResult(new PaymentAuthorizationResult(
+                true,
+                $"ANZ:{SeenTxnRef}",
+                "APPROVED",
+                amount,
+                [
+                    new CardTransactionDto(
+                        "ANZ",
+                        SeenTxnRef,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "00",
+                        "APPROVED",
+                        null,
+                        DateTimeOffset.UtcNow,
+                        amount,
+                        null)
+                ],
+                "ANZ",
+                "Sandbox",
+                LinklyConnectionMode.LocalIp.ToString(),
+                "P",
+                null,
+                SeenTxnRef,
+                "00",
+                "APPROVED"));
         }
 
         public Task<PaymentAuthorizationResult> RefundAsync(

@@ -56,7 +56,8 @@ public sealed class CardPaymentRecoveryService(
     CashCheckoutService checkout,
     ILocalOrderRepository orderRepository,
     ISyncQueueRepository syncQueueRepository,
-    ILocalizationService? localization = null) : ICardPaymentRecoveryService
+    ILocalizationService? localization = null,
+    ILinklyTerminalClient? linklyTerminalClient = null) : ICardPaymentRecoveryService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -66,8 +67,9 @@ public sealed class CardPaymentRecoveryService(
         CancellationToken cancellationToken = default)
     {
         var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
         if (settings.Processor != CardProcessorKind.Linkly ||
-            CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode) != LinklyConnectionMode.CloudBackendAsync)
+            (mode != LinklyConnectionMode.CloudBackendAsync && mode != LinklyConnectionMode.LocalIp))
         {
             return CardPaymentRecoveryResult.None;
         }
@@ -86,6 +88,7 @@ public sealed class CardPaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
+        var attemptMode = ResolveAttemptConnectionMode(attempt, mode);
         if (attempt.Status == LocalCardPaymentAttemptStatus.RequiresReview)
         {
             ConsoleLog.Write(
@@ -100,10 +103,22 @@ public sealed class CardPaymentRecoveryService(
 
         if (attempt.Status == LocalCardPaymentAttemptStatus.OrderCompleted &&
             attempt.AcknowledgedAt is null &&
-            !string.IsNullOrWhiteSpace(attempt.SessionId))
+            !string.IsNullOrWhiteSpace(attempt.SessionId) &&
+            attemptMode == LinklyConnectionMode.CloudBackendAsync)
         {
             await RetryCompletedAttemptAcknowledgeAsync(settings, attempt, cancellationToken);
             LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.OrderCompleted, "order-completed-ack-retry");
+            return CardPaymentRecoveryResult.None;
+        }
+
+        if (attemptMode == LinklyConnectionMode.LocalIp)
+        {
+            return await RecoverLatestLocalIpAsync(cart, session, settings, attempt, cancellationToken);
+        }
+
+        if (attemptMode != LinklyConnectionMode.CloudBackendAsync)
+        {
+            LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.None, "unsupported-attempt-connection-mode");
             return CardPaymentRecoveryResult.None;
         }
 
@@ -251,6 +266,113 @@ public sealed class CardPaymentRecoveryService(
             DialogDetails: BuildDialogDetails(attempt, status));
     }
 
+    private async Task<CardPaymentRecoveryResult> RecoverLatestLocalIpAsync(
+        PosCartService cart,
+        PosSessionState currentSession,
+        CardTerminalSettings settings,
+        LocalCardPaymentAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        var txnRef = NormalizeOptional(attempt.TxnRef);
+        if (txnRef is null || linklyTerminalClient is null)
+        {
+            var reason = txnRef is null ? "local-missing-txn-ref" : "local-client-unavailable";
+            LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, reason);
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
+                DialogDetails: BuildDialogDetails(attempt));
+        }
+
+        var draft = DeserializeDraft(attempt);
+        await attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken);
+        LogRecoveryMarkedRecovering(settings, attempt);
+
+        PaymentAuthorizationResult authorization;
+        try
+        {
+            // LocalIp 断电恢复只依赖 EFT-Client 的 GetLast，不存在后端 session acknowledge。
+            authorization = await linklyTerminalClient.RecoverLastTransactionAsync(
+                attempt.Amount,
+                draft.Session,
+                settings,
+                txnRef,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover local-ip get-last failed attemptGuid={attempt.AttemptGuid} txnRef={LogValue(txnRef)} error={ex.GetType().Name}");
+            LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, "local-get-last-failed", ex.GetType().Name);
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
+                DialogDetails: BuildDialogDetails(attempt));
+        }
+
+        if ((authorization.Approved || HasLocalFinalResult(authorization)) &&
+            !LocalAuthorizationMatchesAttempt(attempt, authorization))
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover local-ip txn-ref mismatch attemptGuid={attempt.AttemptGuid} expectedTxnRef={LogValue(attempt.TxnRef)} actualTxnRef={LogValue(ResolveAuthorizationTxnRef(authorization))}");
+            LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, "local-txn-ref-mismatch");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
+                DialogDetails: BuildDialogDetails(attempt, authorization));
+        }
+
+        if ((authorization.Approved || HasLocalFinalResult(authorization)) && !cart.IsEmpty)
+        {
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"recover local-ip deferred current-cart-not-empty attemptGuid={attempt.AttemptGuid} txnRef={LogValue(txnRef)}");
+            LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, "current-cart-not-empty");
+            await attemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken);
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.currentCartNotEmpty", "The previous card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order."),
+                DialogDetails: BuildDialogDetails(attempt, authorization));
+        }
+
+        if (authorization.Approved)
+        {
+            var result = await CompleteApprovedLocalAttemptAsync(cart, currentSession, attempt, draft, authorization, cancellationToken);
+            LogRecoveryResult(settings, attempt, null, result.Outcome, "local-approved-order-completed");
+            return result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") };
+        }
+
+        if (HasLocalFinalResult(authorization))
+        {
+            var transaction = authorization.CardTransactions?.FirstOrDefault();
+            var responseCode = transaction?.ResponseCode ?? authorization.ResponseCode;
+            var responseText = transaction?.ResponseText ?? authorization.ResponseText ?? authorization.Message;
+            cart.RestoreSnapshot(draft.CartSnapshot);
+            await attemptRepository.UpdateOutcomeAsync(
+                attempt.AttemptGuid,
+                MapLocalFailureStatus(authorization),
+                responseCode,
+                responseText,
+                authorization.Reference ?? attempt.PaymentReference,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+            var reason = string.IsNullOrWhiteSpace(responseText) ? T("cardRecovery.linkly.failedReasonFallback", "Not approved") : responseText;
+            LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.DraftRestored, "local-declined-or-failed");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.DraftRestored,
+                Format("cardRecovery.linkly.failed", "The previous card payment failed: {0}. The order has been restored. Select a payment method again.", reason),
+                DialogDetails: BuildDialogDetails(attempt, authorization));
+        }
+
+        LogRecoveryResult(settings, attempt, null, CardPaymentRecoveryOutcome.Unknown, "local-result-unknown");
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.Unknown,
+            T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
+            DialogDetails: BuildDialogDetails(attempt, authorization));
+    }
+
     public async Task<CardPaymentRecoveryResult> RecoverActiveSessionAsync(
         PosCartService cart,
         PosSessionState session,
@@ -258,7 +380,7 @@ public sealed class CardPaymentRecoveryService(
     {
         var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
         if (settings.Processor != CardProcessorKind.Linkly ||
-            CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode) != LinklyConnectionMode.CloudBackendAsync)
+            !CanRecoverBackendActiveSession(settings))
         {
             return CardPaymentRecoveryResult.None;
         }
@@ -408,6 +530,64 @@ public sealed class CardPaymentRecoveryService(
             BuildDialogDetails(attempt, status));
     }
 
+    private async Task<CardPaymentRecoveryResult> CompleteApprovedLocalAttemptAsync(
+        PosCartService cart,
+        PosSessionState currentSession,
+        LocalCardPaymentAttempt attempt,
+        CardPaymentOrderDraft draft,
+        PaymentAuthorizationResult authorization,
+        CancellationToken cancellationToken)
+    {
+        cart.RestoreSnapshot(draft.CartSnapshot);
+        var tenderAmount = draft.TxnType.Equals("R", StringComparison.OrdinalIgnoreCase)
+            ? -Math.Abs(draft.CardAmount)
+            : Math.Abs(draft.CardAmount);
+        var cardTransactions = BuildLocalCardTransactions(attempt, authorization, tenderAmount);
+        var firstTransaction = cardTransactions.FirstOrDefault();
+        var cardTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            tenderAmount,
+            BuildLocalPaymentReference(attempt, authorization),
+            CardTransactions: cardTransactions,
+            IdempotencyKey: $"CARD_ATTEMPT:{attempt.AttemptGuid:N}");
+        var tenders = draft.CurrentTenders.Concat([cardTender]).ToList();
+        var cashTenderedAmount = tenders
+            .Where(tender => tender.Method == PaymentMethodKind.Cash)
+            .Sum(tender => tender.Amount);
+        var checkoutResult = checkout.CreatePaymentOrder(cart, draft.Session, tenders, cashTenderedAmount);
+        var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
+        var existingOrder = await orderRepository.GetOrderAsync(draft.OrderGuid, cancellationToken);
+        if (existingOrder is null)
+        {
+            await orderRepository.SavePendingOrderAsync(order, cancellationToken);
+        }
+        else
+        {
+            order = existingOrder;
+        }
+
+        await attemptRepository.UpdateOutcomeAsync(
+            attempt.AttemptGuid,
+            LocalCardPaymentAttemptStatus.Approved,
+            firstTransaction?.ResponseCode ?? authorization.ResponseCode,
+            firstTransaction?.ResponseText ?? authorization.ResponseText,
+            cardTender.Reference,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        await attemptRepository.MarkOrderCompletedAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, cancellationToken);
+        cart.Clear();
+
+        var pendingSyncCount = await syncQueueRepository.CountPendingAsync(cancellationToken);
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            string.Empty,
+            order,
+            tenders.Sum(tender => tender.Amount),
+            checkoutResult.ChangeAmount,
+            currentSession with { PendingSyncCount = pendingSyncCount },
+            BuildDialogDetails(attempt, authorization));
+    }
+
     private static CardPaymentRecoveryDialogDetails BuildDialogDetails(
         LocalCardPaymentAttempt attempt,
         LinklyCloudBackendSessionResponse? status = null)
@@ -418,6 +598,20 @@ public sealed class CardPaymentRecoveryService(
             status?.ResponseCode,
             status?.ResponseText,
             attempt.Amount,
+            DateTimeOffset.Now);
+    }
+
+    private static CardPaymentRecoveryDialogDetails BuildDialogDetails(
+        LocalCardPaymentAttempt attempt,
+        PaymentAuthorizationResult authorization)
+    {
+        var transaction = authorization.CardTransactions?.FirstOrDefault();
+        return new CardPaymentRecoveryDialogDetails(
+            NormalizeOptional(authorization.SessionId) ?? NormalizeOptional(attempt.SessionId),
+            ResolveAuthorizationTxnRef(authorization) ?? NormalizeOptional(attempt.TxnRef),
+            transaction?.ResponseCode ?? authorization.ResponseCode,
+            transaction?.ResponseText ?? authorization.ResponseText,
+            authorization.AuthorizedAmount ?? attempt.Amount,
             DateTimeOffset.Now);
     }
 
@@ -435,6 +629,46 @@ public sealed class CardPaymentRecoveryService(
             status.ResponseText,
             null,
             DateTimeOffset.Now);
+    }
+
+    private static string BuildLocalPaymentReference(
+        LocalCardPaymentAttempt attempt,
+        PaymentAuthorizationResult authorization)
+    {
+        return NormalizeOptional(authorization.Reference) ??
+            $"ANZ:{ResolveAuthorizationTxnRef(authorization) ?? NormalizeOptional(attempt.TxnRef) ?? attempt.AttemptGuid.ToString("N")}";
+    }
+
+    private static IReadOnlyList<CardTransactionDto> BuildLocalCardTransactions(
+        LocalCardPaymentAttempt attempt,
+        PaymentAuthorizationResult authorization,
+        decimal amount)
+    {
+        if (authorization.CardTransactions is { Count: > 0 } transactions)
+        {
+            return transactions;
+        }
+
+        var txnRef = ResolveAuthorizationTxnRef(authorization) ??
+            NormalizeOptional(attempt.TxnRef) ??
+            attempt.AttemptGuid.ToString("N");
+        return
+        [
+            new CardTransactionDto(
+                "ANZ",
+                txnRef,
+                null,
+                null,
+                null,
+                null,
+                null,
+                authorization.ResponseCode,
+                authorization.ResponseText ?? authorization.Message,
+                null,
+                DateTimeOffset.UtcNow,
+                Math.Abs(amount),
+                null)
+        ];
     }
 
     private async Task RetryCompletedAttemptAcknowledgeAsync(
@@ -661,6 +895,134 @@ public sealed class CardPaymentRecoveryService(
         }
 
         return LocalCardPaymentAttemptStatus.Failed;
+    }
+
+    private static LinklyConnectionMode ResolveAttemptConnectionMode(
+        LocalCardPaymentAttempt attempt,
+        LinklyConnectionMode fallback)
+    {
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(attempt.ConnectionMode, fallback);
+        // 本地 LocalIp attempt 不会产生 backend session；若已有 SessionId，说明实际交易已进入 CloudBackendAsync。
+        return mode == LinklyConnectionMode.LocalIp && !string.IsNullOrWhiteSpace(attempt.SessionId)
+            ? LinklyConnectionMode.CloudBackendAsync
+            : mode;
+    }
+
+    private static bool HasLocalFinalResult(PaymentAuthorizationResult authorization)
+    {
+        var transaction = authorization.CardTransactions?.FirstOrDefault();
+        return !authorization.ResultUnknown &&
+            (!string.IsNullOrWhiteSpace(authorization.Reference) ||
+                !string.IsNullOrWhiteSpace(authorization.ResponseCode) ||
+                !string.IsNullOrWhiteSpace(authorization.ResponseText) ||
+                !string.IsNullOrWhiteSpace(transaction?.TxnRef) ||
+                !string.IsNullOrWhiteSpace(transaction?.ResponseCode) ||
+                !string.IsNullOrWhiteSpace(transaction?.ResponseText));
+    }
+
+    private static bool LocalAuthorizationMatchesAttempt(
+        LocalCardPaymentAttempt attempt,
+        PaymentAuthorizationResult authorization)
+    {
+        var expectedTxnRef = NormalizeLinklyReference(attempt.TxnRef);
+        var actualTxnRef = ResolveAuthorizationTxnRef(authorization);
+        return expectedTxnRef is not null &&
+            actualTxnRef is not null &&
+            TextEquals(expectedTxnRef, actualTxnRef);
+    }
+
+    private static LocalCardPaymentAttemptStatus MapLocalFailureStatus(PaymentAuthorizationResult authorization)
+    {
+        var transaction = authorization.CardTransactions?.FirstOrDefault();
+        var responseCode = NormalizeOptional(transaction?.ResponseCode) ?? NormalizeOptional(authorization.ResponseCode);
+        if (IsTimeoutResponseCode(responseCode))
+        {
+            return LocalCardPaymentAttemptStatus.TimedOut;
+        }
+
+        if (IsCancelResponseCode(responseCode))
+        {
+            return LocalCardPaymentAttemptStatus.Cancelled;
+        }
+
+        if (IsDeclineResponseCode(responseCode))
+        {
+            return LocalCardPaymentAttemptStatus.Declined;
+        }
+
+        var text = $"{authorization.Message} {authorization.ResponseText} {transaction?.ResponseText}".ToUpperInvariant();
+        if (text.Contains("TIMEOUT", StringComparison.Ordinal))
+        {
+            return LocalCardPaymentAttemptStatus.TimedOut;
+        }
+
+        if (text.Contains("CANCEL", StringComparison.Ordinal))
+        {
+            return LocalCardPaymentAttemptStatus.Cancelled;
+        }
+
+        if (text.Contains("DECLIN", StringComparison.Ordinal))
+        {
+            return LocalCardPaymentAttemptStatus.Declined;
+        }
+
+        return LocalCardPaymentAttemptStatus.Failed;
+    }
+
+    private static bool CanRecoverBackendActiveSession(CardTerminalSettings settings)
+    {
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
+        if (mode == LinklyConnectionMode.CloudBackendAsync)
+        {
+            return true;
+        }
+
+        return settings.LinklyConnectionModePriority is { Count: > 0 } priority &&
+            CardTerminalSettings.NormalizeLinklyConnectionModePriority(priority, mode)
+                .Contains(LinklyConnectionMode.CloudBackendAsync);
+    }
+
+    private static bool IsDeclineResponseCode(string? responseCode)
+    {
+        return !string.IsNullOrWhiteSpace(responseCode) &&
+            !LinklyApprovalResponseCodes.IsApproved(responseCode) &&
+            !IsCancelResponseCode(responseCode) &&
+            !IsTimeoutResponseCode(responseCode);
+    }
+
+    private static bool IsCancelResponseCode(string? responseCode)
+    {
+        return string.Equals(responseCode, "C0", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CA", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CANCEL", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "CANCELED", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTimeoutResponseCode(string? responseCode)
+    {
+        return string.Equals(responseCode, "TO", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(responseCode, "TIMEOUT", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveAuthorizationTxnRef(PaymentAuthorizationResult authorization)
+    {
+        return NormalizeLinklyReference(authorization.TxnRef) ??
+            NormalizeLinklyReference(authorization.CardTransactions?.FirstOrDefault()?.TxnRef) ??
+            NormalizeLinklyReference(authorization.Reference);
+    }
+
+    private static string? NormalizeLinklyReference(string? value)
+    {
+        var normalized = NormalizeOptional(value);
+        if (normalized is null)
+        {
+            return null;
+        }
+
+        return normalized.StartsWith("ANZ:", StringComparison.OrdinalIgnoreCase)
+            ? NormalizeOptional(normalized[4..])
+            : normalized;
     }
 
     private static string BuildPaymentReference(

@@ -523,6 +523,7 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
     private readonly ILocalizationService? _localization;
     private readonly ISquarePaymentAttemptContextAccessor? _squarePaymentAttemptContextAccessor;
     private readonly ILocalSquarePaymentAttemptRepository? _squarePaymentAttemptRepository;
+    private readonly ILinklyPaymentAttemptContextAccessor? _linklyPaymentAttemptContextAccessor;
     private readonly ConcurrentDictionary<SquareRefundAttemptKey, string> _squareRefundIdempotencyKeys = new();
 
     public ConfiguredCardTerminalClient(
@@ -532,7 +533,8 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         ISquareAccessTokenProvider? squareAccessTokenProvider = null,
         ILocalizationService? localization = null,
         ISquarePaymentAttemptContextAccessor? squarePaymentAttemptContextAccessor = null,
-        ILocalSquarePaymentAttemptRepository? squarePaymentAttemptRepository = null)
+        ILocalSquarePaymentAttemptRepository? squarePaymentAttemptRepository = null,
+        ILinklyPaymentAttemptContextAccessor? linklyPaymentAttemptContextAccessor = null)
     {
         _settingsProvider = settingsProvider;
         _httpClient = httpClient;
@@ -540,6 +542,7 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         _localization = localization;
         _squarePaymentAttemptContextAccessor = squarePaymentAttemptContextAccessor;
         _squarePaymentAttemptRepository = squarePaymentAttemptRepository;
+        _linklyPaymentAttemptContextAccessor = linklyPaymentAttemptContextAccessor;
     }
 
     public async Task<PaymentAuthorizationResult> AuthorizeAsync(
@@ -557,10 +560,27 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient
         {
             CardProcessorKind.Linkly => _linklyTerminalClient is null
                 ? new PaymentAuthorizationResult(false, null, T("payment.card.linklyUnavailable", "ANZ Linkly terminal adapter is unavailable."))
-                : await _linklyTerminalClient.PurchaseAsync(amount, session, settings, cancellationToken),
+                : await AuthorizeLinklyAsync(amount, session, settings, cancellationToken),
             CardProcessorKind.Square => await AuthorizeSquareAsync(settings, amount, session, cancellationToken),
             _ => new PaymentAuthorizationResult(false, null, T("payment.card.status.notConfigured", "Card terminal is not configured."))
         };
+    }
+
+    private Task<PaymentAuthorizationResult> AuthorizeLinklyAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
+        var txnRef = mode == LinklyConnectionMode.LocalIp
+            ? _linklyPaymentAttemptContextAccessor?.Current?.TxnRef
+            : null;
+
+        // LocalIp 断电恢复必须用付款前已经落库的 TxnRef，否则重启 GetLast 会查错交易。
+        return !string.IsNullOrWhiteSpace(txnRef)
+            ? _linklyTerminalClient!.PurchaseWithReferenceAsync(amount, session, settings, txnRef, cancellationToken)
+            : _linklyTerminalClient!.PurchaseAsync(amount, session, settings, cancellationToken);
     }
 
     public async Task<PaymentAuthorizationResult> RefundAsync(
