@@ -35,14 +35,15 @@ async function main() {
   if (loadStateFailure) failures.push(loadStateFailure)
 
   const remoteQueryFailure = await runTest('详情页应将分页筛选排序作为远程 query 发送', () => {
-	    assert(
-	      detailSource.includes('pageNumber: detailPage') &&
-	        detailSource.includes('pageSize: detailPageSize') &&
-	        detailSource.includes('keyword: detailItemFilter.trim() || undefined') &&
-	        detailSource.includes("statFilter: detailStatFilter === 'all' ? undefined : detailStatFilter") &&
-	        detailSource.includes('sortBy: detailSortField || undefined') &&
-	        detailSource.includes("sortDescending: detailSortField ? detailSortOrder === 'descend' : undefined"),
-	      '详情页尚未把分页筛选排序拼到远程明细查询里',
+    assert(
+      detailSource.includes('pageNumber: detailPage') &&
+        detailSource.includes('pageSize: detailPageSize') &&
+        detailSource.includes('keyword: detailItemFilter.trim() || undefined') &&
+        detailSource.includes("statFilter: detailStatFilter === 'all' ? undefined : detailStatFilter") &&
+        detailSource.includes('columnFilters: cleanedDetailColumnFilters') &&
+        detailSource.includes('sortBy: detailSortField || undefined') &&
+        detailSource.includes("sortDescending: detailSortField ? detailSortOrder === 'descend' : undefined"),
+      '详情页尚未把分页筛选排序拼到远程明细查询里',
     )
   })
   if (remoteQueryFailure) failures.push(remoteQueryFailure)
@@ -60,6 +61,38 @@ async function main() {
     )
   })
   if (defaultLocationSortFailure) failures.push(defaultLocationSortFailure)
+
+  const detailColumnFilterFailure = await runTest('详情页主明细关键列应支持列头过滤和服务端排序字段', () => {
+    const requiredSortFields = [
+      "'itemNumber'",
+      "'productName'",
+      "'barcode'",
+      "'locationCode'",
+      "'quantity'",
+      "'allocQuantity'",
+      "'importPrice'",
+      "'isActive'",
+    ]
+    assert(
+      detailSource.includes('useState<StoreOrderDetailColumnFilters>({})') &&
+        detailSource.includes('cleanStoreOrderDetailColumnFilters(detailColumnFilters)') &&
+        requiredSortFields.every((field) => detailSource.includes(field)) &&
+        detailSource.includes("detailTextFilterProps('itemNumber'") &&
+        detailSource.includes("detailTextFilterProps('productName'") &&
+        detailSource.includes("detailTextFilterProps('barcode'") &&
+        detailSource.includes("detailTextFilterProps('locationCode'") &&
+        detailSource.includes("detailNumberFilterProps({ min: 'quantityMin', max: 'quantityMax' })") &&
+        detailSource.includes("detailNumberFilterProps({ min: 'allocQuantityMin', max: 'allocQuantityMax' })") &&
+        detailSource.includes("detailNumberFilterProps({ min: 'importPriceMin', max: 'importPriceMax' })") &&
+        detailSource.includes('detailStatusFilterProps()') &&
+        detailSource.includes('isStoreOrderDetailSortField(field)') &&
+        detailSource.includes('applyDetailColumnFilters') &&
+        detailSource.includes('setSelectedLineKeys([])') &&
+        detailSource.includes('setDetailPage(1)'),
+      '详情页主明细关键列尚未完整接入列头过滤、排序白名单和结果集切换保护',
+    )
+  })
+  if (detailColumnFilterFailure) failures.push(detailColumnFilterFailure)
 
   const defaultPageSizeFailure = await runTest('详情页主明细默认每页 200 并只提供指定分页选项', () => {
     assert(
@@ -92,14 +125,15 @@ async function main() {
   })
   if (currentPageDataFailure) failures.push(currentPageDataFailure)
 
-	  const clearSelectionFailure = await runTest('翻页筛选排序时应清空勾选行', () => {
-	    assert(
-	      detailSource.includes('setSelectedLineKeys([])') &&
-	        detailSource.includes('setDetailPage(nextPage)') &&
-	        detailSource.includes("extra.action === 'paginate'") &&
-	        detailSource.includes('setDetailItemFilter(event.target.value)') &&
-	        detailSource.includes('setDetailSortField(field)'),
-	      '翻页筛选排序时尚未统一清空 selectedLineKeys',
+  const clearSelectionFailure = await runTest('翻页筛选排序时应清空勾选行', () => {
+    assert(
+      detailSource.includes('setSelectedLineKeys([])') &&
+        detailSource.includes('setDetailPage(nextPage)') &&
+        detailSource.includes("extra.action === 'paginate'") &&
+        detailSource.includes("extra.action === 'filter'") &&
+        detailSource.includes('setDetailItemFilter(event.target.value)') &&
+        detailSource.includes('setDetailSortField(field)'),
+      '翻页筛选排序时尚未统一清空 selectedLineKeys',
     )
   })
   if (clearSelectionFailure) failures.push(clearSelectionFailure)
@@ -112,7 +146,7 @@ async function main() {
       '详情页尚未接入明细请求取消逻辑',
     )
   })
-	  if (cancelFailure) failures.push(cancelFailure)
+  if (cancelFailure) failures.push(cancelFailure)
 
   const containerCodesFailure = await runTest('货柜选品应使用跨页商品编码去重', () => {
     assert(
@@ -125,7 +159,7 @@ async function main() {
       '货柜选品仍在使用当前页 items 做已选商品去重',
     )
   })
-	  if (containerCodesFailure) failures.push(containerCodesFailure)
+  if (containerCodesFailure) failures.push(containerCodesFailure)
 
   if (failures.length > 0) {
     throw new Error(`共有 ${failures.length} 个测试失败\n- ${failures.join('\n- ')}`)

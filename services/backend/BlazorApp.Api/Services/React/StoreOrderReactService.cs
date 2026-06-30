@@ -5548,6 +5548,121 @@ FinalRows AS (
                 );
             }
 
+            var itemNumberFilter = normalizedQuery.ItemNumber;
+            if (!string.IsNullOrWhiteSpace(itemNumberFilter))
+            {
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => p.ItemNumber != null && p.ItemNumber.Contains(itemNumberFilter)
+                );
+            }
+
+            var productNameFilter = normalizedQuery.ProductName;
+            if (!string.IsNullOrWhiteSpace(productNameFilter))
+            {
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => p.ProductName != null && p.ProductName.Contains(productNameFilter)
+                );
+            }
+
+            var barcodeFilter = normalizedQuery.Barcode;
+            if (!string.IsNullOrWhiteSpace(barcodeFilter))
+            {
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => p.Barcode != null && p.Barcode.Contains(barcodeFilter)
+                );
+            }
+
+            var locationCodeFilter = normalizedQuery.LocationCode;
+            if (!string.IsNullOrWhiteSpace(locationCodeFilter))
+            {
+                // 货位表不在明细主联表里；用 SQL 子查询过滤，避免宽泛货位条件生成过大的 IN 列表。
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) =>
+                        d.ProductCode != null
+                        && SqlFunc.Subqueryable<ProductLocation>()
+                            .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
+                            .Where(
+                                (pl, l) =>
+                                    pl.ProductCode == d.ProductCode
+                                    && !pl.IsDeleted
+                                    && !l.IsDeleted
+                                    && l.LocationType == 1
+                                    && l.LocationCode != null
+                                    && l.LocationCode.Contains(locationCodeFilter)
+                            )
+                            .Any()
+                );
+            }
+
+            if (normalizedQuery.QuantityMin.HasValue)
+            {
+                var min = normalizedQuery.QuantityMin.Value;
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => d.Quantity != null && d.Quantity >= min
+                );
+            }
+
+            if (normalizedQuery.QuantityMax.HasValue)
+            {
+                var max = normalizedQuery.QuantityMax.Value;
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => d.Quantity != null && d.Quantity <= max
+                );
+            }
+
+            if (normalizedQuery.AllocQuantityMin.HasValue)
+            {
+                var min = normalizedQuery.AllocQuantityMin.Value;
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => d.AllocQuantity != null && d.AllocQuantity >= min
+                );
+            }
+
+            if (normalizedQuery.AllocQuantityMax.HasValue)
+            {
+                var max = normalizedQuery.AllocQuantityMax.Value;
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) => d.AllocQuantity != null && d.AllocQuantity <= max
+                );
+            }
+
+            if (normalizedQuery.ImportPriceMin.HasValue)
+            {
+                var min = normalizedQuery.ImportPriceMin.Value;
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) =>
+                        (d.ImportPrice != null && d.ImportPrice >= min)
+                        || (
+                            d.ImportPrice == null
+                            && wp.ImportPrice != null
+                            && wp.ImportPrice >= min
+                        )
+                );
+            }
+
+            if (normalizedQuery.ImportPriceMax.HasValue)
+            {
+                var max = normalizedQuery.ImportPriceMax.Value;
+                detailQuery = detailQuery.Where(
+                    (d, p, wp, dp) =>
+                        (d.ImportPrice != null && d.ImportPrice <= max)
+                        || (
+                            d.ImportPrice == null
+                            && wp.ImportPrice != null
+                            && wp.ImportPrice <= max
+                        )
+                );
+            }
+
+            if (normalizedQuery.IsActive.HasValue)
+            {
+                var isActive = normalizedQuery.IsActive.Value;
+                // SqlSugar 在 SQLite 下布尔等值翻译不稳定；这里沿用现有状态筛选的布尔表达式口径。
+                detailQuery = isActive
+                    ? detailQuery.Where((d, p, wp, dp) => wp.IsActive)
+                    : detailQuery.Where((d, p, wp, dp) => !wp.IsActive);
+            }
+
             var statFilter = normalizedQuery.StatFilter?.Trim().ToLowerInvariant();
             if (statFilter == "orderednotshipped")
             {
@@ -5579,6 +5694,7 @@ FinalRows AS (
             {
                 detailQuery = sortBy switch
                 {
+                    "itemnumber" => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
                     "productcode" => detailQuery.OrderBy((d, p, wp, dp) => d.ProductCode, orderType),
                     "barcode" => detailQuery.OrderBy((d, p, wp, dp) => p.Barcode, orderType),
                     "productname" => detailQuery.OrderBy((d, p, wp, dp) => p.ProductName, orderType),
@@ -5868,11 +5984,27 @@ FinalRows AS (
             {
                 PageNumber = pageNumber,
                 PageSize = pageSize,
-                Keyword = query?.Keyword,
-                StatFilter = query?.StatFilter,
-                SortBy = query?.SortBy,
+                Keyword = NormalizeStoreOrderDetailTextFilter(query?.Keyword),
+                StatFilter = NormalizeStoreOrderDetailTextFilter(query?.StatFilter),
+                ItemNumber = NormalizeStoreOrderDetailTextFilter(query?.ItemNumber),
+                ProductName = NormalizeStoreOrderDetailTextFilter(query?.ProductName),
+                Barcode = NormalizeStoreOrderDetailTextFilter(query?.Barcode),
+                LocationCode = NormalizeStoreOrderDetailTextFilter(query?.LocationCode),
+                QuantityMin = query?.QuantityMin,
+                QuantityMax = query?.QuantityMax,
+                AllocQuantityMin = query?.AllocQuantityMin,
+                AllocQuantityMax = query?.AllocQuantityMax,
+                ImportPriceMin = query?.ImportPriceMin,
+                ImportPriceMax = query?.ImportPriceMax,
+                IsActive = query?.IsActive,
+                SortBy = NormalizeStoreOrderDetailTextFilter(query?.SortBy),
                 SortDescending = query?.SortDescending ?? false,
             };
+        }
+
+        private static string? NormalizeStoreOrderDetailTextFilter(string? value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
 
         private async Task FillLocationCodesAsync(List<StoreOrderCartItemDto> items)

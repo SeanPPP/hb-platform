@@ -76,6 +76,7 @@ import type { StoreDto } from '../../../types/store'
 import type { ChinaSupplierItem } from '../../../types/chinaSupplier'
 import type {
   StoreOrderDetail,
+  StoreOrderDetailColumnFilters,
   StoreOrderDetailLine,
   StoreOrderDetailQuery,
   StoreOrderDetailStatFilter,
@@ -161,6 +162,33 @@ type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
 type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner'
 type BatchEditType = 'allocQuantity' | 'importPrice' | 'status' | 'copyOrderQuantityToAllocQuantity'
+type StoreOrderDetailTextFilterKey = 'itemNumber' | 'productName' | 'barcode' | 'locationCode'
+type StoreOrderDetailNumberFilterKey =
+  | 'quantityMin'
+  | 'quantityMax'
+  | 'allocQuantityMin'
+  | 'allocQuantityMax'
+  | 'importPriceMin'
+  | 'importPriceMax'
+type StoreOrderDetailNumberRange = {
+  min: StoreOrderDetailNumberFilterKey
+  max: StoreOrderDetailNumberFilterKey
+}
+
+const STORE_ORDER_DETAIL_SORT_FIELDS: StoreOrderDetailSortField[] = [
+  'itemNumber',
+  'productName',
+  'barcode',
+  'locationCode',
+  'quantity',
+  'allocQuantity',
+  'importPrice',
+  'isActive',
+]
+
+function isStoreOrderDetailSortField(field: unknown): field is StoreOrderDetailSortField {
+  return typeof field === 'string' && STORE_ORDER_DETAIL_SORT_FIELDS.includes(field as StoreOrderDetailSortField)
+}
 
 function resolvePasteTargetField(writeTarget: StoreOrderPasteWriteTarget): StoreOrderPasteTargetField {
   return writeTarget === 'allocQuantityByInner' ? 'allocQuantity' : writeTarget
@@ -304,6 +332,44 @@ function cleanProductPickerColumnFilters(
   return Object.keys(next).length ? next : undefined
 }
 
+function cleanStoreOrderDetailColumnFilters(
+  filters?: StoreOrderDetailColumnFilters,
+): StoreOrderDetailColumnFilters | undefined {
+  if (!filters) {
+    return undefined
+  }
+
+  const next: StoreOrderDetailColumnFilters = {}
+  const assignText = (key: StoreOrderDetailTextFilterKey) => {
+    const value = filters[key]?.trim()
+    if (value) {
+      next[key] = value
+    }
+  }
+  const assignNumber = (key: StoreOrderDetailNumberFilterKey) => {
+    const value = filters[key]
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      next[key] = value
+    }
+  }
+
+  assignText('itemNumber')
+  assignText('productName')
+  assignText('barcode')
+  assignText('locationCode')
+  assignNumber('quantityMin')
+  assignNumber('quantityMax')
+  assignNumber('allocQuantityMin')
+  assignNumber('allocQuantityMax')
+  assignNumber('importPriceMin')
+  assignNumber('importPriceMax')
+  if (typeof filters.isActive === 'boolean') {
+    next.isActive = filters.isActive
+  }
+
+  return Object.keys(next).length ? next : undefined
+}
+
 interface ProductPickerTextFilterDropdownProps {
   value?: string
   placeholder: string
@@ -398,6 +464,51 @@ function ProductPickerNumberRangeFilterDropdown({
       </Space.Compact>
       <Space>
         <Button size="small" type="primary" onClick={() => onApply({ min: minDraft, max: maxDraft }, confirm)}>{applyLabel}</Button>
+        <Button size="small" onClick={() => onReset(confirm)}>{resetLabel}</Button>
+      </Space>
+    </div>
+  )
+}
+
+interface StoreOrderDetailStatusFilterDropdownProps {
+  value?: boolean
+  activeLabel: string
+  inactiveLabel: string
+  applyLabel: string
+  resetLabel: string
+  confirm: FilterDropdownProps['confirm']
+  onApply: (value: boolean | undefined, confirm: FilterDropdownProps['confirm']) => void
+  onReset: (confirm: FilterDropdownProps['confirm']) => void
+}
+
+function StoreOrderDetailStatusFilterDropdown({
+  value,
+  activeLabel,
+  inactiveLabel,
+  applyLabel,
+  resetLabel,
+  confirm,
+  onApply,
+  onReset,
+}: StoreOrderDetailStatusFilterDropdownProps) {
+  const [draft, setDraft] = useState<boolean | undefined>(value)
+
+  useEffect(() => {
+    setDraft(value)
+  }, [value])
+
+  return (
+    <div className="store-order-list-column-filter" onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Radio.Group
+        value={draft}
+        options={[
+          { label: activeLabel, value: true },
+          { label: inactiveLabel, value: false },
+        ]}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <Space>
+        <Button size="small" type="primary" onClick={() => onApply(draft, confirm)}>{applyLabel}</Button>
         <Button size="small" onClick={() => onReset(confirm)}>{resetLabel}</Button>
       </Space>
     </div>
@@ -1157,6 +1268,7 @@ export default function StoreOrderDetailPage() {
   const [detailPage, setDetailPage] = useState(1)
   const [detailPageSize, setDetailPageSize] = useState(STORE_ORDER_DETAIL_DEFAULT_PAGE_SIZE)
   const [detailStatFilter, setDetailStatFilter] = useState<StoreOrderDetailStatFilter>('all')
+  const [detailColumnFilters, setDetailColumnFilters] = useState<StoreOrderDetailColumnFilters>({})
   const [detailSortField, setDetailSortField] = useState<DetailSortField>('locationCode')
   const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>('ascend')
   const [headerForm, setHeaderForm] = useState<{
@@ -1193,6 +1305,11 @@ export default function StoreOrderDetailPage() {
 
   useDynamicTabTitle(tabTitle)
 
+  const cleanedDetailColumnFilters = useMemo(
+    () => cleanStoreOrderDetailColumnFilters(detailColumnFilters),
+    [detailColumnFilters],
+  )
+
   // 明细表只请求当前页；翻页、筛选、排序都会带着 pageSize 重新向服务端取数。
   const detailQuery = useMemo<StoreOrderDetailQuery>(
     () => ({
@@ -1200,10 +1317,11 @@ export default function StoreOrderDetailPage() {
       pageSize: detailPageSize,
       keyword: detailItemFilter.trim() || undefined,
       statFilter: detailStatFilter === 'all' ? undefined : detailStatFilter,
+      columnFilters: cleanedDetailColumnFilters,
       sortBy: detailSortField || undefined,
       sortDescending: detailSortField ? detailSortOrder === 'descend' : undefined,
     }),
-    [detailItemFilter, detailPage, detailPageSize, detailSortField, detailSortOrder, detailStatFilter],
+    [cleanedDetailColumnFilters, detailItemFilter, detailPage, detailPageSize, detailSortField, detailSortOrder, detailStatFilter],
   )
   const detailQueryKey = useMemo(() => JSON.stringify(detailQuery), [detailQuery])
   const storesQueryKey = useMemo(
@@ -2459,6 +2577,114 @@ export default function StoreOrderDetailPage() {
     }
   }
 
+  const applyDetailColumnFilters = (
+    nextFilters: StoreOrderDetailColumnFilters,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    const cleanedFilters = cleanStoreOrderDetailColumnFilters(nextFilters)
+    // 列头过滤切换服务端结果集，必须清空旧勾选，避免批量动作误用旧行。
+    setSelectedLineKeys([])
+    setDetailPage(1)
+    setDetailColumnFilters(cleanedFilters ?? {})
+    confirm()
+  }
+
+  const applyDetailColumnFilterPatch = (
+    patch: StoreOrderDetailColumnFilters,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    applyDetailColumnFilters({ ...detailColumnFilters, ...patch }, confirm)
+  }
+
+  const clearDetailColumnFilter = (
+    keys: Array<keyof StoreOrderDetailColumnFilters>,
+    confirm: FilterDropdownProps['confirm'],
+  ) => {
+    const nextFilters = { ...detailColumnFilters }
+    keys.forEach((key) => {
+      delete nextFilters[key]
+    })
+    applyDetailColumnFilters(nextFilters, confirm)
+  }
+
+  const makeDetailTextFilterDropdown = (
+    key: StoreOrderDetailTextFilterKey,
+    placeholder: string,
+  ) => ({ confirm }: FilterDropdownProps) => (
+    <ProductPickerTextFilterDropdown
+      value={detailColumnFilters[key]}
+      placeholder={placeholder}
+      applyLabel={t('containers.actions.applyColumnFilter', '应用')}
+      resetLabel={t('containers.actions.resetColumnFilter', '重置')}
+      confirm={confirm}
+      onApply={(value, nextConfirm) =>
+        applyDetailColumnFilterPatch({ [key]: value } as StoreOrderDetailColumnFilters, nextConfirm)
+      }
+      onReset={(nextConfirm) => clearDetailColumnFilter([key], nextConfirm)}
+    />
+  )
+
+  const makeDetailNumberRangeFilterDropdown = (
+    range: StoreOrderDetailNumberRange,
+  ) => ({ confirm }: FilterDropdownProps) => (
+    <ProductPickerNumberRangeFilterDropdown
+      minValue={detailColumnFilters[range.min]}
+      maxValue={detailColumnFilters[range.max]}
+      minPlaceholder={t('containers.placeholders.minValue', '最小值')}
+      maxPlaceholder={t('containers.placeholders.maxValue', '最大值')}
+      applyLabel={t('containers.actions.applyColumnFilter', '应用')}
+      resetLabel={t('containers.actions.resetColumnFilter', '重置')}
+      confirm={confirm}
+      onApply={(value, nextConfirm) =>
+        applyDetailColumnFilterPatch(
+          {
+            [range.min]: value.min,
+            [range.max]: value.max,
+          } as StoreOrderDetailColumnFilters,
+          nextConfirm,
+        )
+      }
+      onReset={(nextConfirm) => clearDetailColumnFilter([range.min, range.max], nextConfirm)}
+    />
+  )
+
+  const makeDetailStatusFilterDropdown = ({ confirm }: FilterDropdownProps) => (
+    <StoreOrderDetailStatusFilterDropdown
+      value={detailColumnFilters.isActive}
+      activeLabel={t('common.activeUpper')}
+      inactiveLabel={t('common.inactiveUpper')}
+      applyLabel={t('containers.actions.applyColumnFilter', '应用')}
+      resetLabel={t('containers.actions.resetColumnFilter', '重置')}
+      confirm={confirm}
+      onApply={(value, nextConfirm) => applyDetailColumnFilterPatch({ isActive: value }, nextConfirm)}
+      onReset={(nextConfirm) => clearDetailColumnFilter(['isActive'], nextConfirm)}
+    />
+  )
+
+  const detailFilterIcon = (active?: boolean) => (
+    <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
+  )
+  const detailColumnSortOrder = (field: StoreOrderDetailSortField): SortOrder =>
+    detailSortField === field ? detailSortOrder : null
+  const hasDetailNumberRangeFilter = (range: StoreOrderDetailNumberRange) => (
+    typeof detailColumnFilters[range.min] === 'number' || typeof detailColumnFilters[range.max] === 'number'
+  )
+  const detailTextFilterProps = (key: StoreOrderDetailTextFilterKey, placeholder: string) => ({
+    filterDropdown: makeDetailTextFilterDropdown(key, placeholder),
+    filterIcon: detailFilterIcon,
+    filtered: Boolean(detailColumnFilters[key]?.trim()),
+  })
+  const detailNumberFilterProps = (range: StoreOrderDetailNumberRange) => ({
+    filterDropdown: makeDetailNumberRangeFilterDropdown(range),
+    filterIcon: detailFilterIcon,
+    filtered: hasDetailNumberRangeFilter(range),
+  })
+  const detailStatusFilterProps = () => ({
+    filterDropdown: makeDetailStatusFilterDropdown,
+    filterIcon: detailFilterIcon,
+    filtered: typeof detailColumnFilters.isActive === 'boolean',
+  })
+
   const renderZeroOrEmptyCell = (value: string | number | undefined | null) => {
     if (value === undefined || value === null || value === '') {
       return renderDangerValue('--')
@@ -2526,7 +2752,8 @@ export default function StoreOrderDetailPage() {
       width: 78,
       fixed: isDesktop ? 'left' : undefined,
       sorter: true,
-      sortOrder: detailSortField === 'itemNumber' ? detailSortOrder : null,
+      sortOrder: detailColumnSortOrder('itemNumber'),
+      ...detailTextFilterProps('itemNumber', t('storeOrders.detail.filterItemNumber', '过滤货号')),
       render: (value: string | undefined) =>
         value ? (
           <Space size={4} wrap={false} className="store-order-nowrap">
@@ -2549,6 +2776,9 @@ export default function StoreOrderDetailPage() {
       title: t('column.productName'),
       dataIndex: 'productName',
       width: 132,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('productName'),
+      ...detailTextFilterProps('productName', t('storeOrders.detail.filterProductName', '过滤商品名称')),
       render: (value: string | undefined) =>
         value ? renderStoreOrderTwoLineText(value) : '--',
     },
@@ -2556,6 +2786,9 @@ export default function StoreOrderDetailPage() {
       title: t('column.barcode'),
       dataIndex: 'barcode',
       width: 104,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('barcode'),
+      ...detailTextFilterProps('barcode', t('storeOrders.detail.filterBarcode', '过滤条码')),
       render: (value: string | undefined) => (
         <BarcodePreview value={value} className="store-order-barcode-cell" textNoWrap showCopy={false} />
       ),
@@ -2571,19 +2804,26 @@ export default function StoreOrderDetailPage() {
       dataIndex: 'locationCode',
       width: 82,
       sorter: true,
-      sortOrder: detailSortField === 'locationCode' ? detailSortOrder : null,
+      sortOrder: detailColumnSortOrder('locationCode'),
+      ...detailTextFilterProps('locationCode', t('storeOrders.detail.filterLocation', '过滤货位')),
       render: (value: string | undefined) => <span className="store-order-nowrap">{renderZeroOrEmptyCell(value)}</span>,
     },
     {
       title: t('column.orderQuantity'),
       dataIndex: 'quantity',
       width: 58,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('quantity'),
+      ...detailNumberFilterProps({ min: 'quantityMin', max: 'quantityMax' }),
       render: (_, record) => renderStoreOrderDetailNumericCell(renderQuantityText(record)),
     },
     {
       title: t('column.allocQuantity'),
       dataIndex: 'allocQuantity',
       width: 70,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('allocQuantity'),
+      ...detailNumberFilterProps({ min: 'allocQuantityMin', max: 'allocQuantityMax' }),
       render: (value: number | undefined, record) => (
         <InputNumber
           ref={(node) => registerDetailInput(record.detailGUID, 'allocQuantity', node)}
@@ -2610,6 +2850,9 @@ export default function StoreOrderDetailPage() {
       title: t('column.importPrice'),
       dataIndex: 'importPrice',
       width: 70,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('importPrice'),
+      ...detailNumberFilterProps({ min: 'importPriceMin', max: 'importPriceMax' }),
       render: (value: number | undefined, record) => (
         <InputNumber
           ref={(node) => registerDetailInput(record.detailGUID, 'importPrice', node)}
@@ -2696,6 +2939,9 @@ export default function StoreOrderDetailPage() {
       title: t('column.status'),
       dataIndex: 'isActive',
       width: 50,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('isActive'),
+      ...detailStatusFilterProps(),
       render: (value: boolean) => <Tag color={value ? 'success' : 'default'}>{value ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag>,
     },
     {
@@ -3218,7 +3464,7 @@ export default function StoreOrderDetailPage() {
                   },
                 }}
                 onChange={(_, __, sorter, extra) => {
-                  if (extra.action === 'paginate') {
+                  if (extra.action === 'paginate' || extra.action === 'filter') {
                     return
                   }
 
@@ -3226,7 +3472,7 @@ export default function StoreOrderDetailPage() {
                   const field = nextSorter?.field
                   setSelectedLineKeys([])
                   setDetailPage(1)
-                  if ((field === 'itemNumber' || field === 'locationCode') && nextSorter.order) {
+                  if (isStoreOrderDetailSortField(field) && nextSorter.order) {
                     setDetailSortField(field)
                     setDetailSortOrder(nextSorter.order)
                     return

@@ -338,24 +338,39 @@ try {
     )
   }) as typeof fetch
 
-	  const result = await getStoreOrderDetail(
-	    'order-1',
-	    {
-	      pageNumber: 2,
-	      pageSize: 20,
-	      keyword: 'ABC-123',
-	      statFilter: 'orderedNotShipped',
-	      sortBy: 'itemNumber',
-	      sortDescending: true,
-	    },
-	    controller.signal,
-	  )
+  const result = await getStoreOrderDetail(
+    'order-1',
+    {
+      pageNumber: 2,
+      pageSize: 20,
+      keyword: 'ABC-123',
+      statFilter: 'orderedNotShipped',
+      sortBy: 'importPrice',
+      sortDescending: true,
+      columnFilters: {
+        itemNumber: 'HB043',
+        productName: 'Money',
+        barcode: '9528',
+        locationCode: 'A-01',
+        quantityMin: 1,
+        quantityMax: 48,
+        allocQuantityMin: 0,
+        allocQuantityMax: 12,
+        importPriceMin: 1.5,
+        importPriceMax: 2.5,
+        isActive: false,
+      },
+    },
+    controller.signal,
+  )
 
-	  assertEqual(
-	    capturedUrl,
-	    '/api/react/v1/store-order/detail/order-1?pageNumber=2&pageSize=20&keyword=ABC-123&statFilter=orderedNotShipped&sortBy=itemNumber&sortDescending=true',
-	    '订货明细接口应通过 query 传递远程分页筛选排序参数',
-	  )
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/store-order/detail/order-1?pageNumber=2&pageSize=20&keyword=ABC-123&statFilter=orderedNotShipped&sortBy=importPrice&sortDescending=true&itemNumber=HB043&productName=Money&barcode=9528&locationCode=A-01&quantityMin=1&quantityMax=48&allocQuantityMin=0&allocQuantityMax=12&importPriceMin=1.5&importPriceMax=2.5&isActive=false',
+    '订货明细接口应通过平铺 query 传递远程分页筛选排序参数',
+  )
+  assertEqual(capturedUrl.includes('columnFilters'), false, '订货明细列头过滤不应把嵌套对象写入 URL')
+  assertEqual(capturedUrl.includes('[object Object]'), false, '订货明细列头过滤不应被序列化为 [object Object]')
   assertEqual(capturedMethod, 'GET', '订货明细接口应继续使用 GET 请求')
   assertEqual(capturedSignal, controller.signal, '订货明细接口应透传取消信号')
   assertDeepEqual(

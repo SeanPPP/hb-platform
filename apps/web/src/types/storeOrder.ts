@@ -347,13 +347,36 @@ export interface StoreOrderSyncJobResult {
 
 export type StoreOrderDetailStatFilter = 'all' | 'orderedNotShipped' | 'shippedWithoutOrder'
 
-export type StoreOrderDetailSortField = 'itemNumber' | 'locationCode'
+export type StoreOrderDetailSortField =
+  | 'itemNumber'
+  | 'productName'
+  | 'barcode'
+  | 'locationCode'
+  | 'quantity'
+  | 'allocQuantity'
+  | 'importPrice'
+  | 'isActive'
+
+export interface StoreOrderDetailColumnFilters {
+  itemNumber?: string
+  productName?: string
+  barcode?: string
+  locationCode?: string
+  quantityMin?: number
+  quantityMax?: number
+  allocQuantityMin?: number
+  allocQuantityMax?: number
+  importPriceMin?: number
+  importPriceMax?: number
+  isActive?: boolean
+}
 
 export interface StoreOrderDetailQuery {
   pageNumber: number
   pageSize: number
   keyword?: string
   statFilter?: StoreOrderDetailStatFilter
+  columnFilters?: StoreOrderDetailColumnFilters
   sortBy?: StoreOrderDetailSortField
   sortDescending?: boolean
 }

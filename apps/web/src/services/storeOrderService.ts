@@ -352,6 +352,16 @@ function normalizeStoreOrderSyncPayload(payload?: SyncMissingStoreOrdersPayload)
   return storeCodes.length ? { storeCodes } : {}
 }
 
+function buildStoreOrderDetailQueryParams(query: StoreOrderDetailQuery) {
+  const { columnFilters, ...params } = query
+
+  return {
+    ...params,
+    // 明细列头筛选走 GET；这里主动展平成一层 query，避免全局 request 把对象转成 [object Object]。
+    ...(columnFilters ?? {}),
+  }
+}
+
 function normalizeStoreOrderHqIncrementalSyncPayload(payload?: StoreOrderHqSyncPayload) {
   const basePayload = normalizeStoreOrderSyncPayload(payload)
   return {
@@ -624,7 +634,7 @@ export async function getStoreOrderDetail(
     query ? `${API_BASE}/detail/${orderGuid}` : `${API_BASE}/detail/${orderGuid}/full`,
     {
       method: 'GET',
-      params: query ? { ...query } : undefined,
+      params: query ? buildStoreOrderDetailQueryParams(query) : undefined,
       signal,
     },
   )

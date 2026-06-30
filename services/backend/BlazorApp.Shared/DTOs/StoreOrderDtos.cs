@@ -297,6 +297,17 @@ namespace BlazorApp.Shared.DTOs
     public int PageSize { get; set; } = DefaultPageSize;
     public string? Keyword { get; set; }
     public string? StatFilter { get; set; }
+    public string? ItemNumber { get; set; }
+    public string? ProductName { get; set; }
+    public string? Barcode { get; set; }
+    public string? LocationCode { get; set; }
+    public decimal? QuantityMin { get; set; }
+    public decimal? QuantityMax { get; set; }
+    public decimal? AllocQuantityMin { get; set; }
+    public decimal? AllocQuantityMax { get; set; }
+    public decimal? ImportPriceMin { get; set; }
+    public decimal? ImportPriceMax { get; set; }
+    public bool? IsActive { get; set; }
     public string? SortBy { get; set; }
     public bool SortDescending { get; set; }
   }

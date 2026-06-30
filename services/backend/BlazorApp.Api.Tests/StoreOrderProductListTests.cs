@@ -1864,6 +1864,224 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderDetailAsync_FiltersDetailColumnsBeforePaging()
+    {
+        await SeedStoreOrderAsync("ORDER-DETAIL-FILTER");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-FILTER",
+            "P-FIRST-NONMATCH",
+            "AA-FIRST",
+            quantity: 12m,
+            allocQuantity: 3m,
+            productName: "Different Product",
+            barcode: "BAR-MATCH-9528",
+            importPrice: 2.25m
+        );
+        await SeedLocationAsync("P-FIRST-NONMATCH", "L-FIRST-NONMATCH", "A-01-01");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-FILTER",
+            "P-MATCH",
+            "ZZ-HB043-MATCH",
+            quantity: 12m,
+            allocQuantity: 3m,
+            productName: "Money Tin Match",
+            barcode: "BAR-MATCH-9528",
+            importPrice: 2.25m
+        );
+        await SeedLocationAsync("P-MATCH", "L-MATCH", "A-01-01");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-FILTER",
+            "P-NAME-MISS",
+            "ZZ-HB043-NAME",
+            quantity: 12m,
+            allocQuantity: 3m,
+            productName: "Different Product",
+            barcode: "BAR-MATCH-9528",
+            importPrice: 2.25m
+        );
+        await SeedLocationAsync("P-NAME-MISS", "L-NAME-MISS", "A-01-01");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-FILTER",
+            "P-STATUS-MISS",
+            "ZZ-HB043-STATUS",
+            quantity: 12m,
+            allocQuantity: 3m,
+            warehouseIsActive: false,
+            productName: "Money Tin Match",
+            barcode: "BAR-MATCH-9528",
+            importPrice: 2.25m
+        );
+        await SeedLocationAsync("P-STATUS-MISS", "L-STATUS-MISS", "A-01-01");
+
+        var result = await CreateService().GetOrderDetailAsync(
+            "ORDER-DETAIL-FILTER",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                ItemNumber = "HB043",
+                ProductName = "Money",
+                Barcode = "9528",
+                LocationCode = "A-01",
+                QuantityMin = 10m,
+                QuantityMax = 15m,
+                AllocQuantityMin = 2m,
+                AllocQuantityMax = 4m,
+                ImportPriceMin = 2m,
+                ImportPriceMax = 3m,
+                IsActive = true,
+            }
+        );
+
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.ItemsTotal);
+        Assert.Equal("P-MATCH", Assert.Single(result.Data.Items).ProductCode);
+    }
+
+    [Theory]
+    [InlineData("itemNumber")]
+    [InlineData("productName")]
+    [InlineData("barcode")]
+    [InlineData("locationCode")]
+    [InlineData("quantityMin")]
+    [InlineData("quantityMax")]
+    [InlineData("allocQuantityMin")]
+    [InlineData("allocQuantityMax")]
+    [InlineData("importPriceMin")]
+    [InlineData("importPriceMax")]
+    [InlineData("isActive")]
+    public async Task GetOrderDetailAsync_AppliesEachDetailColumnFilter(string differingField)
+    {
+        await SeedStoreOrderAsync($"ORDER-DETAIL-FILTER-{differingField}");
+        await SeedOrderLineAsync(
+            $"ORDER-DETAIL-FILTER-{differingField}",
+            $"P-MATCH-{differingField}",
+            "HB043-MATCH",
+            quantity: 12m,
+            allocQuantity: 3m,
+            productName: "Money Tin Match",
+            barcode: "BAR-MATCH-9528",
+            importPrice: 2.25m
+        );
+        await SeedLocationAsync($"P-MATCH-{differingField}", $"L-MATCH-{differingField}", "A-01-01");
+
+        var missProductCode = $"P-MISS-{differingField}";
+        var missItemNumber = differingField == "itemNumber" ? "NO-MATCH" : "HB043-MISS";
+        var missProductName = differingField == "productName" ? "Different Product" : "Money Tin Match";
+        var missBarcode = differingField == "barcode" ? "BAR-NOPE" : "BAR-MATCH-9528";
+        var missQuantity = differingField == "quantityMin" ? 9m : differingField == "quantityMax" ? 16m : 12m;
+        var missAllocQuantity =
+            differingField == "allocQuantityMin" ? 1m : differingField == "allocQuantityMax" ? 5m : 3m;
+        var missImportPrice =
+            differingField == "importPriceMin" ? 1.5m : differingField == "importPriceMax" ? 3.5m : 2.25m;
+        var missIsActive = differingField != "isActive";
+        var missLocationCode = differingField == "locationCode" ? "B-99-01" : "A-01-01";
+
+        await SeedOrderLineAsync(
+            $"ORDER-DETAIL-FILTER-{differingField}",
+            missProductCode,
+            missItemNumber,
+            quantity: missQuantity,
+            allocQuantity: missAllocQuantity,
+            warehouseIsActive: missIsActive,
+            productName: missProductName,
+            barcode: missBarcode,
+            importPrice: missImportPrice
+        );
+        await SeedLocationAsync(missProductCode, $"L-MISS-{differingField}", missLocationCode);
+
+        var result = await CreateService().GetOrderDetailAsync(
+            $"ORDER-DETAIL-FILTER-{differingField}",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                ItemNumber = "HB043",
+                ProductName = "Money",
+                Barcode = "9528",
+                LocationCode = "A-01",
+                QuantityMin = 10m,
+                QuantityMax = 15m,
+                AllocQuantityMin = 2m,
+                AllocQuantityMax = 4m,
+                ImportPriceMin = 2m,
+                ImportPriceMax = 3m,
+                IsActive = true,
+            }
+        );
+
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data.ItemsTotal);
+        Assert.Equal($"P-MATCH-{differingField}", Assert.Single(result.Data.Items).ProductCode);
+    }
+
+    [Theory]
+    [InlineData("itemNumber", "P-HIGH")]
+    [InlineData("productName", "P-HIGH")]
+    [InlineData("barcode", "P-HIGH")]
+    [InlineData("locationCode", "P-HIGH")]
+    [InlineData("quantity", "P-LOW")]
+    [InlineData("allocQuantity", "P-LOW")]
+    [InlineData("importPrice", "P-HIGH")]
+    [InlineData("isActive", "P-MID")]
+    public async Task GetOrderDetailAsync_SortsSupportedDetailColumnsBeforePaging(
+        string sortBy,
+        string expectedFirstProductCode
+    )
+    {
+        await SeedStoreOrderAsync("ORDER-DETAIL-SORT");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-SORT",
+            "P-LOW",
+            "C-ITEM",
+            quantity: 1m,
+            allocQuantity: 1m,
+            productName: "Gamma Product",
+            barcode: "C-BAR",
+            importPrice: 3m
+        );
+        await SeedLocationAsync("P-LOW", "L-C", "C-03");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-SORT",
+            "P-MID",
+            "B-ITEM",
+            quantity: 5m,
+            allocQuantity: 3m,
+            warehouseIsActive: false,
+            productName: "Beta Product",
+            barcode: "B-BAR",
+            importPrice: 2m
+        );
+        await SeedLocationAsync("P-MID", "L-B", "B-02");
+        await SeedOrderLineAsync(
+            "ORDER-DETAIL-SORT",
+            "P-HIGH",
+            "A-ITEM",
+            quantity: 9m,
+            allocQuantity: 5m,
+            productName: "Alpha Product",
+            barcode: "A-BAR",
+            importPrice: 1m
+        );
+        await SeedLocationAsync("P-HIGH", "L-A", "A-01");
+
+        var result = await CreateService().GetOrderDetailAsync(
+            "ORDER-DETAIL-SORT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = sortBy,
+                SortDescending = false,
+            }
+        );
+
+        Assert.NotNull(result.Data);
+        Assert.Equal(3, result.Data.ItemsTotal);
+        Assert.Equal(expectedFirstProductCode, Assert.Single(result.Data.Items).ProductCode);
+    }
+
+    [Fact]
     public async Task GetOrderListAsync_ReturnsOutboundDate()
     {
         var outboundDate = new DateTime(2026, 6, 7);
@@ -2699,11 +2917,21 @@ public sealed class StoreOrderProductListTests : IDisposable
         bool isActive = true,
         bool warehouseIsActive = true,
         bool isDeleted = false,
-        bool productIsDeleted = false
+        bool productIsDeleted = false,
+        string? productName = null,
+        string? barcode = null,
+        decimal importPrice = 2m
     )
     {
-        await SeedProductAsync(productCode, itemNumber, isActive: isActive, isDeleted: productIsDeleted);
-        await SeedWarehouseProductAsync(productCode, importPrice: 2m, isActive: warehouseIsActive);
+        await SeedProductAsync(
+            productCode,
+            itemNumber,
+            barcode: barcode,
+            isActive: isActive,
+            isDeleted: productIsDeleted,
+            productName: productName
+        );
+        await SeedWarehouseProductAsync(productCode, importPrice: importPrice, isActive: warehouseIsActive);
         await _db.Insertable(new DomesticProduct
         {
             ProductCode = productCode,
@@ -2720,8 +2948,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             ProductCode = productCode,
             Quantity = quantity,
             AllocQuantity = allocQuantity,
-            ImportPrice = 2m,
-            ImportAmount = allocQuantity * 2m,
+            ImportPrice = importPrice,
+            ImportAmount = allocQuantity * importPrice,
             OEMPrice = 3m,
             OEMAmount = quantity * 3m,
             IsDeleted = isDeleted,
