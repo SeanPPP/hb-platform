@@ -880,7 +880,8 @@ async function main() {
   const inlineBooleanToggleFailure = await runTest('编辑页自动定价和特殊商品应双击本地编辑并随保存明细统一落库', () => {
     assert(editPageSource.includes('EditableBooleanCell,'), '编辑页应导入行内布尔编辑单元格')
     assert(editCellsSource.includes('function EditableBooleanCell'), '行内编辑组件文件应定义布尔编辑单元格')
-    assert(editCellsSource.includes('onDoubleClick={() => onSave(detailGuid, field, !actualValue)}'), '布尔字段应双击切换本地值')
+    assert(editCellsSource.includes('const handleToggle = () => onSave(detailGuid, field, !actualValue)'), '布尔字段应保留本地取反保存逻辑')
+    assert(editCellsSource.includes("onDoubleClick={toggleTrigger === 'doubleClick' ? handleToggle : undefined}"), '布尔字段应双击切换本地值')
     assert(editPageSource.includes('field="autoPricing"'), '自动定价应纳入可编辑字段')
     assert(editPageSource.includes('field="isSpecialProduct"'), '特殊商品应纳入可编辑字段')
     assert(editPageSource.includes('const handleInlineDetailSave = useCallback'), '行内编辑应先写入本地明细')

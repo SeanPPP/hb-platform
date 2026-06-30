@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildOtaRegistrationPayload,
   buildRegistrationUrl,
+  getRequiredRegistrationGaps,
   parseEasUpdateOutput,
   registerOtaUpdate,
 } from "./publish-ota-update.mjs";
@@ -88,6 +89,44 @@ const updatesOnlyPayload = buildOtaRegistrationPayload(
 
 assert.equal(updatesOnlyPayload.updateGroupId, null);
 assert.equal(updatesOnlyPayload.androidUpdateId, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+assert.deepEqual(
+  getRequiredRegistrationGaps(updatesOnlyPayload),
+  ["updateGroupId"],
+);
+
+const updateListShapeJsonOutput = JSON.stringify({
+  name: "preview",
+  currentPage: [
+    {
+      branch: "preview",
+      message: "提示测试机下载安装新版 APK",
+      runtimeVersion: "1.0.1",
+      group: "25cc3688-779d-4f66-82f0-2f7d6486586f",
+      platforms: "android",
+    },
+  ],
+});
+const parsedUpdateListShapeJson = parseEasUpdateOutput(updateListShapeJsonOutput);
+
+assert.equal(parsedUpdateListShapeJson.branch, "preview");
+assert.equal(parsedUpdateListShapeJson.runtimeVersion, "1.0.1");
+assert.equal(parsedUpdateListShapeJson.updateGroupId, "25cc3688-779d-4f66-82f0-2f7d6486586f");
+assert.equal(parsedUpdateListShapeJson.androidUpdateId, "");
+
+const updateListShapePayload = buildOtaRegistrationPayload(
+  parsedUpdateListShapeJson,
+  {
+    channel: "preview",
+    profile: "preview",
+    runtimeVersion: "1.0.1",
+    message: "fallback message",
+  },
+  "2026-06-22T00:00:00.000Z"
+);
+
+assert.equal(updateListShapePayload.updateGroupId, "25cc3688-779d-4f66-82f0-2f7d6486586f");
+assert.equal(updateListShapePayload.androidUpdateId, null);
+assert.deepEqual(getRequiredRegistrationGaps(updateListShapePayload), []);
 
 const payload = buildOtaRegistrationPayload(
   parsedJson,

@@ -651,7 +651,8 @@ public class StoreRetailPriceHqSyncContractTests
             Mock.Of<IStoreProductPriceReactService>(),
             retailPriceService ?? Mock.Of<IStoreRetailPriceReactService>(),
             Mock.Of<IUserService>(),
-            Mock.Of<ILogger<ReactStoreProductPricesController>>()
+            Mock.Of<ILogger<ReactStoreProductPricesController>>(),
+            Mock.Of<IStorePriceTransferJobService>()
         );
     }
 

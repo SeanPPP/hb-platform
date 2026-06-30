@@ -953,6 +953,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-REPLACE", "ITEM-REPLACE", quantity: 5m, allocQuantity: 2m);
         await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-APPEND", "ITEM-APPEND", quantity: 4m, allocQuantity: 6m);
         await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-SKIP", "ITEM-SKIP", quantity: 3m, allocQuantity: 7m);
+        await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-ZERO-EXISTING", "ITEM-ZERO-EXISTING", quantity: 4m, allocQuantity: 9m);
+        await SeedOrderLineAsync("ORDER-PASTE-ACTION", "P-ZERO-DELETE", "ITEM-ZERO-DELETE", quantity: 0m, allocQuantity: 9m);
         await SeedProductAsync("P-NEW-ZERO", "ITEM-NEW-ZERO");
         await SeedWarehouseProductAsync("P-NEW-ZERO");
         await SeedProductAsync("P-NEW-VALID", "ITEM-NEW-VALID");
@@ -967,6 +969,8 @@ public sealed class StoreOrderProductListTests : IDisposable
                 new() { ProductCode = "P-REPLACE", Quantity = 10m, Action = "replace" },
                 new() { ProductCode = "P-APPEND", Quantity = 5m, Action = "append" },
                 new() { ProductCode = "P-SKIP", Quantity = 99m, Action = "skip" },
+                new() { ProductCode = "P-ZERO-EXISTING", Quantity = 0m, Action = "replace" },
+                new() { ProductCode = "P-ZERO-DELETE", Quantity = 0m, Action = "replace" },
                 new() { ProductCode = "P-NEW-ZERO", Quantity = 0m, Action = "replace" },
                 new() { ProductCode = "P-NEW-VALID", Quantity = 8m, Action = "append" },
             },
@@ -981,6 +985,9 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(10m, rows.Single(row => row.ProductCode == "P-REPLACE").AllocQuantity);
         Assert.Equal(11m, rows.Single(row => row.ProductCode == "P-APPEND").AllocQuantity);
         Assert.Equal(7m, rows.Single(row => row.ProductCode == "P-SKIP").AllocQuantity);
+        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").AllocQuantity);
+        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").ImportAmount);
+        Assert.DoesNotContain(rows, row => row.ProductCode == "P-ZERO-DELETE");
         Assert.DoesNotContain(rows, row => row.ProductCode == "P-NEW-ZERO");
         Assert.Equal(8m, rows.Single(row => row.ProductCode == "P-NEW-VALID").AllocQuantity);
     }
@@ -1101,7 +1108,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(12m, rows.Single(row => row.ProductCode == "P002").AllocQuantity);
         Assert.Equal(4m, rows.Single(row => row.ProductCode == "P002").ImportPrice);
         Assert.Equal(8m, rows.Single(row => row.ProductCode == "P003").AllocQuantity);
-        Assert.Equal(10m, rows.Single(row => row.ProductCode == "P004").AllocQuantity);
+        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P004").AllocQuantity);
         Assert.Equal(2m, rows.Single(row => row.ProductCode == "P005").AllocQuantity);
         Assert.Equal(9.5m, rows.Single(row => row.ProductCode == "P005").ImportPrice);
         Assert.Equal(19m, rows.Single(row => row.ProductCode == "P005").ImportAmount);

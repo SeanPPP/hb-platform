@@ -1,7 +1,10 @@
+using System.Collections.Concurrent;
+using System.Threading;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
@@ -14,8 +17,14 @@ namespace BlazorApp.Api.Services
     /// </summary>
     public class StoreService : IStoreService
     {
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> HqBranchSyncLocks =
+            new(StringComparer.OrdinalIgnoreCase);
+
         // 数据库上下文，用于数据库操作
         private readonly SqlSugarContext _context;
+
+        // HQ数据库上下文，用于把本地分店资料同步到总部系统。
+        private readonly HqSqlSugarContext? _hqContext;
 
         // 日志记录器，用于记录操作日志和错误信息
         private readonly ILogger<StoreService> _logger;
@@ -25,9 +34,15 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="context">数据库上下文</param>
         /// <param name="logger">日志记录器</param>
-        public StoreService(SqlSugarContext context, ILogger<StoreService> logger)
+        /// <param name="hqContext">HQ数据库上下文</param>
+        public StoreService(
+            SqlSugarContext context,
+            ILogger<StoreService> logger,
+            HqSqlSugarContext? hqContext = null
+        )
         {
             _context = context;
+            _hqContext = hqContext;
             _logger = logger;
         }
 
@@ -608,6 +623,162 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "更新分店状态失败，GUID: {StoreGUID}", guid);
                 return ApiResponse<bool>.Error("更新分店状态失败", "UPDATE_STORE_STATUS_ERROR");
             }
+        }
+
+        /// <summary>
+        /// 将当前分店资料同步到HQ分店信息表
+        /// </summary>
+        public async Task<ApiResponse<bool>> SyncStoreToHqAsync(string guid)
+        {
+            try
+            {
+                if (_hqContext == null)
+                {
+                    return ApiResponse<bool>.Error("HQ数据库未配置", "HQ_CONTEXT_NOT_CONFIGURED");
+                }
+
+                var store = await _context.Db.Queryable<Store>()
+                    .Where(s => s.StoreGUID == guid)
+                    .FirstAsync();
+
+                if (store == null)
+                {
+                    return ApiResponse<bool>.Error("分店不存在", "STORE_NOT_FOUND");
+                }
+
+                await UpsertHqBranchAsync(store);
+
+                return ApiResponse<bool>.OK(true, "同步HQ分店成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "同步分店到HQ失败，StoreGUID: {StoreGUID}", guid);
+                return ApiResponse<bool>.Error("同步HQ分店失败", "SYNC_STORE_TO_HQ_ERROR");
+            }
+        }
+
+        private async Task UpsertHqBranchAsync(Store store)
+        {
+            var branchCode = store.StoreCode?.Trim();
+            if (string.IsNullOrWhiteSpace(branchCode))
+            {
+                throw new InvalidOperationException("分店代码不能为空");
+            }
+
+            var syncLock = HqBranchSyncLocks.GetOrAdd(branchCode, _ => new SemaphoreSlim(1, 1));
+            await syncLock.WaitAsync();
+            try
+            {
+                var hqDb = _hqContext!.Db;
+
+                if (hqDb.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    await MergeSqlServerHqBranchAsync(hqDb, branchCode, store);
+                    return;
+                }
+
+                var affectedRows = await UpdateHqBranchAsync(hqDb, branchCode, store);
+                if (affectedRows > 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    // HQ分店表没有本地StoreGUID，按分店代码做唯一业务键创建。
+                    await hqDb.Insertable(MapHqBranch(branchCode, store)).ExecuteCommandAsync();
+                }
+                catch (Exception ex) when (IsDuplicateBranchInsertException(ex))
+                {
+                    // 并发实例同时插入时，唯一键命中后回到更新路径保持幂等。
+                    await UpdateHqBranchAsync(hqDb, branchCode, store);
+                }
+            }
+            finally
+            {
+                syncLock.Release();
+            }
+        }
+
+        private static HqBranch MapHqBranch(string branchCode, Store store)
+        {
+            return new HqBranch
+            {
+                BranchCode = branchCode,
+                BranchName = store.StoreName,
+                BusinessNumber = store.ABN,
+                Phone = store.Phone,
+                Address = store.Address,
+            };
+        }
+
+        private static Task<int> UpdateHqBranchAsync(
+            ISqlSugarClient hqDb,
+            string branchCode,
+            Store store
+        )
+        {
+            // 只覆盖分店基础资料，避免误动HQ表中未纳入本地分店管理的字段。
+            return hqDb.Updateable<HqBranch>()
+                .SetColumns(branch => new HqBranch
+                {
+                    BranchName = store.StoreName,
+                    BusinessNumber = store.ABN,
+                    Phone = store.Phone,
+                    Address = store.Address,
+                })
+                .Where(branch => branch.BranchCode == branchCode)
+                .ExecuteCommandAsync();
+        }
+
+        private static Task<int> MergeSqlServerHqBranchAsync(
+            ISqlSugarClient hqDb,
+            string branchCode,
+            Store store
+        )
+        {
+            const string sql = @"
+MERGE [DIC_分店信息表] WITH (HOLDLOCK) AS target
+USING (
+    SELECT
+        @BranchCode AS [H分店代码],
+        @BranchName AS [H分店名称],
+        @BusinessNumber AS [H商业编号],
+        @Phone AS [H电话],
+        @Address AS [H分店地址]
+) AS source
+ON target.[H分店代码] = source.[H分店代码]
+WHEN MATCHED THEN
+    UPDATE SET
+        [H分店名称] = source.[H分店名称],
+        [H商业编号] = source.[H商业编号],
+        [H电话] = source.[H电话],
+        [H分店地址] = source.[H分店地址]
+WHEN NOT MATCHED THEN
+    INSERT ([H分店代码], [H分店名称], [H商业编号], [H电话], [H分店地址])
+    VALUES (source.[H分店代码], source.[H分店名称], source.[H商业编号], source.[H电话], source.[H分店地址]);";
+
+            // SQL Server用HOLDLOCK保证同一分店代码的插入/更新为原子upsert。
+            return hqDb.Ado.ExecuteCommandAsync(
+                sql,
+                ToParameter("@BranchCode", branchCode),
+                ToParameter("@BranchName", store.StoreName),
+                ToParameter("@BusinessNumber", store.ABN),
+                ToParameter("@Phone", store.Phone),
+                ToParameter("@Address", store.Address)
+            );
+        }
+
+        private static SugarParameter ToParameter(string name, string? value)
+        {
+            return new SugarParameter(name, value ?? (object)DBNull.Value);
+        }
+
+        private static bool IsDuplicateBranchInsertException(Exception ex)
+        {
+            return ex.Message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("重复", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

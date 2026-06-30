@@ -553,6 +553,7 @@ builder.Services.AddSingleton<
 >();
 builder.Services.AddSingleton<IProductStoreSyncJobService, ProductStoreSyncJobService>();
 builder.Services.AddSingleton<IProductPushToHqJobService, ProductPushToHqJobService>();
+builder.Services.AddSingleton<IStorePriceTransferJobService, StorePriceTransferJobService>();
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();
 builder.Services.Configure<StoreRetailPriceHqSyncOptions>(
@@ -562,6 +563,7 @@ builder.Services.AddScoped<IStoreRetailPriceHqSyncService, StoreRetailPriceHqSyn
 builder.Services.AddScoped<IStoreRetailPriceReactService, StoreRetailPriceReactService>();
 builder.Services.AddScoped<IStoreProductPriceReactService, StoreProductPriceReactService>();
 builder.Services.AddScoped<IStoreMultiCodePricesReactService, StoreMultiCodePricesReactService>();
+builder.Services.AddScoped<IStorePriceTransferService, StorePriceTransferService>();
 builder.Services.AddScoped<ICashRegisterUserReactService, CashRegisterUserReactService>();
 builder.Services.AddScoped<IStoreUserReactService, StoreUserReactService>();
 builder.Services.AddScoped<IDataSyncFullService, DataSyncFullService>();
@@ -665,7 +667,7 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger(); // 启用Swagger JSON端点
     app.UseSwaggerUI(); // 启用Swagger UI界面（通常在 /swagger 路径）
-    // 🔗 访问地址：https://localhost:7171/swagger
+    // 🔗 访问地址：http://localhost:5002/swagger
 }
 
 // 🔒 HTTPS重定向中间件（当前已禁用）

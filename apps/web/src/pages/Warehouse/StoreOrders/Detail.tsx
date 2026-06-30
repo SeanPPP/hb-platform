@@ -2131,6 +2131,13 @@ export default function StoreOrderDetailPage() {
     setPastePreviewFilter('all')
   }
 
+  const handleChangePasteTargetField = (targetField: StoreOrderPasteWriteTarget) => {
+    setPasteTargetField(targetField)
+    // 写入目标会影响空数量解析，切换后清空预览，避免沿用旧模式的结果。
+    setPastePreviewItems([])
+    setPastePreviewFilter('all')
+  }
+
   const handleParsePasteData = async () => {
     if (!detail) {
       return
@@ -2142,7 +2149,7 @@ export default function StoreOrderDetailPage() {
 
     setParsingPaste(true)
     try {
-      const items = parseStoreOrderPasteRows(pasteData, columnMapping)
+      const items = parseStoreOrderPasteRows(pasteData, columnMapping, pasteQuantityMode)
 
       if (!items.length) {
         message.warning(t('storeOrders.detail.noValidPasteItems'))
@@ -3313,7 +3320,7 @@ export default function StoreOrderDetailPage() {
                   <div style={{ marginTop: 8 }}>
                     <Radio.Group
                       value={pasteTargetField}
-                      onChange={(event) => setPasteTargetField(event.target.value as StoreOrderPasteWriteTarget)}
+                      onChange={(event) => handleChangePasteTargetField(event.target.value as StoreOrderPasteWriteTarget)}
                     >
                       <Radio value="allocQuantity">{t('storeOrders.detail.allocQuantityDefault')}</Radio>
                       <Radio value="allocQuantityByInner">{t('storeOrders.detail.allocQuantityByInner')}</Radio>

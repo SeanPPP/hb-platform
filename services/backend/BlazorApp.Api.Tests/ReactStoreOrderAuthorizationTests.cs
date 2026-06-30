@@ -593,7 +593,14 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             .Setup(item => item.ScanLookupProductsAsync(lookupRequest))
             .ReturnsAsync(
                 ApiResponse<StoreOrderScanLookupResultDto>.OK(
-                    new StoreOrderScanLookupResultDto { Barcode = "930001" }
+                    new StoreOrderScanLookupResultDto
+                    {
+                        Barcode = "930001",
+                        Items = new List<StoreOrderProductDto>
+                        {
+                            new() { ProductCode = addRequest.ProductCode },
+                        },
+                    }
                 )
             );
         service
@@ -646,6 +653,216 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         );
         scopeService.Verify(item => item.CanAccessStoreCodeAsync(storeCode), Times.Never);
         userService.Verify(item => item.GetUserStoresAsync("user-1"), Times.Never);
+    }
+
+    [Fact]
+    public async Task ScanLookupProducts_ThenAddToCart_AllowsWarehouseStaffMobileScanFlow()
+    {
+        var storeCode = "1024";
+        var lookupRequest = new StoreOrderScanLookupRequestDto
+        {
+            Barcode = "930001",
+            StoreCode = storeCode,
+        };
+        var addRequest = new AddToCartRequestDto
+        {
+            StoreCode = storeCode,
+            ProductCode = "P001",
+            Quantity = 1,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.ScanLookupProductsAsync(lookupRequest))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderScanLookupResultDto>.OK(
+                    new StoreOrderScanLookupResultDto
+                    {
+                        Barcode = "930001",
+                        Items = new List<StoreOrderProductDto>
+                        {
+                            new() { ProductCode = addRequest.ProductCode },
+                        },
+                    }
+                )
+            );
+        service
+            .Setup(item => item.AddToCartAsync(addRequest))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderCartDto?>.OK(
+                    new StoreOrderCartDto
+                    {
+                        OrderGUID = "cart-1",
+                        StoreCode = storeCode,
+                        TotalQuantity = 1,
+                    }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync(storeCode)).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+        controller.Request.Headers["X-Scan-Trace-Id"] = "scan-add-1";
+
+        var lookupResult = await controller.ScanLookupProducts(lookupRequest);
+        controller.Request.Path = "/api/react/v1/store-order/cart/scan-add";
+        var addResult = await controller.AddToCart(addRequest);
+
+        Assert.IsType<OkObjectResult>(lookupResult);
+        Assert.IsType<OkObjectResult>(addResult);
+        service.Verify(item => item.ScanLookupProductsAsync(lookupRequest), Times.Once);
+        service.Verify(item => item.AddToCartAsync(addRequest), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync(storeCode), Times.Never);
+    }
+
+    [Fact]
+    public async Task UpdateCartItem_AllowsWarehouseStaffMobileScanFlow()
+    {
+        var lookupRequest = new StoreOrderScanLookupRequestDto
+        {
+            Barcode = "930001",
+            StoreCode = "1024",
+        };
+        var request = new AddToCartRequestDto
+        {
+            StoreCode = "1024",
+            ProductCode = "P001",
+            Quantity = 3,
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.ScanLookupProductsAsync(lookupRequest))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderScanLookupResultDto>.OK(
+                    new StoreOrderScanLookupResultDto
+                    {
+                        Barcode = "930001",
+                        Items = new List<StoreOrderProductDto>
+                        {
+                            new() { ProductCode = request.ProductCode },
+                        },
+                    }
+                )
+            );
+        service
+            .Setup(item => item.UpdateCartItemAsync(request))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderCartDto?>.OK(
+                    new StoreOrderCartDto
+                    {
+                        OrderGUID = "cart-1",
+                        StoreCode = request.StoreCode,
+                        TotalQuantity = 3,
+                    }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync(request.StoreCode)).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+        controller.Request.Headers["X-Scan-Trace-Id"] = "scan-update-1";
+
+        var lookupResult = await controller.ScanLookupProducts(lookupRequest);
+        controller.Request.Path = "/api/react/v1/store-order/cart/scan-update";
+        var result = await controller.UpdateCartItem(request);
+
+        Assert.IsType<OkObjectResult>(lookupResult);
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.ScanLookupProductsAsync(lookupRequest), Times.Once);
+        service.Verify(item => item.UpdateCartItemAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync(request.StoreCode), Times.Never);
+    }
+
+    [Fact]
+    public async Task ClearCart_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.ClearCartAsync("1024"))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderCartDto?>.OK(
+                    new StoreOrderCartDto { OrderGUID = "cart-1", StoreCode = "1024" }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.ClearCart(new ClearCartRequestDto { StoreCode = "1024" });
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.ClearCartAsync("1024"), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
+    }
+
+    [Fact]
+    public async Task RemoveFromCart_ForbidsWarehouseStaffEvenWithOrderCreatePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.RemoveFromCart(
+            new RemoveFromCartRequestDto { StoreCode = "1024", DetailGUID = "detail-1" }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task SubmitOrder_ForbidsWarehouseStaffEvenWithOrderCreatePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.SubmitOrder(
+            new SubmitStoreOrderRequestDto { StoreCode = "1024" }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task AddToCart_ForbidsWarehouseStaffLegacyManageOnScanRoute()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+        controller.Request.Path = "/api/react/v1/store-order/cart/scan-add";
+
+        var result = await controller.AddToCart(
+            new AddToCartRequestDto { StoreCode = "S001", ProductCode = "P001", Quantity = 1 }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -1182,6 +1399,23 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateOrder_ForbidsWarehouseStaffEvenWithOrderCreatePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
+            CreateScopeService(),
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.CreateOrder(new CreateStoreOrderDto { StoreCode = "S001" });
+
+        Assert.IsType<ForbidResult>(result);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task WarehouseStaffLegacyManage_ForbidsStoreOrderWriteActions()
     {
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
@@ -1220,6 +1454,24 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
                     CompleteOrder = true,
                 }
             )
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.AddToCart(
+                new AddToCartRequestDto { StoreCode = "S001", ProductCode = "P001", Quantity = 1 }
+            )
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.UpdateCartItem(
+                new AddToCartRequestDto { StoreCode = "S001", ProductCode = "P001", Quantity = 2 }
+            )
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.RemoveFromCart(
+                new RemoveFromCartRequestDto { StoreCode = "S001", DetailGUID = "detail-1" }
+            )
+        );
+        Assert.IsType<ForbidResult>(
+            await controller.ClearCart(new ClearCartRequestDto { StoreCode = "S001" })
         );
         Assert.IsType<ForbidResult>(
             await controller.SyncMissingOrders(new SyncMissingOrdersRequestDto())

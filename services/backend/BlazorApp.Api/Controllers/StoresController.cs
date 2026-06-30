@@ -273,6 +273,28 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
+        /// 将当前分店资料同步到HQ分店信息表
+        /// </summary>
+        [HttpPost("guid/{guid}/sync-hq")]
+        [Authorize(Policy = Permissions.Stores.Edit)]
+        public async Task<IActionResult> SyncStoreToHq(string guid)
+        {
+            try
+            {
+                var result = await _storeService.SyncStoreToHqAsync(guid);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "同步分店到HQ失败，GUID: {StoreGUID}", guid);
+                return StatusCode(
+                    500,
+                    ApiResponse<bool>.Error("服务器内部错误", "INTERNAL_SERVER_ERROR")
+                );
+            }
+        }
+
+        /// <summary>
         /// 获取分店用户列表
         /// </summary>
         [HttpGet("guid/{guid}/users")]

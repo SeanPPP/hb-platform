@@ -87,6 +87,7 @@
     <Compile Include="ProductSetCodeReactServiceTests.cs" />
     <Compile Include="ReactProductHqSyncContractTests.cs" />
     <Compile Include="StoreRetailPriceHqSyncContractTests.cs" />
+    <Compile Include="StorePriceTransferJobServiceTests.cs" />
     <Compile Include="LocalSupplierInvoiceHqSyncContractTests.cs" />
     <Compile Include="LocalSupplierInvoiceHqProductSyncTests.cs" />
     <Compile Include="LocalSupplierInvoiceBatchUpdateJobServiceTests.cs" />

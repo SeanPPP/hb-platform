@@ -33,6 +33,9 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IStoreOrderPasteReplaceJobService _pasteReplaceJobService;
         private readonly IStoreOrderInvoiceEmailTextTranslationService _invoiceEmailTextTranslationService;
 
+        private const string ScanTraceHeaderName = "X-Scan-Trace-Id";
+        private const string CartFlowCheckType = "cart-flow";
+        private const string ScanOrderFlowCheckType = "scan-order-flow";
         private static readonly TimeSpan CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan AuthorizationSuccessCacheDuration = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan AuthorizationFailureCacheDuration = TimeSpan.FromSeconds(5);
@@ -97,8 +100,13 @@ namespace BlazorApp.Api.Controllers.React
         private string GetScanTraceId()
         {
             // 前端扫码链路透传 traceId，缺失时使用 ASP.NET TraceIdentifier 兜底。
-            return Request.Headers["X-Scan-Trace-Id"].FirstOrDefault()
-                ?? HttpContext.TraceIdentifier;
+            return GetExplicitScanTraceId() ?? HttpContext.TraceIdentifier;
+        }
+
+        private string? GetExplicitScanTraceId()
+        {
+            var traceId = Request.Headers[ScanTraceHeaderName].FirstOrDefault()?.Trim();
+            return string.IsNullOrWhiteSpace(traceId) ? null : traceId;
         }
 
         private static string GetBarcodeTail(string? barcode)
@@ -203,7 +211,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             if (IsWarehouseStaffOnly())
             {
-                // 纯 WarehouseStaff 只能查看/打印分店订货文档，不能借旧 Warehouse.Manage 权限执行写动作。
+                // 纯 WarehouseStaff 不能借旧 Warehouse.Manage 执行普通订货写动作；购物车动作走 RequireCartWritePermissionAsync。
                 return Forbid();
             }
 
@@ -218,11 +226,27 @@ namespace BlazorApp.Api.Controllers.React
         {
             if (IsWarehouseStaffOnly())
             {
-                // 扫码购物车写入同样属于订货写动作，必须和页面按钮权限保持一致。
+                // 纯 WarehouseStaff 不能借旧 Warehouse.Manage 执行普通订货写动作；购物车动作走 RequireCartWritePermissionAsync。
                 return Forbid();
             }
 
             return await RequireAnyPermissionAsync(storeCode, checkType, permissions);
+        }
+
+        private async Task<IActionResult?> RequireCartWritePermissionAsync(string? storeCode, string checkType)
+        {
+            var permissions = IsWarehouseStaffOnly()
+                ? new[] { Permissions.Orders.Create }
+                : CartWritePermissions;
+
+            // WarehouseStaff 的购物车写入只认显式 Orders.Create，不把旧 Warehouse.Manage 当成订货写权限。
+            return await RequireAnyPermissionAsync(storeCode, checkType, permissions)
+                ?? await RequireAssignedStoreScopeAsync(storeCode);
+        }
+
+        private Task<IActionResult?> RequireCartWritePermissionAsync(AddToCartRequestDto request)
+        {
+            return RequireCartWritePermissionAsync(request.StoreCode, ScanOrderFlowCheckType);
         }
 
         private async Task<bool> AuthorizePolicyWithCacheAsync(
@@ -840,6 +864,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 添加到购物车
         /// </summary>
         [HttpPost("cart/add")]
+        [HttpPost("cart/scan-add")]
         public async Task<IActionResult> AddToCart([FromBody] AddToCartRequestDto request)
         {
             var totalSw = Stopwatch.StartNew();
@@ -848,12 +873,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(
-                        request.StoreCode,
-                        "scan-order-flow",
-                        CartWritePermissions
-                    )
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                    await RequireCartWritePermissionAsync(request);
                 permissionSw.Stop();
                 if (forbidden != null)
                 {
@@ -909,6 +929,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 更新购物车项数量 (覆盖)
         /// </summary>
         [HttpPost("cart/update")]
+        [HttpPost("cart/scan-update")]
         public async Task<IActionResult> UpdateCartItem([FromBody] AddToCartRequestDto request)
         {
             var totalSw = Stopwatch.StartNew();
@@ -917,12 +938,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var permissionSw = Stopwatch.StartNew();
                 var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(
-                        request.StoreCode,
-                        "scan-order-flow",
-                        CartWritePermissions
-                    )
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                    await RequireCartWritePermissionAsync(request);
                 permissionSw.Stop();
                 if (forbidden != null)
                 {
@@ -1013,8 +1029,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(CartWritePermissions)
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                    await RequireCartWritePermissionAsync(request.StoreCode, CartFlowCheckType);
                 if (forbidden != null)
                 {
                     return forbidden;

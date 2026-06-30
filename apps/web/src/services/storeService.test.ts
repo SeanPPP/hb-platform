@@ -1,4 +1,4 @@
-import { createStore, getActiveStores, getNextStoreCode, getStores } from './storeService'
+import { createStore, getActiveStores, getNextStoreCode, getStores, syncStoreToHq } from './storeService'
 import type { StoreDto } from '../types/store'
 
 function assertDeepEqual(actual: unknown, expected: unknown, label: string) {
@@ -157,6 +157,52 @@ try {
     },
     '创建分店接口应使用 POST 并原样提交未启用收银系统状态',
   )
+
+  let capturedSyncUrl = ''
+  let capturedSyncInit: RequestInit | undefined
+  globalThis.fetch = (async (input, init) => {
+    capturedSyncUrl = String(input)
+    capturedSyncInit = init
+    return new Response(JSON.stringify({
+      success: true,
+      data: true,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const syncResult = await syncStoreToHq('store-guid-1')
+  assertDeepEqual(
+    {
+      path: new URL(capturedSyncUrl, 'http://localhost').pathname,
+      method: capturedSyncInit?.method,
+      syncResult,
+    },
+    {
+      path: '/api/stores/guid/store-guid-1/sync-hq',
+      method: 'POST',
+      syncResult: true,
+    },
+    '同步HQ分店应调用当前分店的 sync-hq POST 接口',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: false,
+    message: '同步HQ分店失败',
+    errorCode: 'SYNC_STORE_TO_HQ_ERROR',
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+
+  let failed = false
+  try {
+    await syncStoreToHq('store-guid-2')
+  } catch (error) {
+    failed = error instanceof Error && error.message === '同步HQ分店失败'
+  }
+  assertDeepEqual(failed, true, '同步HQ分店业务失败时应抛出后端错误消息')
 } finally {
   globalThis.fetch = originalFetch
 }

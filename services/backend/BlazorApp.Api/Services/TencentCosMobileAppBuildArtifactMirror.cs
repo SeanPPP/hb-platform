@@ -166,6 +166,9 @@ namespace BlazorApp.Api.Services
             // EAS 初始 artifact 使用 expo.dev，实际文件可能经 CDN 或云存储域名跳转。
             return normalized == "expo.dev"
                 || normalized.EndsWith(".expo.dev", StringComparison.Ordinal)
+                // EAS 2026 构建产物会从 expo.dev 跳转到 wf-artifacts.eascdn.net。
+                || normalized == "eascdn.net"
+                || normalized.EndsWith(".eascdn.net", StringComparison.Ordinal)
                 || normalized == "storage.googleapis.com"
                 || normalized.EndsWith(".googleapis.com", StringComparison.Ordinal)
                 || normalized.EndsWith(".cloudfront.net", StringComparison.Ordinal)
