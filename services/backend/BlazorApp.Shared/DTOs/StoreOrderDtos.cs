@@ -261,6 +261,30 @@ namespace BlazorApp.Shared.DTOs
   }
 
   /// <summary>
+  /// 扫码购物车写入后的轻量汇总，只承载页面顶部数量和金额需要的字段。
+  /// </summary>
+  public class StoreOrderCartMutationSummaryDto
+  {
+    public string OrderGUID { get; set; } = string.Empty;
+    public string StoreCode { get; set; } = string.Empty;
+    public decimal TotalAmount { get; set; }
+    public decimal TotalImportAmount { get; set; }
+    public int TotalQuantity { get; set; }
+    public int TotalSku { get; set; }
+  }
+
+  /// <summary>
+  /// 扫码加购/改数量的轻量响应：只返回变更行和购物车摘要，避免整车明细 reload。
+  /// </summary>
+  public class StoreOrderCartMutationResultDto
+  {
+    public StoreOrderCartMutationSummaryDto Summary { get; set; } = new();
+    public StoreOrderCartItemDto? ChangedItem { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public bool Removed { get; set; }
+  }
+
+  /// <summary>
   /// 订货明细交互页查询参数。
   /// </summary>
   public class StoreOrderDetailQueryDto

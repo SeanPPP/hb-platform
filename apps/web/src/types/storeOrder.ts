@@ -503,6 +503,7 @@ export interface StoreOrderCart {
   storeName?: string
   totalAmount: number
   totalQuantity: number
+  totalSKU?: number
   totalImportAmount: number
   totalVolume: number
   remarks?: string
@@ -513,6 +514,7 @@ export interface StoreOrderCart {
   storeContactEmail?: string
   flowStatus?: StoreOrderFlowStatus
   invoiceEmailSentInfo?: StoreOrderInvoiceEmailSentInfo
+  isSummaryOnly?: boolean
   items: StoreOrderCartItem[]
 }
 

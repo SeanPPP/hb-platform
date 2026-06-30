@@ -29,14 +29,33 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartAsync(string storeCode);
 
         /// <summary>
+        /// 获取分店当前购物车的轻量汇总
+        /// </summary>
+        Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartSummaryAsync(string storeCode);
+
+        /// <summary>
         /// 添加到购物车 (或更新数量)
         /// </summary>
         Task<ApiResponse<StoreOrderCartDto?>> AddToCartAsync(AddToCartRequestDto request);
 
         /// <summary>
+        /// 扫码添加到购物车，只返回摘要和当前变更行。
+        /// </summary>
+        Task<ApiResponse<StoreOrderCartMutationResultDto?>> AddToCartMutationAsync(
+            AddToCartRequestDto request
+        );
+
+        /// <summary>
         /// 更新购物车项数量 (覆盖)
         /// </summary>
         Task<ApiResponse<StoreOrderCartDto?>> UpdateCartItemAsync(AddToCartRequestDto request);
+
+        /// <summary>
+        /// 扫码更新购物车项数量，只返回摘要和当前变更行。
+        /// </summary>
+        Task<ApiResponse<StoreOrderCartMutationResultDto?>> UpdateCartItemMutationAsync(
+            AddToCartRequestDto request
+        );
 
         /// <summary>
         /// 移除购物车项

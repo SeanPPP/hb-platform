@@ -27,6 +27,22 @@ export interface StoreOrderCart extends BaseStoreOrderCart {
   importTotalAmount?: number;
 }
 
+export interface StoreOrderCartMutationSummary {
+  orderGUID: string;
+  storeCode?: string;
+  totalAmount: number;
+  totalImportAmount: number;
+  totalQuantity: number;
+  totalSku: number;
+}
+
+export interface StoreOrderCartMutationResult {
+  summary: StoreOrderCartMutationSummary;
+  changedItem: StoreOrderCartItem | null;
+  productCode: string;
+  removed: boolean;
+}
+
 export interface StoreOrderProductQuery {
   storeCode?: string;
   itemNumber?: string;

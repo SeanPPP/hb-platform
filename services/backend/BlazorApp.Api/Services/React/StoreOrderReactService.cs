@@ -59,6 +59,14 @@ namespace BlazorApp.Api.Services.React
             public string? LocationSortCode { get; set; }
         }
 
+        private sealed class StoreOrderCartMutationSummaryRow
+        {
+            public decimal TotalAmount { get; set; }
+            public decimal TotalImportAmount { get; set; }
+            public decimal TotalQuantity { get; set; }
+            public int TotalSku { get; set; }
+        }
+
         private sealed class StoreOrderImportPriceVarianceSummarySqlRow
         {
             public int TotalRows { get; set; }
@@ -2181,6 +2189,71 @@ namespace BlazorApp.Api.Services.React
             return new ApiResponse<StoreOrderCartDto?> { Success = true, Data = dto };
         }
 
+        public async Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartSummaryAsync(string storeCode)
+        {
+            var order = await _db.Queryable<WareHouseOrder>()
+                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
+                .FirstAsync();
+
+            if (order == null)
+            {
+                return new ApiResponse<StoreOrderCartDto?> { Success = true, Data = null };
+            }
+
+            var store = await GetStoreByCodeOrGuidAsync(order.StoreCode);
+            var detailRows = await _db.Queryable<WareHouseOrderDetails>()
+                .LeftJoin<DomesticProduct>((d, dp) => d.ProductCode == dp.ProductCode)
+                .Where(d => d.OrderGUID == order.OrderGUID && !d.IsDeleted)
+                .Select(
+                    (d, dp) =>
+                        new
+                        {
+                            d.ProductCode,
+                            Quantity = d.Quantity ?? 0,
+                            AllocQuantity = d.AllocQuantity ?? 0,
+                            ImportAmount = d.ImportAmount ?? ((d.ImportPrice ?? 0) * (d.Quantity ?? 0)),
+                            UnitVolume = (dp.PackingQuantity > 0)
+                                ? (dp.UnitVolume / dp.PackingQuantity)
+                                : dp.UnitVolume,
+                        }
+                )
+                .ToListAsync();
+
+            var totalVolume = detailRows.Sum(row => (row.UnitVolume ?? 0) * row.Quantity);
+            var totalAllocVolume = detailRows.Sum(row => (row.UnitVolume ?? 0) * row.AllocQuantity);
+
+            return new ApiResponse<StoreOrderCartDto?>
+            {
+                Success = true,
+                Data = new StoreOrderCartDto
+                {
+                    OrderGUID = order.OrderGUID,
+                    OrderNo = order.OrderNo,
+                    StoreCode = order.StoreCode,
+                    TotalAmount = order.OEMTotalAmount ?? 0,
+                    TotalQuantity = (int)detailRows.Sum(row => row.Quantity),
+                    TotalImportAmount = detailRows.Sum(row => row.ImportAmount),
+                    TotalVolume = totalVolume,
+                    TotalOrderVolume = totalVolume,
+                    TotalAllocVolume = totalAllocVolume,
+                    Remarks = order.Remarks,
+                    StoreAddress = store?.Address,
+                    StoreContactEmail = store?.ContactEmail,
+                    ShippingFee = order.ShippingFee,
+                    OrderDate = order.OrderDate,
+                    TotalAllocQuantity = (int)detailRows.Sum(row => row.AllocQuantity),
+                    TotalSKU = detailRows
+                        .Select(row => row.ProductCode)
+                        .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Count(),
+                    FlowStatus = order.FlowStatus,
+                    // 关键逻辑：summary 故意跳过商品明细字段，保证登录/切店首屏更快。
+                    Items = new List<StoreOrderCartItemDto>(),
+                },
+            };
+        }
+
         public async Task<ApiResponse<StoreOrderCartDto?>> AddToCartAsync(AddToCartRequestDto request)
         {
             var totalSw = Stopwatch.StartNew();
@@ -2348,6 +2421,197 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<ApiResponse<StoreOrderCartMutationResultDto?>> AddToCartMutationAsync(
+            AddToCartRequestDto request
+        )
+        {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
+            try
+            {
+                var now = DateTime.Now;
+                var currentUser =
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                var orderSw = Stopwatch.StartNew();
+                var order = await _db.Queryable<WareHouseOrder>()
+                    .Where(o =>
+                        o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
+                    )
+                    .FirstAsync();
+
+                if (order == null)
+                {
+                    order = new WareHouseOrder
+                    {
+                        OrderGUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = request.StoreCode,
+                        OrderDate = now,
+                        FlowStatus = 0,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        UpdatedBy = currentUser,
+                        OEMTotalAmount = 0,
+                        ImportTotalAmount = 0,
+                        ShippingFee = 0,
+                    };
+                    await _db.Insertable(order).ExecuteCommandAsync();
+                }
+                orderSw.Stop();
+
+                var productSw = Stopwatch.StartNew();
+                var productInfo = await _db.Queryable<Product>()
+                    .InnerJoin<WarehouseProduct>((p, wp) => p.ProductCode == wp.ProductCode)
+                    .Where((p, wp) => p.ProductCode == request.ProductCode)
+                    .Select((p, wp) => new
+                    {
+                        wp.OEMPrice,
+                        wp.ImportPrice,
+                    })
+                    .FirstAsync();
+                productSw.Stop();
+
+                if (productInfo == null)
+                {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        orderSw.ElapsedMilliseconds,
+                        productSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return new ApiResponse<StoreOrderCartMutationResultDto?>
+                    {
+                        Success = false,
+                        Message = "商品不存在",
+                    };
+                }
+
+                var price = productInfo.OEMPrice ?? 0;
+                var importPrice = productInfo.ImportPrice ?? 0;
+
+                var detailLookupSw = Stopwatch.StartNew();
+                var detail = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d =>
+                        d.OrderGUID == order.OrderGUID
+                        && d.ProductCode == request.ProductCode
+                        && !d.IsDeleted
+                    )
+                    .FirstAsync();
+                detailLookupSw.Stop();
+
+                var removed = false;
+                string? detailGuid = detail?.DetailGUID;
+                var detailWriteSw = Stopwatch.StartNew();
+                if (detail == null)
+                {
+                    if (request.Quantity <= 0)
+                    {
+                        // 扫码轻量接口遇到无存量的非正数加购时，不创建无效明细，只返回空变更行。
+                        removed = true;
+                    }
+                    else
+                    {
+                        detail = new WareHouseOrderDetails
+                        {
+                            DetailGUID = UuidHelper.GenerateUuid7(),
+                            OrderGUID = order.OrderGUID,
+                            StoreCode = request.StoreCode,
+                            ProductCode = request.ProductCode,
+                            Quantity = request.Quantity,
+                            OEMPrice = price,
+                            OEMAmount = price * request.Quantity,
+                            ImportPrice = importPrice,
+                            ImportAmount = importPrice * request.Quantity,
+                            IsDeleted = false,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            CreatedBy = currentUser,
+                            UpdatedBy = currentUser,
+                        };
+                        detailGuid = detail.DetailGUID;
+                        await _db.Insertable(detail).ExecuteCommandAsync();
+                    }
+                }
+                else
+                {
+                    detail.Quantity += request.Quantity;
+                    if (detail.Quantity <= 0)
+                    {
+                        removed = true;
+                        await SoftDeleteOrderDetailAsync(detail, currentUser, now);
+                    }
+                    else
+                    {
+                        detail.OEMAmount = detail.Quantity * detail.OEMPrice;
+                        detail.ImportAmount = detail.Quantity * detail.ImportPrice;
+                        detail.UpdatedAt = now;
+                        detail.UpdatedBy = currentUser;
+                        await _db.Updateable(detail).ExecuteCommandAsync();
+                    }
+                }
+                detailWriteSw.Stop();
+
+                var totalUpdateSw = Stopwatch.StartNew();
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                totalUpdateSw.Stop();
+
+                var payloadSw = Stopwatch.StartNew();
+                var result = await BuildCartMutationResultAsync(
+                    order.OrderGUID,
+                    request.StoreCode,
+                    request.ProductCode,
+                    detailGuid,
+                    removed,
+                    traceId
+                );
+                payloadSw.Stop();
+
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} removed={Removed} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} productMs={ProductMs} detailLookupMs={DetailLookupMs} detailWriteMs={DetailWriteMs} recalculateMs={RecalculateMs} mutationPayloadMs={MutationPayloadMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    result.Success,
+                    result.Data?.Removed ?? false,
+                    result.Data?.Summary.TotalQuantity ?? 0,
+                    result.Data?.Summary.TotalSku ?? 0,
+                    orderSw.ElapsedMilliseconds,
+                    productSw.ElapsedMilliseconds,
+                    detailLookupSw.ElapsedMilliseconds,
+                    detailWriteSw.ElapsedMilliseconds,
+                    totalUpdateSw.ElapsedMilliseconds,
+                    payloadSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.add.mutation.error storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    totalSw.ElapsedMilliseconds
+                );
+                _logger.LogError(ex, "AddToCartMutationAsync failed");
+                return new ApiResponse<StoreOrderCartMutationResultDto?>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
         public async Task<ApiResponse<StoreOrderCartDto?>> UpdateCartItemAsync(AddToCartRequestDto request)
         {
             var totalSw = Stopwatch.StartNew();
@@ -2505,6 +2769,330 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "UpdateCartItemAsync failed");
                 return new ApiResponse<StoreOrderCartDto?> { Success = false, Message = ex.Message };
             }
+        }
+
+        public async Task<ApiResponse<StoreOrderCartMutationResultDto?>> UpdateCartItemMutationAsync(
+            AddToCartRequestDto request
+        )
+        {
+            var totalSw = Stopwatch.StartNew();
+            var traceId = GetScanTraceId();
+            try
+            {
+                var now = DateTime.Now;
+                var currentUser =
+                    _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
+
+                var orderSw = Stopwatch.StartNew();
+                var order = await _db.Queryable<WareHouseOrder>()
+                    .Where(o =>
+                        o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
+                    )
+                    .FirstAsync();
+                orderSw.Stop();
+
+                if (order == null)
+                {
+                    if (request.Quantity <= 0)
+                    {
+                        return new ApiResponse<StoreOrderCartMutationResultDto?>
+                        {
+                            Success = true,
+                            Data = new StoreOrderCartMutationResultDto
+                            {
+                                ProductCode = request.ProductCode,
+                                Removed = true,
+                                Summary = new StoreOrderCartMutationSummaryDto
+                                {
+                                    StoreCode = request.StoreCode,
+                                },
+                            },
+                        };
+                    }
+
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.update.mutation.fallback-add storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        orderSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return await AddToCartMutationAsync(request);
+                }
+
+                var productSw = Stopwatch.StartNew();
+                var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+                    .Where(wp => wp.ProductCode == request.ProductCode)
+                    .FirstAsync();
+                productSw.Stop();
+
+                if (warehouseProduct == null)
+                {
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.update.mutation.product-missing storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} orderMs={OrderMs} productMs={ProductMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        orderSw.ElapsedMilliseconds,
+                        productSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    return new ApiResponse<StoreOrderCartMutationResultDto?>
+                    {
+                        Success = false,
+                        Message = "商品不存在",
+                    };
+                }
+
+                var price = warehouseProduct.OEMPrice ?? 0;
+                var importPrice = warehouseProduct.ImportPrice ?? 0;
+
+                var detailLookupSw = Stopwatch.StartNew();
+                var detail = await _db.Queryable<WareHouseOrderDetails>()
+                    .Where(d =>
+                        d.OrderGUID == order.OrderGUID
+                        && d.ProductCode == request.ProductCode
+                        && !d.IsDeleted
+                    )
+                    .FirstAsync();
+                detailLookupSw.Stop();
+
+                var removed = false;
+                string? detailGuid = detail?.DetailGUID;
+                var detailWriteSw = Stopwatch.StartNew();
+                if (detail == null)
+                {
+                    if (request.Quantity <= 0)
+                    {
+                        // 扫码更新为 0 时没有现存行，无需插入再删除，直接返回 removed。
+                        removed = true;
+                    }
+                    else
+                    {
+                        detail = new WareHouseOrderDetails
+                        {
+                            DetailGUID = UuidHelper.GenerateUuid7(),
+                            OrderGUID = order.OrderGUID,
+                            StoreCode = request.StoreCode,
+                            ProductCode = request.ProductCode,
+                            Quantity = request.Quantity,
+                            OEMPrice = price,
+                            OEMAmount = price * request.Quantity,
+                            ImportPrice = importPrice,
+                            ImportAmount = importPrice * request.Quantity,
+                            IsDeleted = false,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            CreatedBy = currentUser,
+                            UpdatedBy = currentUser,
+                        };
+                        detailGuid = detail.DetailGUID;
+                        await _db.Insertable(detail).ExecuteCommandAsync();
+                    }
+                }
+                else
+                {
+                    detail.Quantity = request.Quantity;
+                    if (detail.Quantity <= 0)
+                    {
+                        removed = true;
+                        await SoftDeleteOrderDetailAsync(detail, currentUser, now);
+                    }
+                    else
+                    {
+                        detail.OEMAmount = detail.Quantity * detail.OEMPrice;
+                        detail.ImportAmount = detail.Quantity * detail.ImportPrice;
+                        detail.UpdatedAt = now;
+                        detail.UpdatedBy = currentUser;
+                        await _db.Updateable(detail).ExecuteCommandAsync();
+                    }
+                }
+                detailWriteSw.Stop();
+
+                var totalUpdateSw = Stopwatch.StartNew();
+                await UpdateOrderTotalAsync(order.OrderGUID);
+                totalUpdateSw.Stop();
+
+                var payloadSw = Stopwatch.StartNew();
+                var result = await BuildCartMutationResultAsync(
+                    order.OrderGUID,
+                    request.StoreCode,
+                    request.ProductCode,
+                    detailGuid,
+                    removed,
+                    traceId
+                );
+                payloadSw.Stop();
+
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.update.mutation.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} removed={Removed} totalQuantity={TotalQuantity} totalSku={TotalSku} orderMs={OrderMs} productMs={ProductMs} detailLookupMs={DetailLookupMs} detailWriteMs={DetailWriteMs} recalculateMs={RecalculateMs} mutationPayloadMs={MutationPayloadMs} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    result.Success,
+                    result.Data?.Removed ?? false,
+                    result.Data?.Summary.TotalQuantity ?? 0,
+                    result.Data?.Summary.TotalSku ?? 0,
+                    orderSw.ElapsedMilliseconds,
+                    productSw.ElapsedMilliseconds,
+                    detailLookupSw.ElapsedMilliseconds,
+                    detailWriteSw.ElapsedMilliseconds,
+                    totalUpdateSw.ElapsedMilliseconds,
+                    payloadSw.ElapsedMilliseconds,
+                    totalSw.ElapsedMilliseconds
+                );
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "[shop-scan-perf] traceId={TraceId} stage=cart.update.mutation.error storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} totalMs={TotalMs}",
+                    traceId,
+                    request.StoreCode,
+                    request.ProductCode,
+                    request.Quantity,
+                    totalSw.ElapsedMilliseconds
+                );
+                _logger.LogError(ex, "UpdateCartItemMutationAsync failed");
+                return new ApiResponse<StoreOrderCartMutationResultDto?>
+                {
+                    Success = false,
+                    Message = ex.Message,
+                };
+            }
+        }
+
+        private async Task<ApiResponse<StoreOrderCartMutationResultDto?>> BuildCartMutationResultAsync(
+            string orderGuid,
+            string storeCode,
+            string productCode,
+            string? detailGuid,
+            bool removed,
+            string traceId
+        )
+        {
+            var summarySw = Stopwatch.StartNew();
+            var summaryRow = await _db.Queryable<WareHouseOrderDetails>()
+                .Where(d => d.OrderGUID == orderGuid && !d.IsDeleted)
+                .Select(d => new StoreOrderCartMutationSummaryRow
+                {
+                    TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0),
+                    TotalSku = SqlFunc.AggregateDistinctCount(d.ProductCode),
+                    TotalAmount = SqlFunc.AggregateSum(d.OEMAmount ?? 0),
+                    TotalImportAmount = SqlFunc.AggregateSum(d.ImportAmount ?? 0),
+                })
+                .FirstAsync();
+            summarySw.Stop();
+
+            StoreOrderCartItemDto? changedItem = null;
+            var changedItemSw = Stopwatch.StartNew();
+            if (!removed)
+            {
+                changedItem = await QueryCartMutationChangedItemAsync(orderGuid, productCode, detailGuid);
+            }
+            changedItemSw.Stop();
+
+            // 轻量响应只校准摘要和当前商品行，移动端本地缓存负责合并其它行。
+            var result = new StoreOrderCartMutationResultDto
+            {
+                ProductCode = productCode,
+                Removed = removed || changedItem == null,
+                Summary = new StoreOrderCartMutationSummaryDto
+                {
+                    OrderGUID = orderGuid,
+                    StoreCode = storeCode,
+                    TotalAmount = summaryRow?.TotalAmount ?? 0,
+                    TotalImportAmount = summaryRow?.TotalImportAmount ?? 0,
+                    TotalQuantity = (int)(summaryRow?.TotalQuantity ?? 0),
+                    TotalSku = summaryRow?.TotalSku ?? 0,
+                },
+                ChangedItem = changedItem,
+            };
+
+            _logger.LogInformation(
+                "[shop-scan-perf] traceId={TraceId} stage=cart.mutation.payload.done storeCode={StoreCode} productCode={ProductCode} removed={Removed} totalQuantity={TotalQuantity} totalSku={TotalSku} summaryQueryMs={SummaryQueryMs} changedItemQueryMs={ChangedItemQueryMs}",
+                traceId,
+                storeCode,
+                productCode,
+                result.Removed,
+                result.Summary.TotalQuantity,
+                result.Summary.TotalSku,
+                summarySw.ElapsedMilliseconds,
+                changedItemSw.ElapsedMilliseconds
+            );
+
+            return new ApiResponse<StoreOrderCartMutationResultDto?>
+            {
+                Success = true,
+                Data = result,
+            };
+        }
+
+        private async Task<StoreOrderCartItemDto?> QueryCartMutationChangedItemAsync(
+            string orderGuid,
+            string productCode,
+            string? detailGuid
+        )
+        {
+            var query = _db.Queryable<WareHouseOrderDetails>()
+                .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
+                .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
+                .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
+                .LeftJoin<ProductGrade>((d, p, wp, dp, pg) => d.ProductCode == pg.ProductCode && !pg.IsDeleted)
+                .Where(d =>
+                    d.OrderGUID == orderGuid
+                    && d.ProductCode == productCode
+                    && !d.IsDeleted
+                );
+
+            if (!string.IsNullOrWhiteSpace(detailGuid))
+            {
+                query = query.Where(d => d.DetailGUID == detailGuid);
+            }
+
+            var item = await query
+                .Select(
+                    (d, p, wp, dp, pg) =>
+                        new StoreOrderCartItemDto
+                        {
+                            DetailGUID = d.DetailGUID,
+                            ProductCode = d.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            Grade = pg.Grade,
+                            ProductName = p.ProductName,
+                            ProductImage = p.ProductImage,
+                            Price = d.OEMPrice ?? 0,
+                            Quantity = d.Quantity ?? 0,
+                            AllocQuantity = d.AllocQuantity,
+                            Amount = d.OEMAmount ?? 0,
+                            ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
+                            ImportAmount =
+                                d.ImportAmount
+                                ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            Volume =
+                                (dp.PackingQuantity > 0)
+                                    ? (dp.UnitVolume / dp.PackingQuantity)
+                                    : dp.UnitVolume,
+                            MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                        }
+                )
+                .FirstAsync();
+
+            if (item?.Volume.HasValue == true)
+            {
+                item.OrderVolume = CalculateVolume(item.Volume, item.Quantity);
+                item.AllocVolume = CalculateVolume(item.Volume, item.AllocQuantity ?? 0);
+                item.TotalVolume = item.OrderVolume;
+            }
+
+            return item;
         }
 
         public async Task<ApiResponse<bool>> RemoveFromCartAsync(RemoveFromCartRequestDto request)

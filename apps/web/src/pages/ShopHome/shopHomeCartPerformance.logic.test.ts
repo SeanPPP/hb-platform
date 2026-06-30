@@ -225,10 +225,11 @@ async function main() {
         shopHomeSource.includes('return cartProductItems.slice(startIndex, startIndex + pageSize)') &&
         shopHomeSource.includes('const displayProducts = cartOnlyFilter ? cartProductPageItems : products') &&
         shopHomeSource.includes('const displayTotal = cartOnlyFilter ? cartProductItems.length : total') &&
-        shopHomeSource.includes('const cartProductCount = cart?.items.length ?? 0') &&
+        shopHomeSource.includes('const cartProductCount = (cart?.items.length || cart?.totalSKU) ?? 0') &&
         shopHomeSource.includes('type={cartOnlyFilter ?') &&
         shopHomeSource.includes('icon={<ShoppingCartOutlined />}') &&
-        shopHomeSource.includes('setCartOnlyFilter((current) => !current)') &&
+        shopHomeSource.includes('const handleCartOnlyFilterToggle = useCallback') &&
+        shopHomeSource.includes('await ensureFullCart()') &&
         shopHomeSource.includes("t('shop.cartProductsFilter', { count: cartProductCount })") &&
         shopHomeSource.includes('cartOnlyFilter ? t(') &&
         shopHomeSource.includes("t('shop.noCartProductsFound')"),
@@ -244,28 +245,44 @@ async function main() {
         shopHomeSource.includes('const cartQuantityByProductCode = useMemo<Record<string, number>>(() => {') &&
         shopHomeSource.includes('acc[item.productCode] = item.quantity') &&
         shopHomeSource.includes('cartOnlyFilter') &&
-        shopHomeSource.includes('const currentCartQuantity = cartQuantityByProductCode[productCode] ?? 0') &&
+        shopHomeSource.includes('const currentCartQuantity = cart?.isSummaryOnly') &&
         shopHomeSource.includes('const dynamicData = cartOnlyFilter') &&
         shopHomeSource.includes('? cartProductDynamicDataMap[product.productCode]') &&
         shopHomeSource.includes(': dynamicDataMap[product.productCode]') &&
         shopHomeSource.includes('const syncedDynamicData: StoreOrderDynamicData = {') &&
-        shopHomeSource.includes('cartQuantity: cartQuantityByProductCode[product.productCode] ?? 0') &&
+        shopHomeSource.includes('cart?.isSummaryOnly') &&
+        shopHomeSource.includes('dynamicData?.cartQuantity ?? 0') &&
+        shopHomeSource.includes('cartQuantityByProductCode[product.productCode] ?? dynamicData?.cartQuantity ?? 0') &&
         shopHomeSource.includes('dynamicData={cardDynamicData}'),
-      '商品卡没有用全局 cart.items 覆盖 ProductCard dynamicData.cartQuantity',
+      '商品卡没有在 summary-only 时保留 dynamic-data.cartQuantity，或 full cart 时没有用全局 cart.items 覆盖数量',
     )
   })
   if (cartOnlyDynamicDataFailure) failures.push(cartOnlyDynamicDataFailure)
 
+  const summaryCartFailure = await runTest('商城首页 summary-only 不应阻断当前页商品卡购物车状态', () => {
+    assert(
+      shopHomeSource.includes('const ensureFullCart = useCallback') &&
+        shopHomeSource.includes('selectedStoreCodeRef.current !== storeCode') &&
+        shopHomeSource.includes('cart && !cart.isSummaryOnly && cart.storeCode === storeCode') &&
+        shopHomeSource.includes('cart?.isSummaryOnly || cart?.items.length') &&
+        shopHomeSource.includes('summary 只服务首屏；需要明细交互时再补 full cart') &&
+        shopHomeSource.includes('const fullCart = await ensureFullCart()') &&
+        shopHomeSource.includes('fullCart?.items.find((item) => item.productCode === productCode)'),
+      'summary-only 下缺少按需 full cart、防陈旧门店保护，或删除商品没有先补 detailGUID 明细',
+    )
+  })
+  if (summaryCartFailure) failures.push(summaryCartFailure)
+
   const cartClearSyncFailure = await runTest('清空购物车后应清理卡片乐观状态和未提交数量更新', () => {
     assert(
-      shopHomeSource.includes('if (cart?.items.length) {\n      return\n    }') &&
+      shopHomeSource.includes('if (cart?.isSummaryOnly || cart?.items.length) {\n      return\n    }') &&
         shopHomeSource.includes('Object.values(quantityUpdateTimersRef.current).forEach((timer) => window.clearTimeout(timer))') &&
         shopHomeSource.includes('quantityUpdateTimersRef.current = {}') &&
         shopHomeSource.includes('quantityUpdateVersionRef.current = {}') &&
         shopHomeSource.includes('setOptimisticCartQuantityMap({})') &&
         shopHomeSource.includes('setRemovingCartProductMap({})') &&
         shopHomeSource.includes('setQuantityLoadingMap({})') &&
-        shopHomeSource.includes('[cart?.items.length]'),
+        shopHomeSource.includes('[cart?.isSummaryOnly, cart?.items.length]'),
       '购物车清空后没有取消未提交数量更新，或没有清理商品卡乐观/删除中状态',
     )
   })
@@ -503,13 +520,13 @@ async function main() {
   })
   if (bestSellerDateRangeFailure) failures.push(bestSellerDateRangeFailure)
 
-  const bestSellerStatusNoticeFailure = await runTest('热销商品非 Fresh 状态应提示统计未就绪或回退中', () => {
+  const bestSellerStatusNoticeFailure = await runTest('热销商品非 Fresh 状态应提示统计未就绪', () => {
     assert(
       bestSellersSource.includes('const isBestSellerStatisticFresh = statisticStatus ===') &&
         bestSellersSource.includes('bestSellerStatusNotice') &&
-        bestSellersSource.includes('商品统计未就绪或正在回退 POSM 实时数据，加载可能较慢。') &&
+        bestSellersSource.includes('商品统计未就绪，请先生成商品统计。') &&
         bestSellersSource.includes('getBestSellerEmptyText()') &&
-        bestSellersSource.includes('统计未就绪或正在回退 POSM，暂未返回热销商品。'),
+        bestSellersSource.includes('统计未就绪，暂未返回热销商品。'),
       '热销商品缺少非 Fresh 状态提示，或空数据文案没有区分统计未就绪和真无数据',
     )
   })

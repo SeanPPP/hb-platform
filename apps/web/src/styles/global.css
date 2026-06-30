@@ -1909,6 +1909,14 @@ body {
   text-align: center;
 }
 
+.shop-cart-drawer-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 180px;
+}
+
 .shop-orders-page {
   display: flex;
   flex-direction: column;

@@ -26,7 +26,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
@@ -342,6 +342,18 @@ export default function Cart() {
     },
     storeCode: selectedStoreCode,
   });
+  const globalCartMutationPending =
+    useIsMutating({ mutationKey: ["cartMutation", selectedStoreCode ?? null] }) > 0;
+  // 购物车写操作 pending 时禁止提交，避免提交到乐观缓存尚未确认的数量。
+  const cartMutationPending =
+    submitPending ||
+    globalCartMutationPending ||
+    scanResult.isBusy ||
+    updateCartQuantity.isPending ||
+    removeCartLine.isPending ||
+    clearCart.isPending;
+  const cartMutationPendingRef = useRef(cartMutationPending);
+  cartMutationPendingRef.current = cartMutationPending;
 
   const hidScanner = useHidBarcodeScanner({
     onScan: async (barcode) => {
@@ -417,6 +429,11 @@ export default function Cart() {
   }
 
   async function handleClearCart() {
+    if (cartMutationPendingRef.current) {
+      setSnackbarMessage(t("common:loading"));
+      return;
+    }
+
     try {
       await clearCart.mutateAsync();
       setOpenSwipeDetailGUID(null);
@@ -442,6 +459,11 @@ export default function Cart() {
   }
 
   async function handleSubmitCart() {
+    if (cartMutationPendingRef.current) {
+      setSnackbarMessage(t("common:loading"));
+      return;
+    }
+
     if (!selectedStoreCode) {
       setSnackbarMessage(t("messages.needStore"));
       return;
@@ -615,7 +637,7 @@ export default function Cart() {
               mode="contained"
               icon="arrow-right"
               contentStyle={[styles.checkoutButtonContent, { minHeight: checkoutButtonHeight }]}
-              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+              disabled={!selectedStoreCode || !cartQuery.total || cartMutationPending}
               loading={submitPending}
               onPress={confirmSubmitCart}
               style={[styles.checkoutButton, styles.checkoutSubmitButton]}
@@ -628,7 +650,7 @@ export default function Cart() {
               mode="outlined"
               icon="delete-sweep-outline"
               contentStyle={styles.clearCartButtonContent}
-              disabled={!selectedStoreCode || !cartQuery.total || clearCart.isPending || submitPending}
+              disabled={!selectedStoreCode || !cartQuery.total || cartMutationPending}
               loading={clearCart.isPending}
               onPress={confirmClearCart}
               style={styles.checkoutClearButton}

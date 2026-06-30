@@ -189,7 +189,13 @@ namespace BlazorApp.Api.Data
                 ["IX_WarehouseProduct_ProductCode_NotDeleted"] = ("WarehouseProduct", "CREATE NONCLUSTERED INDEX [IX_WarehouseProduct_ProductCode_NotDeleted] ON [WarehouseProduct] ([ProductCode]) WHERE [IsDeleted] = 0"),
                 ["IX_Product_ProductCategoryGUID"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_ProductCategoryGUID] ON [Product] ([ProductCategoryGUID]) WHERE [ProductCategoryGUID] IS NOT NULL"),
                 ["IX_Product_IsActive"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_IsActive] ON [Product] ([IsActive])"),
-                ["IX_Product_Search"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Search] ON [Product] ([ProductName], [ProductCode], [Barcode], [ItemNumber], [LocalSupplierCode], [IsActive])")
+                ["IX_Product_Search"] = ("Product", "CREATE NONCLUSTERED INDEX [IX_Product_Search] ON [Product] ([ProductName], [ProductCode], [Barcode], [ItemNumber], [LocalSupplierCode], [IsActive])"),
+
+                // 购物车重载按门店、订单明细和商品编码回查，补齐关键连接过滤索引；生产大表需在低峰受控执行。
+                ["IX_WareHouseOrder_StoreCode_FlowStatus_IsDeleted"] = ("WareHouseOrder", "CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_StoreCode_FlowStatus_IsDeleted] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted])"),
+                ["IX_WareHouseOrderDetails_OrderGUID_IsDeleted_ProductCode"] = ("WareHouseOrderDetails", "CREATE NONCLUSTERED INDEX [IX_WareHouseOrderDetails_OrderGUID_IsDeleted_ProductCode] ON [WareHouseOrderDetails] ([OrderGUID], [IsDeleted], [ProductCode])"),
+                ["IX_ProductGrade_ProductCode_IsDeleted"] = ("ProductGrade", "CREATE NONCLUSTERED INDEX [IX_ProductGrade_ProductCode_IsDeleted] ON [ProductGrade] ([ProductCode], [IsDeleted])"),
+                ["IX_DomesticProduct_ProductCode"] = ("DomesticProduct", "CREATE NONCLUSTERED INDEX [IX_DomesticProduct_ProductCode] ON [DomesticProduct] ([ProductCode])")
             };
 
             foreach (var index in relatedIndexes)
