@@ -340,55 +340,57 @@ export default function Login() {
   };
 
   return (
-    <View style={styles.root}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={0}
+    >
       <StatusBar barStyle="light-content" backgroundColor={BRAND_RED} />
 
-      {/* ── 品牌区 ── */}
-      <View style={styles.brandSection}>
-        <View style={styles.topActions}>
-          <TouchableOpacity
-            style={styles.langSwitch}
-            onPress={() => setAppLanguage(i18n.language === "zh" ? "en" : "zh")}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.langSwitchText}>
-              {t(i18n.language === "zh" ? "languageSwitch.toEnglish" : "languageSwitch.toChinese")}
-            </Text>
-          </TouchableOpacity>
-        </View>
-        <Animated.View
-          style={{
-            opacity: logoOpacity,
-            transform: [{ scale: logoScale }],
-          }}
-        >
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>HB</Text>
-          </View>
-        </Animated.View>
-
-        <Animated.View
-          style={{
-            alignItems: "center",
-            opacity: titleOpacity,
-            transform: [{ translateY: titleTranslateY }],
-          }}
-        >
-          <Text style={styles.brandTitle}>{t("common:appName")}</Text>
-          <Text style={styles.brandSubtitle}>{t("subtitle")}</Text>
-        </Animated.View>
-      </View>
-
-      {/* ── 表单区 ── */}
-      <KeyboardAvoidingView
-        style={styles.formSection}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      {/* 软键盘弹出时让品牌区和表单一起滚动，避免固定品牌区把输入框挤到键盘后面。 */}
+      <ScrollView
+        contentContainerStyle={styles.pageScrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        <ScrollView
-          contentContainerStyle={styles.formScrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
+        {/* ── 品牌区 ── */}
+        <View style={styles.brandSection}>
+          <View style={styles.topActions}>
+            <TouchableOpacity
+              style={styles.langSwitch}
+              onPress={() => setAppLanguage(i18n.language === "zh" ? "en" : "zh")}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.langSwitchText}>
+                {t(i18n.language === "zh" ? "languageSwitch.toEnglish" : "languageSwitch.toChinese")}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <Animated.View
+            style={{
+              opacity: logoOpacity,
+              transform: [{ scale: logoScale }],
+            }}
+          >
+            <View style={styles.logoCircle}>
+              <Text style={styles.logoText}>HB</Text>
+            </View>
+          </Animated.View>
+
+          <Animated.View
+            style={{
+              alignItems: "center",
+              opacity: titleOpacity,
+              transform: [{ translateY: titleTranslateY }],
+            }}
+          >
+            <Text style={styles.brandTitle}>{t("common:appName")}</Text>
+            <Text style={styles.brandSubtitle}>{t("subtitle")}</Text>
+          </Animated.View>
+        </View>
+
+        {/* ── 表单区 ── */}
+        <View style={styles.formSection}>
           <View style={styles.formCard}>
             {updateRestartReady ? (
               <View style={styles.updatePrompt}>
@@ -560,8 +562,8 @@ export default function Login() {
               </>
             )}
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </View>
+      </ScrollView>
 
       <Portal>
         <Modal
@@ -624,7 +626,7 @@ export default function Login() {
       >
         {error}
       </Snackbar>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -694,9 +696,9 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.85)",
     letterSpacing: 1,
   },
+  pageScrollContent: { flexGrow: 1 },
   // 表单区
-  formSection: { flex: 1, paddingHorizontal: 24, paddingTop: 24 },
-  formScrollContent: { flexGrow: 1, justifyContent: "center", paddingBottom: 20 },
+  formSection: { flexGrow: 1, justifyContent: "center", paddingBottom: 20, paddingHorizontal: 24, paddingTop: 24 },
   formCard: {
     backgroundColor: "#FFFFFF",
     borderRadius: 16,
