@@ -15,6 +15,7 @@ import {
   Pagination,
   Popconfirm,
   Space,
+  Spin,
   Typography,
   message,
 } from 'antd'
@@ -34,6 +35,7 @@ interface ShopCartDrawerProps {
   open: boolean
   onClose: () => void
   cart: StoreOrderCart | null
+  loading?: boolean
   onCartChanged: () => Promise<void>
 }
 
@@ -41,12 +43,17 @@ export default function ShopCartDrawer({
   open,
   onClose,
   cart,
+  loading = false,
   onCartChanged,
 }: ShopCartDrawerProps) {
   const { t } = useTranslation()
   const cartItems = cart?.items ?? []
   const totalQuantity = cart?.totalQuantity ?? 0
   const totalImportAmount = cart?.totalImportAmount ?? 0
+  const isSummaryOnly = Boolean(cart?.isSummaryOnly)
+  const hasCartSummary = Boolean(totalQuantity || cart?.totalSKU || totalImportAmount)
+  const isCartDetailLoading = loading || (isSummaryOnly && hasCartSummary)
+  const canSubmitCart = !isCartDetailLoading && cartItems.length > 0
   const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({})
   const [remarks, setRemarks] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -228,7 +235,7 @@ export default function ShopCartDrawer({
       width={460}
       extra={<Button onClick={onClose}>{t('common.close', 'Close')}</Button>}
       footer={
-        cartItems.length ? (
+        cartItems.length || hasCartSummary ? (
           <div className="shop-cart-drawer-footer">
             <div className="shop-cart-drawer-total-row">
               <Text>{t('shop.totalQuantity', 'Total Quantity')}</Text>
@@ -247,8 +254,16 @@ export default function ShopCartDrawer({
               rows={2}
               maxLength={500}
               showCount
+              disabled={!canSubmitCart || submitting}
             />
-            <Button type="primary" size="large" block onClick={handleSubmitWithConfirm} loading={submitting}>
+            <Button
+              type="primary"
+              size="large"
+              block
+              onClick={handleSubmitWithConfirm}
+              loading={submitting || isCartDetailLoading}
+              disabled={!canSubmitCart}
+            >
               {t('shop.submitOrder', 'Submit Order')}
             </Button>
           </div>
@@ -356,6 +371,13 @@ export default function ShopCartDrawer({
             />
           </div>
         </>
+      ) : isCartDetailLoading ? (
+        <div className="shop-cart-drawer-loading">
+          <Spin />
+          <Text type="secondary">
+            {t('shop.loadingCartItems', 'Loading cart items...')}
+          </Text>
+        </div>
       ) : (
         <Empty description={t('shop.emptyCart', 'Your cart is empty')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
       )}

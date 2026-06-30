@@ -166,6 +166,31 @@ namespace BlazorApp.Api.Controllers.React
         {
             var userId = GetCurrentUserId();
             var normalizedStoreCode = NormalizeAuthorizationStoreCode(storeCode);
+            var permissionsCacheKey = BuildAuthorizationCacheKey(
+                "permissions",
+                userId,
+                normalizedStoreCode,
+                checkType,
+                string.Join("|", permissions)
+            );
+
+            if (
+                !string.IsNullOrWhiteSpace(userId)
+                && _cache.TryGetValue<bool>(permissionsCacheKey, out var cachedPermissionsResult)
+            )
+            {
+                LogScanAuthorizationMetric(
+                    "authorization.permissions",
+                    normalizedStoreCode,
+                    checkType,
+                    true,
+                    0
+                );
+                return cachedPermissionsResult;
+            }
+
+            var sw = Stopwatch.StartNew();
+            var isAllowed = false;
             foreach (var permission in permissions)
             {
                 if (
@@ -177,11 +202,26 @@ namespace BlazorApp.Api.Controllers.React
                     )
                 )
                 {
-                    return true;
+                    isAllowed = true;
+                    break;
                 }
             }
 
-            return false;
+            sw.Stop();
+            if (!string.IsNullOrWhiteSpace(userId))
+            {
+                // 扫码会连续做 lookup/add，整组权限结果短 TTL 复用，语义仍由逐 policy 判断决定。
+                SetAuthorizationCache(permissionsCacheKey, isAllowed);
+            }
+
+            LogScanAuthorizationMetric(
+                "authorization.permissions",
+                normalizedStoreCode,
+                checkType,
+                false,
+                sw.ElapsedMilliseconds
+            );
+            return isAllowed;
         }
 
         private async Task<IActionResult?> RequireAnyPermissionAsync(params string[] permissions)
@@ -256,9 +296,19 @@ namespace BlazorApp.Api.Controllers.React
             string permission
         )
         {
+            var sw = Stopwatch.StartNew();
             if (string.IsNullOrWhiteSpace(userId))
             {
                 var uncached = await _authorizationService.AuthorizeAsync(User, null, permission);
+                sw.Stop();
+                LogScanAuthorizationMetric(
+                    "authorization.policy",
+                    normalizedStoreCode,
+                    checkType,
+                    false,
+                    sw.ElapsedMilliseconds,
+                    permission
+                );
                 return uncached.Succeeded;
             }
 
@@ -271,11 +321,29 @@ namespace BlazorApp.Api.Controllers.React
             );
             if (_cache.TryGetValue<bool>(cacheKey, out var cachedResult))
             {
+                sw.Stop();
+                LogScanAuthorizationMetric(
+                    "authorization.policy",
+                    normalizedStoreCode,
+                    checkType,
+                    true,
+                    sw.ElapsedMilliseconds,
+                    permission
+                );
                 return cachedResult;
             }
 
             var result = await _authorizationService.AuthorizeAsync(User, null, permission);
+            sw.Stop();
             SetAuthorizationCache(cacheKey, result.Succeeded);
+            LogScanAuthorizationMetric(
+                "authorization.policy",
+                normalizedStoreCode,
+                checkType,
+                false,
+                sw.ElapsedMilliseconds,
+                permission
+            );
             return result.Succeeded;
         }
 
@@ -301,13 +369,28 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<bool> HasGlobalWarehouseOrderScopeAsync()
         {
+            var traceId = GetExplicitScanTraceId();
+            var sw = Stopwatch.StartNew();
             // 仅真实管理员或显式仓库订货管理权限拥有全分店订货范围；角色名本身不绕过订单 scope。
-            return IsRealAdmin()
+            var hasScope = IsRealAdmin()
                 || await HasAnyPermissionAsync(new[]
                 {
                     Permissions.Warehouse.ManageOrders,
                     Permissions.Warehouse.Manage
                 });
+            sw.Stop();
+
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=authorization.global-scope allowed={Allowed} elapsedMs={ElapsedMs}",
+                    traceId,
+                    hasScope,
+                    sw.ElapsedMilliseconds
+                );
+            }
+
+            return hasScope;
         }
 
         private async Task<IActionResult?> RequireStoreScopeAsync(string? storeCode)
@@ -351,12 +434,15 @@ namespace BlazorApp.Api.Controllers.React
                     && _cache.TryGetValue<bool>(cacheKey, out var cachedScopeAllowed)
                 )
                 {
+                    LogAssignedStoreScopeMetric(normalizedStoreCode, true, 0, null);
                     return cachedScopeAllowed ? null : Forbid();
                 }
 
+                var sw = Stopwatch.StartNew();
                 var isAllowed =
                     await _storeScopeService.CanAccessStoreCodeAsync(storeCode)
                     || await CanAccessAssignedStoreCodeAsync(storeCode);
+                sw.Stop();
 
                 if (!string.IsNullOrWhiteSpace(userGuid))
                 {
@@ -364,6 +450,7 @@ namespace BlazorApp.Api.Controllers.React
                     SetAuthorizationCache(cacheKey, isAllowed);
                 }
 
+                LogAssignedStoreScopeMetric(normalizedStoreCode, false, sw.ElapsedMilliseconds, isAllowed);
                 return isAllowed ? null : Forbid();
             }
 
@@ -397,6 +484,62 @@ namespace BlazorApp.Api.Controllers.React
             );
         }
 
+        private void LogScanAuthorizationMetric(
+            string stage,
+            string normalizedStoreCode,
+            string checkType,
+            bool cacheHit,
+            long elapsedMs,
+            string? permission = null
+        )
+        {
+            var traceId = GetExplicitScanTraceId();
+            if (string.IsNullOrWhiteSpace(traceId) || !IsScanAuthorizationCheckType(checkType))
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "[shop-scan-perf] traceId={TraceId} stage={Stage} storeCode={StoreCode} checkType={CheckType} permission={Permission} cacheHit={CacheHit} elapsedMs={ElapsedMs}",
+                traceId,
+                stage,
+                normalizedStoreCode,
+                checkType,
+                permission ?? "all",
+                cacheHit,
+                elapsedMs
+            );
+        }
+
+        private void LogAssignedStoreScopeMetric(
+            string normalizedStoreCode,
+            bool cacheHit,
+            long elapsedMs,
+            bool? isAllowed
+        )
+        {
+            var traceId = GetExplicitScanTraceId();
+            if (string.IsNullOrWhiteSpace(traceId))
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "[shop-scan-perf] traceId={TraceId} stage=authorization.assigned-store-scope storeCode={StoreCode} cacheHit={CacheHit} allowed={Allowed} elapsedMs={ElapsedMs}",
+                traceId,
+                normalizedStoreCode,
+                cacheHit,
+                isAllowed,
+                elapsedMs
+            );
+        }
+
+        private static bool IsScanAuthorizationCheckType(string checkType)
+        {
+            return string.Equals(checkType, ScanOrderFlowCheckType, StringComparison.Ordinal)
+                || string.Equals(checkType, CartFlowCheckType, StringComparison.Ordinal);
+        }
+
         private void SetAuthorizationCache(string cacheKey, bool isAllowed)
         {
             var duration = isAllowed
@@ -420,7 +563,20 @@ namespace BlazorApp.Api.Controllers.React
                 return false;
             }
 
+            var sw = Stopwatch.StartNew();
             var storesResult = await _userService.GetUserStoresAsync(userGuid);
+            sw.Stop();
+            var traceId = GetExplicitScanTraceId();
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                _logger.LogInformation(
+                    "[shop-scan-perf] traceId={TraceId} stage=authorization.user-stores-query elapsedMs={ElapsedMs} success={Success} storeCount={StoreCount}",
+                    traceId,
+                    sw.ElapsedMilliseconds,
+                    storesResult.Success,
+                    storesResult.Data?.Count ?? 0
+                );
+            }
             if (!storesResult.Success || storesResult.Data == null)
             {
                 return false;
@@ -612,6 +768,13 @@ namespace BlazorApp.Api.Controllers.React
         {
             return User?.FindFirst("userId")?.Value
                 ?? User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        }
+
+        private bool IsScanCartMutationRoute()
+        {
+            // 同一个 action 绑定普通和扫码路由；只让 scan-* 路径走轻量响应，保持普通 API 兼容。
+            return Request.Path.Value?.Contains("/cart/scan-", StringComparison.OrdinalIgnoreCase)
+                == true;
         }
 
         /// <summary>
@@ -861,6 +1024,37 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取分店当前购物车的轻量汇总
+        /// </summary>
+        [HttpGet("cart/{storeCode}/summary")]
+        public async Task<IActionResult> GetActiveCartSummary(string storeCode)
+        {
+            try
+            {
+                var forbidden =
+                    await RequireAnyPermissionAsync(OrderReadPermissions)
+                    ?? await RequireAssignedStoreScopeAsync(storeCode);
+                if (forbidden != null)
+                {
+                    return forbidden;
+                }
+
+                var result = await _service.GetActiveCartSummaryAsync(storeCode);
+                if (result.Success)
+                {
+                    return Ok(new { success = true, data = result.Data });
+                }
+
+                return BadRequest(new { success = false, message = result.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetActiveCartSummary failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 添加到购物车
         /// </summary>
         [HttpPost("cart/add")]
@@ -889,6 +1083,29 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var serviceSw = Stopwatch.StartNew();
+                if (IsScanCartMutationRoute())
+                {
+                    var mutationResult = await _service.AddToCartMutationAsync(request);
+                    serviceSw.Stop();
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.add.controller.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} totalQuantity={TotalQuantity} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        mutationResult.Success,
+                        mutationResult.Data?.Summary.TotalQuantity ?? 0,
+                        permissionSw.ElapsedMilliseconds,
+                        serviceSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    if (mutationResult.Success)
+                    {
+                        return Ok(new { success = true, data = mutationResult.Data });
+                    }
+                    return BadRequest(new { success = false, message = mutationResult.Message });
+                }
+
                 var result = await _service.AddToCartAsync(request);
                 serviceSw.Stop();
                 _logger.LogInformation(
@@ -954,6 +1171,29 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var serviceSw = Stopwatch.StartNew();
+                if (IsScanCartMutationRoute())
+                {
+                    var mutationResult = await _service.UpdateCartItemMutationAsync(request);
+                    serviceSw.Stop();
+                    _logger.LogInformation(
+                        "[shop-scan-perf] traceId={TraceId} stage=cart.update.controller.done storeCode={StoreCode} productCode={ProductCode} quantity={Quantity} success={Success} totalQuantity={TotalQuantity} permissionMs={PermissionMs} serviceMs={ServiceMs} totalMs={TotalMs}",
+                        traceId,
+                        request.StoreCode,
+                        request.ProductCode,
+                        request.Quantity,
+                        mutationResult.Success,
+                        mutationResult.Data?.Summary.TotalQuantity ?? 0,
+                        permissionSw.ElapsedMilliseconds,
+                        serviceSw.ElapsedMilliseconds,
+                        totalSw.ElapsedMilliseconds
+                    );
+                    if (mutationResult.Success)
+                    {
+                        return Ok(new { success = true, data = mutationResult.Data });
+                    }
+                    return BadRequest(new { success = false, message = mutationResult.Message });
+                }
+
                 var result = await _service.UpdateCartItemAsync(request);
                 serviceSw.Stop();
                 _logger.LogInformation(

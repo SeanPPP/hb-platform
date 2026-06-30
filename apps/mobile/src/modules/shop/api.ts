@@ -12,6 +12,7 @@ import type {
   AddToCartPayload,
   UpdateCartQuantityPayload,
   StoreOrderCart,
+  StoreOrderCartMutationResult,
 } from "@/modules/shop/types";
 import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
 import { buildScanLookupPayload } from "@/modules/shop/scan-lookup-payload";
@@ -285,6 +286,34 @@ function normalizeCart(payload: Partial<StoreOrderCart> | null | undefined): Sto
   };
 }
 
+function normalizeCartMutationResult(payload: ApiItem | null | undefined): StoreOrderCartMutationResult | null {
+  if (!payload) {
+    return null;
+  }
+
+  const summary = (payload.summary ?? payload.Summary ?? {}) as ApiItem;
+  const changedItemPayload = (payload.changedItem ?? payload.ChangedItem) as ApiItem | null | undefined;
+  const changedItem = changedItemPayload ? transformCartItem(changedItemPayload) : null;
+  const productCode =
+    getStringValue(payload.productCode, payload.ProductCode, changedItem?.productCode) ?? "";
+
+  return {
+    productCode,
+    removed: Boolean(payload.removed ?? payload.Removed ?? false),
+    changedItem,
+    summary: {
+      orderGUID: getStringValue(summary.orderGUID, summary.OrderGUID) ?? "",
+      storeCode: getStringValue(summary.storeCode, summary.StoreCode),
+      totalAmount: getFiniteNumber(summary.totalAmount, summary.TotalAmount) ?? 0,
+      totalImportAmount:
+        getFiniteNumber(summary.totalImportAmount, summary.TotalImportAmount) ?? 0,
+      totalQuantity: getFiniteNumber(summary.totalQuantity, summary.TotalQuantity) ?? 0,
+      totalSku:
+        getFiniteNumber(summary.totalSku, summary.totalSKU, summary.TotalSku, summary.TotalSKU) ?? 0,
+    },
+  };
+}
+
 export async function getStoresByUserGuid(userGuid: string): Promise<Store[]> {
   const stores = await getUserStoresApi(userGuid);
 
@@ -374,26 +403,34 @@ export async function getCart(storeCode: string): Promise<StoreOrderCart | null>
 export async function addToCart(
   payload: AddToCartPayload,
   scanTraceId?: string
-): Promise<StoreOrderCart | null> {
+): Promise<StoreOrderCart | StoreOrderCartMutationResult | null> {
   const path = scanTraceId ? "/react/v1/store-order/cart/scan-add" : "/react/v1/store-order/cart/add";
   const response = await apiClient.post(
     path,
     payload,
     buildScanTraceHeaders(scanTraceId)
   );
+  if (scanTraceId) {
+    return normalizeCartMutationResult(response.data as ApiItem | null);
+  }
+
   return normalizeCart(response.data as Partial<StoreOrderCart> | null);
 }
 
 export async function updateCartQuantity(
   payload: UpdateCartQuantityPayload,
   scanTraceId?: string
-): Promise<StoreOrderCart | null> {
+): Promise<StoreOrderCart | StoreOrderCartMutationResult | null> {
   const path = scanTraceId ? "/react/v1/store-order/cart/scan-update" : "/react/v1/store-order/cart/update";
   const response = await apiClient.post(
     path,
     payload,
     buildScanTraceHeaders(scanTraceId)
   );
+  if (scanTraceId) {
+    return normalizeCartMutationResult(response.data as ApiItem | null);
+  }
+
   return normalizeCart(response.data as Partial<StoreOrderCart> | null);
 }
 

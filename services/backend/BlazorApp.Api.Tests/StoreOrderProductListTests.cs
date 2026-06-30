@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
@@ -1260,6 +1261,214 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(10m, result.Data.TotalImportAmount);
         Assert.Equal(1, result.Data.TotalSKU);
         Assert.Contains(_sqlLogs, log => log.Contains("SUM", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task AddToCartMutationAsync_新增Sku返回摘要和变更行()
+    {
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", oemPrice: 3m, importPrice: 2m);
+
+        var result = await CreateService().AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 5,
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data!.Removed);
+        Assert.Equal("P001", result.Data.ProductCode);
+        Assert.Equal(5, result.Data.Summary.TotalQuantity);
+        Assert.Equal(1, result.Data.Summary.TotalSku);
+        Assert.Equal(15m, result.Data.Summary.TotalAmount);
+        Assert.Equal(10m, result.Data.Summary.TotalImportAmount);
+        Assert.NotNull(result.Data.ChangedItem);
+        Assert.Equal("P001", result.Data.ChangedItem!.ProductCode);
+        Assert.Equal(5m, result.Data.ChangedItem.Quantity);
+        Assert.DoesNotContain(
+            "\"items\"",
+            JsonSerializer.Serialize(result.Data),
+            StringComparison.OrdinalIgnoreCase
+        );
+    }
+
+    [Fact]
+    public async Task AddToCartMutationAsync_已有Sku累加并返回当前行()
+    {
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", oemPrice: 3m, importPrice: 2m);
+        var service = CreateService();
+
+        await service.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 2,
+        });
+        var result = await service.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 3,
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data!.Removed);
+        Assert.Equal(5, result.Data.Summary.TotalQuantity);
+        Assert.Equal(15m, result.Data.Summary.TotalAmount);
+        Assert.Equal(5m, result.Data.ChangedItem?.Quantity);
+    }
+
+    [Fact]
+    public async Task UpdateCartItemMutationAsync_覆盖数量并返回当前行()
+    {
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", oemPrice: 3m, importPrice: 2m);
+        var service = CreateService();
+        await service.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 2,
+        });
+
+        var result = await service.UpdateCartItemMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 7,
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.False(result.Data!.Removed);
+        Assert.Equal(7, result.Data.Summary.TotalQuantity);
+        Assert.Equal(21m, result.Data.Summary.TotalAmount);
+        Assert.Equal(7m, result.Data.ChangedItem?.Quantity);
+    }
+
+    [Fact]
+    public async Task UpdateCartItemMutationAsync_数量为零删除行()
+    {
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", oemPrice: 3m, importPrice: 2m);
+        var service = CreateService();
+        await service.AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 2,
+        });
+
+        var result = await service.UpdateCartItemMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 0,
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.True(result.Data!.Removed);
+        Assert.Null(result.Data.ChangedItem);
+        Assert.Equal(0, result.Data.Summary.TotalQuantity);
+        Assert.Equal(0, result.Data.Summary.TotalSku);
+        Assert.Equal(0m, result.Data.Summary.TotalAmount);
+    }
+
+    [Fact]
+    public async Task GetActiveCartSummaryAsync_ReturnsTotalsWithoutItems()
+    {
+        await SeedStoreOrderAsync("ORDER-CART-SUMMARY", flowStatus: 0);
+        await SeedDomesticProductAsync("P001", unitVolume: 1.2m, packingQuantity: 6);
+        await SeedDomesticProductAsync("P002", unitVolume: 0.9m, packingQuantity: 3);
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = "ORDER-CART-SUMMARY-P001",
+            OrderGUID = "ORDER-CART-SUMMARY",
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 5m,
+            AllocQuantity = 2m,
+            ImportPrice = 3m,
+            ImportAmount = null,
+            OEMPrice = 6m,
+            OEMAmount = 30m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = "ORDER-CART-SUMMARY-P002",
+            OrderGUID = "ORDER-CART-SUMMARY",
+            StoreCode = "S001",
+            ProductCode = "P002",
+            Quantity = 2m,
+            AllocQuantity = 1m,
+            ImportPrice = 4m,
+            ImportAmount = 11m,
+            OEMPrice = 8m,
+            OEMAmount = 16m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = "ORDER-CART-SUMMARY-DELETED",
+            OrderGUID = "ORDER-CART-SUMMARY",
+            StoreCode = "S001",
+            ProductCode = "P003",
+            Quantity = 99m,
+            AllocQuantity = 99m,
+            ImportPrice = 9m,
+            ImportAmount = 999m,
+            OEMPrice = 9m,
+            OEMAmount = 891m,
+            IsDeleted = true,
+        }).ExecuteCommandAsync();
+
+        _sqlLogs.Clear();
+        var result = await CreateService().GetActiveCartSummaryAsync("S001");
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(7, result.Data.TotalQuantity);
+        Assert.Equal(3, result.Data.TotalAllocQuantity);
+        Assert.Equal(2, result.Data.TotalSKU);
+        Assert.Equal(26m, result.Data.TotalImportAmount);
+        Assert.Equal(1.6m, result.Data.TotalVolume, 10);
+        Assert.Equal(1.6m, result.Data.TotalOrderVolume, 10);
+        Assert.Equal(0.7m, result.Data.TotalAllocVolume, 10);
+        Assert.Equal("测试地址", result.Data.StoreAddress);
+        Assert.Empty(result.Data.Items);
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("WarehouseProduct", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductGrade", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductImage", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.DoesNotContain(
+            _sqlLogs,
+            log => log.Contains("ProductName", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public async Task GetActiveCartSummaryAsync_EmptyCartReturnsNull()
+    {
+        await SeedStoreOrderAsync("ORDER-NON-CART", flowStatus: 1);
+
+        var result = await CreateService().GetActiveCartSummaryAsync("S001");
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data);
     }
 
     [Fact]

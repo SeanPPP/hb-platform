@@ -33,8 +33,6 @@ namespace BlazorApp.Api.Services.React
         public decimal? TotalCost { get; set; }
         public decimal? GrossProfit { get; set; }
         public string? CostSource { get; set; }
-        public string? PosmBarcode { get; set; }
-        public string? PosmProductName { get; set; }
     }
 
     internal class BestSellerBranchAggregateRow
@@ -3466,49 +3464,54 @@ namespace BlazorApp.Api.Services.React
                         pageIndex,
                         pageSize
                     );
-                    if (statisticResult != null)
+                    if (ShouldCacheBestSellerResult(statisticResult))
                     {
                         CacheBestSellerResult(cacheKey, statisticResult);
-                        return statisticResult;
                     }
+                    return statisticResult;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "[BestSellers] Statistic query failed, falling back to POSM");
-                    var fallbackResult = await GetBestSellersFromPosmFallbackAsync(
-                        dateRange,
-                        branchCodes,
+                    _logger.LogWarning(ex, "[BestSellers] Statistic query failed, POSM fallback disabled");
+                    return CreateEmptyBestSellerResponse(
                         pageIndex,
                         pageSize,
                         SalesStatisticRefreshStatus.Failed,
-                        $"商品统计查询失败，已使用 POSM 实时回退数据: {ex.Message}"
+                        $"商品统计查询失败，请先修复或重新生成统计表: {ex.Message}"
                     );
-                    CacheBestSellerResult(cacheKey, fallbackResult);
-                    return fallbackResult;
                 }
-
-                var result = await GetBestSellersFromPosmFallbackAsync(
-                    dateRange,
-                    branchCodes,
-                    pageIndex,
-                    pageSize,
-                    SalesStatisticRefreshStatus.Pending,
-                    "商品统计表未就绪，已使用 POSM 实时回退数据。"
-                );
-
-                _logger.LogInformation(
-                    "[BestSellers] Found {Total} products, returning {Count} for page {Page}",
-                    result.Total, result.Products.Count, pageIndex
-                );
-
-                CacheBestSellerResult(cacheKey, result);
-                return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[BestSellers] GetBestSellersAsync failed");
                 throw;
             }
+        }
+
+        private static bool ShouldCacheBestSellerResult(BestSellerResponseDto result)
+        {
+            // 只缓存已生成且有数据的统计结果，避免短暂空表把热销页空结果固定 30 分钟。
+            return result.StatisticStatus == SalesStatisticRefreshStatus.Fresh
+                && result.Total > 0
+                && result.Products.Any();
+        }
+
+        private static BestSellerResponseDto CreateEmptyBestSellerResponse(
+            int pageIndex,
+            int pageSize,
+            string? statisticStatus,
+            string? statisticMessage
+        )
+        {
+            return new BestSellerResponseDto
+            {
+                Products = new List<BestSellerProductDto>(),
+                Total = 0,
+                PageIndex = pageIndex,
+                PageSize = pageSize,
+                StatisticStatus = statisticStatus,
+                StatisticMessage = statisticMessage,
+            };
         }
 
         private void CacheBestSellerResult(string? cacheKey, BestSellerResponseDto result)
@@ -3528,7 +3531,7 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
-        private async Task<BestSellerResponseDto?> GetBestSellersFromStatisticsAsync(
+        private async Task<BestSellerResponseDto> GetBestSellersFromStatisticsAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes,
             int pageIndex,
@@ -3541,29 +3544,25 @@ namespace BlazorApp.Api.Services.React
             if (statisticStatus.Status == SalesStatisticRefreshStatus.Failed)
             {
                 _logger.LogWarning(
-                    "[BestSellers] Product statistic status failed, fallback to POSM: {Message}",
+                    "[BestSellers] Product statistic status failed, POSM fallback disabled: {Message}",
                     statisticStatus.Message
                 );
-                return await GetBestSellersFromPosmFallbackAsync(
-                    dateRange,
-                    branchCodes,
+                return CreateEmptyBestSellerResponse(
                     pageIndex,
                     pageSize,
                     SalesStatisticRefreshStatus.Failed,
-                    statisticStatus.Message ?? "商品统计状态失败，已使用 POSM 实时回退数据。"
+                    statisticStatus.Message ?? "商品统计状态失败，请先修复或重新生成统计表。"
                 );
             }
 
             if (statisticStatus.Status != SalesStatisticRefreshStatus.Fresh)
             {
                 // 非 Fresh 说明日期范围不完整或水位过期，不能把部分统计当完整排名展示。
-                return await GetBestSellersFromPosmFallbackAsync(
-                    dateRange,
-                    branchCodes,
+                return CreateEmptyBestSellerResponse(
                     pageIndex,
                     pageSize,
                     statisticStatus.Status,
-                    statisticStatus.Message ?? "商品统计未完整生成，已使用 POSM 实时回退数据。"
+                    statisticStatus.Message ?? "商品统计未完整生成，请先生成商品统计。"
                 );
             }
 
@@ -3593,7 +3592,14 @@ namespace BlazorApp.Api.Services.React
 
             var total = await groupedQuery.Clone().CountAsync();
             if (total <= 0)
-                return null;
+            {
+                return CreateEmptyBestSellerResponse(
+                    pageIndex,
+                    pageSize,
+                    SalesStatisticRefreshStatus.Fresh,
+                    null
+                );
+            }
 
             var pagedData = await query.Clone()
                 .GroupBy(s => s.ProductCode)
@@ -3618,95 +3624,7 @@ namespace BlazorApp.Api.Services.React
                 statisticStatus.Status,
                 statisticStatus.Message,
                 productCodes => GetBranchSalesFromStatisticsAsync(startDate, endDate, branchCodes, productCodes),
-                productCodes => GetPosmFallbackInfoFromStatisticsAsync(startDate, endDate, branchCodes, productCodes)
-            );
-        }
-
-        private async Task<BestSellerResponseDto> GetBestSellersFromPosmFallbackAsync(
-            DateRangeDto dateRange,
-            List<string>? branchCodes,
-            int pageIndex,
-            int pageSize,
-            string statisticStatus,
-            string statisticMessage
-        )
-        {
-            var startDate = dateRange.StartDate.Date;
-            var endExclusive = dateRange.EndDate.Date.AddDays(1);
-            var salesQuery = _posmContext.Db.Queryable<SalesOrderDetail>()
-                .LeftJoin<SalesOrder>((d, o) => d.OrderGuid == o.OrderGuid)
-                .Where((d, o) => o.Status == 1)
-                .Where((d, o) => d.SupplierCode == "200")
-                .Where((d, o) => o.OrderTime >= startDate && o.OrderTime < endExclusive);
-
-            if (branchCodes != null && branchCodes.Any())
-            {
-                var allowedDirectOrderGuids = await _posmContext.Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status == 1
-                        && o.OrderTime >= startDate
-                        && o.OrderTime < endExclusive
-                        && o.BranchCode != null
-                        && branchCodes.Contains(o.BranchCode)
-                    )
-                    .Select(o => o.OrderGuid)
-                    .ToListAsync();
-                var deviceMappedOrderGuids = await GetDeviceMappedOrderGuidsAsync(startDate, endExclusive, branchCodes);
-                var allowedOrderGuids = allowedDirectOrderGuids
-                    .Concat(deviceMappedOrderGuids)
-                    .Where(id => !string.IsNullOrWhiteSpace(id))
-                    .Distinct()
-                    .ToList();
-
-                if (!allowedOrderGuids.Any())
-                {
-                    return new BestSellerResponseDto
-                    {
-                        Products = new List<BestSellerProductDto>(),
-                        Total = 0,
-                        PageIndex = pageIndex,
-                        PageSize = pageSize,
-                        StatisticStatus = statisticStatus,
-                        StatisticMessage = statisticMessage,
-                    };
-                }
-
-                // POSM 回退也按“订单分店 + 设备分店”解析权限范围，避免 BranchCode 为空时漏单。
-                salesQuery = salesQuery.Where((d, o) => allowedOrderGuids.Contains(o.OrderGuid));
-            }
-
-            // POSM 回退只做最稳定的商品聚合分页，不在 SQL 内做设备分店 fallback 或字符串聚合。
-            var groupedQuery = salesQuery
-                .GroupBy((d, o) => d.ProductCode)
-                .Select((d, o) => new BestSellerAggregateRow
-                {
-                    ProductCode = d.ProductCode,
-                    TotalQuantity = SqlFunc.AggregateSum(d.Quantity) ?? 0,
-                    TotalSalesAmount = SqlFunc.AggregateSum(d.ActualAmount) ?? 0m,
-                });
-            var total = await groupedQuery.Clone().CountAsync();
-            var pagedData = await salesQuery.Clone()
-                .GroupBy((d, o) => d.ProductCode)
-                .OrderBy((d, o) => SqlFunc.AggregateSum(d.Quantity), OrderByType.Desc)
-                .Select((d, o) => new BestSellerAggregateRow
-                {
-                    ProductCode = d.ProductCode,
-                    TotalQuantity = SqlFunc.AggregateSum(d.Quantity) ?? 0,
-                    TotalSalesAmount = SqlFunc.AggregateSum(d.ActualAmount) ?? 0m,
-                })
-                .Skip((pageIndex - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync();
-
-            return await BuildBestSellerResponseAsync(
-                pagedData,
-                total,
-                pageIndex,
-                pageSize,
-                statisticStatus,
-                statisticMessage,
-                productCodes => GetBranchSalesFromPosmAsync(dateRange, branchCodes, productCodes),
-                productCodes => GetPosmFallbackInfoFromPosmAsync(dateRange, productCodes)
+                productCodes => GetBestSellerInfoFromStatisticsAsync(startDate, endDate, branchCodes, productCodes)
             );
         }
 
@@ -3718,7 +3636,7 @@ namespace BlazorApp.Api.Services.React
             string? statisticStatus,
             string? statisticMessage,
             Func<List<string>, Task<List<BestSellerBranchAggregateRow>>> loadBranchSales,
-            Func<List<string>, Task<Dictionary<string, (string? Barcode, string? ProductName)>>> loadFallbackInfo
+            Func<List<string>, Task<Dictionary<string, (string? Barcode, string? ProductName)>>> loadStatisticInfo
         )
         {
             if (!pagedData.Any())
@@ -3740,7 +3658,7 @@ namespace BlazorApp.Api.Services.React
                 .Distinct()
                 .ToList();
             var productDict = await GetBestSellerProductInfoMapAsync(productCodes);
-            var fallbackInfo = await loadFallbackInfo(productCodes);
+            var statisticInfo = await loadStatisticInfo(productCodes);
             var branchSalesData = await loadBranchSales(productCodes);
             var branchCodesInPage = branchSalesData
                 .Select(x => x.BranchCode)
@@ -3777,7 +3695,7 @@ namespace BlazorApp.Api.Services.React
             var products = pagedData.Select((item, index) =>
             {
                 productDict.TryGetValue(item.ProductCode, out var productInfo);
-                fallbackInfo.TryGetValue(item.ProductCode, out var posmInfo);
+                statisticInfo.TryGetValue(item.ProductCode, out var statInfo);
                 var branchSales = branchSalesMap.TryGetValue(item.ProductCode, out var rows)
                     ? rows
                     : new List<BestSellerBranchSaleDto>();
@@ -3787,11 +3705,11 @@ namespace BlazorApp.Api.Services.React
                     ItemNumber = productInfo?.ItemNumber,
                     Barcode = !string.IsNullOrWhiteSpace(productInfo?.Barcode)
                         ? productInfo.Barcode
-                        : posmInfo.Barcode,
+                        : statInfo.Barcode,
                     ProductImage = productInfo?.ProductImage,
                     ProductName = !string.IsNullOrWhiteSpace(productInfo?.ProductName)
                         ? productInfo.ProductName
-                        : posmInfo.ProductName,
+                        : statInfo.ProductName,
                     Quantity = item.TotalQuantity,
                     SalesAmount = item.TotalSalesAmount,
                     TotalCost = item.TotalCost,
@@ -3871,27 +3789,28 @@ namespace BlazorApp.Api.Services.React
             }
 
             var rows = await query
-                .Select(s => new
+                .GroupBy(s => new { s.ProductCode, s.BranchCode, s.CostSource })
+                .Select(s => new BestSellerBranchAggregateRow
                 {
-                    s.ProductCode,
-                    s.BranchCode,
-                    s.TotalQuantity,
-                    s.TotalAmount,
-                    s.TotalCost,
-                    s.GrossProfit,
-                    s.CostSource,
+                    ProductCode = s.ProductCode,
+                    BranchCode = s.BranchCode,
+                    Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                    SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                    TotalCost = SqlFunc.AggregateSum(s.TotalCost),
+                    GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                    CostSource = s.CostSource,
                 })
                 .ToListAsync();
 
-            // 分店销量聚合：成本来源需要保留真实来源分布，避免 SQL 字符串聚合误导。
+            // 分店销量先按成本来源下推聚合，再在内存合并少量 CostSource 分组以保留 Mixed 语义。
             return rows
                 .GroupBy(s => new { s.ProductCode, s.BranchCode })
                 .Select(group => new BestSellerBranchAggregateRow
                 {
                     ProductCode = group.Key.ProductCode,
                     BranchCode = group.Key.BranchCode,
-                    Quantity = group.Sum(x => x.TotalQuantity),
-                    SalesAmount = group.Sum(x => x.TotalAmount),
+                    Quantity = group.Sum(x => x.Quantity),
+                    SalesAmount = group.Sum(x => x.SalesAmount),
                     TotalCost = group.Any(x => x.TotalCost.HasValue) ? group.Sum(x => x.TotalCost ?? 0m) : null,
                     GrossProfit = group.Any(x => x.GrossProfit.HasValue) ? group.Sum(x => x.GrossProfit ?? 0m) : null,
                     CostSource = ResolveCostSource(group.Select(x => x.CostSource)),
@@ -3899,52 +3818,7 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private async Task<List<string>> GetDeviceMappedOrderGuidsAsync(
-            DateTime startDate,
-            DateTime endExclusive,
-            List<string> branchCodes
-        )
-        {
-            var branchSet = branchCodes
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!.Trim())
-                .Distinct()
-                .ToList();
-            if (!branchSet.Any())
-                return new List<string>();
-
-            var deviceCodes = await _posmContext.Db.Queryable<POSM_设备注册信息表>()
-                .Where(d => d.分店代码 != null && branchSet.Contains(d.分店代码))
-                .Select(d => d.系统设备编号)
-                .ToListAsync();
-            deviceCodes = deviceCodes
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!)
-                .Distinct()
-                .ToList();
-            if (!deviceCodes.Any())
-                return new List<string>();
-
-            return (
-                await _posmContext.Db.Queryable<SalesOrder>()
-                    .Where(o =>
-                        o.Status == 1
-                        && o.OrderTime >= startDate
-                        && o.OrderTime < endExclusive
-                        && (o.BranchCode == null || o.BranchCode == "")
-                        && o.DeviceCode != null
-                        && deviceCodes.Contains(o.DeviceCode)
-                    )
-                    .Select(o => o.OrderGuid)
-                    .ToListAsync()
-            )
-                .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
-                .Select(orderGuid => orderGuid!)
-                .Distinct()
-                .ToList();
-        }
-
-        private async Task<Dictionary<string, (string? Barcode, string? ProductName)>> GetPosmFallbackInfoFromStatisticsAsync(
+        private async Task<Dictionary<string, (string? Barcode, string? ProductName)>> GetBestSellerInfoFromStatisticsAsync(
             DateTime startDate,
             DateTime endDate,
             List<string>? branchCodes,
@@ -3968,113 +3842,6 @@ namespace BlazorApp.Api.Services.React
 
             var rows = await query
                 .Select(s => new { s.ProductCode, s.Barcode, s.ProductName })
-                .ToListAsync();
-
-            return rows
-                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
-                .GroupBy(x => x.ProductCode)
-                .ToDictionary(
-                    x => x.Key,
-                    x => (
-                        x.Select(row => row.Barcode).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
-                        x.Select(row => row.ProductName).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
-                    )
-                );
-        }
-
-        private async Task<List<BestSellerBranchAggregateRow>> GetBranchSalesFromPosmAsync(
-            DateRangeDto dateRange,
-            List<string>? branchCodes,
-            List<string> productCodes
-        )
-        {
-            if (!productCodes.Any())
-                return new List<BestSellerBranchAggregateRow>();
-
-            var startDate = dateRange.StartDate.Date;
-            var endExclusive = dateRange.EndDate.Date.AddDays(1);
-            var rawRows = await _posmContext.Db.Queryable<SalesOrderDetail>()
-                .LeftJoin<SalesOrder>((d, o) => d.OrderGuid == o.OrderGuid)
-                .Where((d, o) =>
-                    o.Status == 1
-                    && d.SupplierCode == "200"
-                    && o.OrderTime >= startDate
-                    && o.OrderTime < endExclusive
-                    && productCodes.Contains(d.ProductCode)
-                )
-                .Select((d, o) => new
-                {
-                    d.ProductCode,
-                    o.BranchCode,
-                    o.DeviceCode,
-                    Quantity = d.Quantity ?? 0,
-                    SalesAmount = d.ActualAmount ?? 0m,
-                })
-                .ToListAsync();
-
-            var deviceCodes = rawRows
-                .Where(x => string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.DeviceCode))
-                .Select(x => x.DeviceCode!)
-                .Distinct()
-                .ToList();
-            var deviceBranchMap = deviceCodes.Any()
-                ? (await _posmContext.Db.Queryable<POSM_设备注册信息表>()
-                    .Where(d => deviceCodes.Contains(d.系统设备编号))
-                    .Select(d => new { d.系统设备编号, d.分店代码 })
-                    .ToListAsync())
-                    .Where(x => !string.IsNullOrWhiteSpace(x.系统设备编号))
-                    .GroupBy(x => x.系统设备编号)
-                    .ToDictionary(
-                        x => x.Key,
-                        x => x.Select(row => row.分店代码).FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
-                    )
-                : new Dictionary<string, string>();
-
-            // 分店销量聚合：POSM 回退路径在内存中解析设备分店，避免复杂 SQL 翻译失败。
-            return rawRows
-                .Select(x => new
-                {
-                    x.ProductCode,
-                    BranchCode = ResolveBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap),
-                    x.Quantity,
-                    x.SalesAmount,
-                })
-                .Where(x =>
-                    !string.IsNullOrWhiteSpace(x.ProductCode)
-                    && !string.IsNullOrWhiteSpace(x.BranchCode)
-                    && (branchCodes == null || !branchCodes.Any() || branchCodes.Contains(x.BranchCode))
-                )
-                .GroupBy(x => new { x.ProductCode, x.BranchCode })
-                .Select(group => new BestSellerBranchAggregateRow
-                {
-                    ProductCode = group.Key.ProductCode,
-                    BranchCode = group.Key.BranchCode,
-                    Quantity = group.Sum(x => x.Quantity),
-                    SalesAmount = group.Sum(x => x.SalesAmount),
-                })
-                .ToList();
-        }
-
-        private async Task<Dictionary<string, (string? Barcode, string? ProductName)>> GetPosmFallbackInfoFromPosmAsync(
-            DateRangeDto dateRange,
-            List<string> productCodes
-        )
-        {
-            if (!productCodes.Any())
-                return new Dictionary<string, (string? Barcode, string? ProductName)>();
-
-            var startDate = dateRange.StartDate.Date;
-            var endExclusive = dateRange.EndDate.Date.AddDays(1);
-            var rows = await _posmContext.Db.Queryable<SalesOrderDetail>()
-                .LeftJoin<SalesOrder>((d, o) => d.OrderGuid == o.OrderGuid)
-                .Where((d, o) =>
-                    o.Status == 1
-                    && d.SupplierCode == "200"
-                    && o.OrderTime >= startDate
-                    && o.OrderTime < endExclusive
-                    && productCodes.Contains(d.ProductCode)
-                )
-                .Select((d, o) => new { d.ProductCode, d.Barcode, d.ProductName })
                 .ToListAsync();
 
             return rows
@@ -4121,29 +3888,7 @@ namespace BlazorApp.Api.Services.React
             if (states.Select(s => s.Date.Date).Distinct().Count() < expectedDays)
                 return (SalesStatisticRefreshStatus.Pending, "日期范围内仍有商品统计未生成。");
 
-            // 上传水位检查：POSM 源数据推进后，旧统计先标记 Stale，前台走实时回退。
-            var currentSourceUploadTime = await _posmContext.Db.Queryable<SalesOrder>()
-                .Where(o =>
-                    o.Status != null
-                    && (o.Status == 1 || o.Status == 4)
-                    && o.OrderTime != null
-                    && o.OrderTime >= startDate
-                    && o.OrderTime < endDate.AddDays(1)
-                )
-                .MaxAsync(o => o.LastUploadTime);
-            var recordedSourceUploadTime = states
-                .Where(s => s.LastSourceUploadTime.HasValue)
-                .Select(s => s.LastSourceUploadTime!.Value)
-                .DefaultIfEmpty(DateTime.MinValue)
-                .Max();
-            if (
-                states.All(s => s.LastSourceUploadTime.HasValue)
-                && currentSourceUploadTime.HasValue
-                && currentSourceUploadTime.Value > recordedSourceUploadTime
-            )
-            {
-                return (SalesStatisticRefreshStatus.Stale, "POSM 已上传新销售数据，商品统计等待补算。");
-            }
+            // Best Sellers 请求链路只读统计状态表；源数据水位由统计任务写入状态，避免页面触发 POSM 重查询。
 
             return (SalesStatisticRefreshStatus.Fresh, null);
         }
@@ -4169,19 +3914,5 @@ namespace BlazorApp.Api.Services.React
             return sources.Count == 1 ? sources[0] : "Mixed";
         }
 
-        private static string ResolveBranchCode(
-            string? branchCode,
-            string? deviceCode,
-            Dictionary<string, string> deviceBranchMap
-        )
-        {
-            if (!string.IsNullOrWhiteSpace(branchCode))
-                return branchCode;
-
-            if (!string.IsNullOrWhiteSpace(deviceCode) && deviceBranchMap.TryGetValue(deviceCode, out var mappedBranch))
-                return mappedBranch ?? string.Empty;
-
-            return string.Empty;
-        }
     }
 }

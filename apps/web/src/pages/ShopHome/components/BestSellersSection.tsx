@@ -204,13 +204,13 @@ export default function BestSellersSection() {
   const grossMarginRate = totalSales > 0 && typeof totalGrossProfit === 'number' ? totalGrossProfit / totalSales : undefined
   const isBestSellerStatisticFresh = statisticStatus === 'Fresh' || !statisticStatus
   const bestSellerStatusNotice = !isBestSellerStatisticFresh
-    ? (statisticMessage || '商品统计未就绪或正在回退 POSM 实时数据，加载可能较慢。')
+    ? (statisticMessage || '商品统计未就绪，请先生成商品统计。')
     : null
 
   const getBestSellerEmptyText = useCallback(() => {
     const description = isBestSellerStatisticFresh
       ? 'No best-seller data found.'
-      : '统计未就绪或正在回退 POSM，暂未返回热销商品。'
+      : '统计未就绪，暂未返回热销商品。'
 
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={description} />
   }, [isBestSellerStatisticFresh])

@@ -7,7 +7,7 @@ import {
 } from '@ant-design/icons'
 import { Badge, Button, Drawer, Dropdown, Input, Menu, Select, Spin, message } from 'antd'
 import type { MenuProps } from 'antd'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import LanguageSwitch from '../components/LanguageSwitch'
@@ -15,7 +15,7 @@ import ShopCartDrawer from '../components/ShopCartDrawer'
 import ShopCartSummary from '../components/ShopCartSummary'
 import { getUserStores } from '../services/userService'
 import { getCategoryTree, type WarehouseCategoryNode } from '../services/warehouseCategoryService'
-import { getActiveStoreOrderCart } from '../services/storeOrderService'
+import { getActiveStoreOrderCart, getActiveStoreOrderCartSummary } from '../services/storeOrderService'
 import { useAuthStore } from '../store/auth'
 import { useShopStore } from '../store/shop'
 import { resolveShopBannerCopy } from './shopBannerCopy'
@@ -52,8 +52,14 @@ export default function ShopLayout() {
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
   const [loadingCategories, setLoadingCategories] = useState(false)
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false)
+  const [cartDrawerLoading, setCartDrawerLoading] = useState(false)
   const [mobileCategoryVisible, setMobileCategoryVisible] = useState(false)
   const [isHoverSupported, setIsHoverSupported] = useState(true)
+  const selectedStoreCodeRef = useRef<string | null>(null)
+  const cartDrawerOpenRef = useRef(false)
+  const fullCartRequestVersionRef = useRef(0)
+  selectedStoreCodeRef.current = selectedStore?.storeCode ?? null
+  cartDrawerOpenRef.current = cartDrawerOpen
 
   const selectedCategory = useMemo(() => {
     return new URLSearchParams(location.search).get('category') || ''
@@ -132,23 +138,90 @@ export default function ShopLayout() {
     }
   }, [])
 
-  const refreshCart = async () => {
-    if (!selectedStore?.storeCode) {
+  const refreshCartSummary = useCallback(async () => {
+    const storeCode = selectedStore?.storeCode ?? null
+    if (!storeCode) {
       setCart(null)
+      setCartDrawerLoading(false)
       return
     }
 
     try {
-      const nextCart = await getActiveStoreOrderCart(selectedStore.storeCode)
-      setCart(nextCart)
+      const nextCart = await getActiveStoreOrderCartSummary(storeCode)
+      if (selectedStoreCodeRef.current === storeCode) {
+        setCart(nextCart)
+      }
     } catch (error) {
-      setCart(null)
+      if (selectedStoreCodeRef.current === storeCode) {
+        setCart(null)
+      }
     }
-  }
+  }, [selectedStore?.storeCode, setCart])
+
+  const refreshFullCart = useCallback(async () => {
+    const storeCode = selectedStore?.storeCode ?? null
+    if (!storeCode) {
+      setCart(null)
+      setCartDrawerLoading(false)
+      return
+    }
+
+    const requestVersion = fullCartRequestVersionRef.current + 1
+    fullCartRequestVersionRef.current = requestVersion
+    setCartDrawerLoading(true)
+    try {
+      const nextCart = await getActiveStoreOrderCart(storeCode)
+      if (selectedStoreCodeRef.current === storeCode) {
+        setCart(nextCart)
+      }
+    } catch (error) {
+      if (selectedStoreCodeRef.current === storeCode) {
+        setCart(null)
+      }
+    } finally {
+      if (fullCartRequestVersionRef.current === requestVersion) {
+        setCartDrawerLoading(false)
+      }
+    }
+  }, [selectedStore?.storeCode, setCart])
 
   useEffect(() => {
-    void refreshCart()
-  }, [selectedStore?.storeCode])
+    // 切换分店先清掉旧购物车；抽屉已打开时直接补新门店明细，否则只拉摘要。
+    setCart(null)
+    void (cartDrawerOpenRef.current ? refreshFullCart() : refreshCartSummary())
+  }, [refreshCartSummary, refreshFullCart, setCart])
+
+  useEffect(() => {
+    if (!selectedStore?.storeCode) {
+      return
+    }
+
+    const refreshVisibleCart = () => {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+
+      // 抽屉已打开时保留明细视图；否则只刷新顶部摘要，避免前台切回拖慢首屏。
+      void (cartDrawerOpen ? refreshFullCart() : refreshCartSummary())
+    }
+
+    const refreshFocusedCart = () => {
+      void (cartDrawerOpen ? refreshFullCart() : refreshCartSummary())
+    }
+
+    window.addEventListener('focus', refreshFocusedCart)
+    document.addEventListener('visibilitychange', refreshVisibleCart)
+
+    return () => {
+      window.removeEventListener('focus', refreshFocusedCart)
+      document.removeEventListener('visibilitychange', refreshVisibleCart)
+    }
+  }, [cartDrawerOpen, refreshCartSummary, refreshFullCart, selectedStore?.storeCode])
+
+  const openCartDrawer = () => {
+    setCartDrawerOpen(true)
+    void refreshFullCart()
+  }
 
   const buildMenuItems = (nodes: WarehouseCategoryNode[]): MenuProps['items'] => {
     return nodes.map((node) => {
@@ -225,7 +298,7 @@ export default function ShopLayout() {
           </div>
 
           <div className="shop-header-actions">
-            <div className="shop-cart-entry" onClick={() => setCartDrawerOpen(true)}>
+            <div className="shop-cart-entry" onClick={openCartDrawer}>
               <div className="shop-cart-entry-label">
                 <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[8, -8]}>
                   <ShoppingCartOutlined style={{ fontSize: 20 }} />
@@ -254,7 +327,7 @@ export default function ShopLayout() {
               />
             </div>
 
-            <Button className="shop-checkout-btn" onClick={() => setCartDrawerOpen(true)}>
+            <Button className="shop-checkout-btn" onClick={openCartDrawer}>
               {t('shop.checkout', 'Checkout')} »
             </Button>
 
@@ -310,7 +383,7 @@ export default function ShopLayout() {
               }))}
             />
           </div>
-          <div className="shop-mobile-grid-item" onClick={() => setCartDrawerOpen(true)}>
+          <div className="shop-mobile-grid-item" onClick={openCartDrawer}>
             <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[5, -5]}>
               <ShoppingCartOutlined className="icon" />
             </Badge>
@@ -426,7 +499,8 @@ export default function ShopLayout() {
         open={cartDrawerOpen}
         onClose={() => setCartDrawerOpen(false)}
         cart={cart}
-        onCartChanged={refreshCart}
+        loading={cartDrawerLoading}
+        onCartChanged={refreshFullCart}
       />
 
       <Drawer

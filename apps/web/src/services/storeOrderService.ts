@@ -271,7 +271,7 @@ function normalizeStoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateRe
   }
 }
 
-function normalizeCart(payload: unknown): StoreOrderCart | null {
+function normalizeCart(payload: unknown, options?: { isSummaryOnly?: boolean }): StoreOrderCart | null {
   const result = normalizeResult<Partial<StoreOrderCart> | null>(payload)
   if (!result) {
     return null
@@ -285,6 +285,7 @@ function normalizeCart(payload: unknown): StoreOrderCart | null {
     storeName: result.storeName,
     totalAmount: result.totalAmount ?? 0,
     totalQuantity: result.totalQuantity ?? 0,
+    totalSKU: result.totalSKU ?? 0,
     totalImportAmount: result.totalImportAmount ?? 0,
     totalVolume: result.totalVolume ?? 0,
     remarks: result.remarks,
@@ -292,8 +293,10 @@ function normalizeCart(payload: unknown): StoreOrderCart | null {
     orderDate: result.orderDate,
     outboundDate: result.outboundDate,
     storeAddress: result.storeAddress,
+    storeContactEmail: result.storeContactEmail,
     flowStatus: result.flowStatus,
     invoiceEmailSentInfo,
+    isSummaryOnly: Boolean(options?.isSummaryOnly),
     items: Array.isArray(result.items) ? result.items : [],
   }
 }
@@ -703,6 +706,15 @@ export async function getActiveStoreOrderCart(storeCode: string) {
   })
 
   return normalizeCart(response)
+}
+
+export async function getActiveStoreOrderCartSummary(storeCode: string) {
+  const response = await request<ApiResponse<unknown> | unknown>(`${API_BASE}/cart/${storeCode}/summary`, {
+    method: 'GET',
+  })
+
+  // 登录和切换分店只需要摘要；明细按打开抽屉等真实需要再拉全量。
+  return normalizeCart(response, { isSummaryOnly: true })
 }
 
 export async function addStoreOrderCartItem(payload: {

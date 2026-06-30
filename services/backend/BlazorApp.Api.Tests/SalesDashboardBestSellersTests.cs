@@ -73,6 +73,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         await SeedSaleAsync("O-2", "D-2", "P-BEST-1", "S2", new DateTime(2026, 6, 2), 7, 14m);
         await SeedSaleAsync("O-3", "D-3", "P-BEST-1", "S1", new DateTime(2026, 6, 3), 2, 4m);
         await SeedSaleAsync("O-4", "D-4", "P-BEST-2", "S3", new DateTime(2026, 6, 4), 20, 40m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -145,6 +146,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             IsDeleted = true,
         }).ExecuteCommandAsync();
         await SeedSaleAsync("O-SOFT", "D-SOFT", "P-SOFT", "S1", new DateTime(2026, 6, 1), 4, 8m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -172,6 +174,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             localSupplierCode: null
         );
         await SeedSaleAsync("O-HB022", "D-HB022", "HB022-119", "S1", new DateTime(2026, 6, 1), 9, 18m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -187,7 +190,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetBestSellersAsync_HBweb条码缺失时回退POSM销售明细条码和名称()
+    public async Task GetBestSellersAsync_HBweb条码缺失时使用统计表条码和名称()
     {
         await SeedProductAsync(
             "P-POSM-BAR",
@@ -209,6 +212,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             barcode: "POSM-BAR-001",
             productName: "POSM 商品名"
         );
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -232,6 +236,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         await SeedDeviceAsync("POS-2", "S2");
         await SeedSaleAsync("O-DEVICE-1", "D-DEVICE-1", "P-DEVICE-STORE", null, new DateTime(2026, 6, 1), 5, 10m, deviceCode: "POS-1");
         await SeedSaleAsync("O-DEVICE-2", "D-DEVICE-2", "P-DEVICE-STORE", null, new DateTime(2026, 6, 2), 7, 14m, deviceCode: "POS-2");
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -272,6 +277,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         await SeedSaleAsync("O-RANK-2", "D-RANK-2", "P-RANK-2", "S1", new DateTime(2026, 6, 2), 12, 24m);
         await SeedSaleAsync("O-RANK-3", "D-RANK-3", "P-RANK-2", "S2", new DateTime(2026, 6, 3), 8, 16m);
         await SeedSaleAsync("O-RANK-4", "D-RANK-4", "P-RANK-3", "S1", new DateTime(2026, 6, 4), 5, 10m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -295,6 +301,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     {
         await SeedProductAsync("P-CACHE-1", "ITEM-CACHE-1", "BAR-CACHE-1", "缓存商品一", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-CACHE-1", "D-CACHE-1", "P-CACHE-1", "S1", new DateTime(2026, 6, 1), 5, 10m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var service = CreateService();
         var dateRange = new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) };
@@ -302,6 +309,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         await SeedProductAsync("P-CACHE-2", "ITEM-CACHE-2", "BAR-CACHE-2", "缓存商品二", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-CACHE-2", "D-CACHE-2", "P-CACHE-2", "S1", new DateTime(2026, 6, 2), 99, 198m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var second = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
 
@@ -319,6 +327,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         await SeedProductAsync("P-CACHE-PAGE-2", "ITEM-CACHE-PAGE-2", "BAR-CACHE-PAGE-2", "分页缓存二", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-CACHE-PAGE-1", "D-CACHE-PAGE-1", "P-CACHE-PAGE-1", "S1", new DateTime(2026, 6, 1), 20, 40m);
         await SeedSaleAsync("O-CACHE-PAGE-2", "D-CACHE-PAGE-2", "P-CACHE-PAGE-2", "S1", new DateTime(2026, 6, 1), 10, 20m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var service = CreateService();
         var dateRange = new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) };
@@ -326,6 +335,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
 
         await SeedProductAsync("P-CACHE-PAGE-3", "ITEM-CACHE-PAGE-3", "BAR-CACHE-PAGE-3", "分页缓存三", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-CACHE-PAGE-3", "D-CACHE-PAGE-3", "P-CACHE-PAGE-3", "S1", new DateTime(2026, 6, 2), 99, 198m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var widerPage = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 2);
 
@@ -426,7 +436,96 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetBestSellersAsync_统计状态失败时回退POSM查询避免页面失败()
+    public async Task GetBestSellersAsync_Fresh空统计结果不缓存()
+    {
+        var dateRange = new DateRangeDto { StartDate = new DateTime(2026, 6, 9), EndDate = new DateTime(2026, 6, 9) };
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 9), SalesStatisticRefreshStatus.Fresh);
+        var service = CreateService();
+
+        var first = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
+
+        Assert.Empty(first.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, first.StatisticStatus);
+
+        await SeedProductAsync("P-FRESH-LATE", "ITEM-FRESH-LATE", "BAR-FRESH-LATE", "后补统计商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 9),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-FRESH-LATE",
+            ProductName = "后补统计商品",
+            Barcode = "BAR-FRESH-LATE",
+            TotalQuantity = 11,
+            TotalAmount = 22m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+
+        var second = await service.GetBestSellersAsync(dateRange, null, pageIndex: 1, pageSize: 50);
+
+        var product = Assert.Single(second.Products);
+        Assert.Equal("P-FRESH-LATE", product.ProductCode);
+        Assert.Equal(11, product.Quantity);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_POSM不可访问时仍只读统计表()
+    {
+        await SeedProductAsync("P-NO-POSM", "ITEM-NO-POSM", "BAR-NO-POSM", "无 POSM 统计商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
+        await _localDb.Insertable(new ProductStoreDailySalesStatistic
+        {
+            Date = new DateTime(2026, 6, 10),
+            BranchCode = "S1",
+            SupplierCode = "200",
+            ProductCode = "P-NO-POSM",
+            ProductName = "无 POSM 统计商品",
+            Barcode = "BAR-NO-POSM",
+            TotalQuantity = 3,
+            TotalAmount = 6m,
+            OrderCount = 1,
+        }).ExecuteCommandAsync();
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 10), SalesStatisticRefreshStatus.Fresh);
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 11), SalesStatisticRefreshStatus.Fresh);
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 12), SalesStatisticRefreshStatus.Failed, "对账失败");
+        await SeedStatisticStateAsync(new DateTime(2026, 6, 13), SalesStatisticRefreshStatus.Pending);
+        var service = CreateServiceWithBrokenPosm();
+
+        var fresh = await service.GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 10), EndDate = new DateTime(2026, 6, 10) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+        var freshEmpty = await service.GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 11), EndDate = new DateTime(2026, 6, 11) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+        var failed = await service.GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 12), EndDate = new DateTime(2026, 6, 12) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+        var pending = await service.GetBestSellersAsync(
+            new DateRangeDto { StartDate = new DateTime(2026, 6, 13), EndDate = new DateTime(2026, 6, 13) },
+            null,
+            pageIndex: 1,
+            pageSize: 50
+        );
+
+        Assert.Equal("P-NO-POSM", Assert.Single(fresh.Products).ProductCode);
+        Assert.Empty(freshEmpty.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, freshEmpty.StatisticStatus);
+        Assert.Empty(failed.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, failed.StatisticStatus);
+        Assert.Empty(pending.Products);
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, pending.StatisticStatus);
+    }
+
+    [Fact]
+    public async Task GetBestSellersAsync_统计状态失败时直接返回空结果避免明细回退()
     {
         await SeedProductAsync("P-FALLBACK", "ITEM-FALLBACK", "BAR-FALLBACK", "回退商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-FALLBACK", "D-FALLBACK", "P-FALLBACK", "S1", new DateTime(2026, 6, 1), 8, 16m);
@@ -439,19 +538,18 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             pageSize: 50
         );
 
-        var product = Assert.Single(result.Products);
-        Assert.Equal("P-FALLBACK", product.ProductCode);
-        Assert.Equal(8, product.Quantity);
-        Assert.Equal(16m, product.SalesAmount);
+        Assert.Empty(result.Products);
+        Assert.Equal(0, result.Total);
         Assert.Equal(SalesStatisticRefreshStatus.Failed, result.StatisticStatus);
         Assert.Contains("对账失败", result.StatisticMessage);
     }
 
     [Fact]
-    public async Task GetBestSellersAsync_POSM回退包含结束日整天销售()
+    public async Task GetBestSellersAsync_统计表包含结束日整天销售()
     {
         await SeedProductAsync("P-END-DATE", "ITEM-END-DATE", "BAR-END-DATE", "结束日商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-END-DATE", "D-END-DATE", "P-END-DATE", "S1", new DateTime(2026, 6, 8, 18, 30, 0), 5, 25m);
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 8));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 8) },
@@ -467,7 +565,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetBestSellersAsync_POSM回退分店过滤使用设备映射参与排名()
+    public async Task GetBestSellersAsync_统计表分店过滤使用设备映射参与排名()
     {
         await SeedProductAsync("P-DEVICE-RANK", "ITEM-DEVICE-RANK", "BAR-DEVICE-RANK", "设备分店商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedStoreAsync("S1", "Store 1");
@@ -482,6 +580,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             45m,
             deviceCode: "DEVICE-S1"
         );
+        await SeedBestSellerStatisticsFromPosmAsync(new DateTime(2026, 6, 1), new DateTime(2026, 6, 1));
 
         var result = await CreateService().GetBestSellersAsync(
             new DateRangeDto { StartDate = new DateTime(2026, 6, 1), EndDate = new DateTime(2026, 6, 1) },
@@ -554,7 +653,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
-    public async Task GetBestSellersAsync_商品统计重算中使用POSM回退避免读取旧统计()
+    public async Task GetBestSellersAsync_商品统计重算中返回空结果避免读取旧统计()
     {
         await SeedProductAsync("P-QUEUED", "ITEM-QUEUED", "BAR-QUEUED", "重算商品", productIsActive: true, warehouseIsActive: true, minOrderQuantity: 1);
         await SeedSaleAsync("O-QUEUED", "D-QUEUED", "P-QUEUED", "S1", new DateTime(2026, 6, 1), 9, 18m);
@@ -581,9 +680,8 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             pageSize: 10
         );
 
-        var product = Assert.Single(result.Products);
-        Assert.Equal(9, product.Quantity);
-        Assert.Equal(18m, product.SalesAmount);
+        Assert.Empty(result.Products);
+        Assert.Equal(0, result.Total);
         Assert.Equal(SalesStatisticRefreshStatus.Pending, result.StatisticStatus);
     }
 
@@ -1284,6 +1382,115 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedBestSellerStatisticsFromPosmAsync(DateTime startDate, DateTime endDate)
+    {
+        var start = startDate.Date;
+        var end = endDate.Date;
+        var endExclusive = end.AddDays(1);
+
+        await _localDb.Deleteable<ProductStoreDailySalesStatistic>()
+            .Where(s => s.Date >= start && s.Date <= end && s.SupplierCode == "200")
+            .ExecuteCommandAsync();
+        await _localDb.Deleteable<SalesStatisticRefreshState>()
+            .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date >= start && s.Date <= end)
+            .ExecuteCommandAsync();
+
+        var salesRows = await _posmDb.Queryable<SalesOrderDetail>()
+            .LeftJoin<SalesOrder>((d, o) => d.OrderGuid == o.OrderGuid)
+            .Where((d, o) =>
+                o.Status == 1
+                && d.SupplierCode == "200"
+                && o.OrderTime >= start
+                && o.OrderTime < endExclusive
+            )
+            .Select((d, o) => new
+            {
+                d.OrderGuid,
+                d.ProductCode,
+                d.Barcode,
+                d.ProductName,
+                d.Quantity,
+                d.ActualAmount,
+                o.BranchCode,
+                o.DeviceCode,
+                o.OrderTime,
+            })
+            .ToListAsync();
+
+        var deviceCodes = salesRows
+            .Where(x => string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.DeviceCode))
+            .Select(x => x.DeviceCode!)
+            .Distinct()
+            .ToList();
+        var deviceBranchMap = deviceCodes.Any()
+            ? (await _posmDb.Queryable<POSM_设备注册信息表>()
+                .Where(d => deviceCodes.Contains(d.系统设备编号))
+                .Select(d => new { d.系统设备编号, d.分店代码 })
+                .ToListAsync())
+                .Where(x => !string.IsNullOrWhiteSpace(x.系统设备编号))
+                .GroupBy(x => x.系统设备编号)
+                .ToDictionary(
+                    x => x.Key,
+                    x => x.Select(row => row.分店代码).FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
+                )
+            : new Dictionary<string, string>();
+
+        // 测试辅助：把 POSM fixture 转成统计表行，验证 Best Sellers 运行时不再读取 POSM。
+        var statisticRows = salesRows
+            .Where(x => x.OrderTime.HasValue && !string.IsNullOrWhiteSpace(x.ProductCode))
+            .Select(x => new
+            {
+                Date = x.OrderTime!.Value.Date,
+                BranchCode = ResolveTestBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap),
+                x.OrderGuid,
+                x.ProductCode,
+                x.Barcode,
+                x.ProductName,
+                Quantity = x.Quantity ?? 0,
+                ActualAmount = x.ActualAmount ?? 0m,
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.BranchCode))
+            .GroupBy(x => new { x.Date, x.BranchCode, x.ProductCode })
+            .Select(group => new ProductStoreDailySalesStatistic
+            {
+                Date = group.Key.Date,
+                BranchCode = group.Key.BranchCode,
+                SupplierCode = "200",
+                ProductCode = group.Key.ProductCode,
+                ProductName = group.Select(x => x.ProductName).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                Barcode = group.Select(x => x.Barcode).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                TotalQuantity = group.Sum(x => x.Quantity),
+                TotalAmount = group.Sum(x => x.ActualAmount),
+                OrderCount = group.Select(x => x.OrderGuid).Distinct().Count(),
+                UpdateTime = DateTime.Now,
+            })
+            .ToList();
+
+        if (statisticRows.Any())
+        {
+            await _localDb.Insertable(statisticRows).ExecuteCommandAsync();
+        }
+
+        for (var date = start; date <= end; date = date.AddDays(1))
+        {
+            await SeedStatisticStateAsync(date, SalesStatisticRefreshStatus.Fresh);
+        }
+    }
+
+    private static string ResolveTestBranchCode(
+        string? branchCode,
+        string? deviceCode,
+        Dictionary<string, string> deviceBranchMap
+    )
+    {
+        if (!string.IsNullOrWhiteSpace(branchCode))
+            return branchCode;
+
+        return !string.IsNullOrWhiteSpace(deviceCode) && deviceBranchMap.TryGetValue(deviceCode, out var mappedBranch)
+            ? mappedBranch
+            : string.Empty;
+    }
+
     private async Task SeedSaleAsync(
         string orderGuid,
         string detailGuid,
@@ -1368,6 +1575,18 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         return new SalesDashboardReactService(
             CreateSqlSugarContext(_localDb),
             CreatePosmSqlSugarContext(_posmDb),
+            Mock.Of<IMapper>(),
+            NullLogger<SalesDashboardReactService>.Instance,
+            new MemoryCache(new MemoryCacheOptions())
+        );
+    }
+
+    private SalesDashboardReactService CreateServiceWithBrokenPosm()
+    {
+        var brokenPosmDb = new SqlSugarClient(CreateConnectionConfig("Data Source=/dev/null/hbposm-forbidden.db"));
+        return new SalesDashboardReactService(
+            CreateSqlSugarContext(_localDb),
+            CreatePosmSqlSugarContext(brokenPosmDb),
             Mock.Of<IMapper>(),
             NullLogger<SalesDashboardReactService>.Instance,
             new MemoryCache(new MemoryCacheOptions())

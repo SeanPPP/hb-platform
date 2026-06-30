@@ -41,6 +41,8 @@ assert(
 
 const mobileLayoutSource = readFileSync(path.join(root, 'src/layout/MobileLayout.tsx'), 'utf8')
 const adminLayoutSource = readFileSync(path.join(root, 'src/layout/AdminLayout.tsx'), 'utf8')
+const shopLayoutSource = readFileSync(path.join(root, 'src/layout/ShopLayout.tsx'), 'utf8')
+const shopCartDrawerSource = readFileSync(path.join(root, 'src/components/ShopCartDrawer.tsx'), 'utf8')
 const errorBoundarySource = readFileSync(path.join(root, 'src/components/GlobalErrorBoundary.tsx'), 'utf8')
 const containerDetailSource = readFileSync(path.join(root, 'src/pages/Warehouse/ContainerDetail/index.tsx'), 'utf8')
 
@@ -65,6 +67,40 @@ assert(
 assert(
   errorBoundarySource.includes('window.location.reload()'),
   '错误恢复按钮应继续保留主动刷新能力',
+)
+assert(
+  shopLayoutSource.includes("window.addEventListener('focus', refreshFocusedCart)") &&
+    shopLayoutSource.includes("document.addEventListener('visibilitychange', refreshVisibleCart)"),
+  '商城布局应在 Web 页面回到前台时刷新购物车，确保 PDA 加购后顶部购物车同步',
+)
+assert(
+  shopLayoutSource.includes('getActiveStoreOrderCartSummary') &&
+    shopLayoutSource.includes('const refreshCartSummary = useCallback') &&
+    shopLayoutSource.includes('const refreshFullCart = useCallback') &&
+    shopLayoutSource.includes('void refreshFullCart()') &&
+    shopLayoutSource.includes('cartDrawerOpen ? refreshFullCart() : refreshCartSummary()') &&
+    shopLayoutSource.includes('cartDrawerOpenRef.current ? refreshFullCart() : refreshCartSummary()'),
+  '商城布局登录、切店和普通前台刷新应先拉购物车摘要，抽屉打开时前台刷新应保留全量明细',
+)
+assert(
+  shopLayoutSource.includes('// 切换分店先清掉旧购物车') &&
+    shopLayoutSource.includes('setCart(null)') &&
+    shopLayoutSource.includes('cartDrawerOpenRef.current ? refreshFullCart() : refreshCartSummary()'),
+  '商城布局切换分店时应先清空旧购物车，抽屉打开则直接加载新门店明细',
+)
+assert(
+  shopLayoutSource.includes('selectedStoreCodeRef.current === storeCode'),
+  '商城购物车刷新响应回来前应确认仍是当前门店，避免旧门店请求覆盖新门店购物车',
+)
+assert(
+  shopCartDrawerSource.includes('const canSubmitCart = !isCartDetailLoading && cartItems.length > 0') &&
+    shopCartDrawerSource.includes('disabled={!canSubmitCart || submitting}') &&
+    shopCartDrawerSource.includes('disabled={!canSubmitCart}'),
+  '购物车抽屉在 summary-only 或明细加载中时不能允许提交未展示明细的订单',
+)
+assert(
+  !shopLayoutSource.includes('setInterval('),
+  '商城购物车同步不应使用后台轮询，避免慢查询持续打到服务端',
 )
 
 const viewportHookMatch = containerDetailSource.match(/function useContainerDetailViewport\(\) \{[\s\S]*?\n\}/)

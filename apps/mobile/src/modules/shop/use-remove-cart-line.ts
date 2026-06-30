@@ -10,6 +10,8 @@ export function useRemoveCartLine(storeCode?: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
+    mutationKey: ["cartMutation", storeCode ?? null],
+    scope: { id: `cart:${storeCode ?? "none"}` },
     mutationFn: async ({ detailGUID }: RemoveCartLineVariables) => {
       if (!storeCode) {
         throw new Error(i18n.t("common:errors.selectStoreFirst"));

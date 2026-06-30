@@ -99,9 +99,11 @@ export default function ShopHomePage() {
   const quantityUpdateTimersRef = useRef<Record<string, number>>({})
   const quantityUpdateVersionRef = useRef<Record<string, number>>({})
   const selectedStore = useShopStore((state) => state.selectedStore)
+  const selectedStoreCodeRef = useRef<string | null>(null)
   const cart = useShopStore((state) => state.cart)
   const setCart = useShopStore((state) => state.setCart)
   const shouldShowCategoryPath = Boolean(keyword)
+  selectedStoreCodeRef.current = selectedStore?.storeCode ?? null
 
   useEffect(() => {
     return () => {
@@ -174,7 +176,7 @@ export default function ShopHomePage() {
 
   const displayProducts = cartOnlyFilter ? cartProductPageItems : products
   const displayTotal = cartOnlyFilter ? cartProductItems.length : total
-  const cartProductCount = cart?.items.length ?? 0
+  const cartProductCount = (cart?.items.length || cart?.totalSKU) ?? 0
 
   const pageTitle = useMemo(() => {
     if (cartOnlyFilter) {
@@ -208,7 +210,7 @@ export default function ShopHomePage() {
   }, [cartOnlyFilter, cartProductItems.length, currentPage, pageSize])
 
   useEffect(() => {
-    if (cart?.items.length) {
+    if (cart?.isSummaryOnly || cart?.items.length) {
       return
     }
 
@@ -218,7 +220,7 @@ export default function ShopHomePage() {
     setOptimisticCartQuantityMap({})
     setRemovingCartProductMap({})
     setQuantityLoadingMap({})
-  }, [cart?.items.length])
+  }, [cart?.isSummaryOnly, cart?.items.length])
 
   const loadDynamicDataMap = useCallback(
     async (productCodes: string[]) => {
@@ -436,6 +438,27 @@ export default function ShopHomePage() {
     setCart(cart)
   }, [selectedStore?.storeCode, setCart])
 
+  const ensureFullCart = useCallback(async () => {
+    const storeCode = selectedStore?.storeCode ?? null
+    if (!storeCode) {
+      setCart(null)
+      return null
+    }
+
+    if (cart && !cart.isSummaryOnly && cart.storeCode === storeCode) {
+      return cart
+    }
+
+    // summary 只服务首屏；需要明细交互时再补 full cart，避免登录和切店拖慢。
+    const nextCart = await getActiveStoreOrderCart(storeCode)
+    if (selectedStoreCodeRef.current !== storeCode) {
+      return null
+    }
+
+    setCart(nextCart)
+    return nextCart
+  }, [cart, selectedStore?.storeCode, setCart])
+
   const refreshDynamicData = useCallback(async () => {
     if (!selectedStore?.storeCode || !products.length) {
       setDynamicDataMap({})
@@ -619,6 +642,27 @@ export default function ShopHomePage() {
     [navigate],
   )
 
+  const handleCartOnlyFilterToggle = useCallback(async () => {
+    if (cartOnlyFilter) {
+      setCartOnlyFilter(false)
+      setCurrentPage(1)
+      return
+    }
+
+    if (!selectedStore?.storeCode) {
+      message.warning(t('shop.selectStoreFirst'))
+      return
+    }
+
+    try {
+      await ensureFullCart()
+      setCartOnlyFilter(true)
+      setCurrentPage(1)
+    } catch (error) {
+      message.error(t('shop.loadCartFailed', 'Failed to load cart'))
+    }
+  }, [cartOnlyFilter, ensureFullCart, selectedStore?.storeCode, t])
+
   const handleAddToCart = useCallback(
     async (product: StoreOrderProductItem, quantity: number) => {
       if (!selectedStore?.storeCode) {
@@ -669,7 +713,9 @@ export default function ShopHomePage() {
 
       const productCode = product.productCode
       const normalizedQuantity = Math.max(0, Math.floor(Number.isFinite(quantity) ? quantity : 0))
-      const currentCartQuantity = cartQuantityByProductCode[productCode] ?? 0
+      const currentCartQuantity = cart?.isSummaryOnly
+        ? (dynamicDataMap[productCode]?.cartQuantity ?? 0)
+        : (cartQuantityByProductCode[productCode] ?? dynamicDataMap[productCode]?.cartQuantity ?? 0)
       const hasPendingQuantityWork =
         optimisticCartQuantityMap[productCode] !== undefined ||
         quantityUpdateTimersRef.current[productCode] !== undefined ||
@@ -746,6 +792,8 @@ export default function ShopHomePage() {
     },
     [
       cartQuantityByProductCode,
+      cart?.isSummaryOnly,
+      dynamicDataMap,
       optimisticCartQuantityMap,
       quantityLoadingMap,
       refreshDynamicDataForProducts,
@@ -771,8 +819,8 @@ export default function ShopHomePage() {
     setOptimisticCartQuantityMap((prev) => ({ ...prev, [productCode]: 0 }))
 
     try {
-      const cart = await getActiveStoreOrderCart(selectedStore.storeCode)
-      const cartItem = cart?.items.find((item) => item.productCode === productCode)
+      const fullCart = await ensureFullCart()
+      const cartItem = fullCart?.items.find((item) => item.productCode === productCode)
 
       if (!cartItem) {
         setOptimisticCartQuantityMap((prev) => {
@@ -891,8 +939,7 @@ export default function ShopHomePage() {
                 type={cartOnlyFilter ? 'primary' : 'default'}
                 icon={<ShoppingCartOutlined />}
                 onClick={() => {
-                  setCartOnlyFilter((current) => !current)
-                  setCurrentPage(1)
+                  void handleCartOnlyFilterToggle()
                 }}
               >
                 {t('shop.cartProductsFilter', { count: cartProductCount })}
@@ -929,9 +976,11 @@ export default function ShopHomePage() {
                 ...(dynamicData ?? {
                   productCode: product.productCode,
                 }),
-                // 商品卡购物车数量以全局 cart 快照为准，避免购物车抽屉清空后页面动态数据滞后。
+                // summary-only 没有明细，当前页商品仍以 dynamic-data 的 cartQuantity 判断是否已入车。
                 productCode: dynamicData?.productCode ?? product.productCode,
-                cartQuantity: cartQuantityByProductCode[product.productCode] ?? 0,
+                cartQuantity: cart?.isSummaryOnly
+                  ? (dynamicData?.cartQuantity ?? 0)
+                  : (cartQuantityByProductCode[product.productCode] ?? dynamicData?.cartQuantity ?? 0),
               }
               const isRemovingFromCart = Boolean(removingCartProductMap[product.productCode])
               const optimisticCartQuantity = isRemovingFromCart
