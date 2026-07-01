@@ -14,9 +14,15 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let width: Int
     let height: Int
     let hex: String
+    let inkMinY: Int
+    let inkMaxY: Int
 
     var widthBytes: Int {
       (width + 7) / 8
+    }
+
+    var inkHeight: Int {
+      max(1, inkMaxY - inkMinY + 1)
     }
   }
 
@@ -640,6 +646,8 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let dateY = infoBandBottom - dateBitmap.height
     let itemX = dateX
     let itemY = dateY - (itemBitmap?.height ?? 0) - 6
+    // iOS 位图高度包含 UIKit 行高；OFF 按真实墨迹底部和折扣数字对齐，避免压住 Now 价。
+    let discountOffY = startY + discountBitmap.inkMaxY - offBitmap.inkMaxY
     let nameMaxWidth = max(1, width - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
     let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 2, maxWidth: nameMaxWidth)
 
@@ -651,7 +659,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
       bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
       bitmapCommand(
         startX + discountBitmap.width + percentBitmap.width / 2,
-        startY + discountBitmap.height - offBitmap.height,
+        discountOffY,
         offBitmap
       ),
     ]
@@ -695,8 +703,8 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let wasBitmap = textToBitmap("WAS ", fontSize: fontSizeToPixels(10), isBold: true, fontFamily: "sans-serif-light")
     let saveBitmap = textToBitmap("SAVE", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
     let intBitmap = textToBitmap(price.integer, fontSize: fontSizeToPixels(60), isBold: true, fontFamily: "sans-serif-black")
-    let decimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(24), isBold: true, fontFamily: "sans-serif-black")
-    let dotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let decimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(48), isBold: true, fontFamily: "sans-serif-black")
+    let dotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(36), isBold: true, fontFamily: "sans-serif-black")
     let rrpBitmap = textToBitmap(formatMoney(retailPrice), fontSize: fontSizeToPixels(10), isBold: true, fontFamily: "sans-serif-condensed")
     let saveAmountBitmap = textToBitmap(formatMoney(saveAmount), fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-condensed")
     let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 4, maxWidth: paperWidth)
@@ -707,7 +715,9 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     var startX = (paperWidth - currencyBitmap.width - intBitmap.width) / 2
     if (Int(price.decimal) ?? 0) != 0 {
       startX = (paperWidth - currencyBitmap.width - intBitmap.width - dotBitmap.width - decimalBitmap.width) / 2
-      commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width, startY + Int(Double(intBitmap.height) * 0.9), dotBitmap))
+      // 大折扣当前价的小数点按真实墨迹底部对齐个位数字，避免 UIKit 行高把点压低。
+      let priceDotY = startY + intBitmap.inkMaxY - dotBitmap.inkMaxY
+      commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width, priceDotY, dotBitmap))
       commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width + dotBitmap.width, startY, decimalBitmap))
     }
 
@@ -770,7 +780,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     return [
       bitmapCommand(startX, 20, discountBitmap),
       bitmapCommand(startX + discountBitmap.width, 20, percentBitmap),
-      bitmapCommand((paperWidth - offBitmap.width) / 2, 20 + discountBitmap.height + 20, offBitmap),
+      bitmapCommand((paperWidth - offBitmap.width) / 2, 20 + discountBitmap.height + 20 - offBitmap.inkHeight, offBitmap),
     ]
   }
 
@@ -1124,7 +1134,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
   private func convertImageToPrinterBitmap(_ image: UIImage, width: Int, height: Int) -> PrinterBitmap {
     guard let cgImage = image.cgImage else {
-      return PrinterBitmap(width: width, height: height, hex: "")
+      return PrinterBitmap(width: width, height: height, hex: "", inkMinY: 0, inkMaxY: max(0, height - 1))
     }
 
     var rgba = [UInt8](repeating: 255, count: width * height * 4)
@@ -1145,7 +1155,8 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     // CPCL EG 使用 1bit 单色图，阈值保持和 Android isBlack 一致。
-    return PrinterBitmap(width: width, height: height, hex: bitmapToHex(rgba, width: width, height: height))
+    let inkBounds = bitmapInkVerticalBounds(rgba, width: width, height: height)
+    return PrinterBitmap(width: width, height: height, hex: bitmapToHex(rgba, width: width, height: height), inkMinY: inkBounds.minY, inkMaxY: inkBounds.maxY)
   }
 
   private func bitmapCommand(_ x: Int, _ y: Int, _ bitmap: PrinterBitmap) -> String {
@@ -1266,6 +1277,28 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     return hex
+  }
+
+  private func bitmapInkVerticalBounds(_ rgba: [UInt8], width: Int, height: Int) -> (minY: Int, maxY: Int) {
+    var minY = height
+    var maxY = -1
+
+    for y in 0..<height {
+      for x in 0..<width {
+        let offset = (y * width + x) * 4
+        if isBlackPixel(rgba, offset: offset) {
+          minY = min(minY, y)
+          maxY = max(maxY, y)
+        }
+      }
+    }
+
+    // 空白图回退到整个位图，避免调用方对齐时拿到无效边界。
+    if maxY < minY {
+      return (0, max(0, height - 1))
+    }
+
+    return (minY, maxY)
   }
 
   private func isBlackPixel(_ rgba: [UInt8], offset: Int) -> Bool {
