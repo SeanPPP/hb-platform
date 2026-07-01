@@ -1,4 +1,12 @@
 import { NativeModules, PermissionsAndroid, Platform } from "react-native";
+import {
+  buildBigDiscountLabelCommand,
+  buildClearanceLabelCommand,
+  buildDiscountLabelCommand,
+  buildProductLabelCommand,
+  buildWarehouseLocationLabelCommand,
+  buildWarehouseProductLabelCommand,
+} from "@/modules/printer/cpcl-labels";
 import type {
   PrinterDevice,
   PrinterStatus,
@@ -39,6 +47,11 @@ function getModule() {
   }
 
   return nativeModule;
+}
+
+function printIosCpclLabel(command: string) {
+  // iOS 原生模块当前只负责 BLE raw 写入；业务标签在 TS 层生成 CPCL，避免复刻 Android 位图渲染。
+  return getModule().print(command, "GB18030");
 }
 
 async function requestAndroidBluetoothPermissions() {
@@ -101,16 +114,25 @@ export async function printRawCommand(command: string) {
 
 export async function printNativeProductLabel(payload: ProductLabelPrintPayload, printType?: string | null) {
   await ensureBluetoothPermissions();
+  if (Platform.OS === "ios") {
+    return printIosCpclLabel(buildProductLabelCommand(payload, printType));
+  }
   return getModule().printProductLabel(payload, printType ?? null);
 }
 
 export async function printNativeDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null) {
   await ensureBluetoothPermissions();
+  if (Platform.OS === "ios") {
+    return printIosCpclLabel(buildDiscountLabelCommand(payload, printType));
+  }
   return getModule().printDiscountLabel(payload, printType ?? null);
 }
 
 export async function printNativeClearanceLabel(payload: ProductLabelPrintPayload) {
   await ensureBluetoothPermissions();
+  if (Platform.OS === "ios") {
+    return printIosCpclLabel(buildClearanceLabelCommand(payload));
+  }
   return getModule().printClearanceLabel(payload);
 }
 
@@ -119,15 +141,24 @@ export async function printNativeBigDiscountLabel(
   printType?: string | null
 ) {
   await ensureBluetoothPermissions();
+  if (Platform.OS === "ios") {
+    return printIosCpclLabel(buildBigDiscountLabelCommand(payload, printType));
+  }
   return getModule().printBigDiscountLabel(payload, printType ?? null);
 }
 
 export async function printNativeWarehouseProductLabel(payload: WarehouseProductLabelPrintPayload) {
   await ensureBluetoothPermissions();
+  if (Platform.OS === "ios") {
+    return printIosCpclLabel(buildWarehouseProductLabelCommand(payload));
+  }
   return getModule().printWarehouseProductLabel(payload);
 }
 
 export async function printNativeWarehouseLocationLabel(payload: WarehouseLocationLabelPrintPayload) {
   await ensureBluetoothPermissions();
+  if (Platform.OS === "ios") {
+    return printIosCpclLabel(buildWarehouseLocationLabelCommand(payload));
+  }
   return getModule().printWarehouseLocationLabel(payload);
 }
