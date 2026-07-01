@@ -192,7 +192,7 @@ export default function Home() {
   });
   const cameraScan = useCameraScan({
     ignoreWhileProcessing: cameraScanMode === "continuous",
-    suppressRepeatsUntilChange: cameraScanMode === "continuous",
+    resetKey: `${cameraScanMode}:${selectedStoreCode ?? ""}:${autoAddWhenSingle ? "add" : "lookup"}`,
     onBarcode: async (barcode) => {
       if (cameraScanMode === "single") {
         // 单次扫码命中后先收起相机，后续查询/加购反馈沿用原链路。

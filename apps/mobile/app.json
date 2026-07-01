@@ -23,6 +23,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.hbweb.expo",
+      "appleTeamId": "3SV4A23SVW",
       "infoPlist": {
         "NSCameraUsageDescription": "Used for scanning barcodes and taking profile photos",
         "NSBluetoothAlwaysUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",

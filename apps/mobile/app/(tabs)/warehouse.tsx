@@ -451,8 +451,19 @@ export default function WarehouseScreen() {
     return parsed;
   }, [getErrorMessage, t]);
 
+  const cameraScanDisabled =
+    cameraScanMode === "continuous" &&
+    scannerTarget === "productLocation" &&
+    Boolean(pendingStorageLocationBind);
   const cameraScan = useCameraScan({
+    disabled: cameraScanDisabled,
     ignoreWhileProcessing: cameraScanMode === "continuous",
+    resetKey: [
+      cameraScanMode,
+      scannerTarget,
+      segment,
+      pendingStorageLocationBind ? "pending-location-bind" : "ready",
+    ].join(":"),
     suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
       if (cameraScanMode === "single") {
@@ -894,7 +905,8 @@ export default function WarehouseScreen() {
   }, [busy]);
 
   const handleLookupLocationsForProductScan = useCallback(async (barcode: string) => {
-    if (productLocationBindingRef.current) {
+    if (productLocationBindingRef.current || pendingStorageLocationBind) {
+      // 确认弹窗打开后不再接收后台扫码，避免替换用户正在确认的货位。
       return;
     }
     const keyword = barcode.trim();
@@ -937,7 +949,7 @@ export default function WarehouseScreen() {
     if (autoBindLocation && requestId === productLocationLookupRequestRef.current) {
       await handleRequestBindLocation(autoBindLocation);
     }
-  }, [getErrorMessage, handleRequestBindLocation, t]);
+  }, [getErrorMessage, handleRequestBindLocation, pendingStorageLocationBind, t]);
 
   const handleConfirmUnbindProductLocation = useCallback(async () => {
     if (!pendingProductLocationUnbind || busy) {
@@ -1085,6 +1097,10 @@ export default function WarehouseScreen() {
   const hidScanner = useHidBarcodeScanner({
     onScan: async (barcode) => {
       if (unbindLocationConfirmVisible || pendingProductLocationUnbind) {
+        return;
+      }
+      if (pendingStorageLocationBind) {
+        // 货位绑定确认弹窗打开时，扫码枪也不能替换用户正在确认的货位。
         return;
       }
 

@@ -49,6 +49,17 @@ assert.equal(
 
 assert.equal(
   shouldForwardCameraScan(
+    { value: "9300", timestamp: 1000, processing: false },
+    "9300",
+    2500,
+    { ...baseOptions, ignoreWhileProcessing: true }
+  ),
+  true,
+  "首页连续加购不启用永久同码拦截时，冷却后应允许同条码再次触发"
+);
+
+assert.equal(
+  shouldForwardCameraScan(
     { value: "9300", timestamp: 1000, processing: true },
     "9400",
     2600,

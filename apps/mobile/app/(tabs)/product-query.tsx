@@ -1149,8 +1149,18 @@ function ProductQueryContent() {
     t,
   ]);
 
+  const cameraScanDisabled =
+    cameraScanMode === "continuous" &&
+    (lookupVisible || Boolean(autoPricingDialog) || autoPricingDialogSaving);
   const cameraScan = useCameraScan({
+    disabled: cameraScanDisabled,
     ignoreWhileProcessing: cameraScanMode === "continuous",
+    resetKey: [
+      cameraScanMode,
+      selectedStoreCode ?? "",
+      lookupVisible ? "lookup" : "idle",
+      autoPricingDialog ? "pricing" : "idle",
+    ].join(":"),
     suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
       console.log("[product-query] barcode scanned", { barcode });
