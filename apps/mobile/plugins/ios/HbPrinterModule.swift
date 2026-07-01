@@ -1,4 +1,5 @@
 import CoreBluetooth
+import CoreImage
 import Foundation
 import UIKit
 
@@ -182,7 +183,10 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    rejectUnsupportedLabelPrint(reject)
+    bluetoothQueue.async {
+      let command = self.buildDiscountLabelCommand(payload, printType: printType)
+      self.writePrinterCommand(command, encoding: "GB18030", resolver: resolve, rejecter: reject)
+    }
   }
 
   @objc(printClearanceLabel:resolver:rejecter:)
@@ -201,7 +205,10 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    rejectUnsupportedLabelPrint(reject)
+    bluetoothQueue.async {
+      let command = self.buildBigDiscountLabelCommand(payload, printType: printType)
+      self.writePrinterCommand(command, encoding: "GB18030", resolver: resolve, rejecter: reject)
+    }
   }
 
   @objc(printWarehouseProductLabel:resolver:rejecter:)
@@ -210,7 +217,10 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    rejectUnsupportedLabelPrint(reject)
+    bluetoothQueue.async {
+      let command = self.buildWarehouseProductLabelCommand(payload)
+      self.writePrinterCommand(command, encoding: "GB18030", resolver: resolve, rejecter: reject)
+    }
   }
 
   @objc(printWarehouseLocationLabel:resolver:rejecter:)
@@ -219,7 +229,10 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     resolver resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
-    rejectUnsupportedLabelPrint(reject)
+    bluetoothQueue.async {
+      let command = self.buildWarehouseLocationLabelCommand(payload)
+      self.writePrinterCommand(command, encoding: "GB18030", resolver: resolve, rejecter: reject)
+    }
   }
 
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -585,6 +598,303 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     return commands.joined(separator: "\r\n") + "\r\n"
   }
 
+  private func buildDiscountLabelCommand(_ payload: NSDictionary, printType: String?) -> String {
+    let isSmall = printType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "small"
+    let width = isSmall ? 472 : 570
+    let height = isSmall ? 320 : 400
+    let productName = dictString(payload, "productName")
+    let itemNumber = dictString(payload, "itemNumber")
+    let barcodeValue = dictString(payload, "barcode")
+    let barcode = barcodeValue.isEmpty ? itemNumber : barcodeValue
+    let retailPrice = dictDouble(payload, "retailPrice") ?? 0
+    let discountRate = dictDouble(payload, "discountRate") ?? 0
+    let discountValue = discountRate * 100
+    let nowPrice = retailPrice * (1 - discountRate)
+
+    // 折扣标签对齐 Android：折扣数字、Now 价、二维码和日期全部使用位图绘制。
+    let nowLabelBitmap = textToBitmap("Now", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let nowPriceBitmap = textToBitmap("$\(formatMoney(nowPrice))", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let discountBitmap = textToBitmap(String(format: "%02d", Int(discountValue.rounded())), fontSize: fontSizeToPixels(44), isBold: false, fontFamily: "sans-serif-black")
+    let offBitmap = textToBitmap("OFF", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black")
+    let percentBitmap = textToBitmap("%", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "Arial", isInverse: true, padding: 2)
+    let itemBitmap = itemNumber.isEmpty ? nil : textToBitmap(itemNumber, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
+
+    let startY = 20
+    let startX = width - discountBitmap.width - percentBitmap.width - offBitmap.width + 20
+    let rightMargin = 12
+    let columnGap = 10
+    let nowGroupGap = 6
+    let qrBitmap = barcode.isEmpty ? nil : createQrCodeBitmap(barcode, size: 64)
+    let qrVisualWidth = qrBitmap?.width ?? 64
+    let effectiveLabelBottom = 204
+    let bottomMargin = 10
+    let infoBandBottom = effectiveLabelBottom - bottomMargin
+    let qrX = 10
+    let qrY = infoBandBottom - (qrBitmap?.height ?? 64)
+    let nowPriceX = width - rightMargin - nowPriceBitmap.width
+    let nowLabelX = nowPriceX - nowGroupGap - nowLabelBitmap.width
+    let nowLabelY = infoBandBottom - nowLabelBitmap.height
+    let nowPriceY = infoBandBottom - nowPriceBitmap.height
+    let dateX = qrX + qrVisualWidth + columnGap
+    let dateY = infoBandBottom - dateBitmap.height
+    let itemX = dateX
+    let itemY = dateY - (itemBitmap?.height ?? 0) - 6
+    let nameMaxWidth = max(1, width - discountBitmap.width - percentBitmap.width - offBitmap.width + 10)
+    let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 2, maxWidth: nameMaxWidth)
+
+    var commands = [
+      "! 0 200 200 \(height) 1",
+      "PAGE-WIDTH \(width)",
+      bitmapCommand(5, 5, nameBitmap),
+      bitmapCommand(startX, startY, discountBitmap),
+      bitmapCommand(startX + discountBitmap.width, startY, percentBitmap),
+      bitmapCommand(
+        startX + discountBitmap.width + percentBitmap.width / 2,
+        startY + discountBitmap.height - offBitmap.height,
+        offBitmap
+      ),
+    ]
+
+    if let itemBitmap {
+      commands.append(bitmapCommand(itemX, itemY, itemBitmap))
+    }
+
+    if let qrBitmap {
+      commands.append(bitmapCommand(qrX, qrY, qrBitmap))
+    }
+
+    commands.append(bitmapCommand(dateX, dateY, dateBitmap))
+    commands.append(bitmapCommand(nowLabelX, nowLabelY, nowLabelBitmap))
+    commands.append(bitmapCommand(nowPriceX, nowPriceY, nowPriceBitmap))
+    commands.append("PRINT")
+    return commands.joined(separator: "\r\n") + "\r\n"
+  }
+
+  private func buildBigDiscountLabelCommand(_ payload: NSDictionary, printType: String?) -> String {
+    let productName = dictString(payload, "productName")
+    let barcode = dictString(payload, "barcode")
+    let retailPrice = dictDouble(payload, "retailPrice") ?? 0
+    let discountRate = dictDouble(payload, "discountRate") ?? 0
+    let paperWidth = 480
+    let afterDiscount = retailPrice * (1 - discountRate)
+    let price = formatPriceParts(afterDiscount)
+    let saveAmount = retailPrice * discountRate
+
+    var commands = [
+      "! 0 200 200 1200 1",
+      "PAGE-WIDTH \(paperWidth)",
+    ]
+
+    commands.append(contentsOf: buildBigDiscountHeaderCommands(discountRate: discountRate, printType: printType, paperWidth: paperWidth))
+
+    let currencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(20), isBold: false, fontFamily: "sans-serif-black")
+    let wasCurrencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
+    let saveCurrencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "sans-serif-black")
+    let eaBitmap = textToBitmap("ea", fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
+    let wasBitmap = textToBitmap("WAS ", fontSize: fontSizeToPixels(10), isBold: true, fontFamily: "sans-serif-light")
+    let saveBitmap = textToBitmap("SAVE", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
+    let intBitmap = textToBitmap(price.integer, fontSize: fontSizeToPixels(60), isBold: true, fontFamily: "sans-serif-black")
+    let decimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(24), isBold: true, fontFamily: "sans-serif-black")
+    let dotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let rrpBitmap = textToBitmap(formatMoney(retailPrice), fontSize: fontSizeToPixels(10), isBold: true, fontFamily: "sans-serif-condensed")
+    let saveAmountBitmap = textToBitmap(formatMoney(saveAmount), fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-condensed")
+    let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 4, maxWidth: paperWidth)
+    let dashLineBitmap = createDashLineBitmap(width: 450, height: 2)
+    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "Arial", isInverse: true, padding: 2)
+
+    let startY = 220
+    var startX = (paperWidth - currencyBitmap.width - intBitmap.width) / 2
+    if (Int(price.decimal) ?? 0) != 0 {
+      startX = (paperWidth - currencyBitmap.width - intBitmap.width - dotBitmap.width - decimalBitmap.width) / 2
+      commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width, startY + Int(Double(intBitmap.height) * 0.9), dotBitmap))
+      commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width + dotBitmap.width, startY, decimalBitmap))
+    }
+
+    commands.append(bitmapCommand(startX, startY, currencyBitmap))
+    commands.append(bitmapCommand(startX + currencyBitmap.width, startY, intBitmap))
+    commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width + 30, startY + Int(Double(intBitmap.height) * 0.9), eaBitmap))
+
+    let rrpStartY = startY + intBitmap.height + 20
+    commands.append(bitmapCommand(5, rrpStartY, wasBitmap))
+    commands.append(bitmapCommand(5 + wasBitmap.width, rrpStartY, wasCurrencyBitmap))
+    commands.append(bitmapCommand(5 + wasBitmap.width + wasCurrencyBitmap.width, rrpStartY, rrpBitmap))
+
+    if discountRate > 0 {
+      commands.append("LINE 5 \(rrpStartY) \(5 + wasBitmap.width + rrpBitmap.width) \(rrpStartY + wasBitmap.height) 2")
+      commands.append("LINE 5 \(rrpStartY + wasBitmap.height) \(5 + wasBitmap.width + rrpBitmap.width) \(rrpStartY) 2")
+      let saveStartX = 30 + wasBitmap.width + wasCurrencyBitmap.width + rrpBitmap.width
+      commands.append(bitmapCommand(saveStartX, rrpStartY, saveBitmap))
+      commands.append(bitmapCommand(saveStartX + saveBitmap.width + 5, rrpStartY, saveCurrencyBitmap))
+      commands.append(bitmapCommand(saveStartX + saveBitmap.width + 5 + saveCurrencyBitmap.width + 5, rrpStartY, saveAmountBitmap))
+    }
+
+    commands.append(bitmapCommand(5, 550 - nameBitmap.height - 5, nameBitmap))
+    commands.append(bitmapCommand(15, 550, dashLineBitmap))
+
+    if !barcode.isEmpty {
+      commands.append("BARCODE 128 1 2 30 15 560 \(cpclText(barcode))")
+    }
+
+    commands.append(bitmapCommand(paperWidth - dateBitmap.width - 10, 630 - dateBitmap.height, dateBitmap))
+    commands.append("PRINT")
+    return commands.joined(separator: "\r\n") + "\r\n"
+  }
+
+  private func buildBigDiscountHeaderCommands(discountRate: Double, printType: String?, paperWidth: Int) -> [String] {
+    let discount = discountRate * 100
+    let title = printType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !title.isEmpty {
+      let titleBitmap = textToBitmap(title, fontSize: fontSizeToPixels(25), isBold: true, fontFamily: "sans-serif-black")
+      return [bitmapCommand(paperWidth / 2 - titleBitmap.width / 2, 80, titleBitmap)]
+    }
+
+    if discount <= 10 || discount > 100 {
+      let specialBitmap = textToBitmap("Special", fontSize: fontSizeToPixels(40), isBold: true, fontFamily: "sans-serif-black")
+      return [bitmapCommand(paperWidth / 2 - specialBitmap.width / 2, 40, specialBitmap)]
+    }
+
+    if abs(discount - 50) < 0.01 {
+      let halfBitmap = textToBitmap("1/2", fontSize: fontSizeToPixels(40), isBold: true, fontFamily: "sans-serif-black")
+      let priceBitmap = textToBitmap("PRICE", fontSize: fontSizeToPixels(25), isBold: true, fontFamily: "sans-serif-black")
+      return [
+        bitmapCommand(130, 20, halfBitmap),
+        bitmapCommand(120, 20 + halfBitmap.height, priceBitmap),
+      ]
+    }
+
+    let discountBitmap = textToBitmap(String(Int(discount.rounded())), fontSize: fontSizeToPixels(40), isBold: true, fontFamily: "sans-serif-black")
+    let percentBitmap = textToBitmap("%", fontSize: fontSizeToPixels(24), isBold: true, fontFamily: "sans-serif-condensed")
+    let offBitmap = textToBitmap("OFF", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let startX = (paperWidth - discountBitmap.width - percentBitmap.width) / 2
+    return [
+      bitmapCommand(startX, 20, discountBitmap),
+      bitmapCommand(startX + discountBitmap.width, 20, percentBitmap),
+      bitmapCommand((paperWidth - offBitmap.width) / 2, 20 + discountBitmap.height + 20, offBitmap),
+    ]
+  }
+
+  private func buildWarehouseProductLabelCommand(_ payload: NSDictionary) -> String {
+    let width = 570
+    let height = 208
+    let productName = dictString(payload, "productName")
+    let itemNumber = dictString(payload, "itemNumber")
+    let barcodeValue = dictString(payload, "barcode")
+    let barcode = barcodeValue.isEmpty ? itemNumber : barcodeValue
+    let middlePackageQuantity = dictDouble(payload, "middlePackageQuantity")
+    let purchasePrice = dictDouble(payload, "purchasePrice")
+    let retailPrice = dictDouble(payload, "retailPrice")
+    let locationCode = dictString(payload, "locationCode")
+    let locationBarcode = dictString(payload, "locationBarcode")
+    let domesticPrice = dictDouble(payload, "domesticPrice")
+    let oemPrice = dictDouble(payload, "oemPrice")
+    let importPrice = dictDouble(payload, "importPrice")
+    let displayPrice = retailPrice ?? domesticPrice ?? oemPrice ?? importPrice
+    let costPrice = purchasePrice ?? importPrice ?? domesticPrice ?? oemPrice
+    let priceDetails = [
+      "PK \(formatOptionalQuantity(middlePackageQuantity))",
+      "COST \(formatOptionalMoney(costPrice))",
+      "RRP \(formatOptionalMoney(displayPrice))",
+    ]
+    let contentWidth = width - 40
+
+    // 仓库商品标签按 Android 的信息密度布局：标题/商品/货号居中，货位和价格区固定。
+    let titleBitmap = textToBitmap("WAREHOUSE PRODUCT", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "Arial", maxLines: 1, maxWidth: max(180, contentWidth))
+    let itemText = itemNumber.isEmpty ? "--" : itemNumber
+    let itemBitmap = textToBitmap("ITEM \(cpclText(itemText))", fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let packBitmap = textToBitmap(priceDetails[0], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let costBitmap = textToBitmap(priceDetails[1], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let rrpBitmap = textToBitmap(priceDetails[2], fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let locationText = locationCode.isEmpty ? "UNASSIGNED" : locationCode
+    let locationBitmap = textToBitmap("LOC \(cpclText(locationText))", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let locationBarcodeBitmap = locationBarcode.isEmpty ? nil : textToBitmap(cpclText(locationBarcode), fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    func centerX(_ bitmap: PrinterBitmap) -> Int { max(0, (width - bitmap.width) / 2) }
+
+    var commands = [
+      "! 0 200 200 \(height) 1",
+      "PAGE-WIDTH \(width)",
+      bitmapCommand(centerX(titleBitmap), 12, titleBitmap),
+      bitmapCommand(centerX(nameBitmap), 38, nameBitmap),
+      bitmapCommand(centerX(itemBitmap), 66, itemBitmap),
+      bitmapCommand(20, 92, locationBitmap),
+      bitmapCommand(width - dateBitmap.width - 20, 92, dateBitmap),
+    ]
+
+    if let locationBarcodeBitmap {
+      commands.append(bitmapCommand(centerX(locationBarcodeBitmap), 120, locationBarcodeBitmap))
+    }
+
+    if !barcode.isEmpty {
+      commands.append("BARCODE 128 1 1 38 24 146 \(cpclText(barcode))")
+      commands.append(bitmapCommand(380, 132, packBitmap))
+      commands.append(bitmapCommand(380, 156, costBitmap))
+      commands.append(bitmapCommand(380, 180, rrpBitmap))
+    } else {
+      commands.append(bitmapCommand(centerX(packBitmap), 132, packBitmap))
+      commands.append(bitmapCommand(centerX(costBitmap), 156, costBitmap))
+      commands.append(bitmapCommand(centerX(rrpBitmap), 180, rrpBitmap))
+    }
+
+    commands.append("PRINT")
+    return commands.joined(separator: "\r\n") + "\r\n"
+  }
+
+  private func buildWarehouseLocationLabelCommand(_ payload: NSDictionary) -> String {
+    let width = 570
+    let height = 208
+    let locationCode = dictString(payload, "locationCode")
+    let locationBarcode = dictString(payload, "locationBarcode")
+    let locationGuid = dictString(payload, "locationGuid")
+    let itemValue = dictString(payload, "itemNumber")
+    let itemNumber = itemValue.isEmpty ? "--" : itemValue
+    let productValue = dictString(payload, "productName")
+    let productName = productValue.isEmpty ? "--" : productValue
+    let quantityValue = dictDouble(payload, "middlePackageQuantity").map { Int($0.rounded()) }
+    let middlePackageQuantity = (quantityValue ?? 1) > 0 ? (quantityValue ?? 1) : 1
+    let displayCode = locationCode.isEmpty ? (locationBarcode.isEmpty ? locationGuid : locationBarcode) : locationCode
+    let barcode = locationBarcode.isEmpty ? displayCode : locationBarcode
+
+    let titleBitmap = textToBitmap("LOCATION", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let codeBitmap = longTextToBitmap(displayCode, fontSize: fontSizeToPixels(15), isBold: true, fontFamily: "sans-serif-black", maxLines: 1, maxWidth: width - 30)
+    // 货位标签补充商品信息，空货位保持占位，避免打印布局跳动。
+    let rightAreaLeft = width - 178
+    let leftTextWidth = rightAreaLeft - 28
+    let itemBitmap = longTextToBitmap("ITEM \(itemNumber)", fontSize: fontSizeToPixels(9), isBold: true, fontFamily: "sans-serif-black", maxLines: 1, maxWidth: leftTextWidth)
+    let nameBitmap = longTextToBitmap("DESC \(productName)", fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "Arial", maxLines: 1, maxWidth: leftTextWidth)
+    let innerBitmap = textToBitmap("INNER", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
+    let innerQuantityBitmap = textToBitmap(String(middlePackageQuantity), fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black")
+    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    func centerX(_ bitmap: PrinterBitmap) -> Int { max(0, (width - bitmap.width) / 2) }
+    let rightPadding = 20
+    let quantityX = width - rightPadding - innerQuantityBitmap.width
+    let innerX = max(rightAreaLeft, quantityX - innerBitmap.width - 8)
+    let quantityY = 72
+    let innerY = quantityY + max(0, innerQuantityBitmap.height - innerBitmap.height - 3)
+    let dateX = width - rightPadding - dateBitmap.width
+    let dateY = height - dateBitmap.height - 10
+
+    var commands = [
+      "! 0 200 200 \(height) 1",
+      "PAGE-WIDTH \(width)",
+      bitmapCommand(centerX(titleBitmap), 8, titleBitmap),
+      bitmapCommand(centerX(codeBitmap), 28, codeBitmap),
+      bitmapCommand(18, 78, itemBitmap),
+      bitmapCommand(18, 108, nameBitmap),
+      bitmapCommand(innerX, innerY, innerBitmap),
+      bitmapCommand(quantityX, quantityY, innerQuantityBitmap),
+      bitmapCommand(dateX, dateY, dateBitmap),
+    ]
+
+    if !barcode.isEmpty {
+      commands.append("BARCODE 128 1 1 44 24 150 \(cpclText(barcode))")
+    }
+
+    commands.append("PRINT")
+    return commands.joined(separator: "\r\n") + "\r\n"
+  }
+
   private func dictString(_ payload: NSDictionary, _ key: String) -> String {
     guard let value = payload[key], !(value is NSNull) else {
       return ""
@@ -627,6 +937,25 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
   private func formatPriceParts(_ value: Double?) -> PriceParts {
     let cents = Int(((value ?? 0) * 100).rounded())
     return PriceParts(integer: String(cents / 100), decimal: String(format: "%02d", abs(cents % 100)))
+  }
+
+  private func formatMoney(_ value: Double) -> String {
+    String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), value)
+  }
+
+  private func formatOptionalMoney(_ value: Double?) -> String {
+    guard let value else {
+      return "--"
+    }
+    return formatMoney(value)
+  }
+
+  private func formatOptionalQuantity(_ value: Double?) -> String {
+    guard let value else {
+      return "--"
+    }
+    let rounded = Int(value.rounded())
+    return abs(value - Double(rounded)) < 0.01 ? String(rounded) : String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), value)
   }
 
   private func todayString() -> String {
@@ -821,6 +1150,100 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
   private func bitmapCommand(_ x: Int, _ y: Int, _ bitmap: PrinterBitmap) -> String {
     "EG \(bitmap.widthBytes) \(bitmap.height) \(x) \(y) \(bitmap.hex)"
+  }
+
+  private func createQrCodeBitmap(_ value: String, size: Int) -> PrinterBitmap {
+    guard
+      let data = value.data(using: .utf8),
+      let filter = CIFilter(name: "CIQRCodeGenerator")
+    else {
+      return textToBitmap(value, fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    }
+
+    filter.setValue(data, forKey: "inputMessage")
+    filter.setValue("L", forKey: "inputCorrectionLevel")
+
+    guard let outputImage = filter.outputImage else {
+      return textToBitmap(value, fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    }
+
+    let context = CIContext(options: nil)
+    guard let cgImage = context.createCGImage(outputImage, from: outputImage.extent) else {
+      return textToBitmap(value, fontSize: fontSizeToPixels(7), isBold: true, fontFamily: "sans-serif-black")
+    }
+
+    let targetSize = max(1, size)
+    // CoreImage 的 QR 默认带 quiet zone；裁到黑色边界后再缩放，贴近 Android MARGIN=0。
+    let qrImage = UIImage(cgImage: cropQrQuietZone(cgImage) ?? cgImage)
+    return renderPrinterBitmap(width: targetSize, height: targetSize, isInverse: false) {
+      qrImage.draw(in: CGRect(x: 0, y: 0, width: targetSize, height: targetSize))
+    }
+  }
+
+  private func cropQrQuietZone(_ image: CGImage) -> CGImage? {
+    let width = image.width
+    let height = image.height
+    guard width > 0, height > 0 else {
+      return nil
+    }
+
+    var rgba = [UInt8](repeating: 255, count: width * height * 4)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    rgba.withUnsafeMutableBytes { buffer in
+      guard let context = CGContext(
+        data: buffer.baseAddress,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+      ) else {
+        return
+      }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+
+    var minX = width
+    var minY = height
+    var maxX = -1
+    var maxY = -1
+
+    for y in 0..<height {
+      for x in 0..<width {
+        let offset = (y * width + x) * 4
+        if isBlackPixel(rgba, offset: offset) {
+          minX = min(minX, x)
+          minY = min(minY, y)
+          maxX = max(maxX, x)
+          maxY = max(maxY, y)
+        }
+      }
+    }
+
+    guard maxX >= minX, maxY >= minY else {
+      return nil
+    }
+
+    return image.cropping(to: CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1))
+  }
+
+  private func createDashLineBitmap(width: Int, height: Int) -> PrinterBitmap {
+    let safeWidth = max(1, width)
+    let safeHeight = max(1, height)
+    return renderPrinterBitmap(width: safeWidth, height: safeHeight, isInverse: false) {
+      // 大折扣标签底部虚线按 Android 的 10px 实线、18px 步进绘制。
+      let path = UIBezierPath()
+      var x: CGFloat = 0
+      while x < CGFloat(safeWidth) {
+        path.move(to: CGPoint(x: x, y: CGFloat(safeHeight) / 2))
+        path.addLine(to: CGPoint(x: min(x + 10, CGFloat(safeWidth)), y: CGFloat(safeHeight) / 2))
+        x += 18
+      }
+      UIColor.black.setStroke()
+      path.lineWidth = CGFloat(safeHeight)
+      path.stroke()
+    }
   }
 
   private func bitmapToHex(_ rgba: [UInt8], width: Int, height: Int) -> String {

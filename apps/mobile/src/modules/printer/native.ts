@@ -144,7 +144,20 @@ export async function printNativeProductLabel(payload: ProductLabelPrintPayload,
 export async function printNativeDiscountLabel(payload: ProductLabelPrintPayload, printType?: string | null) {
   await ensureBluetoothPermissions();
   if (Platform.OS === "ios") {
-    return printIosCpclLabel(buildDiscountLabelCommand(payload, printType));
+    const module = getModule();
+    if (typeof module.printDiscountLabel !== "function") {
+      return printIosCpclLabel(buildDiscountLabelCommand(payload, printType));
+    }
+
+    try {
+      // 新 iOS 包走 Swift 位图渲染，旧包才回退到 JS CPCL。
+      return await module.printDiscountLabel(payload, printType ?? null);
+    } catch (error) {
+      if (!isIosUnsupportedLabelPrintError(error)) {
+        throw error;
+      }
+      return printIosCpclLabel(buildDiscountLabelCommand(payload, printType));
+    }
   }
   return getModule().printDiscountLabel(payload, printType ?? null);
 }
@@ -163,7 +176,20 @@ export async function printNativeBigDiscountLabel(
 ) {
   await ensureBluetoothPermissions();
   if (Platform.OS === "ios") {
-    return printIosCpclLabel(buildBigDiscountLabelCommand(payload, printType));
+    const module = getModule();
+    if (typeof module.printBigDiscountLabel !== "function") {
+      return printIosCpclLabel(buildBigDiscountLabelCommand(payload, printType));
+    }
+
+    try {
+      // 大折扣标签需要原生位图布局才能和 Android 纸面一致。
+      return await module.printBigDiscountLabel(payload, printType ?? null);
+    } catch (error) {
+      if (!isIosUnsupportedLabelPrintError(error)) {
+        throw error;
+      }
+      return printIosCpclLabel(buildBigDiscountLabelCommand(payload, printType));
+    }
   }
   return getModule().printBigDiscountLabel(payload, printType ?? null);
 }
@@ -171,7 +197,20 @@ export async function printNativeBigDiscountLabel(
 export async function printNativeWarehouseProductLabel(payload: WarehouseProductLabelPrintPayload) {
   await ensureBluetoothPermissions();
   if (Platform.OS === "ios") {
-    return printIosCpclLabel(buildWarehouseProductLabelCommand(payload));
+    const module = getModule();
+    if (typeof module.printWarehouseProductLabel !== "function") {
+      return printIosCpclLabel(buildWarehouseProductLabelCommand(payload));
+    }
+
+    try {
+      // 仓库商品标签优先使用 Swift 复刻 Android 位图布局。
+      return await module.printWarehouseProductLabel(payload);
+    } catch (error) {
+      if (!isIosUnsupportedLabelPrintError(error)) {
+        throw error;
+      }
+      return printIosCpclLabel(buildWarehouseProductLabelCommand(payload));
+    }
   }
   return getModule().printWarehouseProductLabel(payload);
 }
@@ -179,7 +218,20 @@ export async function printNativeWarehouseProductLabel(payload: WarehouseProduct
 export async function printNativeWarehouseLocationLabel(payload: WarehouseLocationLabelPrintPayload) {
   await ensureBluetoothPermissions();
   if (Platform.OS === "ios") {
-    return printIosCpclLabel(buildWarehouseLocationLabelCommand(payload));
+    const module = getModule();
+    if (typeof module.printWarehouseLocationLabel !== "function") {
+      return printIosCpclLabel(buildWarehouseLocationLabelCommand(payload));
+    }
+
+    try {
+      // 仓库货位标签优先使用 Swift 复刻 Android 位图布局。
+      return await module.printWarehouseLocationLabel(payload);
+    } catch (error) {
+      if (!isIosUnsupportedLabelPrintError(error)) {
+        throw error;
+      }
+      return printIosCpclLabel(buildWarehouseLocationLabelCommand(payload));
+    }
   }
   return getModule().printWarehouseLocationLabel(payload);
 }
