@@ -38,5 +38,12 @@
         "buildType": "apk"
       }
     }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6786073002"
+      }
+    }
   }
 }

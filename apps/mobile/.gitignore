@@ -20,6 +20,9 @@ android/gradlew.bat
 *.key
 *.mobileprovision
 
+# iOS 构建产物
+*.ipa
+
 # Metro
 .metro-health-check*
 

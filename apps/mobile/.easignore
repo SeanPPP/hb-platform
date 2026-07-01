@@ -26,6 +26,9 @@ ios/build/
 *.mobileprovision
 *.pem
 
+# iOS 构建产物
+*.ipa
+
 # Metro
 .metro-health-check*
 

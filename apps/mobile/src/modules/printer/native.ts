@@ -30,12 +30,12 @@ const unsupportedPrinterStatus: PrinterStatus = {
 };
 
 function getModule() {
-  if (Platform.OS !== "android") {
-    throw new Error("Bluetooth label printing is only supported on Android right now.");
+  if (Platform.OS !== "android" && Platform.OS !== "ios") {
+    throw new Error("Bluetooth printing is only supported on Android and iOS right now.");
   }
 
   if (!nativeModule) {
-    throw new Error("The Android printer module is not available.");
+    throw new Error("The Bluetooth printer module is not available.");
   }
 
   return nativeModule;
@@ -72,7 +72,8 @@ export async function ensureBluetoothPermissions() {
 }
 
 export async function getPrinterStatus() {
-  if (Platform.OS !== "android" || !nativeModule) {
+  // iOS 真机通过原生模块检查 BLE 状态；无模块时仍保持“不支持”状态，避免页面崩溃。
+  if ((Platform.OS !== "android" && Platform.OS !== "ios") || !nativeModule) {
     return unsupportedPrinterStatus;
   }
 

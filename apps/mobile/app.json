@@ -25,6 +25,8 @@
       "bundleIdentifier": "com.hbweb.expo",
       "infoPlist": {
         "NSCameraUsageDescription": "Used for scanning barcodes and taking profile photos",
+        "NSBluetoothAlwaysUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",
+        "NSBluetoothPeripheralUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",
         "NSMicrophoneUsageDescription": "Used for audio feedback",
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -52,6 +54,7 @@
     },
     "plugins": [
       "expo-router",
+      "./plugins/with-ios-printer-module",
       [
         "expo-camera",
         {
