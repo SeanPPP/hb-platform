@@ -547,6 +547,8 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     let startY = 30
+    // iOS 位图高度包含 UIKit 行高；普通标签小数点按 TS 固定坐标对齐，等效 Android ink bounds 表现。
+    let priceDotY = startY + 38
     let startX = width - priceDecimalBitmap.width
     var commands = [
       "! 0 200 200 \(height) 1",
@@ -571,7 +573,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     commands.append(bitmapCommand(startX, startY, priceDecimalBitmap))
-    commands.append(bitmapCommand(startX - priceDotBitmap.width, startY + priceIntegerBitmap.height - 10, priceDotBitmap))
+    commands.append(bitmapCommand(startX - priceDotBitmap.width, priceDotY, priceDotBitmap))
     commands.append(bitmapCommand(startX - priceDotBitmap.width - priceIntegerBitmap.width, startY, priceIntegerBitmap))
     commands.append(bitmapCommand(
       priceCurrencyX,
