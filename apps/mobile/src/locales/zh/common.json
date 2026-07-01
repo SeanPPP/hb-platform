@@ -85,6 +85,8 @@
   "scanner": {
     "waiting": "等待扫码",
     "addingToCart": "正在加入购物车",
+    "cameraModeSingle": "单次扫码",
+    "cameraModeContinuous": "连续扫码",
     "addedByCamera": "摄像头扫码已加入购物车",
     "addedByScanner": "扫码枪扫码已加入购物车",
     "selectStoreFirst": "请先选择门店后再扫码",

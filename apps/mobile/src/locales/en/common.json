@@ -85,6 +85,8 @@
   "scanner": {
     "waiting": "Waiting for a scan",
     "addingToCart": "Adding to cart",
+    "cameraModeSingle": "Single scan",
+    "cameraModeContinuous": "Continuous scan",
     "addedByCamera": "Camera scan added to cart",
     "addedByScanner": "Scanner input added to cart",
     "selectStoreFirst": "Please select a store before scanning.",

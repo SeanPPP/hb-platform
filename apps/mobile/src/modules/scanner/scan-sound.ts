@@ -2,6 +2,7 @@ import { createAudioPlayer } from "expo-audio";
 import type { ScanFeedbackState } from "@/modules/scanner/types";
 
 type PlayableScanStatus = Exclude<ScanFeedbackState["status"], "ready" | "scanning">;
+type GeneratedToneKey = PlayableScanStatus | "barcode_captured";
 
 interface ToneStep {
   durationMs: number;
@@ -12,8 +13,12 @@ interface ToneStep {
 const SAMPLE_RATE = 8000;
 const PCM_MAX = 32767;
 const WAV_HEADER_SIZE = 44;
+const PLAYER_CLEANUP_PADDING_MS = 300;
 
-const SOUND_PATTERNS: Record<PlayableScanStatus, ToneStep[]> = {
+const SOUND_PATTERNS: Record<GeneratedToneKey, ToneStep[]> = {
+  barcode_captured: [
+    { frequency: 660, durationMs: 55, volume: 0.24 },
+  ],
   found: [
     { frequency: 988, durationMs: 90, volume: 0.32 },
   ],
@@ -53,7 +58,8 @@ const SOUND_PATTERNS: Record<PlayableScanStatus, ToneStep[]> = {
 
 const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-const soundUriCache = new Map<PlayableScanStatus, string>();
+const soundUriCache = new Map<GeneratedToneKey, string>();
+const activePlayers = new Set<ReturnType<typeof createAudioPlayer>>();
 
 function writeAscii(view: DataView, offset: number, value: string) {
   for (let index = 0; index < value.length; index += 1) {
@@ -124,21 +130,48 @@ function createWaveDataUri(pattern: ToneStep[]) {
   return `data:audio/wav;base64,${encodeBase64(new Uint8Array(buffer))}`;
 }
 
-function getSoundUri(status: PlayableScanStatus) {
-  const cached = soundUriCache.get(status);
+function getPatternDurationMs(key: GeneratedToneKey) {
+  return SOUND_PATTERNS[key].reduce((sum, step) => sum + step.durationMs, 0);
+}
+
+function getSoundUri(key: GeneratedToneKey) {
+  const cached = soundUriCache.get(key);
   if (cached) {
     return cached;
   }
 
-  const uri = createWaveDataUri(SOUND_PATTERNS[status]);
-  soundUriCache.set(status, uri);
+  const uri = createWaveDataUri(SOUND_PATTERNS[key]);
+  soundUriCache.set(key, uri);
   return uri;
 }
 
 export function preloadScanFeedbackSounds() {
-  for (const status of Object.keys(SOUND_PATTERNS) as PlayableScanStatus[]) {
-    getSoundUri(status);
+  for (const key of Object.keys(SOUND_PATTERNS) as GeneratedToneKey[]) {
+    getSoundUri(key);
   }
+}
+
+function playGeneratedTone(key: GeneratedToneKey) {
+  try {
+    const player = createAudioPlayer({ uri: getSoundUri(key) });
+    // createAudioPlayer 不会自动释放；短音播放期间保留引用，结束后释放原生资源。
+    activePlayers.add(player);
+    setTimeout(() => {
+      activePlayers.delete(player);
+      try {
+        player.remove();
+      } catch (error) {
+        console.warn("[scan-sound] failed to release sound", error);
+      }
+    }, getPatternDurationMs(key) + PLAYER_CLEANUP_PADDING_MS);
+    player.play();
+  } catch (error) {
+    console.warn("[scan-sound] failed to play sound", error);
+  }
+}
+
+export function playBarcodeCapturedSound() {
+  playGeneratedTone("barcode_captured");
 }
 
 export function playScanFeedbackSound(status: ScanFeedbackState["status"]) {
@@ -146,10 +179,5 @@ export function playScanFeedbackSound(status: ScanFeedbackState["status"]) {
     return;
   }
 
-  try {
-    const player = createAudioPlayer({ uri: getSoundUri(status) });
-    player.play();
-  } catch (error) {
-    console.warn("[scan-sound] failed to play sound", error);
-  }
+  playGeneratedTone(status);
 }

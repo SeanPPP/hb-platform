@@ -1,0 +1,900 @@
+import CoreBluetooth
+import Foundation
+import UIKit
+
+@objc(HbPrinterModule)
+class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+  private struct PriceParts {
+    let integer: String
+    let decimal: String
+  }
+
+  private struct PrinterBitmap {
+    let width: Int
+    let height: Int
+    let hex: String
+
+    var widthBytes: Int {
+      (width + 7) / 8
+    }
+  }
+
+  private let bluetoothQueue = DispatchQueue(label: "com.hbweb.expo.printer.ble")
+  private var centralManager: CBCentralManager!
+  private var discoveredPrinters: [String: [String: Any]] = [:]
+  private var discoveredPeripherals: [String: CBPeripheral] = [:]
+  private var scanResolve: RCTPromiseResolveBlock?
+  private var scanReject: RCTPromiseRejectBlock?
+  private var scanFinishWorkItem: DispatchWorkItem?
+  private var connectedPeripheral: CBPeripheral?
+  private var writeCharacteristic: CBCharacteristic?
+  private var connectedAddress: String?
+  private var connectResolve: RCTPromiseResolveBlock?
+  private var connectReject: RCTPromiseRejectBlock?
+  private var connectTimeoutWorkItem: DispatchWorkItem?
+  private var pendingCharacteristicServiceCount = 0
+  private var printResolve: RCTPromiseResolveBlock?
+  private var printReject: RCTPromiseRejectBlock?
+  private var pendingWriteChunks: [Data] = []
+  private var pendingWriteType: CBCharacteristicWriteType?
+  private var pendingWriteCharacteristic: CBCharacteristic?
+  private var printTimeoutWorkItem: DispatchWorkItem?
+
+  override init() {
+    super.init()
+    centralManager = CBCentralManager(delegate: self, queue: bluetoothQueue)
+  }
+
+  @objc(getStatus:rejecter:)
+  func getStatus(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    bluetoothQueue.async {
+      let state = self.centralManager.state
+      let status = NSMutableDictionary()
+      status["supported"] = state != .unsupported
+      status["enabled"] = state == .poweredOn
+      status["connected"] = self.connectedPeripheral?.state == .connected && self.writeCharacteristic != nil
+      status["address"] = self.connectedAddress ?? NSNull()
+      self.resolve(resolve, status)
+    }
+  }
+
+  @objc(scanPrinters:resolver:rejecter:)
+  func scanPrinters(
+    _ durationMs: NSNumber,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    bluetoothQueue.async {
+      guard self.ensureBluetoothReady(reject) else {
+        return
+      }
+
+      guard self.scanResolve == nil else {
+        self.reject(reject, "SCAN_IN_PROGRESS", "Bluetooth printer scan is already running.")
+        return
+      }
+
+      // iOS BLE 没有 Android MAC 地址，这里用 peripheral UUID 作为后续 connect(address) 的稳定地址。
+      self.discoveredPrinters.removeAll()
+      self.discoveredPeripherals.removeAll()
+      self.scanResolve = resolve
+      self.scanReject = reject
+      if self.centralManager.isScanning {
+        self.centralManager.stopScan()
+      }
+      self.centralManager.scanForPeripherals(withServices: nil, options: [
+        CBCentralManagerScanOptionAllowDuplicatesKey: false,
+      ])
+
+      let delayMs = max(durationMs.intValue, 1500)
+      let workItem = DispatchWorkItem { [weak self] in
+        self?.finishScan()
+      }
+      self.scanFinishWorkItem = workItem
+      self.bluetoothQueue.asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: workItem)
+    }
+  }
+
+  @objc(connect:resolver:rejecter:)
+  func connect(
+    _ address: String,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    bluetoothQueue.async {
+      guard self.ensureBluetoothReady(reject) else {
+        return
+      }
+
+      guard self.connectResolve == nil else {
+        self.reject(reject, "CONNECT_IN_PROGRESS", "Bluetooth printer connection is already running.")
+        return
+      }
+
+      guard let uuid = UUID(uuidString: address) else {
+        self.reject(reject, "INVALID_ADDRESS", "iOS Bluetooth printer address must be a peripheral UUID.")
+        return
+      }
+
+      guard let peripheral = self.discoveredPeripherals[address]
+        ?? self.centralManager.retrievePeripherals(withIdentifiers: [uuid]).first else {
+        self.reject(reject, "CONNECT_ERROR", "Bluetooth printer was not found. Please scan again before connecting.")
+        return
+      }
+
+      self.disconnectInternal()
+      self.connectResolve = resolve
+      self.connectReject = reject
+      peripheral.delegate = self
+      self.connectedPeripheral = peripheral
+      self.connectedAddress = address
+      self.centralManager.connect(peripheral, options: nil)
+
+      // 连接和服务发现都依赖外设回调，超时后清理状态，避免 Promise 悬挂。
+      let workItem = DispatchWorkItem { [weak self] in
+        guard let self else {
+          return
+        }
+        self.failPendingConnect("CONNECT_TIMEOUT", "Bluetooth printer connection timed out.")
+      }
+      self.connectTimeoutWorkItem = workItem
+      self.bluetoothQueue.asyncAfter(deadline: .now() + .seconds(12), execute: workItem)
+    }
+  }
+
+  @objc(disconnect:rejecter:)
+  func disconnect(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    bluetoothQueue.async {
+      self.disconnectInternal()
+      self.resolve(resolve, true)
+    }
+  }
+
+  @objc(print:encoding:resolver:rejecter:)
+  func print(
+    _ command: String,
+    encoding: String?,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    bluetoothQueue.async {
+      self.writePrinterCommand(command, encoding: encoding, resolver: resolve, rejecter: reject)
+    }
+  }
+
+  @objc(printProductLabel:printType:resolver:rejecter:)
+  func printProductLabel(
+    _ payload: NSDictionary,
+    printType: String?,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    bluetoothQueue.async {
+      let command = self.buildProductLabelCommand(payload, printType: printType)
+      self.writePrinterCommand(command, encoding: "GB18030", resolver: resolve, rejecter: reject)
+    }
+  }
+
+  @objc(printDiscountLabel:printType:resolver:rejecter:)
+  func printDiscountLabel(
+    _ payload: NSDictionary,
+    printType: String?,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    rejectUnsupportedLabelPrint(reject)
+  }
+
+  @objc(printClearanceLabel:resolver:rejecter:)
+  func printClearanceLabel(
+    _ payload: NSDictionary,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    rejectUnsupportedLabelPrint(reject)
+  }
+
+  @objc(printBigDiscountLabel:printType:resolver:rejecter:)
+  func printBigDiscountLabel(
+    _ payload: NSDictionary,
+    printType: String?,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    rejectUnsupportedLabelPrint(reject)
+  }
+
+  @objc(printWarehouseProductLabel:resolver:rejecter:)
+  func printWarehouseProductLabel(
+    _ payload: NSDictionary,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    rejectUnsupportedLabelPrint(reject)
+  }
+
+  @objc(printWarehouseLocationLabel:resolver:rejecter:)
+  func printWarehouseLocationLabel(
+    _ payload: NSDictionary,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    rejectUnsupportedLabelPrint(reject)
+  }
+
+  func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    if central.state != .poweredOn {
+      failPendingScan("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+      if connectResolve != nil {
+        failPendingConnect("BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+      }
+    }
+  }
+
+  func centralManager(
+    _ central: CBCentralManager,
+    didDiscover peripheral: CBPeripheral,
+    advertisementData: [String: Any],
+    rssi RSSI: NSNumber
+  ) {
+    let address = peripheral.identifier.uuidString
+    discoveredPeripherals[address] = peripheral
+    let name = peripheral.name
+      ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
+      ?? "Bluetooth Printer"
+    discoveredPrinters[address] = [
+      "name": name,
+      "address": address,
+      "bonded": false,
+      "connected": address == connectedAddress && peripheral.state == .connected,
+    ]
+  }
+
+  func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    peripheral.discoverServices(nil)
+  }
+
+  func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    failPendingConnect("CONNECT_ERROR", error?.localizedDescription ?? "Failed to connect Bluetooth printer.")
+  }
+
+  func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    if peripheral.identifier.uuidString == connectedAddress {
+      if printResolve != nil {
+        failPendingPrint("PRINT_ERROR", error?.localizedDescription ?? "Bluetooth printer disconnected while printing.")
+      }
+      writeCharacteristic = nil
+      connectedPeripheral = nil
+      connectedAddress = nil
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    if let error {
+      failPendingConnect("CONNECT_ERROR", error.localizedDescription)
+      return
+    }
+
+    let services = peripheral.services ?? []
+    if services.isEmpty {
+      failPendingConnect("CONNECT_ERROR", "Bluetooth printer did not expose writable services.")
+      return
+    }
+
+    pendingCharacteristicServiceCount = services.count
+    services.forEach { service in
+      peripheral.discoverCharacteristics(nil, for: service)
+    }
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    defer {
+      pendingCharacteristicServiceCount = max(0, pendingCharacteristicServiceCount - 1)
+      if writeCharacteristic == nil && pendingCharacteristicServiceCount == 0 && connectResolve != nil {
+        failPendingConnect("CONNECT_ERROR", "Bluetooth printer did not expose a writable characteristic.")
+      }
+    }
+
+    if let error {
+      failPendingConnect("CONNECT_ERROR", error.localizedDescription)
+      return
+    }
+
+    guard let characteristic = service.characteristics?.first(where: { item in
+      item.properties.contains(.write) || item.properties.contains(.writeWithoutResponse)
+    }) else {
+      return
+    }
+
+    writeCharacteristic = characteristic
+    connectTimeoutWorkItem?.cancel()
+    connectTimeoutWorkItem = nil
+    let resolve = connectResolve
+    connectResolve = nil
+    connectReject = nil
+    self.resolve(resolve, true)
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+    if let error {
+      failPendingPrint("PRINT_ERROR", error.localizedDescription)
+      return
+    }
+
+    flushPendingWrites()
+  }
+
+  func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+    flushPendingWrites()
+  }
+
+  private func writePrinterCommand(
+    _ command: String,
+    encoding: String?,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let peripheral = connectedPeripheral,
+          peripheral.state == .connected,
+          let characteristic = writeCharacteristic else {
+      self.reject(reject, "PRINT_ERROR", "No Bluetooth printer is connected.")
+      return
+    }
+
+    guard printResolve == nil else {
+      self.reject(reject, "PRINT_IN_PROGRESS", "Bluetooth printer is already printing.")
+      return
+    }
+
+    do {
+      let data = try encodeCommand(command, encoding: encoding)
+      if data.isEmpty {
+        self.resolve(resolve, true)
+        return
+      }
+
+      let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
+      let chunkSize = max(20, peripheral.maximumWriteValueLength(for: writeType))
+      pendingWriteChunks = stride(from: 0, to: data.count, by: chunkSize).map { offset in
+        data.subdata(in: offset..<min(offset + chunkSize, data.count))
+      }
+      pendingWriteType = writeType
+      pendingWriteCharacteristic = characteristic
+      printResolve = resolve
+      printReject = reject
+
+      // 位图标签的 EG 命令明显更大，按数据量放宽超时，避免慢速 BLE withResponse 误报失败。
+      let timeoutSeconds = printTimeoutSeconds(forByteCount: data.count)
+      // BLE 写入有 MTU 和发送窗口上限；必须等系统回调后再继续，避免假成功。
+      let workItem = DispatchWorkItem { [weak self] in
+        guard let self else {
+          return
+        }
+        self.failPendingPrint("PRINT_TIMEOUT", "Bluetooth printer write timed out.")
+      }
+      printTimeoutWorkItem = workItem
+      bluetoothQueue.asyncAfter(deadline: .now() + .seconds(timeoutSeconds), execute: workItem)
+      flushPendingWrites()
+    } catch {
+      self.reject(reject, "PRINT_ERROR", error.localizedDescription)
+    }
+  }
+
+  private func printTimeoutSeconds(forByteCount byteCount: Int) -> Int {
+    max(15, min(120, 10 + Int(ceil(Double(byteCount) / 1024.0))))
+  }
+
+  private func ensureBluetoothReady(_ reject: @escaping RCTPromiseRejectBlock) -> Bool {
+    switch centralManager.state {
+    case .poweredOn:
+      return true
+    case .unsupported:
+      self.reject(reject, "BLUETOOTH_UNSUPPORTED", "Bluetooth is not supported on this device.")
+    case .unauthorized:
+      self.reject(reject, "BLUETOOTH_UNAUTHORIZED", "Bluetooth permission was not granted.")
+    case .poweredOff:
+      self.reject(reject, "BLUETOOTH_DISABLED", "Bluetooth is turned off.")
+    default:
+      self.reject(reject, "BLUETOOTH_NOT_READY", "Bluetooth is not ready yet. Please try again.")
+    }
+    return false
+  }
+
+  private func finishScan() {
+    guard let resolve = scanResolve else {
+      return
+    }
+
+    centralManager.stopScan()
+    scanFinishWorkItem?.cancel()
+    scanFinishWorkItem = nil
+    scanResolve = nil
+    scanReject = nil
+    let printers = discoveredPrinters.values.sorted {
+      String(describing: $0["name"] ?? "") < String(describing: $1["name"] ?? "")
+    }
+    self.resolve(resolve, printers)
+  }
+
+  private func failPendingScan(_ code: String, _ message: String) {
+    guard let reject = scanReject else {
+      return
+    }
+
+    centralManager.stopScan()
+    scanFinishWorkItem?.cancel()
+    scanFinishWorkItem = nil
+    scanResolve = nil
+    scanReject = nil
+    self.reject(reject, code, message)
+  }
+
+  private func failPendingConnect(_ code: String, _ message: String) {
+    guard connectResolve != nil || connectReject != nil else {
+      return
+    }
+
+    let reject = connectReject
+    connectTimeoutWorkItem?.cancel()
+    connectTimeoutWorkItem = nil
+    connectResolve = nil
+    connectReject = nil
+    disconnectInternal()
+    self.reject(reject, code, message)
+  }
+
+  private func flushPendingWrites() {
+    guard let peripheral = connectedPeripheral,
+          peripheral.state == .connected,
+          let characteristic = pendingWriteCharacteristic,
+          let writeType = pendingWriteType else {
+      failPendingPrint("PRINT_ERROR", "No Bluetooth printer is connected.")
+      return
+    }
+
+    while !pendingWriteChunks.isEmpty {
+      if writeType == .withoutResponse && !peripheral.canSendWriteWithoutResponse {
+        return
+      }
+
+      let chunk = pendingWriteChunks.removeFirst()
+      peripheral.writeValue(chunk, for: characteristic, type: writeType)
+      if writeType == .withResponse {
+        return
+      }
+    }
+
+    finishPendingPrint()
+  }
+
+  private func finishPendingPrint() {
+    let resolve = printResolve
+    printTimeoutWorkItem?.cancel()
+    printTimeoutWorkItem = nil
+    printResolve = nil
+    printReject = nil
+    pendingWriteChunks.removeAll()
+    pendingWriteType = nil
+    pendingWriteCharacteristic = nil
+    self.resolve(resolve, true)
+  }
+
+  private func failPendingPrint(_ code: String, _ message: String) {
+    guard printResolve != nil || printReject != nil else {
+      return
+    }
+
+    let reject = printReject
+    printTimeoutWorkItem?.cancel()
+    printTimeoutWorkItem = nil
+    printResolve = nil
+    printReject = nil
+    pendingWriteChunks.removeAll()
+    pendingWriteType = nil
+    pendingWriteCharacteristic = nil
+    self.reject(reject, code, message)
+  }
+
+  private func disconnectInternal() {
+    if printResolve != nil {
+      failPendingPrint("PRINT_ERROR", "Bluetooth printer disconnected while printing.")
+    }
+    if let peripheral = connectedPeripheral {
+      centralManager.cancelPeripheralConnection(peripheral)
+    }
+    writeCharacteristic = nil
+    connectedPeripheral = nil
+    connectedAddress = nil
+  }
+
+  private func buildProductLabelCommand(_ payload: NSDictionary, printType: String?) -> String {
+    let isSmall = printType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "small"
+    let width = isSmall ? 472 : 570
+    let height = isSmall ? 320 : 400
+    let productName = dictString(payload, "productName")
+    let itemNumber = dictString(payload, "itemNumber")
+    let supplierName = formatSupplierAbbreviation(dictString(payload, "supplierName"))
+    let barcode = cpclText(dictString(payload, "barcode"), maxLength: 64)
+    let retailPrice = dictDouble(payload, "retailPrice")
+    let discountRate = dictDouble(payload, "discountRate") ?? 0
+    let grade = formatGrade(dictString(payload, "grade"))
+    let price = formatPriceParts(retailPrice)
+
+    // 普通商品标签对齐 Android：所有文字先渲染成单色位图，再写入 CPCL EG 命令。
+    let priceIntegerBitmap = textToBitmap(price.integer, fontSize: fontSizeToPixels(40), isBold: true, fontFamily: "sans-serif-black")
+    let priceDotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let priceDecimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let priceCurrencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(20), isBold: false, fontFamily: "sans-serif-black")
+    let itemBitmap = textToBitmap(itemNumber, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
+    let supplierBitmap = textToBitmap(supplierName, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
+    let dateBitmap = textToBitmap(todayString(), fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let priceCurrencyX = width - priceDecimalBitmap.width - priceDotBitmap.width - priceIntegerBitmap.width - priceCurrencyBitmap.width
+    // 商品名从 x=5 开始绘制，右侧预留价格块和 10px 间距，避免长名称压住价格。
+    let nameMaxWidth = max(1, priceCurrencyX - 10)
+    let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 2, maxWidth: nameMaxWidth)
+    let discountBitmap: PrinterBitmap?
+    if discountRate > 0 {
+      discountBitmap = textToBitmap(discountLabel(discountRate), fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    } else {
+      discountBitmap = nil
+    }
+
+    let gradeBitmap: PrinterBitmap?
+    if grade.isEmpty {
+      gradeBitmap = nil
+    } else {
+      gradeBitmap = textToBitmap(grade, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 4)
+    }
+
+    let startY = 30
+    let startX = width - priceDecimalBitmap.width
+    var commands = [
+      "! 0 200 200 \(height) 1",
+      "PAGE-WIDTH \(width)",
+      bitmapCommand(5, 5, nameBitmap),
+      bitmapCommand(5, 120, itemBitmap),
+      bitmapCommand(5 + itemBitmap.width + 10, 118, supplierBitmap),
+    ]
+
+    if !barcode.isEmpty {
+      let barcodeType = isValidEan13(barcode) ? "EAN13" : "128"
+      commands.append("BARCODE-TEXT 7 0 5")
+      commands.append("BARCODE \(barcodeType) 1 2 30 5 145 \(barcode)")
+    }
+
+    if let discountBitmap {
+      commands.append(bitmapCommand(width - discountBitmap.width - dateBitmap.width - 20, 175, discountBitmap))
+    }
+
+    if let gradeBitmap {
+      commands.append(bitmapCommand(300, 175, gradeBitmap))
+    }
+
+    commands.append(bitmapCommand(startX, startY, priceDecimalBitmap))
+    commands.append(bitmapCommand(startX - priceDotBitmap.width, startY + priceIntegerBitmap.height - 10, priceDotBitmap))
+    commands.append(bitmapCommand(startX - priceDotBitmap.width - priceIntegerBitmap.width, startY, priceIntegerBitmap))
+    commands.append(bitmapCommand(
+      priceCurrencyX,
+      startY,
+      priceCurrencyBitmap
+    ))
+    commands.append(bitmapCommand(width - dateBitmap.width, 175, dateBitmap))
+    commands.append("PRINT")
+    return commands.joined(separator: "\r\n") + "\r\n"
+  }
+
+  private func dictString(_ payload: NSDictionary, _ key: String) -> String {
+    guard let value = payload[key], !(value is NSNull) else {
+      return ""
+    }
+
+    if let text = value as? String {
+      return cpclText(text)
+    }
+
+    return cpclText(String(describing: value))
+  }
+
+  private func dictDouble(_ payload: NSDictionary, _ key: String) -> Double? {
+    guard let value = payload[key], !(value is NSNull) else {
+      return nil
+    }
+
+    if let number = value as? NSNumber {
+      return number.doubleValue
+    }
+
+    if let text = value as? String {
+      return Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    return nil
+  }
+
+  private func cpclText(_ value: String, maxLength: Int = 80) -> String {
+    let normalized = value
+      .replacingOccurrences(of: "[\\r\\n]+", with: " ", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return String(normalized.prefix(maxLength))
+  }
+
+  private func fontSizeToPixels(_ fontSize: CGFloat) -> CGFloat {
+    fontSize * 3
+  }
+
+  private func formatPriceParts(_ value: Double?) -> PriceParts {
+    let cents = Int(((value ?? 0) * 100).rounded())
+    return PriceParts(integer: String(cents / 100), decimal: String(format: "%02d", abs(cents % 100)))
+  }
+
+  private func todayString() -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy/MM/dd"
+    return formatter.string(from: Date())
+  }
+
+  private func discountLabel(_ discountRate: Double) -> String {
+    "\(String(format: "%02d", Int((discountRate * 100).rounded())))%OFF"
+  }
+
+  private func formatSupplierAbbreviation(_ value: String) -> String {
+    let locale = Locale(identifier: "en_US")
+    let words = cpclText(value)
+      .lowercased(with: locale)
+      .split(whereSeparator: { $0.isWhitespace })
+      .map { word -> String in
+        let text = String(word)
+        return String(text.prefix(1)).uppercased(with: locale) + String(text.dropFirst())
+      }
+
+    if words.isEmpty {
+      return ""
+    }
+
+    if words.count == 1 {
+      return String(words[0].prefix(3)).uppercased(with: locale)
+    }
+
+    return words
+      .prefix(4)
+      .map { String($0.prefix(1)).uppercased(with: locale) }
+      .joined(separator: ".")
+  }
+
+  private func formatGrade(_ value: String) -> String {
+    String(cpclText(value).uppercased(with: Locale(identifier: "en_US")).prefix(1))
+  }
+
+  private func isValidEan13(_ value: String) -> Bool {
+    let barcode = cpclText(value, maxLength: 64)
+    guard barcode.range(of: #"^\d{13}$"#, options: .regularExpression) != nil else {
+      return false
+    }
+
+    let digits = barcode.compactMap { $0.wholeNumberValue }
+    let checkDigit = digits.prefix(12).enumerated().reduce(0) { sum, item in
+      sum + item.element * (item.offset.isMultiple(of: 2) ? 1 : 3)
+    }
+    return (10 - (checkDigit % 10)) % 10 == digits[12]
+  }
+
+  private func printerFont(fontFamily: String, fontSize: CGFloat, isBold: Bool) -> UIFont {
+    if fontFamily == "Arial" {
+      let fontName = isBold ? "Arial-BoldMT" : "Arial"
+      return UIFont(name: fontName, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize, weight: isBold ? .bold : .regular)
+    }
+
+    if fontFamily.contains("black") {
+      return UIFont.systemFont(ofSize: fontSize, weight: .black)
+    }
+
+    if fontFamily.contains("light") {
+      return UIFont.systemFont(ofSize: fontSize, weight: isBold ? .bold : .light)
+    }
+
+    return UIFont.systemFont(ofSize: fontSize, weight: isBold ? .bold : .regular)
+  }
+
+  private func textToBitmap(
+    _ text: String,
+    fontSize: CGFloat,
+    isBold: Bool,
+    fontFamily: String,
+    isInverse: Bool = false,
+    padding: Int = 0
+  ) -> PrinterBitmap {
+    let safeText = cpclText(text).isEmpty ? " " : cpclText(text)
+    let font = printerFont(fontFamily: fontFamily, fontSize: fontSize, isBold: isBold)
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: isInverse ? UIColor.white : UIColor.black,
+    ]
+    let measuredSize = (safeText as NSString).size(withAttributes: attributes)
+    let width = max(1, Int(ceil(measuredSize.width)) + padding * 2)
+    let height = max(1, Int(ceil(measuredSize.height)) + padding * 2)
+
+    return renderPrinterBitmap(width: width, height: height, isInverse: isInverse) {
+      (safeText as NSString).draw(
+        at: CGPoint(x: CGFloat(padding), y: CGFloat(padding)),
+        withAttributes: attributes
+      )
+    }
+  }
+
+  private func longTextToBitmap(
+    _ text: String,
+    fontSize: CGFloat,
+    isBold: Bool,
+    fontFamily: String,
+    maxLines: Int,
+    maxWidth: Int
+  ) -> PrinterBitmap {
+    let safeText = cpclText(text).isEmpty ? " " : cpclText(text)
+    let font = printerFont(fontFamily: fontFamily, fontSize: fontSize, isBold: isBold)
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: UIColor.black,
+    ]
+    let lines = wrapText(safeText, font: font, maxWidth: maxWidth, maxLines: maxLines)
+    let lineHeight = ceil(font.lineHeight)
+    let measuredWidth = lines.map { measureText($0, font: font) }.max() ?? 1
+    let width = max(1, min(maxWidth, Int(ceil(measuredWidth))))
+    let height = max(1, Int(lineHeight) * lines.count)
+
+    return renderPrinterBitmap(width: width, height: height, isInverse: false) {
+      lines.enumerated().forEach { index, line in
+        (line as NSString).draw(
+          at: CGPoint(x: 0, y: CGFloat(index) * lineHeight),
+          withAttributes: attributes
+        )
+      }
+    }
+  }
+
+  private func wrapText(_ text: String, font: UIFont, maxWidth: Int, maxLines: Int) -> [String] {
+    var lines: [String] = []
+    var current = ""
+
+    for character in text {
+      let next = current + String(character)
+      if !current.isEmpty && measureText(next, font: font) > CGFloat(maxWidth) && lines.count < maxLines - 1 {
+        lines.append(current)
+        current = String(character)
+      } else {
+        current = next
+      }
+    }
+
+    if !current.isEmpty || lines.isEmpty {
+      lines.append(current)
+    }
+
+    return Array(lines.prefix(maxLines))
+  }
+
+  private func measureText(_ text: String, font: UIFont) -> CGFloat {
+    (text as NSString).size(withAttributes: [.font: font]).width
+  }
+
+  private func renderPrinterBitmap(width: Int, height: Int, isInverse: Bool, draw: () -> Void) -> PrinterBitmap {
+    let size = CGSize(width: width, height: height)
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = true
+    let renderer = UIGraphicsImageRenderer(size: size, format: format)
+    let image = renderer.image { _ in
+      (isInverse ? UIColor.black : UIColor.white).setFill()
+      UIRectFill(CGRect(origin: .zero, size: size))
+      draw()
+    }
+    return convertImageToPrinterBitmap(image, width: width, height: height)
+  }
+
+  private func convertImageToPrinterBitmap(_ image: UIImage, width: Int, height: Int) -> PrinterBitmap {
+    guard let cgImage = image.cgImage else {
+      return PrinterBitmap(width: width, height: height, hex: "")
+    }
+
+    var rgba = [UInt8](repeating: 255, count: width * height * 4)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    rgba.withUnsafeMutableBytes { buffer in
+      guard let context = CGContext(
+        data: buffer.baseAddress,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+      ) else {
+        return
+      }
+      context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+
+    // CPCL EG 使用 1bit 单色图，阈值保持和 Android isBlack 一致。
+    return PrinterBitmap(width: width, height: height, hex: bitmapToHex(rgba, width: width, height: height))
+  }
+
+  private func bitmapCommand(_ x: Int, _ y: Int, _ bitmap: PrinterBitmap) -> String {
+    "EG \(bitmap.widthBytes) \(bitmap.height) \(x) \(y) \(bitmap.hex)"
+  }
+
+  private func bitmapToHex(_ rgba: [UInt8], width: Int, height: Int) -> String {
+    let widthBytes = (width + 7) / 8
+    var hex = ""
+    hex.reserveCapacity(widthBytes * height * 2)
+
+    for y in 0..<height {
+      for byteIndex in 0..<widthBytes {
+        var value: UInt8 = 0
+        for bit in 0..<8 {
+          let x = byteIndex * 8 + bit
+          let offset = (y * width + x) * 4
+          if x < width && isBlackPixel(rgba, offset: offset) {
+            value |= UInt8(1 << (7 - bit))
+          }
+        }
+        hex += String(format: "%02X", value)
+      }
+    }
+
+    return hex
+  }
+
+  private func isBlackPixel(_ rgba: [UInt8], offset: Int) -> Bool {
+    guard offset + 3 < rgba.count else {
+      return false
+    }
+
+    let alpha = Int(rgba[offset + 3])
+    if alpha == 0 {
+      return false
+    }
+
+    let luminance = (Int(rgba[offset]) * 299 + Int(rgba[offset + 1]) * 587 + Int(rgba[offset + 2]) * 114) / 1000
+    return luminance < 200
+  }
+
+  private func encodeCommand(_ command: String, encoding: String?) throws -> Data {
+    let normalizedEncoding = encoding?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if normalizedEncoding == nil || normalizedEncoding == "UTF-8" || normalizedEncoding == "UTF8" {
+      return Data(command.utf8)
+    }
+
+    if normalizedEncoding == "GB18030" || normalizedEncoding == "GBK" || normalizedEncoding == "GB2312" {
+      let cfEncoding = CFStringConvertIANACharSetNameToEncoding("GB18030" as CFString)
+      if cfEncoding != kCFStringEncodingInvalidId {
+        let nsEncoding = CFStringConvertEncodingToNSStringEncoding(cfEncoding)
+        let stringEncoding = String.Encoding(rawValue: nsEncoding)
+        if let data = command.data(using: stringEncoding) {
+          return data
+        }
+      }
+    }
+
+    throw NSError(
+      domain: "HbPrinterModule",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported printer command encoding: \(encoding ?? "")"]
+    )
+  }
+
+  private func rejectUnsupportedLabelPrint(_ reject: @escaping RCTPromiseRejectBlock) {
+    // iOS 先只支持原始命令写入；Android 位图标签渲染未复刻时必须明确失败。
+    reject("IOS_LABEL_PRINT_UNSUPPORTED", "iOS label bitmap printing is not supported yet.", nil)
+  }
+
+  private func resolve(_ resolve: RCTPromiseResolveBlock?, _ value: Any?) {
+    DispatchQueue.main.async {
+      resolve?(value)
+    }
+  }
+
+  private func reject(_ reject: RCTPromiseRejectBlock?, _ code: String, _ message: String) {
+    DispatchQueue.main.async {
+      reject?(code, message, nil)
+    }
+  }
+}

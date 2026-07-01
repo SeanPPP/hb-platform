@@ -11,7 +11,7 @@ import {
 const productPayload = {
   productName: "Coconut Water 1L",
   itemNumber: "HB013-108",
-  grade: "A",
+  grade: "a+",
   supplierName: "Hot Bargain Supplier",
   barcode: "9300605123458",
   retailPrice: 12.34,
@@ -23,23 +23,70 @@ const productPayload = {
 const productCommand = buildProductLabelCommand(productPayload);
 assert.ok(productCommand.startsWith("! 0 200 200 400 1\r\n"), "普通商品标签使用标准高度");
 assert.ok(productCommand.includes("PAGE-WIDTH 570"), "普通商品标签使用标准宽度");
-assert.ok(productCommand.includes("TEXT 4 0 20 20 Coconut Water 1L"), "普通商品标签包含商品名");
-assert.ok(productCommand.includes("BARCODE EAN13"), "合法 EAN13 条码使用 EAN13");
-assert.ok(productCommand.includes("TEXT 7 0 360 42 $12.34"), "普通商品标签包含价格");
-assert.ok(productCommand.includes("TEXT 4 0 20 190 HB013-108"), "普通商品标签包含货号");
-assert.ok(productCommand.includes("TEXT 4 0 20 230 Hot Bargain Supplier"), "普通商品标签包含供应商");
-assert.ok(productCommand.includes("TEXT 7 0 360 112 25% OFF"), "普通商品标签包含折扣");
+assert.ok(productCommand.includes("TEXT 4 0 5 5 Coconut Water 1L"), "普通商品标签商品名对齐 Android 左上角");
+assert.ok(productCommand.includes("TEXT 4 0 5 120 HB013-108"), "普通商品标签货号对齐 Android 条码上方");
+assert.ok(productCommand.includes("TEXT 4 0 123 118 H.B.S"), "普通商品标签供应商缩写对齐货号右侧");
+assert.ok(productCommand.includes("BARCODE-TEXT 7 0 5"), "普通商品标签启用条码文本");
+assert.ok(productCommand.includes("BARCODE EAN13 1 2 30 5 145 9300605123458"), "合法 EAN13 条码使用 Android 坐标");
+assert.ok(productCommand.includes("TEXT 4 0 466 30 $"), "普通商品标签价格货币符号右上对齐");
+assert.ok(productCommand.includes("TEXT 7 0 478 30 12"), "普通商品标签价格整数右上对齐");
+assert.ok(productCommand.includes("TEXT 4 0 534 68 ."), "普通商品标签价格小数点贴近整数底部");
+assert.ok(productCommand.includes("TEXT 4 0 546 30 34"), "普通商品标签价格小数右上对齐");
+assert.ok(productCommand.includes("TEXT 4 0 358 175 25%OFF"), "普通商品标签折扣对齐 Android 底部");
+assert.ok(productCommand.includes("TEXT 4 0 300 175 A"), "普通商品标签等级取大写首字母");
+assert.match(productCommand, /TEXT 4 0 450 175 \d{4}\/\d{2}\/\d{2}/, "普通商品标签日期右对齐");
 assert.ok(productCommand.endsWith("PRINT\r\n"), "普通商品标签必须发送 PRINT");
 
 const smallProductCommand = buildProductLabelCommand(productPayload, "small");
 assert.ok(smallProductCommand.startsWith("! 0 200 200 320 1\r\n"), "小标签使用小纸高度");
 assert.ok(smallProductCommand.includes("PAGE-WIDTH 472"), "小标签使用小纸宽度");
+assert.ok(smallProductCommand.includes("TEXT 4 0 448 30 34"), "小标签价格右侧跟随小纸宽");
+assert.ok(smallProductCommand.includes("TEXT 4 0 260 175 25%OFF"), "小标签折扣跟随小纸宽");
 
 const fallbackBarcodeCommand = buildProductLabelCommand({
   ...productPayload,
   barcode: "SKU-ABC-123",
 });
-assert.ok(fallbackBarcodeCommand.includes("BARCODE 128"), "非 EAN13 条码回退 CODE128");
+assert.ok(fallbackBarcodeCommand.includes("BARCODE 128 1 2 30 5 145 SKU-ABC-123"), "非 EAN13 条码回退 CODE128 并保持 Android 坐标");
+
+const paddedDiscountCommand = buildProductLabelCommand({
+  ...productPayload,
+  discountRate: 0.05,
+});
+assert.ok(paddedDiscountCommand.includes("TEXT 4 0 358 175 05%OFF"), "个位数折扣按 Android 样式补零");
+
+const longNameCommand = buildProductLabelCommand({
+  ...productPayload,
+  productName: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 SHOULD_NOT_PRINT",
+  retailPrice: 1234.56,
+});
+const longNameLines = longNameCommand
+  .split("\r\n")
+  .filter((line) => line.startsWith("TEXT 4 0 5 5 ") || line.startsWith("TEXT 4 0 5 37 "));
+assert.equal(longNameLines.length, 2, "长商品名最多输出两行");
+assert.ok(longNameLines.every((line) => line.replace(/^TEXT 4 0 5 (5|37) /, "").length <= 33), "长商品名按价格左侧宽度裁剪");
+assert.equal(longNameCommand.includes("SHOULD_NOT_PRINT"), false, "长商品名尾部不能覆盖右侧价格区");
+assert.ok(longNameCommand.includes("TEXT 4 0 410 30 $"), "大价格仍保留右上价格块");
+
+const blankFieldCommand = buildProductLabelCommand({
+  ...productPayload,
+  itemNumber: " ",
+  supplierName: null,
+  barcode: " ",
+  grade: null,
+});
+const blankFieldLines = blankFieldCommand.split("\r\n");
+assert.ok(blankFieldLines.includes("TEXT 4 0 5 120  "), "空货号仍保留 Android 货号行位置");
+assert.ok(blankFieldLines.includes("TEXT 4 0 27 118  "), "空供应商仍按空货号宽度保留相对位置");
+assert.equal(blankFieldCommand.includes("BARCODE-TEXT"), false, "空条码不输出条码文字");
+assert.equal(blankFieldCommand.includes("BARCODE "), false, "空条码不输出条码命令");
+
+const blankItemWithSupplierCommand = buildProductLabelCommand({
+  ...productPayload,
+  itemNumber: " ",
+  barcode: " ",
+});
+assert.ok(blankItemWithSupplierCommand.includes("TEXT 4 0 27 118 H.B.S"), "空货号但有供应商时仍按空格宽度定位供应商");
 
 const sanitizedTextCommand = buildProductLabelCommand({
   ...productPayload,

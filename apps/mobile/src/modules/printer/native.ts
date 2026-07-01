@@ -50,8 +50,21 @@ function getModule() {
 }
 
 function printIosCpclLabel(command: string) {
-  // iOS 原生模块当前只负责 BLE raw 写入；业务标签在 TS 层生成 CPCL，避免复刻 Android 位图渲染。
+  // iOS 旧包没有原生位图标签能力时，仍可用 TS 生成 CPCL 作为兼容回退。
   return getModule().print(command, "GB18030");
+}
+
+function isIosUnsupportedLabelPrintError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "IOS_LABEL_PRINT_UNSUPPORTED" ||
+    String(candidate.message ?? "").includes("IOS_LABEL_PRINT_UNSUPPORTED") ||
+    String(candidate.message ?? "").includes("iOS label bitmap printing is not supported yet")
+  );
 }
 
 async function requestAndroidBluetoothPermissions() {
@@ -115,7 +128,15 @@ export async function printRawCommand(command: string) {
 export async function printNativeProductLabel(payload: ProductLabelPrintPayload, printType?: string | null) {
   await ensureBluetoothPermissions();
   if (Platform.OS === "ios") {
-    return printIosCpclLabel(buildProductLabelCommand(payload, printType));
+    try {
+      // 新 iOS 包走 Swift 位图文本渲染，布局和 Android 普通商品标签保持一致。
+      return await getModule().printProductLabel(payload, printType ?? null);
+    } catch (error) {
+      if (!isIosUnsupportedLabelPrintError(error)) {
+        throw error;
+      }
+      return printIosCpclLabel(buildProductLabelCommand(payload, printType));
+    }
   }
   return getModule().printProductLabel(payload, printType ?? null);
 }

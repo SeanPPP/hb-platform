@@ -19,6 +19,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
+import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
 import { getCategoryTree } from "@/modules/shop/api";
 import { shouldClearActiveCartMutation } from "@/modules/shop/cart-mutation-state";
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
@@ -27,7 +28,7 @@ import { useProductGrades } from "@/modules/shop/use-product-grades";
 import { useProducts } from "@/modules/shop/use-products";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
-import { useCameraScan } from "@/modules/scanner/use-camera-scan";
+import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
 import { ScanResultPicker } from "@/components/ui/ScanResultPicker";
@@ -88,6 +89,7 @@ export default function Home() {
   } = useStores();
   const cartSummary = useCartStore((state) => state.cartSummary);
   const [cameraVisible, setCameraVisible] = useState(false);
+  const [cameraScanMode, setCameraScanMode] = useState<CameraScanMode>("single");
   const [storePickerVisible, setStorePickerVisible] = useState(false);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [gradeFilterVisible, setGradeFilterVisible] = useState(false);
@@ -189,7 +191,13 @@ export default function Home() {
     storeCode: selectedStoreCode,
   });
   const cameraScan = useCameraScan({
+    ignoreWhileProcessing: cameraScanMode === "continuous",
+    suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
+      if (cameraScanMode === "single") {
+        // 单次扫码命中后先收起相机，后续查询/加购反馈沿用原链路。
+        setCameraVisible(false);
+      }
       await scanResult.handleBarcode(barcode, "camera");
     },
   });
@@ -374,6 +382,12 @@ export default function Home() {
       setKeyword("");
       setSelectedGrade(undefined);
   }, []);
+  const handleCameraScanModeChange = useCallback((mode: CameraScanMode) => {
+    setCameraScanMode(mode);
+    if (mode === "continuous") {
+      setCameraVisible(false);
+    }
+  }, []);
 
   const toggleCategoryExpanded = useCallback((categoryGUID: string) => {
     setExpandedCategoryGUIDs((currentValue) =>
@@ -537,6 +551,7 @@ export default function Home() {
           mode="contained-tonal"
           accessibilityLabel={t("cameraQuery")}
           onPress={() => setCameraVisible(true)}
+          disabled={cameraScanMode === "continuous"}
           style={styles.cameraQueryButton}
         />
         <IconButton
@@ -547,6 +562,33 @@ export default function Home() {
           style={styles.filterToggleButton}
         />
       </View>
+      <CameraScanModeSelector
+        value={cameraScanMode}
+        onChange={handleCameraScanModeChange}
+        style={styles.scanModeSelector}
+      />
+      {cameraScanMode === "continuous" ? (
+        <View style={styles.inlineCameraPanel}>
+          {cameraScan.permission?.granted ? (
+            <CameraView
+              style={[styles.inlineCameraView, isCompactLayout ? styles.inlineCameraViewCompact : null]}
+              {...cameraScan.cameraProps}
+            />
+          ) : (
+            <Card style={styles.permissionCard}>
+              <Card.Content style={styles.permissionCardContent}>
+                <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
+                <Text variant="bodySmall" style={styles.secondaryText}>
+                  {t("camera.needPermissionDescription")}
+                </Text>
+                <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
+                  {t("camera.grantPermission")}
+                </Button>
+              </Card.Content>
+            </Card>
+          )}
+        </View>
+      ) : null}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -880,7 +922,7 @@ export default function Home() {
 
       <Portal>
         <Modal
-          visible={cameraVisible}
+          visible={cameraVisible && cameraScanMode === "single"}
           onDismiss={() => {
             setCameraVisible(false);
           }}
@@ -1111,6 +1153,23 @@ const styles = StyleSheet.create({
   },
   cameraQueryButton: {
     margin: 0,
+  },
+  scanModeSelector: {
+    marginTop: 2,
+  },
+  inlineCameraPanel: {
+    borderWidth: 1,
+    borderColor: "#DFE3E7",
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#FFFFFF",
+  },
+  inlineCameraView: {
+    width: "100%",
+    height: 220,
+  },
+  inlineCameraViewCompact: {
+    height: 160,
   },
   autoAddToggleButton: {
     margin: 0,

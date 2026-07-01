@@ -17,6 +17,7 @@ import { SetCodeCompactSection } from "@/components/product-maintenance/SetCodeC
 import { StickyActionBar } from "@/components/product-maintenance/StickyActionBar";
 import { StoreClearancePriceCard } from "@/components/product-maintenance/StoreClearancePriceCard";
 import { StorePriceStrategyCard } from "@/components/product-maintenance/StorePriceStrategyCard";
+import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
 import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import {
   getSavedPrinter,
@@ -51,10 +52,14 @@ import type {
   ProductLookupItem,
   ProductSetCodeItem,
 } from "@/modules/product-maintenance/types";
-import { useCameraScan } from "@/modules/scanner/use-camera-scan";
+import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
 import { isAxiosError } from "axios";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
-import { playScanFeedbackSound, preloadScanFeedbackSounds } from "@/modules/scanner/scan-sound";
+import {
+  playBarcodeCapturedSound,
+  playScanFeedbackSound,
+  preloadScanFeedbackSounds,
+} from "@/modules/scanner/scan-sound";
 import type { ScanSource } from "@/modules/scanner/types";
 import { useStores } from "@/modules/shop/use-stores";
 import type { Store } from "@/modules/shop/types";
@@ -314,6 +319,7 @@ function ProductQueryContent() {
   const [lookupVisible, setLookupVisible] = useState(false);
   const [lookupSelectionSource, setLookupSelectionSource] = useState<ScanSource | null>(null);
   const [cameraVisible, setCameraVisible] = useState(false);
+  const [cameraScanMode, setCameraScanMode] = useState<CameraScanMode>("single");
   const [queryFeedback, setQueryFeedback] = useState<QueryFeedback>({ type: "idle" });
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -1144,13 +1150,18 @@ function ProductQueryContent() {
   ]);
 
   const cameraScan = useCameraScan({
+    ignoreWhileProcessing: cameraScanMode === "continuous",
+    suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
       console.log("[product-query] barcode scanned", { barcode });
       setKeyword(barcode);
-      const result = await handleLookup(barcode, "scan", "camera");
-      if (!result.keepCameraOpen) {
+      if (cameraScanMode === "single") {
+        // 单次扫码命中后立即隐藏预览，查询结果继续由原有反馈流处理。
         setCameraVisible(false);
       }
+      // 相机识别到条码先给短提示；查询完成后再播放命中/无结果等结果音。
+      playBarcodeCapturedSound();
+      await handleLookup(barcode, "scan", "camera");
     },
   });
   const hidScanner = useHidBarcodeScanner({
@@ -1161,18 +1172,25 @@ function ProductQueryContent() {
     },
   });
 
+  const shouldRestoreCameraScan = useCallback(
+    (source?: ScanSource | null) => source === "camera" && cameraScanMode === "continuous",
+    [cameraScanMode]
+  );
   const restoreScanAbility = useCallback(
     (source?: ScanSource | null) => {
-      if (source === "camera") {
-        setCameraVisible(true);
-      }
-
+      const restoreCamera = shouldRestoreCameraScan(source);
       setTimeout(() => {
         hidScanner.focusHiddenInput?.();
-      }, source === "camera" ? 160 : 60);
+      }, restoreCamera ? 160 : 60);
     },
-    [hidScanner.focusHiddenInput]
+    [hidScanner.focusHiddenInput, shouldRestoreCameraScan]
   );
+  const handleCameraScanModeChange = useCallback((mode: CameraScanMode) => {
+    setCameraScanMode(mode);
+    if (mode === "continuous") {
+      setCameraVisible(false);
+    }
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -1894,6 +1912,30 @@ function ProductQueryContent() {
   );
   const retailGp = calcGpPercent(storePrice?.retailPrice, storePrice?.purchasePrice);
   const discountedRetailGp = calcGpPercent(discountedRetailPrice, storePrice?.purchasePrice);
+  const renderCameraScanner = () => (
+    <>
+      {cameraScan.permission?.granted ? (
+        <View style={styles.cameraFrame}>
+          <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
+        </View>
+      ) : (
+        <Card style={styles.permissionCard}>
+          <Card.Content style={styles.permissionCardContent}>
+            <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
+            <Text variant="bodySmall" style={styles.cameraTip}>
+              {t("camera.needPermissionDescription")}
+            </Text>
+            <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
+              {t("camera.grantPermission")}
+            </Button>
+          </Card.Content>
+        </Card>
+      )}
+      <Text variant="bodySmall" style={styles.cameraTip}>
+        {t("messages.cameraTip")}
+      </Text>
+    </>
+  );
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
@@ -1901,7 +1943,11 @@ function ProductQueryContent() {
         storeName={selectedStore?.storeName}
         canSelectStore={canSelectStore}
         onStorePress={() => setStorePickerVisible(true)}
-        onScanPress={() => setCameraVisible(true)}
+        onScanPress={() => {
+          if (cameraScanMode === "single") {
+            setCameraVisible(true);
+          }
+        }}
         onRefreshPress={() => void handleRefresh()}
         refreshing={refreshing}
       />
@@ -1915,6 +1961,16 @@ function ProductQueryContent() {
         onSubmit={() => void handleLookup()}
         onClear={handleClear}
       />
+      <CameraScanModeSelector
+        value={cameraScanMode}
+        onChange={handleCameraScanModeChange}
+        style={styles.cameraModeSelector}
+      />
+      {cameraScanMode === "continuous" ? (
+        <View style={styles.inlineCameraPanel}>
+          {renderCameraScanner()}
+        </View>
+      ) : null}
 
       <ScrollView contentContainerStyle={styles.content}>
         {access.canCreateStoreProducts ? (
@@ -2289,7 +2345,7 @@ function ProductQueryContent() {
               return;
             }
 
-            const keepCameraOpen = autoPricingDialog.scanSource === "camera";
+            const keepCameraOpen = shouldRestoreCameraScan(autoPricingDialog.scanSource);
             restoreScanAbility(autoPricingDialog.scanSource);
             finishAutoPricingDialog({
               status: "cancelled",
@@ -2334,7 +2390,7 @@ function ProductQueryContent() {
                       return;
                     }
 
-                    const keepCameraOpen = autoPricingDialog.scanSource === "camera";
+                    const keepCameraOpen = shouldRestoreCameraScan(autoPricingDialog.scanSource);
                     restoreScanAbility(autoPricingDialog.scanSource);
                     finishAutoPricingDialog({
                       status: "cancelled",
@@ -2357,7 +2413,7 @@ function ProductQueryContent() {
                     }
 
                     setAutoPricingDialogSaving(true);
-                    const keepCameraOpen = autoPricingDialog.scanSource === "camera";
+                    const keepCameraOpen = shouldRestoreCameraScan(autoPricingDialog.scanSource);
                     const savedDetail = await persistStorePrice(autoPricingDialog.detail, {
                       retailPrice:
                         autoPricingDialog.evaluation.recalculatedRetailPrice
@@ -2544,7 +2600,7 @@ function ProductQueryContent() {
         />
 
         <Modal
-          visible={cameraVisible}
+          visible={cameraVisible && cameraScanMode === "single"}
           onDismiss={() => setCameraVisible(false)}
           contentContainerStyle={styles.cameraModal}
         >
@@ -2552,26 +2608,7 @@ function ProductQueryContent() {
             <Text variant="titleMedium">{t("camera.title")}</Text>
             <Button onPress={() => setCameraVisible(false)}>{t("common:actions.close")}</Button>
           </View>
-          {cameraScan.permission?.granted ? (
-            <View style={styles.cameraFrame}>
-              <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
-            </View>
-          ) : (
-            <Card style={styles.permissionCard}>
-              <Card.Content style={styles.permissionCardContent}>
-                <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
-                <Text variant="bodySmall" style={styles.cameraTip}>
-                  {t("camera.needPermissionDescription")}
-                </Text>
-                <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
-                  {t("camera.grantPermission")}
-                </Button>
-              </Card.Content>
-            </Card>
-          )}
-          <Text variant="bodySmall" style={styles.cameraTip}>
-            {t("messages.cameraTip")}
-          </Text>
+          {renderCameraScanner()}
         </Modal>
       </Portal>
 
@@ -2606,6 +2643,18 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 16,
     gap: 6,
+  },
+  cameraModeSelector: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+  },
+  inlineCameraPanel: {
+    marginHorizontal: 12,
+    marginBottom: 8,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    gap: 8,
   },
   returnBar: {
     alignItems: "flex-start",

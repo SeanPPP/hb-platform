@@ -7,10 +7,11 @@ import { ActivityIndicator, Button, Card, IconButton, Menu, Modal, Portal, Searc
 import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
+import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
 import { NumericInputModal } from "@/components/product-maintenance/NumericInputModal";
 import { hasVisibleTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
-import { useCameraScan } from "@/modules/scanner/use-camera-scan";
+import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { resolveLocalizedErrorMessage } from "@/shared/i18n/error-message";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -326,6 +327,7 @@ export default function WarehouseScreen() {
   const [photoPermission, requestPhotoPermission] = useCameraPermissions();
   const [segment, setSegment] = useState<SegmentValue>("product");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>("product");
+  const [cameraScanMode, setCameraScanMode] = useState<CameraScanMode>("single");
   const [snackbar, setSnackbar] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -450,8 +452,13 @@ export default function WarehouseScreen() {
   }, [getErrorMessage, t]);
 
   const cameraScan = useCameraScan({
+    ignoreWhileProcessing: cameraScanMode === "continuous",
+    suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
-      setScannerVisible(false);
+      if (cameraScanMode === "single") {
+        // 单次扫码仍沿用原弹窗体验，命中后立即关闭再分发到当前目标。
+        setScannerVisible(false);
+      }
       if (scannerTarget === "productLocation") {
         updateProductLocationLookupKeyword(barcode);
         await handleLookupLocationsForProductScan(barcode);
@@ -474,6 +481,38 @@ export default function WarehouseScreen() {
       await handleLookupProduct(barcode);
     },
   });
+  const openCameraScanner = useCallback((target: ScannerTarget) => {
+    setScannerTarget(target);
+    setScannerVisible(cameraScanMode === "single");
+  }, [cameraScanMode]);
+  const handleCameraScanModeChange = useCallback((mode: CameraScanMode) => {
+    setCameraScanMode(mode);
+    if (mode === "continuous") {
+      setScannerVisible(false);
+      setScannerTarget(segment === "location" ? "location" : "product");
+    }
+  }, [segment]);
+  const handleSegmentChange = useCallback((value: string) => {
+    const nextSegment = value as SegmentValue;
+    setSegment(nextSegment);
+    if (cameraScanMode === "continuous") {
+      setScannerTarget(nextSegment === "location" ? "location" : "product");
+    }
+  }, [cameraScanMode]);
+  const restoreDefaultScannerTarget = useCallback(() => {
+    if (cameraScanMode === "continuous") {
+      // 关闭局部扫码流后，连续相机回到当前主分段的默认扫码目标。
+      setScannerTarget(segment === "location" ? "location" : "product");
+    }
+  }, [cameraScanMode, segment]);
+  const closeProductLocationModal = useCallback(() => {
+    setProductLocationModalVisible(false);
+    restoreDefaultScannerTarget();
+  }, [restoreDefaultScannerTarget]);
+  const closeBindProductModal = useCallback(() => {
+    setBindModalVisible(false);
+    restoreDefaultScannerTarget();
+  }, [restoreDefaultScannerTarget]);
 
   const syncFormFromProduct = useCallback((item: WarehouseProduct | null) => {
     setProductForm({
@@ -711,8 +750,11 @@ export default function WarehouseScreen() {
   const openProductLocationModal = useCallback(() => {
     updateProductLocationLookupKeyword("");
     setProductLocationBindFeedback("");
+    if (cameraScanMode === "continuous") {
+      setScannerTarget("productLocation");
+    }
     setProductLocationModalVisible(true);
-  }, [updateProductLocationLookupKeyword]);
+  }, [cameraScanMode, updateProductLocationLookupKeyword]);
 
   const openUnbindLocationConfirm = useCallback(() => {
     if (!product?.locationGuid && !product?.locationCode) {
@@ -801,7 +843,7 @@ export default function WarehouseScreen() {
       setLocationMatches([]);
       updateProductLocationLookupKeyword("");
       setPendingStorageLocationBind(null);
-      setProductLocationModalVisible(false);
+      closeProductLocationModal();
       setUnbindLocationConfirmVisible(false);
       setSnackbar(t("messages.locationSaved"));
     } catch (error) {
@@ -821,7 +863,7 @@ export default function WarehouseScreen() {
         setBusy(false);
       }
     }
-  }, [applyProduct, product, t, updateProductLocationLookupKeyword]);
+  }, [applyProduct, closeProductLocationModal, product, t, updateProductLocationLookupKeyword]);
 
   const handleRequestBindLocation = useCallback(async (location: WarehouseLocation) => {
     const decision = getProductLocationScanBindDecision(location.locationType, location.productCount);
@@ -1265,14 +1307,14 @@ export default function WarehouseScreen() {
       applyLocationDetail(null);
       setLocationResults((current) => current.filter((item) => item.locationGuid !== selectedLocation.locationGuid));
       setDefaultLocationLoaded(false);
-      setBindModalVisible(false);
+      closeBindProductModal();
       setSnackbar(t("messages.saved"));
     } catch (error) {
       setSnackbar(getErrorMessage(error, "messages.locationDeleteFailed"));
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, selectedLocation, t]);
+  }, [applyLocationDetail, closeBindProductModal, selectedLocation, t]);
 
   const openBindProductModal = useCallback(() => {
     if (!selectedLocation) {
@@ -1287,8 +1329,11 @@ export default function WarehouseScreen() {
     setSelectedBindProduct(null);
     setBindInitialQuantity("0");
     setHasBindProductLookup(false);
+    if (cameraScanMode === "continuous") {
+      setScannerTarget("bindProduct");
+    }
     setBindModalVisible(true);
-  }, [selectedLocation, t]);
+  }, [cameraScanMode, selectedLocation, t]);
 
   const handleLookupBindProducts = useCallback(async (value?: string) => {
     const keyword = (value ?? bindProductKeyword).trim();
@@ -1323,7 +1368,7 @@ export default function WarehouseScreen() {
       return;
     }
     if (!canBindMoreProductsToWarehouseLocation(selectedLocation.locationType, selectedLocation.products.length)) {
-      setBindModalVisible(false);
+      closeBindProductModal();
       setSnackbar(t("location.pickLocationSingleProductHint"));
       return;
     }
@@ -1343,7 +1388,7 @@ export default function WarehouseScreen() {
         initialQuantity,
       });
       applyLocationDetail(detail);
-      setBindModalVisible(false);
+      closeBindProductModal();
       setBindProductKeyword("");
       setBindProductMatches([]);
       setSelectedBindProduct(null);
@@ -1380,7 +1425,7 @@ export default function WarehouseScreen() {
     } finally {
       setBusy(false);
     }
-  }, [applyLocationDetail, bindInitialQuantity, bindProductKeyword, hasLocationLookup, loadDefaultUnusedLocations, locationKeyword, parseInitialQuantity, selectedBindProduct, selectedLocation, t]);
+  }, [applyLocationDetail, bindInitialQuantity, bindProductKeyword, closeBindProductModal, hasLocationLookup, loadDefaultUnusedLocations, locationKeyword, parseInitialQuantity, selectedBindProduct, selectedLocation, t]);
 
   const openUnbindProductConfirm = useCallback((item: BoundLocationProduct) => {
     if (!selectedLocation || !item.productCode) {
@@ -1579,6 +1624,24 @@ export default function WarehouseScreen() {
     product,
     t,
   ]);
+  const renderCameraScanner = () => (
+    <>
+      {cameraScan.permission?.granted ? (
+        <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
+      ) : (
+        <View style={styles.permissionBlock}>
+          <Text variant="titleMedium">{t("camera.permissionTitle")}</Text>
+          <Text variant="bodySmall">{t("camera.permissionDescription")}</Text>
+          <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>{t("camera.grantPermission")}</Button>
+        </View>
+      )}
+    </>
+  );
+  const renderInlineCameraScanner = () => (
+    <View style={styles.inlineCameraBlock}>
+      {renderCameraScanner()}
+    </View>
+  );
 
   if (!hasWarehouseAccess) {
     return (
@@ -1604,12 +1667,17 @@ export default function WarehouseScreen() {
 
       <SegmentedButtons
         value={segment}
-        onValueChange={(value) => setSegment(value as SegmentValue)}
+        onValueChange={handleSegmentChange}
         buttons={[
           { value: "product", label: t("segments.product") },
           { value: "location", label: t("segments.location") },
         ]}
         style={[styles.segmented, isPdaProductLayout ? styles.segmentedCompact : null]}
+      />
+      <CameraScanModeSelector
+        value={cameraScanMode}
+        onChange={handleCameraScanModeChange}
+        style={styles.scanModeSelector}
       />
 
       <ScrollView contentContainerStyle={[styles.content, isPdaProductLayout ? styles.contentCompact : null]}>
@@ -1634,12 +1702,10 @@ export default function WarehouseScreen() {
               <IconButton
                 icon="barcode-scan"
                 mode="contained-tonal"
-                onPress={() => {
-                  setScannerTarget("product");
-                  setScannerVisible(true);
-                }}
+                onPress={() => openCameraScanner("product")}
               />
             </View>
+            {cameraScanMode === "continuous" && scannerTarget === "product" ? renderInlineCameraScanner() : null}
 
             {!product && productMatches.length === 0 ? (
               <EmptyState
@@ -1839,12 +1905,18 @@ export default function WarehouseScreen() {
                 mode="contained"
                 onPress={() => void handleLookupLocations()}
               />
+              <IconButton
+                icon="barcode-scan"
+                mode="contained-tonal"
+                onPress={() => openCameraScanner("location")}
+              />
               {canMaintainLocations ? (
                 <Button mode="contained" icon="plus" onPress={() => void openCreateLocation()}>
                   {t("location.newLocation")}
                 </Button>
               ) : null}
             </View>
+            {cameraScanMode === "continuous" && scannerTarget === "location" ? renderInlineCameraScanner() : null}
 
             {defaultLocationLoading && !hasLocationLookup && locationResults.length === 0 ? (
               <View style={styles.inlineLoadingState}>
@@ -2027,19 +2099,11 @@ export default function WarehouseScreen() {
       </ScrollView>
 
       <Portal>
-        <Modal visible={scannerVisible} onDismiss={() => setScannerVisible(false)} contentContainerStyle={styles.modal}>
+        <Modal visible={scannerVisible && cameraScanMode === "single"} onDismiss={() => setScannerVisible(false)} contentContainerStyle={styles.modal}>
           <Text variant="titleMedium" style={styles.modalTitle}>
             {scannerTarget === "bindProduct" ? t("location.bindModalScanTitle") : t("camera.scanTitle")}
           </Text>
-          {cameraScan.permission?.granted ? (
-            <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
-          ) : (
-            <View style={styles.permissionBlock}>
-              <Text variant="titleMedium">{t("camera.permissionTitle")}</Text>
-              <Text variant="bodySmall">{t("camera.permissionDescription")}</Text>
-              <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>{t("camera.grantPermission")}</Button>
-            </View>
-          )}
+          {renderCameraScanner()}
         </Modal>
 
         <Modal visible={photoVisible} onDismiss={() => setPhotoVisible(false)} contentContainerStyle={styles.modal}>
@@ -2139,7 +2203,7 @@ export default function WarehouseScreen() {
 
         <Modal
           visible={productLocationModalVisible}
-          onDismiss={() => setProductLocationModalVisible(false)}
+          onDismiss={closeProductLocationModal}
           style={styles.bottomSheetModal}
           contentContainerStyle={styles.bottomSheetContainer}
         >
@@ -2151,7 +2215,7 @@ export default function WarehouseScreen() {
                 {t("product.currentLocation")}: {product?.locationCode || t("product.noLocation")}
               </Text>
             </View>
-            <IconButton icon="close" size={20} onPress={() => setProductLocationModalVisible(false)} />
+            <IconButton icon="close" size={20} onPress={closeProductLocationModal} />
           </View>
 
           <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="always">
@@ -2174,12 +2238,10 @@ export default function WarehouseScreen() {
               <IconButton
                 icon="barcode-scan"
                 mode="contained-tonal"
-                onPress={() => {
-                  setScannerTarget("productLocation");
-                  setScannerVisible(true);
-                }}
+                onPress={() => openCameraScanner("productLocation")}
               />
             </View>
+            {cameraScanMode === "continuous" && scannerTarget === "productLocation" ? renderInlineCameraScanner() : null}
 
             {productLocationBindFeedback ? (
               <Text variant="bodySmall" style={styles.productLocationBindFeedback}>
@@ -2300,7 +2362,7 @@ export default function WarehouseScreen() {
 
         <Modal
           visible={bindModalVisible}
-          onDismiss={() => setBindModalVisible(false)}
+          onDismiss={closeBindProductModal}
           style={styles.bottomSheetModal}
           contentContainerStyle={styles.bottomSheetContainer}
         >
@@ -2312,7 +2374,7 @@ export default function WarehouseScreen() {
                 {t("location.bindModalCurrentLocation")}: {selectedLocation?.locationCode || selectedLocation?.locationGuid || notAvailableText}
               </Text>
             </View>
-            <IconButton icon="close" size={20} onPress={() => setBindModalVisible(false)} />
+            <IconButton icon="close" size={20} onPress={closeBindProductModal} />
           </View>
 
           <ScrollView contentContainerStyle={styles.sheetContent}>
@@ -2335,12 +2397,10 @@ export default function WarehouseScreen() {
               <IconButton
                 icon="barcode-scan"
                 mode="contained-tonal"
-                onPress={() => {
-                  setScannerTarget("bindProduct");
-                  setScannerVisible(true);
-                }}
+                onPress={() => openCameraScanner("bindProduct")}
               />
             </View>
+            {cameraScanMode === "continuous" && scannerTarget === "bindProduct" ? renderInlineCameraScanner() : null}
 
             <View style={styles.bindHintCard}>
               <Text variant="labelSmall" style={styles.infoTileLabel}>
@@ -2419,7 +2479,7 @@ export default function WarehouseScreen() {
           </ScrollView>
 
           <View style={styles.sheetFooter}>
-            <Button onPress={() => setBindModalVisible(false)}>{t("common:actions.cancel")}</Button>
+            <Button onPress={closeBindProductModal}>{t("common:actions.cancel")}</Button>
             <Button mode="contained" icon="link-variant" onPress={() => void handleBindProductToLocation()}>
               {t("location.bindModalConfirm")}
             </Button>
@@ -2553,6 +2613,10 @@ const styles = StyleSheet.create({
   },
   segmentedCompact: {
     marginHorizontal: 12,
+    marginBottom: 8,
+  },
+  scanModeSelector: {
+    marginHorizontal: 16,
     marginBottom: 8,
   },
   content: {
@@ -2829,6 +2893,13 @@ const styles = StyleSheet.create({
     height: 320,
     borderRadius: 12,
     overflow: "hidden",
+  },
+  inlineCameraBlock: {
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
   permissionBlock: {
     gap: 10,
