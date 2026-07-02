@@ -446,7 +446,7 @@ export default function DomesticChinaSuppliersPage() {
         confirmLoading={saving}
         onCancel={handleCloseModal}
         onOk={() => void handleSave()}
-        destroyOnClose
+        destroyOnHidden
         width={680}
       >
         <Form form={form} layout="vertical">

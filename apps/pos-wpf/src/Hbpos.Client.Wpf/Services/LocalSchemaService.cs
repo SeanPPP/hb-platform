@@ -224,6 +224,17 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN DiscountPercent TEXT NULL;", cancellationToken);
         }
 
+        if (!columns.Contains("IsAutomaticPromotionDiscount"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN IsAutomaticPromotionDiscount INTEGER NOT NULL DEFAULT 0;", cancellationToken);
+        }
+
+        if (!columns.Contains("DiscountSource"))
+        {
+            // 旧挂单没有折扣来源时按 None 恢复；新挂单会保存 Manual/Promotion。
+            await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN DiscountSource INTEGER NOT NULL DEFAULT 0;", cancellationToken);
+        }
+
         if (!columns.Contains("Kind"))
         {
             await ExecuteAsync(connection, "ALTER TABLE SuspendedOrderLines ADD COLUMN Kind INTEGER NOT NULL DEFAULT 0;", cancellationToken);
@@ -631,6 +642,48 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         );
         """,
         """
+        CREATE TABLE IF NOT EXISTS LocalPromotionRules (
+            StoreCode TEXT NOT NULL,
+            PromotionId TEXT NOT NULL,
+            Name TEXT NOT NULL,
+            IsExclusive INTEGER NOT NULL,
+            Priority INTEGER NOT NULL,
+            ApplyQuantity INTEGER NOT NULL,
+            FixedPrice TEXT NOT NULL,
+            MaxApplicationsPerOrder INTEGER NULL,
+            EffectiveStart TEXT NOT NULL,
+            EffectiveEnd TEXT NOT NULL,
+            UpdatedAt TEXT NULL,
+            SyncedAt TEXT NOT NULL,
+            PRIMARY KEY (StoreCode, PromotionId)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS LocalPromotions (
+            StoreCode TEXT NOT NULL,
+            PromotionId TEXT NOT NULL,
+            Name TEXT NOT NULL,
+            IsExclusive INTEGER NOT NULL,
+            Priority INTEGER NOT NULL,
+            ApplyQuantity INTEGER NOT NULL,
+            FixedPrice TEXT NOT NULL,
+            MaxApplicationsPerOrder INTEGER NULL,
+            EffectiveStart TEXT NOT NULL,
+            EffectiveEnd TEXT NOT NULL,
+            SyncedAt TEXT NOT NULL,
+            PRIMARY KEY (StoreCode, PromotionId)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS LocalPromotionProducts (
+            StoreCode TEXT NOT NULL,
+            PromotionId TEXT NOT NULL,
+            ProductCode TEXT NOT NULL,
+            UnitWeight INTEGER NOT NULL,
+            PRIMARY KEY (StoreCode, PromotionId, ProductCode)
+        );
+        """,
+        """
         CREATE TABLE IF NOT EXISTS SuspendedOrders (
             SuspendedOrderGuid TEXT PRIMARY KEY,
             StoreCode TEXT NOT NULL,
@@ -659,6 +712,8 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             UnitPrice TEXT NOT NULL,
             DiscountAmount TEXT NOT NULL,
             DiscountPercent TEXT NULL,
+            IsAutomaticPromotionDiscount INTEGER NOT NULL DEFAULT 0,
+            DiscountSource INTEGER NOT NULL DEFAULT 0,
             ActualAmount TEXT NOT NULL,
             PriceSource INTEGER NOT NULL,
             PriceSourceLabel TEXT NOT NULL,
@@ -697,6 +752,18 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         """
         CREATE INDEX IF NOT EXISTS IX_LocalSellableItemIndex_Store_Special_Product
         ON LocalSellableItemIndex (StoreCode, IsSpecialProduct, ProductCode);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotionProducts_Store_Product
+        ON LocalPromotionProducts (StoreCode, ProductCode);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotions_Store_EffectiveRange
+        ON LocalPromotionRules (StoreCode, EffectiveStart, EffectiveEnd);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS IX_LocalPromotionProducts_Store_ProductCode
+        ON LocalPromotionProducts (StoreCode, ProductCode);
         """,
         """
         CREATE INDEX IF NOT EXISTS IX_LocalOrderLines_OrderGuid_ItemNumber_LookupCode

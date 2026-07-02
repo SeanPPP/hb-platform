@@ -257,7 +257,7 @@ public sealed class RawScannerService(
     {
         if (_activePageId is null || !_handlers.TryGetValue(_activePageId, out var handler))
         {
-            ConsoleLog.Write("RawScanner", $"scan ignored because no active handler page={_activePageId ?? "<none>"} barcode={result.Barcode}");
+            ConsoleLog.Write("RawScanner", $"scan ignored because no active handler page={_activePageId ?? "<none>"} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(result.Barcode)}");
             return;
         }
 
@@ -272,7 +272,7 @@ public sealed class RawScannerService(
         var dispatchDelayMs = Math.Max(0, (dispatchAt - completedAt).TotalMilliseconds);
         ConsoleLog.Write(
             "RawScanner",
-            $"scan accepted barcode={result.Barcode} completion={result.CompletionKind} activePage={_activePageId} dispatchDelayMs={dispatchDelayMs:0.###}");
+            $"scan accepted barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(result.Barcode)} completion={result.CompletionKind} activePage={_activePageId} dispatchDelayMs={dispatchDelayMs:0.###}");
         handler(new RawBarcodeScannedEventArgs(result.Barcode, result.DevicePath, completedAt));
     }
 

@@ -7,6 +7,7 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   DollarOutlined,
+  DownloadOutlined,
   EnvironmentOutlined,
   FileDoneOutlined,
   FileTextOutlined,
@@ -63,7 +64,9 @@ import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
 import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
+import PaymentTerminalSettingsPage from '../pages/System/PaymentTerminalSettings'
 import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
+import SystemWpfVersionsPage from '../pages/System/WpfVersions'
 import SystemRolesPage from '../pages/System/Roles'
 import SystemStoresPage from '../pages/System/Stores'
 import SystemEmployeeProfilesPage from '../pages/System/EmployeeProfiles'
@@ -104,6 +107,7 @@ const iconMap = {
   CalendarOutlined: <CalendarOutlined />,
   DatabaseOutlined: <DatabaseOutlined />,
   DollarOutlined: <DollarOutlined />,
+  DownloadOutlined: <DownloadOutlined />,
   EnvironmentOutlined: <EnvironmentOutlined />,
   FileDoneOutlined: <FileDoneOutlined />,
   FileTextOutlined: <FileTextOutlined />,
@@ -199,6 +203,16 @@ export const appRoutes: AppRouteItem[] = [
         element: <InvoiceEmailSettingsPage />,
       },
       {
+        path: '/system/payment-terminal-settings',
+        meta: {
+          title: 'menu.paymentTerminalSettings',
+          icon: 'WalletOutlined',
+          keepAlive: true,
+          accessKey: 'canManageSystemSettings',
+        },
+        element: <PaymentTerminalSettingsPage />,
+      },
+      {
         path: '/system/users',
         meta: {
           title: 'menu.systemUsers',
@@ -247,6 +261,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewAppDownloads',
         },
         element: <SystemAppDownloadsPage />,
+      },
+      {
+        path: '/system/wpf-versions',
+        meta: {
+          title: 'menu.wpfVersions',
+          icon: 'DownloadOutlined',
+          keepAlive: true,
+          accessKey: 'canViewAppDownloads',
+        },
+        element: <SystemWpfVersionsPage />,
       },
     ],
   },

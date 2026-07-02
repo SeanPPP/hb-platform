@@ -8,6 +8,10 @@ namespace BlazorApp.Shared.DTOs
         public string HGUID { get; set; } = string.Empty;
         public string? StoreCode { get; set; }
         public string? StoreName { get; set; }
+        public string? LegacyStoreCode { get; set; }
+        public string? UserGUID { get; set; }
+        public string? Username { get; set; }
+        public string? UserFullName { get; set; }
         public string? OperatorUser { get; set; }
         public string? UserBarcode { get; set; }
         public string? LoginRole { get; set; }
@@ -25,6 +29,10 @@ namespace BlazorApp.Shared.DTOs
         public string HGUID { get; set; } = string.Empty;
         public string? StoreCode { get; set; }
         public string? StoreName { get; set; }
+        public string? LegacyStoreCode { get; set; }
+        public string? UserGUID { get; set; }
+        public string? Username { get; set; }
+        public string? UserFullName { get; set; }
         public string? OperatorUser { get; set; }
         public string? UserBarcode { get; set; }
         public string? LoginRole { get; set; }
@@ -37,9 +45,17 @@ namespace BlazorApp.Shared.DTOs
         public DateTime LastModifyDate { get; set; }
     }
 
+    public class CashRegisterUserUserOptionDto
+    {
+        public string UserGUID { get; set; } = string.Empty;
+        public string Username { get; set; } = string.Empty;
+        public string? UserFullName { get; set; }
+    }
+
     public class CreateCashRegisterUserDto
     {
         public string? StoreCode { get; set; }
+        public string? UserGUID { get; set; }
         public string? OperatorUser { get; set; }
         public string? UserBarcode { get; set; }
         public string? LoginRole { get; set; }
@@ -50,6 +66,7 @@ namespace BlazorApp.Shared.DTOs
     public class UpdateCashRegisterUserDto
     {
         public string? StoreCode { get; set; }
+        public string? UserGUID { get; set; }
         public string? OperatorUser { get; set; }
         public string? UserBarcode { get; set; }
         public string? LoginRole { get; set; }

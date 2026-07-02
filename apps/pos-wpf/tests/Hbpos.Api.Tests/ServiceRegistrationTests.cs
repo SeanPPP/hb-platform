@@ -4,6 +4,7 @@ using Hbpos.Contracts.Linkly;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Net.Http;
 
 namespace Hbpos.Api.Tests;
 
@@ -81,5 +82,29 @@ public sealed class ServiceRegistrationTests
         Assert.True(LinklyTimeoutConstants.HttpTimeout > LinklyTimeoutConstants.BusinessWait);
         Assert.Equal(LinklyTimeoutConstants.HttpTimeout, factory.CreateClient(nameof(ILinklyCloudBackendAsyncTransport)).Timeout);
         Assert.Equal(LinklyTimeoutConstants.HttpTimeout, factory.CreateClient(nameof(ILinklyCloudBackendTokenProvider)).Timeout);
+    }
+
+    [Fact]
+    public void AddHbposApiServices_configures_local_app_update_service_timeout()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+
+        Assert.Equal(TimeSpan.FromSeconds(15), factory.CreateClient(nameof(ILocalAppUpdateService)).Timeout);
+    }
+
+    [Fact]
+    public void AddHbposApiServices_RegistersPromotionRuleService()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        var descriptor = Assert.Single(services, x => x.ServiceType == typeof(IPromotionRuleService));
+        Assert.Equal(typeof(PromotionRuleService), descriptor.ImplementationType);
     }
 }

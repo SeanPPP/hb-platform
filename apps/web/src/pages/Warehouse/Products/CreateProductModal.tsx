@@ -598,7 +598,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
       title={t('warehouse.createProduct')}
       open={open}
       width={980}
-      destroyOnClose
+      destroyOnHidden
       okText={t('common.save')}
       cancelText={t('common.cancel')}
       confirmLoading={submitting}

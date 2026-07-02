@@ -48,6 +48,16 @@ namespace BlazorApp.Api.Controllers.React
             );
         }
 
+        [HttpGet("user-options")]
+        [Authorize(Policy = Permissions.Store.ManageOperations)]
+        public async Task<IActionResult> GetUserOptions()
+        {
+            var result = await _service.GetUserOptionsAsync();
+            if (result.Success)
+                return Ok(new { success = true, data = result.Data, message = result.Message });
+            return BadRequest(new { success = false, message = result.Message });
+        }
+
         [HttpGet("{hGuid}")]
         [Authorize(Policy = Permissions.Store.ManageOperations)]
         public async Task<IActionResult> GetByHGuid(string hGuid)

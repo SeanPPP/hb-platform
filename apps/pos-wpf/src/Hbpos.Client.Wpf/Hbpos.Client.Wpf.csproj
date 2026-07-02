@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Hbpos.Contracts\Hbpos.Contracts.csproj" />
+    <ProjectReference Include="..\..\..\..\services\backend\BlazorApp.Shared\BlazorApp.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +21,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\AppIcon.ico</ApplicationIcon>
+    <HbposWpfAppVersion Condition="'$(HbposWpfAppVersion)' == '' and '$(HBPOS_WPF_APP_VERSION)' != ''">$(HBPOS_WPF_APP_VERSION)</HbposWpfAppVersion>
+    <HbposWpfAppVersion Condition="'$(HbposWpfAppVersion)' == ''">0.0.0-local</HbposWpfAppVersion>
+    <Version>$(HbposWpfAppVersion)</Version>
+    <InformationalVersion>$(HbposWpfAppVersion)</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

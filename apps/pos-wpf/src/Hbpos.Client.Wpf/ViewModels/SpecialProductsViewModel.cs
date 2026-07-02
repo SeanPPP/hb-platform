@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Converters;
@@ -25,6 +26,8 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
     private readonly Action _onBack;
     private readonly Action<CartLine>? _onCartLineAdded;
     private readonly IRawScannerService? _rawScannerService;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private readonly object _specialItemsGate = new();
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private readonly Func<IEnumerable<string?>, int, CancellationToken, Task<int>> _thumbnailPreloadAsync;
@@ -85,7 +88,9 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         ISpecialProductsWorkflowService? workflowService = null,
         IRawScannerService? rawScannerService = null,
         Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
-        Func<IEnumerable<string?>, int, CancellationToken, Task<int>>? thumbnailPreloadAsync = null)
+        Func<IEnumerable<string?>, int, CancellationToken, Task<int>>? thumbnailPreloadAsync = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _workflowService = workflowService ?? new SpecialProductsWorkflowService(
             priceIndex,
@@ -97,6 +102,13 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         _onBack = onBack;
         _onCartLineAdded = onCartLineAdded;
         _rawScannerService = rawScannerService;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         _delayAsync = delayAsync ?? Task.Delay;
         _thumbnailPreloadAsync = thumbnailPreloadAsync ?? ProductThumbnailImageSourceConverter.PreloadAsync;
 
@@ -345,6 +357,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+
         OnPropertyChanged(nameof(SubtitleText));
         OnPropertyChanged(nameof(OnlineStateText));
         RefreshCommandStates();
@@ -396,7 +413,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
         if (!IsEditMode)
         {
             SetStatus("specialProducts.status.scanRequiresEdit");
-            Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcode={normalizedBarcode} consumed=true searched=false reason=edit-mode-off");
+            Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} consumed=true searched=false reason=edit-mode-off");
             return true;
         }
 
@@ -411,7 +428,7 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
             SetStatus("specialProducts.status.scanConfirm", selected.DisplayName);
         }
 
-        Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcode={normalizedBarcode} consumed=true searched=true results={SearchResults.Count} selectedProductCode={selected?.ProductCode ?? "<none>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
+        Log($"operation=scanner store={Session.StoreCode} source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} consumed=true searched=true results={SearchResults.Count} selectedProductCode={selected?.ProductCode ?? "<none>"} elapsedMs={stopwatch.ElapsedMilliseconds}");
         return true;
     }
 
@@ -462,6 +479,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private void AddToCart(SellableItemDto? item)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.AddToCart))
+        {
+            return;
+        }
+
         if (item is null)
         {
             Log($"operation=add-to-cart store={Session.StoreCode} success=false reason=null-item totalElapsedMs=0");
@@ -488,6 +510,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private async Task DownloadSpecialProductsAsync(CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        {
+            return;
+        }
+
         if (IsBusy || !EnsureOnlineMutationAllowed())
         {
             return;
@@ -558,6 +585,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private async Task AddSpecialProductAsync(SellableItemDto? item, CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        {
+            return;
+        }
+
         if (item is null || !IsEditMode || !EnsureOnlineMutationAllowed())
         {
             return;
@@ -569,6 +601,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private async Task RemoveSpecialProductAsync(SellableItemDto? item, CancellationToken cancellationToken)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        {
+            return;
+        }
+
         if (item is null || !IsEditMode || !EnsureOnlineMutationAllowed())
         {
             return;
@@ -621,6 +658,11 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private async Task MoveSpecialProductAsync(SellableItemDto? item, int delta)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        {
+            return;
+        }
+
         if (item is null || IsBusy || !IsEditMode)
         {
             return;
@@ -658,7 +700,24 @@ public sealed partial class SpecialProductsViewModel : ObservableObject, IScanne
 
     private void ToggleEditMode()
     {
+        if (!IsEditMode && !TryRequirePermission(Permissions.PosTerminal.SpecialProducts.Manage))
+        {
+            return;
+        }
+
         IsEditMode = !IsEditMode;
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        SetStatusText(message);
+        return false;
     }
 
     private void ShowPreviousPage()

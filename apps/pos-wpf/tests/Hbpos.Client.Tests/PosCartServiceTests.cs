@@ -292,6 +292,64 @@ public sealed class PosCartServiceTests
     }
 
     [Fact]
+    public void ApplyPromotionDiscounts_preserves_manual_discounts_and_replaces_old_promotion_discounts()
+    {
+        var cart = new PosCartService();
+        var manualLine = cart.AddItem(CreateItem(productCode: "SKU-MANUAL", lookupCode: "MANUAL-001", price: 20m));
+        var stalePromotionLine = cart.AddItem(CreateItem(productCode: "SKU-PROMO-OLD", lookupCode: "PROMO-OLD-001", price: 10m));
+        var freshPromotionLine = cart.AddItem(CreateItem(productCode: "SKU-PROMO-NEW", lookupCode: "PROMO-NEW-001", price: 8m));
+
+        Assert.True(cart.SetLineDiscountAmount(manualLine, 3m));
+        stalePromotionLine.SetPromotionDiscountAmount(2m);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(manualLine, 9m),
+            new PromotionLineDiscount(freshPromotionLine, 20m)
+        ]);
+
+        Assert.Equal(3m, manualLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, manualLine.DiscountSource);
+
+        Assert.Equal(0m, stalePromotionLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.None, stalePromotionLine.DiscountSource);
+
+        Assert.Equal(8m, freshPromotionLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, freshPromotionLine.DiscountSource);
+    }
+
+    [Fact]
+    public void SetLineDiscountAmount_zero_resets_manual_source_and_allows_future_promotion()
+    {
+        var cart = new PosCartService();
+        var amountLine = cart.AddItem(CreateItem(productCode: "SKU-RESET-AMOUNT", lookupCode: "RESET-001", price: 10m));
+        var percentLine = cart.AddItem(CreateItem(productCode: "SKU-RESET-PERCENT", lookupCode: "RESET-002", price: 10m));
+
+        Assert.True(cart.SetLineDiscountAmount(amountLine, 2m));
+        Assert.Equal(CartLineDiscountSource.Manual, amountLine.DiscountSource);
+
+        Assert.True(cart.SetLineDiscountAmount(amountLine, 0m));
+        Assert.Equal(CartLineDiscountSource.None, amountLine.DiscountSource);
+
+        Assert.True(cart.SetLineDiscountPercent(percentLine, 10m));
+        Assert.Equal(CartLineDiscountSource.Manual, percentLine.DiscountSource);
+
+        Assert.True(cart.SetLineDiscountPercent(percentLine, 0m));
+        Assert.Equal(CartLineDiscountSource.None, percentLine.DiscountSource);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(amountLine, 4m),
+            new PromotionLineDiscount(percentLine, 5m)
+        ]);
+
+        Assert.Equal(4m, amountLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, amountLine.DiscountSource);
+        Assert.Equal(5m, percentLine.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, percentLine.DiscountSource);
+    }
+
+    [Fact]
     public void SetLineDiscountPercent_recalculates_after_quantity_changes()
     {
         var cart = new PosCartService();
@@ -324,6 +382,99 @@ public sealed class PosCartServiceTests
 
         Assert.Equal(1m, line.Quantity);
         Assert.Equal(0m, line.DiscountAmount);
+        Assert.Equal(10m, cart.ActualAmount);
+    }
+
+    [Fact]
+    public void Automatic_promotion_rules_apply_quantity_fixed_price_discount()
+    {
+        var cart = new PosCartService();
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 2,
+                fixedPrice: 15m,
+                products:
+                [
+                    new CatalogPromotionProductDto("SKU-001", 1)
+                ])
+        ]);
+
+        var line = cart.AddItem(CreateItem(productCode: "SKU-001", lookupCode: "690001", price: 10m));
+        cart.AddItem(CreateItem(productCode: "SKU-001", lookupCode: "690001", price: 10m));
+
+        Assert.Equal(2m, line.Quantity);
+        Assert.True(line.IsAutomaticPromotionDiscount);
+        Assert.Equal(5m, line.DiscountAmount);
+        Assert.Equal(15m, line.ActualAmount);
+        Assert.Equal(5m, cart.DiscountAmount);
+        Assert.Equal(15m, cart.ActualAmount);
+
+        Assert.True(cart.DecreaseLine(line));
+
+        line = Assert.Single(cart.Lines);
+        Assert.False(line.IsAutomaticPromotionDiscount);
+        Assert.Equal(0m, line.DiscountAmount);
+        Assert.Equal(10m, cart.ActualAmount);
+    }
+
+    [Fact]
+    public void Automatic_promotion_rules_skip_manual_discount_lines()
+    {
+        var cart = new PosCartService();
+        var first = cart.AddItem(CreateItem(productCode: "SKU-001", lookupCode: "690001", price: 10m));
+        var second = cart.AddItem(CreateItem(productCode: "SKU-002", lookupCode: "690002", price: 10m));
+
+        Assert.True(cart.SetLineDiscountAmount(first, 2m));
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 2,
+                fixedPrice: 15m,
+                products:
+                [
+                    new CatalogPromotionProductDto("SKU-001", 1),
+                    new CatalogPromotionProductDto("SKU-002", 1)
+                ])
+        ]);
+
+        Assert.False(first.IsAutomaticPromotionDiscount);
+        Assert.Equal(2m, first.DiscountAmount);
+        Assert.False(second.IsAutomaticPromotionDiscount);
+        Assert.Equal(0m, second.DiscountAmount);
+        Assert.Equal(18m, cart.ActualAmount);
+
+        Assert.True(cart.SetLineDiscountAmount(first, 0m));
+
+        Assert.True(first.IsAutomaticPromotionDiscount);
+        Assert.Equal(2.5m, first.DiscountAmount);
+        Assert.True(second.IsAutomaticPromotionDiscount);
+        Assert.Equal(2.5m, second.DiscountAmount);
+        Assert.Equal(15m, cart.ActualAmount);
+    }
+
+    [Fact]
+    public void Automatic_promotion_rules_skip_open_and_return_lines()
+    {
+        var cart = new PosCartService();
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 2,
+                fixedPrice: 15m,
+                products:
+                [
+                    new CatalogPromotionProductDto("SKU-001", 1)
+                ])
+        ]);
+
+        var sale = cart.AddItem(CreateItem(productCode: "SKU-001", lookupCode: "690001", price: 10m));
+        var openItem = cart.AddOpenItem(CreateItem(productCode: "SKU-001", lookupCode: "OPEN-001", price: 10m), 10m);
+        var returnLine = cart.AddReturnLine(CreateReturnLine("receipt-order-line-1"));
+
+        Assert.Equal(0m, sale.DiscountAmount);
+        Assert.Equal(0m, openItem.DiscountAmount);
+        Assert.Equal(0m, returnLine.DiscountAmount);
         Assert.Equal(10m, cart.ActualAmount);
     }
 
@@ -464,6 +615,7 @@ public sealed class PosCartServiceTests
         Assert.Equal(3m, line.Quantity);
         Assert.Equal(12m, line.UnitPrice);
         Assert.Equal(3.78m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, line.DiscountSource);
         Assert.Equal("ITEM-01", line.ItemNumber);
         Assert.Equal(" look-01 ", line.LookupCode);
         Assert.Equal("LOOK-01", line.LookupCodeNormalized);
@@ -489,9 +641,64 @@ public sealed class PosCartServiceTests
 
         line = Assert.Single(cart.Lines);
         Assert.Equal(4m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Manual, line.DiscountSource);
 
         Assert.True(cart.SetLineQuantity(line, 3m));
         Assert.Equal(4m, line.DiscountAmount);
+    }
+
+    [Fact]
+    public void Snapshot_and_restore_preserve_automatic_promotion_discount_without_current_rules()
+    {
+        var cart = new PosCartService();
+        cart.SetAutomaticPromotionRules(
+        [
+            CreatePromotionRule(
+                applyQuantity: 2,
+                fixedPrice: 15m,
+                products:
+                [
+                    new CatalogPromotionProductDto("SKU-RESTORE-03", 1)
+                ])
+        ]);
+        var line = cart.AddItem(CreateItem(productCode: "SKU-RESTORE-03", lookupCode: "look-03", price: 10m));
+        cart.AddItem(CreateItem(productCode: "SKU-RESTORE-03", lookupCode: "look-03", price: 10m));
+        var snapshot = cart.CreateSnapshot();
+        var restoredCart = new PosCartService();
+
+        restoredCart.RestoreSnapshot(snapshot);
+
+        line = Assert.Single(restoredCart.Lines);
+        Assert.True(line.IsAutomaticPromotionDiscount);
+        Assert.Equal(5m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
+        Assert.Equal(15m, restoredCart.ActualAmount);
+    }
+
+    [Fact]
+    public void Snapshot_and_restore_keep_promotion_discount_source_so_reapply_replaces_old_promotion_discount()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddItem(CreateItem(productCode: "SKU-RESTORE-PROMO", lookupCode: "look-promo", price: 10m));
+        Assert.True(cart.SetLineQuantity(line, 2m));
+        line.SetPromotionDiscountAmount(4m);
+
+        var snapshot = cart.CreateSnapshot();
+        cart.Clear();
+
+        cart.RestoreSnapshot(snapshot);
+
+        line = Assert.Single(cart.Lines);
+        Assert.Equal(4m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
+
+        cart.ApplyPromotionDiscounts(
+        [
+            new PromotionLineDiscount(line, 6m)
+        ]);
+
+        Assert.Equal(6m, line.DiscountAmount);
+        Assert.Equal(CartLineDiscountSource.Promotion, line.DiscountSource);
     }
 
     private static SellableItemDto CreateItem(
@@ -519,6 +726,29 @@ public sealed class PosCartServiceTests
             QuantityFactor: quantityFactor,
             UpdatedAt: DateTimeOffset.UtcNow,
             ProductImage: productImage);
+    }
+
+    private static CatalogPromotionRuleDto CreatePromotionRule(
+        int applyQuantity,
+        decimal fixedPrice,
+        IReadOnlyList<CatalogPromotionProductDto> products,
+        string promotionId = "PROMO-001",
+        bool isExclusive = true,
+        int priority = 0,
+        int? maxApplicationsPerOrder = null)
+    {
+        return new CatalogPromotionRuleDto(
+            promotionId,
+            "Quantity discount",
+            isExclusive,
+            priority,
+            applyQuantity,
+            fixedPrice,
+            maxApplicationsPerOrder,
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1),
+            DateTimeOffset.UtcNow,
+            products);
     }
 
     private static ReturnCartLineRequest CreateReturnLine(

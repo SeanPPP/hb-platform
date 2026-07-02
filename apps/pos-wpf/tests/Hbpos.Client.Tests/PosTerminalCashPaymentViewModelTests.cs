@@ -5,6 +5,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Orders;
+using Hbpos.Contracts.Promotions;
 
 namespace Hbpos.Client.Tests;
 
@@ -229,6 +230,109 @@ public sealed class PosTerminalCashPaymentViewModelTests
         allowedViewModel.OpenPaymentCommand.Execute(null);
 
         Assert.True(allowedRaised);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_open_payment_waits_for_pending_promotion_evaluation()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-PAY", "Promo Payment Tea", "930PROMO-PAY", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var evaluationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueSync(lines => []);
+        promotionService.EnqueueAsync(async lines =>
+        {
+            await evaluationGate.Task;
+            return [new PromotionLineDiscount(Assert.Single(lines), 5m)];
+        });
+
+        var openedPayment = false;
+        var discountWhenOpenedPayment = -1m;
+        var actualAmountWhenOpenedPayment = -1m;
+        PosTerminalViewModel? viewModel = null;
+        viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: () =>
+            {
+                openedPayment = true;
+                discountWhenOpenedPayment = Assert.Single(viewModel!.CartLines).DiscountAmount;
+                actualAmountWhenOpenedPayment = viewModel.ActualAmount;
+            },
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO-PAY";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 1);
+
+        viewModel.ScanText = "930PROMO-PAY";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 2);
+
+        viewModel.OpenPaymentCommand.Execute(null);
+
+        Assert.False(openedPayment);
+
+        evaluationGate.SetResult();
+
+        await WaitUntilAsync(() => openedPayment);
+        Assert.Equal(5m, discountWhenOpenedPayment);
+        Assert.Equal(15m, actualAmountWhenOpenedPayment);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_hold_order_waits_for_pending_promotion_evaluation()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-HOLD", "Promo Hold Tea", "930PROMO-HOLD", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var evaluationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueSync(lines => []);
+        promotionService.EnqueueAsync(async lines =>
+        {
+            await evaluationGate.Task;
+            return [new PromotionLineDiscount(Assert.Single(lines), 5m)];
+        });
+
+        var heldOrder = false;
+        var discountWhenHeldOrder = -1m;
+        var actualAmountWhenHeldOrder = -1m;
+        PosTerminalViewModel? viewModel = null;
+        viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            onHoldOrderAsync: () =>
+            {
+                heldOrder = true;
+                discountWhenHeldOrder = Assert.Single(viewModel!.CartLines).DiscountAmount;
+                actualAmountWhenHeldOrder = viewModel.ActualAmount;
+                return Task.CompletedTask;
+            },
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO-HOLD";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 1);
+
+        viewModel.ScanText = "930PROMO-HOLD";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 2);
+
+        var holdTask = viewModel.HoldOrderCommand.ExecuteAsync(null);
+
+        Assert.False(heldOrder);
+
+        evaluationGate.SetResult();
+
+        await holdTask;
+        Assert.True(heldOrder);
+        Assert.Equal(5m, discountWhenHeldOrder);
+        Assert.Equal(15m, actualAmountWhenHeldOrder);
     }
 
     [Fact]
@@ -859,6 +963,231 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal("-8.5%", line.DiscountRateText);
         Assert.Equal(9.15m, viewModel.ActualAmount);
         Assert.Same(line, viewModel.SelectedCartLine);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_adding_item_recalculates_promotions_and_applies_discount()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-ADD", "Promo Add Tea", "930PROMO1", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var promotionRepository = new FakeLocalPromotionRepository();
+        promotionRepository.SeedStore(
+            Session.StoreCode,
+            [CreatePromotionRule("PROMO-ADD", ["SKU-PROMO-ADD"], applyQuantity: 2, fixedPrice: 15m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            promotionEvaluationService: new PromotionEvaluationService(promotionRepository));
+
+        viewModel.ScanText = "930PROMO1";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930PROMO1";
+        viewModel.ScanCommand.Execute(null);
+
+        var line = Assert.Single(viewModel.CartLines);
+        await WaitUntilAsync(() => line.DiscountAmount == 5m);
+
+        Assert.Equal(2m, line.Quantity);
+        Assert.Equal(15m, viewModel.ActualAmount);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_quantity_and_price_changes_clear_stale_promotion_discount_and_recalculate()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-EDIT", "Promo Edit Tea", "930PROMO2", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var promotionRepository = new FakeLocalPromotionRepository();
+        promotionRepository.SeedStore(
+            Session.StoreCode,
+            [CreatePromotionRule("PROMO-EDIT", ["SKU-PROMO-EDIT"], applyQuantity: 2, fixedPrice: 15m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            promotionEvaluationService: new PromotionEvaluationService(promotionRepository));
+
+        viewModel.ScanText = "930PROMO2";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930PROMO2";
+        viewModel.ScanCommand.Execute(null);
+        var line = Assert.Single(viewModel.CartLines);
+        await WaitUntilAsync(() => line.DiscountAmount == 5m);
+
+        viewModel.SelectedCartLine = line;
+        viewModel.KeypadBuffer = "1";
+        viewModel.ModifySelectedLineQuantityCommand.Execute(null);
+        await WaitUntilAsync(() => line.Quantity == 1m && line.DiscountAmount == 0m);
+
+        viewModel.KeypadBuffer = "2";
+        viewModel.ModifySelectedLineQuantityCommand.Execute(null);
+        await WaitUntilAsync(() => line.Quantity == 2m && line.DiscountAmount == 5m);
+
+        viewModel.KeypadBuffer = "12";
+        viewModel.ModifySelectedLinePriceCommand.Execute(null);
+        await WaitUntilAsync(() => line.UnitPrice == 12m && line.DiscountAmount == 9m);
+
+        Assert.Equal(15m, viewModel.ActualAmount);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_manual_discount_recalculates_other_lines_without_reusing_manual_line()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll(
+        [
+            CreateItem("SKU-PROMO-MANUAL-A", "Promo Manual Tea A", "930PROMO3A", PriceSourceKind.StoreRetailPrice, 10m),
+            CreateItem("SKU-PROMO-MANUAL-B", "Promo Manual Tea B", "930PROMO3B", PriceSourceKind.StoreRetailPrice, 10m)
+        ]);
+        var promotionRepository = new FakeLocalPromotionRepository();
+        promotionRepository.SeedStore(
+            Session.StoreCode,
+            [
+                CreatePromotionRule("PROMO-MANUAL-A", ["SKU-PROMO-MANUAL-A"], applyQuantity: 2, fixedPrice: 15m),
+                CreatePromotionRule("PROMO-MANUAL-B", ["SKU-PROMO-MANUAL-B"], applyQuantity: 2, fixedPrice: 15m)
+            ]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            promotionEvaluationService: new PromotionEvaluationService(promotionRepository));
+
+        viewModel.ScanText = "930PROMO3A";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930PROMO3A";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930PROMO3B";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930PROMO3B";
+        viewModel.ScanCommand.Execute(null);
+
+        var lineA = Assert.Single(viewModel.CartLines, item => item.LookupCode == "930PROMO3A");
+        var lineB = Assert.Single(viewModel.CartLines, item => item.LookupCode == "930PROMO3B");
+        await WaitUntilAsync(() => lineA.DiscountAmount == 5m && lineB.DiscountAmount == 5m);
+
+        viewModel.SelectedCartLine = lineA;
+        viewModel.KeypadBuffer = "1";
+        viewModel.ApplySelectedLineDiscountAmountCommand.Execute(null);
+        await WaitUntilAsync(() => lineA.DiscountAmount == 1m && lineB.DiscountAmount == 5m);
+
+        Assert.Equal(34m, viewModel.ActualAmount);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_promotion_evaluation_failure_keeps_existing_promotion_discount_and_sets_localized_warning_status()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        var openedPayment = false;
+        var localization = new LocalizationService();
+        localization.SetCulture("zh-CN");
+        index.ReplaceAll([CreateItem("SKU-PROMO-FAIL", "Promo Fail Tea", "930PROMO4", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueSync(lines => []);
+        promotionService.EnqueueSync(lines => [new PromotionLineDiscount(Assert.Single(lines), 5m)]);
+        promotionService.EnqueueThrow(new InvalidOperationException("promotion cache unavailable"));
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: () => openedPayment = true,
+            localization: localization,
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO4";
+        viewModel.ScanCommand.Execute(null);
+        viewModel.ScanText = "930PROMO4";
+        viewModel.ScanCommand.Execute(null);
+
+        var line = Assert.Single(viewModel.CartLines);
+        await WaitUntilAsync(() => line.DiscountAmount == 5m);
+
+        viewModel.ScanText = "930PROMO4";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => viewModel.StatusMessage == localization.T("pos.status.promotionFallback"));
+
+        Assert.Equal(3m, line.Quantity);
+        Assert.Equal(5m, line.DiscountAmount);
+        Assert.Equal(10m, line.UnitPrice);
+        Assert.Equal(25m, viewModel.ActualAmount);
+        Assert.Equal(StatusFeedbackKind.Warning, viewModel.StatusFeedbackKind);
+
+        viewModel.OpenPaymentCommand.Execute(null);
+
+        Assert.True(openedPayment);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_promotion_evaluation_does_not_recurse_when_discount_application_raises_cart_changed()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-COUNT", "Promo Count Tea", "930PROMO5", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var promotionService = new CountingPromotionEvaluationService();
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO5";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 1);
+
+        viewModel.ScanText = "930PROMO5";
+        viewModel.ScanCommand.Execute(null);
+        var line = Assert.Single(viewModel.CartLines);
+        await WaitUntilAsync(() => promotionService.CallCount == 2 && line.DiscountAmount == 5m);
+        await Task.Delay(100);
+
+        Assert.Equal(2, promotionService.CallCount);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_promotion_evaluation_requeues_latest_cart_change_while_previous_evaluation_is_still_running()
+    {
+        var cart = new PosCartService();
+        var index = new LocalSellableItemIndex();
+        index.ReplaceAll([CreateItem("SKU-PROMO-QUEUE", "Promo Queue Tea", "930PROMO6", PriceSourceKind.StoreRetailPrice, 10m)]);
+        var firstEvaluationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var promotionService = new ScriptedPromotionEvaluationService();
+        promotionService.EnqueueAsync(async lines =>
+        {
+            await firstEvaluationGate.Task;
+            return [];
+        });
+        promotionService.EnqueueSync(lines => [new PromotionLineDiscount(Assert.Single(lines), 5m)]);
+        var viewModel = new PosTerminalViewModel(
+            index,
+            cart,
+            Session,
+            onOpenPayment: null,
+            promotionEvaluationService: promotionService);
+
+        viewModel.ScanText = "930PROMO6";
+        viewModel.ScanCommand.Execute(null);
+        await WaitUntilAsync(() => promotionService.CallCount == 1);
+
+        viewModel.ScanText = "930PROMO6";
+        viewModel.ScanCommand.Execute(null);
+        await Task.Delay(50);
+        Assert.Equal(1, promotionService.CallCount);
+
+        firstEvaluationGate.SetResult();
+
+        var line = Assert.Single(viewModel.CartLines);
+        await WaitUntilAsync(() => promotionService.CallCount == 2 && line.DiscountAmount == 5m);
+
+        Assert.Equal([1m, 2m], promotionService.SnapshotQuantities);
+        Assert.Equal(2m, line.Quantity);
+        Assert.Equal(15m, viewModel.ActualAmount);
     }
 
     [Fact]
@@ -3560,6 +3889,26 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(condition());
     }
 
+    private static PromotionRuleDto CreatePromotionRule(
+        string id,
+        IReadOnlyList<string> productCodes,
+        int applyQuantity,
+        decimal fixedPrice)
+    {
+        var asOf = DateTimeOffset.UtcNow;
+        return new PromotionRuleDto(
+            id,
+            $"Rule {id}",
+            asOf.AddDays(-1).UtcDateTime,
+            asOf.AddDays(1).UtcDateTime,
+            false,
+            10,
+            applyQuantity,
+            fixedPrice,
+            null,
+            productCodes.Select(productCode => new PromotionRuleProductDto(productCode, 1)).ToArray());
+    }
+
     private static IDisposable CaptureClientLog(ConcurrentQueue<string> lines)
     {
         void Capture(string line)
@@ -3628,6 +3977,102 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public Task<IReadOnlyList<SyncQueueListItem>> GetActiveItemsAsync(int take = 20, CancellationToken cancellationToken = default)
         {
             return Task.FromResult<IReadOnlyList<SyncQueueListItem>>([]);
+        }
+    }
+
+    private sealed class FakeLocalPromotionRepository : ILocalPromotionRepository
+    {
+        private readonly Dictionary<string, IReadOnlyList<PromotionRuleDto>> _rulesByStore = new(StringComparer.OrdinalIgnoreCase);
+
+        public void SeedStore(string storeCode, IReadOnlyList<PromotionRuleDto> rules)
+        {
+            _rulesByStore[storeCode] = rules;
+        }
+
+        public Task ReplaceStoreRulesAsync(
+            string storeCode,
+            PromotionRulesResponse response,
+            CancellationToken cancellationToken = default)
+        {
+            _rulesByStore[storeCode] = response.Rules;
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<PromotionRuleDto>> GetActiveRulesAsync(
+            string storeCode,
+            DateTimeOffset asOf,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_rulesByStore.TryGetValue(storeCode, out var rules))
+            {
+                return Task.FromResult<IReadOnlyList<PromotionRuleDto>>([]);
+            }
+
+            var activeRules = rules
+                .Where(rule => rule.EffectiveStart <= asOf.UtcDateTime && rule.EffectiveEnd >= asOf.UtcDateTime)
+                .ToArray();
+            return Task.FromResult<IReadOnlyList<PromotionRuleDto>>(activeRules);
+        }
+    }
+
+    private sealed class CountingPromotionEvaluationService : IPromotionEvaluationService
+    {
+        public int CallCount { get; private set; }
+
+        public Task<IReadOnlyList<PromotionLineDiscount>> EvaluateAsync(
+            IReadOnlyList<CartLine> lines,
+            string storeCode,
+            DateTimeOffset asOf,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            if (lines.Count == 1 && lines[0].Quantity >= 2m)
+            {
+                return Task.FromResult<IReadOnlyList<PromotionLineDiscount>>([new PromotionLineDiscount(lines[0], 5m)]);
+            }
+
+            return Task.FromResult<IReadOnlyList<PromotionLineDiscount>>([]);
+        }
+    }
+
+    private sealed class ScriptedPromotionEvaluationService : IPromotionEvaluationService
+    {
+        private readonly Queue<Func<IReadOnlyList<CartLine>, Task<IReadOnlyList<PromotionLineDiscount>>>> _steps = new();
+
+        public int CallCount { get; private set; }
+
+        public List<decimal> SnapshotQuantities { get; } = [];
+
+        public void EnqueueSync(Func<IReadOnlyList<CartLine>, IReadOnlyList<PromotionLineDiscount>> step)
+        {
+            _steps.Enqueue(lines => Task.FromResult(step(lines)));
+        }
+
+        public void EnqueueAsync(Func<IReadOnlyList<CartLine>, Task<IReadOnlyList<PromotionLineDiscount>>> step)
+        {
+            _steps.Enqueue(step);
+        }
+
+        public void EnqueueThrow(Exception exception)
+        {
+            _steps.Enqueue(_ => Task.FromException<IReadOnlyList<PromotionLineDiscount>>(exception));
+        }
+
+        public async Task<IReadOnlyList<PromotionLineDiscount>> EvaluateAsync(
+            IReadOnlyList<CartLine> lines,
+            string storeCode,
+            DateTimeOffset asOf,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            SnapshotQuantities.Add(lines.Sum(line => line.Quantity));
+
+            if (_steps.Count == 0)
+            {
+                return [];
+            }
+
+            return await _steps.Dequeue()(lines);
         }
     }
 

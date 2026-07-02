@@ -25,10 +25,15 @@ const printCssFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrder
 const zhFile = path.resolve(process.cwd(), 'src/i18n/locales/zh.json')
 const enFile = path.resolve(process.cwd(), 'src/i18n/locales/en.json')
 
-const invoiceSource = readFileSync(invoiceFile, 'utf8')
-const printCssSource = readFileSync(printCssFile, 'utf8')
-const zhSource = readFileSync(zhFile, 'utf8')
-const enSource = readFileSync(enFile, 'utf8')
+function readSource(file: string) {
+  // 统一换行，避免 Windows CRLF 让源码契约断言误判。
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+}
+
+const invoiceSource = readSource(invoiceFile)
+const printCssSource = readSource(printCssFile)
+const zhSource = readSource(zhFile)
+const enSource = readSource(enFile)
 
 function readCssRule(source: string, selector: string) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

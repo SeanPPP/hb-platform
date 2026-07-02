@@ -21,6 +21,7 @@ public partial class App : Application
     private SingleInstanceStartupLease? _startupLease;
     private StartupSplashWindow? _startupSplashWindow;
     private StartupProgressState? _startupProgressState;
+    private bool _startupGateReleaseScheduled;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -64,6 +65,7 @@ public partial class App : Application
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
             _startupProgressState?.SetStage(MainWindowPreparingPercent, localization.T("startup.stage.loadingProducts"));
             await mainWindow.InitializeForStartupAsync();
+            mainWindow.StartupCompleted += (_, _) => ScheduleStartupGateReleaseAfterClickGuardDelay();
             _startupProgressState?.SetStage(MainWindowInitializedPercent, localization.T("startup.stage.preparingMainWindow"));
             MainWindow = mainWindow;
             FinishStartupExperience();
@@ -71,11 +73,20 @@ public partial class App : Application
             // 主窗口句柄会在 Show 前为扫码初始化提前创建；Show 后再刷新一次，确保任务栏按钮拿到正确图标。
             WindowsShellIdentityService.ApplyWindowIdentity(mainWindow);
             WindowsShellIdentityService.ApplyWindowIcon(mainWindow);
+            if (mainWindow.IsStartupBlockedByAppUpdate)
+            {
+                // 已显示阻断窗口后释放启动闸门；运行中互斥仍会保护单实例。
+                ShutdownMode = ShutdownMode.OnMainWindowClose;
+                ScheduleStartupGateReleaseAfterClickGuardDelay();
+                base.OnStartup(e);
+                return;
+            }
+
             mainWindow.ActivateForScannerInput();
             await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
             mainWindow.ContinueStartupAfterShown();
             ShutdownMode = ShutdownMode.OnMainWindowClose;
-            _ = ReleaseStartupGateAfterClickGuardDelayAsync();
+            ScheduleStartupGateReleaseAfterClickGuardDelay();
 
             base.OnStartup(e);
         }
@@ -139,6 +150,17 @@ public partial class App : Application
         {
             base.OnExit(e);
         }
+    }
+
+    private void ScheduleStartupGateReleaseAfterClickGuardDelay()
+    {
+        if (_startupGateReleaseScheduled)
+        {
+            return;
+        }
+
+        _startupGateReleaseScheduled = true;
+        _ = ReleaseStartupGateAfterClickGuardDelayAsync();
     }
 
     private async Task ReleaseStartupGateAfterClickGuardDelayAsync()

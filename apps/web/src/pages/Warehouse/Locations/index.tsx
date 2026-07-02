@@ -898,7 +898,7 @@ export default function WarehouseLocationsPage() {
         onOk={() => void handleSave()}
         onCancel={handleCloseModal}
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
         okText={t('common.save')}
         cancelText={t('common.cancel')}
       >

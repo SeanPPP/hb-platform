@@ -412,7 +412,7 @@ export default function SystemCenterLogsPage() {
           setDetailOpen(false)
           setDetailRecord(null)
         }}
-        destroyOnClose
+        destroyOnHidden
       >
         {detailRecord ? (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>

@@ -33,16 +33,21 @@ const sharedDetailLoadStateFile = path.resolve(process.cwd(), 'src/utils/detailL
 const zhFile = path.resolve(process.cwd(), 'src/i18n/locales/zh.json')
 const enFile = path.resolve(process.cwd(), 'src/i18n/locales/en.json')
 
-const detailSource = readFileSync(detailFile, 'utf8')
-const pickingListSource = readFileSync(pickingListFile, 'utf8')
-const invoiceSource = readFileSync(invoiceFile, 'utf8')
-const containerDetailSource = readFileSync(containerDetailFile, 'utf8')
-const localSupplierInvoiceDetailSource = readFileSync(localSupplierInvoiceDetailFile, 'utf8')
-const localSupplierInvoiceEditSource = readFileSync(localSupplierInvoiceEditFile, 'utf8')
-const detailLoadStateSource = readFileSync(detailLoadStateFile, 'utf8')
-const sharedDetailLoadStateSource = readFileSync(sharedDetailLoadStateFile, 'utf8')
-const zhSource = readFileSync(zhFile, 'utf8')
-const enSource = readFileSync(enFile, 'utf8')
+function readSource(file: string) {
+  // 统一换行，避免 Windows CRLF 让源码契约断言误判。
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+}
+
+const detailSource = readSource(detailFile)
+const pickingListSource = readSource(pickingListFile)
+const invoiceSource = readSource(invoiceFile)
+const containerDetailSource = readSource(containerDetailFile)
+const localSupplierInvoiceDetailSource = readSource(localSupplierInvoiceDetailFile)
+const localSupplierInvoiceEditSource = readSource(localSupplierInvoiceEditFile)
+const detailLoadStateSource = readSource(detailLoadStateFile)
+const sharedDetailLoadStateSource = readSource(sharedDetailLoadStateFile)
+const zhSource = readSource(zhFile)
+const enSource = readSource(enFile)
 
 async function main() {
   const failures: string[] = []

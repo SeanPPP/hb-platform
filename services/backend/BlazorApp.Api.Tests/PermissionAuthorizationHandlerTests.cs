@@ -74,6 +74,37 @@ public class PermissionAuthorizationHandlerTests
     }
 
     [Fact]
+    public async Task ViewAppDownloadsPolicy_AllowsManageAppDownloadsDatabasePermissionAlias()
+    {
+        var roleService = new Mock<IRoleService>();
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.System.ViewAppDownloads))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", Permissions.System.ManageAppDownloads))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        var handler = CreateHandler(roleService);
+        var requirement = new PermissionRequirement(Permissions.System.ViewAppDownloads);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", Permissions.System.ViewAppDownloads),
+            Times.Once
+        );
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", Permissions.System.ManageAppDownloads),
+            Times.Once
+        );
+    }
+
+    [Fact]
     public async Task LocalPurchaseViewPolicy_DeniesWithoutCanonicalOrLegacyPermission()
     {
         var roleService = new Mock<IRoleService>();

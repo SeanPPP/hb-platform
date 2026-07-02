@@ -1487,7 +1487,7 @@ export default function StoreOrderImportPriceVariancePage() {
         confirmLoading={batchWarehouseImportPriceSaving}
         maskClosable={!batchWarehouseImportPriceSaving}
         closable={!batchWarehouseImportPriceSaving}
-        destroyOnClose
+        destroyOnHidden
         onCancel={closeBatchWarehouseImportPriceModal}
         onOk={() => void handleBatchWarehouseImportPriceSave()}
       >
@@ -1530,7 +1530,7 @@ export default function StoreOrderImportPriceVariancePage() {
         })}
         width={1280}
         footer={null}
-        destroyOnClose
+        destroyOnHidden
         onCancel={closeProductDetails}
       >
         <Row gutter={16} style={{ marginBottom: 16 }}>

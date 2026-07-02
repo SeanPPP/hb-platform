@@ -1,4 +1,4 @@
-﻿import { AppstoreOutlined, CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, CloudSyncOutlined, CopyOutlined, DownloadOutlined, EditOutlined, GiftOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -428,7 +428,7 @@ function ProductFormModal({ open, saving, editingItem, suppliers, form, onCancel
 }) {
     const { t } = useTranslation();
     const productTypeOptions = getProductTypeOptions(t);
-    return (<Modal title={editingItem ? t('warehouse.editProductTitle', { name: editingItem.itemNumber || editingItem.name }) : t('warehouse.editProduct')} open={open} width={920} destroyOnClose okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={saving} onCancel={onCancel} onOk={onSubmit}>
+    return (<Modal title={editingItem ? t('warehouse.editProductTitle', { name: editingItem.itemNumber || editingItem.name }) : t('warehouse.editProduct')} open={open} width={920} destroyOnHidden okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={saving} onCancel={onCancel} onOk={onSubmit}>
       <Form form={form} layout="vertical" preserve={false}>
         <Space size={16} style={{ display: 'flex' }} align="start">
           <Form.Item name="supplierCode" label={t('domesticProducts.supplier')} style={{ flex: 1 }} rules={editingItem ? [] : [{ required: true, message: t('domesticProducts.selectSupplier') }]}>
@@ -560,7 +560,7 @@ function SetItemsModal({ open, loading, saving, product, items, canEdit, onCance
           </Button>) : null,
         },
     ];
-    return (<Modal title={getProductDetailsModalTitle(product, t)} open={open} width={1100} destroyOnClose onCancel={onCancel} onOk={onSubmit} okText={t('common.save')} cancelText={t('common.close')} confirmLoading={saving} okButtonProps={{ disabled: !canEdit }}>
+    return (<Modal title={getProductDetailsModalTitle(product, t)} open={open} width={1100} destroyOnHidden onCancel={onCancel} onOk={onSubmit} okText={t('common.save')} cancelText={t('common.close')} confirmLoading={saving} okButtonProps={{ disabled: !canEdit }}>
       <Space style={{ marginBottom: 16 }}>
         <Typography.Text type="secondary">
           {getProductDetailsHint(product?.productType, t)}
@@ -1921,7 +1921,7 @@ export default function WarehouseProductsPage() {
             setSetItemsDraft((current) => current.map((item) => (item.id === rowId ? { ...item, [field]: value } : item)));
         }} onSubmit={() => void handleSaveSetItems()}/>
 
-      <Modal title={t('warehouse.batchEditTitle', '批量修改 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchEditOpen} width={680} destroyOnClose okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchEditSaving} onCancel={() => {
+      <Modal title={t('warehouse.batchEditTitle', '批量修改 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchEditOpen} width={680} destroyOnHidden okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchEditSaving} onCancel={() => {
             setBatchEditOpen(false);
             batchEditForm.resetFields();
         }} onOk={() => void handleBatchEditSave()}>
@@ -1960,7 +1960,7 @@ export default function WarehouseProductsPage() {
         </Form>
       </Modal>
 
-      <Modal title={t('warehouse.batchCategoryTitle', '批量设置分类 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchCategoryOpen} width={640} destroyOnClose okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchCategorySaving} okButtonProps={{ disabled: !targetCategoryGuid || !categories.length }} onCancel={() => {
+      <Modal title={t('warehouse.batchCategoryTitle', '批量设置分类 ({{count}} 个商品)', { count: selectedRowKeys.length })} open={batchCategoryOpen} width={640} destroyOnHidden okText={t('common.save')} cancelText={t('common.cancel')} confirmLoading={batchCategorySaving} okButtonProps={{ disabled: !targetCategoryGuid || !categories.length }} onCancel={() => {
             setBatchCategoryOpen(false);
             setTargetCategoryGuid(undefined);
         }} onOk={() => void handleBatchCategorySave()}>

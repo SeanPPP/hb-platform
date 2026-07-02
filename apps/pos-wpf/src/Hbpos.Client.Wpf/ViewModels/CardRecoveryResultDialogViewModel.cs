@@ -26,7 +26,11 @@ public sealed class CardRecoveryResultDialogViewModel
         DateTimeOffset timestamp,
         IEnumerable<ReceiptPreviewRow>? receiptPreviewRows = null,
         bool canPrintReceipt = false,
-        string printButtonText = "Print receipt")
+        string printButtonText = "Print receipt",
+        bool canRetryRecovery = false,
+        string retryButtonText = "Retry recovery",
+        bool canManualConfirm = false,
+        string manualConfirmButtonText = "Confirm checked and continue")
     {
         Title = title;
         Message = message;
@@ -40,6 +44,10 @@ public sealed class CardRecoveryResultDialogViewModel
         Timestamp = timestamp;
         CanPrintReceipt = canPrintReceipt;
         PrintButtonText = printButtonText;
+        CanRetryRecovery = canRetryRecovery;
+        RetryButtonText = retryButtonText;
+        CanManualConfirm = canManualConfirm;
+        ManualConfirmButtonText = manualConfirmButtonText;
         ReceiptPreviewRows = new ObservableCollection<ReceiptPreviewRow>(receiptPreviewRows ?? []);
     }
 
@@ -68,6 +76,14 @@ public sealed class CardRecoveryResultDialogViewModel
     public bool CanPrintReceipt { get; }
 
     public string PrintButtonText { get; }
+
+    public bool CanRetryRecovery { get; }
+
+    public string RetryButtonText { get; }
+
+    public bool CanManualConfirm { get; }
+
+    public string ManualConfirmButtonText { get; }
 
     public bool HasReceiptPreview => ReceiptPreviewRows.Count > 0;
 

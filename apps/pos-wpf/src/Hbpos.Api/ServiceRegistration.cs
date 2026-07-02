@@ -10,6 +10,7 @@ public static class ServiceRegistration
         IConfiguration? configuration = null)
     {
         services.AddOptions<SquareWebhookOptions>();
+        services.AddOptions<AppUpdateOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -28,6 +29,7 @@ public static class ServiceRegistration
             });
             services.Configure<SquareWebhookOptions>(configuration.GetSection("Square"));
             services.Configure<SquareTerminalRestOptions>(configuration.GetSection("Square"));
+            services.Configure<AppUpdateOptions>(configuration.GetSection("AppUpdate"));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -36,6 +38,7 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         services.AddScoped<ICashierService, CashierService>();
         services.AddScoped<ICatalogService, CatalogService>();
+        services.AddScoped<IPromotionRuleService, PromotionRuleService>();
         services.AddScoped<IAdvertisementPlaybackService, AdvertisementPlaybackService>();
         services.AddScoped<IStoreSchemaSqlExecutor, SqlSugarStoreSchemaSqlExecutor>();
         services.AddScoped<IStoreSchemaInitializer, SqlSugarStoreSchemaInitializer>();
@@ -86,6 +89,11 @@ public static class ServiceRegistration
         services.AddSingleton<IPriceIndexBuilder, PriceIndexBuilder>();
         services.AddSingleton<IOrderSyncPlanner, OrderSyncPlanner>();
         services.AddScoped<IStoreVoucherReservationService, SqlSugarStoreVoucherReservationService>();
+        services.AddHttpClient<ILocalAppUpdateService, LocalAppUpdateService>(client =>
+        {
+            // 本地 WPF 更新检查不应继承 HttpClient 默认 100 秒超时，避免 POS API 线程长时间挂起。
+            client.Timeout = TimeSpan.FromSeconds(15);
+        });
 
         return services;
     }

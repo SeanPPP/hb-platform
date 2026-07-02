@@ -20,6 +20,20 @@ public interface ILinklyTerminalClient
         CardTerminalSettings settings,
         CancellationToken cancellationToken = default);
 
+    Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default);
+
+    Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default);
+
     Task<PaymentAuthorizationResult> RefundAsync(
         decimal amount,
         PosSessionState session,
@@ -204,6 +218,42 @@ public sealed class LinklyTerminalClient(
             settings,
             originalReference: null,
             cancellationToken);
+    }
+
+    public Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default)
+    {
+        return RunTransactionAsync(
+            TransactionType.PurchaseCash,
+            amount,
+            session,
+            settings,
+            txnRef,
+            cancellationToken);
+    }
+
+    public Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default)
+    {
+        _ = session;
+        var normalizedTxnRef = NormalizeReference(txnRef);
+        return string.IsNullOrWhiteSpace(normalizedTxnRef)
+            ? Task.FromResult(new PaymentAuthorizationResult(false, null, T("linkly.local.missingTxnRef", "ANZ Linkly transaction reference is missing.")))
+            : TryRecoverLastTransactionAsync(
+                settings,
+                amount,
+                normalizedTxnRef,
+                [],
+                T("linkly.local.recoveryFailed", "ANZ Linkly recovery could not confirm the previous transaction."),
+                cancellationToken);
     }
 
     public Task<PaymentAuthorizationResult> RefundAsync(
@@ -782,8 +832,8 @@ public sealed class LinklyTerminalClient(
         var txnRef = string.IsNullOrWhiteSpace(response.TxnRef) ? requestedTxnRef : response.TxnRef.Trim();
         var transaction = ToCardTransaction(response, amount, txnRef, receipts);
         return response.Success
-            ? new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction])
-            : new PaymentAuthorizationResult(false, $"ANZ:{txnRef}", FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction]);
+            ? new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText)
+            : new PaymentAuthorizationResult(false, $"ANZ:{txnRef}", FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText);
     }
 
     private PaymentAuthorizationResult ToAuthorizationResult(
@@ -796,8 +846,8 @@ public sealed class LinklyTerminalClient(
         var txnRef = string.IsNullOrWhiteSpace(response.TxnRef) ? requestedTxnRef : response.TxnRef.Trim();
         var transaction = ToCardTransaction(response, amount, txnRef, receipts);
         return response.Success && response.LastTransactionSuccess
-            ? new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction])
-            : new PaymentAuthorizationResult(false, $"ANZ:{txnRef}", FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction]);
+            ? new PaymentAuthorizationResult(true, $"ANZ:{txnRef}", "ANZ Linkly", amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText)
+            : new PaymentAuthorizationResult(false, $"ANZ:{txnRef}", FormatResponseMessage(response.ResponseText, response.ResponseCode), amount, [transaction], ProcessorName, TxnRef: txnRef, ResponseCode: transaction.ResponseCode, ResponseText: transaction.ResponseText);
     }
 
     private static CardTransactionDto ToCardTransaction(
@@ -870,7 +920,7 @@ public sealed class LinklyTerminalClient(
         return timeoutCts;
     }
 
-    private static string BuildTxnRef(PosSessionState session)
+    internal static string BuildTxnRef(PosSessionState session)
     {
         var device = new string(session.DeviceCode.Where(char.IsLetterOrDigit).ToArray());
         if (string.IsNullOrWhiteSpace(device))

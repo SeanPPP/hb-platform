@@ -1,3 +1,5 @@
+export type PromotionScopeType = 'StoreOnly' | 'MultiStore' | 'Headquarters'
+
 export interface PromotionListDto {
   id: string
   name: string
@@ -10,6 +12,9 @@ export interface PromotionListDto {
   fixedPrice: number
   productsCount: number
   storesCount: number
+  scopeType?: PromotionScopeType | null
+  canEditInStoreScope?: boolean
+  canCopyToStore?: boolean
 }
 
 export interface PromotionProductItemDto {
@@ -37,6 +42,9 @@ export interface PromotionDetailDto {
   maxApplicationsPerOrder?: number
   products: PromotionProductItemDto[]
   stores: PromotionStoreItemDto[]
+  scopeType?: PromotionScopeType | null
+  canEditInStoreScope?: boolean
+  canCopyToStore?: boolean
 }
 
 export interface CreatePromotionDto {

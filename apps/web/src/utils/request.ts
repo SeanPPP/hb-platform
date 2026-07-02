@@ -210,9 +210,22 @@ async function request<T>(url: string, options: RequestOptions = {}): Promise<T>
 }
 
 export function unwrapApiData<T>(payload: ApiResponse<T> | T): T {
-  if (payload && typeof payload === 'object' && 'data' in payload) {
-    return (payload as ApiResponse<T>).data as T
+  if (payload && typeof payload === 'object') {
+    const response = payload as ApiResponse<T>
+    const success = response.success ?? response.isSuccess
+
+    // 后端业务失败可能仍返回 HTTP 200，必须转成异常，避免页面误报“保存成功”。
+    if (success === false) {
+      const code = response.code ?? response.errorCode
+      const message = response.message || '请求失败'
+      throw new RequestError(code ? `${code}: ${message}` : message, 200, payload)
+    }
+
+    if ('data' in payload) {
+      return response.data as T
+    }
   }
+
   return payload as T
 }
 

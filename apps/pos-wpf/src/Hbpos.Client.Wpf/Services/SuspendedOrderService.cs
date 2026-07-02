@@ -56,7 +56,8 @@ public sealed class SuspendedOrderService(
                 line.DiscountPercent,
                 CalculateActualAmount(line),
                 line.PriceSource,
-                line.PriceSourceLabel)
+                line.PriceSourceLabel,
+                line.DiscountSource)
             {
                 Kind = line.Kind,
                 ReturnSourceKey = line.ReturnSourceKey,
@@ -139,7 +140,8 @@ public sealed class SuspendedOrderService(
                 line.ReturnSourceKey,
                 line.OriginalOrderGuid,
                 line.OriginalOrderDetailGuid,
-                line.ReturnReason))
+                line.ReturnReason,
+                line.DiscountSource))
             .ToArray()));
         cart.AddReturnPaymentCapacities(order.ReturnPaymentCapacities);
         await repository.MarkStatusAsync(suspendedOrderGuid, SuspendedOrderStatus.Recalled, cancellationToken);

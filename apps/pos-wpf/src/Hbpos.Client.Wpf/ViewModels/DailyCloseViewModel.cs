@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -14,6 +15,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
     private readonly ILocalizationService? _localization;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private readonly Action? _returnToPos;
     private DailyCloseReport? _currentReport;
     private int _archivePreviewVersion;
@@ -58,12 +61,21 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         IDailyClosePrintService dailyClosePrintService,
         PosSessionState session,
         ILocalizationService? localization = null,
-        Action? returnToPos = null)
+        Action? returnToPos = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
         _session = session;
         _localization = localization;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         _returnToPos = returnToPos;
 
         foreach (var denomination in _dailyCloseService.Denominations)
@@ -144,6 +156,14 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private DateTime BusinessDate => (SelectedDate ?? DateTime.Today).Date;
 
+    partial void OnSessionChanged(PosSessionState value)
+    {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+    }
+
     public Task LoadAsync(CancellationToken cancellationToken = default)
     {
         return RefreshSummaryAsync(cancellationToken);
@@ -178,6 +198,11 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     public async Task SaveAndPrintAsync(CancellationToken cancellationToken = default)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.DailyClose.Save))
+        {
+            return;
+        }
+
         if (!CanSaveAndPrint())
         {
             return;
@@ -253,6 +278,11 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private async Task ReprintSelectedArchiveAsync(CancellationToken cancellationToken = default)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.DailyClose.Reprint))
+        {
+            return;
+        }
+
         if (!CanReprintSelectedArchive())
         {
             return;
@@ -507,6 +537,19 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
             _localization?.CurrentCulture ?? CultureInfo.CurrentCulture,
             _localization?.T(key) ?? fallback,
             args);
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        // 中文注释：日结保存会写本地归档，执行前必须再次校验权限。
+        StatusMessage = message;
+        return false;
     }
 
     public void Dispose()

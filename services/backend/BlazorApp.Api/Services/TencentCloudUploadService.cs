@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -30,9 +31,143 @@ namespace BlazorApp.Api.Services
             _timeProvider = timeProvider ?? TimeProvider.System;
         }
 
+        public bool HasRequiredConfiguration()
+        {
+            return !string.IsNullOrWhiteSpace(_settings.SecretId)
+                && !string.IsNullOrWhiteSpace(_settings.SecretKey)
+                && !string.IsNullOrWhiteSpace(_settings.BucketName)
+                && !string.IsNullOrWhiteSpace(_settings.Region);
+        }
+
+        public bool TryMatchPublicDownloadUrl(
+            string? downloadUrl,
+            string objectKey,
+            out string normalizedDownloadUrl
+        )
+        {
+            normalizedDownloadUrl = string.Empty;
+            if (!HasRequiredConfiguration())
+            {
+                return false;
+            }
+
+            normalizedDownloadUrl = downloadUrl?.Trim() ?? string.Empty;
+            if (
+                !Uri.TryCreate(normalizedDownloadUrl, UriKind.Absolute, out var actualUri)
+                || !Uri.TryCreate(GeneratePublicUrl(objectKey), UriKind.Absolute, out var expectedUri)
+            )
+            {
+                return false;
+            }
+
+            var isMatched = string.Equals(
+                    actualUri.Scheme,
+                    expectedUri.Scheme,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && string.Equals(
+                    actualUri.Host,
+                    expectedUri.Host,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && actualUri.Port == expectedUri.Port
+                && string.Equals(
+                    Uri.UnescapeDataString(actualUri.AbsolutePath.TrimStart('/')),
+                    Uri.UnescapeDataString(expectedUri.AbsolutePath.TrimStart('/')),
+                    StringComparison.Ordinal
+                );
+            if (!isMatched)
+            {
+                return false;
+            }
+
+            // 中文注释：一旦确认 bucket/region/objectKey 命中，就只持久化公开下载地址，避免把临时签名 query 或 fragment 写入发布记录。
+            normalizedDownloadUrl = expectedUri.GetLeftPart(UriPartial.Path);
+            return true;
+        }
+
+        public async Task<ApiResponse<CosObjectMetadata>> GetObjectMetadataAsync(
+            string objectKey,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if (!HasRequiredConfiguration())
+            {
+                return ApiResponse<CosObjectMetadata>.Error(
+                    "COS 配置不完整",
+                    "COS_NOT_CONFIGURED"
+                );
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Head,
+                    GeneratePublicUrl(objectKey)
+                );
+                using var response = await _httpClient.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken
+                );
+
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    return ApiResponse<CosObjectMetadata>.Error(
+                        "COS 对象不存在",
+                        "COS_OBJECT_NOT_FOUND"
+                    );
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return ApiResponse<CosObjectMetadata>.Error(
+                        $"COS 对象元数据校验失败，状态码：{(int)response.StatusCode}",
+                        "COS_OBJECT_METADATA_UNAVAILABLE"
+                    );
+                }
+
+                var sha256 = TryGetHeaderValue(response, "x-cos-meta-sha256");
+                return ApiResponse<CosObjectMetadata>.OK(
+                    new CosObjectMetadata
+                    {
+                        ContentLength = response.Content.Headers.ContentLength,
+                        Sha256 = string.IsNullOrWhiteSpace(sha256)
+                            ? null
+                            : sha256.Trim().ToLowerInvariant(),
+                    }
+                );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "读取 COS 对象元数据失败，ObjectKey: {ObjectKey}", objectKey);
+                return ApiResponse<CosObjectMetadata>.Error(
+                    "COS 对象元数据校验失败",
+                    "COS_OBJECT_METADATA_UNAVAILABLE",
+                    ex.Message
+                );
+            }
+        }
+
         private string GeneratePublicUrl(string objectKey)
         {
             return $"https://{_settings.BucketName}.cos.{_settings.Region}.myqcloud.com/{objectKey}";
+        }
+
+        private static string? TryGetHeaderValue(HttpResponseMessage response, string headerName)
+        {
+            if (response.Headers.TryGetValues(headerName, out var headerValues))
+            {
+                return headerValues.FirstOrDefault();
+            }
+
+            return response.Content.Headers.TryGetValues(headerName, out var contentHeaderValues)
+                ? contentHeaderValues.FirstOrDefault()
+                : null;
         }
 
         private string ExtractUploadIdFromResponse(string response)
@@ -73,15 +208,36 @@ namespace BlazorApp.Api.Services
         public DirectUploadSignature GetDirectUploadSignature(
             string objectKey,
             string contentType,
-            long expiresInSeconds = 3600
+            long expiresInSeconds = 3600,
+            IReadOnlyDictionary<string, string>? additionalHeaders = null
         )
         {
-            var url = GeneratePresignedPutUrl(objectKey, contentType, expiresInSeconds);
+            var uploadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Content-Type"] = contentType,
+            };
+            if (additionalHeaders is not null)
+            {
+                foreach (var header in additionalHeaders)
+                {
+                    if (!string.IsNullOrWhiteSpace(header.Key) && !string.IsNullOrWhiteSpace(header.Value))
+                    {
+                        uploadHeaders[header.Key.Trim()] = header.Value.Trim();
+                    }
+                }
+            }
+
+            var url = GeneratePresignedPutUrl(
+                objectKey,
+                contentType,
+                expiresInSeconds,
+                signedHeaders: uploadHeaders
+            );
             return new DirectUploadSignature
             {
                 Url = url,
                 ObjectKey = objectKey,
-                Headers = new Dictionary<string, string> { ["Content-Type"] = contentType },
+                Headers = uploadHeaders,
             };
         }
 
@@ -312,7 +468,8 @@ namespace BlazorApp.Api.Services
             string contentType,
             long expiresInSeconds,
             string? bucketName = null,
-            string? region = null
+            string? region = null,
+            IReadOnlyDictionary<string, string>? signedHeaders = null
         )
         {
             var bucket = bucketName ?? _settings.BucketName;
@@ -329,13 +486,27 @@ namespace BlazorApp.Api.Services
 
             var keyTime = $"{startTimestamp};{expiredTimestamp}";
             var path = BuildCosCanonicalPath(objectKey);
-            var (headerList, httpHeaders) = BuildCosHeaderSignatureParts(
-                new Dictionary<string, string>
+            var headersToSign = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["content-type"] = contentType,
+                ["host"] = host,
+            };
+            if (signedHeaders is not null)
+            {
+                foreach (var header in signedHeaders)
                 {
-                    ["content-type"] = contentType,
-                    ["host"] = host,
+                    if (
+                        !string.Equals(header.Key, "Host", StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(header.Key)
+                        && !string.IsNullOrWhiteSpace(header.Value)
+                    )
+                    {
+                        headersToSign[header.Key.Trim()] = header.Value.Trim();
+                    }
                 }
-            );
+            }
+
+            var (headerList, httpHeaders) = BuildCosHeaderSignatureParts(headersToSign);
             var authorization = GenerateCosAuthorization(
                 "put",
                 path,
@@ -625,5 +796,12 @@ namespace BlazorApp.Api.Services
         }
 
         #endregion
+
+        public sealed class CosObjectMetadata
+        {
+            public long? ContentLength { get; set; }
+
+            public string? Sha256 { get; set; }
+        }
     }
 }

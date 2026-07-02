@@ -49,6 +49,84 @@ public sealed class RoleServicePermissionTests : IDisposable
     }
 
     [Fact]
+    public void PermissionSeedData_IncludesFineGrainedPosTerminalPermissions()
+    {
+        var requiredCodes = new[]
+        {
+            Permissions.PosTerminal.Sales.View,
+            Permissions.PosTerminal.Sales.AddItem,
+            Permissions.PosTerminal.Sales.AddOpenItem,
+            Permissions.PosTerminal.Sales.RemoveLine,
+            Permissions.PosTerminal.Sales.ChangeQuantity,
+            Permissions.PosTerminal.Sales.ChangePrice,
+            Permissions.PosTerminal.Sales.LineDiscount,
+            Permissions.PosTerminal.Sales.OrderDiscount,
+            Permissions.PosTerminal.Sales.ClearCart,
+            Permissions.PosTerminal.Sales.HoldOrder,
+            Permissions.PosTerminal.Sales.RecallOrder,
+            Permissions.PosTerminal.Payment.View,
+            Permissions.PosTerminal.Payment.TakeCash,
+            Permissions.PosTerminal.Payment.TakeCard,
+            Permissions.PosTerminal.Payment.TakeVoucher,
+            Permissions.PosTerminal.Payment.RemoveTender,
+            Permissions.PosTerminal.Payment.Confirm,
+            Permissions.PosTerminal.Returns.View,
+            Permissions.PosTerminal.Returns.AddReceiptLine,
+            Permissions.PosTerminal.Returns.AddNoReceiptItem,
+            Permissions.PosTerminal.Returns.Confirm,
+            Permissions.PosTerminal.SpecialProducts.View,
+            Permissions.PosTerminal.SpecialProducts.AddToCart,
+            Permissions.PosTerminal.SpecialProducts.Manage,
+            Permissions.PosTerminal.History.View,
+            Permissions.PosTerminal.History.Recall,
+            Permissions.PosTerminal.History.Reprint,
+            Permissions.PosTerminal.DailyClose.View,
+            Permissions.PosTerminal.DailyClose.Save,
+            Permissions.PosTerminal.DailyClose.Reprint,
+            Permissions.PosTerminal.Installments.View,
+            Permissions.PosTerminal.Installments.Create,
+            Permissions.PosTerminal.Installments.AddRepayment,
+            Permissions.PosTerminal.Installments.Cancel,
+            Permissions.PosTerminal.Installments.ConfirmPickup,
+            Permissions.PosTerminal.Settings.View,
+            Permissions.PosTerminal.Settings.PaymentTerminal,
+            Permissions.PosTerminal.Settings.ReceiptPrinter,
+            Permissions.PosTerminal.Settings.CatalogDownload,
+            Permissions.PosTerminal.Settings.CatalogReset,
+            Permissions.PosTerminal.Settings.TestDataReset,
+            Permissions.PosTerminal.Settings.DeviceRegistration,
+            Permissions.PosTerminal.Settings.AppUpdate,
+            Permissions.PosTerminal.CashDrawer.Open,
+            Permissions.PosTerminal.Receipt.PrintLast,
+            Permissions.PosTerminal.CustomerDisplay.Manage,
+            Permissions.PosTerminal.System.Sync,
+        };
+        var seedsByCode = PermissionSeedData.AllPermissions.ToDictionary(
+            seed => seed.Code,
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        Assert.True(requiredCodes.Length > 5);
+        foreach (var code in requiredCodes)
+        {
+            var seed = Assert.Contains(code, seedsByCode);
+            Assert.StartsWith("POS ", seed.Category);
+            Assert.Contains("收银端", seed.Description);
+            Assert.False(string.IsNullOrWhiteSpace(seed.Name));
+        }
+
+        Assert.DoesNotContain(
+            PermissionSeedData.AllPermissions,
+            seed => seed.Code.Contains("History.Refund", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.Sell");
+        Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.Discount");
+        Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.OpenCashDrawer");
+        Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.DailyClose");
+        Assert.DoesNotContain(PermissionSeedData.AllPermissions, seed => seed.Code == "Permissions.PosTerminal.ManageDevices");
+    }
+
+    [Fact]
     public async Task UserHasPermissionAsync_AdminRoleImplicitlyGrantsAnyPermission()
     {
         await SeedUserWithRoleAsync("user-1", "role-admin", "Admin");

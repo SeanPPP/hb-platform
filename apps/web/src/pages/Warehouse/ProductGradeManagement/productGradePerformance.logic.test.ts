@@ -40,10 +40,15 @@ const serviceFile = path.resolve(process.cwd(), 'src/services/productGradeServic
 const typeFile = path.resolve(process.cwd(), 'src/types/productGrade.ts')
 const packageFile = path.resolve(process.cwd(), 'package.json')
 
-const pageSource = readFileSync(pageFile, 'utf8')
-const serviceSource = readFileSync(serviceFile, 'utf8')
-const typeSource = readFileSync(typeFile, 'utf8')
-const packageSource = readFileSync(packageFile, 'utf8')
+function readSource(file: string) {
+  // 统一换行，避免 Windows CRLF 让源码契约断言误判。
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+}
+
+const pageSource = readSource(pageFile)
+const serviceSource = readSource(serviceFile)
+const typeSource = readSource(typeFile)
+const packageSource = readSource(packageFile)
 
 async function main() {
   const failures: string[] = []

@@ -71,8 +71,11 @@
     <Compile Include="StoreOrderPasteReplaceJobServiceTests.cs" />
     <Compile Include="StoreOrderContactAndInvoiceTests.cs" />
     <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
+    <Compile Include="PaymentTerminalSettingsServiceTests.cs" />
+    <Compile Include="PaymentTerminalSettingsSchemaMigratorTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />
     <Compile Include="AdvertisementReactServiceTests.cs" />
+    <Compile Include="CashRegisterUserReactServiceTests.cs" />
     <Compile Include="PromotionReactServiceTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />
     <Compile Include="ProductStoreRecordsTests.cs" />
@@ -100,6 +103,8 @@
     <Compile Include="TencentCosMobileAppBuildArtifactMirrorTests.cs" />
     <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />
     <Compile Include="MobileAppBuildServiceTests.cs" />
+    <Compile Include="WpfAppReleaseServiceTests.cs" />
+    <Compile Include="WpfAppReleasesControllerTests.cs" />
     <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />

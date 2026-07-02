@@ -50,14 +50,16 @@ namespace BlazorApp.Api.Services.React
             if (!string.IsNullOrEmpty(userGuid))
             {
                 var assignment = await _db.Queryable<UserStore>()
-                    .Where(us => us.UserGUID == userGuid)
+                    .Where(us => us.UserGUID == userGuid && !us.IsDeleted)
                     .OrderBy(us => us.IsPrimary ? 0 : 1)
                     .FirstAsync();
 
                 if (assignment != null)
                 {
                     var store = await _db.Queryable<Store>()
-                        .Where(s => s.StoreGUID == assignment.StoreGUID)
+                        .Where(s =>
+                            s.StoreGUID == assignment.StoreGUID && s.IsActive && !s.IsDeleted
+                        )
                         .FirstAsync();
                     if (store != null && !string.IsNullOrEmpty(store.StoreCode))
                     {
@@ -77,16 +79,17 @@ namespace BlazorApp.Api.Services.React
             if (string.IsNullOrEmpty(userGuid))
                 return result;
             var storeGuids = await _db.Queryable<UserStore>()
-                .Where(us => us.UserGUID == userGuid)
+                // 关键逻辑：收银条码管理沿用“可管理门店”语义，当前账号只有 primary 分店才作为管理范围。
+                .Where(us => us.UserGUID == userGuid && !us.IsDeleted && us.IsPrimary)
                 .Select(us => us.StoreGUID)
                 .ToListAsync();
             if (!storeGuids.Any())
                 return result;
             var codes = await _db.Queryable<Store>()
-                .Where(s => storeGuids.Contains(s.StoreGUID))
+                .Where(s => storeGuids.Contains(s.StoreGUID) && s.IsActive && !s.IsDeleted)
                 .Select(s => s.StoreCode)
                 .ToListAsync();
-            result.AddRange(codes.Where(c => !string.IsNullOrEmpty(c)));
+            result.AddRange(NormalizeStoreCodes(codes));
             return result;
         }
 
@@ -105,7 +108,222 @@ namespace BlazorApp.Api.Services.React
             var user = _httpContextAccessor.HttpContext?.User;
             if (user == null)
                 return false;
-            return HasRole(user, "Admin") || HasRole(user, "WarehouseManager");
+            return HasRole(user, "Admin");
+        }
+
+        private static List<string> NormalizeStoreCodes(IEnumerable<string?> storeCodes)
+        {
+            return storeCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private sealed class LinkedUserStoreRow
+        {
+            public string UserGUID { get; set; } = string.Empty;
+            public string? StoreCode { get; set; }
+            public string? StoreName { get; set; }
+            public bool IsPrimary { get; set; }
+        }
+
+        private sealed record LinkedUserStoreDisplay(string StoreCode, string StoreName);
+
+        private async Task<Dictionary<string, LinkedUserStoreDisplay>> GetLinkedUserStoreDisplaysAsync(
+            IEnumerable<string?> userGuids)
+        {
+            var normalizedUserGuids = userGuids
+                .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
+                .Select(userGuid => userGuid!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (!normalizedUserGuids.Any())
+            {
+                return new Dictionary<string, LinkedUserStoreDisplay>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var rows = await _db.Queryable<UserStore>()
+                .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+                .Where((us, s) =>
+                    normalizedUserGuids.Contains(us.UserGUID) &&
+                    !us.IsDeleted &&
+                    s.IsActive &&
+                    !s.IsDeleted)
+                .Select((us, s) => new LinkedUserStoreRow
+                {
+                    UserGUID = us.UserGUID,
+                    StoreCode = s.StoreCode,
+                    StoreName = s.StoreName,
+                    IsPrimary = us.IsPrimary,
+                })
+                .ToListAsync();
+
+            // 关键逻辑：界面主门店展示按后台用户关联分店生成，旧 CashRegisterUsers.StoreCode 只保留为兼容字段。
+            return rows
+                .Where(row => !string.IsNullOrWhiteSpace(row.UserGUID))
+                .GroupBy(row => row.UserGUID, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group =>
+                    {
+                        var orderedRows = group
+                            .OrderByDescending(row => row.IsPrimary)
+                            .ThenBy(row => row.StoreCode, StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var storeCodes = NormalizeStoreCodes(orderedRows.Select(row => row.StoreCode));
+                        var storeNames = orderedRows
+                            .Select(row => string.IsNullOrWhiteSpace(row.StoreName)
+                                ? row.StoreCode
+                                : row.StoreName)
+                            .Where(name => !string.IsNullOrWhiteSpace(name))
+                            .Select(name => name!.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        return new LinkedUserStoreDisplay(
+                            string.Join(", ", storeCodes),
+                            string.Join(", ", storeNames));
+                    },
+                    StringComparer.OrdinalIgnoreCase);
+        }
+
+        private async Task<List<string>> GetUserGuidsForStoreCodesAsync(
+            IEnumerable<string?> storeCodes
+        )
+        {
+            var normalizedStoreCodes = NormalizeStoreCodes(storeCodes);
+            if (!normalizedStoreCodes.Any())
+            {
+                return new List<string>();
+            }
+
+            return (
+                    await _db.Queryable<UserStore>()
+                        .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+                        .Where(
+                            (us, s) =>
+                                normalizedStoreCodes.Contains(s.StoreCode)
+                                && !us.IsDeleted
+                                && s.IsActive
+                                && !s.IsDeleted
+                        )
+                        .Select((us, s) => us.UserGUID)
+                        .ToListAsync()
+                )
+                .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private async Task<List<string>> GetUserGuidsForStoreCodeFilterAsync(
+            string filterValue,
+            string op
+        )
+        {
+            var keyword = filterValue.Trim();
+            if (keyword.Length == 0)
+            {
+                return new List<string>();
+            }
+
+            var query = _db.Queryable<UserStore>()
+                .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+                .Where((us, s) => !us.IsDeleted && s.IsActive && !s.IsDeleted);
+            query = op == "equals"
+                ? query.Where((us, s) => s.StoreCode == keyword)
+                : query.Where((us, s) => s.StoreCode != null && s.StoreCode.Contains(keyword));
+
+            return (await query.Select((us, s) => us.UserGUID).ToListAsync())
+                .Where(userGuid => !string.IsNullOrWhiteSpace(userGuid))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        public async Task<ApiResponse<List<CashRegisterUserUserOptionDto>>> GetUserOptionsAsync()
+        {
+            try
+            {
+                var managerStoreCodes = await GetCurrentUserStoreCodesAsync();
+                var isAdmin = IsAdmin();
+
+                var query = _db.Queryable<User>()
+                    .Where(user => user.IsActive && !user.IsDeleted);
+
+                if (!isAdmin)
+                {
+                    // 关键逻辑：收银条码页不能借用 Users.View，候选用户必须沿用本页的可管理门店范围。
+                    var scopedUserGuids = await GetUserGuidsForStoreCodesAsync(managerStoreCodes);
+                    if (!scopedUserGuids.Any())
+                    {
+                        return ApiResponse<List<CashRegisterUserUserOptionDto>>.OK(
+                            new List<CashRegisterUserUserOptionDto>(),
+                            "获取成功");
+                    }
+
+                    query = query.Where(user => scopedUserGuids.Contains(user.UserGUID));
+                }
+
+                var users = await query
+                    .OrderBy(user => user.Username)
+                    .Select(user => new CashRegisterUserUserOptionDto
+                    {
+                        UserGUID = user.UserGUID,
+                        Username = user.Username,
+                        UserFullName = user.FullName,
+                    })
+                    .ToListAsync();
+
+                return ApiResponse<List<CashRegisterUserUserOptionDto>>.OK(users, "获取成功");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "获取收银条码可关联用户失败");
+                return ApiResponse<List<CashRegisterUserUserOptionDto>>.Error("获取可关联用户失败");
+            }
+        }
+
+        private static ISugarQueryable<CashRegisterUser> ApplyLinkedUserScope(
+            ISugarQueryable<CashRegisterUser> query,
+            IReadOnlyCollection<string> userGuids
+        )
+        {
+            if (!userGuids.Any())
+            {
+                return query.Where(_ => false);
+            }
+
+            // 关键逻辑：收银条码旧 StoreCode 只做兼容显示，管理授权按条码关联后台用户的分店关系判断。
+            return query.Where(u => u.UserGUID != null && userGuids.Contains(u.UserGUID));
+        }
+
+        private async Task<ISugarQueryable<CashRegisterUser>> ApplyManagerScopeAsync(
+            ISugarQueryable<CashRegisterUser> query,
+            bool isAdmin,
+            IReadOnlyCollection<string> managerStoreCodes
+        )
+        {
+            if (isAdmin)
+            {
+                return query;
+            }
+
+            return ApplyLinkedUserScope(query, await GetUserGuidsForStoreCodesAsync(managerStoreCodes));
+        }
+
+        private async Task<bool> IsUserInManagerScopeAsync(
+            string userGuid,
+            bool isAdmin,
+            IReadOnlyCollection<string> managerStoreCodes
+        )
+        {
+            if (isAdmin)
+            {
+                return true;
+            }
+
+            var scopedUserGuids = await GetUserGuidsForStoreCodesAsync(managerStoreCodes);
+            return scopedUserGuids.Contains(userGuid, StringComparer.OrdinalIgnoreCase);
         }
 
         public async Task<GridResponseDto<CashRegisterUserListDto>> GetGridDataAsync(
@@ -122,10 +340,7 @@ namespace BlazorApp.Api.Services.React
                 var userStoreCodes = await GetCurrentUserStoreCodesAsync();
                 var isAdmin = IsAdmin();
 
-                if (!isAdmin && userStoreCodes.Any())
-                {
-                    baseQuery = baseQuery.Where(u => userStoreCodes.Contains(u.StoreCode));
-                }
+                baseQuery = await ApplyManagerScopeAsync(baseQuery, isAdmin, userStoreCodes);
 
                 if (request.FilterModel != null && request.FilterModel.Any())
                 {
@@ -145,12 +360,9 @@ namespace BlazorApp.Api.Services.React
                             switch (col)
                             {
                                 case "storeCode":
-                                    if (op == "equals")
-                                        baseQuery = baseQuery.Where(u => u.StoreCode == v);
-                                    else if (op == "contains")
-                                        baseQuery = baseQuery.Where(u =>
-                                            u.StoreCode != null && u.StoreCode.Contains(v)
-                                        );
+                                    var storeFilteredUserGuids =
+                                        await GetUserGuidsForStoreCodeFilterAsync(v, op);
+                                    baseQuery = ApplyLinkedUserScope(baseQuery, storeFilteredUserGuids);
                                     break;
                                 case "operatorUser":
                                     if (op == "equals")
@@ -270,7 +482,8 @@ namespace BlazorApp.Api.Services.React
                     {
                         Id = u.Id,
                         HGUID = u.HGUID ?? string.Empty,
-                        StoreCode = u.StoreCode,
+                        LegacyStoreCode = u.StoreCode,
+                        UserGUID = u.UserGUID,
                         OperatorUser = u.OperatorUser,
                         UserBarcode = u.UserBarcode,
                         LoginRole = u.LoginRole,
@@ -283,25 +496,39 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToList();
 
-                var storeCodes = resultList
-                    .Where(r => !string.IsNullOrEmpty(r.StoreCode))
-                    .Select(r => r.StoreCode)
+                var userGuids = resultList
+                    .Where(r => !string.IsNullOrWhiteSpace(r.UserGUID))
+                    .Select(r => r.UserGUID!)
                     .Distinct()
                     .ToList();
-                if (storeCodes.Any())
+                if (userGuids.Any())
                 {
-                    var stores = await _db.Queryable<Store>()
-                        .Where(s => storeCodes.Contains(s.StoreCode))
+                    var users = await _db.Queryable<User>()
+                        .Where(u => userGuids.Contains(u.UserGUID))
                         .ToListAsync();
-                    var storeDict = stores.ToDictionary(s => s.StoreCode, s => s.StoreName);
+                    var userDict = users.ToDictionary(u => u.UserGUID, StringComparer.OrdinalIgnoreCase);
                     foreach (var item in resultList)
                     {
                         if (
-                            !string.IsNullOrEmpty(item.StoreCode)
-                            && storeDict.TryGetValue(item.StoreCode, out var storeName)
+                            !string.IsNullOrWhiteSpace(item.UserGUID)
+                            && userDict.TryGetValue(item.UserGUID, out var user)
                         )
                         {
-                            item.StoreName = storeName;
+                            item.Username = user.Username;
+                            item.UserFullName = user.FullName;
+                        }
+                    }
+
+                    var storeDisplayDict = await GetLinkedUserStoreDisplaysAsync(userGuids);
+                    foreach (var item in resultList)
+                    {
+                        if (
+                            !string.IsNullOrWhiteSpace(item.UserGUID)
+                            && storeDisplayDict.TryGetValue(item.UserGUID, out var storeDisplay)
+                        )
+                        {
+                            item.StoreCode = storeDisplay.StoreCode;
+                            item.StoreName = storeDisplay.StoreName;
                         }
                     }
                 }
@@ -324,10 +551,7 @@ namespace BlazorApp.Api.Services.React
 
                 var query = _db.Queryable<CashRegisterUser>().Where(u => u.HGUID == hGuid);
 
-                if (!isAdmin && userStoreCodes.Any())
-                {
-                    query = query.Where(u => userStoreCodes.Contains(u.StoreCode));
-                }
+                query = await ApplyManagerScopeAsync(query, isAdmin, userStoreCodes);
 
                 var entity = await query.FirstAsync();
 
@@ -336,21 +560,27 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<CashRegisterUserDetailDto>.Error("收银用户不存在");
                 }
 
-                string? storeName = null;
-                if (!string.IsNullOrEmpty(entity.StoreCode))
+                User? linkedUser = null;
+                if (!string.IsNullOrWhiteSpace(entity.UserGUID))
                 {
-                    var store = await _db.Queryable<Store>()
-                        .Where(s => s.StoreCode == entity.StoreCode)
+                    linkedUser = await _db.Queryable<User>()
+                        .Where(u => u.UserGUID == entity.UserGUID)
                         .FirstAsync();
-                    storeName = store?.StoreName;
                 }
+
+                var storeDisplayDict = await GetLinkedUserStoreDisplaysAsync([entity.UserGUID]);
+                storeDisplayDict.TryGetValue(entity.UserGUID ?? string.Empty, out var storeDisplay);
 
                 var result = new CashRegisterUserDetailDto
                 {
                     Id = entity.Id,
                     HGUID = entity.HGUID ?? string.Empty,
-                    StoreCode = entity.StoreCode,
-                    StoreName = storeName,
+                    StoreCode = storeDisplay?.StoreCode,
+                    StoreName = storeDisplay?.StoreName,
+                    LegacyStoreCode = entity.StoreCode,
+                    UserGUID = entity.UserGUID,
+                    Username = linkedUser?.Username,
+                    UserFullName = linkedUser?.FullName,
                     OperatorUser = entity.OperatorUser,
                     UserBarcode = entity.UserBarcode,
                     LoginRole = entity.LoginRole,
@@ -372,6 +602,40 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private async Task<User?> GetEnabledUserAsync(string? userGuid)
+        {
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return null;
+            }
+
+            return await _db.Queryable<User>()
+                .Where(u => u.UserGUID == userGuid && u.IsActive && !u.IsDeleted)
+                .FirstAsync();
+        }
+
+        private async Task DeactivateOtherActiveCashiersAsync(
+            string? userGuid,
+            string currentHGuid,
+            string updatedBy)
+        {
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return;
+            }
+
+            // 关键逻辑：同一后台用户只保留一条有效收银条码；后续如有并发竞争再补数据库过滤索引。
+            await _db.Updateable<CashRegisterUser>()
+                .SetColumns(u => new CashRegisterUser
+                {
+                    Status = false,
+                    LastModifier = updatedBy,
+                    LastModifyDate = DateTime.UtcNow,
+                })
+                .Where(u => u.UserGUID == userGuid && u.HGUID != currentHGuid && u.Status)
+                .ExecuteCommandAsync();
+        }
+
         public async Task<ApiResponse<CashRegisterUserDetailDto>> CreateAsync(
             CreateCashRegisterUserDto dto,
             string createdBy
@@ -383,17 +647,8 @@ namespace BlazorApp.Api.Services.React
                 var userStoreCode = await GetCurrentUserStoreCodeAsync();
                 var isAdmin = IsAdmin();
 
-                if (!isAdmin && userStoreCodes.Any())
+                if (!isAdmin)
                 {
-                    if (
-                        !string.IsNullOrEmpty(dto.StoreCode)
-                        && !userStoreCodes.Contains(dto.StoreCode)
-                    )
-                    {
-                        return ApiResponse<CashRegisterUserDetailDto>.Error(
-                            "只能创建自己分店的收银用户"
-                        );
-                    }
                     dto.StoreCode = userStoreCode;
                 }
 
@@ -402,18 +657,21 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<CashRegisterUserDetailDto>.Error("分店代码不能为空");
                 }
 
-                if (string.IsNullOrEmpty(dto.UserBarcode))
+                var normalizedUserBarcode = dto.UserBarcode?.Trim();
+                if (string.IsNullOrEmpty(normalizedUserBarcode))
                 {
                     return ApiResponse<CashRegisterUserDetailDto>.Error("用户条码不能为空");
                 }
 
-                var existing = await _db.Queryable<CashRegisterUser>()
-                    .Where(u => u.UserBarcode == dto.UserBarcode)
-                    .FirstAsync();
-
-                if (existing != null)
+                var linkedUser = await GetEnabledUserAsync(dto.UserGUID);
+                if (linkedUser == null)
                 {
-                    return ApiResponse<CashRegisterUserDetailDto>.Error("用户条码已存在");
+                    return ApiResponse<CashRegisterUserDetailDto>.Error("请选择启用的后台用户");
+                }
+
+                if (!await IsUserInManagerScopeAsync(linkedUser.UserGUID, isAdmin, userStoreCodes))
+                {
+                    return ApiResponse<CashRegisterUserDetailDto>.Error("只能管理自己分店关联用户的收银条码");
                 }
 
                 var now = DateTime.UtcNow;
@@ -421,8 +679,9 @@ namespace BlazorApp.Api.Services.React
                 {
                     HGUID = Guid.NewGuid().ToString("N"),
                     StoreCode = dto.StoreCode ?? string.Empty,
+                    UserGUID = linkedUser.UserGUID,
                     OperatorUser = dto.OperatorUser ?? string.Empty,
-                    UserBarcode = dto.UserBarcode ?? string.Empty,
+                    UserBarcode = normalizedUserBarcode,
                     LoginRole = dto.LoginRole ?? string.Empty,
                     Remark = dto.Remark ?? string.Empty,
                     PrintCount = 0,
@@ -433,23 +692,45 @@ namespace BlazorApp.Api.Services.React
                     LastModifyDate = now,
                 };
 
-                await _db.Insertable(entity).ExecuteCommandAsync();
-
-                string? storeName = null;
-                if (!string.IsNullOrEmpty(entity.StoreCode))
+                await _db.Ado.BeginTranAsync();
+                try
                 {
-                    var store = await _db.Queryable<Store>()
-                        .Where(s => s.StoreCode == entity.StoreCode)
+                    var existing = await _db.Queryable<CashRegisterUser>()
+                        .Where(u => u.UserBarcode == entity.UserBarcode && u.Status)
                         .FirstAsync();
-                    storeName = store?.StoreName;
+                    if (existing != null)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<CashRegisterUserDetailDto>.Error("用户条码已存在");
+                    }
+
+                    if (entity.Status)
+                    {
+                        await DeactivateOtherActiveCashiersAsync(entity.UserGUID, entity.HGUID, createdBy);
+                    }
+
+                    await _db.Insertable(entity).ExecuteCommandAsync();
+                    await _db.Ado.CommitTranAsync();
                 }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
+
+                var storeDisplayDict = await GetLinkedUserStoreDisplaysAsync([entity.UserGUID]);
+                storeDisplayDict.TryGetValue(entity.UserGUID ?? string.Empty, out var storeDisplay);
 
                 var result = new CashRegisterUserDetailDto
                 {
                     Id = entity.Id,
                     HGUID = entity.HGUID ?? string.Empty,
-                    StoreCode = entity.StoreCode,
-                    StoreName = storeName,
+                    StoreCode = storeDisplay?.StoreCode,
+                    StoreName = storeDisplay?.StoreName,
+                    LegacyStoreCode = entity.StoreCode,
+                    UserGUID = entity.UserGUID,
+                    Username = linkedUser?.Username,
+                    UserFullName = linkedUser?.FullName,
                     OperatorUser = entity.OperatorUser,
                     UserBarcode = entity.UserBarcode,
                     LoginRole = entity.LoginRole,
@@ -484,10 +765,7 @@ namespace BlazorApp.Api.Services.React
 
                 var query = _db.Queryable<CashRegisterUser>().Where(u => u.HGUID == hGuid);
 
-                if (!isAdmin && userStoreCodes.Any())
-                {
-                    query = query.Where(u => userStoreCodes.Contains(u.StoreCode));
-                }
+                query = await ApplyManagerScopeAsync(query, isAdmin, userStoreCodes);
 
                 var entity = await query.FirstAsync();
 
@@ -496,35 +774,33 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<CashRegisterUserDetailDto>.Error("收银用户不存在");
                 }
 
-                if (!isAdmin && userStoreCodes.Any() && !userStoreCodes.Contains(entity.StoreCode))
+                var normalizedUserBarcode = dto.UserBarcode?.Trim();
+                if (dto.UserBarcode is not null && string.IsNullOrEmpty(normalizedUserBarcode))
                 {
-                    return ApiResponse<CashRegisterUserDetailDto>.Error("没有权限修改此收银用户");
+                    return ApiResponse<CashRegisterUserDetailDto>.Error("用户条码不能为空");
                 }
 
-                if (!string.IsNullOrEmpty(dto.StoreCode))
+                if (!isAdmin)
                 {
-                    if (!isAdmin && userStoreCodes.Any() && !userStoreCodes.Contains(dto.StoreCode))
-                    {
-                        return ApiResponse<CashRegisterUserDetailDto>.Error(
-                            "只能修改自己分店的收银用户"
-                        );
-                    }
+                    entity.StoreCode = await GetCurrentUserStoreCodeAsync() ?? entity.StoreCode;
+                }
+                else if (!string.IsNullOrEmpty(dto.StoreCode))
+                {
                     entity.StoreCode = dto.StoreCode;
                 }
 
-                if (!string.IsNullOrEmpty(dto.UserBarcode) && dto.UserBarcode != entity.UserBarcode)
+                var linkedUser = await GetEnabledUserAsync(dto.UserGUID);
+                if (linkedUser == null)
                 {
-                    var existing = await _db.Queryable<CashRegisterUser>()
-                        .Where(u => u.UserBarcode == dto.UserBarcode && u.HGUID != hGuid)
-                        .FirstAsync();
-
-                    if (existing != null)
-                    {
-                        return ApiResponse<CashRegisterUserDetailDto>.Error("用户条码已存在");
-                    }
-                    entity.UserBarcode = dto.UserBarcode;
+                    return ApiResponse<CashRegisterUserDetailDto>.Error("请选择启用的后台用户");
                 }
 
+                if (!await IsUserInManagerScopeAsync(linkedUser.UserGUID, isAdmin, userStoreCodes))
+                {
+                    return ApiResponse<CashRegisterUserDetailDto>.Error("只能管理自己分店关联用户的收银条码");
+                }
+
+                entity.UserGUID = linkedUser.UserGUID;
                 entity.OperatorUser = dto.OperatorUser ?? string.Empty;
                 entity.LoginRole = dto.LoginRole ?? string.Empty;
                 entity.Remark = dto.Remark ?? string.Empty;
@@ -532,23 +808,50 @@ namespace BlazorApp.Api.Services.React
                 entity.LastModifier = updatedBy;
                 entity.LastModifyDate = DateTime.UtcNow;
 
-                await _db.Updateable(entity).ExecuteCommandAsync();
-
-                string? storeName = null;
-                if (!string.IsNullOrEmpty(entity.StoreCode))
+                await _db.Ado.BeginTranAsync();
+                try
                 {
-                    var store = await _db.Queryable<Store>()
-                        .Where(s => s.StoreCode == entity.StoreCode)
-                        .FirstAsync();
-                    storeName = store?.StoreName;
+                    if (!string.IsNullOrEmpty(normalizedUserBarcode) && normalizedUserBarcode != entity.UserBarcode)
+                    {
+                        var existing = await _db.Queryable<CashRegisterUser>()
+                            .Where(u => u.UserBarcode == normalizedUserBarcode && u.HGUID != hGuid && u.Status)
+                            .FirstAsync();
+                        if (existing != null)
+                        {
+                            await _db.Ado.RollbackTranAsync();
+                            return ApiResponse<CashRegisterUserDetailDto>.Error("用户条码已存在");
+                        }
+
+                        entity.UserBarcode = normalizedUserBarcode;
+                    }
+
+                    if (entity.Status)
+                    {
+                        await DeactivateOtherActiveCashiersAsync(entity.UserGUID, entity.HGUID, updatedBy);
+                    }
+
+                    await _db.Updateable(entity).ExecuteCommandAsync();
+                    await _db.Ado.CommitTranAsync();
                 }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
+
+                var storeDisplayDict = await GetLinkedUserStoreDisplaysAsync([entity.UserGUID]);
+                storeDisplayDict.TryGetValue(entity.UserGUID ?? string.Empty, out var storeDisplay);
 
                 var result = new CashRegisterUserDetailDto
                 {
                     Id = entity.Id,
                     HGUID = entity.HGUID ?? string.Empty,
-                    StoreCode = entity.StoreCode,
-                    StoreName = storeName,
+                    StoreCode = storeDisplay?.StoreCode,
+                    StoreName = storeDisplay?.StoreName,
+                    LegacyStoreCode = entity.StoreCode,
+                    UserGUID = entity.UserGUID,
+                    Username = linkedUser.Username,
+                    UserFullName = linkedUser.FullName,
                     OperatorUser = entity.OperatorUser,
                     UserBarcode = entity.UserBarcode,
                     LoginRole = entity.LoginRole,
@@ -579,21 +882,13 @@ namespace BlazorApp.Api.Services.React
 
                 var query = _db.Queryable<CashRegisterUser>().Where(u => u.HGUID == hGuid);
 
-                if (!isAdmin && userStoreCodes.Any())
-                {
-                    query = query.Where(u => userStoreCodes.Contains(u.StoreCode));
-                }
+                query = await ApplyManagerScopeAsync(query, isAdmin, userStoreCodes);
 
                 var entity = await query.FirstAsync();
 
                 if (entity == null)
                 {
                     return ApiResponse<bool>.Error("收银用户不存在");
-                }
-
-                if (!isAdmin && userStoreCodes.Any() && !userStoreCodes.Contains(entity.StoreCode))
-                {
-                    return ApiResponse<bool>.Error("没有权限删除此收银用户");
                 }
 
                 await _db.Deleteable(entity).ExecuteCommandAsync();
@@ -621,10 +916,7 @@ namespace BlazorApp.Api.Services.React
 
                 var query = _db.Queryable<CashRegisterUser>().Where(u => hGuids.Contains(u.HGUID));
 
-                if (!isAdmin && userStoreCodes.Any())
-                {
-                    query = query.Where(u => userStoreCodes.Contains(u.StoreCode));
-                }
+                query = await ApplyManagerScopeAsync(query, isAdmin, userStoreCodes);
 
                 var entities = await query.ToListAsync();
 

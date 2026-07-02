@@ -128,20 +128,7 @@
             <Border x:Name="PromotionPanel" Grid.Row="1" Grid.Column="1" Margin="18,0,0,0" CornerRadius="18" Background="#243B2E" ClipToBounds="True">
                 <Grid>
                     <Rectangle Fill="#243B2E" />
-                    <Image x:Name="AdvertisementImage"
-                           Stretch="UniformToFill"
-                           Visibility="Collapsed"
-                           ImageFailed="AdvertisementImage_ImageFailed" />
-                    <MediaElement x:Name="AdvertisementVideo"
-                                  Stretch="UniformToFill"
-                                  LoadedBehavior="Manual"
-                                  UnloadedBehavior="Manual"
-                                  IsMuted="True"
-                                  Volume="0"
-                                  Visibility="Collapsed"
-                                  MediaEnded="AdvertisementVideo_MediaEnded"
-                                  MediaFailed="AdvertisementVideo_MediaFailed" />
-                    <Rectangle>
+                    <Rectangle x:Name="PromotionFallbackBackground">
                         <Rectangle.Fill>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                                 <GradientStop Color="#315C3D" Offset="0" />
@@ -149,6 +136,19 @@
                             </LinearGradientBrush>
                         </Rectangle.Fill>
                     </Rectangle>
+                    <Image x:Name="AdvertisementImage"
+                           Stretch="Uniform"
+                           Visibility="Collapsed"
+                           ImageFailed="AdvertisementImage_ImageFailed" />
+                    <MediaElement x:Name="AdvertisementVideo"
+                                  Stretch="Uniform"
+                                  LoadedBehavior="Manual"
+                                  UnloadedBehavior="Manual"
+                                  IsMuted="True"
+                                  Volume="0"
+                                  Visibility="Collapsed"
+                                  MediaEnded="AdvertisementVideo_MediaEnded"
+                                  MediaFailed="AdvertisementVideo_MediaFailed" />
                     <Rectangle Opacity="0.18" Fill="#FF000000" />
                     <StackPanel x:Name="PromotionTextPanel" Margin="48,44">
                         <Border Background="{StaticResource PosWarningBrush}" CornerRadius="6" Padding="10,5" HorizontalAlignment="Left">

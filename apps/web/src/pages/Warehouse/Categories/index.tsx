@@ -816,7 +816,7 @@ export default function WarehouseCategoriesPage() {
         confirmLoading={saving}
         onOk={() => void handleSave()}
         onCancel={handleCloseModal}
-        destroyOnClose
+        destroyOnHidden
         width={720}
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>

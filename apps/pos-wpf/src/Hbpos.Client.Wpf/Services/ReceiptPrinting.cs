@@ -165,7 +165,9 @@ public interface ICardReceiptPrintedNotifier
 public enum LinklyBankReceiptKind
 {
     SignatureRequired,
-    Declined
+    Declined,
+    RecoveredApproved,
+    RecoveredFailed
 }
 
 public interface ILinklyBankReceiptPrinter
@@ -794,7 +796,14 @@ public sealed class LinklyBankReceiptPrinter(
             previewRows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Separator, separator));
         }
 
-        AddText(kind == LinklyBankReceiptKind.Declined ? "*** DECLINED ***" : "*** SIGNATURE REQUIRED ***", ReceiptPrintAlignment.Center, isEmphasized: true);
+        var heading = kind switch
+        {
+            LinklyBankReceiptKind.Declined => "*** DECLINED ***",
+            LinklyBankReceiptKind.RecoveredApproved => "*** APPROVED RECOVERY ***",
+            LinklyBankReceiptKind.RecoveredFailed => "*** NOT PAID ***",
+            _ => "*** SIGNATURE REQUIRED ***"
+        };
+        AddText(heading, ReceiptPrintAlignment.Center, isEmphasized: true);
         AddSeparator();
 
         if (!string.IsNullOrWhiteSpace(cardSummary))

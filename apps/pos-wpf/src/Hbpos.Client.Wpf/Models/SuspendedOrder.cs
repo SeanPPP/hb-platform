@@ -42,11 +42,15 @@ public sealed record SuspendedOrderLine(
     decimal? DiscountPercent,
     decimal ActualAmount,
     PriceSourceKind PriceSource,
-    string PriceSourceLabel)
+    string PriceSourceLabel,
+    PosCartLineDiscountSource DiscountSource = PosCartLineDiscountSource.None)
 {
     public CartLineKind Kind { get; init; } = CartLineKind.Sale;
 
     public string ReturnSourceKey { get; init; } = string.Empty;
+
+    // 自动满减折扣标记必须随挂单保存，取单后才会继续按规则重算。
+    public bool IsAutomaticPromotionDiscount => DiscountSource == PosCartLineDiscountSource.Promotion;
 
     public Guid? OriginalOrderGuid { get; init; }
 

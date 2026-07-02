@@ -29,14 +29,19 @@ const containerProductPickerFile = path.resolve(process.cwd(), 'src/pages/Wareho
 const printCssFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/print.css')
 const packageFile = path.resolve(process.cwd(), 'package.json')
 
-const storeOrdersSource = readFileSync(storeOrdersFile, 'utf8')
-const detailSource = readFileSync(detailFile, 'utf8')
-const compactCssSource = readFileSync(compactCssFile, 'utf8')
-const pickingListSource = readFileSync(pickingListFile, 'utf8')
-const invoiceSource = readFileSync(invoiceFile, 'utf8')
-const containerProductPickerSource = readFileSync(containerProductPickerFile, 'utf8')
-const printCssSource = readFileSync(printCssFile, 'utf8')
-const packageSource = readFileSync(packageFile, 'utf8')
+function readSource(file: string) {
+  // 统一换行，避免 Windows CRLF 让源码契约断言误判。
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+}
+
+const storeOrdersSource = readSource(storeOrdersFile)
+const detailSource = readSource(detailFile)
+const compactCssSource = readSource(compactCssFile)
+const pickingListSource = readSource(pickingListFile)
+const invoiceSource = readSource(invoiceFile)
+const containerProductPickerSource = readSource(containerProductPickerFile)
+const printCssSource = readSource(printCssFile)
+const packageSource = readSource(packageFile)
 const detailMainTableSource = detailSource.slice(detailSource.indexOf('const columns: ColumnsType<StoreOrderDetailLine>'))
 const detailKeyboardHandlerSource = detailSource.slice(
   detailSource.indexOf('const handleDetailInputKeyDown'),

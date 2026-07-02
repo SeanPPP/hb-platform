@@ -14,8 +14,173 @@ namespace BlazorApp.Api.Data
 
             // 关键位置：统一串起所有启动兜底迁移，避免 Program.cs 只接入其中一条补列链路。
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
+            await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
+            await EnsureWpfAppReleaseSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureCashRegisterUsersSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string addUserGuidColumnSql =
+                @"
+IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('CashRegisterUsers', 'UserGUID') IS NULL
+    BEGIN
+        ALTER TABLE [CashRegisterUsers]
+        ADD [UserGUID] nvarchar(50) NULL;
+    END;
+END;";
+
+            // 关键位置：SQL Server 同一 batch 中 ADD 后再静态引用新列会先编译失败，补列必须先单独执行。
+            await db.Ado.ExecuteCommandAsync(addUserGuidColumnSql);
+
+            const string sql =
+                @"
+IF OBJECT_ID('CashRegisterUsers', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('CashRegisterUsers', 'UserGUID') IS NOT NULL
+    BEGIN
+        UPDATE [CashRegisterUsers]
+        SET [UserGUID] = LTRIM(RTRIM([UserGUID]))
+        WHERE [UserGUID] IS NOT NULL
+          AND [UserGUID] <> LTRIM(RTRIM([UserGUID]));
+
+        UPDATE [CashRegisterUsers]
+        SET [UserGUID] = NULL
+        WHERE [UserGUID] IS NOT NULL
+          AND LTRIM(RTRIM([UserGUID])) = '';
+
+        IF COL_LENGTH('CashRegisterUsers', 'OperatorUser') IS NOT NULL
+           AND OBJECT_ID('User', 'U') IS NOT NULL
+        BEGIN
+            -- 关键位置：老数据若 OperatorUser 已经保存后台 UserGUID，则自动回填；姓名/旧编号不猜测，避免错误授权。
+            UPDATE [cashier]
+            SET [UserGUID] = [linkedUser].[UserGUID]
+            FROM [CashRegisterUsers] AS [cashier]
+            INNER JOIN [User] AS [linkedUser]
+                ON [linkedUser].[UserGUID] = LTRIM(RTRIM([cashier].[OperatorUser]))
+            WHERE NULLIF(LTRIM(RTRIM([cashier].[UserGUID])), '') IS NULL
+              AND NULLIF(LTRIM(RTRIM([cashier].[OperatorUser])), '') IS NOT NULL
+              AND [linkedUser].[IsActive] = 1
+              AND ISNULL([linkedUser].[IsDeleted], 0) = 0;
+        END;
+
+        IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+        BEGIN
+            UPDATE [CashRegisterUsers]
+            SET [UserBarcode] = LTRIM(RTRIM([UserBarcode]))
+            WHERE [UserBarcode] IS NOT NULL
+              AND [UserBarcode] <> LTRIM(RTRIM([UserBarcode]));
+
+            IF COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+            BEGIN
+                -- 关键位置：空白条码不能继续保持有效，否则空输入可能命中历史脏数据；只失效记录以兼容旧表非空约束。
+                UPDATE [CashRegisterUsers]
+                SET [Status] = 0
+                WHERE [Status] = 1
+                  AND ([UserBarcode] IS NULL OR LTRIM(RTRIM([UserBarcode])) = '');
+            END;
+        END;
+
+        IF COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+        BEGIN
+            -- 关键位置：旧库可能缺少排序/状态列，只有列齐全时才做去重，避免启动迁移被极旧表结构阻断。
+            ;WITH [CashRegisterUserActiveDuplicates] AS (
+                SELECT
+                    [Id],
+                    ROW_NUMBER() OVER (PARTITION BY [UserGUID]
+                        ORDER BY
+                            [LastModifyDate] DESC,
+                            [CreateDate] DESC,
+                            [Id] DESC
+                    ) AS [RowNumber]
+                FROM [CashRegisterUsers]
+                WHERE [Status] = 1
+                  AND [UserGUID] IS NOT NULL
+            )
+            UPDATE [CashRegisterUsers]
+            SET [Status] = 0
+            WHERE [Id] IN (
+                SELECT [Id]
+                FROM [CashRegisterUserActiveDuplicates]
+                WHERE [RowNumber] > 1
+            );
+        END;
+
+        IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+           AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+        BEGIN
+            ;WITH [CashRegisterBarcodeActiveDuplicates] AS (
+                SELECT
+                    [Id],
+                    ROW_NUMBER() OVER (PARTITION BY [UserBarcode]
+                        ORDER BY
+                            [LastModifyDate] DESC,
+                            [CreateDate] DESC,
+                            [Id] DESC
+                    ) AS [RowNumber]
+                FROM [CashRegisterUsers]
+                WHERE [Status] = 1
+                  AND NULLIF(LTRIM(RTRIM([UserBarcode])), '') IS NOT NULL
+            )
+            UPDATE [CashRegisterUsers]
+            SET [Status] = 0
+            WHERE [Id] IN (
+                SELECT [Id]
+                FROM [CashRegisterBarcodeActiveDuplicates]
+                WHERE [RowNumber] > 1
+            );
+        END;
+    END;
+
+    IF NOT EXISTS (
+        SELECT *
+        FROM sys.indexes
+        WHERE name = 'IX_CashRegisterUsers_UserGUID_Active'
+          AND object_id = OBJECT_ID('CashRegisterUsers')
+    )
+       AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+    BEGIN
+        CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserGUID_Active]
+        ON [CashRegisterUsers]([UserGUID])
+        WHERE [Status] = 1 AND [UserGUID] IS NOT NULL;
+    END;
+
+    IF COL_LENGTH('CashRegisterUsers', 'UserBarcode') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Status') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'Id') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'LastModifyDate') IS NOT NULL
+       AND COL_LENGTH('CashRegisterUsers', 'CreateDate') IS NOT NULL
+       AND NOT EXISTS (
+            SELECT *
+            FROM sys.indexes
+            WHERE name = 'IX_CashRegisterUsers_UserBarcode_Active'
+              AND object_id = OBJECT_ID('CashRegisterUsers')
+        )
+    BEGIN
+        CREATE UNIQUE INDEX [IX_CashRegisterUsers_UserBarcode_Active]
+        ON [CashRegisterUsers]([UserBarcode])
+        WHERE [Status] = 1 AND [UserBarcode] IS NOT NULL AND [UserBarcode] <> '';
+    END;
+END;";
+
+            // 关键逻辑：老表只补 nullable 关联列，StoreCode 继续保留兼容显示；有效条码唯一性按 UserGUID 和 UserBarcode 双重兜底。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("CashRegisterUsers.UserGUID 列与有效条码唯一索引检查完成");
         }
 
         private static async Task EnsureMobileAppBuildSchemaAsync(
@@ -248,6 +413,412 @@ END;";
             // 关键位置：OTA 自动发布脚本启动前依赖 service token 校验，表缺失时必须由应用启动自举。
             await db.Ado.ExecuteCommandAsync(sql);
             logger.LogInformation("Service API Token 表检查完成");
+        }
+
+        private static async Task EnsureWpfAppReleaseSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql =
+                @"
+IF OBJECT_ID('WpfAppRelease', 'U') IS NULL
+BEGIN
+    CREATE TABLE [WpfAppRelease] (
+        [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_WpfAppRelease] PRIMARY KEY,
+        [Channel] nvarchar(80) NOT NULL,
+        [Version] nvarchar(80) NOT NULL,
+        [FileName] nvarchar(260) NOT NULL,
+        [FileSize] bigint NOT NULL,
+        [Sha256] nvarchar(128) NOT NULL,
+        [DownloadUrl] nvarchar(1000) NOT NULL,
+        [CosObjectKey] nvarchar(500) NOT NULL,
+        [InstallerType] nvarchar(40) NOT NULL,
+        [InstallerArguments] nvarchar(500) NULL,
+        [ReleaseNotes] nvarchar(2000) NULL,
+        [IsActive] bit NOT NULL CONSTRAINT [DF_WpfAppRelease_IsActive] DEFAULT(1),
+        [PublishedAt] datetime2 NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL
+    );
+END;
+
+IF OBJECT_ID('WpfAppRelease', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('WpfAppRelease', 'Channel') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [Channel] nvarchar(80) NOT NULL CONSTRAINT [DF_WpfAppRelease_Channel] DEFAULT('production');
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'Version') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [Version] nvarchar(80) NOT NULL CONSTRAINT [DF_WpfAppRelease_Version] DEFAULT('');
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'FileName') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [FileName] nvarchar(260) NOT NULL CONSTRAINT [DF_WpfAppRelease_FileName] DEFAULT('');
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'FileSize') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [FileSize] bigint NOT NULL CONSTRAINT [DF_WpfAppRelease_FileSize] DEFAULT(0);
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'Sha256') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [Sha256] nvarchar(128) NOT NULL CONSTRAINT [DF_WpfAppRelease_Sha256] DEFAULT('');
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'DownloadUrl') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [DownloadUrl] nvarchar(1000) NOT NULL CONSTRAINT [DF_WpfAppRelease_DownloadUrl] DEFAULT('');
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'CosObjectKey') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [CosObjectKey] nvarchar(500) NOT NULL CONSTRAINT [DF_WpfAppRelease_CosObjectKey] DEFAULT('');
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'InstallerType') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [InstallerType] nvarchar(40) NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'InstallerArguments') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [InstallerArguments] nvarchar(500) NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'ReleaseNotes') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [ReleaseNotes] nvarchar(2000) NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'IsActive') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [IsActive] bit NOT NULL CONSTRAINT [DF_WpfAppRelease_IsActive] DEFAULT(1);
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'PublishedAt') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [PublishedAt] datetime2 NOT NULL CONSTRAINT [DF_WpfAppRelease_PublishedAt] DEFAULT(SYSUTCDATETIME());
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'CreatedAt') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [CreatedAt] datetime2 NOT NULL CONSTRAINT [DF_WpfAppRelease_CreatedAt] DEFAULT(SYSUTCDATETIME());
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'CreatedBy') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [CreatedBy] nvarchar(max) NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'UpdatedAt') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [UpdatedAt] datetime2 NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'UpdatedBy') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [UpdatedBy] nvarchar(max) NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'IsDeleted') IS NULL
+    BEGIN
+        ALTER TABLE [WpfAppRelease]
+        ADD [IsDeleted] bit NULL;
+    END;
+
+    IF COL_LENGTH('WpfAppRelease', 'InstallerType') IS NOT NULL
+    BEGIN
+        EXEC(N'
+            UPDATE [WpfAppRelease]
+            SET [InstallerType] = CASE
+                WHEN LOWER(RIGHT(ISNULL([FileName], ''''), 4)) = ''.msi'' THEN ''msi''
+                WHEN LOWER(RIGHT(ISNULL([FileName], ''''), 4)) = ''.exe'' THEN ''exe''
+                ELSE ''exe''
+            END
+            WHERE [InstallerType] IS NULL
+               OR LTRIM(RTRIM([InstallerType])) = '''';
+        ');
+
+        ALTER TABLE [WpfAppRelease]
+        ALTER COLUMN [InstallerType] nvarchar(40) NOT NULL;
+    END;
+END;
+
+-- 关键位置：旧库可能存在重复的 Channel+Version，先保留未删除、启用且较新的行，其余行统一失活，避免唯一索引阻断启动。
+IF OBJECT_ID('WpfAppRelease', 'U') IS NOT NULL
+BEGIN
+    -- 关键位置：先把 WPF 发布历史数据规范成业务层可比较的渠道和版本，避免大小写和 v 前缀把重复版本漏过去。
+    UPDATE [WpfAppRelease]
+    SET [Channel] = CASE
+            WHEN NULLIF(LTRIM(RTRIM([Channel])), '') IS NULL THEN 'production'
+            ELSE LOWER(LTRIM(RTRIM([Channel])))
+        END,
+        [Version] = CASE
+            WHEN NULLIF(LTRIM(RTRIM([Version])), '') IS NULL THEN ''
+            WHEN LEFT(LTRIM(RTRIM([Version])), 1) IN ('v', 'V')
+                THEN SUBSTRING(LTRIM(RTRIM([Version])), 2, 79)
+            ELSE LTRIM(RTRIM([Version]))
+        END
+    WHERE ISNULL([Channel], '') <> CASE
+            WHEN NULLIF(LTRIM(RTRIM([Channel])), '') IS NULL THEN 'production'
+            ELSE LOWER(LTRIM(RTRIM([Channel])))
+        END
+       OR ISNULL([Version], '') <> CASE
+            WHEN NULLIF(LTRIM(RTRIM([Version])), '') IS NULL THEN ''
+            WHEN LEFT(LTRIM(RTRIM([Version])), 1) IN ('v', 'V')
+                THEN SUBSTRING(LTRIM(RTRIM([Version])), 2, 79)
+            ELSE LTRIM(RTRIM([Version]))
+        END;
+
+    ;WITH [WpfAppReleaseDuplicateRows] AS (
+        SELECT
+            [Id],
+            ROW_NUMBER() OVER (PARTITION BY [NormalizedChannel], [NormalizedVersion]
+                ORDER BY
+                    CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END,
+                    CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
+                    [CreatedAt] DESC,
+                    [Id] DESC
+            ) AS [RowNumber]
+        FROM (
+            SELECT
+                [Id],
+                CASE
+                    WHEN NULLIF(LTRIM(RTRIM([Channel])), '') IS NULL THEN 'production'
+                    ELSE LOWER(LTRIM(RTRIM([Channel])))
+                END AS [NormalizedChannel],
+                CASE
+                    WHEN NULLIF(LTRIM(RTRIM([Version])), '') IS NULL THEN ''
+                    WHEN LEFT(LTRIM(RTRIM([Version])), 1) IN ('v', 'V')
+                        THEN SUBSTRING(LTRIM(RTRIM([Version])), 2, 79)
+                    ELSE LTRIM(RTRIM([Version]))
+                END AS [NormalizedVersion],
+                [IsActive],
+                [CreatedAt],
+                [IsDeleted]
+            FROM [WpfAppRelease]
+        ) AS [NormalizedWpfAppReleaseRows]
+    )
+    UPDATE [WpfAppRelease]
+    SET [IsActive] = 0
+    WHERE [Id] IN (
+        SELECT [Id]
+        FROM [WpfAppReleaseDuplicateRows]
+        WHERE [RowNumber] > 1
+    );
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_WpfAppRelease_Channel_Version'
+      AND object_id = OBJECT_ID('WpfAppRelease')
+)
+BEGIN
+    -- 关键位置：WPF 发布唯一键只约束活跃版本，既保留历史重复脏数据审计线索，也避免旧库启动迁移失败。
+    CREATE UNIQUE INDEX [IX_WpfAppRelease_Channel_Version]
+    ON [WpfAppRelease]([Channel], [Version])
+    WHERE [IsActive] = 1;
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_WpfAppRelease_Channel_PublishedAt'
+      AND object_id = OBJECT_ID('WpfAppRelease')
+)
+BEGIN
+    CREATE INDEX [IX_WpfAppRelease_Channel_PublishedAt]
+    ON [WpfAppRelease]([Channel], [IsActive], [PublishedAt]);
+END;
+
+IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NULL
+BEGIN
+    CREATE TABLE [WpfUpdatePolicy] (
+        [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_WpfUpdatePolicy] PRIMARY KEY,
+        [Channel] nvarchar(80) NOT NULL,
+        [TargetVersion] nvarchar(80) NOT NULL,
+        [MinimumSupportedVersion] nvarchar(80) NULL,
+        [ForceUpdate] bit NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_ForceUpdate] DEFAULT(0),
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL
+    );
+END;
+
+IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('WpfUpdatePolicy', 'Channel') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [Channel] nvarchar(80) NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_Channel] DEFAULT('production');
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'TargetVersion') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [TargetVersion] nvarchar(80) NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_TargetVersion] DEFAULT('');
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'MinimumSupportedVersion') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [MinimumSupportedVersion] nvarchar(80) NULL;
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'MinimumSupportedVersion') IS NOT NULL
+    BEGIN
+        -- 关键位置：旧库可能把 MinimumSupportedVersion 建成 NOT NULL，规范化空白值前先统一放宽成可空，避免启动迁移写入 NULL 失败。
+        ALTER TABLE [WpfUpdatePolicy]
+        ALTER COLUMN [MinimumSupportedVersion] nvarchar(80) NULL;
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'ForceUpdate') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [ForceUpdate] bit NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_ForceUpdate] DEFAULT(0);
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'CreatedAt') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [CreatedAt] datetime2 NOT NULL CONSTRAINT [DF_WpfUpdatePolicy_CreatedAt] DEFAULT(SYSUTCDATETIME());
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'CreatedBy') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [CreatedBy] nvarchar(max) NULL;
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'UpdatedAt') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [UpdatedAt] datetime2 NULL;
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'UpdatedBy') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [UpdatedBy] nvarchar(max) NULL;
+    END;
+
+    IF COL_LENGTH('WpfUpdatePolicy', 'IsDeleted') IS NULL
+    BEGIN
+        ALTER TABLE [WpfUpdatePolicy]
+        ADD [IsDeleted] bit NULL;
+    END;
+END;
+
+-- 关键位置：策略表每个 Channel 只能保留一条配置，启动迁移先保留未删除且最新的策略，再补唯一索引。
+IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NOT NULL
+BEGIN
+    -- 关键位置：策略表也要先按业务层语义规范化渠道和版本，避免引用不到已规范化的发布版本。
+    UPDATE [WpfUpdatePolicy]
+    SET [Channel] = CASE
+            WHEN NULLIF(LTRIM(RTRIM([Channel])), '') IS NULL THEN 'production'
+            ELSE LOWER(LTRIM(RTRIM([Channel])))
+        END,
+        [TargetVersion] = CASE
+            WHEN NULLIF(LTRIM(RTRIM([TargetVersion])), '') IS NULL THEN ''
+            WHEN LEFT(LTRIM(RTRIM([TargetVersion])), 1) IN ('v', 'V')
+                THEN SUBSTRING(LTRIM(RTRIM([TargetVersion])), 2, 79)
+            ELSE LTRIM(RTRIM([TargetVersion]))
+        END,
+        [MinimumSupportedVersion] = CASE
+            WHEN NULLIF(LTRIM(RTRIM([MinimumSupportedVersion])), '') IS NULL THEN NULL
+            WHEN LEFT(LTRIM(RTRIM([MinimumSupportedVersion])), 1) IN ('v', 'V')
+                THEN SUBSTRING(LTRIM(RTRIM([MinimumSupportedVersion])), 2, 79)
+            ELSE LTRIM(RTRIM([MinimumSupportedVersion]))
+        END
+    WHERE ISNULL([Channel], '') <> CASE
+            WHEN NULLIF(LTRIM(RTRIM([Channel])), '') IS NULL THEN 'production'
+            ELSE LOWER(LTRIM(RTRIM([Channel])))
+        END
+       OR ISNULL([TargetVersion], '') <> CASE
+            WHEN NULLIF(LTRIM(RTRIM([TargetVersion])), '') IS NULL THEN ''
+            WHEN LEFT(LTRIM(RTRIM([TargetVersion])), 1) IN ('v', 'V')
+                THEN SUBSTRING(LTRIM(RTRIM([TargetVersion])), 2, 79)
+            ELSE LTRIM(RTRIM([TargetVersion]))
+        END
+       OR ISNULL([MinimumSupportedVersion], '') <> ISNULL(CASE
+            WHEN NULLIF(LTRIM(RTRIM([MinimumSupportedVersion])), '') IS NULL THEN NULL
+            WHEN LEFT(LTRIM(RTRIM([MinimumSupportedVersion])), 1) IN ('v', 'V')
+                THEN SUBSTRING(LTRIM(RTRIM([MinimumSupportedVersion])), 2, 79)
+            ELSE LTRIM(RTRIM([MinimumSupportedVersion]))
+        END, '');
+
+    ;WITH [WpfUpdatePolicyDuplicateRows] AS (
+        SELECT
+            [Id],
+            ROW_NUMBER() OVER (PARTITION BY [NormalizedChannel]
+                ORDER BY
+                    CASE WHEN ISNULL([IsDeleted], 0) = 0 THEN 0 ELSE 1 END,
+                    [LastChangedAt] DESC,
+                    [CreatedAt] DESC,
+                    [Id] DESC
+            ) AS [RowNumber]
+        FROM (
+            SELECT
+                [Id],
+                CASE
+                    WHEN NULLIF(LTRIM(RTRIM([Channel])), '') IS NULL THEN 'production'
+                    ELSE LOWER(LTRIM(RTRIM([Channel])))
+                END AS [NormalizedChannel],
+                ISNULL([UpdatedAt], [CreatedAt]) AS [LastChangedAt],
+                [CreatedAt],
+                [IsDeleted]
+            FROM [WpfUpdatePolicy]
+        ) AS [NormalizedWpfUpdatePolicyRows]
+    )
+    DELETE FROM [WpfUpdatePolicy]
+    WHERE [Id] IN (
+        SELECT [Id]
+        FROM [WpfUpdatePolicyDuplicateRows]
+        WHERE [RowNumber] > 1
+    );
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_WpfUpdatePolicy_Channel'
+      AND object_id = OBJECT_ID('WpfUpdatePolicy')
+)
+BEGIN
+    CREATE UNIQUE INDEX [IX_WpfUpdatePolicy_Channel]
+    ON [WpfUpdatePolicy]([Channel]);
+END;";
+
+            // 关键位置：WPF 发布链路已经依赖校验、下载、安装器和强更字段，旧表也要在启动时补齐这些列。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("WPF 客户端发布与更新策略表检查完成");
         }
     }
 }

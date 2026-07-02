@@ -98,6 +98,28 @@ public sealed record CatalogSyncPageResponse(
     bool HasMore,
     int TotalCount);
 
+public sealed record CatalogPromotionProductDto(
+    string ProductCode,
+    int UnitWeight);
+
+public sealed record CatalogPromotionRuleDto(
+    string PromotionId,
+    string Name,
+    bool IsExclusive,
+    int Priority,
+    int ApplyQuantity,
+    decimal FixedPrice,
+    int? MaxApplicationsPerOrder,
+    DateTimeOffset EffectiveStart,
+    DateTimeOffset EffectiveEnd,
+    DateTimeOffset? UpdatedAt,
+    IReadOnlyList<CatalogPromotionProductDto> Products);
+
+public sealed record CatalogPromotionsResponse(
+    string StoreCode,
+    DateTimeOffset GeneratedAt,
+    IReadOnlyList<CatalogPromotionRuleDto> Promotions);
+
 public sealed record CatalogLookupResponse(
     string StoreCode,
     string LookupCode,

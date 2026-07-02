@@ -2,6 +2,7 @@ import type { ApiResponse } from '../types/api'
 import type {
   CashRegisterUserDetailDto,
   CashRegisterUserListDto,
+  CashRegisterUserUserOptionDto,
   CreateCashRegisterUserDto,
   UpdateCashRegisterUserDto,
 } from '../types/cashRegisterUser'
@@ -20,6 +21,11 @@ export async function getCashRegisterUserGrid(data: Record<string, unknown>) {
 export async function getCashRegisterUserByHGuid(hGuid: string): Promise<CashRegisterUserDetailDto> {
   const response = await request.get<ApiResponse<CashRegisterUserDetailDto>>(`${API_BASE}/${hGuid}`)
   return unwrapApiData(response)
+}
+
+export async function getCashRegisterUserUserOptions(): Promise<CashRegisterUserUserOptionDto[]> {
+  const response = await request.get<ApiResponse<CashRegisterUserUserOptionDto[]>>(`${API_BASE}/user-options`)
+  return unwrapApiData(response) ?? []
 }
 
 export async function createCashRegisterUser(data: CreateCashRegisterUserDto): Promise<CashRegisterUserDetailDto> {

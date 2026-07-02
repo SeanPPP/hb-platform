@@ -45,6 +45,27 @@
     "allStores": "全部门店",
     "noStore": "未配置分店"
   },
+  "upload": {
+    "status": {
+      "idleTitle": "等待上传素材",
+      "idleDescription": "请选择相册素材，或使用相机拍摄图片/视频。",
+      "fileSelectedTitle": "已有素材信息",
+      "fileSelectedDescription": "可以继续保存广告，或重新上传替换当前素材。",
+      "uploadingTitle": "正在上传素材",
+      "libraryDescription": "正在读取相册素材并上传，请保持页面打开。",
+      "cameraDescription": "正在处理相机素材并上传，请保持页面打开。",
+      "imageReadyTitle": "图片已上传",
+      "videoReadyTitle": "视频已上传",
+      "uploadedDescription": "素材信息已回填，请确认标题、时间和分店后保存广告。",
+      "canceledTitle": "未选择素材",
+      "canceledDescription": "上传已取消，当前广告内容未改变。",
+      "permissionTitle": "缺少上传权限",
+      "libraryPermissionDescription": "请允许访问媒体库后再选择素材。",
+      "cameraPermissionDescription": "请允许访问相机后再拍摄素材。",
+      "failedTitle": "素材上传失败",
+      "failedDescription": "请检查网络后重试，或重新选择一个素材。"
+    }
+  },
   "actions": {
     "create": "新建",
     "edit": "编辑",
@@ -77,6 +98,7 @@
     "toggleSuccess": "广告状态已更新。",
     "toggleFailed": "广告状态更新失败。",
     "uploadSuccess": "素材上传成功。",
+    "uploadCanceled": "未选择素材，上传已取消。",
     "uploadFailed": "素材上传失败。",
     "permissionDenied": "需要媒体库访问权限。",
     "cameraPermissionDenied": "需要相机权限。",

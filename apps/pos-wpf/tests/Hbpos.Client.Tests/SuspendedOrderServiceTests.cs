@@ -175,6 +175,100 @@ public sealed class SuspendedOrderServiceTests
     }
 
     [Fact]
+    public async Task RecallOrderAsync_preserves_automatic_promotion_discount_and_recalculates_after_edit()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+            var session = CreateSession();
+            cart.SetAutomaticPromotionRules(
+            [
+                CreatePromotionRule(
+                    applyQuantity: 2,
+                    fixedPrice: 15m,
+                    products:
+                    [
+                        new CatalogPromotionProductDto("SKU-PROMO-01", 1)
+                    ])
+            ]);
+
+            await schema.InitializeAsync();
+            var line = cart.AddItem(CreateItem(productCode: "SKU-PROMO-01", lookupCode: "promo-01", price: 10m));
+            cart.AddItem(CreateItem(productCode: "SKU-PROMO-01", lookupCode: "promo-01", price: 10m));
+            Assert.True(line.IsAutomaticPromotionDiscount);
+            Assert.Equal(5m, line.DiscountAmount);
+
+            var suspended = await service.SuspendCurrentOrderAsync(session);
+            var saved = await repository.GetAsync(suspended.SuspendedOrderGuid);
+            var savedLine = Assert.Single(saved?.Lines ?? []);
+            Assert.True(savedLine.IsAutomaticPromotionDiscount);
+
+            await service.RecallOrderAsync(suspended.SuspendedOrderGuid);
+
+            line = Assert.Single(cart.Lines);
+            Assert.True(line.IsAutomaticPromotionDiscount);
+            Assert.Equal(5m, line.DiscountAmount);
+            Assert.Equal(15m, cart.ActualAmount);
+
+            // 取单后继续编辑必须重新套用自动满减，不能把旧满减当成人工折扣保留。
+            Assert.True(cart.DecreaseLine(line));
+
+            line = Assert.Single(cart.Lines);
+            Assert.False(line.IsAutomaticPromotionDiscount);
+            Assert.Equal(0m, line.DiscountAmount);
+            Assert.Equal(10m, cart.ActualAmount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task RecallOrderAsync_preserves_promotion_discount_source_so_future_promotions_replace_it()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var cart = new PosCartService();
+            var repository = new SuspendedOrderRepository(store);
+            var service = new SuspendedOrderService(repository, cart);
+            var session = CreateSession();
+
+            await schema.InitializeAsync();
+            var line = cart.AddItem(CreateItem(productCode: "SKU-PROMO-HOLD-01", lookupCode: "promo-hold-01", price: 10m));
+            cart.ApplyPromotionDiscounts([new PromotionLineDiscount(line, 3m)]);
+
+            var suspended = await service.SuspendCurrentOrderAsync(session);
+            var saved = await repository.GetAsync(suspended.SuspendedOrderGuid);
+            Assert.Equal(PosCartLineDiscountSource.Promotion, Assert.Single(saved!.Lines).DiscountSource);
+
+            await service.RecallOrderAsync(suspended.SuspendedOrderGuid);
+
+            var recalledLine = Assert.Single(cart.Lines);
+            Assert.Equal(3m, recalledLine.DiscountAmount);
+
+            // 中文注释：召回后的自动促销折扣仍应保持 Promotion 来源，后续重算才能替换旧金额。
+            cart.ApplyPromotionDiscounts([new PromotionLineDiscount(recalledLine, 5m)]);
+
+            Assert.Equal(5m, recalledLine.DiscountAmount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task RecallOrderAsync_restores_return_line_context_and_card_refund_capacity()
     {
         var databasePath = CreateTempDatabasePath();
@@ -286,6 +380,29 @@ public sealed class SuspendedOrderServiceTests
             QuantityFactor: quantityFactor,
             UpdatedAt: DateTimeOffset.UtcNow,
             ProductImage: productImage);
+    }
+
+    private static CatalogPromotionRuleDto CreatePromotionRule(
+        int applyQuantity,
+        decimal fixedPrice,
+        IReadOnlyList<CatalogPromotionProductDto> products,
+        string promotionId = "PROMO-HOLD-01",
+        bool isExclusive = true,
+        int priority = 0,
+        int? maxApplicationsPerOrder = null)
+    {
+        return new CatalogPromotionRuleDto(
+            promotionId,
+            "Quantity discount",
+            isExclusive,
+            priority,
+            applyQuantity,
+            fixedPrice,
+            maxApplicationsPerOrder,
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1),
+            DateTimeOffset.UtcNow,
+            products);
     }
 
     private static string CreateTempDatabasePath()

@@ -7,6 +7,7 @@ import {
   VideoCameraOutlined,
 } from '@ant-design/icons'
 import {
+  App as AntdApp,
   Button,
   Card,
   Checkbox,
@@ -15,7 +16,6 @@ import {
   Image,
   Input,
   InputNumber,
-  message,
   Modal,
   Popconfirm,
   Select,
@@ -149,6 +149,7 @@ function renderMediaThumb(record: AdvertisementListDto) {
 
 export default function AdvertisementsPage() {
   const { t } = useTranslation()
+  const { message: messageApi } = AntdApp.useApp()
   const access = useAuthStore((state) => state.access)
   const [queryForm] = Form.useForm<QueryFormValues>()
   const [editorForm] = Form.useForm<AdvertisementFormValues>()
@@ -192,7 +193,7 @@ export default function AdvertisementsPage() {
       setStoreOptions(stores)
     } catch (error) {
       console.error(t('posAdmin.advertisements.loadStoresFailed'), error)
-      message.error(t('posAdmin.advertisements.loadStoresFailed'))
+      messageApi.error(t('posAdmin.advertisements.loadStoresFailed'))
     }
   }
 
@@ -228,7 +229,7 @@ export default function AdvertisementsPage() {
       setTotal(result?.total ?? 0)
     } catch (error) {
       console.error(t('posAdmin.advertisements.loadFailed'), error)
-      message.error(t('posAdmin.advertisements.loadFailed'))
+      messageApi.error(t('posAdmin.advertisements.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -297,7 +298,7 @@ export default function AdvertisementsPage() {
       setEditorOpen(true)
     } catch (error) {
       console.error(t('posAdmin.advertisements.loadDetailFailed'), error)
-      message.error(t('posAdmin.advertisements.loadDetailFailed'))
+      messageApi.error(t('posAdmin.advertisements.loadDetailFailed'))
     }
   }
 
@@ -345,10 +346,10 @@ export default function AdvertisementsPage() {
       }
 
       editorForm.setFieldsValue(nextValues)
-      message.success(t('posAdmin.advertisements.uploadSuccess'))
+      messageApi.success(t('posAdmin.advertisements.uploadSuccess'))
     } catch (error) {
       console.error(t('posAdmin.advertisements.uploadFailed'), error)
-      message.error(t('posAdmin.advertisements.uploadFailed'))
+      messageApi.error(t('posAdmin.advertisements.uploadFailed'))
     } finally {
       setUploading(false)
     }
@@ -356,15 +357,17 @@ export default function AdvertisementsPage() {
 
   const handleSave = async () => {
     try {
-      const values = await editorForm.validateFields()
+      await editorForm.validateFields()
+      // 上传元数据由 setFieldsValue 写入隐藏表单 store，保存时必须读取完整值集。
+      const values = editorForm.getFieldsValue(true) as AdvertisementFormValues
 
       if (!values.mediaUrl) {
-        message.error(t('posAdmin.advertisements.mediaRequired'))
+        messageApi.error(t('posAdmin.advertisements.mediaRequired'))
         return
       }
 
       if (values.effectiveEnd.isBefore(values.effectiveStart)) {
-        message.error(t('posAdmin.advertisements.invalidEffectiveRange'))
+        messageApi.error(t('posAdmin.advertisements.invalidEffectiveRange'))
         return
       }
 
@@ -377,7 +380,7 @@ export default function AdvertisementsPage() {
         await createAdvertisement(payload)
       }
 
-      message.success(t('message.saveSuccess'))
+      messageApi.success(t('message.saveSuccess'))
       closeEditor()
       await loadData()
     } catch (error) {
@@ -390,7 +393,7 @@ export default function AdvertisementsPage() {
         return
       }
       console.error(t('posAdmin.advertisements.saveFailed'), error)
-      message.error(t('posAdmin.advertisements.saveFailed'))
+      messageApi.error(error instanceof Error && error.message ? error.message : t('posAdmin.advertisements.saveFailed'))
     } finally {
       setEditorSaving(false)
     }
@@ -399,11 +402,11 @@ export default function AdvertisementsPage() {
   const handleDelete = async (id: string) => {
     try {
       await deleteAdvertisement(id)
-      message.success(t('message.deleteSuccess'))
+      messageApi.success(t('message.deleteSuccess'))
       await loadData()
     } catch (error) {
       console.error(t('posAdmin.advertisements.deleteFailed'), error)
-      message.error(t('posAdmin.advertisements.deleteFailed'))
+      messageApi.error(t('posAdmin.advertisements.deleteFailed'))
     }
   }
 
@@ -411,11 +414,11 @@ export default function AdvertisementsPage() {
     try {
       setTogglingId(record.id)
       await enableAdvertisement(record.id, enable)
-      message.success(t('posAdmin.advertisements.toggleSuccess'))
+      messageApi.success(t('posAdmin.advertisements.toggleSuccess'))
       await loadData()
     } catch (error) {
       console.error(t('posAdmin.advertisements.toggleFailed'), error)
-      message.error(t('posAdmin.advertisements.toggleFailed'))
+      messageApi.error(t('posAdmin.advertisements.toggleFailed'))
     } finally {
       setTogglingId(null)
     }
@@ -634,7 +637,7 @@ export default function AdvertisementsPage() {
         onOk={() => void handleSave()}
         width={860}
         okButtonProps={{ disabled: !access.canEditAdvertisements, loading: editorSaving }}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form<AdvertisementFormValues> form={editorForm} layout="vertical" disabled={!access.canEditAdvertisements}>
           <Space style={{ width: '100%' }} wrap>

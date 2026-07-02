@@ -68,6 +68,33 @@ public sealed class ConfiguredCardTerminalClientTests
     }
 
     [Fact]
+    public async Task AuthorizeAsync_uses_recoverable_txn_ref_for_local_ip_linkly_purchase()
+    {
+        var settings = CardTerminalSettings.FromEnvironment() with
+        {
+            Processor = CardProcessorKind.Linkly,
+            LinklyConnectionMode = LinklyConnectionMode.LocalIp
+        };
+        var linkly = new StubLinklyTerminalClient(new PaymentAuthorizationResult(true, "ANZ:LOCAL-TXN-001", AuthorizedAmount: 10m));
+        var attemptContext = new LinklyPaymentAttemptContextAccessor();
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(settings),
+            new HttpClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            linkly,
+            linklyPaymentAttemptContextAccessor: attemptContext);
+        using var scope = attemptContext.Begin(new LinklyPaymentAttemptContext(
+            Guid.NewGuid(),
+            (_, _, _, _) => Task.CompletedTask,
+            "LOCAL-TXN-001"));
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.True(result.Approved);
+        Assert.Equal("LOCAL-TXN-001", linkly.LastPurchaseReference);
+    }
+
+    [Fact]
     public async Task RefundAsync_delegates_linkly_refund_to_adapter()
     {
         var settings = CardTerminalSettings.FromEnvironment() with { Processor = CardProcessorKind.Linkly };
@@ -1633,6 +1660,8 @@ public sealed class ConfiguredCardTerminalClientTests
 
         public string? LastOriginalReference { get; private set; }
 
+        public string? LastPurchaseReference { get; private set; }
+
         public CardTerminalSettings? LastSettings { get; private set; }
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
@@ -1653,6 +1682,29 @@ public sealed class ConfiguredCardTerminalClientTests
             LastAmount = amount;
             LastSettings = settings;
             return Task.FromResult(result);
+        }
+
+        public Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(
+            decimal amount,
+            PosSessionState session,
+            CardTerminalSettings settings,
+            string txnRef,
+            CancellationToken cancellationToken = default)
+        {
+            LastAmount = amount;
+            LastPurchaseReference = txnRef;
+            LastSettings = settings;
+            return Task.FromResult(result);
+        }
+
+        public Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
+            decimal amount,
+            PosSessionState session,
+            CardTerminalSettings settings,
+            string txnRef,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
         }
 
         public Task<PaymentAuthorizationResult> RefundAsync(

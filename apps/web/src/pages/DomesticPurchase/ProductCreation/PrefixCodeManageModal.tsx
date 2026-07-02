@@ -235,7 +235,7 @@ export default function PrefixCodeManageModal({ visible, supplierCode, supplierN
   ]
 
   return (
-    <Modal title={t('productCreation.managePrefixTitle', '管理前缀码 - {{name}}', { name: supplierName || supplierCode })} open={visible} onCancel={onClose} width={900} footer={null} destroyOnClose>
+    <Modal title={t('productCreation.managePrefixTitle', '管理前缀码 - {{name}}', { name: supplierName || supplierCode })} open={visible} onCancel={onClose} width={900} footer={null} destroyOnHidden>
       <Form form={form} layout="inline" style={{ marginBottom: 16 }}>
         <Row gutter={12} style={{ width: '100%' }}>
           <Col flex="120px">

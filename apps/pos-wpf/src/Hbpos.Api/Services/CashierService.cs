@@ -1,4 +1,5 @@
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Constants;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Cashiers;
 
@@ -17,36 +18,124 @@ public sealed class CashierService(HbposSqlSugarContext dbContext) : ICashierSer
         CashierBarcodeLoginRequest request,
         CancellationToken cancellationToken)
     {
-        var cashier = await dbContext.MainDb.Queryable<CashRegisterUser>()
-            .FirstAsync(
-                x => x.StoreCode == request.StoreCode
-                    && x.UserBarcode == request.UserBarcode
-                    && x.Status,
-                cancellationToken);
-
-        if (cashier is null)
+        var userBarcode = request.UserBarcode?.Trim();
+        var storeCode = request.StoreCode?.Trim();
+        var deviceCode = request.DeviceCode?.Trim();
+        if (string.IsNullOrWhiteSpace(userBarcode) ||
+            string.IsNullOrWhiteSpace(storeCode) ||
+            string.IsNullOrWhiteSpace(deviceCode))
         {
             return null;
         }
 
-        return new CashierSessionDto(
-            string.IsNullOrWhiteSpace(cashier.HGUID) ? cashier.Id.ToString() : cashier.HGUID,
-            cashier.OperatorUser,
-            cashier.StoreCode,
-            request.DeviceCode,
-            SplitRoles(cashier.LoginRole));
-    }
+        var cashier = await dbContext.MainDb.Queryable<CashRegisterUser>()
+            .FirstAsync(
+                x => x.UserBarcode == userBarcode && x.Status,
+                cancellationToken);
 
-    private static string[] SplitRoles(string? roles)
-    {
-        if (string.IsNullOrWhiteSpace(roles))
+        var cashierUserGuid = cashier?.UserGUID?.Trim();
+        if (cashier is null || string.IsNullOrWhiteSpace(cashierUserGuid))
         {
-            return [];
+            return null;
         }
 
-        return roles
-            .Split([',', ';', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var user = await dbContext.MainDb.Queryable<User>()
+            .FirstAsync(
+                x => x.UserGUID == cashierUserGuid && x.IsActive && !x.IsDeleted,
+                cancellationToken);
+        if (user is null)
+        {
+            return null;
+        }
+
+        var allowedStoreCodes = await dbContext.MainDb.Queryable<UserStore>()
+            .InnerJoin<Store>((us, s) => us.StoreGUID == s.StoreGUID)
+            .Where((us, s) =>
+                us.UserGUID == user.UserGUID
+                && !us.IsDeleted
+                && s.IsActive
+                && !s.IsDeleted)
+            .Select((us, s) => s.StoreCode)
+            .ToListAsync(cancellationToken);
+        if (!allowedStoreCodes.Contains(storeCode, StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var snapshot = await GetPermissionSnapshotAsync(user.UserGUID, cancellationToken);
+
+        return new CashierSessionDto(
+            string.IsNullOrWhiteSpace(cashier.HGUID) ? cashier.Id.ToString() : cashier.HGUID,
+            cashierUserGuid,
+            string.IsNullOrWhiteSpace(user.FullName) ? user.Username : user.FullName,
+            storeCode,
+            deviceCode,
+            snapshot.RoleNames,
+            snapshot.PermissionCodes,
+            allowedStoreCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            snapshot.IsSuperAdmin,
+            IsOfflineCached: false,
+            IsEmergencyOverride: false);
+    }
+
+    private async Task<CashierPermissionSnapshot> GetPermissionSnapshotAsync(
+        string userGuid,
+        CancellationToken cancellationToken)
+    {
+        var roleEntries = await dbContext.MainDb.Queryable<UserRole>()
+            .InnerJoin<Role>((ur, r) => ur.RoleGUID == r.RoleGUID)
+            .Where((ur, r) =>
+                ur.UserGUID == userGuid
+                && !ur.IsDeleted
+                && r.IsActive
+                && !r.IsDeleted)
+            .Select((ur, r) => new { r.RoleGUID, r.RoleName })
+            .ToListAsync(cancellationToken);
+        var roleNames = roleEntries
+            .Select(x => x.RoleName)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var isSuperAdmin = roleNames.Any(Permissions.IsSuperAdminRole);
+
+        string[] permissionCodes;
+        if (isSuperAdmin)
+        {
+            permissionCodes = (await dbContext.MainDb.Queryable<SysPermission>()
+                    .Where(x => !x.IsDeleted)
+                    .Select(x => x.Code)
+                    .ToListAsync(cancellationToken))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        else
+        {
+            var roleGuids = roleEntries
+                .Select(x => x.RoleGUID)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var rolePermissionCodes = roleGuids.Count == 0
+                ? []
+                : await dbContext.MainDb.Queryable<SysRolePermission>()
+                    .Where(x => roleGuids.Contains(x.RoleGuid) && !x.IsDeleted)
+                    .Select(x => x.PermissionCode)
+                    .ToListAsync(cancellationToken);
+            var directPermissionCodes = await dbContext.MainDb.Queryable<SysUserPermission>()
+                .Where(x => x.UserGuid == userGuid && !x.IsDeleted)
+                .Select(x => x.PermissionCode)
+                .ToListAsync(cancellationToken);
+
+            // 关键逻辑：权限别名展开保持和后台 RoleService 快照一致。
+            permissionCodes = Permissions.ExpandPermissionCodes(
+                    rolePermissionCodes.Concat(directPermissionCodes))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        return new CashierPermissionSnapshot(roleNames, permissionCodes, isSuperAdmin);
     }
+
+    private sealed record CashierPermissionSnapshot(
+        string[] RoleNames,
+        string[] PermissionCodes,
+        bool IsSuperAdmin);
 }

@@ -880,7 +880,7 @@ export default function ScheduledStatisticsPage() {
           setDetailOpen(false)
           setDetailTask(null)
         }}
-        destroyOnClose
+        destroyOnHidden
       >
         {detailLoading ? (
           <Typography.Text type="secondary">正在加载...</Typography.Text>

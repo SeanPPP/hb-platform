@@ -303,10 +303,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs)
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks)
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings)
-  // App 下载页只认独立系统权限，非 Admin 需要后台显式分配。
-  const canViewAppDownloads = isAdmin || hasPermission(P.System.ViewAppDownloads)
   // OTA 登记和回撤命令属于发布管理动作，和只读下载页权限分开控制。
   const canManageAppDownloads = isAdmin || hasPermission(P.System.ManageAppDownloads)
+  // 管理权限隐含页面可见性，避免只有发布权限时前端路由仍被错误隐藏。
+  const canViewAppDownloads =
+    isAdmin || canManageAppDownloads || hasPermission(P.System.ViewAppDownloads)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)

@@ -178,7 +178,7 @@ public sealed class PosTerminalWorkflowService : IPosTerminalWorkflowService
         totalStopwatch.Stop();
         ConsoleLog.Write(
             "PosScan",
-            $"{FormatTraceId(traceId)}barcode={submittedScanText} storeCode={session.StoreCode} source={source} hit={matchKind} matchCount={matchCount} autoAdded={FormatBool(autoAdded)} cartLines={_cart.Lines.Count} exactLookupElapsedMs={exactLookupElapsedMs} searchElapsedMs={searchElapsedMs} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
+            $"{FormatTraceId(traceId)}barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(submittedScanText)} storeCode={session.StoreCode} source={source} hit={matchKind} matchCount={matchCount} autoAdded={FormatBool(autoAdded)} cartLines={_cart.Lines.Count} exactLookupElapsedMs={exactLookupElapsedMs} searchElapsedMs={searchElapsedMs} totalElapsedMs={totalStopwatch.ElapsedMilliseconds}");
 
         return result;
     }
