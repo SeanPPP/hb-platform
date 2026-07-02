@@ -84,6 +84,11 @@ public static class ServiceRegistration
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IAdvertisementMediaCache, AdvertisementMediaCacheService>(client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(5);
+        });
+        services.AddSingleton<IAdvertisementMediaCacheDirectoryProvider, AdvertisementMediaCacheDirectoryProvider>();
         services.AddHttpClient<IOrderHistoryApiClient, OrderHistoryApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -273,7 +278,8 @@ public static class ServiceRegistration
         services.AddSingleton<IPrintFacade>(sp => new PrintFacade(
             sp.GetRequiredService<IReceiptPrintService>(),
             sp.GetRequiredService<IReceiptPrinterSettingsStore>(),
-            sp.GetRequiredService<IReceiptTextFormatter>()));
+            sp.GetRequiredService<IReceiptTextFormatter>(),
+            sp.GetRequiredService<ILinklyBankReceiptPrinter>()));
 
         services.AddSingleton<IPosInfrastructureFacade>(sp => new PosInfrastructureFacade(
             sp.GetRequiredService<IConnectivityApiClient>(),

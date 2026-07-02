@@ -12,8 +12,10 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 function readCssRule(source: string, selector: string) {
+  // 统一换行，避免 Windows CRLF 让多行选择器匹配失败。
+  const normalizedSource = source.replace(/\r\n/g, '\n')
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = source.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, 'm'))
+  const match = normalizedSource.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, 'm'))
   return match?.[1] ?? ''
 }
 

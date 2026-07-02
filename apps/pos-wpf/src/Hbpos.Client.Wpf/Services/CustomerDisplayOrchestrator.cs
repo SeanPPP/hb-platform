@@ -10,7 +10,12 @@ public interface ICustomerDisplayOrchestrator
 {
     event EventHandler? Closed;
 
-    void LoadFromCart(CustomerDisplayViewModel customerDisplay, PosSessionState session, PosCartService cart);
+    void LoadFromCart(
+        CustomerDisplayViewModel customerDisplay,
+        PosSessionState session,
+        PosCartService cart,
+        bool forceAdvertisementRefresh = false,
+        bool refreshAdvertisements = true);
 
     void Prewarm(CustomerDisplayViewModel customerDisplay, PosSessionState session, PosCartService cart)
     {
@@ -32,6 +37,7 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
     private static readonly TimeSpan DefaultAdvertisementRefreshInterval = TimeSpan.FromMinutes(5);
     private readonly ICustomerDisplayWindowService customerDisplayWindowService;
     private readonly IAdvertisementApiClient advertisementApiClient;
+    private readonly IAdvertisementMediaCache advertisementMediaCache;
     private readonly TimeSpan advertisementRefreshInterval;
     private readonly SemaphoreSlim _advertisementRefreshGate = new(1, 1);
     private IReadOnlyList<AdvertisementPlaybackItemDto> _cachedAdvertisements = [];
@@ -49,18 +55,21 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
 
     public CustomerDisplayOrchestrator(
         ICustomerDisplayWindowService customerDisplayWindowService,
-        IAdvertisementApiClient advertisementApiClient)
-        : this(customerDisplayWindowService, advertisementApiClient, DefaultAdvertisementRefreshInterval)
+        IAdvertisementApiClient advertisementApiClient,
+        IAdvertisementMediaCache? advertisementMediaCache = null)
+        : this(customerDisplayWindowService, advertisementApiClient, DefaultAdvertisementRefreshInterval, advertisementMediaCache)
     {
     }
 
     internal CustomerDisplayOrchestrator(
         ICustomerDisplayWindowService customerDisplayWindowService,
         IAdvertisementApiClient advertisementApiClient,
-        TimeSpan advertisementRefreshInterval)
+        TimeSpan advertisementRefreshInterval,
+        IAdvertisementMediaCache? advertisementMediaCache = null)
     {
         this.customerDisplayWindowService = customerDisplayWindowService;
         this.advertisementApiClient = advertisementApiClient;
+        this.advertisementMediaCache = advertisementMediaCache ?? NullAdvertisementMediaCache.Instance;
         this.advertisementRefreshInterval = advertisementRefreshInterval <= TimeSpan.Zero
             ? DefaultAdvertisementRefreshInterval
             : advertisementRefreshInterval;
@@ -73,7 +82,12 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
         remove => customerDisplayWindowService.Closed -= value;
     }
 
-    public void LoadFromCart(CustomerDisplayViewModel customerDisplay, PosSessionState session, PosCartService cart)
+    public void LoadFromCart(
+        CustomerDisplayViewModel customerDisplay,
+        PosSessionState session,
+        PosCartService cart,
+        bool forceAdvertisementRefresh = false,
+        bool refreshAdvertisements = true)
     {
         var lines = cart.Lines.Select(line => new CustomerDisplayLine(
             line.DisplayName,
@@ -82,8 +96,13 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
             line.UnitPrice,
             line.ActualAmount));
         customerDisplay.TerminalName = session.DeviceCode;
-        customerDisplay.LoadLines(lines, cart.TotalAmount, 0m, cart.DiscountAmount);
-        StartAdvertisementRefresh(customerDisplay, session.StoreCode);
+        customerDisplay.LoadLines(lines, cart.TotalAmount, cart.DiscountAmount);
+        if (!refreshAdvertisements)
+        {
+            return;
+        }
+
+        StartAdvertisementRefresh(customerDisplay, session.StoreCode, forceAdvertisementRefresh);
     }
 
     public void Prewarm(CustomerDisplayViewModel customerDisplay, PosSessionState session, PosCartService cart)
@@ -132,13 +151,21 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
         ConsoleLog.Write(
             "CustomerDisplay",
             $"set-mode start requestedMode={mode} store={session.StoreCode} device={session.DeviceCode} ownerPresent={owner is not null} currentMode={customerDisplayWindowService.Mode}");
+        var forceAdvertisementRefresh = customerDisplayWindowService.Mode == CustomerDisplayWindowMode.Closed
+            && mode != CustomerDisplayWindowMode.Closed;
         if (mode == CustomerDisplayWindowMode.Closed)
         {
             StopAdvertisementRefresh();
         }
         else
         {
-            LoadFromCart(customerDisplay, session, cart);
+            // 只有从关闭状态打开客屏时触发广告刷新；大小切换只同步购物车内容。
+            LoadFromCart(
+                customerDisplay,
+                session,
+                cart,
+                forceAdvertisementRefresh,
+                refreshAdvertisements: forceAdvertisementRefresh);
         }
 
         var result = customerDisplayWindowService.SetMode(mode, customerDisplay, owner);
@@ -211,7 +238,29 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
                 return;
             }
 
-            _cachedAdvertisements = response.Items;
+            var now = DateTimeOffset.UtcNow;
+            IReadOnlyList<AdvertisementPlaybackItemDto> advertisements = response.Items
+                .Where(advertisement => IsCurrentlyEffective(advertisement, now))
+                .ToArray();
+            try
+            {
+                // 客显图片/视频可能较大，先落本地缓存再交给 WPF 播放控件，降低远程流式播放卡顿。
+                advertisements = await advertisementMediaCache
+                    .CacheAsync(advertisements, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ConsoleLog.Write(
+                    "CustomerDisplay",
+                    $"advertisement media cache failed store={normalizedStoreCode} elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.Message}");
+            }
+
+            _cachedAdvertisements = advertisements;
             _hasAdvertisementSnapshot = true;
             _lastAdvertisementStoreCode = normalizedStoreCode;
             _lastAdvertisementRefreshUtc = DateTimeOffset.UtcNow;
@@ -228,7 +277,10 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
         }
     }
 
-    private void StartAdvertisementRefresh(CustomerDisplayViewModel customerDisplay, string storeCode)
+    private void StartAdvertisementRefresh(
+        CustomerDisplayViewModel customerDisplay,
+        string storeCode,
+        bool forceAdvertisementRefresh)
     {
         var normalizedStoreCode = NormalizeStoreCode(storeCode);
         if (string.IsNullOrWhiteSpace(normalizedStoreCode))
@@ -237,7 +289,10 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
             return;
         }
 
-        _ = RefreshAdvertisementsAsync(customerDisplay, normalizedStoreCode);
+        _ = RefreshAdvertisementsAsync(
+            customerDisplay,
+            normalizedStoreCode,
+            force: forceAdvertisementRefresh);
 
         if (_periodicRefreshCts is not null
             && !_periodicRefreshCts.IsCancellationRequested
@@ -327,6 +382,11 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
         return (storeCode ?? string.Empty).Trim();
     }
 
+    private static bool IsCurrentlyEffective(AdvertisementPlaybackItemDto advertisement, DateTimeOffset now)
+    {
+        return advertisement.EffectiveStart <= now && advertisement.EffectiveEnd >= now;
+    }
+
     private sealed class NullAdvertisementApiClient : IAdvertisementApiClient
     {
         public static NullAdvertisementApiClient Instance { get; } = new();
@@ -340,6 +400,18 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
                 NormalizeStoreCode(storeCode),
                 DateTimeOffset.UtcNow,
                 []));
+        }
+    }
+
+    private sealed class NullAdvertisementMediaCache : IAdvertisementMediaCache
+    {
+        public static NullAdvertisementMediaCache Instance { get; } = new();
+
+        public Task<IReadOnlyList<AdvertisementPlaybackItemDto>> CacheAsync(
+            IReadOnlyList<AdvertisementPlaybackItemDto> advertisements,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(advertisements);
         }
     }
 }

@@ -54,6 +54,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IReceiptPrintService _receiptPrintService;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly IReceiptTextFormatter _receiptTextFormatter;
+    private readonly ILinklyBankReceiptPrinter? _linklyBankReceiptPrinter;
     private readonly IInstallmentOrderService _installmentOrderService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
@@ -102,6 +103,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private Task? _posPostShowStartupTask;
     private AppStartupOptions? _startupOptions;
     private bool _disposed;
+    private bool _startupCardRecoveryPendingAfterCashierLogin;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
@@ -384,6 +386,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _receiptPrintService = print.ReceiptPrintService ?? new NoopReceiptPrintService(_localization);
         _receiptPrinterSettingsStore = print.ReceiptPrinterSettingsStore;
         _receiptTextFormatter = print.ReceiptTextFormatter ?? new ReceiptTextFormatter();
+        _linklyBankReceiptPrinter = print.LinklyBankReceiptPrinter;
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _suspendedOrderService = suspendedOrderService;
         _remoteOrderHistoryService = remoteOrderHistoryService;
@@ -483,6 +486,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         LoginCashierCommand = new AsyncRelayCommand(LoginCashierFromInputAsync, CanLoginCashierFromInput);
         CloseCardRecoveryResultDialogCommand = _cardRecoveryPresenter.CloseCardRecoveryResultDialogCommand;
         PrintRecoveredReceiptCommand = _cardRecoveryPresenter.PrintRecoveredReceiptCommand;
+        RetryActiveSessionRecoveryCommand = _cardRecoveryPresenter.RetryActiveSessionRecoveryCommand;
+        ManualConfirmActiveSessionRecoveryCommand = _cardRecoveryPresenter.ManualConfirmActiveSessionRecoveryCommand;
 
         _cart.CartChanged += OnCartChanged;
         _localization.CultureChanged += OnCultureChanged;
@@ -533,6 +538,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _receiptTextFormatter,
             _localization,
             _linklyFallbackPromptCoordinator,
+            _linklyBankReceiptPrinter,
             _mainChildViewModelFactory,
             _cart,
             setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
@@ -704,6 +710,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand CloseCardRecoveryResultDialogCommand { get; }
 
     public IAsyncRelayCommand PrintRecoveredReceiptCommand { get; }
+
+    public IRelayCommand RetryActiveSessionRecoveryCommand { get; }
+
+    public IRelayCommand ManualConfirmActiveSessionRecoveryCommand { get; }
 
     public IRelayCommand ShowCashPaymentCommand { get; }
 
@@ -900,6 +910,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             ApplyCashierSession(emergencySession!);
             StatusMessage = emergencyMessage;
+            await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
             return true;
         }
 
@@ -923,6 +934,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         StatusMessage = result.Session.IsOfflineCached
             ? "已使用离线缓存登录收银员"
             : "收银员登录成功";
+        await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
         return true;
     }
 
@@ -1079,7 +1091,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ConsoleLog.Write(
             "SpecialProducts",
             $"startup home preload skipped store={Session.StoreCode} reason=moved-before-main-window");
-        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await RecoverStartupCardPaymentAttemptAsync();
         await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
         _connectivityTimer.Start();
         BeginInitialCatalogSync();
@@ -1691,6 +1703,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private Task<bool> RecoverCardPaymentAttemptAsync(bool navigateToPaymentOnDraft) =>
         _cardRecoveryPresenter?.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft) ?? Task.FromResult(false);
+
+    private async Task RecoverStartupCardPaymentAttemptAsync()
+    {
+        if (Session.CashierSession is null)
+        {
+            // 启动恢复会触发状态弹窗和小票打印，必须等收银员身份建立后再执行。
+            _startupCardRecoveryPendingAfterCashierLogin = true;
+            return;
+        }
+
+        _startupCardRecoveryPendingAfterCashierLogin = false;
+        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+    }
+
+    private async Task RecoverPendingStartupCardPaymentAttemptAfterLoginAsync()
+    {
+        if (!_startupCardRecoveryPendingAfterCashierLogin)
+        {
+            return;
+        }
+
+        // pending 只消费一次，避免切换/重复登录时重复恢复同一笔启动交易。
+        _startupCardRecoveryPendingAfterCashierLogin = false;
+        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+    }
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;
 

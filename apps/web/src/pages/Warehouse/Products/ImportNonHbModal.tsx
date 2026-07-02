@@ -204,7 +204,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
       title={t('warehouse.importNonHb.title', '导入非国内商品')}
       open={open}
       width={1280}
-      destroyOnClose
+      destroyOnHidden
       okText={t('warehouse.importNonHb.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
       confirmLoading={importing}

@@ -126,4 +126,20 @@ public sealed class KeyboardScannerFallbackBufferTests
         Assert.True(handled);
         Assert.True(dispatchCalled);
     }
+
+    [Theory]
+    [InlineData("", "1", "1")]
+    [InlineData("12", "3", "123")]
+    [InlineData("123", "Back", "12")]
+    [InlineData("", "Back", "")]
+    [InlineData("123", "Clear", "")]
+    [InlineData("123", "A", "123")]
+    [InlineData("123", null, "123")]
+    public void ApplyCashierBarcodeKeyboardInput_updates_cashier_barcode_buffer(
+        string current,
+        string? key,
+        string expected)
+    {
+        Assert.Equal(expected, MainWindow.ApplyCashierBarcodeKeyboardInput(current, key));
+    }
 }

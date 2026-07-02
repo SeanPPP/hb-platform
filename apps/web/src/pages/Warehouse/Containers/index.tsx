@@ -214,7 +214,7 @@ function CreateContainerModal({ open, loading, onCancel, onSubmit }: CreateConta
       confirmLoading={loading}
       okText={t('common.create')}
       cancelText={t('common.cancel')}
-      destroyOnClose
+      destroyOnHidden
       onCancel={() => {
         form.resetFields()
         onCancel()

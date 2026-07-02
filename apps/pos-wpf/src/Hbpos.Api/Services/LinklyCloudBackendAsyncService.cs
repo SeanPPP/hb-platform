@@ -3771,11 +3771,9 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             var session = _sessions.Values
                 .Where(existing =>
                     SameTerminal(existing, environment, storeCode, deviceCode) &&
-                    (existing.IsActive ||
-                        IsFinalForClientRecovery(existing) && existing.ClientAcknowledgedAt is null))
-                // 未确认的最终交易也要挡住新支付，避免成功收尾前重复刷卡覆盖上一笔。
-                .OrderBy(existing => existing.IsActive ? 0 : 1)
-                .ThenByDescending(existing => existing.UpdatedAt)
+                    existing.IsActive)
+                // 中文注释：active 只用于新付款前的即时阻塞；历史终态恢复继续走 resumable，避免清完一条又弹下一条旧记录。
+                .OrderByDescending(existing => existing.UpdatedAt)
                 .ThenByDescending(existing => existing.Id)
                 .FirstOrDefault();
             return Task.FromResult(session is null ? null : Clone(session));
@@ -3820,9 +3818,9 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             }
 
             var next = Clone(session);
-            // 客户端恢复完成后写入确认时间，后�?resumable 查询不再返回这笔已完成会话�?            next.ClientAcknowledgedAt = acknowledgedAt;
-            // 客户端恢复完成后写入确认时间，后续 resumable 查询不再返回这笔已完成会话。
+            // 客户端确认后同步关闭 active 标记，人工确认 pending session 时也不能继续阻塞下一笔付款。
             next.ClientAcknowledgedAt = acknowledgedAt;
+            next.IsActive = false;
             next.UpdatedAt = acknowledgedAt;
             _sessions[key] = Clone(next);
             return Task.FromResult<LinklyCloudBackendSessionRecord?>(next);
@@ -4180,12 +4178,8 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [DeviceCode] = @DeviceCode
-              AND (
-                    [IsActive] = 1
-                    OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
-                  )
+              AND [IsActive] = 1
             ORDER BY
-                CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
                 [UpdatedAt] DESC,
                 [Id] DESC;
             """;
@@ -4242,6 +4236,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             UPDATE [dbo].[POSM_LinklyCloudBackendSession]
             SET [ClientAcknowledgedAt] = @ClientAcknowledgedAt,
+                [IsActive] = 0,
                 [UpdatedAt] = @ClientAcknowledgedAt
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode

@@ -156,7 +156,7 @@ function ProductFormModal({
       title={editingItem ? t('domesticProducts.editTitle', '编辑国内商品 - {{name}}', { name: editingItem.itemNumber || editingItem.name }) : t('domesticProducts.createTitle', '新建国内商品')}
       open={open}
       width={920}
-      destroyOnClose
+      destroyOnHidden
       okText={t('common.save', '保存')}
       cancelText={t('common.cancel', '取消')}
       confirmLoading={saving}
@@ -424,7 +424,7 @@ function SetItemsModal({
       title={product ? t('domesticProducts.setItemsTitle', '套装子项 - {{name}}', { name: product.itemNumber || product.name }) : t('domesticProducts.setItemsTitleShort', '套装子项')}
       open={open}
       width={1100}
-      destroyOnClose
+      destroyOnHidden
       onCancel={onCancel}
       onOk={onSubmit}
       okText={t('common.save', '保存')}

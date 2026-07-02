@@ -52,6 +52,8 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
     private readonly List<AdvertisementPlaybackItemDto> _advertisements = [];
     private int _currentAdvertisementIndex = -1;
 
+    internal Func<DateTimeOffset> UtcNow { get; init; } = () => DateTimeOffset.UtcNow;
+
     public ObservableCollection<CustomerDisplayLine> Lines { get; } = [];
 
     public string TotalToPayLabel => "customer.totalToPay";
@@ -80,14 +82,15 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
         CurrentAdvertisement is not null
         && string.Equals(CurrentAdvertisement.MediaType, "video", StringComparison.OrdinalIgnoreCase);
 
-    public void LoadLines(IEnumerable<CustomerDisplayLine> lines, decimal subtotal, decimal taxAmount, decimal savingsAmount)
+    public void LoadLines(IEnumerable<CustomerDisplayLine> lines, decimal subtotal, decimal savingsAmount)
     {
         var materialized = lines.ToList();
         Lines.ReplaceWith(materialized);
         Subtotal = subtotal;
-        TaxAmount = taxAmount;
         SavingsAmount = savingsAmount;
-        TotalToPay = subtotal + taxAmount - savingsAmount;
+        TotalToPay = subtotal - savingsAmount;
+        // 客显 GST 是含税应付额里的税额组成部分，不能再加回应付金额。
+        TaxAmount = decimal.Round(TotalToPay / 11m, 2, MidpointRounding.AwayFromZero);
         TotalItemQuantity = materialized.Sum(line => line.Quantity);
         SkuCount = materialized.Count;
         IsReadyForPayment = TotalToPay > 0m;
@@ -96,8 +99,9 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
 
     public void LoadAdvertisements(IEnumerable<AdvertisementPlaybackItemDto> advertisements)
     {
+        var now = UtcNow();
         _advertisements.Clear();
-        _advertisements.AddRange(advertisements.Where(IsPlayableAdvertisement));
+        _advertisements.AddRange(advertisements.Where(advertisement => IsPlayableAdvertisement(advertisement, now)));
         IsAdvertisementAvailable = _advertisements.Count > 0;
         _currentAdvertisementIndex = IsAdvertisementAvailable ? 0 : -1;
         CurrentAdvertisement = IsAdvertisementAvailable ? _advertisements[0] : null;
@@ -106,12 +110,17 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
 
     public void AdvanceAdvertisement()
     {
+        RemoveExpiredAdvertisements();
         if (_advertisements.Count == 0)
         {
-            CurrentAdvertisement = null;
-            IsAdvertisementAvailable = false;
-            RefreshIdleAdvertisementVisibility();
+            ClearAdvertisements();
             return;
+        }
+
+        if (CurrentAdvertisement is not null)
+        {
+            _currentAdvertisementIndex = _advertisements.FindIndex(advertisement =>
+                EqualityComparer<AdvertisementPlaybackItemDto>.Default.Equals(advertisement, CurrentAdvertisement));
         }
 
         _currentAdvertisementIndex = (_currentAdvertisementIndex + 1) % _advertisements.Count;
@@ -130,9 +139,7 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
     {
         if (_advertisements.Count == 0)
         {
-            CurrentAdvertisement = null;
-            IsAdvertisementAvailable = false;
-            RefreshIdleAdvertisementVisibility();
+            ClearAdvertisements();
             return;
         }
 
@@ -146,10 +153,7 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
         _advertisements.RemoveAt(currentIndex);
         if (_advertisements.Count == 0)
         {
-            _currentAdvertisementIndex = -1;
-            CurrentAdvertisement = null;
-            IsAdvertisementAvailable = false;
-            RefreshIdleAdvertisementVisibility();
+            ClearAdvertisements();
             return;
         }
 
@@ -177,9 +181,26 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
         IsIdleAdvertisementVisible = IsAdvertisementAvailable && Lines.Count == 0;
     }
 
-    private static bool IsPlayableAdvertisement(AdvertisementPlaybackItemDto advertisement)
+    private void RemoveExpiredAdvertisements()
+    {
+        var now = UtcNow();
+        // 切换广告前先剔除过期素材，当前片段可播完，但不会进入下一轮。
+        _advertisements.RemoveAll(advertisement => !IsPlayableAdvertisement(advertisement, now));
+    }
+
+    private void ClearAdvertisements()
+    {
+        _currentAdvertisementIndex = -1;
+        CurrentAdvertisement = null;
+        IsAdvertisementAvailable = false;
+        RefreshIdleAdvertisementVisibility();
+    }
+
+    private static bool IsPlayableAdvertisement(AdvertisementPlaybackItemDto advertisement, DateTimeOffset now)
     {
         return !string.IsNullOrWhiteSpace(advertisement.MediaUrl)
+            && advertisement.EffectiveStart <= now
+            && advertisement.EffectiveEnd >= now
             && (string.Equals(advertisement.MediaType, "image", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(advertisement.MediaType, "video", StringComparison.OrdinalIgnoreCase));
     }

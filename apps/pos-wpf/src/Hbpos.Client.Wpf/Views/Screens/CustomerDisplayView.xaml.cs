@@ -10,7 +10,6 @@ namespace Hbpos.Client.Wpf.Views.Screens;
 
 public partial class CustomerDisplayView : UserControl
 {
-    private const double CompactPromotionWidthThreshold = 1280;
     private static readonly GridLength VisibleSummaryRowHeight = new(132);
     private static readonly GridLength HiddenSummaryRowHeight = new(0);
     private readonly DispatcherTimer _imageAdvanceTimer = new() { Interval = TimeSpan.FromSeconds(8) };
@@ -100,19 +99,7 @@ public partial class CustomerDisplayView : UserControl
         CartPanel.Visibility = Visibility.Visible;
         Grid.SetRowSpan(PromotionPanel, 1);
 
-        if (UsesCompactPromotionLayout(width))
-        {
-            PromotionBannerRow.Height = new GridLength(154);
-            Grid.SetRow(PromotionPanel, 0);
-            Grid.SetColumn(PromotionPanel, 0);
-            Grid.SetColumnSpan(PromotionPanel, 2);
-            PromotionPanel.Margin = new Thickness(0, 0, 0, 16);
-            Grid.SetColumnSpan(CartPanel, 2);
-            PromotionTextPanel.Margin = new Thickness(28, 20, 160, 18);
-            ApplyPromotionTypography(26, 14);
-            return;
-        }
-
+        // 购物车有商品时广告固定在右侧，避免窄屏横幅布局遮盖购物车。
         PromotionBannerRow.Height = new GridLength(0);
         Grid.SetRow(PromotionPanel, 1);
         Grid.SetColumn(PromotionPanel, 1);
@@ -121,11 +108,6 @@ public partial class CustomerDisplayView : UserControl
         Grid.SetColumnSpan(CartPanel, 1);
         PromotionTextPanel.Margin = new Thickness(48, 44, 48, 44);
         ApplyPromotionTypography(34, 16);
-    }
-
-    public static bool UsesCompactPromotionLayout(double width)
-    {
-        return width > 0 && width < CompactPromotionWidthThreshold;
     }
 
     private void ViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -145,7 +127,12 @@ public partial class CustomerDisplayView : UserControl
     private void RefreshAdvertisementPlayback()
     {
         var hasAdvertisement = _viewModel?.IsAdvertisementAvailable == true;
-        PromotionSubtitleText.Visibility = hasAdvertisement ? Visibility.Visible : Visibility.Collapsed;
+        // 有广告素材时收起默认背景，避免图片/视频被后层渐变遮住。
+        PromotionFallbackBackground.Visibility = hasAdvertisement ? Visibility.Collapsed : Visibility.Visible;
+        // 广告素材播放时隐藏全部促销文字层，避免标签或说明覆盖媒体内容。
+        PromotionTextPanel.Visibility = hasAdvertisement ? Visibility.Collapsed : Visibility.Visible;
+        // 广告素材只展示媒体本身，避免把广告名称叠在图片/视频上。
+        PromotionSubtitleText.Visibility = Visibility.Collapsed;
         PromotionBodyText.Visibility = hasAdvertisement && !string.IsNullOrWhiteSpace(_viewModel?.CurrentAdvertisementDescription)
             ? Visibility.Visible
             : Visibility.Collapsed;

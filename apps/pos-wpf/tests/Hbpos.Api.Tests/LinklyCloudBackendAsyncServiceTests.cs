@@ -603,7 +603,7 @@ namespace Hbpos.Api.Tests;
     }
 
     [Fact]
-    public async Task GetActiveSessionAsync_returns_completed_unacknowledged_session_to_block_new_payment()
+    public async Task GetActiveSessionAsync_ignores_completed_unacknowledged_session_but_resumable_returns_it()
     {
         var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
         await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
@@ -622,11 +622,13 @@ namespace Hbpos.Api.Tests;
         }, CancellationToken.None);
 
         var response = await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+        var resumable = await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
 
-        Assert.NotNull(response);
-        Assert.Equal("completed-unacknowledged", response!.SessionId);
-        Assert.Equal("Completed", response.Status);
-        Assert.Null(response.ClientAcknowledgedAt);
+        Assert.Null(response);
+        Assert.NotNull(resumable);
+        Assert.Equal("completed-unacknowledged", resumable!.SessionId);
+        Assert.Equal("Completed", resumable.Status);
+        Assert.Null(resumable.ClientAcknowledgedAt);
     }
 
     [Fact]
@@ -828,6 +830,43 @@ namespace Hbpos.Api.Tests;
 
         Assert.NotNull(acknowledged.ClientAcknowledgedAt);
         Assert.Equal("completed-session", acknowledged.SessionId);
+        Assert.Null(await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AcknowledgeSessionAsync_clears_pending_active_session_for_manual_recovery()
+    {
+        var service = CreateService(new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted));
+        await service.Repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            SessionId = "pending-session",
+            Status = "Pending",
+            TxnRef = "TXN-PENDING",
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+
+        var acknowledged = await service.AcknowledgeSessionAsync(
+            "S01",
+            "POS-01",
+            "Sandbox",
+            "pending-session",
+            CancellationToken.None);
+
+        var persisted = await service.Repository.GetSessionAsync(
+            "Sandbox",
+            "S01",
+            "POS-01",
+            "pending-session",
+            CancellationToken.None);
+
+        Assert.NotNull(acknowledged.ClientAcknowledgedAt);
+        Assert.NotNull(persisted);
+        Assert.False(persisted.IsActive);
+        Assert.Null(await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
         Assert.Null(await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None));
     }
 
@@ -1135,7 +1174,7 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("Completed", response.Status);
         Assert.Equal("Completed", persisted?.Status);
         Assert.Equal("00", persisted?.ResponseCode);
-        var blockingSession = await repository.GetActiveSessionAsync("Sandbox", "S01", "POS-01", CancellationToken.None);
+        var blockingSession = await repository.GetResumableSessionAsync("Sandbox", "S01", "POS-01", CancellationToken.None);
         Assert.NotNull(blockingSession);
         Assert.Equal(response.SessionId, blockingSession!.SessionId);
         Assert.False(blockingSession.IsActive);
@@ -2118,7 +2157,7 @@ namespace Hbpos.Api.Tests;
         status = await service.GetStatusAsync("S01", "POS-01", "Sandbox", session.SessionId, CancellationToken.None);
         Assert.Equal("Completed", status?.Status);
         Assert.Equal("00", status?.ResponseCode);
-        var blockingSession = await service.GetActiveSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
+        var blockingSession = await service.GetResumableSessionAsync("S01", "POS-01", "Sandbox", CancellationToken.None);
         Assert.NotNull(blockingSession);
         Assert.Equal(session.SessionId, blockingSession!.SessionId);
         Assert.Equal("Completed", blockingSession.Status);

@@ -33,4 +33,15 @@ public sealed class CardPaymentRecoveryCoordinator(
             _ => CardPaymentRecoveryResult.None
         };
     }
+
+    public async Task<CardPaymentRecoveryResult> ManuallyClearActiveSessionAsync(
+        string sessionId,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = await settingsProvider.GetSettingsAsync(cancellationToken);
+        return settings.Processor == CardProcessorKind.Linkly
+            ? await linklyRecoveryService.ManuallyClearActiveSessionAsync(sessionId, session, cancellationToken)
+            : CardPaymentRecoveryResult.None;
+    }
 }

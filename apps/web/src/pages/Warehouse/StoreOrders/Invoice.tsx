@@ -729,7 +729,7 @@ export default function StoreOrderInvoicePage() {
       <Modal
         title={t('warehouse.invoice.emailModalTitle', { lng: emailModalLanguage })}
         open={emailModalOpen}
-        destroyOnClose
+        destroyOnHidden
         okText={t('warehouse.invoice.sendEmail', { lng: emailModalLanguage })}
         cancelText={t('common.cancel', { lng: emailModalLanguage })}
         confirmLoading={sendingEmail || translatingEmailText}

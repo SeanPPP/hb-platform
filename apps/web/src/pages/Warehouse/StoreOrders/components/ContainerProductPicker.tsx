@@ -316,7 +316,7 @@ export default function ContainerProductPicker({
       title={t('storeOrders.containerPickerTitle')}
       open={open}
       width={1000}
-      destroyOnClose
+      destroyOnHidden
       onCancel={onClose}
       footer={null}
     >

@@ -113,6 +113,36 @@ public sealed class LinklySignatureSlipPrinterTests
         Assert.Empty(notifier.Markers);
     }
 
+    [Theory]
+    [InlineData(LinklyBankReceiptKind.RecoveredApproved, "*** APPROVED RECOVERY ***")]
+    [InlineData(LinklyBankReceiptKind.RecoveredFailed, "*** NOT PAID ***")]
+    public async Task PrintAsync_recovered_receipts_print_status_header_without_signature_area(
+        LinklyBankReceiptKind kind,
+        string expectedHeader)
+    {
+        var driver = new RecordingReceiptPrinterDriver();
+        var notifier = new RecordingCardReceiptPrintedNotifier();
+        var printer = new LinklyBankReceiptPrinter(
+            new StaticReceiptPrinterSettingsStore(),
+            driver,
+            [notifier]);
+
+        var result = await printer.PrintAsync(
+            "Sandbox",
+            "recovered-session-1",
+            "BANK RECEIPT LINE",
+            kind,
+            responseCode: "00",
+            responseText: "APPROVED");
+
+        Assert.True(result.Succeeded);
+        var document = Assert.Single(driver.Documents);
+        Assert.Contains(expectedHeader, document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("BANK RECEIPT LINE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("CUSTOMER SIGNATURE", document.PlainText, StringComparison.Ordinal);
+        Assert.Empty(notifier.Markers);
+    }
+
     [Fact]
     public async Task PrintAsync_signature_required_marks_backend_receipt_printed()
     {

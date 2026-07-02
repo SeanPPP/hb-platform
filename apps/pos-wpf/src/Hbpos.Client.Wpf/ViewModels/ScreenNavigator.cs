@@ -338,7 +338,7 @@ internal sealed class ScreenNavigator
 
     public void ShowCustomerDisplay()
     {
-        LoadCustomerDisplayFromCart();
+        LoadCustomerDisplayFromCart(forceAdvertisementRefresh: true);
         SetCurrentScreen(CustomerDisplay);
     }
 
@@ -476,9 +476,14 @@ internal sealed class ScreenNavigator
 
     // ── Helper methods ──
 
-    public void LoadCustomerDisplayFromCart()
+    public void LoadCustomerDisplayFromCart(bool forceAdvertisementRefresh = false)
     {
-        _customerDisplayOrchestrator.LoadFromCart(CustomerDisplay, Session, _cart);
+        // 显式打开客显页面要立即拿最新广告；购物车变化调用保持默认节流。
+        _customerDisplayOrchestrator.LoadFromCart(
+            CustomerDisplay,
+            Session,
+            _cart,
+            forceAdvertisementRefresh: forceAdvertisementRefresh);
     }
 
     public PosCartServiceSnapshot? CreateCurrentCartSnapshot()

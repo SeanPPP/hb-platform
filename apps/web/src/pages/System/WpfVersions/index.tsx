@@ -731,7 +731,7 @@ export default function WpfVersionsPage() {
         open={uploadOpen}
         width={560}
         onClose={closeUploadDrawer}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form<UploadFormValues>
           form={uploadForm}

@@ -1579,7 +1579,7 @@ export default function ProductGradeManagementPage() {
         confirmLoading={batchCategorySaving}
         maskClosable={!batchCategorySaving}
         width={640}
-        destroyOnClose
+        destroyOnHidden
         okButtonProps={{
           disabled:
             categoryLoading
@@ -1620,7 +1620,7 @@ export default function ProductGradeManagementPage() {
         confirmLoading={categorySaving}
         maskClosable={!categorySaving}
         width={640}
-        destroyOnClose
+        destroyOnHidden
         okButtonProps={{
           disabled:
             categoryLoading

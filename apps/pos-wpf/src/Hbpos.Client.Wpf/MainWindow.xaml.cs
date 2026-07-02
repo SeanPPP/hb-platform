@@ -83,6 +83,42 @@ public partial class MainWindow : Window
         ExecuteCashierLoginCommandFromPasswordBox();
     }
 
+    private void CashierBarcodeKeyboardButtonClick(object sender, RoutedEventArgs e)
+    {
+        var key = (sender as Button)?.Tag as string;
+        var nextValue = ApplyCashierBarcodeKeyboardInput(CashierLoginOverlayPasswordBox.Password, key);
+
+        // 关键逻辑：屏幕键盘只服务遮罩弹窗，顶部小输入框和扫码枪登录流程保持不变。
+        CashierLoginOverlayPasswordBox.Password = nextValue;
+        _viewModel.CashierBarcodeInput = nextValue;
+        CashierLoginOverlayPasswordBox.Focus();
+        Keyboard.Focus(CashierLoginOverlayPasswordBox);
+    }
+
+    internal static string ApplyCashierBarcodeKeyboardInput(string current, string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return current;
+        }
+
+        if (string.Equals(key, "Clear", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        if (string.Equals(key, "Back", StringComparison.OrdinalIgnoreCase))
+        {
+            return current.Length == 0
+                ? string.Empty
+                : current[..^1];
+        }
+
+        return key.Length == 1 && char.IsDigit(key[0])
+            ? current + key
+            : current;
+    }
+
     private void CashierLoginButtonClick(object sender, RoutedEventArgs e)
     {
         ClearCashierBarcodePasswordBoxesAfterLogin();
