@@ -603,7 +603,7 @@ export default function PosmSalesOrdersPage() {
         ]}
         width={900}
         centered
-        destroyOnClose
+        destroyOnHidden
       >
         <div style={{ height: 600, overflow: 'auto' }}>
           {pdfLoading ? (

@@ -868,7 +868,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       title={t('storeOrders.selectProductTitle')}
       open={open}
       width={1080}
-      destroyOnClose
+      destroyOnHidden
       okText={t('storeOrders.addSelected', { count: selectedRowKeys.length })}
       cancelText={t('common.close')}
       confirmLoading={loading}
@@ -1039,7 +1039,7 @@ function BatchEditModal({ open, loading, selectedCount, onCancel, onConfirm }: B
     <Modal
       title={t('storeOrders.batchModifyTitle')}
       open={open}
-      destroyOnClose
+      destroyOnHidden
       okText={t('storeOrders.applyTo', { count: selectedCount })}
       cancelText={t('common.close')}
       confirmLoading={loading}
@@ -3294,7 +3294,7 @@ export default function StoreOrderDetailPage() {
               title={t('storeOrders.detail.excelPasteTitle')}
               open={pasteModalOpen}
               width={880}
-              destroyOnClose
+              destroyOnHidden
               onCancel={() => setPasteModalOpen(false)}
               footer={[
                 <Button key="cancel" onClick={() => setPasteModalOpen(false)}>

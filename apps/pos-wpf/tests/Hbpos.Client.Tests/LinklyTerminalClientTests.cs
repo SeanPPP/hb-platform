@@ -66,6 +66,8 @@ public sealed class LinklyTerminalClientTests
         Assert.Equal("10", responseJson.GetProperty("amtPurchase").GetRawText());
         var disconnectEvent = AssertEvent(events, "disconnect", "succeeded", "response");
         Assert.True(disconnectEvent.GetProperty("response").GetProperty("disconnected").GetBoolean());
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
     }
 
     [Fact]
@@ -84,6 +86,8 @@ public sealed class LinklyTerminalClientTests
         Assert.True(connectEvent.TryGetProperty("request", out _));
         Assert.True(connectEvent.TryGetProperty("response", out var responseJson));
         Assert.False(responseJson.GetProperty("connected").GetBoolean());
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
     }
 
     [Fact]
@@ -96,6 +100,8 @@ public sealed class LinklyTerminalClientTests
 
         Assert.False(result.Approved);
         Assert.Contains("could not be sent", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
     }
 
     [Fact]
@@ -116,6 +122,35 @@ public sealed class LinklyTerminalClientTests
         Assert.False(result.Approved);
         Assert.Equal("ANZ:TXN-DECLINE", result.Reference);
         Assert.Contains("DECLINED", result.Message);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
+    }
+
+    [Fact]
+    public async Task PurchaseWithReferenceAsync_uses_supplied_txn_ref_and_closes_socket()
+    {
+        var eftClient = new FakeLinklyEftClient(new EFTTransactionResponse
+        {
+            Success = true,
+            TxnRef = "LOCAL-TXN-001",
+            AmtPurchase = 10m,
+            ResponseCode = "00",
+            ResponseText = "APPROVED"
+        });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.PurchaseWithReferenceAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "LOCAL-TXN-001");
+
+        Assert.True(result.Approved);
+        Assert.Equal("ANZ:LOCAL-TXN-001", result.Reference);
+        var request = Assert.IsType<EFTTransactionRequest>(eftClient.LastRequest);
+        Assert.Equal("LOCAL-TXN-001", request.TxnRef);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
     }
 
     [Fact]
@@ -138,6 +173,42 @@ public sealed class LinklyTerminalClientTests
         Assert.True(result.Approved);
         Assert.StartsWith("ANZ:TERM1", result.Reference, StringComparison.Ordinal);
         Assert.IsType<EFTGetLastTransactionRequest>(getLastClient.LastRequest);
+        Assert.Equal(1, purchaseClient.DisconnectCallCount);
+        Assert.True(purchaseClient.Disposed);
+        Assert.Equal(1, getLastClient.DisconnectCallCount);
+        Assert.True(getLastClient.Disposed);
+    }
+
+    [Fact]
+    public async Task RecoverLastTransactionAsync_sends_get_last_request_and_closes_socket()
+    {
+        var eftClient = new FakeLinklyEftClient(
+            new EFTReceiptResponse
+            {
+                ReceiptText = ["MERCHANT COPY", "APPROVED"]
+            },
+            new EFTGetLastTransactionResponse
+            {
+                Success = true,
+                LastTransactionSuccess = true,
+                TxnRef = "LOCAL-TXN-001",
+                AmtPurchase = 10m,
+                ResponseCode = "00",
+                ResponseText = "APPROVED"
+            });
+        var client = new LinklyTerminalClient(new FakeLinklyEftClientFactory(eftClient));
+
+        var result = await client.RecoverLastTransactionAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(),
+            "LOCAL-TXN-001");
+
+        Assert.True(result.Approved);
+        Assert.Equal("ANZ:LOCAL-TXN-001", result.Reference);
+        Assert.IsType<EFTGetLastTransactionRequest>(eftClient.LastRequest);
+        Assert.Equal(1, eftClient.DisconnectCallCount);
+        Assert.True(eftClient.Disposed);
     }
 
     [Fact]
@@ -211,6 +282,10 @@ public sealed class LinklyTerminalClientTests
         Assert.Equal("ANZ:TERM12605260000000", result.Reference);
         Assert.IsType<EFTSendKeyRequest>(purchaseClient.Requests[1]);
         Assert.IsType<EFTGetLastTransactionRequest>(getLastClient.LastRequest);
+        Assert.Equal(1, purchaseClient.DisconnectCallCount);
+        Assert.True(purchaseClient.Disposed);
+        Assert.Equal(1, getLastClient.DisconnectCallCount);
+        Assert.True(getLastClient.Disposed);
         var events = logs.ReadJsonEvents("LinklyLocal");
         var cancelRequestEvent = AssertEvent(events, "cancel", "sent", "request");
         Assert.True(cancelRequestEvent.GetProperty("request").TryGetProperty("key", out _));
@@ -247,6 +322,10 @@ public sealed class LinklyTerminalClientTests
         Assert.True(result.Approved);
         Assert.Equal("ANZ:TERM12605260000000", result.Reference);
         Assert.IsType<EFTGetLastTransactionRequest>(getLastClient.LastRequest);
+        Assert.Equal(1, purchaseClient.DisconnectCallCount);
+        Assert.True(purchaseClient.Disposed);
+        Assert.Equal(1, getLastClient.DisconnectCallCount);
+        Assert.True(getLastClient.Disposed);
         var events = logs.ReadJsonEvents("LinklyLocal");
         var failureEvent = AssertEvent(events, "transaction", "failed", "response");
         Assert.True(failureEvent.TryGetProperty("request", out var failedRequest));
@@ -272,6 +351,10 @@ public sealed class LinklyTerminalClientTests
 
         Assert.False(result.Approved);
         Assert.Equal("ANZ Linkly transaction timed out.", result.Message);
+        Assert.Equal(1, purchaseClient.DisconnectCallCount);
+        Assert.True(purchaseClient.Disposed);
+        Assert.Equal(1, getLastClient.DisconnectCallCount);
+        Assert.True(getLastClient.Disposed);
     }
 
     [Fact]
@@ -293,6 +376,10 @@ public sealed class LinklyTerminalClientTests
 
         Assert.False(result.Approved);
         Assert.Contains("DECLINED", result.Message);
+        Assert.Equal(1, purchaseClient.DisconnectCallCount);
+        Assert.True(purchaseClient.Disposed);
+        Assert.Equal(1, getLastClient.DisconnectCallCount);
+        Assert.True(getLastClient.Disposed);
     }
 
     [Fact]
@@ -394,6 +481,12 @@ public sealed class LinklyTerminalClientTests
 
         public bool WaitForCancellationOnRead { get; init; }
 
+        public int DisconnectCallCount { get; private set; }
+
+        public int DisposeCallCount { get; private set; }
+
+        public bool Disposed => DisposeCallCount > 0;
+
         public async Task<bool> ConnectAsync(string hostName, int hostPort, bool useSsl, bool useKeepAlive)
         {
             if (ConnectException is not null)
@@ -447,11 +540,13 @@ public sealed class LinklyTerminalClientTests
 
         public bool Disconnect()
         {
+            DisconnectCallCount++;
             return true;
         }
 
         public void Dispose()
         {
+            DisposeCallCount++;
         }
     }
 

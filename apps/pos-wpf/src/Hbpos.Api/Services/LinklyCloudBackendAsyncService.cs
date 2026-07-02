@@ -823,6 +823,12 @@ public class LinklyCloudBackendAsyncService(
             out var responseTxnRef,
             out var responseDate,
             out var responseTime);
+        var resolvedResponseTxnRef = await ResolveStatusTestTxnRefAsync(
+            responseTxnRef,
+            normalizedEnvironment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken);
         var succeeded = transportResponse.StatusCode == HttpStatusCode.OK &&
             status &&
             IsSuccessfulStatusTestResponse(responseCode);
@@ -837,7 +843,7 @@ public class LinklyCloudBackendAsyncService(
             succeeded,
             responseCode,
             responseText,
-            responseTxnRef,
+            resolvedResponseTxnRef,
             responseDate,
             responseTime,
             message);
@@ -858,6 +864,7 @@ public class LinklyCloudBackendAsyncService(
                 result.HttpStatus,
                 result.ResponseCode,
                 result.ResponseText,
+                result.TxnRef,
                 result.ResponseTxnRef,
                 result.ResponseDate,
                 result.ResponseTime
@@ -867,6 +874,28 @@ public class LinklyCloudBackendAsyncService(
                 result.RequestedAt
             });
         return result;
+    }
+
+    private async Task<string?> ResolveStatusTestTxnRefAsync(
+        string? responseTxnRef,
+        string normalizedEnvironment,
+        string normalizedStoreCode,
+        string normalizedDeviceCode,
+        CancellationToken cancellationToken)
+    {
+        var normalizedResponseTxnRef = NormalizeOptional(responseTxnRef);
+        if (normalizedResponseTxnRef is not null)
+        {
+            return normalizedResponseTxnRef;
+        }
+
+        // 3.1.1/3.1.2 的 Status 请求不能带 TxnRef；终端回包省略时，用本机最近未确认交易补齐响应证据。
+        var latestSession = await repository.GetResumableSessionAsync(
+            normalizedEnvironment,
+            normalizedStoreCode,
+            normalizedDeviceCode,
+            cancellationToken);
+        return NormalizeOptional(latestSession?.TxnRef);
     }
 
     public async Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
@@ -3739,8 +3768,14 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
     {
         lock (_gate)
         {
-            var session = _sessions.Values.FirstOrDefault(existing =>
-                existing.IsActive && SameTerminal(existing, environment, storeCode, deviceCode));
+            var session = _sessions.Values
+                .Where(existing =>
+                    SameTerminal(existing, environment, storeCode, deviceCode) &&
+                    existing.IsActive)
+                // 中文注释：active 只用于新付款前的即时阻塞；历史终态恢复继续走 resumable，避免清完一条又弹下一条旧记录。
+                .OrderByDescending(existing => existing.UpdatedAt)
+                .ThenByDescending(existing => existing.Id)
+                .FirstOrDefault();
             return Task.FromResult(session is null ? null : Clone(session));
         }
     }
@@ -3783,9 +3818,9 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             }
 
             var next = Clone(session);
-            // 客户端恢复完成后写入确认时间，后�?resumable 查询不再返回这笔已完成会话�?            next.ClientAcknowledgedAt = acknowledgedAt;
-            // 客户端恢复完成后写入确认时间，后续 resumable 查询不再返回这笔已完成会话。
+            // 客户端确认后同步关闭 active 标记，人工确认 pending session 时也不能继续阻塞下一笔付款。
             next.ClientAcknowledgedAt = acknowledgedAt;
+            next.IsActive = false;
             next.UpdatedAt = acknowledgedAt;
             _sessions[key] = Clone(next);
             return Task.FromResult<LinklyCloudBackendSessionRecord?>(next);
@@ -4144,7 +4179,9 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
               AND [StoreCode] = @StoreCode
               AND [DeviceCode] = @DeviceCode
               AND [IsActive] = 1
-            ORDER BY [UpdatedAt] DESC, [Id] DESC;
+            ORDER BY
+                [UpdatedAt] DESC,
+                [Id] DESC;
             """;
 
         return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendSessionRecord>(
@@ -4199,6 +4236,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         const string sql = """
             UPDATE [dbo].[POSM_LinklyCloudBackendSession]
             SET [ClientAcknowledgedAt] = @ClientAcknowledgedAt,
+                [IsActive] = 0,
                 [UpdatedAt] = @ClientAcknowledgedAt
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode

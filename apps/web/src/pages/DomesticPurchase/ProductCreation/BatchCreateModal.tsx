@@ -529,7 +529,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       width={1120}
       style={{ top: 40, maxWidth: 'calc(100vw - 32px)' }}
       footer={null}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form form={form} layout="vertical">
         <Steps current={currentStep} items={steps} style={{ marginBottom: 24 }} />

@@ -31,9 +31,14 @@ public static class ServiceRegistration
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+        services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
+        services.AddSingleton<EmergencyOverridePasswordService>();
+        services.AddSingleton<ICashierLoginService, CashierLoginService>();
         services.AddSingleton<IScannerBindingService, ScannerBindingService>();
         services.AddSingleton<ILocalDeviceRepository, LocalDeviceRepository>();
         services.AddSingleton<ILocalCatalogRepository, LocalCatalogRepository>();
+        services.AddSingleton<ILocalPromotionRepository, LocalPromotionRepository>();
+        services.AddSingleton<IPromotionEvaluationService, PromotionEvaluationService>();
         services.AddSingleton<ILocalOrderRepository, LocalOrderRepository>();
         services.AddSingleton<ILocalCardPaymentAttemptRepository, LocalCardPaymentAttemptRepository>();
         services.AddSingleton<ILinklyPaymentAttemptContextAccessor, LinklyPaymentAttemptContextAccessor>();
@@ -61,12 +66,29 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(3);
         });
+        services.AddHttpClient<ICashierLoginApiClient, CashierLoginApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IAdvertisementApiClient, AdvertisementApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(5);
         })
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IPromotionApiClient, PromotionApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(5);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IAdvertisementMediaCache, AdvertisementMediaCacheService>(client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(5);
+        });
+        services.AddSingleton<IAdvertisementMediaCacheDirectoryProvider, AdvertisementMediaCacheDirectoryProvider>();
         services.AddHttpClient<IOrderHistoryApiClient, OrderHistoryApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -112,6 +134,24 @@ public static class ServiceRegistration
         services.AddSingleton<IShellCatalogService, ShellCatalogService>();
         services.AddSingleton<IMainShellStartupService, MainShellStartupService>();
         services.AddSingleton<IShellSyncCenterService, ShellSyncCenterService>();
+        services.AddSingleton<AppUpdateState>();
+        services.AddSingleton<IAppVersionProvider, AppVersionProvider>();
+        services.AddSingleton<IAppUpdateChannelProvider, AppUpdateChannelProvider>();
+        services.AddHttpClient<IAppUpdateApiClient, AppUpdateApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddHttpClient<IAppUpdateDownloadService, AppUpdateDownloadService>(client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(5);
+        });
+        services.AddSingleton<IAppUpdateDownloadDirectoryProvider, AppUpdateDownloadDirectoryProvider>();
+        services.AddSingleton<IProcessLauncher, ProcessLauncher>();
+        services.AddSingleton<IAppUpdateInstallSafetyGuard, ShellAppUpdateInstallSafetyGuard>();
+        services.AddSingleton<IAppUpdateInstallerLauncher, AppUpdateInstallerLauncher>();
+        services.AddSingleton<IAppUpdatePromptService, WpfAppUpdatePromptService>();
+        services.AddSingleton<IAppUpdateCoordinator, AppUpdateCoordinator>();
         services.AddSingleton<ICashPaymentWorkflowService, CashPaymentWorkflowService>();
         services.AddSingleton<CardPaymentRecoveryService>();
         services.AddSingleton<ISquarePaymentRecoveryService, SquarePaymentRecoveryService>();
@@ -238,7 +278,8 @@ public static class ServiceRegistration
         services.AddSingleton<IPrintFacade>(sp => new PrintFacade(
             sp.GetRequiredService<IReceiptPrintService>(),
             sp.GetRequiredService<IReceiptPrinterSettingsStore>(),
-            sp.GetRequiredService<IReceiptTextFormatter>()));
+            sp.GetRequiredService<IReceiptTextFormatter>(),
+            sp.GetRequiredService<ILinklyBankReceiptPrinter>()));
 
         services.AddSingleton<IPosInfrastructureFacade>(sp => new PosInfrastructureFacade(
             sp.GetRequiredService<IConnectivityApiClient>(),
@@ -269,6 +310,7 @@ public static class ServiceRegistration
             sp.GetRequiredService<PosTerminalWorkflowFactory>(),
             sp.GetRequiredService<ISuspendedOrderService>(),
             sp.GetRequiredService<IRemoteOrderHistoryService>(),
+            promotionEvaluationService: sp.GetRequiredService<IPromotionEvaluationService>(),
             receiptReturnsWorkflowService: sp.GetRequiredService<IReceiptReturnsWorkflowService>(),
             orderUploadExecutionService: sp.GetRequiredService<IOrderUploadExecutionService>(),
             dailyCloseService: sp.GetRequiredService<IDailyCloseService>(),
@@ -276,7 +318,13 @@ public static class ServiceRegistration
             cashDrawerService: sp.GetRequiredService<ICashDrawerService>(),
             installmentOrderService: sp.GetRequiredService<IInstallmentOrderService>(),
             testSalesDataResetService: sp.GetRequiredService<ITestSalesDataResetService>(),
-            windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>()));
+            windowOwnerProvider: sp.GetRequiredService<IWindowOwnerProvider>(),
+            appUpdateState: sp.GetRequiredService<AppUpdateState>(),
+            checkForAppUpdateAsync: cancellationToken => sp.GetRequiredService<IAppUpdateCoordinator>().CheckForUpdatesAsync(manual: true, cancellationToken),
+            cashierSessionContext: sp.GetRequiredService<ICashierSessionContext>(),
+            cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
+            emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
+            enforceCashierPermissions: true));
         services.AddSingleton<MainWindow>();
 
         return services;

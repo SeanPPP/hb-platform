@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -15,6 +16,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly PosCartService _cart;
     private readonly ICashPaymentWorkflowService _workflowService;
     private readonly ILocalizationService? _localization;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private readonly PaymentNavigationActions _navigationActions;
 
     internal PaymentNavigationActions NavigationActions => _navigationActions;
@@ -83,7 +86,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Action? onBackToPos = null,
         Action? onShowInstallmentCenter = null,
         Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
-        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -92,7 +97,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onBackToPos,
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
-            linklyFallbackPromptCoordinator)
+            linklyFallbackPromptCoordinator,
+            cashierSessionContext,
+            enforcePermissionsWhenNoCashier)
     {
     }
 
@@ -104,12 +111,21 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Action? onBackToPos = null,
         Action? onShowInstallmentCenter = null,
         Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
-        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null)
+        ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _cart = cart;
         _workflowService = workflowService;
         _session = session;
         _localization = localization;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         _navigationActions = PaymentNavigationActions.FromLegacyCallbacks(
             onBackToPos,
             onShowInstallmentCenter,
@@ -304,6 +320,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+
         PendingSyncCount = value.PendingSyncCount;
         NotifyPaymentCommandStates();
     }
@@ -399,6 +420,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
+        if (!TryRequirePermission(GetTenderPermission(method)))
+        {
+            return;
+        }
+
         if (!TryApplyAddTenderPlan(
                 _tenderController.CreateAddTenderPlan(BuildAddTenderRequest(method)),
                 out var amountText,
@@ -521,12 +547,22 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             IsSettlementComplete() &&
             (IsPaymentMode || IsRefundMode))
         {
+            if (!TryRequirePermission(Permissions.PosTerminal.Payment.Confirm))
+            {
+                return;
+            }
+
             await CompletePaymentFromTendersAsync();
         }
     }
 
     private void RemoveTender(PaymentTender? tender)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Payment.RemoveTender))
+        {
+            return;
+        }
+
         if (tender is null)
         {
             return;
@@ -555,6 +591,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task ConfirmPaymentAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Payment.Confirm))
+        {
+            return;
+        }
+
         if (IsPaymentInteractionLocked)
         {
             return;
@@ -904,6 +945,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void ShowInstallmentCenter()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.View))
+        {
+            return;
+        }
+
         // 分期流程暂时独立于现有收款流程，只负责跳转到新骨架页面。
         _navigationActions.ShowInstallmentCenter?.Invoke();
     }
@@ -1267,6 +1313,31 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _statusKey = key;
         _statusTextOverride = statusText;
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        // 中文注释：付款命令必须在执行前复核当前收银员权限。
+        SetStatus("payment.status.permissionDenied", message);
+        NotifyPaymentCommandStates();
+        return false;
+    }
+
+    private static string GetTenderPermission(PaymentMethodKind method)
+    {
+        return method switch
+        {
+            PaymentMethodKind.Cash => Permissions.PosTerminal.Payment.TakeCash,
+            PaymentMethodKind.Card => Permissions.PosTerminal.Payment.TakeCard,
+            PaymentMethodKind.Voucher => Permissions.PosTerminal.Payment.TakeVoucher,
+            _ => Permissions.PosTerminal.Payment.Confirm
+        };
     }
 
     internal string T(string key)

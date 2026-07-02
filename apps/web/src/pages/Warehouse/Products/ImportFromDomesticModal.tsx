@@ -377,7 +377,7 @@ export default function ImportFromDomesticModal({
       open={open}
       width={1400}
       wrapClassName="warehouse-import-domestic-modal"
-      destroyOnClose
+      destroyOnHidden
       okText={t('warehouse.importDomestic.importSelected', '导入选中 ({{count}})', { count: selectedRowKeys.length })}
       cancelText={t('common.close', '关闭')}
       confirmLoading={importing}

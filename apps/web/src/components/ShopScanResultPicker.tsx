@@ -33,7 +33,7 @@ export default function ShopScanResultPicker({
       onCancel={onCancel}
       footer={null}
       width={760}
-      destroyOnClose
+      destroyOnHidden
     >
       <div className="shop-scan-picker-list">
         {items.map((item) => {

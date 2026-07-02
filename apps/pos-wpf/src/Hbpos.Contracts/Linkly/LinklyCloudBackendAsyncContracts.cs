@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Hbpos.Contracts.Linkly;
 
 public static class LinklyBackendPaymentReference
@@ -204,7 +206,11 @@ public sealed record LinklyCloudBackendStatusTestResponse(
     string? ResponseTxnRef,
     string? ResponseDate,
     string? ResponseTime,
-    string Message);
+    string Message)
+{
+    [JsonPropertyName("txnRef")]
+    public string? TxnRef => ResponseTxnRef;
+}
 
 public sealed record LinklyCloudBackendTerminalCredentialResponse(
     string Environment,

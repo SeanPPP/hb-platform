@@ -27,6 +27,12 @@ namespace BlazorApp.Shared.Models
         public string StoreCode { get; set; } = string.Empty;
 
         /// <summary>
+        /// 关联后台用户，全局权限按该用户计算。
+        /// </summary>
+        [SugarColumn(ColumnName = "UserGUID", Length = 50, IsNullable = true)]
+        public string? UserGUID { get; set; }
+
+        /// <summary>
         /// 操作用户
         /// </summary>
         [SugarColumn(ColumnName = "OperatorUser", Length = 100)]

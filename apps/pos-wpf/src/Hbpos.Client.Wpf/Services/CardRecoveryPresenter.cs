@@ -12,6 +12,13 @@ namespace Hbpos.Client.Wpf.Services;
 
 internal sealed class CardRecoveryPresenter
 {
+    private enum ActiveSessionRecoveryDialogAction
+    {
+        Close,
+        Retry,
+        ManualConfirm
+    }
+
     private readonly ICardPaymentRecoveryService? _cardPaymentRecoveryService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
     private readonly IReceiptQueryService _receiptQueryService;
@@ -19,6 +26,7 @@ internal sealed class CardRecoveryPresenter
     private readonly IReceiptTextFormatter _receiptTextFormatter;
     private readonly ILocalizationService _localization;
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
+    private readonly ILinklyBankReceiptPrinter? _linklyBankReceiptPrinter;
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
     private readonly PosCartService _cart;
     private readonly Action<string?>? _setStatusMessage;
@@ -30,12 +38,14 @@ internal sealed class CardRecoveryPresenter
     private readonly Action? _onCardRecoveryDraftRestored;
     private readonly Func<Task>? _refreshPendingSyncAsync;
     private readonly Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? _printReceiptAsync;
+    private readonly Func<bool>? _canPrintReceipt;
     private readonly Action? _notifyShowCashPaymentCanExecuteChanged;
     private readonly Action? _notifyPrintRecoveredReceiptCanExecuteChanged;
     private readonly Action<string>? _notifyPropertyChanged;
 
     private Task<CardPaymentRecoveryResult>? _cardPaymentRecoveryTask;
     private ReceiptDetails? _cardRecoveryDialogReceipt;
+    private TaskCompletionSource<ActiveSessionRecoveryDialogAction>? _activeSessionRecoveryDialogActionSource;
 
     public CardRecoveryPresenter(
         ICardPaymentRecoveryService? cardPaymentRecoveryService,
@@ -45,6 +55,7 @@ internal sealed class CardRecoveryPresenter
         IReceiptTextFormatter receiptTextFormatter,
         ILocalizationService localization,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator,
+        ILinklyBankReceiptPrinter? linklyBankReceiptPrinter,
         MainChildViewModelFactory mainChildViewModelFactory,
         PosCartService cart,
         Action<string?>? setStatusMessage = null,
@@ -56,6 +67,7 @@ internal sealed class CardRecoveryPresenter
         Action? onCardRecoveryDraftRestored = null,
         Func<Task>? refreshPendingSyncAsync = null,
         Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? printReceiptAsync = null,
+        Func<bool>? canPrintReceipt = null,
         Action? notifyShowCashPaymentCanExecuteChanged = null,
         Action? notifyPrintRecoveredReceiptCanExecuteChanged = null,
         Action<string>? notifyPropertyChanged = null)
@@ -67,6 +79,7 @@ internal sealed class CardRecoveryPresenter
         _receiptTextFormatter = receiptTextFormatter;
         _localization = localization;
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
+        _linklyBankReceiptPrinter = linklyBankReceiptPrinter;
         _mainChildViewModelFactory = mainChildViewModelFactory;
         _cart = cart;
         _setStatusMessage = setStatusMessage;
@@ -78,12 +91,17 @@ internal sealed class CardRecoveryPresenter
         _onCardRecoveryDraftRestored = onCardRecoveryDraftRestored;
         _refreshPendingSyncAsync = refreshPendingSyncAsync;
         _printReceiptAsync = printReceiptAsync;
+        _canPrintReceipt = canPrintReceipt;
         _notifyShowCashPaymentCanExecuteChanged = notifyShowCashPaymentCanExecuteChanged;
         _notifyPrintRecoveredReceiptCanExecuteChanged = notifyPrintRecoveredReceiptCanExecuteChanged;
         _notifyPropertyChanged = notifyPropertyChanged;
 
         CloseCardRecoveryResultDialogCommand = new RelayCommand(CloseCardRecoveryResultDialog);
         PrintRecoveredReceiptCommand = new AsyncRelayCommand(PrintRecoveredReceiptAsync, CanPrintRecoveredReceipt);
+        RetryActiveSessionRecoveryCommand = new RelayCommand(
+            () => CompleteActiveSessionRecoveryDialog(ActiveSessionRecoveryDialogAction.Retry));
+        ManualConfirmActiveSessionRecoveryCommand = new RelayCommand(
+            () => CompleteActiveSessionRecoveryDialog(ActiveSessionRecoveryDialogAction.ManualConfirm));
 
         if (_cardRecoveryResultDialogService is not null)
         {
@@ -102,6 +120,10 @@ internal sealed class CardRecoveryPresenter
     public IRelayCommand CloseCardRecoveryResultDialogCommand { get; }
 
     public IAsyncRelayCommand PrintRecoveredReceiptCommand { get; }
+
+    public IRelayCommand RetryActiveSessionRecoveryCommand { get; }
+
+    public IRelayCommand ManualConfirmActiveSessionRecoveryCommand { get; }
 
     // ---- Public methods ----
 
@@ -208,7 +230,63 @@ internal sealed class CardRecoveryPresenter
             return false;
         }
 
-        var result = await _cardPaymentRecoveryService.RecoverActiveSessionAsync(_cart, GetSession(), CancellationToken.None);
+        while (true)
+        {
+            var result = await _cardPaymentRecoveryService.RecoverActiveSessionAsync(_cart, GetSession(), CancellationToken.None);
+            ApplyRecoveryStatus(result);
+
+            if (result.Outcome == CardPaymentRecoveryOutcome.None)
+            {
+                return true;
+            }
+
+            if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+            {
+                // 付款页主动恢复的是旧 active session，不能把恢复结果自动混入当前购物车。
+                ShowRecoveredCardDraftDialog(result);
+                return true;
+            }
+
+            if (result.Outcome is CardPaymentRecoveryOutcome.ActiveSessionApproved or CardPaymentRecoveryOutcome.ActiveSessionNotPaid)
+            {
+                var printResult = await PrintActiveSessionBankReceiptAsync(result);
+                if (!printResult.Succeeded)
+                {
+                    _setStatusMessage?.Invoke(FormatActiveSessionPrintFailureMessage(result.Message, printResult.Message));
+                }
+
+                ShowRecoveredActiveSessionDialog(result, printResult);
+                return true;
+            }
+
+            if (result.Outcome == CardPaymentRecoveryOutcome.ActiveSessionManuallyCleared)
+            {
+                return true;
+            }
+
+            if (result.Outcome is CardPaymentRecoveryOutcome.Unknown or CardPaymentRecoveryOutcome.Checking)
+            {
+                var action = await ShowActiveSessionUnresolvedDialogAsync(result);
+                if (action == ActiveSessionRecoveryDialogAction.Retry)
+                {
+                    continue;
+                }
+
+                if (action == ActiveSessionRecoveryDialogAction.ManualConfirm)
+                {
+                    return await ManuallyClearActiveSessionAsync(result);
+                }
+
+                return false;
+            }
+
+            // 其它已确认结果表示上一笔不再处于未知状态，付款页可以解除本地阻塞。
+            return true;
+        }
+    }
+
+    private void ApplyRecoveryStatus(CardPaymentRecoveryResult result)
+    {
         if (!string.IsNullOrWhiteSpace(result.Message))
         {
             _setStatusMessage?.Invoke(result.Message);
@@ -218,27 +296,6 @@ internal sealed class CardRecoveryPresenter
         {
             _setSession?.Invoke(result.UpdatedSession);
         }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.None)
-        {
-            return true;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
-        {
-            // 付款页主动恢复的是旧 active session，不能把恢复结果自动混入当前购物车。
-            ShowRecoveredCardDraftDialog(result);
-            return true;
-        }
-
-        if (result.Outcome is CardPaymentRecoveryOutcome.Unknown or CardPaymentRecoveryOutcome.Checking)
-        {
-            ShowRecoveredCardFailureDialog(result);
-            return false;
-        }
-
-        // 其它已确认结果表示上一笔不再处于未知状态，付款页可以解除本地阻塞。
-        return true;
     }
 
     public void DetachDialogService()
@@ -343,7 +400,7 @@ internal sealed class CardRecoveryPresenter
             details?.ResponseText ?? GetCardRecoveryResponseText(result.Order),
             details?.Timestamp ?? DateTimeOffset.Now,
             previewRows,
-            canPrintReceipt: true,
+            canPrintReceipt: CanUsePrintReceiptPermission(),
             printButtonText: _localization.T("cardRecovery.dialog.action.printReceipt")));
     }
 
@@ -369,7 +426,7 @@ internal sealed class CardRecoveryPresenter
     {
         var details = result.DialogDetails;
         ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
-            _localization.T("cardRecovery.dialog.title.failed"),
+            _localization.T("cardRecovery.dialog.title.unknown"),
             string.IsNullOrWhiteSpace(result.Message)
                 ? _localization.T("cardRecovery.dialog.message.failedFallback")
                 : result.Message,
@@ -381,6 +438,118 @@ internal sealed class CardRecoveryPresenter
             responseCode: details?.ResponseCode,
             responseText: details?.ResponseText,
             timestamp: details?.Timestamp ?? DateTimeOffset.Now));
+    }
+
+    private Task<ActiveSessionRecoveryDialogAction> ShowActiveSessionUnresolvedDialogAsync(CardPaymentRecoveryResult result)
+    {
+        var details = result.DialogDetails;
+        var source = new TaskCompletionSource<ActiveSessionRecoveryDialogAction>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _activeSessionRecoveryDialogActionSource?.TrySetResult(ActiveSessionRecoveryDialogAction.Close);
+        _activeSessionRecoveryDialogActionSource = source;
+
+        ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
+            _localization.T("cardRecovery.dialog.title.unknown"),
+            string.IsNullOrWhiteSpace(result.Message)
+                ? _localization.T("cardRecovery.dialog.message.failedFallback")
+                : result.Message,
+            CardRecoveryResultSeverity.Error,
+            orderGuid: null,
+            amount: details?.Amount,
+            sessionId: details?.SessionId,
+            txnRef: details?.TxnRef,
+            responseCode: details?.ResponseCode,
+            responseText: details?.ResponseText,
+            timestamp: details?.Timestamp ?? DateTimeOffset.Now,
+            canRetryRecovery: true,
+            retryButtonText: _localization.T("cardRecovery.dialog.action.retryRecovery"),
+            canManualConfirm: true,
+            manualConfirmButtonText: _localization.T("cardRecovery.dialog.action.confirmCheckedContinue")));
+
+        return source.Task;
+    }
+
+    private async Task<bool> ManuallyClearActiveSessionAsync(CardPaymentRecoveryResult result)
+    {
+        var sessionId = result.DialogDetails?.SessionId;
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            _setStatusMessage?.Invoke(_localization.T("cardRecovery.linkly.activeSessionManualClearMissing"));
+            return false;
+        }
+
+        // 关键逻辑：人工确认只负责清掉旧 active session，不保存订单、不添加 tender。
+        var clearResult = await _cardPaymentRecoveryService!.ManuallyClearActiveSessionAsync(
+            sessionId,
+            GetSession(),
+            CancellationToken.None);
+        ApplyRecoveryStatus(clearResult);
+        if (clearResult.Outcome == CardPaymentRecoveryOutcome.ActiveSessionManuallyCleared)
+        {
+            return true;
+        }
+
+        ShowRecoveredCardFailureDialog(clearResult);
+        return false;
+    }
+
+    private async Task<ReceiptPrintResult> PrintActiveSessionBankReceiptAsync(CardPaymentRecoveryResult result)
+    {
+        var receipt = result.BankReceipt;
+        if (receipt is null)
+        {
+            return new ReceiptPrintResult(false, _localization.T("cardRecovery.linkly.activeSessionReceiptMissing"));
+        }
+
+        if (_linklyBankReceiptPrinter is null)
+        {
+            return new ReceiptPrintResult(false, _localization.T("cardRecovery.linkly.activeSessionReceiptPrinterMissing"));
+        }
+
+        // 关键逻辑：active session 没有本地订单，恢复时只能打印 Linkly 银行凭证，不能拼接 POS 商品小票。
+        return await _linklyBankReceiptPrinter.PrintAsync(
+            receipt.Environment,
+            receipt.SessionId,
+            receipt.ReceiptText,
+            receipt.Kind,
+            responseCode: receipt.ResponseCode,
+            responseText: receipt.ResponseText);
+    }
+
+    private void ShowRecoveredActiveSessionDialog(
+        CardPaymentRecoveryResult result,
+        ReceiptPrintResult printResult)
+    {
+        var details = result.DialogDetails;
+        var isApproved = result.Outcome == CardPaymentRecoveryOutcome.ActiveSessionApproved;
+        var message = printResult.Succeeded
+            ? result.Message
+            : FormatActiveSessionPrintFailureMessage(result.Message, printResult.Message);
+
+        ShowCardRecoveryResultDialog(new CardRecoveryResultDialogViewModel(
+            isApproved
+                ? _localization.T("cardRecovery.dialog.title.activeSessionApproved")
+                : _localization.T("cardRecovery.dialog.title.activeSessionNotPaid"),
+            message,
+            isApproved && printResult.Succeeded ? CardRecoveryResultSeverity.Success : CardRecoveryResultSeverity.Warning,
+            orderGuid: null,
+            amount: details?.Amount,
+            sessionId: details?.SessionId,
+            txnRef: details?.TxnRef,
+            responseCode: details?.ResponseCode,
+            responseText: details?.ResponseText,
+            timestamp: details?.Timestamp ?? DateTimeOffset.Now));
+    }
+
+    private string FormatActiveSessionPrintFailureMessage(string recoveryMessage, string printMessage)
+    {
+        var failure = string.Format(
+            _localization.CurrentCulture,
+            _localization.T("cardRecovery.linkly.activeSessionReceiptPrintFailed"),
+            printMessage);
+
+        return string.IsNullOrWhiteSpace(recoveryMessage)
+            ? failure
+            : $"{recoveryMessage} {failure}";
     }
 
     private void OnCardRecoveryResultDialogRequested(object? sender, CardRecoveryResultDialogViewModel dialog)
@@ -399,28 +568,48 @@ internal sealed class CardRecoveryPresenter
 
     private void CloseCardRecoveryResultDialog()
     {
+        var activeSessionSource = _activeSessionRecoveryDialogActionSource;
+        _activeSessionRecoveryDialogActionSource = null;
         IsCardRecoveryResultDialogOpen = false;
         CardRecoveryResultDialog = null;
         _cardRecoveryDialogReceipt = null;
         _notifyPropertyChanged?.Invoke(nameof(IsCardRecoveryResultDialogOpen));
         _notifyPropertyChanged?.Invoke(nameof(CardRecoveryResultDialog));
         _notifyPrintRecoveredReceiptCanExecuteChanged?.Invoke();
+        activeSessionSource?.TrySetResult(ActiveSessionRecoveryDialogAction.Close);
+    }
+
+    private void CompleteActiveSessionRecoveryDialog(ActiveSessionRecoveryDialogAction action)
+    {
+        var activeSessionSource = _activeSessionRecoveryDialogActionSource;
+        _activeSessionRecoveryDialogActionSource = null;
+        CloseCardRecoveryResultDialog();
+        activeSessionSource?.TrySetResult(action);
     }
 
     private bool CanPrintRecoveredReceipt()
     {
         return CardRecoveryResultDialog?.CanPrintReceipt == true &&
-            _cardRecoveryDialogReceipt is not null;
+            _cardRecoveryDialogReceipt is not null &&
+            CanUsePrintReceiptPermission();
+    }
+
+    private bool CanUsePrintReceiptPermission()
+    {
+        // 关键逻辑：恢复弹窗可能在主页面之外出现，打印按钮也必须服从当前收银员权限。
+        return _canPrintReceipt?.Invoke() ?? true;
     }
 
     private async Task PrintRecoveredReceiptAsync()
     {
-        if (_cardRecoveryDialogReceipt is null)
+        // 关键逻辑：命令可能被测试或脚本直接调用，不能只依赖按钮禁用来拦截无权限手动打印。
+        var receipt = _cardRecoveryDialogReceipt;
+        if (receipt is null || !CanPrintRecoveredReceipt())
         {
             return;
         }
 
-        await PrintReceiptAsync(_cardRecoveryDialogReceipt, ReceiptPrintReason.CardAuto);
+        await PrintReceiptAsync(receipt, ReceiptPrintReason.CardAuto);
     }
 
     private async Task<IReadOnlyList<ReceiptPreviewRow>> BuildReceiptPreviewRowsAsync(ReceiptDetails receipt)

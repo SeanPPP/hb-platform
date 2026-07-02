@@ -7,7 +7,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace Hbpos.Client.Tests;
 
-[Collection(ConsoleLogGlobalStateTestCollection.Name)]
+[Collection(GlobalLoggingTestCollection.Name)]
 public sealed class CentralLoggingTests
 {
     [Fact]

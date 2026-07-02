@@ -32,8 +32,13 @@ internal sealed class MainChildViewModelFactory
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
     private readonly IUserFeedbackService? _userFeedbackService;
+    private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly IReceiptPrintService? _receiptPrintService;
     private readonly ICardRecoveryResultDialogService? _cardRecoveryResultDialogService;
+    private readonly ICashierSessionContext? _cashierSessionContext;
+    private readonly bool _enforceCashierPermissions;
+    private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
+    private readonly IAppUpdateChannelProvider? _appUpdateChannelProvider;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -58,8 +63,13 @@ internal sealed class MainChildViewModelFactory
         IDailyCloseService dailyCloseService,
         IDailyClosePrintService dailyClosePrintService,
         IUserFeedbackService? userFeedbackService = null,
+        IPromotionEvaluationService? promotionEvaluationService = null,
         IReceiptPrintService? receiptPrintService = null,
-        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null)
+        ICardRecoveryResultDialogService? cardRecoveryResultDialogService = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforceCashierPermissions = false,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null,
+        IAppUpdateChannelProvider? appUpdateChannelProvider = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -83,8 +93,13 @@ internal sealed class MainChildViewModelFactory
         _dailyCloseService = dailyCloseService;
         _dailyClosePrintService = dailyClosePrintService;
         _userFeedbackService = userFeedbackService;
+        _promotionEvaluationService = promotionEvaluationService;
         _receiptPrintService = receiptPrintService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
+        _cashierSessionContext = cashierSessionContext;
+        _enforceCashierPermissions = enforceCashierPermissions;
+        _checkForAppUpdateAsync = checkForAppUpdateAsync;
+        _appUpdateChannelProvider = appUpdateChannelProvider;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -115,7 +130,9 @@ internal sealed class MainChildViewModelFactory
             showPos,
             _localization,
             _receiptTextFormatter,
-            _receiptPrinterSettingsStore);
+            _receiptPrinterSettingsStore,
+            _cashierSessionContext,
+            _enforceCashierPermissions);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }
@@ -131,7 +148,9 @@ internal sealed class MainChildViewModelFactory
             showInstallmentCreateAsync,
             showCashPayment,
             _localization,
-            _cardTerminalClient);
+            _cardTerminalClient,
+            _cashierSessionContext,
+            _enforceCashierPermissions);
     }
 
     public InstallmentCreateViewModel CreateInstallmentCreateViewModel(
@@ -144,7 +163,9 @@ internal sealed class MainChildViewModelFactory
             session,
             onCreatedAsync,
             backToCenter,
-            _localization);
+            _localization,
+            _cashierSessionContext,
+            _enforceCashierPermissions);
     }
 
     public PaymentSuccessViewModel CreatePaymentSuccessViewModel()
@@ -173,7 +194,8 @@ internal sealed class MainChildViewModelFactory
         Action? onOpenReturns = null,
         Func<Task<ReceiptPrintResult>>? onPrintLastReceiptAsync = null,
         Func<Task<ReceiptPrintResult>>? onOpenCashDrawerAsync = null,
-        Func<Task>? onExitApplicationAsync = null)
+        Func<Task>? onExitApplicationAsync = null,
+        Func<string, CancellationToken, Task<bool>>? tryLoginCashierFromScannerFallbackAsync = null)
     {
         return new PosTerminalViewModel(
             _priceIndex,
@@ -183,6 +205,7 @@ internal sealed class MainChildViewModelFactory
             onOpenSpecialProductsAsync,
             _localization,
             userFeedbackService: _userFeedbackService,
+            promotionEvaluationService: _promotionEvaluationService,
             onHoldOrderAsync: onHoldOrderAsync,
             onRecallOrderAsync: onRecallOrderAsync,
             onOpenHistoryAsync: onOpenHistoryAsync,
@@ -198,7 +221,10 @@ internal sealed class MainChildViewModelFactory
             onOpenReturns: onOpenReturns,
             onPrintLastReceiptAsync: onPrintLastReceiptAsync,
             onOpenCashDrawerAsync: onOpenCashDrawerAsync,
-            onExitApplicationAsync: onExitApplicationAsync);
+            onExitApplicationAsync: onExitApplicationAsync,
+            tryLoginCashierFromScannerFallbackAsync: tryLoginCashierFromScannerFallbackAsync,
+            cashierSessionContext: _cashierSessionContext,
+            enforcePermissionsWhenNoCashier: _enforceCashierPermissions);
     }
 
     public SpecialProductsViewModel CreateSpecialProductsViewModel(
@@ -216,7 +242,9 @@ internal sealed class MainChildViewModelFactory
             onBack,
             onCartLineAdded,
             _specialProductsWorkflowService,
-            _rawScannerService);
+            _rawScannerService,
+            cashierSessionContext: _cashierSessionContext,
+            enforcePermissionsWhenNoCashier: _enforceCashierPermissions);
     }
 
     public ReceiptReturnsViewModel CreateReceiptReturnsViewModel(
@@ -230,7 +258,9 @@ internal sealed class MainChildViewModelFactory
             onBack,
             onReturnLineAdded,
             _rawScannerService,
-            _localization);
+            _localization,
+            _cashierSessionContext,
+            _enforceCashierPermissions);
     }
 
     public PaymentViewModel CreatePaymentViewModel(
@@ -248,7 +278,9 @@ internal sealed class MainChildViewModelFactory
             onBackToPos,
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
-            linklyFallbackPromptCoordinator);
+            linklyFallbackPromptCoordinator,
+            _cashierSessionContext,
+            _enforceCashierPermissions);
     }
 
     public DailyCloseViewModel CreateDailyCloseViewModel(
@@ -260,7 +292,9 @@ internal sealed class MainChildViewModelFactory
             _dailyClosePrintService,
             session,
             _localization,
-            returnToPos);
+            returnToPos,
+            _cashierSessionContext,
+            _enforceCashierPermissions);
     }
 
     public SettingsViewModel CreateSettingsViewModel(
@@ -269,7 +303,8 @@ internal sealed class MainChildViewModelFactory
         Func<Task<DeviceReregistrationStartResult>>? reregisterDeviceAsync = null,
         Action? returnToPos = null,
         Func<CancellationToken, Task>? resetTestSalesDataAsync = null,
-        Func<bool>? confirmResetTestSalesData = null)
+        Func<bool>? confirmResetTestSalesData = null,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync = null)
     {
         return new SettingsViewModel(
             _cardTerminalSetupService!,
@@ -282,7 +317,11 @@ internal sealed class MainChildViewModelFactory
             _receiptPrintService,
             resetTestSalesDataAsync: resetTestSalesDataAsync,
             confirmResetTestSalesData: confirmResetTestSalesData,
-            cardRecoveryResultDialogService: _cardRecoveryResultDialogService);
+            cardRecoveryResultDialogService: _cardRecoveryResultDialogService,
+            checkForAppUpdateAsync: checkForAppUpdateAsync ?? _checkForAppUpdateAsync,
+            appUpdateChannel: _appUpdateChannelProvider?.CurrentChannel,
+            cashierSessionContext: _cashierSessionContext,
+            enforcePermissionsWhenNoCashier: _enforceCashierPermissions);
     }
 
     public CustomerDisplayViewModel CreateCustomerDisplayViewModel()

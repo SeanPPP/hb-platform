@@ -1,3 +1,4 @@
+using System.Globalization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
@@ -5,11 +6,13 @@ using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(CultureSensitiveTestCollection.Name)]
 public sealed class ReceiptQueryServiceTests
 {
     [Fact]
     public async Task Receipt_query_service_maps_receipt_preview_from_order()
     {
+        using var culture = new CultureScope(CultureInfo.GetCultureInfo("en-US"));
         var order = CreateOrder(
             Guid.NewGuid(),
             soldAt: new DateTimeOffset(2026, 5, 24, 9, 30, 0, TimeSpan.Zero),
@@ -121,6 +124,30 @@ public sealed class ReceiptQueryServiceTests
         public Task<LocalOrder?> GetOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(_orders.TryGetValue(orderGuid, out var order) ? order : null);
+        }
+    }
+
+    private sealed class CultureScope : IDisposable
+    {
+        private readonly CultureInfo _originalCulture = CultureInfo.CurrentCulture;
+        private readonly CultureInfo _originalUiCulture = CultureInfo.CurrentUICulture;
+        private readonly CultureInfo? _originalDefaultCulture = CultureInfo.DefaultThreadCurrentCulture;
+        private readonly CultureInfo? _originalDefaultUiCulture = CultureInfo.DefaultThreadCurrentUICulture;
+
+        public CultureScope(CultureInfo culture)
+        {
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.CurrentUICulture = culture;
+            CultureInfo.DefaultThreadCurrentCulture = culture;
+            CultureInfo.DefaultThreadCurrentUICulture = culture;
+        }
+
+        public void Dispose()
+        {
+            CultureInfo.CurrentCulture = _originalCulture;
+            CultureInfo.CurrentUICulture = _originalUiCulture;
+            CultureInfo.DefaultThreadCurrentCulture = _originalDefaultCulture;
+            CultureInfo.DefaultThreadCurrentUICulture = _originalDefaultUiCulture;
         }
     }
 }

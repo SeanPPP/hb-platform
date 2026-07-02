@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -17,6 +18,8 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
     private readonly Func<InstallmentOrderSummary, Task> _onCreatedAsync;
     private readonly Action _backToCenter;
     private readonly ILocalizationService? _localization;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private EventHandler? _onCultureChanged;
     private string? _statusResourceKey;
     private string _statusFallback = string.Empty;
@@ -60,13 +63,22 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         PosSessionState session,
         Func<InstallmentOrderSummary, Task> onCreatedAsync,
         Action backToCenter,
-        ILocalizationService? localization = null)
+        ILocalizationService? localization = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
     {
         _installmentOrderService = installmentOrderService;
         _session = session;
         _onCreatedAsync = onCreatedAsync;
         _backToCenter = backToCenter;
         _localization = localization;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         if (_localization is not null)
         {
             _onCultureChanged = (_, _) => RaiseLocalizedProperties();
@@ -126,6 +138,11 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+
         RaiseActionStateChanged();
     }
 
@@ -222,6 +239,11 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
 
     private async Task SubmitAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.Create))
+        {
+            return;
+        }
+
         if (CartSnapshot is null)
         {
             SetStatusResource("installment.create.status.missingCart", "There is no current order available for installment creation.");
@@ -396,6 +418,18 @@ public sealed partial class InstallmentCreateViewModel : ObservableObject, IDisp
         _statusFallback = string.Empty;
         _statusResourceArgs = [];
         StatusMessage = value;
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        SetLiteralStatus(message);
+        return false;
     }
 
     private string FormatResource(string key, string fallback, object[] args)

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -49,6 +50,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly Func<Task>? _onSuspendedOrderRecalledAsync;
     private readonly Action? _returnToPos;
     private readonly ILocalizationService? _localization;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
 
@@ -101,17 +104,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, initialize: true)
     {
     }
 
@@ -124,8 +127,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         Action? returnToPos = null,
         ILocalizationService? localization = null,
         IReceiptTextFormatter? receiptTextFormatter = null,
-        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, initialize: true)
+        IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, initialize: true)
     {
     }
 
@@ -139,6 +144,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ILocalizationService? localization,
         IReceiptTextFormatter? receiptTextFormatter,
         IReceiptPrinterSettingsStore? receiptPrinterSettingsStore,
+        ICashierSessionContext? cashierSessionContext,
+        bool enforcePermissionsWhenNoCashier,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -149,6 +156,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _localization = localization;
         _receiptTextFormatter = receiptTextFormatter ?? new ReceiptTextFormatter();
         _receiptPrinterSettingsStore = receiptPrinterSettingsStore;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
         if (_localization is not null)
         {
             _localization.CultureChanged += OnCultureChanged;
@@ -157,6 +166,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         if (session is not null)
         {
             Session = session;
+            if (session.CashierSession is not null)
+            {
+                _cashierSessionContext.SetCurrent(session.CashierSession);
+            }
+
             StoreFilterText = $"{session.StoreName} ({session.StoreCode})";
             TerminalFilterText = session.DeviceCode;
         }
@@ -169,7 +183,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ReturnToPosCommand = new RelayCommand(ReturnToPos, CanReturnToPos);
         RecallSelectedCommand = new AsyncRelayCommand(RecallSelectedAsync, CanRecallSelected);
         RecallOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(RecallOrderAsync, CanRecallOrder);
-        ReprintCommand = new RelayCommand(() => ReprintRequested?.Invoke(this, EventArgs.Empty), CanReprintSelected);
+        ReprintCommand = new RelayCommand(ReprintSelected, CanReprintSelected);
         RefundCommand = new RelayCommand(() => { }, () => false);
     }
 
@@ -313,6 +327,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+
         StoreFilterText = $"{value.StoreName} ({value.StoreCode})";
         RefreshTerminalOptions(SelectedTerminalOption?.DeviceCode is null);
     }
@@ -500,6 +519,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task RecallOrderAsync(HistoryOrderListItem? order)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.History.Recall))
+        {
+            return;
+        }
+
         if (!CanRecallOrder(order) || _suspendedOrderService is null)
         {
             return;
@@ -519,6 +543,28 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         {
             StatusMessage = ex.Message;
         }
+    }
+
+    private void ReprintSelected()
+    {
+        if (!TryRequirePermission(Permissions.PosTerminal.History.Reprint))
+        {
+            return;
+        }
+
+        ReprintRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        StatusMessage = message;
+        return false;
     }
 
     private static ReceiptDetails CreateSuspendedReceipt(SuspendedOrder order)

@@ -6,6 +6,8 @@ namespace Hbpos.Client.Wpf.ViewModels;
 
 public sealed partial class SettingsViewModel
 {
+    private delegate void SetLocalizedStatus(string key, params object[] args);
+
     private sealed record DataMaintenanceContext(
         Func<bool> IsBusy,
         Func<CancellationToken, Task>? DownloadCatalogAsync,
@@ -13,8 +15,9 @@ public sealed partial class SettingsViewModel
         Func<CancellationToken, Task>? ResetTestSalesDataAsync,
         Func<bool>? ConfirmResetTestSalesData,
         Func<Task<DeviceReregistrationStartResult>>? ReregisterDeviceAsync,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? CheckForAppUpdateAsync,
         Func<Func<Task>, string?, Task> RunBusyAsync,
-        Action<string> SetStatus,
+        SetLocalizedStatus SetStatus,
         Action<string> SetStatusOverride);
 
     private sealed class DataMaintenanceSection
@@ -48,6 +51,11 @@ public sealed partial class SettingsViewModel
         public bool CanReregisterDevice()
         {
             return !_context.IsBusy() && _context.ReregisterDeviceAsync is not null;
+        }
+
+        public bool CanCheckForAppUpdate()
+        {
+            return !_context.IsBusy() && _context.CheckForAppUpdateAsync is not null;
         }
 
         public async Task DownloadCatalogAsync(CancellationToken cancellationToken)
@@ -128,6 +136,23 @@ public sealed partial class SettingsViewModel
                 {
                     _context.SetStatusOverride(result.StatusMessage);
                 }
+            }, null);
+        }
+
+        public async Task CheckForAppUpdateAsync(CancellationToken cancellationToken)
+        {
+            if (_context.CheckForAppUpdateAsync is null)
+            {
+                _context.SetStatus("settings.status.appUpdateNotConfigured");
+                return;
+            }
+
+            await _context.RunBusyAsync(async () =>
+            {
+                // 手动检查只触发更新协调器，不直接安装，避免设置页绕过强制/普通更新状态流。
+                _context.SetStatus("settings.status.appUpdateChecking");
+                var result = await _context.CheckForAppUpdateAsync(cancellationToken);
+                _context.SetStatus(result.StatusKey, result.StatusArgs);
             }, null);
         }
     }

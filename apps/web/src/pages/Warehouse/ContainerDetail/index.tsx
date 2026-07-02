@@ -3877,7 +3877,7 @@ export default function ContainerDetailPage() {
         title={t('containers.modals.batchCategoryTitle', '批量设置分类')}
         open={batchCategoryOpen}
         width={640}
-        destroyOnClose
+        destroyOnHidden
         okText={t('common.save')}
         cancelText={t('common.cancel')}
         confirmLoading={batchCategorySaving}
@@ -3916,7 +3916,7 @@ export default function ContainerDetailPage() {
         title={t('containers.modals.rowCategoryTitle', '目标分类修改')}
         open={rowCategoryOpen}
         width={640}
-        destroyOnClose
+        destroyOnHidden
         okText={t('common.save')}
         cancelText={t('common.cancel')}
         confirmLoading={rowCategorySaving}
@@ -4246,7 +4246,7 @@ export default function ContainerDetailPage() {
         }}
         onOk={() => void saveSetCodePrices()}
         onCancel={closeSetCodeModal}
-        destroyOnClose
+        destroyOnHidden
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           {setCodeModalRow ? (

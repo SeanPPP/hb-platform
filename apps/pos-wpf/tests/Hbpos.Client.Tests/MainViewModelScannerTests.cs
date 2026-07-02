@@ -3,6 +3,7 @@ using System.Windows;
 using System.Globalization;
 using System.Reflection;
 using System.Windows.Media.Imaging;
+using BlazorApp.Shared.Constants;
 using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Converters;
 using Hbpos.Client.Wpf.Localization;
@@ -11,6 +12,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Devices;
 using Hbpos.Contracts.Orders;
 
@@ -37,6 +39,36 @@ public sealed class MainViewModelScannerTests
         await viewModel.ToggleCultureCommand.ExecuteAsync(null);
 
         Assert.Equal("\u5386\u53F2", viewModel.ActivePageTitleText);
+    }
+
+    [Fact]
+    public async Task Cashier_login_overlay_stays_open_until_cashier_session_exists()
+    {
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession));
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        Assert.True(viewModel.IsCashierLoginOverlayOpen);
+
+        viewModel.CashierBarcodeInput = "BAR-1";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+    }
+
+    [Fact]
+    public async Task Cashier_login_overlay_does_not_cover_device_reregistration_dialog()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.IsDeviceReregistrationDialogOpen = true;
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
     }
 
     [Fact]
@@ -209,6 +241,25 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Reset_scanner_binding_command_requires_device_registration_permission()
+    {
+        var scanner = new FakeRawScannerService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            rawScannerService: scanner,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+
+        await viewModel.ResetScannerBindingCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, scanner.ResetCount);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Settings.DeviceRegistration, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Card_payment_completion_auto_prints_receipt_after_success_screen()
     {
         var printService = new RecordingReceiptPrintService();
@@ -260,6 +311,29 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(order.OrderGuid, call.OrderGuid);
         Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
         Assert.Equal(0, cashDrawerService.OpenCallCount);
+    }
+
+    [Fact]
+    public async Task Card_payment_completion_auto_prints_without_receipt_permission()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
     }
 
     [Fact]
@@ -383,6 +457,29 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Cash_payment_completion_auto_drawer_requires_cash_drawer_permission()
+    {
+        var cashDrawerService = new RecordingCashDrawerService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashDrawerService: cashDrawerService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash);
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Equal(0, cashDrawerService.OpenCallCount);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CashDrawer.Open, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task Cash_payment_completion_shows_cash_drawer_failure_without_leaving_success_screen()
     {
         var cashDrawerService = new RecordingCashDrawerService
@@ -418,6 +515,27 @@ public sealed class MainViewModelScannerTests
         var call = Assert.Single(printService.Calls);
         Assert.Equal(order.OrderGuid, call.OrderGuid);
         Assert.Equal(ReceiptPrintReason.Manual, call.Reason);
+    }
+
+    [Fact]
+    public void Payment_success_print_button_requires_receipt_permission()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash);
+        viewModel.PaymentSuccess.LoadFromOrder(order);
+
+        viewModel.PaymentSuccess.PrintReceiptCommand.Execute(null);
+
+        Assert.Empty(printService.Calls);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
     }
 
     [Fact]
@@ -2134,6 +2252,24 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public void ToggleCustomerDisplayWindowCommand_requires_customer_display_permission()
+    {
+        var customerDisplayWindow = new FakeCustomerDisplayWindowService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            customerDisplayWindow,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+
+        viewModel.ToggleCustomerDisplayWindowCommand.Execute(null);
+
+        Assert.Equal(0, customerDisplayWindow.SetModeCallCount);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.CustomerDisplay.Manage, out var deniedMessage));
+        Assert.Equal(deniedMessage, viewModel.StatusMessage);
+    }
+
+    [Fact]
     public async Task ToggleCustomerDisplayWindow_CyclesClosedNormalFullscreenClosed()
     {
         var customerDisplayWindow = new FakeCustomerDisplayWindowService();
@@ -2629,6 +2765,46 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Startup_card_payment_recovery_waits_until_cashier_login()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.OrderCompleted,
+                "Recovered approved payment.",
+                order)));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            receiptPrintService: printService,
+            cardPaymentRecoveryService: recovery,
+            cashierLoginService: new FakeCashierLoginService(cashierSession));
+        var startupOptions = new AppStartupOptions([], false, null, null);
+
+        await viewModel.InitializeAsync(startupOptions);
+        await viewModel.ContinueStartupAfterShownAsync(startupOptions);
+
+        Assert.True(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Equal(0, recovery.CallCount);
+        Assert.Empty(printService.Calls);
+        Assert.False(viewModel.IsCardRecoveryResultDialogOpen);
+
+        viewModel.CashierBarcodeInput = "BAR-1";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.Equal(1, recovery.CallCount);
+        Assert.Same(viewModel.PaymentSuccess, viewModel.CurrentScreen);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.True(viewModel.IsCardRecoveryResultDialogOpen);
+        Assert.Equal("Card transaction recovered successfully", viewModel.CardRecoveryResultDialog?.Title);
+    }
+
+    [Fact]
     public async Task Card_payment_recovery_completed_during_startup_prints_card_receipt()
     {
         var printService = new RecordingReceiptPrintService();
@@ -2661,6 +2837,42 @@ public sealed class MainViewModelScannerTests
         await viewModel.PrintRecoveredReceiptCommand.ExecuteAsync(null);
         await WaitUntilAsync(() => printService.Calls.Count == 2);
         Assert.Equal(ReceiptPrintReason.CardAuto, printService.Calls[1].Reason);
+    }
+
+    [Fact]
+    public async Task Card_payment_recovery_completed_auto_prints_without_receipt_permission_but_manual_print_stays_blocked()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card);
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.OrderCompleted,
+                "Recovered approved payment.",
+                order)));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            receiptPrintService: printService,
+            cardPaymentRecoveryService: recovery,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var recovered = await InvokeRecoverCardPaymentAttemptAsync(viewModel, navigateToPaymentOnDraft: false);
+
+        Assert.True(recovered);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.True(viewModel.IsCardRecoveryResultDialogOpen);
+        Assert.NotNull(viewModel.CardRecoveryResultDialog);
+        Assert.False(viewModel.CardRecoveryResultDialog!.CanPrintReceipt);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
+
+        await viewModel.PrintRecoveredReceiptCommand.ExecuteAsync(null);
+        await Task.Delay(50);
+        Assert.Single(printService.Calls);
     }
 
     [Fact]
@@ -2721,11 +2933,225 @@ public sealed class MainViewModelScannerTests
         Assert.True(viewModel.IsCardRecoveryResultDialogOpen);
         var dialog = viewModel.CardRecoveryResultDialog;
         Assert.NotNull(dialog);
-        Assert.Equal("Previous card transaction was not successful", dialog.Title);
+        Assert.Equal("Previous card transaction result is unknown", dialog.Title);
         Assert.Equal("session-review", dialog.SessionId);
         Assert.Equal("txn-review", dialog.TxnRef);
         Assert.Equal("TM", dialog.ResponseCode);
         Assert.False(dialog.CanPrintReceipt);
+    }
+
+    [Theory]
+    [InlineData(CardPaymentRecoveryOutcome.ActiveSessionApproved, LinklyBankReceiptKind.RecoveredApproved)]
+    [InlineData(CardPaymentRecoveryOutcome.ActiveSessionNotPaid, LinklyBankReceiptKind.RecoveredFailed)]
+    public async Task Active_card_session_recovery_from_payment_prints_bank_receipt_and_keeps_current_order(
+        CardPaymentRecoveryOutcome outcome,
+        LinklyBankReceiptKind expectedKind)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-CURRENT-ACTIVE", "930ACTIVESESSION"));
+        var bankReceiptPrinter = new RecordingLinklyBankReceiptPrinter();
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                outcome,
+                "Previous Linkly transaction resolved.",
+                BankReceipt: new CardPaymentRecoveryBankReceipt(
+                    "Sandbox",
+                    "active-session-1",
+                    "RECOVERED BANK RECEIPT",
+                    expectedKind,
+                    outcome == CardPaymentRecoveryOutcome.ActiveSessionApproved ? "00" : "05",
+                    outcome == CardPaymentRecoveryOutcome.ActiveSessionApproved ? "APPROVED" : "DECLINED"))));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            cart: cart,
+            linklyBankReceiptPrinter: bankReceiptPrinter);
+
+        var recovered = await InvokeRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+
+        Assert.True(recovered);
+        Assert.Equal("Previous Linkly transaction resolved.", viewModel.StatusMessage);
+        Assert.Single(cart.Lines);
+        Assert.Equal("SKU-CURRENT-ACTIVE", cart.Lines[0].ProductCode);
+        var print = Assert.Single(bankReceiptPrinter.Prints);
+        Assert.Equal(expectedKind, print.Kind);
+        Assert.Equal("RECOVERED BANK RECEIPT", print.ReceiptText);
+        Assert.Equal("active-session-1", print.SessionId);
+    }
+
+    [Theory]
+    [InlineData(true, "did not return receipt text")]
+    [InlineData(false, "receipt printer is not available")]
+    public async Task Active_card_session_recovery_from_payment_still_continues_when_bank_receipt_cannot_print(
+        bool omitBankReceipt,
+        string expectedStatus)
+    {
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.ActiveSessionApproved,
+                "Previous Linkly transaction resolved.",
+                BankReceipt: omitBankReceipt
+                    ? null
+                    : new CardPaymentRecoveryBankReceipt(
+                        "Sandbox",
+                        "active-session-1",
+                        "RECOVERED BANK RECEIPT",
+                        LinklyBankReceiptKind.RecoveredApproved,
+                        "00",
+                        "APPROVED"))));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery);
+
+        var recovered = await InvokeRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+
+        Assert.True(recovered);
+        Assert.Contains(expectedStatus, viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Active_card_session_unknown_from_payment_shows_retry_and_manual_confirm_actions()
+    {
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                "Previous Linkly session is still unknown.",
+                DialogDetails: new CardPaymentRecoveryDialogDetails(
+                    "active-session-unknown",
+                    "txn-unknown",
+                    null,
+                    null,
+                    null,
+                    DateTimeOffset.Parse("2026-07-01T08:45:26+10:00")))));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery);
+
+        var recoveryTask = StartRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+        await WaitUntilAsync(() => viewModel.IsCardRecoveryResultDialogOpen);
+
+        var dialog = viewModel.CardRecoveryResultDialog;
+        Assert.NotNull(dialog);
+        Assert.True(dialog!.CanRetryRecovery);
+        Assert.True(dialog.CanManualConfirm);
+        Assert.Equal("Retry recovery", dialog.RetryButtonText);
+        Assert.Equal("Confirm checked and continue", dialog.ManualConfirmButtonText);
+
+        viewModel.CloseCardRecoveryResultDialogCommand.Execute(null);
+
+        Assert.False(await recoveryTask);
+        Assert.Equal(1, recovery.CallCount);
+    }
+
+    [Fact]
+    public async Task Active_card_session_retry_from_unknown_queries_again_and_continues_when_resolved()
+    {
+        var bankReceiptPrinter = new RecordingLinklyBankReceiptPrinter();
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                "Previous Linkly session is still unknown.",
+                DialogDetails: new CardPaymentRecoveryDialogDetails(
+                    "active-session-retry",
+                    "txn-retry",
+                    null,
+                    null,
+                    null,
+                    DateTimeOffset.Parse("2026-07-01T08:45:26+10:00")))),
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.ActiveSessionApproved,
+                "Previous Linkly transaction resolved.",
+                BankReceipt: new CardPaymentRecoveryBankReceipt(
+                    "Sandbox",
+                    "active-session-retry",
+                    "RECOVERED BANK RECEIPT",
+                    LinklyBankReceiptKind.RecoveredApproved,
+                    "00",
+                    "APPROVED"))));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            linklyBankReceiptPrinter: bankReceiptPrinter);
+
+        var recoveryTask = StartRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+        await WaitUntilAsync(() => viewModel.CardRecoveryResultDialog?.CanRetryRecovery == true);
+
+        viewModel.RetryActiveSessionRecoveryCommand.Execute(null);
+
+        Assert.True(await recoveryTask);
+        Assert.Equal(2, recovery.CallCount);
+        Assert.False(viewModel.CardRecoveryResultDialog?.CanRetryRecovery == true);
+        Assert.Single(bankReceiptPrinter.Prints);
+    }
+
+    [Fact]
+    public async Task Active_card_session_retry_from_unknown_keeps_dialog_locked_when_still_unknown()
+    {
+        var firstUnknown = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.Unknown,
+            "Previous Linkly session is still unknown.",
+            DialogDetails: new CardPaymentRecoveryDialogDetails(
+                "active-session-retry-unknown",
+                "txn-retry-unknown",
+                null,
+                null,
+                null,
+                DateTimeOffset.Parse("2026-07-01T08:45:26+10:00")));
+        var secondUnknown = firstUnknown with { Message = "Previous Linkly session is still unknown after retry." };
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(firstUnknown),
+            Task.FromResult(secondUnknown));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery);
+
+        var recoveryTask = StartRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+        await WaitUntilAsync(() => viewModel.CardRecoveryResultDialog?.CanRetryRecovery == true);
+
+        viewModel.RetryActiveSessionRecoveryCommand.Execute(null);
+
+        await WaitUntilAsync(() =>
+            recovery.CallCount == 2 &&
+            viewModel.CardRecoveryResultDialog?.Message == "Previous Linkly session is still unknown after retry.");
+        Assert.True(viewModel.CardRecoveryResultDialog?.CanRetryRecovery);
+
+        viewModel.CloseCardRecoveryResultDialogCommand.Execute(null);
+
+        Assert.False(await recoveryTask);
+        Assert.Equal(2, recovery.CallCount);
+    }
+
+    [Fact]
+    public async Task Active_card_session_manual_confirm_clears_session_and_continues_current_order()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-CURRENT-MANUAL", "930ACTIVEMANUAL"));
+        var recovery = new FakeCardPaymentRecoveryService(
+            Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Checking,
+                "Previous Linkly session is still pending.",
+                DialogDetails: new CardPaymentRecoveryDialogDetails(
+                    "active-session-manual",
+                    "txn-manual",
+                    null,
+                    null,
+                    null,
+                    DateTimeOffset.Parse("2026-07-01T08:45:26+10:00")))));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            cart: cart);
+
+        var recoveryTask = StartRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+        await WaitUntilAsync(() => viewModel.CardRecoveryResultDialog?.CanManualConfirm == true);
+
+        viewModel.ManualConfirmActiveSessionRecoveryCommand.Execute(null);
+
+        Assert.True(await recoveryTask);
+        Assert.Equal(2, recovery.CallCount);
+        Assert.Single(cart.Lines);
+        Assert.Equal("SKU-CURRENT-MANUAL", cart.Lines[0].ProductCode);
+        Assert.Contains("manually cleared", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -2930,6 +3356,20 @@ public sealed class MainViewModelScannerTests
         };
     }
 
+    private static CashierSessionDto CreateCashierSession(params string[] permissionCodes) =>
+        new(
+            "CASHIER-1",
+            "user-1",
+            "Alice",
+            "1042",
+            "POS-01",
+            ["Cashier"],
+            permissionCodes,
+            ["1042"],
+            IsSuperAdmin: false,
+            IsOfflineCached: false,
+            IsEmergencyOverride: false);
+
     private static MainViewModel CreateAuthorizedMainViewModel(
         FakeCustomerDisplayWindowService customerDisplayWindow,
         IReceiptPrintService? receiptPrintService = null,
@@ -2941,7 +3381,12 @@ public sealed class MainViewModelScannerTests
         IConnectivityApiClient? connectivityApiClient = null,
         ISpecialProductsWorkflowService? specialProductsWorkflowService = null,
         ICardPaymentRecoveryService? cardPaymentRecoveryService = null,
-        PosCartService? cart = null)
+        PosCartService? cart = null,
+        IRawScannerService? rawScannerService = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        ICashierLoginService? cashierLoginService = null,
+        ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
+        bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
         var effectiveCart = cart ?? new PosCartService();
@@ -2956,7 +3401,7 @@ public sealed class MainViewModelScannerTests
             new PosCoreServices(priceIndex, effectiveCart, checkout, new FakeLocalSchemaService()),
             new PosInfrastructureFacade(
                 connectivityApiClient ?? new FakeConnectivityApiClient(),
-                new FakeRawScannerService(),
+                rawScannerService ?? new FakeRawScannerService(),
                 userFeedbackService: null,
                 applicationExitService: applicationExitService,
                 confirmationDialogService: confirmationDialogService),
@@ -2968,7 +3413,7 @@ public sealed class MainViewModelScannerTests
                 cardPaymentRecoveryService: cardPaymentRecoveryService,
                 cardRecoveryResultDialogService: null,
                 linklyFallbackPromptCoordinator: null),
-            new PrintFacade(receiptPrintService, receiptPrinterSettingsStore: null, receiptTextFormatter: null),
+            new PrintFacade(receiptPrintService, receiptPrinterSettingsStore: null, receiptTextFormatter: null, linklyBankReceiptPrinter: linklyBankReceiptPrinter),
             new ShellCultureService(localization, new FakeSettingsRepository()),
             new ShellCatalogService(priceIndex, catalogRepository, new FakeCatalogSyncService()),
             catalogRepository,
@@ -2989,7 +3434,10 @@ public sealed class MainViewModelScannerTests
                 remoteLookupRefreshAsync,
                 reloadCatalogAsync),
             orderUploadExecutionService: orderUploadExecutionService,
-            cashDrawerService: cashDrawerService);
+            cashDrawerService: cashDrawerService,
+            cashierSessionContext: cashierSessionContext,
+            cashierLoginService: cashierLoginService,
+            enforceCashierPermissions: enforceCashierPermissions);
     }
 
     private static MainViewModel CreateMainViewModelWithShellCatalog(
@@ -3045,6 +3493,27 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(method);
         var task = (Task<bool>)method!.Invoke(viewModel, [navigateToPaymentOnDraft])!;
         return await task;
+    }
+
+    private static async Task<bool> InvokeRecoverActiveCardPaymentSessionFromPaymentAsync(MainViewModel viewModel)
+    {
+        return await StartRecoverActiveCardPaymentSessionFromPaymentAsync(viewModel);
+    }
+
+    private static Task<bool> StartRecoverActiveCardPaymentSessionFromPaymentAsync(MainViewModel viewModel)
+    {
+        var presenterField = typeof(MainViewModel).GetField(
+            "_cardRecoveryPresenter",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(presenterField);
+        var presenter = presenterField!.GetValue(viewModel);
+        Assert.NotNull(presenter);
+        var method = presenter!.GetType().GetMethod(
+            "RecoverActiveCardPaymentSessionFromPaymentAsync",
+            BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(method);
+        var task = (Task<bool>)method!.Invoke(presenter, [])!;
+        return task;
     }
 
     private static async Task<bool> InvokeRefreshOnlineStateAsync(MainViewModel viewModel)
@@ -3393,6 +3862,18 @@ public sealed class MainViewModelScannerTests
         public Task DeleteValueAsync(string key, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeCashierLoginService(CashierSessionDto session) : ICashierLoginService
+    {
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(CashierLoginResult.Success(session));
         }
     }
 
@@ -3961,6 +4442,26 @@ public sealed class MainViewModelScannerTests
         }
     }
 
+    private sealed class RecordingLinklyBankReceiptPrinter : ILinklyBankReceiptPrinter
+    {
+        public List<BankReceiptPrintCall> Prints { get; } = [];
+
+        public Task<ReceiptPrintResult> PrintAsync(
+            string environment,
+            string sessionId,
+            string receiptText,
+            LinklyBankReceiptKind kind = LinklyBankReceiptKind.SignatureRequired,
+            string? cardType = null,
+            string? maskedCardNumber = null,
+            string? responseCode = null,
+            string? responseText = null,
+            CancellationToken cancellationToken = default)
+        {
+            Prints.Add(new BankReceiptPrintCall(environment, sessionId, receiptText, kind, responseCode, responseText));
+            return Task.FromResult(new ReceiptPrintResult(true, "printed"));
+        }
+    }
+
     private sealed class RecordingCashDrawerService : ICashDrawerService
     {
         public int OpenCallCount { get; private set; }
@@ -4003,6 +4504,14 @@ public sealed class MainViewModelScannerTests
     }
 
     private sealed record ReceiptPrintCall(Guid? OrderGuid, ReceiptPrintReason Reason);
+
+    private sealed record BankReceiptPrintCall(
+        string Environment,
+        string SessionId,
+        string ReceiptText,
+        LinklyBankReceiptKind Kind,
+        string? ResponseCode,
+        string? ResponseText);
 
     private sealed class FakeSyncQueueRepository : ISyncQueueRepository
     {
@@ -4313,6 +4822,24 @@ public sealed class MainViewModelScannerTests
             return _results.Count > 0
                 ? _results.Dequeue()(cart, session, cancellationToken)
                 : Task.FromResult(CardPaymentRecoveryResult.None);
+        }
+
+        public Task<CardPaymentRecoveryResult> ManuallyClearActiveSessionAsync(
+            string sessionId,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.ActiveSessionManuallyCleared,
+                "Previous Linkly session manually cleared.",
+                DialogDetails: new CardPaymentRecoveryDialogDetails(
+                    sessionId,
+                    null,
+                    null,
+                    null,
+                    null,
+                    DateTimeOffset.Now)));
         }
     }
 

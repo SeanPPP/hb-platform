@@ -1,5 +1,7 @@
 namespace Hbpos.Client.Wpf.Models;
 
+using Hbpos.Contracts.Cashiers;
+
 public sealed record PosSessionState(
     string SystemName,
     string StoreCode,
@@ -8,4 +10,5 @@ public sealed record PosSessionState(
     string CashierId,
     string CashierName,
     bool IsOnline,
-    int PendingSyncCount);
+    int PendingSyncCount,
+    CashierSessionDto? CashierSession = null);

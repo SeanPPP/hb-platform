@@ -17,25 +17,71 @@ public sealed class CustomerDisplayViewModelTests
                 new CustomerDisplayLine("Milk", "SKU-001", 2m, 3m, 6m),
                 new CustomerDisplayLine("Bread", "SKU-002", 1.5m, 4m, 6m)
             ],
-            subtotal: 12m,
-            taxAmount: 0m,
-            savingsAmount: 1m);
+            subtotal: 35.94m,
+            savingsAmount: 3.96m);
 
         Assert.Equal(3.5m, viewModel.TotalItemQuantity);
         Assert.Equal(2, viewModel.SkuCount);
-        Assert.Equal(11m, viewModel.TotalToPay);
+        Assert.Equal(31.98m, viewModel.TotalToPay);
+        Assert.Equal(2.91m, viewModel.TaxAmount);
     }
 
-    [Theory]
-    [InlineData(1024, true)]
-    [InlineData(1279, true)]
-    [InlineData(1280, false)]
-    [InlineData(1920, false)]
-    public void CustomerDisplayView_uses_banner_promotion_layout_on_narrow_fullscreen_widths(
-        double width,
-        bool expectedCompact)
+    [Fact]
+    public void CustomerDisplayView_keeps_promotion_on_right_when_cart_has_lines()
     {
-        Assert.Equal(expectedCompact, CustomerDisplayView.UsesCompactPromotionLayout(width));
+        var (_, codeBehind) = ReadCustomerDisplayViewFiles();
+
+        Assert.DoesNotContain("UsesCompactPromotionLayout", codeBehind);
+        Assert.DoesNotContain("Grid.SetColumnSpan(CartPanel, 2)", codeBehind);
+        Assert.DoesNotContain("PromotionBannerRow.Height = new GridLength(154)", codeBehind);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_scales_advertisement_media_inside_promotion_panel()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+
+        Assert.Equal(2, xaml.Split("Stretch=\"Uniform\"", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("Stretch=\"UniformToFill\"", xaml);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_hides_advertisement_title_when_media_is_available()
+    {
+        var (_, codeBehind) = ReadCustomerDisplayViewFiles();
+
+        Assert.Contains("PromotionSubtitleText.Visibility = Visibility.Collapsed;", codeBehind);
+        Assert.DoesNotContain(
+            "PromotionSubtitleText.Visibility = hasAdvertisement ? Visibility.Visible : Visibility.Collapsed;",
+            codeBehind);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_hides_promotion_badge_when_advertisement_media_is_available()
+    {
+        var (xaml, codeBehind) = ReadCustomerDisplayViewFiles();
+
+        Assert.Contains("Text=\"{loc:Loc customer.promotionTitle}\"", xaml);
+        Assert.Contains(
+            "PromotionTextPanel.Visibility = hasAdvertisement ? Visibility.Collapsed : Visibility.Visible;",
+            codeBehind);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_hides_fallback_background_when_advertisement_media_is_available()
+    {
+        var (xaml, codeBehind) = ReadCustomerDisplayViewFiles();
+        var fallbackBackgroundIndex = xaml.IndexOf("x:Name=\"PromotionFallbackBackground\"", StringComparison.Ordinal);
+        var imageIndex = xaml.IndexOf("x:Name=\"AdvertisementImage\"", StringComparison.Ordinal);
+        var videoIndex = xaml.IndexOf("x:Name=\"AdvertisementVideo\"", StringComparison.Ordinal);
+        var dimOverlayIndex = xaml.IndexOf("Opacity=\"0.18\" Fill=\"#FF000000\"", StringComparison.Ordinal);
+
+        Assert.Contains("x:Name=\"PromotionFallbackBackground\"", xaml);
+        Assert.Contains("PromotionFallbackBackground.Visibility = hasAdvertisement ? Visibility.Collapsed : Visibility.Visible;", codeBehind);
+        Assert.True(fallbackBackgroundIndex < imageIndex);
+        Assert.True(fallbackBackgroundIndex < videoIndex);
+        Assert.True(dimOverlayIndex > imageIndex);
+        Assert.True(dimOverlayIndex > videoIndex);
     }
 
     [Fact]
@@ -54,6 +100,59 @@ public sealed class CustomerDisplayViewModelTests
         Assert.True(viewModel.IsAdvertisementAvailable);
         Assert.True(viewModel.IsIdleAdvertisementVisible);
         Assert.Equal("ad-image", viewModel.CurrentAdvertisement?.Id);
+    }
+
+    [Fact]
+    public void LoadAdvertisements_filters_expired_items()
+    {
+        var now = new DateTimeOffset(2026, 6, 29, 10, 0, 0, TimeSpan.Zero);
+        var viewModel = new CustomerDisplayViewModel { UtcNow = () => now };
+
+        viewModel.LoadAdvertisements(
+            [
+                CreateAdvertisement("ad-expired", "image", "https://cdn.example.com/ad-expired.png", now.AddMinutes(-10), now.AddMinutes(-1)),
+                CreateAdvertisement("ad-active", "image", "https://cdn.example.com/ad-active.png", now.AddMinutes(-1), now.AddMinutes(10))
+            ]);
+
+        Assert.True(viewModel.IsAdvertisementAvailable);
+        Assert.Equal("ad-active", viewModel.CurrentAdvertisement?.Id);
+    }
+
+    [Fact]
+    public void AdvanceAdvertisement_removes_expired_items_before_selecting_next_advertisement()
+    {
+        var now = new DateTimeOffset(2026, 6, 29, 10, 0, 0, TimeSpan.Zero);
+        var viewModel = new CustomerDisplayViewModel { UtcNow = () => now };
+        viewModel.LoadAdvertisements(
+            [
+                CreateAdvertisement("ad-first", "image", "https://cdn.example.com/ad-first.png", now.AddMinutes(-1), now.AddMinutes(1)),
+                CreateAdvertisement("ad-second", "image", "https://cdn.example.com/ad-second.png", now.AddMinutes(-1), now.AddMinutes(1))
+            ]);
+        now = now.AddMinutes(2);
+
+        viewModel.AdvanceAdvertisement();
+
+        Assert.False(viewModel.IsAdvertisementAvailable);
+        Assert.Null(viewModel.CurrentAdvertisement);
+    }
+
+    [Fact]
+    public void AdvanceAdvertisement_skips_expired_item_and_keeps_active_item()
+    {
+        var now = new DateTimeOffset(2026, 6, 29, 10, 0, 0, TimeSpan.Zero);
+        var viewModel = new CustomerDisplayViewModel { UtcNow = () => now };
+        viewModel.LoadAdvertisements(
+            [
+                CreateAdvertisement("ad-current", "image", "https://cdn.example.com/ad-current.png", now.AddMinutes(-1), now.AddMinutes(1)),
+                CreateAdvertisement("ad-expired-next", "image", "https://cdn.example.com/ad-expired-next.png", now.AddMinutes(-1), now.AddMinutes(1)),
+                CreateAdvertisement("ad-active-next", "image", "https://cdn.example.com/ad-active-next.png", now.AddMinutes(-1), now.AddMinutes(10))
+            ]);
+        now = now.AddMinutes(2);
+
+        viewModel.AdvanceAdvertisement();
+
+        Assert.True(viewModel.IsAdvertisementAvailable);
+        Assert.Equal("ad-active-next", viewModel.CurrentAdvertisement?.Id);
     }
 
     [Fact]
@@ -92,6 +191,17 @@ public sealed class CustomerDisplayViewModelTests
 
     private static AdvertisementPlaybackItemDto CreateAdvertisement(string id, string mediaType, string mediaUrl)
     {
+        var now = DateTimeOffset.UtcNow;
+        return CreateAdvertisement(id, mediaType, mediaUrl, now.AddMinutes(-5), now.AddMinutes(5));
+    }
+
+    private static AdvertisementPlaybackItemDto CreateAdvertisement(
+        string id,
+        string mediaType,
+        string mediaUrl,
+        DateTimeOffset effectiveStart,
+        DateTimeOffset effectiveEnd)
+    {
         return new AdvertisementPlaybackItemDto(
             id,
             $"Ad {id}",
@@ -103,8 +213,45 @@ public sealed class CustomerDisplayViewModelTests
             $"{id}.dat",
             "application/octet-stream",
             1024,
-            DateTimeOffset.UtcNow.AddMinutes(-5),
-            DateTimeOffset.UtcNow.AddMinutes(5),
+            effectiveStart,
+            effectiveEnd,
             1);
+    }
+
+    private static string FindRepoRoot()
+    {
+        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            var current = new DirectoryInfo(start);
+            while (current is not null)
+            {
+                if (Directory.Exists(Path.Combine(current.FullName, ".git")) ||
+                    File.Exists(Path.Combine(current.FullName, ".git")) ||
+                    File.Exists(Path.Combine(current.FullName, "hb-platform.sln")) ||
+                    File.Exists(Path.Combine(current.FullName, "hb-platform.slnx")))
+                {
+                    return current.FullName;
+                }
+
+                current = current.Parent;
+            }
+        }
+
+        throw new DirectoryNotFoundException("Unable to find repository root.");
+    }
+
+    private static (string Xaml, string CodeBehind) ReadCustomerDisplayViewFiles()
+    {
+        var viewPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "CustomerDisplayView.xaml");
+
+        return (File.ReadAllText(viewPath), File.ReadAllText(viewPath + ".cs"));
     }
 }

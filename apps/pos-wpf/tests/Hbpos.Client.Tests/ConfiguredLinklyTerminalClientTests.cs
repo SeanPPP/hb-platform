@@ -392,6 +392,43 @@ public sealed class ConfiguredLinklyTerminalClientTests
             result.FallbackAttemptedModes);
     }
 
+    [Fact]
+    public async Task PurchaseWithReferenceAsync_uses_supplied_txn_ref_for_local_mode_and_preserves_fallback_priority()
+    {
+        var localFactory = new FakeLinklyEftClientFactory(connectResult: false);
+        var backend = new FakeBackendTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZBACKEND:ASYNC-1",
+            AuthorizedAmount: 10m,
+            ConnectionMode: LinklyConnectionMode.CloudBackendAsync.ToString()));
+        var prompt = new FakeLinklyFallbackPromptService(true);
+        var client = new ConfiguredLinklyTerminalClient(
+            new LinklyTerminalClient(localFactory),
+            new FakeCloudTerminalClient(),
+            backend,
+            prompt);
+
+        var result = await client.PurchaseWithReferenceAsync(
+            10m,
+            CreateSession(),
+            CreateSettings(
+                LinklyConnectionMode.LocalIp,
+                [
+                    LinklyConnectionMode.LocalIp,
+                    LinklyConnectionMode.CloudBackendAsync
+                ]),
+            "LOCAL-TXN-001");
+
+        Assert.True(result.Approved);
+        Assert.Equal("ANZBACKEND:ASYNC-1", result.Reference);
+        Assert.Equal(1, localFactory.Client.ConnectCallCount);
+        Assert.Equal(1, backend.PurchaseCallCount);
+        Assert.Equal(1, prompt.CallCount);
+        Assert.True(result.FallbackSucceeded);
+        Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), result.RequestedConnectionMode);
+        Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), result.ActualConnectionMode);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState(

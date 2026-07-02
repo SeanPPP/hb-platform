@@ -1,5 +1,6 @@
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using System.Collections.Concurrent;
 
 namespace Hbpos.Client.Tests;
 
@@ -13,7 +14,7 @@ public sealed class ShellCatalogServiceTests
         var priceIndex = new LocalSellableItemIndex();
         var repository = new FakeLocalCatalogRepository();
         var sync = new CoordinatedCatalogSyncService();
-        var service = new ShellCatalogService(priceIndex, repository, sync);
+        var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
 
         var regularTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
         await sync.RegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
@@ -39,7 +40,7 @@ public sealed class ShellCatalogServiceTests
         var priceIndex = new LocalSellableItemIndex();
         var repository = new FakeLocalCatalogRepository();
         var sync = new CoordinatedCatalogSyncService();
-        var service = new ShellCatalogService(priceIndex, repository, sync);
+        var service = new ShellCatalogService(priceIndex, repository, sync, new PosCartService());
 
         var regularTask = service.SyncCatalogAndReloadAsync("S01", forceFullDownload: false);
         await sync.RegularStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
@@ -57,48 +58,91 @@ public sealed class ShellCatalogServiceTests
     {
         var priceIndex = new LocalSellableItemIndex();
         var repository = new ThreadTrackingLocalCatalogRepository();
-        var service = new ShellCatalogService(priceIndex, repository, new CoordinatedCatalogSyncService());
+        repository.PromotionRules = [CreatePromotionRule()];
+        var cart = new PosCartService();
+        var cartChangedThreadId = -1;
+        cart.CartChanged += (_, _) => cartChangedThreadId = Environment.CurrentManagedThreadId;
+        var service = new ShellCatalogService(priceIndex, repository, new CoordinatedCatalogSyncService(), cart);
 
         var callerThreadId = -1;
         var completion = new TaskCompletionSource<IReadOnlyList<SellableItemDto>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
+            var context = new SingleThreadSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(context);
             callerThreadId = Environment.CurrentManagedThreadId;
             try
             {
                 _ = service.LoadLocalCatalogAsync("S01").ContinueWith(loadTask =>
                 {
-                    if (loadTask.IsFaulted)
+                    try
                     {
-                        completion.TrySetException(loadTask.Exception.InnerExceptions);
-                        return;
-                    }
+                        if (loadTask.IsFaulted)
+                        {
+                            completion.TrySetException(loadTask.Exception.InnerExceptions);
+                            return;
+                        }
 
-                    if (loadTask.IsCanceled)
+                        if (loadTask.IsCanceled)
+                        {
+                            completion.TrySetCanceled();
+                            return;
+                        }
+
+                        completion.TrySetResult(loadTask.Result);
+                    }
+                    finally
                     {
-                        completion.TrySetCanceled();
-                        return;
+                        context.Complete();
                     }
+                }, TaskScheduler.FromCurrentSynchronizationContext());
 
-                    completion.TrySetResult(loadTask.Result);
-                }, TaskScheduler.Default);
+                context.RunOnCurrentThread();
             }
             catch (Exception ex)
             {
                 completion.TrySetException(ex);
             }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(null);
+            }
         });
 
         thread.Start();
         var loadedItems = await completion.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        thread.Join(TimeSpan.FromSeconds(3));
 
         Assert.Single(loadedItems);
         Assert.Equal("RESET-ITEM", loadedItems[0].ProductCode);
         Assert.NotEqual(callerThreadId, repository.LoadThreadId);
+        Assert.Equal(callerThreadId, cartChangedThreadId);
+        Assert.NotEqual(repository.LoadThreadId, cartChangedThreadId);
         Assert.Equal("RESET-ITEM", Assert.Single(priceIndex.Items).ProductCode);
     }
 
-    private static SellableItemDto CreateItem(string productCode)
+    [Fact]
+    public async Task SyncCatalogAndReloadAsync_LoadsPromotionRulesIntoCart()
+    {
+        var priceIndex = new LocalSellableItemIndex();
+        var repository = new FakeLocalCatalogRepository();
+        repository.PromotionRules =
+        [
+            CreatePromotionRule()
+        ];
+        var cart = new PosCartService();
+        var service = new ShellCatalogService(priceIndex, repository, new CoordinatedCatalogSyncService(), cart);
+
+        await service.SyncCatalogAndReloadAsync("S01", forceFullDownload: true);
+        var line = cart.AddItem(CreateItem("SKU-001", price: 10m));
+        cart.AddItem(CreateItem("SKU-001", price: 10m));
+
+        Assert.True(line.IsAutomaticPromotionDiscount);
+        Assert.Equal(5m, line.DiscountAmount);
+        Assert.Equal(15m, cart.ActualAmount);
+    }
+
+    private static SellableItemDto CreateItem(string productCode, decimal price = 1m)
     {
         return new SellableItemDto(
             "S01",
@@ -108,11 +152,27 @@ public sealed class ShellCatalogServiceTests
             LookupCode: productCode,
             ItemNumber: productCode,
             Barcode: productCode,
-            RetailPrice: 1m,
+            RetailPrice: price,
             PriceSourceKind.StoreRetailPrice,
             "store-retail",
             QuantityFactor: 1m,
             UpdatedAt: Timestamp);
+    }
+
+    private static CatalogPromotionRuleDto CreatePromotionRule()
+    {
+        return new CatalogPromotionRuleDto(
+            "PROMO-001",
+            "Quantity discount",
+            IsExclusive: true,
+            Priority: 10,
+            ApplyQuantity: 2,
+            FixedPrice: 15m,
+            MaxApplicationsPerOrder: null,
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1),
+            DateTimeOffset.UtcNow,
+            [new CatalogPromotionProductDto("SKU-001", UnitWeight: 1)]);
     }
 
     private sealed class CoordinatedCatalogSyncService : ILocalCatalogSyncService
@@ -174,6 +234,8 @@ public sealed class ShellCatalogServiceTests
 
     private class FakeLocalCatalogRepository : ILocalCatalogRepository
     {
+        public IReadOnlyList<CatalogPromotionRuleDto> PromotionRules { get; set; } = [];
+
         public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
             string storeCode,
             CancellationToken cancellationToken = default)
@@ -260,6 +322,22 @@ public sealed class ShellCatalogServiceTests
             return Task.FromResult<IReadOnlyList<SellableItemDto>>([CreateItem("RESET-ITEM")]);
         }
 
+        public Task ReplacePromotionRulesAsync(
+            string storeCode,
+            IEnumerable<CatalogPromotionRuleDto> rules,
+            CancellationToken cancellationToken = default)
+        {
+            PromotionRules = rules.ToArray();
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<CatalogPromotionRuleDto>> LoadPromotionRulesAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(PromotionRules);
+        }
+
         private sealed class FakeLocalCatalogStoreReplaceSession : ILocalCatalogStoreReplaceSession
         {
             public Task StageAsync(IEnumerable<SellableItemDto> items, CancellationToken cancellationToken = default)
@@ -289,6 +367,29 @@ public sealed class ShellCatalogServiceTests
         {
             LoadThreadId = Environment.CurrentManagedThreadId;
             return base.LoadSellableItemsAsync(storeCode, cancellationToken);
+        }
+    }
+
+    private sealed class SingleThreadSynchronizationContext : SynchronizationContext
+    {
+        private readonly BlockingCollection<(SendOrPostCallback Callback, object? State)> _queue = [];
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            _queue.Add((d, state));
+        }
+
+        public void RunOnCurrentThread()
+        {
+            foreach (var (callback, state) in _queue.GetConsumingEnumerable())
+            {
+                callback(state);
+            }
+        }
+
+        public void Complete()
+        {
+            _queue.CompleteAdding();
         }
     }
 }

@@ -35,11 +35,11 @@ public sealed class LocalizationService : ILocalizationService
     private static readonly IReadOnlyDictionary<string, CultureInfo> SupportedCultures =
         new[]
         {
-            CultureInfo.GetCultureInfo(DefaultCultureName),
-            CultureInfo.GetCultureInfo(ChineseCultureName)
+            CreateSupportedCulture(DefaultCultureName),
+            CreateSupportedCulture(ChineseCultureName)
         }.ToDictionary(culture => culture.Name, StringComparer.OrdinalIgnoreCase);
 
-    private CultureInfo _currentCulture = CultureInfo.GetCultureInfo(DefaultCultureName);
+    private CultureInfo _currentCulture = SupportedCultures[DefaultCultureName];
 
     public LocalizationService()
     {
@@ -116,5 +116,13 @@ public sealed class LocalizationService : ILocalizationService
         CultureInfo.DefaultThreadCurrentUICulture = culture;
         Thread.CurrentThread.CurrentCulture = culture;
         Thread.CurrentThread.CurrentUICulture = culture;
+    }
+
+    private static CultureInfo CreateSupportedCulture(string cultureName)
+    {
+        var culture = (CultureInfo)CultureInfo.GetCultureInfo(cultureName).Clone();
+        // 中文说明：界面语言可以切换，但 POS 金额统一使用美元符号显示。
+        culture.NumberFormat.CurrencySymbol = "$";
+        return CultureInfo.ReadOnly(culture);
     }
 }

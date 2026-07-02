@@ -195,6 +195,12 @@ assertEqual(
   'System.ManageAppDownloads should unlock OTA management actions',
 )
 
+assertEqual(
+  appDownloadManagerAccess.canViewAppDownloads,
+  true,
+  'System.ManageAppDownloads should implied System.ViewAppDownloads for page visibility',
+)
+
 const appDownloadDeniedAccess = buildAccess(createCurrentUser())
 
 assertEqual(
@@ -567,8 +573,8 @@ assertEqual(
 
 assertEqual(
   getAccessKeyPermissionCodes('canViewAppDownloads').join(','),
-  P.System.ViewAppDownloads,
-  'Web menu preview should map App download access to System.ViewAppDownloads',
+  `${P.System.ViewAppDownloads},${P.System.ManageAppDownloads}`,
+  'Web menu preview should map App download access to both view and manage permissions',
 )
 
 assertEqual(

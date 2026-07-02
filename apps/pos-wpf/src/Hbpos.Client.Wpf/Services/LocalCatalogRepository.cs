@@ -58,6 +58,21 @@ public interface ILocalCatalogRepository
 
     Task<IReadOnlyList<SellableItemDto>> LoadSellableItemsAsync(string storeCode, CancellationToken cancellationToken = default);
 
+    Task ReplacePromotionRulesAsync(
+        string storeCode,
+        IEnumerable<CatalogPromotionRuleDto> rules,
+        CancellationToken cancellationToken = default)
+    {
+        throw new NotSupportedException("Promotion rule caching is not supported by this repository.");
+    }
+
+    Task<IReadOnlyList<CatalogPromotionRuleDto>> LoadPromotionRulesAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<CatalogPromotionRuleDto>>([]);
+    }
+
     Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
         string storeCode,
         CancellationToken cancellationToken = default)
@@ -492,6 +507,216 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
         return items;
     }
 
+    public async Task ReplacePromotionRulesAsync(
+        string storeCode,
+        IEnumerable<CatalogPromotionRuleDto> rules,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            throw new ArgumentException("Store code is required.", nameof(storeCode));
+        }
+
+        var materializedRules = rules.ToArray();
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+
+        // 促销规则按门店全量替换，确保后台删除或停用后本地缓存不会继续生效。
+        await using (var deleteProductsCommand = connection.CreateCommand())
+        {
+            deleteProductsCommand.Transaction = transaction;
+            deleteProductsCommand.CommandText = """
+                DELETE FROM LocalPromotionProducts
+                WHERE StoreCode = $StoreCode;
+                """;
+            deleteProductsCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            await deleteProductsCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deleteRulesCommand = connection.CreateCommand())
+        {
+            deleteRulesCommand.Transaction = transaction;
+            deleteRulesCommand.CommandText = """
+                DELETE FROM LocalPromotionRules
+                WHERE StoreCode = $StoreCode;
+                """;
+            deleteRulesCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            await deleteRulesCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var syncedAt = DateTimeOffset.UtcNow.ToString("O");
+        foreach (var rule in materializedRules)
+        {
+            var promotionId = NormalizePromotionId(rule.PromotionId);
+            if (string.IsNullOrEmpty(promotionId))
+            {
+                continue;
+            }
+
+            await using (var insertRuleCommand = connection.CreateCommand())
+            {
+                insertRuleCommand.Transaction = transaction;
+                insertRuleCommand.CommandText = """
+                    INSERT INTO LocalPromotionRules
+                    (
+                        StoreCode,
+                        PromotionId,
+                        Name,
+                        IsExclusive,
+                        Priority,
+                        ApplyQuantity,
+                        FixedPrice,
+                        MaxApplicationsPerOrder,
+                        EffectiveStart,
+                        EffectiveEnd,
+                        UpdatedAt,
+                        SyncedAt
+                    )
+                    VALUES
+                    (
+                        $StoreCode,
+                        $PromotionId,
+                        $Name,
+                        $IsExclusive,
+                        $Priority,
+                        $ApplyQuantity,
+                        $FixedPrice,
+                        $MaxApplicationsPerOrder,
+                        $EffectiveStart,
+                        $EffectiveEnd,
+                        $UpdatedAt,
+                        $SyncedAt
+                    );
+                    """;
+                insertRuleCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+                insertRuleCommand.Parameters.AddWithValue("$PromotionId", promotionId);
+                insertRuleCommand.Parameters.AddWithValue("$Name", rule.Name);
+                insertRuleCommand.Parameters.AddWithValue("$IsExclusive", rule.IsExclusive ? 1 : 0);
+                insertRuleCommand.Parameters.AddWithValue("$Priority", rule.Priority);
+                insertRuleCommand.Parameters.AddWithValue("$ApplyQuantity", rule.ApplyQuantity);
+                insertRuleCommand.Parameters.AddWithValue("$FixedPrice", rule.FixedPrice.ToString("0.#############################", CultureInfo.InvariantCulture));
+                insertRuleCommand.Parameters.AddWithValue("$MaxApplicationsPerOrder", (object?)rule.MaxApplicationsPerOrder ?? DBNull.Value);
+                insertRuleCommand.Parameters.AddWithValue("$EffectiveStart", rule.EffectiveStart.ToString("O"));
+                insertRuleCommand.Parameters.AddWithValue("$EffectiveEnd", rule.EffectiveEnd.ToString("O"));
+                insertRuleCommand.Parameters.AddWithValue("$UpdatedAt", (object?)rule.UpdatedAt?.ToString("O") ?? DBNull.Value);
+                insertRuleCommand.Parameters.AddWithValue("$SyncedAt", syncedAt);
+                await insertRuleCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            foreach (var product in rule.Products
+                .GroupBy(product => NormalizeProductCode(product.ProductCode), StringComparer.OrdinalIgnoreCase)
+                .Where(group => !string.IsNullOrEmpty(group.Key))
+                .Select(group => group.Last()))
+            {
+                var productCode = NormalizeProductCode(product.ProductCode);
+                await using var insertProductCommand = connection.CreateCommand();
+                insertProductCommand.Transaction = transaction;
+                insertProductCommand.CommandText = """
+                    INSERT INTO LocalPromotionProducts
+                    (
+                        StoreCode,
+                        PromotionId,
+                        ProductCode,
+                        UnitWeight
+                    )
+                    VALUES
+                    (
+                        $StoreCode,
+                        $PromotionId,
+                        $ProductCode,
+                        $UnitWeight
+                    );
+                    """;
+                insertProductCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+                insertProductCommand.Parameters.AddWithValue("$PromotionId", promotionId);
+                insertProductCommand.Parameters.AddWithValue("$ProductCode", productCode);
+                insertProductCommand.Parameters.AddWithValue("$UnitWeight", Math.Max(1, product.UnitWeight));
+                await insertProductCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<CatalogPromotionRuleDto>> LoadPromotionRulesAsync(
+        string storeCode,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+        {
+            return [];
+        }
+
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        var productsByPromotion = new Dictionary<string, List<CatalogPromotionProductDto>>(StringComparer.Ordinal);
+        await using (var productsCommand = connection.CreateCommand())
+        {
+            productsCommand.CommandText = """
+                SELECT PromotionId, ProductCode, UnitWeight
+                FROM LocalPromotionProducts
+                WHERE StoreCode = $StoreCode
+                ORDER BY PromotionId, ProductCode;
+                """;
+            productsCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+            await using var productReader = await productsCommand.ExecuteReaderAsync(cancellationToken);
+            while (await productReader.ReadAsync(cancellationToken))
+            {
+                var promotionId = ReadString(productReader, "PromotionId");
+                if (!productsByPromotion.TryGetValue(promotionId, out var products))
+                {
+                    products = [];
+                    productsByPromotion[promotionId] = products;
+                }
+
+                products.Add(new CatalogPromotionProductDto(
+                    ReadString(productReader, "ProductCode"),
+                    Math.Max(1, ReadInt32(productReader, "UnitWeight"))));
+            }
+        }
+
+        await using var rulesCommand = connection.CreateCommand();
+        rulesCommand.CommandText = """
+            SELECT
+                PromotionId,
+                Name,
+                IsExclusive,
+                Priority,
+                ApplyQuantity,
+                FixedPrice,
+                MaxApplicationsPerOrder,
+                EffectiveStart,
+                EffectiveEnd,
+                UpdatedAt
+            FROM LocalPromotionRules
+            WHERE StoreCode = $StoreCode
+            ORDER BY IsExclusive DESC, Priority DESC, PromotionId;
+            """;
+        rulesCommand.Parameters.AddWithValue("$StoreCode", normalizedStoreCode);
+
+        var rules = new List<CatalogPromotionRuleDto>();
+        await using var ruleReader = await rulesCommand.ExecuteReaderAsync(cancellationToken);
+        while (await ruleReader.ReadAsync(cancellationToken))
+        {
+            var promotionId = ReadString(ruleReader, "PromotionId");
+            rules.Add(new CatalogPromotionRuleDto(
+                promotionId,
+                ReadString(ruleReader, "Name"),
+                ReadBool(ruleReader, "IsExclusive"),
+                ReadInt32(ruleReader, "Priority"),
+                ReadInt32(ruleReader, "ApplyQuantity"),
+                ReadDecimal(ruleReader, "FixedPrice"),
+                ReadNullableInt32(ruleReader, "MaxApplicationsPerOrder"),
+                ReadNullableDateTimeOffset(ruleReader, "EffectiveStart") ?? DateTimeOffset.MinValue,
+                ReadNullableDateTimeOffset(ruleReader, "EffectiveEnd") ?? DateTimeOffset.MinValue,
+                ReadNullableDateTimeOffset(ruleReader, "UpdatedAt"),
+                productsByPromotion.TryGetValue(promotionId, out var products) ? products : []));
+        }
+
+        return rules;
+    }
+
     public async Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
         string storeCode,
         CancellationToken cancellationToken = default)
@@ -752,6 +977,11 @@ public sealed class LocalCatalogRepository(LocalSqliteStore store) : ILocalCatal
     }
 
     private static string NormalizeProductCode(string? value)
+    {
+        return (value ?? string.Empty).Trim();
+    }
+
+    private static string NormalizePromotionId(string? value)
     {
         return (value ?? string.Empty).Trim();
     }

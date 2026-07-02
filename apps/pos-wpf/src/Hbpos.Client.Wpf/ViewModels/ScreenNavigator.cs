@@ -20,6 +20,7 @@ internal sealed class ScreenNavigator
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly Func<CancellationToken, Task> _syncCatalogAndReloadAsync;
     private readonly Func<CancellationToken, Task> _resetCatalogAndReloadAsync;
+    private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly Func<Task<DeviceReregistrationStartResult>> _beginDeviceReregistrationAsync;
     private readonly Func<Task<bool>>? _recoverActiveCardPaymentSessionFromPaymentAsync;
 
@@ -61,6 +62,7 @@ internal sealed class ScreenNavigator
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator,
         Func<CancellationToken, Task> syncCatalogAndReloadAsync,
         Func<CancellationToken, Task> resetCatalogAndReloadAsync,
+        Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync,
         Func<Task<DeviceReregistrationStartResult>> beginDeviceReregistrationAsync,
         Func<Task<bool>>? recoverActiveCardPaymentSessionFromPaymentAsync,
         Action<object?> setScreen,
@@ -82,6 +84,7 @@ internal sealed class ScreenNavigator
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _syncCatalogAndReloadAsync = syncCatalogAndReloadAsync;
         _resetCatalogAndReloadAsync = resetCatalogAndReloadAsync;
+        _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _beginDeviceReregistrationAsync = beginDeviceReregistrationAsync;
         _recoverActiveCardPaymentSessionFromPaymentAsync = recoverActiveCardPaymentSessionFromPaymentAsync;
         _setScreen = setScreen;
@@ -299,7 +302,8 @@ internal sealed class ScreenNavigator
             reregisterDeviceAsync: _beginDeviceReregistrationAsync,
             returnToPos: ShowPos,
             resetTestSalesDataAsync: resetTestSalesDataAsync,
-            confirmResetTestSalesData: confirmResetTestSalesData);
+            confirmResetTestSalesData: confirmResetTestSalesData,
+            checkForAppUpdateAsync: _checkForAppUpdateAsync);
         await Settings.LoadAsync();
         SetCurrentScreen(Settings);
     }
@@ -334,7 +338,7 @@ internal sealed class ScreenNavigator
 
     public void ShowCustomerDisplay()
     {
-        LoadCustomerDisplayFromCart();
+        LoadCustomerDisplayFromCart(forceAdvertisementRefresh: true);
         SetCurrentScreen(CustomerDisplay);
     }
 
@@ -472,9 +476,14 @@ internal sealed class ScreenNavigator
 
     // ── Helper methods ──
 
-    public void LoadCustomerDisplayFromCart()
+    public void LoadCustomerDisplayFromCart(bool forceAdvertisementRefresh = false)
     {
-        _customerDisplayOrchestrator.LoadFromCart(CustomerDisplay, Session, _cart);
+        // 显式打开客显页面要立即拿最新广告；购物车变化调用保持默认节流。
+        _customerDisplayOrchestrator.LoadFromCart(
+            CustomerDisplay,
+            Session,
+            _cart,
+            forceAdvertisementRefresh: forceAdvertisementRefresh);
     }
 
     public PosCartServiceSnapshot? CreateCurrentCartSnapshot()

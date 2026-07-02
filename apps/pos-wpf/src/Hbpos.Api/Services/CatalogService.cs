@@ -5,8 +5,10 @@ using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Catalog;
+using SqlSugar;
 
 namespace Hbpos.Api.Services;
 
@@ -28,6 +30,10 @@ public interface ICatalogService
 
     Task<CatalogCompareResponse?> CompareSellableItemsAsync(
         CatalogCompareRequest request,
+        CancellationToken cancellationToken);
+
+    Task<CatalogPromotionsResponse?> GetPromotionRulesAsync(
+        string storeCode,
         CancellationToken cancellationToken);
 
     Task<CatalogLookupResponse?> LookupSellableItemAsync(
@@ -109,6 +115,80 @@ public sealed class CatalogService(
     {
         var index = await BuildSellableIndexAsync(request.StoreCode, since: null, cancellationToken);
         return index?.CatalogIndex.Compare(request);
+    }
+
+    public async Task<CatalogPromotionsResponse?> GetPromotionRulesAsync(
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStoreCode = NormalizeStoreCode(storeCode);
+        if (string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return null;
+        }
+
+        var store = await dbContext.MainDb.Queryable<Store>()
+            .FirstAsync(x => x.StoreCode == normalizedStoreCode && x.IsActive && !x.IsDeleted, cancellationToken);
+        if (store is null)
+        {
+            return null;
+        }
+
+        var now = DateTime.UtcNow;
+        var promotions = await dbContext.MainDb.Queryable<Promotion>()
+            .Where(p =>
+                !p.IsDeleted &&
+                p.IsEnabled &&
+                p.ApplyQuantity > 0 &&
+                p.FixedPrice >= 0m &&
+                p.EffectiveStart <= now &&
+                p.EffectiveEnd >= now)
+            .Where(p =>
+                SqlFunc
+                    .Subqueryable<PromotionStore>()
+                    .Where(ps =>
+                        !ps.IsDeleted &&
+                        ps.PromotionId == p.Id &&
+                        ps.StoreCode == normalizedStoreCode)
+                    .Any())
+            .OrderByDescending(p => p.IsExclusive)
+            .OrderByDescending(p => p.Priority)
+            .ToListAsync(cancellationToken);
+
+        var promotionIds = promotions.Select(p => p.Id).ToArray();
+        var products = promotionIds.Length == 0
+            ? new List<PromotionProduct>()
+            : await dbContext.MainDb.Queryable<PromotionProduct>()
+                .Where(product => !product.IsDeleted && promotionIds.Contains(product.PromotionId))
+                .ToListAsync(cancellationToken);
+        var productsByPromotion = products
+            .GroupBy(product => product.PromotionId)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+
+        // 只同步有商品明细的有效规则；收银端离线计算不再访问后端评估接口。
+        var rules = promotions
+            .Select(promotion => new CatalogPromotionRuleDto(
+                promotion.Id,
+                promotion.Name,
+                promotion.IsExclusive,
+                promotion.Priority,
+                promotion.ApplyQuantity,
+                promotion.FixedPrice,
+                promotion.MaxApplicationsPerOrder,
+                ToOffset(promotion.EffectiveStart) ?? DateTimeOffset.MinValue,
+                ToOffset(promotion.EffectiveEnd) ?? DateTimeOffset.MinValue,
+                promotion.UpdatedAt.HasValue ? ToOffset(promotion.UpdatedAt.Value) : null,
+                productsByPromotion.TryGetValue(promotion.Id, out var promotionProducts)
+                    ? promotionProducts
+                        .Select(product => new CatalogPromotionProductDto(
+                            product.ProductCode,
+                            Math.Max(1, product.UnitWeight)))
+                        .ToArray()
+                    : []))
+            .Where(rule => rule.Products.Count > 0)
+            .ToArray();
+
+        return new CatalogPromotionsResponse(store.StoreCode, DateTimeOffset.UtcNow, rules);
     }
 
     public async Task<CatalogLookupResponse?> LookupSellableItemAsync(

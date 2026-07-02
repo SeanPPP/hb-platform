@@ -45,6 +45,27 @@
     "allStores": "All stores",
     "noStore": "No store"
   },
+  "upload": {
+    "status": {
+      "idleTitle": "Ready to upload",
+      "idleDescription": "Pick a media asset, take a photo, or record a video.",
+      "fileSelectedTitle": "Asset details available",
+      "fileSelectedDescription": "Save the advertisement, or upload again to replace the current asset.",
+      "uploadingTitle": "Uploading asset",
+      "libraryDescription": "Reading and uploading the selected media. Keep this page open.",
+      "cameraDescription": "Processing and uploading the camera capture. Keep this page open.",
+      "imageReadyTitle": "Image uploaded",
+      "videoReadyTitle": "Video uploaded",
+      "uploadedDescription": "Asset details are filled in. Confirm title, schedule, and stores before saving.",
+      "canceledTitle": "No asset selected",
+      "canceledDescription": "Upload was canceled and the advertisement was not changed.",
+      "permissionTitle": "Upload permission needed",
+      "libraryPermissionDescription": "Allow media library access before picking an asset.",
+      "cameraPermissionDescription": "Allow camera access before capturing an asset.",
+      "failedTitle": "Asset upload failed",
+      "failedDescription": "Check the network and try again, or pick another asset."
+    }
+  },
   "actions": {
     "create": "Create",
     "edit": "Edit",
@@ -77,6 +98,7 @@
     "toggleSuccess": "Advertisement status updated.",
     "toggleFailed": "Failed to update advertisement status.",
     "uploadSuccess": "Asset uploaded.",
+    "uploadCanceled": "No asset selected. Upload canceled.",
     "uploadFailed": "Failed to upload asset.",
     "permissionDenied": "Media library permission is required.",
     "cameraPermissionDenied": "Camera permission is required.",

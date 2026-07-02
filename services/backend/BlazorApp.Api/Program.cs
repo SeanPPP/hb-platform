@@ -464,6 +464,7 @@ builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection
 builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
 builder.Services.AddScoped<IInvoiceEmailSettingsService, InvoiceEmailSettingsService>();
 builder.Services.AddScoped<IInvoiceEmailService, InvoiceEmailService>();
+builder.Services.AddScoped<PaymentTerminalSettingsService>();
 builder.Services.AddHttpClient<TencentCosMobileAppBuildArtifactMirror>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<IMobileAppBuildArtifactMirror>(sp =>
@@ -505,6 +506,16 @@ builder.Services.AddScoped<IMobileAppBuildMirrorQueue>(sp =>
     sp.GetRequiredService<MobileAppBuildService>()
 );
 builder.Services.AddHostedService<MobileAppBuildMirrorBackgroundService>();
+builder.Services.AddScoped<WpfAppReleaseService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    var uploadService = sp.GetRequiredService<TencentCloudUploadService>();
+    var logger = sp.GetRequiredService<ILogger<WpfAppReleaseService>>();
+    return new WpfAppReleaseService(context.Db, uploadService, logger);
+}); // WPF 客户端安装包发布与更新策略服务
+builder.Services.AddScoped<IWpfAppReleaseService>(sp =>
+    sp.GetRequiredService<WpfAppReleaseService>()
+);
 builder.Services.AddScoped<INavigationService, NavigationService>(); // 动态导航菜单服务
 
 // React 专用：仅限 Product 与 WarehouseProduct 的商品检测/更新/新建服务
@@ -714,7 +725,8 @@ try
         Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
         dbContext.EnsureLoginSessionSchema();
         await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
-        // dbContext.CreateTable();
+        await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
+         dbContext.CreateTable();
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 

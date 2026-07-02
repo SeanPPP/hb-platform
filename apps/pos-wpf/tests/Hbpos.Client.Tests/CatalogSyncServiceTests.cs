@@ -7,6 +7,7 @@ using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Common;
 using Hbpos.Contracts.Health;
 using Hbpos.Contracts.Devices;
+using Hbpos.Contracts.Promotions;
 
 namespace Hbpos.Client.Tests;
 
@@ -138,6 +139,37 @@ public sealed class CatalogSyncServiceTests
         var localVersion = Assert.Single(apiClient.LastCompareRequest.LocalLookups);
         Assert.Equal("LOCAL-CODE", localVersion.LookupCodeNormalized);
         Assert.Equal("local-hash", localVersion.RowVersion);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_ReplacesPromotionRulesAfterCatalogDownload()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 0));
+        apiClient.PromotionResponses.Enqueue(new CatalogPromotionsResponse(
+            "S01",
+            Timestamp,
+            [CreatePromotionRule("PROMO-001", "SKU-001")]));
+        var service = new LocalCatalogSyncService(repository, apiClient);
+
+        await service.FullSyncAsync("S01");
+
+        Assert.Equal(["S01"], apiClient.PromotionRequests);
+        var replaceCall = Assert.Single(repository.PromotionReplaceCalls);
+        Assert.Equal("S01", replaceCall.StoreCode);
+        var rule = Assert.Single(replaceCall.Rules);
+        Assert.Equal("PROMO-001", rule.PromotionId);
+        Assert.Equal("SKU-001", Assert.Single(rule.Products).ProductCode);
     }
 
     [Fact]
@@ -443,6 +475,102 @@ public sealed class CatalogSyncServiceTests
     }
 
     [Fact]
+    public async Task FullSyncAsync_refreshes_promotion_cache_after_catalog_sync_succeeds()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 0));
+        var promotionRepository = new FakeLocalPromotionRepository();
+        var promotionApiClient = new FakePromotionApiClient();
+        promotionApiClient.RulesResponses.Enqueue(new PromotionRulesResponse(
+            "S01",
+            Timestamp,
+            [
+                new PromotionRuleDto(
+                    "PROMO-001",
+                    "Tea Bundle",
+                    Timestamp.AddDays(-1).UtcDateTime,
+                    Timestamp.AddDays(1).UtcDateTime,
+                    true,
+                    10,
+                    2,
+                    8.5m,
+                    1,
+                    [new PromotionRuleProductDto("SKU-001", 2)])
+            ]));
+        var service = new LocalCatalogSyncService(repository, apiClient, null, promotionRepository, promotionApiClient);
+
+        await service.FullSyncAsync("S01");
+
+        var replaceCall = Assert.Single(promotionRepository.ReplaceCalls);
+        Assert.Equal("S01", replaceCall.StoreCode);
+        Assert.Equal("PROMO-001", Assert.Single(replaceCall.Response.Rules).Id);
+        var request = Assert.Single(promotionApiClient.Requests);
+        Assert.Equal("S01", request.StoreCode);
+        Assert.Null(request.AsOf);
+    }
+
+    [Fact]
+    public async Task FullSyncAsync_when_promotion_sync_fails_keeps_existing_cached_rules()
+    {
+        var repository = new FakeLocalCatalogRepository();
+        repository.ComparePages.Enqueue([]);
+        var apiClient = new FakeCatalogApiClient();
+        apiClient.PageResponses.Enqueue(new CatalogSyncPageResponse(
+            "S01",
+            Timestamp,
+            Cursor: null,
+            [],
+            [],
+            NextCursor: null,
+            HasMore: false,
+            TotalCount: 0));
+        var promotionRepository = new FakeLocalPromotionRepository();
+        promotionRepository.SeedStore(
+            "S01",
+            [
+                new PromotionRuleDto(
+                    "PROMO-OLD",
+                    "Old Rule",
+                    Timestamp.AddDays(-2).UtcDateTime,
+                    Timestamp.AddDays(2).UtcDateTime,
+                    false,
+                    5,
+                    2,
+                    9.9m,
+                    1,
+                    [new PromotionRuleProductDto("SKU-OLD", 1)])
+            ]);
+        var promotionApiClient = new FakePromotionApiClient
+        {
+            Exception = new CatalogApiException("promotion sync failed")
+        };
+        var logs = new ConcurrentQueue<string>();
+        var service = new LocalCatalogSyncService(repository, apiClient, null, promotionRepository, promotionApiClient);
+        var progressReports = new List<CatalogSyncProgress>();
+        var progress = new CapturingProgress<CatalogSyncProgress>(progressReports);
+
+        using var logCapture = CaptureClientLog(logs);
+
+        var result = await service.FullSyncAsync("S01", progress: progress);
+
+        Assert.Equal(new LocalCatalogSyncResult("S01", ComparePages: 0, RemotePages: 1, UpsertedCount: 0, DeletedCount: 0), result);
+        Assert.Equal(["PROMO-OLD"], promotionRepository.LoadStoreRuleIds("S01"));
+        Assert.Empty(promotionRepository.ReplaceCalls);
+        Assert.Contains(progressReports, report => report.Stage == CatalogSyncProgressStage.Completed);
+        Assert.True(HasLog(logs, "promotion sync failed"));
+    }
+
+    [Fact]
     public async Task DownloadSpecialProductsAsync_RequestsRemotePagesWithMaxBatchSize()
     {
         var repository = new FakeLocalCatalogRepository();
@@ -575,6 +703,31 @@ public sealed class CatalogSyncServiceTests
         Assert.Equal("http://localhost:5000/api/v1/catalog/special-products/page?storeCode=S01&pageSize=100", capturedRequest?.RequestUri?.ToString());
         Assert.Equal("P01", Assert.Single(response.Items).ProductCode);
         Assert.Equal(1, response.TotalCount);
+    }
+
+    [Fact]
+    public async Task CatalogApiClient_GetPromotionRulesAsync_GetsJsonAndUnwrapsApiResult()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var expected = new CatalogPromotionsResponse(
+            "S01",
+            Timestamp,
+            [CreatePromotionRule("PROMO-001", "SKU-001")]);
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedRequest = request;
+            return JsonResponse(ApiResult<CatalogPromotionsResponse>.Ok(expected));
+        });
+        var client = new CatalogApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:5000/")
+        });
+
+        var response = await client.GetPromotionRulesAsync("S01");
+
+        Assert.Equal(HttpMethod.Get, capturedRequest?.Method);
+        Assert.Equal("http://localhost:5000/api/v1/catalog/promotions?storeCode=S01", capturedRequest?.RequestUri?.ToString());
+        Assert.Equal("PROMO-001", Assert.Single(response.Promotions).PromotionId);
     }
 
     [Fact]
@@ -753,6 +906,22 @@ public sealed class CatalogSyncServiceTests
             UpdatedAt: Timestamp);
     }
 
+    private static CatalogPromotionRuleDto CreatePromotionRule(string promotionId, string productCode)
+    {
+        return new CatalogPromotionRuleDto(
+            promotionId,
+            "Quantity discount",
+            IsExclusive: true,
+            Priority: 10,
+            ApplyQuantity: 2,
+            FixedPrice: 15m,
+            MaxApplicationsPerOrder: null,
+            Timestamp.AddDays(-1),
+            Timestamp.AddDays(1),
+            Timestamp,
+            [new CatalogPromotionProductDto(productCode, UnitWeight: 1)]);
+    }
+
     private static HttpResponseMessage JsonResponse<T>(T value, HttpStatusCode statusCode = HttpStatusCode.OK)
     {
         return new HttpResponseMessage(statusCode)
@@ -781,6 +950,8 @@ public sealed class CatalogSyncServiceTests
         public List<IReadOnlyList<SellableItemDto>> StagedBatches { get; } = [];
 
         public int StoreReplaceCommitCount { get; private set; }
+
+        public List<(string StoreCode, IReadOnlyList<CatalogPromotionRuleDto> Rules)> PromotionReplaceCalls { get; } = [];
 
         public Action? StageStarted { get; set; }
 
@@ -884,6 +1055,24 @@ public sealed class CatalogSyncServiceTests
             return Task.FromResult<IReadOnlyList<SellableItemDto>>(LoadSellableItems(storeCode));
         }
 
+        public Task ReplacePromotionRulesAsync(
+            string storeCode,
+            IEnumerable<CatalogPromotionRuleDto> rules,
+            CancellationToken cancellationToken = default)
+        {
+            PromotionReplaceCalls.Add((storeCode, rules.ToArray()));
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<CatalogPromotionRuleDto>> LoadPromotionRulesAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            var call = PromotionReplaceCalls.LastOrDefault(entry =>
+                string.Equals(entry.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
+            return Task.FromResult(call.Rules ?? []);
+        }
+
         public Task<ILocalCatalogStoreReplaceSession> BeginStoreReplaceSessionAsync(
             string storeCode,
             CancellationToken cancellationToken = default)
@@ -970,7 +1159,11 @@ public sealed class CatalogSyncServiceTests
 
         public Queue<CatalogSpecialProductsPageResponse> SpecialProductsPageResponses { get; } = new();
 
+        public Queue<CatalogPromotionsResponse> PromotionResponses { get; } = new();
+
         public List<(string StoreCode, string? Cursor, int PageSize)> PageRequests { get; } = [];
+
+        public List<string> PromotionRequests { get; } = [];
 
         public Exception? CompareException { get; init; }
 
@@ -1036,6 +1229,16 @@ public sealed class CatalogSyncServiceTests
                 : Task.FromResult(LookupResponse);
         }
 
+        public Task<CatalogPromotionsResponse> GetPromotionRulesAsync(
+            string storeCode,
+            CancellationToken cancellationToken = default)
+        {
+            PromotionRequests.Add(storeCode);
+            return PromotionResponses.Count > 0
+                ? Task.FromResult(PromotionResponses.Dequeue())
+                : Task.FromResult(new CatalogPromotionsResponse(storeCode, Timestamp, []));
+        }
+
         public Task<CatalogSpecialProductMarkResponse> MarkSpecialProductAsync(
             CatalogSpecialProductMarkRequest request,
             CancellationToken cancellationToken = default)
@@ -1046,6 +1249,68 @@ public sealed class CatalogSyncServiceTests
                 request.IsSpecialProduct,
                 DateTimeOffset.UtcNow,
                 []));
+        }
+    }
+
+    private sealed class FakeLocalPromotionRepository : ILocalPromotionRepository
+    {
+        private readonly Dictionary<string, List<PromotionRuleDto>> _rulesByStore = new(StringComparer.OrdinalIgnoreCase);
+
+        public List<(string StoreCode, PromotionRulesResponse Response)> ReplaceCalls { get; } = [];
+
+        public Task ReplaceStoreRulesAsync(
+            string storeCode,
+            PromotionRulesResponse response,
+            CancellationToken cancellationToken = default)
+        {
+            ReplaceCalls.Add((storeCode, response));
+            _rulesByStore[storeCode] = response.Rules.ToList();
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<PromotionRuleDto>> GetActiveRulesAsync(
+            string storeCode,
+            DateTimeOffset asOf,
+            CancellationToken cancellationToken = default)
+        {
+            var rules = _rulesByStore.TryGetValue(storeCode, out var storeRules)
+                ? storeRules
+                    .Where(rule => rule.EffectiveStart <= asOf.UtcDateTime && rule.EffectiveEnd >= asOf.UtcDateTime)
+                    .ToArray()
+                : [];
+            return Task.FromResult<IReadOnlyList<PromotionRuleDto>>(rules);
+        }
+
+        public void SeedStore(string storeCode, IEnumerable<PromotionRuleDto> rules)
+        {
+            _rulesByStore[storeCode] = rules.ToList();
+        }
+
+        public string[] LoadStoreRuleIds(string storeCode)
+        {
+            return _rulesByStore.TryGetValue(storeCode, out var rules)
+                ? rules.Select(rule => rule.Id).ToArray()
+                : [];
+        }
+    }
+
+    private sealed class FakePromotionApiClient : IPromotionApiClient
+    {
+        public Queue<PromotionRulesResponse> RulesResponses { get; } = new();
+
+        public List<(string StoreCode, DateTimeOffset? AsOf)> Requests { get; } = [];
+
+        public Exception? Exception { get; init; }
+
+        public Task<PromotionRulesResponse> GetRulesAsync(
+            string storeCode,
+            DateTimeOffset? asOf = null,
+            CancellationToken cancellationToken = default)
+        {
+            Requests.Add((storeCode, asOf));
+            return Exception is not null
+                ? Task.FromException<PromotionRulesResponse>(Exception)
+                : Task.FromResult(RulesResponses.Dequeue());
         }
     }
 

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
+using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
@@ -27,19 +28,27 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly LocalSellableItemIndex _priceIndex;
     private readonly PosCartService _cart;
     private readonly IPosTerminalWorkflowService _workflowService;
+    private readonly IPromotionEvaluationService? _promotionEvaluationService;
     private readonly PosTerminalActions _actions;
     private readonly PosTerminalScanController _scanController;
     private readonly ILocalizationService? _localization;
     private readonly IUserFeedbackService _userFeedbackService;
+    private readonly ICashierSessionContext _cashierSessionContext;
+    private readonly bool _enforcePermissions;
     private readonly IRawScannerService? _rawScannerService;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _syncCatalogAsync;
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _resetCatalogAsync;
     private readonly Func<CancellationToken, Task<bool>>? _refreshOnlineAsync;
+    private readonly Func<string, CancellationToken, Task<bool>>? _tryLoginCashierFromScannerFallbackAsync;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
     private string? _activeScanTraceId;
     private DateTimeOffset? _activeScanStartedAt;
+    private long _cartChangedSequence;
+    private bool _isPromotionEvaluationRunning;
+    private string? _queuedPromotionEvaluationReason;
+    private Task _pendingPromotionEvaluationTask = Task.CompletedTask;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -96,11 +105,16 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         Action? onOpenReturns = null,
         Func<Task<ReceiptPrintResult>>? onPrintLastReceiptAsync = null,
         Func<Task<ReceiptPrintResult>>? onOpenCashDrawerAsync = null,
-        Func<Task>? onExitApplicationAsync = null)
+        Func<Task>? onExitApplicationAsync = null,
+        Func<string, CancellationToken, Task<bool>>? tryLoginCashierFromScannerFallbackAsync = null,
+        ICashierSessionContext? cashierSessionContext = null,
+        bool enforcePermissionsWhenNoCashier = false,
+        IPromotionEvaluationService? promotionEvaluationService = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
         _workflowService = workflowService ?? new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync);
+        _promotionEvaluationService = promotionEvaluationService;
         _actions = PosTerminalActions.FromLegacyCallbacks(
             onOpenPayment,
             onOpenReturns,
@@ -119,9 +133,17 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _session = session;
         _localization = localization;
         _userFeedbackService = userFeedbackService ?? NoopUserFeedbackService.Instance;
+        _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
+        _enforcePermissions = enforcePermissionsWhenNoCashier;
+        if (session.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(session.CashierSession);
+        }
+
         _syncCatalogAsync = syncCatalogAsync;
         _resetCatalogAsync = resetCatalogAsync;
         _refreshOnlineAsync = refreshOnlineAsync;
+        _tryLoginCashierFromScannerFallbackAsync = tryLoginCashierFromScannerFallbackAsync;
         _rawScannerService = rawScannerService;
         if (_localization is not null)
         {
@@ -149,7 +171,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         ApplyQuickDiscountPercentCommand = new RelayCommand<string>(ApplyQuickDiscountPercent);
         ClearSearchCommand = new RelayCommand(ClearSearch, () => !string.IsNullOrWhiteSpace(ScanText));
         ClearCartCommand = new RelayCommand(ClearCart, () => !_cart.IsEmpty);
-        OpenPaymentCommand = new RelayCommand(OpenPayment, () => !_cart.IsEmpty);
+        OpenPaymentCommand = new AsyncRelayCommand(OpenPaymentAsync, () => !_cart.IsEmpty);
         OpenReturnsCommand = new RelayCommand(OpenReturns);
         OpenSpecialProductsCommand = new AsyncRelayCommand(OpenSpecialProductsAsync);
         HoldOrderCommand = new AsyncRelayCommand(HoldOrderAsync, () => !_cart.IsEmpty);
@@ -328,6 +350,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     partial void OnSessionChanged(PosSessionState value)
     {
+        if (value.CashierSession is not null)
+        {
+            _cashierSessionContext.SetCurrent(value.CashierSession);
+        }
+
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));
     }
@@ -425,7 +452,103 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void OnCartChanged(object? sender, EventArgs e)
     {
+        _cartChangedSequence++;
         RefreshCartCore("cart-changed", _activeScanTraceId, _activeScanStartedAt);
+    }
+
+    private PosTerminalWorkflowResult ExecuteCartMutation(
+        string reason,
+        Func<PosTerminalWorkflowResult> operation)
+    {
+        var previousSequence = _cartChangedSequence;
+        var result = operation();
+        ApplyWorkflowResult(result);
+        QueuePromotionEvaluationIfCartChanged(previousSequence, reason);
+        return result;
+    }
+
+    private void QueuePromotionEvaluationIfCartChanged(long previousSequence, string reason)
+    {
+        if (_promotionEvaluationService is null || _cartChangedSequence == previousSequence)
+        {
+            return;
+        }
+
+        // 中文注释：扫码和改数量只排队促销重算，真正等待发生在收款或挂单前。
+        _queuedPromotionEvaluationReason = reason;
+        if (_isPromotionEvaluationRunning)
+        {
+            return;
+        }
+
+        _pendingPromotionEvaluationTask = RunPromotionEvaluationLoopAsync();
+    }
+
+    private async Task RunPromotionEvaluationLoopAsync()
+    {
+        if (_isPromotionEvaluationRunning)
+        {
+            return;
+        }
+
+        _isPromotionEvaluationRunning = true;
+        try
+        {
+            while (_queuedPromotionEvaluationReason is string reason)
+            {
+                _queuedPromotionEvaluationReason = null;
+                await ReevaluatePromotionsAsync(reason);
+            }
+        }
+        finally
+        {
+            _isPromotionEvaluationRunning = false;
+            if (_queuedPromotionEvaluationReason is not null)
+            {
+                _pendingPromotionEvaluationTask = RunPromotionEvaluationLoopAsync();
+            }
+        }
+    }
+
+    private async Task WaitForPendingPromotionEvaluationAsync()
+    {
+        while (true)
+        {
+            var pendingTask = _pendingPromotionEvaluationTask;
+            if (pendingTask.IsCompleted)
+            {
+                return;
+            }
+
+            await pendingTask;
+        }
+    }
+
+    private async Task ReevaluatePromotionsAsync(string reason)
+    {
+        if (_promotionEvaluationService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var discounts = await _promotionEvaluationService.EvaluateAsync(
+                _cart.Lines.ToArray(),
+                Session.StoreCode,
+                DateTimeOffset.Now);
+            _cart.ApplyPromotionDiscounts(discounts);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 中文注释：促销失败时保留当前折扣，只提示降级，避免收银金额被半更新。
+            ConsoleLog.Write("Promotion", $"promotion evaluation failed reason={reason} error={ex.Message}");
+            SetStatusText(T("pos.status.promotionFallback"), StatusFeedbackKind.Warning);
+        }
     }
 
     private void OnWorkflowCatalogReloaded(object? sender, PosTerminalCatalogReloadedEventArgs e)
@@ -561,7 +684,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void AddOpenItem()
     {
-        ApplyWorkflowResult(_workflowService.AddOpenItem(Session, KeypadBuffer));
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddOpenItem))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("add-open-item", () => _workflowService.AddOpenItem(Session, KeypadBuffer));
     }
 
     private void AddSelected()
@@ -571,7 +699,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             return;
         }
 
-        ApplyWorkflowResult(_workflowService.AddSelectedItem(
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("manual-add-selected", () => _workflowService.AddSelectedItem(
             Session,
             SelectedItem,
             clearScanText: false,
@@ -587,7 +720,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         SelectedItem = item;
-        ApplyWorkflowResult(_workflowService.AddSelectedItem(
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("manual-select-match", () => _workflowService.AddSelectedItem(
             Session,
             item,
             clearScanText: true,
@@ -597,14 +735,23 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void RemoveLine(CartLine? line)
     {
-        ApplyWorkflowResult(_workflowService.RemoveLine(line));
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.RemoveLine))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("remove-line", () => _workflowService.RemoveLine(line));
     }
 
     private void IncreaseLine(CartLine? line)
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangeQuantity))
+        {
+            return;
+        }
+
         var stopwatch = Stopwatch.StartNew();
-        var result = _workflowService.IncreaseLine(line);
-        ApplyWorkflowResult(result);
+        var result = ExecuteCartMutation("increase-line", () => _workflowService.IncreaseLine(line));
         stopwatch.Stop();
         if (line is not null && string.Equals(result.StatusKey, "pos.status.ready", StringComparison.Ordinal))
         {
@@ -614,32 +761,62 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void DecreaseLine(CartLine? line)
     {
-        ApplyWorkflowResult(_workflowService.DecreaseLine(line));
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangeQuantity))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("decrease-line", () => _workflowService.DecreaseLine(line));
     }
 
     private void ModifySelectedLineQuantity()
     {
-        ApplyWorkflowResult(_workflowService.ModifySelectedLineQuantity(SelectedCartLine, KeypadBuffer));
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangeQuantity))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("modify-quantity", () => _workflowService.ModifySelectedLineQuantity(SelectedCartLine, KeypadBuffer));
     }
 
     private void ModifySelectedLinePrice()
     {
-        ApplyWorkflowResult(_workflowService.ModifySelectedLinePrice(SelectedCartLine, KeypadBuffer));
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ChangePrice))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("modify-price", () => _workflowService.ModifySelectedLinePrice(SelectedCartLine, KeypadBuffer));
     }
 
     private void ApplySelectedLineDiscountAmount()
     {
-        ApplyWorkflowResult(_workflowService.ApplySelectedLineDiscountAmount(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
+        if (!TryRequirePermission(IsWholeOrderOperation ? Permissions.PosTerminal.Sales.OrderDiscount : Permissions.PosTerminal.Sales.LineDiscount))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("manual-discount-amount", () => _workflowService.ApplySelectedLineDiscountAmount(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
     }
 
     private void ApplySelectedLineDiscountPercent()
     {
-        ApplyWorkflowResult(_workflowService.ApplySelectedLineDiscountPercent(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
+        if (!TryRequirePermission(IsWholeOrderOperation ? Permissions.PosTerminal.Sales.OrderDiscount : Permissions.PosTerminal.Sales.LineDiscount))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("manual-discount-percent", () => _workflowService.ApplySelectedLineDiscountPercent(SelectedCartLine, KeypadBuffer, IsWholeOrderOperation));
     }
 
     private void ApplyQuickDiscountPercent(string? value)
     {
-        ApplyWorkflowResult(_workflowService.ApplyQuickDiscountPercent(SelectedCartLine, value, IsWholeOrderOperation));
+        if (!TryRequirePermission(IsWholeOrderOperation ? Permissions.PosTerminal.Sales.OrderDiscount : Permissions.PosTerminal.Sales.LineDiscount))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("quick-discount-percent", () => _workflowService.ApplyQuickDiscountPercent(SelectedCartLine, value, IsWholeOrderOperation));
     }
 
     private void SelectCartLine(CartLine line)
@@ -747,7 +924,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             // 扫描枪入口不能 await，异常必须在后台任务内记录，避免静默吞掉。
             ConsoleLog.Write(
                 "PosScan",
-                $"scanner async processing failed barcode={barcode} source={source} device={devicePath} error={ex.Message}");
+                $"scanner async processing failed barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(barcode)} source={source} device={devicePath} error={ex.Message}");
         }
     }
 
@@ -760,11 +937,24 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void ClearCart()
     {
-        ApplyWorkflowResult(_workflowService.ClearCart());
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.ClearCart))
+        {
+            return;
+        }
+
+        ExecuteCartMutation("clear-cart", () => _workflowService.ClearCart());
     }
 
-    private void OpenPayment()
+    private async Task OpenPaymentAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Payment.View))
+        {
+            return;
+        }
+
+        // 进入支付前等待本轮促销尝试结束，避免使用过期金额。
+        await WaitForPendingPromotionEvaluationAsync();
+
         var stopwatch = Stopwatch.StartNew();
         var result = _workflowService.GuardPayment();
         ApplyWorkflowResult(result);
@@ -782,11 +972,21 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void OpenReturns()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Returns.View))
+        {
+            return;
+        }
+
         _actions.OpenReturns?.Invoke();
     }
 
     private async Task OpenSpecialProductsAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.SpecialProducts.View))
+        {
+            return;
+        }
+
         if (_actions.OpenSpecialProductsAsync is not null)
         {
             await _actions.OpenSpecialProductsAsync();
@@ -795,6 +995,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task HoldOrderAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.HoldOrder))
+        {
+            return;
+        }
+
+        // 挂单会持久化金额，必须先等当前促销重算完成。
+        await WaitForPendingPromotionEvaluationAsync();
+
         if (_actions.HoldOrderAsync is not null)
         {
             await _actions.HoldOrderAsync();
@@ -803,6 +1011,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task RecallOrderAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Sales.RecallOrder))
+        {
+            return;
+        }
+
         if (_actions.RecallOrderAsync is not null)
         {
             await _actions.RecallOrderAsync();
@@ -811,6 +1024,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenHistoryAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.History.View))
+        {
+            return;
+        }
+
         if (_actions.OpenHistoryAsync is not null)
         {
             await _actions.OpenHistoryAsync();
@@ -819,6 +1037,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenDailyCloseAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.DailyClose.View))
+        {
+            return;
+        }
+
         if (_actions.OpenDailyCloseAsync is not null)
         {
             await _actions.OpenDailyCloseAsync();
@@ -827,6 +1050,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenSettingsAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.View))
+        {
+            return;
+        }
+
         if (_actions.OpenSettingsAsync is not null)
         {
             await _actions.OpenSettingsAsync();
@@ -835,11 +1063,21 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private void OpenCustomerDisplay()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.CustomerDisplay.Manage))
+        {
+            return;
+        }
+
         _actions.OpenCustomerDisplay?.Invoke();
     }
 
     private async Task PrintLastReceiptAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Receipt.PrintLast))
+        {
+            return;
+        }
+
         if (_actions.PrintLastReceiptAsync is null)
         {
             return;
@@ -855,6 +1093,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task OpenCashDrawerAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.CashDrawer.Open))
+        {
+            return;
+        }
+
         if (_actions.OpenCashDrawerAsync is null)
         {
             return;
@@ -878,6 +1121,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task ReregisterDeviceAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.DeviceRegistration))
+        {
+            return;
+        }
+
         if (_actions.ReregisterDeviceAsync is not null)
         {
             await _actions.ReregisterDeviceAsync();
@@ -912,6 +1160,29 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         var applyStopwatch = new Stopwatch();
         try
         {
+            // 关键逻辑：这里复用旧分支变量；true 表示本地已知商品条码，必须按 AddItem 权限拒绝，不能 fallback 换收银员。
+            var hasLocalCatalogMatch = HasLocalCatalogExactMatch(plan.Barcode);
+            if (!TryRequirePermission(Permissions.PosTerminal.Sales.AddItem))
+            {
+                workflowStopwatch.Stop();
+                // 关键逻辑：只有未登录时才允许扫码先解释为收银员登录；已登录但无添加商品权限时不能切换收银员绕过权限失败。
+                if (!hasLocalCatalogMatch && await TryApplyCashierLoginFallbackAsync(plan, result: null, CancellationToken.None))
+                {
+                    totalStopwatch.Stop();
+                    _scanController.LogFinished(
+                        plan,
+                        "cashier-login",
+                        false,
+                        _cart.Lines.Count,
+                        workflowStopwatch.ElapsedMilliseconds,
+                        0,
+                        totalStopwatch.ElapsedMilliseconds);
+                }
+
+                return;
+            }
+
+            var previousSequence = _cartChangedSequence;
             result = await _workflowService.ProcessScanAsync(
                 Session,
                 plan.Barcode,
@@ -919,9 +1190,24 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
                 plan.Source,
                 plan.TraceId);
             workflowStopwatch.Stop();
+            if (await TryApplyCashierLoginFallbackAsync(plan, result, CancellationToken.None))
+            {
+                totalStopwatch.Stop();
+                _scanController.LogFinished(
+                    plan,
+                    "cashier-login",
+                    false,
+                    _cart.Lines.Count,
+                    workflowStopwatch.ElapsedMilliseconds,
+                    0,
+                    totalStopwatch.ElapsedMilliseconds);
+                return;
+            }
+
             applyStopwatch.Start();
             ApplyWorkflowResult(result, statusTextOverrideFactory?.Invoke(result));
             applyStopwatch.Stop();
+            QueuePromotionEvaluationIfCartChanged(previousSequence, "scan");
         }
         finally
         {
@@ -945,8 +1231,56 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             totalStopwatch.ElapsedMilliseconds);
     }
 
+    private bool HasLocalCatalogExactMatch(string barcode)
+    {
+        return _priceIndex.FindExactMatches(Session.StoreCode, barcode).Count > 0 ||
+            _priceIndex.FindMetadataExactMatches(Session.StoreCode, barcode).Count > 0;
+    }
+
+    private async Task<bool> TryApplyCashierLoginFallbackAsync(
+        PosTerminalScanPlan plan,
+        PosTerminalWorkflowResult? result,
+        CancellationToken cancellationToken)
+    {
+        if (_tryLoginCashierFromScannerFallbackAsync is null ||
+            (result is not null && !IsCatalogMiss(result)))
+        {
+            return false;
+        }
+
+        var loggedIn = await _tryLoginCashierFromScannerFallbackAsync(plan.Barcode, cancellationToken);
+        if (!loggedIn)
+        {
+            return false;
+        }
+
+        // 关键逻辑：未登录时允许扫码先进收银员登录；已能查商品时只在商品明确 miss 后解释为收银员条码。
+        Matches.Clear();
+        SelectedItem = null;
+        IsMatchesPopupOpen = false;
+        IsTouchKeyboardOpen = false;
+        ScanText = string.Empty;
+        SetStatusText(T("shell.cashierLogin.succeeded", "收银员登录成功"), StatusFeedbackKind.Success);
+        ConsoleLog.Write(
+            "CashierLogin",
+            $"scanner fallback cashier login succeeded source={plan.Source} device={plan.DevicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(plan.Barcode)}");
+        return true;
+    }
+
+    private static bool IsCatalogMiss(PosTerminalWorkflowResult result)
+    {
+        return string.Equals(result.StatusKey, "pos.status.noLocalMatch", StringComparison.Ordinal) &&
+            result.Matches is not null &&
+            result.Matches.Count == 0;
+    }
+
     private async Task SyncAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.System.Sync))
+        {
+            return;
+        }
+
         await RunCatalogDownloadAsync(
             _syncCatalogAsync,
             T("pos.catalogSync.starting", "Syncing catalog..."),
@@ -956,6 +1290,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     private async Task ResetCatalogAsync()
     {
+        if (!TryRequirePermission(Permissions.PosTerminal.Settings.CatalogReset))
+        {
+            return;
+        }
+
         await RunCatalogDownloadAsync(
             _resetCatalogAsync,
             T("pos.catalogReset.starting", "Resetting catalog..."),
@@ -1113,6 +1452,19 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         _statusText = message;
         ApplyStatusFeedback(feedbackKind, cue);
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    private bool TryRequirePermission(string permissionCode)
+    {
+        if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
+            _cashierSessionContext.RequirePermission(permissionCode, out var message))
+        {
+            return true;
+        }
+
+        // 中文注释：命令执行前二次校验，避免只靠按钮可用状态保护高风险操作。
+        SetStatusText(message, StatusFeedbackKind.Error, UserFeedbackCue.OperationError);
+        return false;
     }
 
     private void ApplyStatusFeedback(StatusFeedbackKind feedbackKind, UserFeedbackCue? cue)

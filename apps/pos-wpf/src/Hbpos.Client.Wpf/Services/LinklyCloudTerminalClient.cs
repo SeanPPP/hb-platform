@@ -731,6 +731,29 @@ public sealed class ConfiguredLinklyTerminalClient(
             cancellationToken);
     }
 
+    public Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default)
+    {
+        return RunWithPriorityAsync(
+            settings,
+            (mode, modeSettings) => PurchaseOneModeAsync(mode, amount, session, modeSettings, cancellationToken, txnRef),
+            cancellationToken);
+    }
+
+    public Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default)
+    {
+        return localClient.RecoverLastTransactionAsync(amount, session, settings, txnRef, cancellationToken);
+    }
+
     public Task<PaymentAuthorizationResult> RefundAsync(
         decimal amount,
         PosSessionState session,
@@ -759,7 +782,8 @@ public sealed class ConfiguredLinklyTerminalClient(
         decimal amount,
         PosSessionState session,
         CardTerminalSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? txnRef = null)
     {
         // 运行时路由集中在终端适配层，付款流程只依赖统一的 Linkly client。
         return mode switch
@@ -768,7 +792,9 @@ public sealed class ConfiguredLinklyTerminalClient(
             LinklyConnectionMode.CloudBackendAsync => backendClient is null
                 ? Task.FromResult(BackendUnavailable())
                 : backendClient.PurchaseAsync(amount, session, settings, cancellationToken),
-            _ => localClient.PurchaseAsync(amount, session, settings, cancellationToken)
+            _ => string.IsNullOrWhiteSpace(txnRef)
+                ? localClient.PurchaseAsync(amount, session, settings, cancellationToken)
+                : localClient.PurchaseWithReferenceAsync(amount, session, settings, txnRef, cancellationToken)
         };
     }
 

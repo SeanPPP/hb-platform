@@ -27,6 +27,8 @@ const typeFile = path.resolve(process.cwd(), 'src/types/container.ts')
 const pageSource = readFileSync(pageFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
+// 统一换行，避免 Windows CRLF 让源码片段定位失效。
+const normalizedPageSource = pageSource.replace(/\r\n/g, '\n')
 
 async function main() {
   const failures: string[] = []
@@ -89,11 +91,11 @@ async function main() {
   if (columnFailure) failures.push(columnFailure)
 
   const remarkColumnFailure = await runTest('货柜列表应显示备注列', () => {
-    const columnsStart = pageSource.indexOf('const columns: ColumnsType<ContainerMain> = [')
-    const columnsEnd = pageSource.indexOf(']\n\n  return', columnsStart)
+    const columnsStart = normalizedPageSource.indexOf('const columns: ColumnsType<ContainerMain> = [')
+    const columnsEnd = normalizedPageSource.indexOf(']\n\n  return', columnsStart)
     assert(columnsStart >= 0 && columnsEnd > columnsStart, '无法定位货柜列表 columns 定义')
 
-    const columnsSource = pageSource.slice(columnsStart, columnsEnd)
+    const columnsSource = normalizedPageSource.slice(columnsStart, columnsEnd)
     assert(columnsSource.includes("title: t('containers.fields.remark')"), '货柜列表列定义缺少备注标题')
     assert(columnsSource.includes("dataIndex: '备注'"), '货柜列表列定义缺少备注字段')
   })

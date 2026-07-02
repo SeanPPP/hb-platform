@@ -77,8 +77,10 @@ namespace BlazorApp.Api.Services
                     new() { Path = "/system/roles",    TitleKey = "menu.systemRoles",       Icon = "TeamOutlined",     Permission = Permissions.Roles.View },
                     new() { Path = "/system/permissions", TitleKey = "menu.systemPermissions", Icon = "KeyOutlined", Permission = Permissions.Roles.View },
                     new() { Path = "/system/invoice-email-settings", TitleKey = "menu.invoiceEmailSettings", Icon = "SettingOutlined", Permission = Permissions.System.ManageSettings },
+                    new() { Path = "/system/payment-terminal-settings", TitleKey = "menu.paymentTerminalSettings", Icon = "WalletOutlined", Permission = Permissions.System.ManageSettings },
                     new() { Path = "/system/device-registration", TitleKey = "menu.deviceRegistration", Icon = "BuildOutlined", Permission = Permissions.DeviceRegistration.View },
                     new() { Path = "/system/app-downloads", TitleKey = "menu.appDownloads", Icon = "QrcodeOutlined", Permission = Permissions.System.ViewAppDownloads },
+                    new() { Path = "/system/wpf-versions", TitleKey = "menu.wpfVersions", Icon = "DownloadOutlined", Permission = Permissions.System.ViewAppDownloads },
                 },
             },
             new()
@@ -468,10 +470,14 @@ namespace BlazorApp.Api.Services
 
         private static bool HasBackendNavigationAccess(NavigationPermissionContext context)
         {
+            // WPF 版本管理和下载页都挂在后台导航下，具备查看或管理下载权限时都应能看到后台入口。
             return HasAnyPermission(
                 context,
                 Permissions.Dashboard.View,
-                Permissions.Reports.ProductMovementView
+                Permissions.Reports.ProductMovementView,
+                Permissions.System.ManageSettings,
+                Permissions.System.ViewAppDownloads,
+                Permissions.System.ManageAppDownloads
             );
         }
 
@@ -615,7 +621,7 @@ namespace BlazorApp.Api.Services
                 return false;
             }
 
-            return Permissions.GetEquivalentPermissionCodes(permission)
+            return GetNavigationEquivalentPermissionCodes(permission)
                 .Any(code => context.PermissionCodes.Contains(code));
         }
 
@@ -629,8 +635,31 @@ namespace BlazorApp.Api.Services
 
         private static bool HasPermissionClaim(ClaimsPrincipal user, string? permission)
         {
-            return Permissions.GetEquivalentPermissionCodes(permission)
+            if (string.IsNullOrWhiteSpace(permission))
+            {
+                return false;
+            }
+
+            return GetNavigationEquivalentPermissionCodes(permission)
                 .Any(code => user.HasClaim("permission", code));
+        }
+
+        private static IReadOnlyCollection<string> GetNavigationEquivalentPermissionCodes(
+            string permission
+        )
+        {
+            var codes = new HashSet<string>(
+                Permissions.GetEquivalentPermissionCodes(permission),
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            // WPF 版本页和下载页目前都绑定查看权限，但发布管理用户也需要保留可见性。
+            if (string.Equals(permission, Permissions.System.ViewAppDownloads, StringComparison.OrdinalIgnoreCase))
+            {
+                codes.Add(Permissions.System.ManageAppDownloads);
+            }
+
+            return codes;
         }
 
         private static bool IsWarehouseDevice(string? deviceType)

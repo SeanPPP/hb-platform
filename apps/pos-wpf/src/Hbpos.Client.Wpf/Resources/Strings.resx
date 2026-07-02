@@ -89,7 +89,7 @@
   <data name="Subtotal" xml:space="preserve"><value>Subtotal</value></data>
   <data name="Success" xml:space="preserve"><value>Success</value></data>
   <data name="Savings" xml:space="preserve"><value>Savings</value></data>
-  <data name="Tax" xml:space="preserve"><value>Tax</value></data>
+  <data name="Tax" xml:space="preserve"><value>GST</value></data>
   <data name="Tendered" xml:space="preserve"><value>Tendered</value></data>
   <data name="Terminal" xml:space="preserve"><value>Terminal</value></data>
   <data name="Time" xml:space="preserve"><value>Time</value></data>
@@ -146,6 +146,7 @@
   <data name="pos.status.scannerResult" xml:space="preserve"><value>Scan {0}: {1}</value></data>
   <data name="pos.status.cartCleared" xml:space="preserve"><value>Cart cleared.</value></data>
   <data name="pos.status.catalogSyncSkipped" xml:space="preserve"><value>Offline: catalog sync skipped.</value></data>
+  <data name="pos.status.promotionFallback" xml:space="preserve"><value>Promotions not updated. Using cached local prices.</value></data>
   <data name="cart.status.zeroPriceItem" xml:space="preserve"><value>Cart contains a zero-price item. Update the price before checkout.</value></data>
   <data name="cart.status.quantityMustBeInteger" xml:space="preserve"><value>Item quantity must be a positive integer.</value></data>
   <data name="pos.status.selectCartLine" xml:space="preserve"><value>Select a cart line first.</value></data>
@@ -229,7 +230,7 @@
   <data name="payment.card.error.overlay.cardDeclined.message" xml:space="preserve"><value>Card was not approved. Reason: {0}</value></data>
   <data name="payment.card.error.overlay.close" xml:space="preserve"><value>OK</value></data>
   <data name="payment.card.error.overlay.activeSession.title" xml:space="preserve"><value>Previous Card Transaction Needs Recovery</value></data>
-  <data name="payment.card.error.overlay.activeSession.message" xml:space="preserve"><value>The current order was not sent to Linkly. Recover or confirm the previous transaction before starting a new card payment.</value></data>
+  <data name="payment.card.error.overlay.activeSession.message" xml:space="preserve"><value>POS will check the previous Linkly transaction before another card payment. The current order will stay on this screen.</value></data>
   <data name="payment.card.error.overlay.activeSession.recover" xml:space="preserve"><value>Recover previous</value></data>
   <data name="payment.card.error.overlay.activeSession.close" xml:space="preserve"><value>Close</value></data>
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve"><value>Recovering previous Linkly transaction...</value></data>
@@ -299,6 +300,11 @@
   <data name="customerDisplay.window.noSecondDisplay" xml:space="preserve"><value>No second display detected. Customer display was not opened.</value></data>
   <data name="shell.customerDisplayWindow" xml:space="preserve"><value>Customer display window</value></data>
   <data name="shell.languageToggle" xml:space="preserve"><value>中 / EN</value></data>
+  <data name="shell.cashierLogin.overlayTitle" xml:space="preserve"><value>Cashier login required</value></data>
+  <data name="shell.cashierLogin.overlayMessage" xml:space="preserve"><value>Scan a cashier barcode to continue.</value></data>
+  <data name="shell.cashierLogin.overlayAction" xml:space="preserve"><value>Log in cashier</value></data>
+  <data name="shell.cashierLogin.inputHint" xml:space="preserve"><value>Cashier barcode</value></data>
+  <data name="shell.cashierLogin.tooltip" xml:space="preserve"><value>Scan or enter cashier barcode / emergency password</value></data>
   <data name="shell.scannerBinding" xml:space="preserve"><value>Scanner</value></data>
   <data name="shell.scannerBinding.resetTooltip" xml:space="preserve"><value>Reset scanner binding</value></data>
   <data name="shell.window.minimize" xml:space="preserve"><value>Minimize</value></data>
@@ -709,6 +715,9 @@
   <data name="cardRecovery.dialog.title.completed" xml:space="preserve"><value>Card transaction recovered successfully</value></data>
   <data name="cardRecovery.dialog.title.draftRestored" xml:space="preserve"><value>Previous card transaction was not completed</value></data>
   <data name="cardRecovery.dialog.title.failed" xml:space="preserve"><value>Previous card transaction was not successful</value></data>
+  <data name="cardRecovery.dialog.title.unknown" xml:space="preserve"><value>Previous card transaction result is unknown</value></data>
+  <data name="cardRecovery.dialog.title.activeSessionApproved" xml:space="preserve"><value>Previous Linkly transaction was successful</value></data>
+  <data name="cardRecovery.dialog.title.activeSessionNotPaid" xml:space="preserve"><value>Previous Linkly transaction was not paid</value></data>
   <data name="cardRecovery.dialog.title.failedLastTransaction" xml:space="preserve"><value>Previous card transaction was not successful</value></data>
   <data name="cardRecovery.dialog.message.failedLastTransaction" xml:space="preserve"><value>A Transaction Status request without TxnRef has completed. The terminal returned that the previous transaction was not successful. Record the TxnRef, timestamp, and response code for certification.</value></data>
   <data name="cardRecovery.dialog.message.autoPrintSucceeded" xml:space="preserve"><value>The receipt was printed automatically. You can preview it here and reprint if needed.</value></data>
@@ -716,6 +725,8 @@
   <data name="cardRecovery.dialog.message.draftRestoredFallback" xml:space="preserve"><value>The cart has been restored. Please confirm payment again.</value></data>
   <data name="cardRecovery.dialog.message.failedFallback" xml:space="preserve"><value>The terminal result has been confirmed. Follow the prompt for manual handling.</value></data>
   <data name="cardRecovery.dialog.action.printReceipt" xml:space="preserve"><value>Print receipt</value></data>
+  <data name="cardRecovery.dialog.action.retryRecovery" xml:space="preserve"><value>Retry recovery</value></data>
+  <data name="cardRecovery.dialog.action.confirmCheckedContinue" xml:space="preserve"><value>Confirm checked and continue</value></data>
   <data name="cardRecovery.dialog.action.close" xml:space="preserve"><value>Close</value></data>
   <data name="cardRecovery.dialog.section.certFields" xml:space="preserve"><value>Certification fields</value></data>
   <data name="cardRecovery.dialog.section.receiptPreview" xml:space="preserve"><value>Receipt preview</value></data>
@@ -737,6 +748,15 @@
   <data name="cardRecovery.linkly.activeSessionStillPending" xml:space="preserve"><value>The previous Linkly session is still pending. Try recovery again or ask a supervisor to check Linkly.</value></data>
   <data name="cardRecovery.linkly.activeSessionApproved" xml:space="preserve"><value>The previous Linkly session may have succeeded. Ask a supervisor to verify txnRef {0} before charging again.</value></data>
   <data name="cardRecovery.linkly.activeSessionCleared" xml:space="preserve"><value>The previous Linkly session was not submitted or failed. It has been cleared; retry the current card payment.</value></data>
+  <data name="cardRecovery.linkly.activeSessionApprovedCleared" xml:space="preserve"><value>The previous Linkly transaction was successful and has been cleared. Continue the current order.</value></data>
+  <data name="cardRecovery.linkly.activeSessionNotPaidCleared" xml:space="preserve"><value>The previous Linkly transaction was not paid successfully and has been cleared. Continue the current order and retry payment if needed.</value></data>
+  <data name="cardRecovery.linkly.activeSessionReceiptMissing" xml:space="preserve"><value>Linkly did not return receipt text for the previous transaction.</value></data>
+  <data name="cardRecovery.linkly.activeSessionReceiptPrinterMissing" xml:space="preserve"><value>Linkly receipt printer is not available.</value></data>
+  <data name="cardRecovery.linkly.activeSessionReceiptPrintFailed" xml:space="preserve"><value>Previous transaction receipt was not printed: {0}</value></data>
+  <data name="cardRecovery.linkly.activeSessionAcknowledgeFailed" xml:space="preserve"><value>The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again.</value></data>
+  <data name="cardRecovery.linkly.activeSessionManuallyCleared" xml:space="preserve"><value>The previous Linkly session was manually checked and cleared. Continue the current order.</value></data>
+  <data name="cardRecovery.linkly.activeSessionManualClearFailed" xml:space="preserve"><value>POS could not clear the previous Linkly session. Try recovery again or check Linkly before charging again.</value></data>
+  <data name="cardRecovery.linkly.activeSessionManualClearMissing" xml:space="preserve"><value>Cannot clear the previous Linkly session because the session id is missing.</value></data>
   <data name="cardRecovery.square.currentCartNotEmpty" xml:space="preserve"><value>The previous Square card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order.</value></data>
   <data name="cardRecovery.square.unknown" xml:space="preserve"><value>The previous Square card result cannot be confirmed. Ask a supervisor to confirm the Square backend status before continuing.</value></data>
   <data name="cardRecovery.square.checking" xml:space="preserve"><value>A previous Square card transaction for {0:C2} was in progress before the POS closed. Checking the card terminal status.</value></data>
@@ -744,4 +764,37 @@
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>The previous Square card payment was not completed: {0}. The order has been restored. Select a payment method again.</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>The payment amount returned by Square does not match the order amount. The order was not saved automatically. Ask a supervisor to confirm.</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>The previous Square card payment was successful. The order has been recovered and saved automatically.</value></data>
+  <data name="settings.section.appUpdate.title" xml:space="preserve"><value>Software update</value></data>
+  <data name="settings.section.appUpdate.description" xml:space="preserve"><value>Check for a new WPF POS installer without interrupting the current checkout flow.</value></data>
+  <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>Channel</value></data>
+  <data name="settings.section.appUpdate.action" xml:space="preserve"><value>Check update</value></data>
+  <data name="settings.status.appUpdateNotConfigured" xml:space="preserve"><value>Software update check is not configured.</value></data>
+  <data name="settings.status.appUpdateChecking" xml:space="preserve"><value>Checking for software updates...</value></data>
+  <data name="settings.status.appUpdateLatest" xml:space="preserve"><value>Current version is already up to date.</value></data>
+  <data name="settings.status.appUpdateAlreadyRunning" xml:space="preserve"><value>Software update check is already running.</value></data>
+  <data name="settings.status.appUpdateCheckFailed" xml:space="preserve"><value>Software update check failed. Please try again later.</value></data>
+  <data name="settings.status.appUpdatePolicyFailed" xml:space="preserve"><value>Update policy is unavailable. Please contact an administrator.</value></data>
+  <data name="settings.status.appUpdateOptionalDeclined" xml:space="preserve"><value>Software update was skipped.</value></data>
+  <data name="settings.status.appUpdateReady" xml:space="preserve"><value>Software update is ready to install.</value></data>
+  <data name="settings.status.appUpdateForceReady" xml:space="preserve"><value>Required software update is ready.</value></data>
+  <data name="settings.status.appUpdateDownloadFailed" xml:space="preserve"><value>Software update download failed. {0}</value></data>
+  <data name="settings.status.appUpdateInstallFailed" xml:space="preserve"><value>Software update installer failed to start. {0}</value></data>
+  <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>Starting software update installer...</value></data>
+  <data name="appUpdate.prompt.title" xml:space="preserve"><value>Software update</value></data>
+  <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>Version {0} is available. Download and install now?</value></data>
+  <data name="appUpdate.optional.title" xml:space="preserve"><value>Update ready</value></data>
+  <data name="appUpdate.optional.ready" xml:space="preserve"><value>New version has been downloaded. Install when the terminal is idle.</value></data>
+  <data name="appUpdate.force.title" xml:space="preserve"><value>Update required</value></data>
+  <data name="appUpdate.force.action" xml:space="preserve"><value>Install update</value></data>
+  <data name="appUpdate.force.downloading" xml:space="preserve"><value>Downloading required update. Please wait.</value></data>
+  <data name="appUpdate.force.ready" xml:space="preserve"><value>Install this required update before continuing checkout.</value></data>
+  <data name="appUpdate.force.minimumRequired" xml:space="preserve"><value>This terminal is below the minimum supported version ({0}). Install the required update before continuing checkout.</value></data>
+  <data name="appUpdate.force.rollbackReady" xml:space="preserve"><value>Roll back to version {0} before continuing checkout.</value></data>
+  <data name="appUpdate.force.downloadFailed" xml:space="preserve"><value>Required update failed: {0}</value></data>
+  <data name="appUpdate.force.downloadFailedDefault" xml:space="preserve"><value>Update download failed. Contact an administrator.</value></data>
+  <data name="appUpdate.startup.checkFailed" xml:space="preserve"><value>Software update check failed during startup: {0}</value></data>
+  <data name="appUpdate.force.retry" xml:space="preserve"><value>Retry</value></data>
+  <data name="appUpdate.force.exit" xml:space="preserve"><value>Exit</value></data>
+  <data name="appUpdate.install.activeTransaction" xml:space="preserve"><value>Complete or clear the current transaction before installing the update.</value></data>
+  <data name="appUpdate.install.failed" xml:space="preserve"><value>Could not start the update installer. {0}</value></data>
 </root>

@@ -19,6 +19,7 @@ public sealed class CatalogControllerTests
         Assert.Equal("sellable-items/page", GetHttpGetTemplate(nameof(CatalogController.GetSellableItemsPage)));
         Assert.Equal("sellable-items/lookup", GetHttpGetTemplate(nameof(CatalogController.LookupSellableItem)));
         Assert.Equal("special-products/page", GetHttpGetTemplate(nameof(CatalogController.GetSpecialProductsPage)));
+        Assert.Equal("promotions", GetHttpGetTemplate(nameof(CatalogController.GetPromotionRules)));
         Assert.Equal("sellable-items/compare", GetHttpPostTemplate(nameof(CatalogController.CompareSellableItems)));
         Assert.Equal("special-products/mark", GetHttpPostTemplate(nameof(CatalogController.MarkSpecialProduct)));
         Assert.Equal("sellable-items", GetHttpGetTemplate(nameof(CatalogController.GetSellableItems)));
@@ -55,6 +56,37 @@ public sealed class CatalogControllerTests
         Assert.True(apiResult.Success);
         Assert.Same(expected, apiResult.Data);
         Assert.Equal(("S01", DateTimeOffset.UnixEpoch, "cursor-1", 100), service.LastPageRequest);
+    }
+
+    [Fact]
+    public async Task GetPromotionRules_ReturnsWrappedServiceResponse()
+    {
+        var expected = new CatalogPromotionsResponse("S01", DateTimeOffset.UnixEpoch, []);
+        var service = new FakeCatalogService { PromotionRulesResponse = expected };
+        var controller = new CatalogController(service);
+
+        var result = await controller.GetPromotionRules("S01", CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<CatalogPromotionsResponse>>(ok.Value);
+        Assert.True(apiResult.Success);
+        Assert.Same(expected, apiResult.Data);
+        Assert.Equal("S01", service.LastPromotionRulesStoreCode);
+    }
+
+    [Fact]
+    public async Task GetPromotionRules_ReturnsForbiddenWhenDeviceStoreDoesNotMatch()
+    {
+        var controller = new CatalogController(new FakeCatalogService());
+        SetAuthenticatedDevice(controller, storeCode: "S02", deviceCode: "POS-02");
+
+        var result = await controller.GetPromotionRules("S01", CancellationToken.None);
+
+        var forbidden = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        var apiResult = Assert.IsType<ApiResult<CatalogPromotionsResponse>>(forbidden.Value);
+        Assert.False(apiResult.Success);
+        Assert.Equal("DEVICE_SCOPE_FORBIDDEN", apiResult.ErrorCode);
     }
 
     [Fact]
@@ -283,6 +315,8 @@ public sealed class CatalogControllerTests
 
         public CatalogSpecialProductsPageResponse? SpecialProductsPageResponse { get; init; }
 
+        public CatalogPromotionsResponse? PromotionRulesResponse { get; init; }
+
         public (string StoreCode, DateTimeOffset? Since, string? Cursor, int PageSize)? LastPageRequest { get; private set; }
 
         public CatalogCompareRequest? LastCompareRequest { get; private set; }
@@ -290,6 +324,8 @@ public sealed class CatalogControllerTests
         public (string StoreCode, string? LookupCode, string? LookupCodeNormalized)? LastLookupRequest { get; private set; }
 
         public (string StoreCode, string? Cursor, int PageSize)? LastSpecialProductsPageRequest { get; private set; }
+
+        public string? LastPromotionRulesStoreCode { get; private set; }
 
         public CatalogSpecialProductMarkRequest? LastSpecialProductRequest { get; private set; }
 
@@ -345,6 +381,14 @@ public sealed class CatalogControllerTests
         {
             LastSpecialProductsPageRequest = (storeCode, cursor, pageSize);
             return Task.FromResult(SpecialProductsPageResponse);
+        }
+
+        public Task<CatalogPromotionsResponse?> GetPromotionRulesAsync(
+            string storeCode,
+            CancellationToken cancellationToken)
+        {
+            LastPromotionRulesStoreCode = storeCode;
+            return Task.FromResult(PromotionRulesResponse);
         }
 
         public Task<CatalogSpecialProductMarkServiceResult> MarkSpecialProductAsync(
