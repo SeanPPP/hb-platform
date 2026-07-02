@@ -541,8 +541,8 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
     // 普通商品标签对齐 Android：所有文字先渲染成单色位图，再写入 CPCL EG 命令。
     let priceIntegerBitmap = textToBitmap(price.integer, fontSize: fontSizeToPixels(40), isBold: true, fontFamily: "sans-serif-black")
-    let priceDotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
-    let priceDecimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
+    let priceDotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(20), isBold: false, fontFamily: "sans-serif-black")
+    let priceDecimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(20), isBold: false, fontFamily: "sans-serif-black")
     let priceCurrencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(20), isBold: false, fontFamily: "sans-serif-black")
     let itemBitmap = textToBitmap(itemNumber, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
     let supplierBitmap = textToBitmap(supplierName, fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
@@ -566,8 +566,8 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     }
 
     let startY = 30
-    // iOS 位图高度包含 UIKit 行高；普通标签小数点按 TS 固定坐标对齐，等效 Android ink bounds 表现。
-    let priceDotY = startY + 38
+    // iOS 位图高度包含 UIKit 行高；普通标签小数点按真实墨迹底部和整数对齐。
+    let priceDotY = startY + priceIntegerBitmap.inkMaxY - priceDotBitmap.inkMaxY
     let startX = width - priceDecimalBitmap.width
     var commands = [
       "! 0 200 200 \(height) 1",
@@ -619,7 +619,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
     // 折扣标签对齐 Android：折扣数字、Now 价、二维码和日期全部使用位图绘制。
     let nowLabelBitmap = textToBitmap("Now", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
-    let nowPriceBitmap = textToBitmap("$\(formatMoney(nowPrice))", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
+    let nowPriceBitmap = textToBitmap("$\(formatMoney(nowPrice))", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black", isInverse: true, padding: 2)
     let discountBitmap = textToBitmap(String(format: "%02d", Int(discountValue.rounded())), fontSize: fontSizeToPixels(44), isBold: false, fontFamily: "sans-serif-black")
     let offBitmap = textToBitmap("OFF", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-black")
     let percentBitmap = textToBitmap("%", fontSize: fontSizeToPixels(20), isBold: true, fontFamily: "sans-serif-black")
@@ -699,12 +699,12 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
     let currencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(20), isBold: false, fontFamily: "sans-serif-black")
     let wasCurrencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(8), isBold: true, fontFamily: "sans-serif-black")
     let saveCurrencyBitmap = textToBitmap("$", fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "sans-serif-black")
-    let eaBitmap = textToBitmap("ea", fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
+    let eaBitmap = textToBitmap("ea", fontSize: fontSizeToPixels(8), isBold: false, fontFamily: "sans-serif-light")
     let wasBitmap = textToBitmap("WAS ", fontSize: fontSizeToPixels(10), isBold: true, fontFamily: "sans-serif-light")
     let saveBitmap = textToBitmap("SAVE", fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-light", isInverse: true, padding: 2)
     let intBitmap = textToBitmap(price.integer, fontSize: fontSizeToPixels(60), isBold: true, fontFamily: "sans-serif-black")
-    let decimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(48), isBold: true, fontFamily: "sans-serif-black")
-    let dotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(36), isBold: true, fontFamily: "sans-serif-black")
+    let decimalBitmap = textToBitmap(price.decimal, fontSize: fontSizeToPixels(30), isBold: false, fontFamily: "sans-serif-black")
+    let dotBitmap = textToBitmap(".", fontSize: fontSizeToPixels(36), isBold: false, fontFamily: "sans-serif-black")
     let rrpBitmap = textToBitmap(formatMoney(retailPrice), fontSize: fontSizeToPixels(10), isBold: true, fontFamily: "sans-serif-condensed")
     let saveAmountBitmap = textToBitmap(formatMoney(saveAmount), fontSize: fontSizeToPixels(16), isBold: true, fontFamily: "sans-serif-condensed")
     let nameBitmap = longTextToBitmap(productName, fontSize: fontSizeToPixels(10), isBold: false, fontFamily: "Arial", maxLines: 4, maxWidth: paperWidth)
@@ -713,8 +713,10 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
     let startY = 220
     var startX = (paperWidth - currencyBitmap.width - intBitmap.width) / 2
+    var eaX = startX + currencyBitmap.width + intBitmap.width + 30
     if (Int(price.decimal) ?? 0) != 0 {
       startX = (paperWidth - currencyBitmap.width - intBitmap.width - dotBitmap.width - decimalBitmap.width) / 2
+      eaX = startX + currencyBitmap.width + intBitmap.width + dotBitmap.width + decimalBitmap.width + 12
       // 大折扣当前价的小数点按真实墨迹底部对齐个位数字，避免 UIKit 行高把点压低。
       let priceDotY = startY + intBitmap.inkMaxY - dotBitmap.inkMaxY
       commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width, priceDotY, dotBitmap))
@@ -723,7 +725,7 @@ class HbPrinterModule: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate 
 
     commands.append(bitmapCommand(startX, startY, currencyBitmap))
     commands.append(bitmapCommand(startX + currencyBitmap.width, startY, intBitmap))
-    commands.append(bitmapCommand(startX + currencyBitmap.width + intBitmap.width + 30, startY + Int(Double(intBitmap.height) * 0.9), eaBitmap))
+    commands.append(bitmapCommand(eaX, startY + Int(Double(intBitmap.height) * 0.9), eaBitmap))
 
     let rrpStartY = startY + intBitmap.height + 20
     commands.append(bitmapCommand(5, rrpStartY, wasBitmap))

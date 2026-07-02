@@ -25,7 +25,7 @@ import {
 } from 'antd'
 import type { TableProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { SorterResult, SortOrder } from 'antd/es/table/interface'
+import type { FilterDropdownProps, SorterResult, SortOrder } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -48,6 +48,18 @@ import type {
   UpdateLocationParams,
 } from '../../../types/location'
 import { copyTextToClipboard } from '../../../utils/clipboard'
+import {
+  buildComparableFilterTokens,
+  buildLocationFilterQuery,
+  buildTextFilterTokens,
+  normalizeLocationTableFilters,
+  parseComparableFilterTokens,
+  parseTextFilterTokens,
+  setFilterValues,
+  type ComparableFilterMode,
+  type TextFilterMode,
+  type WarehouseLocationColumnFilters,
+} from './columnFilters'
 
 interface LocationFormValues {
   locationCode: string
@@ -58,7 +70,7 @@ interface LocationFormValues {
 
 function getLocationTypeOptions(t: (key: string, options?: Record<string, unknown>) => string) {
   return [
-    { value: 0, label: t('warehouseLocations.storageLocation') },
+    { value: 2, label: t('warehouseLocations.storageLocation') },
     { value: 1, label: t('warehouseLocations.pickingLocation') },
   ]
 }
@@ -290,6 +302,7 @@ export default function WarehouseLocationsPage() {
   const [updatedByKeyword, setUpdatedByKeyword] = useState('')
   const [locationTypeFilter, setLocationTypeFilter] = useState<number | null | undefined>(undefined)
   const [usageFilter, setUsageFilter] = useState<boolean | null | undefined>(undefined)
+  const [columnFilters, setColumnFilters] = useState<WarehouseLocationColumnFilters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
@@ -311,17 +324,21 @@ export default function WarehouseLocationsPage() {
     nextUpdatedBy = updatedByKeyword,
     nextSortBy = sortBy,
     nextSortOrder = sortOrder,
+    nextColumnFilters = columnFilters,
   ) => {
     setLoading(true)
     const effectiveSortBy = nextSortBy || DEFAULT_LOCATION_SORT_BY
     const effectiveSortOrder = nextSortOrder || DEFAULT_LOCATION_SORT_ORDER
+    const locationFilterQuery = buildLocationFilterQuery(nextColumnFilters)
     try {
       const result = await getLocationList({
-        locationType: nextLocationType,
-        isUsed: nextUsage,
-        locationCode: nextLocationCode || undefined,
-        locationBarcode: nextLocationBarcode || undefined,
-        updatedBy: nextUpdatedBy || undefined,
+        locationType: locationFilterQuery.locationType ?? nextLocationType,
+        isUsed: locationFilterQuery.isUsed ?? nextUsage,
+        locationCode: locationFilterQuery.locationCode || nextLocationCode || undefined,
+        locationBarcode: locationFilterQuery.locationBarcode || nextLocationBarcode || undefined,
+        updatedBy: locationFilterQuery.updatedBy || nextUpdatedBy || undefined,
+        status: locationFilterQuery.status,
+        filters: locationFilterQuery.filters,
         pageNumber: nextPage,
         pageSize: nextPageSize,
         sortBy: effectiveSortBy,
@@ -334,6 +351,7 @@ export default function WarehouseLocationsPage() {
       setPageSize(result.pageSize)
       setSortBy(effectiveSortBy)
       setSortOrder(effectiveSortOrder)
+      setColumnFilters(nextColumnFilters)
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouseLocations.loadFailed'))
@@ -341,6 +359,26 @@ export default function WarehouseLocationsPage() {
       setLoading(false)
     }
   }
+
+  const loadDataWithColumnFilters = (
+    nextPage = page,
+    nextPageSize = pageSize,
+    nextColumnFilters = columnFilters,
+    nextSortBy = sortBy,
+    nextSortOrder = sortOrder,
+  ) =>
+    loadData(
+      nextPage,
+      nextPageSize,
+      null,
+      null,
+      '',
+      '',
+      '',
+      nextSortBy,
+      nextSortOrder,
+      nextColumnFilters,
+    )
 
   useEffect(() => {
     void loadData(1, pageSize)
@@ -350,7 +388,7 @@ export default function WarehouseLocationsPage() {
     setEditingItem(null)
     form.resetFields()
     form.setFieldsValue({
-      locationType: 0,
+      locationType: 2,
       status: 1,
     })
     setModalOpen(true)
@@ -361,7 +399,7 @@ export default function WarehouseLocationsPage() {
     form.setFieldsValue({
       locationCode: record.locationCode,
       locationBarcode: record.locationBarcode,
-      locationType: record.locationType ?? 0,
+      locationType: record.locationType ?? 2,
       status: record.status ?? 1,
     })
     setModalOpen(true)
@@ -387,7 +425,7 @@ export default function WarehouseLocationsPage() {
       }
 
       handleCloseModal()
-      void loadData(editingItem ? page : 1, pageSize)
+      void loadDataWithColumnFilters(editingItem ? page : 1, pageSize)
     } catch (error) {
       if (error instanceof Error) {
         message.error(error.message || t('warehouseLocations.saveFailed'))
@@ -401,7 +439,7 @@ export default function WarehouseLocationsPage() {
     try {
       await deleteLocation(record.locationGuid)
       message.success(t('warehouseLocations.deleteSuccess'))
-      void loadData(page, pageSize)
+      void loadDataWithColumnFilters(page, pageSize)
     } catch (error) {
       console.error(error)
       message.error(error instanceof Error ? error.message : t('warehouseLocations.deleteFailed'))
@@ -427,7 +465,7 @@ export default function WarehouseLocationsPage() {
               </Space>
             ),
           })
-          await loadData(1, pageSize)
+          await loadDataWithColumnFilters(1, pageSize)
         } catch (error) {
           console.error(error)
           message.error(error instanceof Error ? error.message : t('warehouseLocations.syncFromHqFailed'))
@@ -438,20 +476,48 @@ export default function WarehouseLocationsPage() {
     })
   }
 
-  const handleTableChange: TableProps<LocationItem>['onChange'] = (pagination, _filters, sorter, extra) => {
-    if (extra.action === 'sort') {
-      const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
-      const field = getSortField(currentSorter)
-      const nextSortBy = field ? LOCATION_SORT_FIELD_MAP[field] : DEFAULT_LOCATION_SORT_BY
-      const nextSortOrder = currentSorter?.order || DEFAULT_LOCATION_SORT_ORDER
-      void loadData(
+  const mergeTopFilters = (filters: WarehouseLocationColumnFilters = columnFilters) => {
+    let nextFilters = filters
+    nextFilters = setFilterValues(nextFilters, 'locationCode', buildTextFilterTokens('contains', locationCodeKeyword))
+    nextFilters = setFilterValues(nextFilters, 'locationBarcode', buildTextFilterTokens('contains', locationBarcodeKeyword))
+    nextFilters = setFilterValues(nextFilters, 'updatedBy', buildTextFilterTokens('contains', updatedByKeyword))
+    nextFilters = setFilterValues(nextFilters, 'locationType', locationTypeFilter === null || locationTypeFilter === undefined ? undefined : [locationTypeFilter])
+    nextFilters = setFilterValues(nextFilters, 'usage', usageFilter === null || usageFilter === undefined ? undefined : [usageFilter])
+    return nextFilters
+  }
+
+  const syncTopFiltersFromColumns = (filters: WarehouseLocationColumnFilters) => {
+    setLocationCodeKeyword(parseTextFilterTokens(filters.locationCode).value)
+    setLocationBarcodeKeyword(parseTextFilterTokens(filters.locationBarcode).value)
+    setUpdatedByKeyword(parseTextFilterTokens(filters.updatedBy).value)
+    setLocationTypeFilter(filters.locationType?.[0] === undefined ? undefined : Number(filters.locationType[0]))
+    setUsageFilter(filters.usage?.[0] === undefined ? undefined : filters.usage[0] === 'true')
+  }
+
+  const handleTableChange: TableProps<LocationItem>['onChange'] = (pagination, filters, sorter, extra) => {
+    const currentSorter = Array.isArray(sorter) ? sorter[0] : sorter
+    const field = getSortField(currentSorter)
+    const nextSortBy = field ? LOCATION_SORT_FIELD_MAP[field] : DEFAULT_LOCATION_SORT_BY
+    const nextSortOrder = currentSorter?.order || DEFAULT_LOCATION_SORT_ORDER
+
+    if (extra.action === 'filter') {
+      const nextColumnFilters = normalizeLocationTableFilters(filters)
+      syncTopFiltersFromColumns(nextColumnFilters)
+      void loadDataWithColumnFilters(
         1,
         pagination.pageSize || pageSize,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
+        nextColumnFilters,
+        nextSortBy,
+        nextSortOrder,
+      )
+      return
+    }
+
+    if (extra.action === 'sort') {
+      void loadDataWithColumnFilters(
+        1,
+        pagination.pageSize || pageSize,
+        columnFilters,
         nextSortBy,
         nextSortOrder,
       )
@@ -459,8 +525,127 @@ export default function WarehouseLocationsPage() {
     }
 
     if (extra.action === 'paginate') {
-      void loadData(pagination.current || page, pagination.pageSize || pageSize)
+      void loadDataWithColumnFilters(pagination.current || page, pagination.pageSize || pageSize)
     }
+  }
+
+  const filterIcon = (filtered?: boolean) => <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
+  const filterDropdownStyle = { padding: 8, width: 240 }
+  const textFilterModeOptions: Array<{ label: string; value: TextFilterMode }> = [
+    { label: t('warehouse.filterMode.contains', '包含'), value: 'contains' },
+    { label: t('warehouse.filterMode.equals', '等于'), value: 'eq' },
+    { label: t('warehouse.filterMode.startsWith', '开头是'), value: 'starts' },
+    { label: t('warehouse.filterMode.endsWith', '结尾是'), value: 'ends' },
+  ]
+  const comparableFilterModeOptions: Array<{ label: string; value: ComparableFilterMode }> = [
+    { label: t('warehouse.filterMode.equals', '等于'), value: 'eq' },
+    { label: t('warehouse.filterMode.range', '范围'), value: 'range' },
+    { label: t('warehouse.filterMode.greaterOrEqual', '大于等于'), value: 'gte' },
+    { label: t('warehouse.filterMode.lessOrEqual', '小于等于'), value: 'lte' },
+  ]
+
+  const renderColumnFilterPanel = (content: JSX.Element, onApply: () => void, onReset: () => void) => (
+    <div style={filterDropdownStyle} onKeyDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        {content}
+        <Space>
+          <Button size="small" onClick={onReset}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+          <Button size="small" type="primary" onClick={onApply}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+        </Space>
+      </Space>
+    </div>
+  )
+
+  const buildTextFilterDropdown = (filterKey: string, placeholder: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+    const values = (selectedKeys.length ? selectedKeys : columnFilters[filterKey] ?? []).map((value) => String(value))
+    const parsedFilter = parseTextFilterTokens(values)
+    const updateFilter = (mode: TextFilterMode, value?: string) => {
+      setSelectedKeys(buildTextFilterTokens(mode, value))
+    }
+
+    return renderColumnFilterPanel(
+      <>
+        <Select size="small" value={parsedFilter.mode} options={textFilterModeOptions} onChange={(mode) => updateFilter(mode, parsedFilter.value)} />
+        <Input
+          autoFocus
+          allowClear
+          value={parsedFilter.value}
+          placeholder={placeholder}
+          onChange={(event) => updateFilter(parsedFilter.mode, event.target.value)}
+          onPressEnter={() => confirm()}
+        />
+      </>,
+      () => confirm(),
+      () => {
+        setSelectedKeys([])
+        clearFilters?.()
+        confirm()
+      },
+    )
+  }
+
+  const buildDateFilterDropdown = (filterKey: string) => ({ confirm, selectedKeys, setSelectedKeys, clearFilters }: FilterDropdownProps) => {
+    const values = (selectedKeys.length ? selectedKeys : columnFilters[filterKey] ?? []).map((value) => String(value))
+    const parsedFilter = parseComparableFilterTokens(values)
+    const updateFilter = (mode: ComparableFilterMode, nextValue: { value?: string; min?: string; max?: string }) => {
+      setSelectedKeys(buildComparableFilterTokens(mode, nextValue))
+    }
+
+    return renderColumnFilterPanel(
+      <>
+        <Select
+          size="small"
+          value={parsedFilter.mode}
+          options={comparableFilterModeOptions}
+          onChange={(mode) => updateFilter(mode, {
+            value: parsedFilter.value || parsedFilter.min || parsedFilter.max,
+            min: parsedFilter.min,
+            max: parsedFilter.max,
+          })}
+        />
+        {parsedFilter.mode === 'range' ? (
+          <>
+            <Input type="date" value={parsedFilter.min} onChange={(event) => updateFilter('range', { min: event.target.value || undefined, max: parsedFilter.max || undefined })} />
+            <Input type="date" value={parsedFilter.max} onChange={(event) => updateFilter('range', { min: parsedFilter.min || undefined, max: event.target.value || undefined })} />
+          </>
+        ) : (
+          <Input type="date" value={parsedFilter.value} onChange={(event) => updateFilter(parsedFilter.mode, { value: event.target.value || undefined })} />
+        )}
+      </>,
+      () => confirm(),
+      () => {
+        setSelectedKeys([])
+        clearFilters?.()
+        confirm()
+      },
+    )
+  }
+
+  const textFilterProps = (filterKey: string, placeholder: string) => ({
+    filterDropdown: buildTextFilterDropdown(filterKey, placeholder),
+    filterIcon,
+    filtered: Boolean(columnFilters[filterKey]?.[0]?.trim()),
+    filteredValue: columnFilters[filterKey] ?? null,
+  })
+
+  const dateFilterProps = (filterKey: string) => ({
+    filterDropdown: buildDateFilterDropdown(filterKey),
+    filterIcon,
+    filtered: Boolean(columnFilters[filterKey]?.length),
+    filteredValue: columnFilters[filterKey] ?? null,
+  })
+
+  const enumFilterProps = (filterKey: string, options: Array<{ text: string; value: string | number }>) => ({
+    filters: options,
+    filterIcon,
+    filtered: Boolean(columnFilters[filterKey]?.length),
+    filteredValue: columnFilters[filterKey] ?? null,
+  })
+
+  const queryWithCurrentFilters = () => {
+    const nextColumnFilters = mergeTopFilters()
+    setColumnFilters(nextColumnFilters)
+    void loadDataWithColumnFilters(1, pageSize, nextColumnFilters, sortBy, sortOrder)
   }
 
   const columns: ColumnsType<LocationItem> = [
@@ -476,6 +661,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'LocationCode' ? sortOrder : null,
       width: 150,
+      ...textFilterProps('locationCode', t('warehouseLocations.searchLocationCode')),
       render: (value: string | undefined) => (
         <BarcodePreview value={value} align="left" compactCopy textNoWrap />
       ),
@@ -486,6 +672,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'LocationType' ? sortOrder : null,
       width: 86,
+      ...enumFilterProps('locationType', locationTypeOptions.map((option) => ({ text: String(option.label), value: option.value }))),
       render: (value: number | null | undefined) => formatLocationType(value, locationTypeOptions),
     },
     {
@@ -494,6 +681,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'LocationBarcode' ? sortOrder : null,
       width: 150,
+      ...textFilterProps('locationBarcode', t('warehouseLocations.searchLocationBarcode')),
       render: (value: string | undefined) => (
         <BarcodePreview value={value} align="left" compactCopy textNoWrap />
       ),
@@ -504,6 +692,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'Status' ? sortOrder : null,
       width: 76,
+      ...enumFilterProps('status', statusOptions.map((option) => ({ text: String(option.label), value: option.value }))),
       render: (value: number | null | undefined) => formatStatus(value, t),
     },
     {
@@ -512,6 +701,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'Usage' ? sortOrder : null,
       width: 86,
+      ...enumFilterProps('usage', usageOptions.map((option) => ({ text: String(option.label), value: String(option.value) }))),
       render: (_, record) =>
         record.products?.length ? <Tag color="processing">{t('common.used')}</Tag> : <Tag>{t('common.unused')}</Tag>,
     },
@@ -519,18 +709,21 @@ export default function WarehouseLocationsPage() {
       title: t('column.itemNumber'),
       key: 'itemNumbers',
       width: 118,
+      ...textFilterProps('productItemNumber', t('column.itemNumber')),
       render: (_, record) => renderCopyableProducts(record.products, 'itemNumber', t),
     },
     {
       title: t('column.productBarcode'),
       key: 'productBarcodes',
       width: 150,
+      ...textFilterProps('productBarcode', t('column.productBarcode')),
       render: (_, record) => renderCopyableProductBarcodes(record.products, t),
     },
     {
       title: t('column.productName'),
       key: 'productNames',
       width: 190,
+      ...textFilterProps('productName', t('column.productName')),
       render: (_, record) => renderLocationProductName(record.products),
     },
     {
@@ -545,6 +738,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'UpdatedAt' ? sortOrder : null,
       width: 150,
+      ...dateFilterProps('updatedAt'),
       render: (value: string | undefined) => (
         <span className="warehouse-locations-nowrap">{formatDateTime(value)}</span>
       ),
@@ -555,6 +749,7 @@ export default function WarehouseLocationsPage() {
       sorter: true,
       sortOrder: sortBy === 'UpdatedBy' ? sortOrder : null,
       width: 100,
+      ...textFilterProps('updatedBy', t('warehouseLocations.searchUpdatedBy')),
       render: (value: string | undefined) => (
         <span className="warehouse-locations-nowrap">{value || '--'}</span>
       ),
@@ -656,7 +851,7 @@ export default function WarehouseLocationsPage() {
               style={{ width: 160 }}
             />
           </Space>
-          <Button type="primary" icon={<SearchOutlined />} onClick={() => void loadData(1, pageSize)}>
+          <Button type="primary" icon={<SearchOutlined />} onClick={queryWithCurrentFilters}>
             {t('common.query')}
           </Button>
           <Button
@@ -667,19 +862,11 @@ export default function WarehouseLocationsPage() {
               setUpdatedByKeyword('')
               setLocationTypeFilter(undefined)
               setUsageFilter(undefined)
+              setColumnFilters({})
               setSortBy(DEFAULT_LOCATION_SORT_BY)
               setSortOrder(DEFAULT_LOCATION_SORT_ORDER)
-              void loadData(
-                1,
-                pageSize,
-                undefined,
-                undefined,
-                '',
-                '',
-                '',
-                DEFAULT_LOCATION_SORT_BY,
-                DEFAULT_LOCATION_SORT_ORDER,
-              )
+              // 顶部重置同时清空列头过滤，避免请求继续携带旧条件。
+              void loadDataWithColumnFilters(1, pageSize, {}, DEFAULT_LOCATION_SORT_BY, DEFAULT_LOCATION_SORT_ORDER)
             }}
           >
             {t('common.reset')}

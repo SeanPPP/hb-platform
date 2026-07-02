@@ -30,6 +30,8 @@ namespace BlazorApp.Shared.DTOs
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
         public string? CategoryName { get; set; }
+        public List<string> LocationCodes { get; set; } = new List<string>();
+        public List<string> LocationBarcodes { get; set; } = new List<string>();
         public string? SupplierName { get; set; }
         public string? SupplierCode { get; set; }
         public string? DomesticSupplierName { get; set; }

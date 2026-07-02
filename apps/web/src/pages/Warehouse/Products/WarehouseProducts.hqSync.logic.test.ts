@@ -425,6 +425,7 @@ async function main() {
       "'isActive'",
       "'productType'",
       "'barcode'",
+      "'locationCodes'",
       "'name'",
       "'packingQty'",
       "'volume'",
@@ -454,7 +455,8 @@ async function main() {
         columnsSection.indexOf("key: 'categoryName'") < columnsSection.indexOf("key: 'nameEn'") &&
         columnsSection.indexOf("key: 'nameEn'") < columnsSection.indexOf("key: 'minOrderQuantity'") &&
         columnsSection.indexOf("key: 'minOrderQuantity'") < columnsSection.indexOf("key: 'domesticPrice'") &&
-        columnsSection.indexOf("key: 'barcode'") < columnsSection.indexOf("key: 'name'"),
+        columnsSection.indexOf("key: 'barcode'") < columnsSection.indexOf("key: 'locationCodes'") &&
+        columnsSection.indexOf("key: 'locationCodes'") < columnsSection.indexOf("key: 'name'"),
       'baseColumns 应按截图默认顺序排列，避免默认顺序依赖历史代码顺序',
     )
     assert(
@@ -667,7 +669,7 @@ async function main() {
     )
     assert(
       columnsSection.includes('BarcodePreview value={value} textMaxWidth={150} compactCopy') &&
-        pageSource.includes('scroll={{ x: 2260, y: 620 }}'),
+        pageSource.includes('scroll={{ x: 2390, y: 620 }}'),
       '条码列和表格横向滚动宽度应按紧凑布局更新',
     )
     assert(
@@ -702,7 +704,7 @@ async function main() {
     )
     assert(
       pageSource.includes('virtual') &&
-        pageSource.includes('scroll={{ x: 2260, y: 620 }}') &&
+        pageSource.includes('scroll={{ x: 2390, y: 620 }}') &&
         pageSource.includes('const result = await getWarehouseProductsTable(query);'),
       '分页调整应保留现有虚拟表格、固定滚动高度和异步服务端分页请求',
     )
@@ -1132,11 +1134,12 @@ async function main() {
       'normalizeTableFilters 应显式维护列 key 到后端 filter key 的映射',
     )
     assert(
-      columnsSection.includes("...textFilterProps('itemNumber'") &&
+        columnsSection.includes("...textFilterProps('itemNumber'") &&
         columnsSection.includes("...textFilterProps('productName'") &&
         columnsSection.includes("...textFilterProps('nameEn'") &&
-        columnsSection.includes("...textFilterProps('barcode'"),
-      '货号、商品名、英文名和条码列应接入文本列头筛选',
+        columnsSection.includes("...textFilterProps('barcode'") &&
+        columnsSection.includes("...textFilterProps('locationCodes'"),
+      '货号、商品名、英文名、条码和货位列应接入文本列头筛选',
     )
     assert(
       columnsSection.includes("...numberRangeFilterProps('minOrderQuantity')") &&
@@ -1165,6 +1168,12 @@ async function main() {
         columnsSection.includes("dataIndex: 'labelPrice'") &&
         columnsSection.includes("...numberRangeFilterProps('oemPrice')"),
       '商品名和 OEM 列应保留原列 key，同时继续使用后端 productName / oemPrice filter key',
+    )
+    assert(
+      columnsSection.includes("key: 'locationCodes'") &&
+        columnsSection.includes("dataIndex: 'locationCodes'") &&
+        columnsSection.includes("t('location.location', '货位')"),
+      '货位列应使用 locationCodes 作为列 key/dataIndex，并复用货位翻译文案',
     )
   })
   if (columnFilterUiFailure) failures.push(columnFilterUiFailure)

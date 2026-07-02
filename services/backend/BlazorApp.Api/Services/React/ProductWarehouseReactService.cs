@@ -25,6 +25,8 @@ namespace BlazorApp.Api.Services.React
     /// </summary>
     public class ProductWarehouseReactService : IProductWarehouseReactService
     {
+        private const int PickingLocationType = 1;
+
         private readonly SqlSugarContext _context;
         private readonly HqSqlSugarContext _hqContext;
         private readonly ILogger<ProductWarehouseReactService> _logger;
@@ -1375,26 +1377,78 @@ namespace BlazorApp.Api.Services.React
             if (!string.IsNullOrWhiteSpace(request.GlobalSearch))
             {
                 var keyword = request.GlobalSearch.Trim();
-                var keywordLower = keyword.ToLower();
+                var isCodeLikeKeyword = IsWarehouseCodeLikeKeyword(keyword);
+                var locationSearchMode = isCodeLikeKeyword ? "starts" : "contains";
+                var globalSearchExpression = Expressionable.Create<
+                    WarehouseProduct,
+                    DomesticProduct,
+                    ChinaSupplier,
+                    Product,
+                    WarehouseCategory,
+                    HBLocalSupplier
+                >();
+
+                if (isCodeLikeKeyword)
+                {
+                    var hbPrefixedKeyword = keyword.StartsWith("HB", StringComparison.OrdinalIgnoreCase)
+                        ? keyword
+                        : $"HB{keyword}";
+
+                    // 代码型关键字走等值/前缀匹配，避免一次 SKU/条码搜索拖慢所有名称列。
+                    globalSearchExpression = globalSearchExpression.Or(
+                        (w, dp, s, p, c, ls) =>
+                            (
+                                w.ProductCode != null
+                                && (w.ProductCode == keyword || w.ProductCode.StartsWith(keyword))
+                            )
+                            || (
+                                p.ItemNumber != null
+                                && (
+                                    p.ItemNumber == keyword
+                                    || p.ItemNumber.StartsWith(keyword)
+                                    // 仓库常用 HB 货号，允许用户省略 HB 前缀搜索，如 246-BD -> HB246-BD。
+                                    || p.ItemNumber == hbPrefixedKeyword
+                                    || p.ItemNumber.StartsWith(hbPrefixedKeyword)
+                                )
+                            )
+                            || (
+                                p.Barcode != null
+                                && (p.Barcode == keyword || p.Barcode.StartsWith(keyword))
+                            )
+                            || (
+                                s.SupplierCode != null
+                                && (s.SupplierCode == keyword || s.SupplierCode.StartsWith(keyword))
+                            )
+                            || (
+                                p.LocalSupplierCode != null
+                                && (
+                                    p.LocalSupplierCode == keyword
+                                    || p.LocalSupplierCode.StartsWith(keyword)
+                                )
+                            )
+                        );
+                }
+                else
+                {
+                    // SQL Server 默认不区分大小写；列侧不包 ToLower，保留索引可用性。
+                    globalSearchExpression = globalSearchExpression.Or(
+                        (w, dp, s, p, c, ls) =>
+                            (p.ProductName != null && p.ProductName.Contains(keyword))
+                            || (p.EnglishName != null && p.EnglishName.Contains(keyword))
+                            || (p.ItemNumber != null && p.ItemNumber.Contains(keyword))
+                            || (p.Barcode != null && p.Barcode.Contains(keyword))
+                            || (c.CategoryName != null && c.CategoryName.Contains(keyword))
+                            || (s.SupplierName != null && s.SupplierName.Contains(keyword))
+                            || (p.LocalSupplierCode != null && p.LocalSupplierCode.Contains(keyword))
+                            || (ls.Name != null && ls.Name.Contains(keyword))
+                        );
+                }
+
                 query = query.Where(
-                    (w, dp, s, p, c, ls) =>
-                        (p.ProductName != null && p.ProductName.ToLower().Contains(keywordLower))
-                        || (p.EnglishName != null && p.EnglishName.ToLower().Contains(keywordLower))
-                        || (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keywordLower))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keywordLower))
-                        || (
-                            c.CategoryName != null
-                            && c.CategoryName.ToLower().Contains(keywordLower)
-                        )
-                        || (
-                            s.SupplierName != null
-                            && s.SupplierName.ToLower().Contains(keywordLower)
-                        )
-                        || (
-                            p.LocalSupplierCode != null
-                            && p.LocalSupplierCode.ToLower().Contains(keywordLower)
-                        )
-                        || (ls.Name != null && ls.Name.ToLower().Contains(keywordLower))
+                    globalSearchExpression
+                        .Or(BuildPickingLocationCodePredicate(locationSearchMode, keyword))
+                        .Or(BuildPickingLocationBarcodePredicate(locationSearchMode, keyword))
+                        .ToExpression()
                 );
             }
 
@@ -1420,18 +1474,18 @@ namespace BlazorApp.Api.Services.React
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.ProductName != null
-                                        && p.ProductName.ToLower().Contains(value),
+                                        && p.ProductName.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.ProductName != null && p.ProductName.ToLower() == value,
-                                value =>
-                                    (w, dp, s, p, c, ls) =>
-                                        p.ProductName != null
-                                        && p.ProductName.ToLower().StartsWith(value),
+                                        p.ProductName != null && p.ProductName == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.ProductName != null
-                                        && p.ProductName.ToLower().EndsWith(value)
+                                        && p.ProductName.StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ProductName != null
+                                        && p.ProductName.EndsWith(value)
                             );
                             break;
                         case "nameen":
@@ -1441,18 +1495,18 @@ namespace BlazorApp.Api.Services.React
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.EnglishName != null
-                                        && p.EnglishName.ToLower().Contains(value),
+                                        && p.EnglishName.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.EnglishName != null && p.EnglishName.ToLower() == value,
-                                value =>
-                                    (w, dp, s, p, c, ls) =>
-                                        p.EnglishName != null
-                                        && p.EnglishName.ToLower().StartsWith(value),
+                                        p.EnglishName != null && p.EnglishName == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.EnglishName != null
-                                        && p.EnglishName.ToLower().EndsWith(value)
+                                        && p.EnglishName.StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.EnglishName != null
+                                        && p.EnglishName.EndsWith(value)
                             );
                             break;
                         case "itemnumber":
@@ -1462,18 +1516,18 @@ namespace BlazorApp.Api.Services.React
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.ItemNumber != null
-                                        && p.ItemNumber.ToLower().Contains(value),
+                                        && p.ItemNumber.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.ItemNumber != null && p.ItemNumber.ToLower() == value,
-                                value =>
-                                    (w, dp, s, p, c, ls) =>
-                                        p.ItemNumber != null
-                                        && p.ItemNumber.ToLower().StartsWith(value),
+                                        p.ItemNumber != null && p.ItemNumber == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         p.ItemNumber != null
-                                        && p.ItemNumber.ToLower().EndsWith(value)
+                                        && p.ItemNumber.StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        p.ItemNumber != null
+                                        && p.ItemNumber.EndsWith(value)
                             );
                             break;
                         case "barcode":
@@ -1482,17 +1536,20 @@ namespace BlazorApp.Api.Services.React
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.Barcode != null && p.Barcode.ToLower().Contains(value),
+                                        p.Barcode != null && p.Barcode.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.Barcode != null && p.Barcode.ToLower() == value,
+                                        p.Barcode != null && p.Barcode == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.Barcode != null && p.Barcode.ToLower().StartsWith(value),
+                                        p.Barcode != null && p.Barcode.StartsWith(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        p.Barcode != null && p.Barcode.ToLower().EndsWith(value)
+                                        p.Barcode != null && p.Barcode.EndsWith(value)
                             );
+                            break;
+                        case "locationcodes":
+                            query = ApplyPickingLocationTextMatchFilter(query, values);
                             break;
                         case "categoryname":
                             // 兼容旧客户端的分类名称文本筛选；新仓库商品页分类筛选走顶层 CategoryGuids/UncategorizedOnly。
@@ -1502,18 +1559,18 @@ namespace BlazorApp.Api.Services.React
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         c.CategoryName != null
-                                        && c.CategoryName.ToLower().Contains(value),
+                                        && c.CategoryName.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        c.CategoryName != null && c.CategoryName.ToLower() == value,
-                                value =>
-                                    (w, dp, s, p, c, ls) =>
-                                        c.CategoryName != null
-                                        && c.CategoryName.ToLower().StartsWith(value),
+                                        c.CategoryName != null && c.CategoryName == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         c.CategoryName != null
-                                        && c.CategoryName.ToLower().EndsWith(value)
+                                        && c.CategoryName.StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        c.CategoryName != null
+                                        && c.CategoryName.EndsWith(value)
                             );
                             break;
                         case "suppliername":
@@ -1524,18 +1581,18 @@ namespace BlazorApp.Api.Services.React
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         s.SupplierName != null
-                                        && s.SupplierName.ToLower().Contains(value),
+                                        && s.SupplierName.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        s.SupplierName != null && s.SupplierName.ToLower() == value,
-                                value =>
-                                    (w, dp, s, p, c, ls) =>
-                                        s.SupplierName != null
-                                        && s.SupplierName.ToLower().StartsWith(value),
+                                        s.SupplierName != null && s.SupplierName == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
                                         s.SupplierName != null
-                                        && s.SupplierName.ToLower().EndsWith(value)
+                                        && s.SupplierName.StartsWith(value),
+                                value =>
+                                    (w, dp, s, p, c, ls) =>
+                                        s.SupplierName != null
+                                        && s.SupplierName.EndsWith(value)
                             );
                             break;
                         case "suppliercode":
@@ -1566,16 +1623,16 @@ namespace BlazorApp.Api.Services.React
                                 values,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        ls.Name != null && ls.Name.ToLower().Contains(value),
+                                        ls.Name != null && ls.Name.Contains(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        ls.Name != null && ls.Name.ToLower() == value,
+                                        ls.Name != null && ls.Name == value,
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        ls.Name != null && ls.Name.ToLower().StartsWith(value),
+                                        ls.Name != null && ls.Name.StartsWith(value),
                                 value =>
                                     (w, dp, s, p, c, ls) =>
-                                        ls.Name != null && ls.Name.ToLower().EndsWith(value)
+                                        ls.Name != null && ls.Name.EndsWith(value)
                             );
                             break;
                         case "domesticprice":
@@ -1848,6 +1905,53 @@ namespace BlazorApp.Api.Services.React
                 .Select((code, index) => new { code, index })
                 .ToDictionary(x => x.code, x => x.index);
 
+            var pagePickingLocations = await _context
+                .Db.Queryable<ProductLocation>()
+                .InnerJoin<Location>((pl, l) => pl.LocationGuid == l.LocationGuid)
+                .Where(
+                    (pl, l) =>
+                        pl.ProductCode != null
+                        && pageProductCodes.Contains(pl.ProductCode)
+                        && !pl.IsDeleted
+                        && !l.IsDeleted
+                        && l.LocationType == PickingLocationType
+                )
+                .Select(
+                    (pl, l) =>
+                        new
+                        {
+                            ProductCode = pl.ProductCode!,
+                            LocationCode = l.LocationCode,
+                            LocationBarcode = l.LocationBarcode,
+                        }
+                )
+                .ToListAsync();
+
+            // 货位是一对多关系，分页后再聚合，避免主查询 count/page 被货位行数放大。
+            var pickingLocationMap = pagePickingLocations
+                .GroupBy(x => x.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new
+                    {
+                        Codes = group
+                            .Select(x => x.LocationCode)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .Select(x => x!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(x => x)
+                            .ToList(),
+                        Barcodes = group
+                            .Select(x => x.LocationBarcode)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .Select(x => x!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(x => x)
+                            .ToList(),
+                    },
+                    StringComparer.OrdinalIgnoreCase
+                );
+
             var rows = await _context
                 .Db.Queryable<WarehouseProduct>()
                 .LeftJoin<DomesticProduct>(
@@ -1928,6 +2032,18 @@ namespace BlazorApp.Api.Services.React
                     UpdatedAt = row.UpdatedAt,
                     ProductImage = row.ProductImage,
                     ProductType = row.ProductType,
+                    LocationCodes = pickingLocationMap.TryGetValue(
+                        row.ProductCode,
+                        out var pickingLocation
+                    )
+                        ? pickingLocation.Codes
+                        : new List<string>(),
+                    LocationBarcodes = pickingLocationMap.TryGetValue(
+                        row.ProductCode,
+                        out var pickingLocationForBarcode
+                    )
+                        ? pickingLocationForBarcode.Barcodes
+                        : new List<string>(),
                 })
                 .ToList();
 
@@ -1943,6 +2059,203 @@ namespace BlazorApp.Api.Services.React
             resp.Items = items;
             resp.Total = total;
             return resp;
+        }
+
+        private static bool IsWarehouseCodeLikeKeyword(string keyword)
+        {
+            // ponytail: 纯字母词可能是英文商品名（如 PEARL），不按代码型处理；纯字母代码用列过滤更明确。
+            return keyword.Length >= 3
+                && !keyword.Any(char.IsWhiteSpace)
+                && keyword.Any(ch => char.IsDigit(ch) || ch == '-' || ch == '_' || ch == '/');
+        }
+
+        private static ISugarQueryable<
+            WarehouseProduct,
+            DomesticProduct,
+            ChinaSupplier,
+            Product,
+            WarehouseCategory,
+            HBLocalSupplier
+        > ApplyPickingLocationTextMatchFilter(
+            ISugarQueryable<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            > query,
+            IEnumerable<string> values
+        )
+        {
+            var tokens = ParseTextMatchFilterTokens(values);
+            if (!tokens.Any())
+            {
+                return query;
+            }
+
+            var expression = Expressionable.Create<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier
+            >();
+            foreach (var token in tokens)
+            {
+                expression = expression
+                    .Or(BuildPickingLocationCodePredicate(token.Mode, token.Value))
+                    .Or(BuildPickingLocationBarcodePredicate(token.Mode, token.Value));
+            }
+
+            return query.Where(expression.ToExpression());
+        }
+
+        private static Expression<
+            Func<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier,
+                bool
+            >
+        > BuildPickingLocationCodePredicate(string mode, string value)
+        {
+            return mode switch
+            {
+                "eq" => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationCode != null
+                                && l.LocationCode == value
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+                "starts" => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationCode != null
+                                && l.LocationCode.StartsWith(value)
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+                "ends" => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationCode != null
+                                && l.LocationCode.EndsWith(value)
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+                _ => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationCode != null
+                                && l.LocationCode.Contains(value)
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+            };
+        }
+
+        private static Expression<
+            Func<
+                WarehouseProduct,
+                DomesticProduct,
+                ChinaSupplier,
+                Product,
+                WarehouseCategory,
+                HBLocalSupplier,
+                bool
+            >
+        > BuildPickingLocationBarcodePredicate(string mode, string value)
+        {
+            return mode switch
+            {
+                "eq" => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationBarcode != null
+                                && l.LocationBarcode == value
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+                "starts" => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationBarcode != null
+                                && l.LocationBarcode.StartsWith(value)
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+                "ends" => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationBarcode != null
+                                && l.LocationBarcode.EndsWith(value)
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+                _ => (w, dp, s, p, c, ls) =>
+                    w.ProductCode != null
+                    && SqlFunc.Subqueryable<Location>()
+                        .InnerJoin<ProductLocation>((l, pl) => l.LocationGuid == pl.LocationGuid)
+                        .Where(
+                            (l, pl) =>
+                                !l.IsDeleted
+                                && l.LocationType == PickingLocationType
+                                && l.LocationBarcode != null
+                                && l.LocationBarcode.Contains(value)
+                                && !pl.IsDeleted
+                                && pl.ProductCode == w.ProductCode
+                        )
+                        .Any(),
+            };
         }
 
         private static ISugarQueryable<
@@ -2064,27 +2377,27 @@ namespace BlazorApp.Api.Services.React
 
                 if (TryParseFilterToken(value, "contains", out var containsToken, requireNamespace: true))
                 {
-                    tokens.Add(("contains", containsToken.ToLowerInvariant()));
+                    tokens.Add(("contains", containsToken));
                     continue;
                 }
                 if (TryParseFilterToken(value, "eq", out var equalsToken, requireNamespace: true))
                 {
-                    tokens.Add(("eq", equalsToken.ToLowerInvariant()));
+                    tokens.Add(("eq", equalsToken));
                     continue;
                 }
                 if (TryParseFilterToken(value, "starts", out var startsToken, requireNamespace: true))
                 {
-                    tokens.Add(("starts", startsToken.ToLowerInvariant()));
+                    tokens.Add(("starts", startsToken));
                     continue;
                 }
                 if (TryParseFilterToken(value, "ends", out var endsToken, requireNamespace: true))
                 {
-                    tokens.Add(("ends", endsToken.ToLowerInvariant()));
+                    tokens.Add(("ends", endsToken));
                     continue;
                 }
 
                 // 兼容旧调用方：无模式前缀的文本值按 contains 处理。
-                tokens.Add(("contains", value.ToLowerInvariant()));
+                tokens.Add(("contains", value));
             }
 
             return tokens.Distinct().ToList();

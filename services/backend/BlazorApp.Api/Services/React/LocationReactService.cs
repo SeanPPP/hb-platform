@@ -14,6 +14,7 @@ namespace BlazorApp.Api.Services.React
         private const int PickingLocationType = 1;
         private const int StorageLocationType = 2;
         private const string LocationCodePattern = @"^[A-Z]-\d{2}-\d{2}-\d{2}$";
+        private const string FilterTokenNamespace = "__filter";
 
         private readonly SqlSugarContext _context;
         private readonly ICurrentUserService _currentUserService;
@@ -45,12 +46,17 @@ namespace BlazorApp.Api.Services.React
 
                 if (filter.IsUsed.HasValue)
                 {
-                    // 使用数据库端子查询判断使用状态，避免把全部已用货位 GUID 拉到内存。
+                    // 使用状态与列表商品加载保持同一口径：只把未删除商品的有效绑定视为已使用。
                     if (filter.IsUsed.Value)
                     {
                         query = query.Where(l =>
                             SqlFunc.Subqueryable<ProductLocation>()
-                                .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                                .InnerJoin<Product>((pl, p) =>
+                                    pl.ProductCode == p.ProductCode && !p.IsDeleted
+                                )
+                                .Where((pl, p) =>
+                                    !pl.IsDeleted && pl.LocationGuid == l.LocationGuid
+                                )
                                 .Any()
                         );
                     }
@@ -58,88 +64,19 @@ namespace BlazorApp.Api.Services.React
                     {
                         query = query.Where(l =>
                             !SqlFunc.Subqueryable<ProductLocation>()
-                                .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                                .InnerJoin<Product>((pl, p) =>
+                                    pl.ProductCode == p.ProductCode && !p.IsDeleted
+                                )
+                                .Where((pl, p) =>
+                                    !pl.IsDeleted && pl.LocationGuid == l.LocationGuid
+                                )
                                 .Any()
                         );
                     }
                 }
 
-                if (filter.Filters != null && filter.Filters.Any())
-                {
-                    foreach (var kv in filter.Filters)
-                    {
-                        var key = kv.Key?.ToLower();
-                        var values =
-                            kv.Value?.Where(v => !string.IsNullOrWhiteSpace(v)).ToList()
-                            ?? new List<string>();
-                        if (!values.Any())
-                            continue;
-
-                        switch (key)
-                        {
-                            case "locationcode":
-                                var codeLowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(l =>
-                                    l.LocationCode != null
-                                    && codeLowers.Any(v => l.LocationCode.ToLower().Contains(v))
-                                );
-                                break;
-                            case "locationbarcode":
-                                var barcodeLowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(l =>
-                                    l.LocationBarcode != null
-                                    && barcodeLowers.Any(v =>
-                                        l.LocationBarcode.ToLower().Contains(v)
-                                    )
-                                );
-                                break;
-                            case "status":
-                                var statusInts = values
-                                    .Select(v => int.TryParse(v, out var i) ? i : -1)
-                                    .Where(i => i >= 0)
-                                    .ToList();
-                                if (statusInts.Any())
-                                    query = query.Where(l =>
-                                        l.Status.HasValue && statusInts.Contains(l.Status.Value)
-                                    );
-                                break;
-                            case "locationtype":
-                                var typeInts = values
-                                    .Select(v => int.TryParse(v, out var i) ? i : -1)
-                                    .Where(i => i >= 0)
-                                    .ToList();
-                                if (typeInts.Any())
-                                    query = query.Where(l =>
-                                        l.LocationType.HasValue
-                                        && typeInts.Contains(l.LocationType.Value)
-                                    );
-                                break;
-                            case "updatedby":
-                                var byLowers = values.Select(v => v.ToLower()).ToList();
-                                query = query.Where(l =>
-                                    l.UpdatedBy != null
-                                    && byLowers.Any(v => l.UpdatedBy.ToLower().Contains(v))
-                                );
-                                break;
-                            case "updatedat":
-                                if (
-                                    values.Count >= 1
-                                    && DateTime.TryParse(values[0], out var dateStart)
-                                )
-                                {
-                                    query = query.Where(l => l.UpdatedAt >= dateStart);
-                                }
-                                if (
-                                    values.Count >= 2
-                                    && DateTime.TryParse(values[1], out var dateEnd)
-                                )
-                                {
-                                    query = query.Where(l => l.UpdatedAt <= dateEnd);
-                                }
-                                break;
-                        }
-                    }
-                }
+                query = ApplyTopLevelFilters(query, filter);
+                query = ApplyColumnFilters(query, filter.Filters);
 
                 var total = await query.Clone().CountAsync();
 
@@ -973,6 +910,588 @@ namespace BlazorApp.Api.Services.React
             };
         }
 
+        private static ISugarQueryable<Location> ApplyTopLevelFilters(
+            ISugarQueryable<Location> query,
+            LocationReactFilterDto filter
+        )
+        {
+            if (!string.IsNullOrWhiteSpace(filter.LocationCode))
+            {
+                query = ApplyLocationTextFilter(
+                    query,
+                    "locationcode",
+                    new[] { filter.LocationCode }
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.LocationBarcode))
+            {
+                query = ApplyLocationTextFilter(
+                    query,
+                    "locationbarcode",
+                    new[] { filter.LocationBarcode }
+                );
+            }
+
+            if (filter.Status.HasValue)
+            {
+                var status = filter.Status.Value;
+                query = query.Where(l => l.Status.HasValue && l.Status.Value == status);
+            }
+
+            if (filter.UpdatedAtStart.HasValue)
+            {
+                var updatedAtStart = filter.UpdatedAtStart.Value;
+                query = query.Where(l => l.UpdatedAt >= updatedAtStart);
+            }
+
+            if (filter.UpdatedAtEnd.HasValue)
+            {
+                var updatedAtEnd = filter.UpdatedAtEnd.Value;
+                query = query.Where(l => l.UpdatedAt <= updatedAtEnd);
+            }
+
+            if (!string.IsNullOrWhiteSpace(filter.UpdatedBy))
+            {
+                query = ApplyLocationTextFilter(query, "updatedby", new[] { filter.UpdatedBy });
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Location> ApplyColumnFilters(
+            ISugarQueryable<Location> query,
+            Dictionary<string, string[]>? filters
+        )
+        {
+            if (filters == null || filters.Count == 0)
+            {
+                return query;
+            }
+
+            foreach (var kv in filters)
+            {
+                var key = kv.Key?.Trim().ToLowerInvariant();
+                var values = NormalizeFilterValues(kv.Value);
+                if (string.IsNullOrWhiteSpace(key) || values.Count == 0)
+                {
+                    continue;
+                }
+
+                query = key switch
+                {
+                    "locationcode" or "locationbarcode" or "updatedby" =>
+                        ApplyLocationTextFilter(query, key, values),
+                    "status" => ApplyNullableIntFilter(query, "status", values),
+                    "locationtype" => ApplyNullableIntFilter(query, "locationtype", values),
+                    "updatedat" => ApplyUpdatedAtFilter(query, values),
+                    "productitemnumber" or "productbarcode" or "productname" =>
+                        ApplyProductTextFilter(query, key, values),
+                    _ => query,
+                };
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Location> ApplyLocationTextFilter(
+            ISugarQueryable<Location> query,
+            string key,
+            IEnumerable<string> values
+        )
+        {
+            var criteria = ParseTextFilterCriteria(values);
+            foreach (var criterion in criteria)
+            {
+                var value = criterion.Value;
+                // 文本列保留 token 模式；默认 contains 兼容旧客户端的裸值筛选。
+                query = key switch
+                {
+                    "locationcode" => ApplyLocationCodeFilter(query, criterion.Mode, value),
+                    "locationbarcode" => ApplyLocationBarcodeFilter(query, criterion.Mode, value),
+                    "updatedby" => ApplyUpdatedByFilter(query, criterion.Mode, value),
+                    _ => query,
+                };
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Location> ApplyLocationCodeFilter(
+            ISugarQueryable<Location> query,
+            LocationTextFilterMode mode,
+            string value
+        )
+        {
+            return mode switch
+            {
+                LocationTextFilterMode.Equals => query.Where(l =>
+                    l.LocationCode != null && l.LocationCode == value
+                ),
+                LocationTextFilterMode.Starts => query.Where(l =>
+                    l.LocationCode != null && l.LocationCode.StartsWith(value)
+                ),
+                LocationTextFilterMode.Ends => query.Where(l =>
+                    l.LocationCode != null && l.LocationCode.EndsWith(value)
+                ),
+                _ => query.Where(l =>
+                    l.LocationCode != null && l.LocationCode.Contains(value)
+                ),
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyLocationBarcodeFilter(
+            ISugarQueryable<Location> query,
+            LocationTextFilterMode mode,
+            string value
+        )
+        {
+            return mode switch
+            {
+                LocationTextFilterMode.Equals => query.Where(l =>
+                    l.LocationBarcode != null && l.LocationBarcode == value
+                ),
+                LocationTextFilterMode.Starts => query.Where(l =>
+                    l.LocationBarcode != null && l.LocationBarcode.StartsWith(value)
+                ),
+                LocationTextFilterMode.Ends => query.Where(l =>
+                    l.LocationBarcode != null && l.LocationBarcode.EndsWith(value)
+                ),
+                _ => query.Where(l =>
+                    l.LocationBarcode != null && l.LocationBarcode.Contains(value)
+                ),
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyUpdatedByFilter(
+            ISugarQueryable<Location> query,
+            LocationTextFilterMode mode,
+            string value
+        )
+        {
+            return mode switch
+            {
+                LocationTextFilterMode.Equals => query.Where(l =>
+                    l.UpdatedBy != null && l.UpdatedBy == value
+                ),
+                LocationTextFilterMode.Starts => query.Where(l =>
+                    l.UpdatedBy != null && l.UpdatedBy.StartsWith(value)
+                ),
+                LocationTextFilterMode.Ends => query.Where(l =>
+                    l.UpdatedBy != null && l.UpdatedBy.EndsWith(value)
+                ),
+                _ => query.Where(l => l.UpdatedBy != null && l.UpdatedBy.Contains(value)),
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyProductTextFilter(
+            ISugarQueryable<Location> query,
+            string key,
+            IEnumerable<string> values
+        )
+        {
+            var criteria = ParseTextFilterCriteria(values);
+            foreach (var criterion in criteria)
+            {
+                var value = criterion.Value;
+                // 商品列必须用 EXISTS 子查询，避免主查询 join 后一对多导致货位重复和分页漂移。
+                query = key switch
+                {
+                    "productitemnumber" => ApplyProductItemNumberFilter(
+                        query,
+                        criterion.Mode,
+                        value
+                    ),
+                    "productbarcode" => ApplyProductBarcodeFilter(query, criterion.Mode, value),
+                    "productname" => ApplyProductNameFilter(query, criterion.Mode, value),
+                    _ => query,
+                };
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Location> ApplyProductItemNumberFilter(
+            ISugarQueryable<Location> query,
+            LocationTextFilterMode mode,
+            string value
+        )
+        {
+            return mode switch
+            {
+                LocationTextFilterMode.Equals => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ItemNumber != null
+                            && p.ItemNumber == value
+                        )
+                        .Any()
+                ),
+                LocationTextFilterMode.Starts => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ItemNumber != null
+                            && p.ItemNumber.StartsWith(value)
+                        )
+                        .Any()
+                ),
+                LocationTextFilterMode.Ends => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ItemNumber != null
+                            && p.ItemNumber.EndsWith(value)
+                        )
+                        .Any()
+                ),
+                _ => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ItemNumber != null
+                            && p.ItemNumber.Contains(value)
+                        )
+                        .Any()
+                ),
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyProductBarcodeFilter(
+            ISugarQueryable<Location> query,
+            LocationTextFilterMode mode,
+            string value
+        )
+        {
+            return mode switch
+            {
+                LocationTextFilterMode.Equals => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.Barcode != null
+                            && p.Barcode == value
+                        )
+                        .Any()
+                ),
+                LocationTextFilterMode.Starts => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.Barcode != null
+                            && p.Barcode.StartsWith(value)
+                        )
+                        .Any()
+                ),
+                LocationTextFilterMode.Ends => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.Barcode != null
+                            && p.Barcode.EndsWith(value)
+                        )
+                        .Any()
+                ),
+                _ => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.Barcode != null
+                            && p.Barcode.Contains(value)
+                        )
+                        .Any()
+                ),
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyProductNameFilter(
+            ISugarQueryable<Location> query,
+            LocationTextFilterMode mode,
+            string value
+        )
+        {
+            return mode switch
+            {
+                LocationTextFilterMode.Equals => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ProductName != null
+                            && p.ProductName == value
+                        )
+                        .Any()
+                ),
+                LocationTextFilterMode.Starts => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ProductName != null
+                            && p.ProductName.StartsWith(value)
+                        )
+                        .Any()
+                ),
+                LocationTextFilterMode.Ends => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ProductName != null
+                            && p.ProductName.EndsWith(value)
+                        )
+                        .Any()
+                ),
+                _ => query.Where(l =>
+                    SqlFunc.Subqueryable<ProductLocation>()
+                        .InnerJoin<Product>((pl, p) => pl.ProductCode == p.ProductCode && !p.IsDeleted)
+                        .Where((pl, p) =>
+                            !pl.IsDeleted
+                            && pl.LocationGuid == l.LocationGuid
+                            && p.ProductName != null
+                            && p.ProductName.Contains(value)
+                        )
+                        .Any()
+                ),
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyNullableIntFilter(
+            ISugarQueryable<Location> query,
+            string key,
+            IEnumerable<string> values
+        )
+        {
+            var intValues = values
+                .Select(value => int.TryParse(value, out var intValue) ? intValue : (int?)null)
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .Distinct()
+                .ToList();
+
+            if (intValues.Count == 0)
+            {
+                return query;
+            }
+
+            return key switch
+            {
+                "status" => query.Where(l => l.Status.HasValue && intValues.Contains(l.Status.Value)),
+                "locationtype" => query.Where(l =>
+                    l.LocationType.HasValue && intValues.Contains(l.LocationType.Value)
+                ),
+                _ => query,
+            };
+        }
+
+        private static ISugarQueryable<Location> ApplyUpdatedAtFilter(
+            ISugarQueryable<Location> query,
+            List<string> values
+        )
+        {
+            var bounds = ParseDateFilterBounds(values);
+            if (bounds.Start.HasValue)
+            {
+                var start = bounds.Start.Value;
+                query = query.Where(l => l.UpdatedAt >= start);
+            }
+
+            if (bounds.End.HasValue)
+            {
+                var end = bounds.End.Value;
+                query = bounds.EndIsExclusive
+                    ? query.Where(l => l.UpdatedAt < end)
+                    : query.Where(l => l.UpdatedAt <= end);
+            }
+
+            return query;
+        }
+
+        private static List<string> NormalizeFilterValues(IEnumerable<string>? values)
+        {
+            return values?
+                    .Select(value => value?.Trim())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value!)
+                    .Distinct()
+                    .ToList()
+                ?? new List<string>();
+        }
+
+        private static List<LocationTextFilterCriterion> ParseTextFilterCriteria(
+            IEnumerable<string> values
+        )
+        {
+            return NormalizeFilterValues(values)
+                .Select(ParseTextFilterCriterion)
+                .Where(criterion => !string.IsNullOrWhiteSpace(criterion.Value))
+                .Distinct()
+                .ToList();
+        }
+
+        private static LocationTextFilterCriterion ParseTextFilterCriterion(string value)
+        {
+            var normalizedValue = value.Trim();
+            var namespacePrefix = $"{FilterTokenNamespace}:";
+            if (!normalizedValue.StartsWith(namespacePrefix, StringComparison.Ordinal))
+            {
+                return new LocationTextFilterCriterion(LocationTextFilterMode.Contains, normalizedValue);
+            }
+
+            var tokenBody = normalizedValue[namespacePrefix.Length..];
+            var separatorIndex = tokenBody.IndexOf(':');
+            if (separatorIndex <= 0)
+            {
+                return new LocationTextFilterCriterion(LocationTextFilterMode.Contains, normalizedValue);
+            }
+
+            var rawMode = tokenBody[..separatorIndex];
+            var tokenValue = tokenBody[(separatorIndex + 1)..].Trim();
+            var mode = rawMode switch
+            {
+                "eq" => LocationTextFilterMode.Equals,
+                "starts" => LocationTextFilterMode.Starts,
+                "ends" => LocationTextFilterMode.Ends,
+                _ => LocationTextFilterMode.Contains,
+            };
+
+            return new LocationTextFilterCriterion(mode, tokenValue);
+        }
+
+        private static LocationDateFilterBounds ParseDateFilterBounds(List<string> values)
+        {
+            var bounds = new LocationDateFilterBounds();
+
+            if (
+                values.Count >= 2
+                && !HasTokenPrefix(values[0])
+                && !HasTokenPrefix(values[1])
+            )
+            {
+                ApplyDateStart(values[0], bounds);
+                ApplyDateEnd(values[1], bounds);
+                return bounds;
+            }
+
+            foreach (var value in values)
+            {
+                if (value.StartsWith("gte:", StringComparison.Ordinal))
+                {
+                    ApplyDateStart(value["gte:".Length..], bounds);
+                    continue;
+                }
+
+                if (value.StartsWith("lte:", StringComparison.Ordinal))
+                {
+                    ApplyDateEnd(value["lte:".Length..], bounds);
+                    continue;
+                }
+
+                var parsedToken = ParseTextFilterCriterion(value);
+                if (
+                    parsedToken.Mode == LocationTextFilterMode.Equals
+                    && DateTime.TryParse(parsedToken.Value, out var exactDate)
+                )
+                {
+                    bounds.Start = exactDate.Date;
+                    bounds.End = exactDate.Date.AddDays(1);
+                    bounds.EndIsExclusive = true;
+                    continue;
+                }
+
+                if (DateTime.TryParse(value, out var legacyExactDate))
+                {
+                    // 裸日期来自旧筛选形态，按当天精确匹配，避免单值日期变成无限上界查询。
+                    bounds.Start = legacyExactDate.Date;
+                    bounds.End = legacyExactDate.Date.AddDays(1);
+                    bounds.EndIsExclusive = true;
+                }
+            }
+
+            return bounds;
+        }
+
+        private static bool HasTokenPrefix(string value)
+        {
+            return value.StartsWith($"{FilterTokenNamespace}:", StringComparison.Ordinal)
+                || value.StartsWith("gte:", StringComparison.Ordinal)
+                || value.StartsWith("lte:", StringComparison.Ordinal);
+        }
+
+        private static void ApplyDateStart(string value, LocationDateFilterBounds bounds)
+        {
+            if (DateTime.TryParse(value, out var dateStart))
+            {
+                bounds.Start = IsDateOnlyValue(value) ? dateStart.Date : dateStart;
+            }
+        }
+
+        private static void ApplyDateEnd(string value, LocationDateFilterBounds bounds)
+        {
+            if (!DateTime.TryParse(value, out var dateEnd))
+            {
+                return;
+            }
+
+            bounds.End = IsDateOnlyValue(value) ? dateEnd.Date.AddDays(1) : dateEnd;
+            bounds.EndIsExclusive = IsDateOnlyValue(value);
+        }
+
+        private static bool IsDateOnlyValue(string value)
+        {
+            return Regex.IsMatch(value.Trim(), @"^\d{4}-\d{1,2}-\d{1,2}$");
+        }
+
+        private enum LocationTextFilterMode
+        {
+            Contains,
+            Equals,
+            Starts,
+            Ends,
+        }
+
+        private readonly struct LocationTextFilterCriterion
+        {
+            public LocationTextFilterCriterion(LocationTextFilterMode mode, string value)
+            {
+                Mode = mode;
+                Value = value;
+            }
+
+            public LocationTextFilterMode Mode { get; }
+
+            public string Value { get; }
+        }
+
+        private sealed class LocationDateFilterBounds
+        {
+            public DateTime? Start { get; set; }
+
+            public DateTime? End { get; set; }
+
+            public bool EndIsExclusive { get; set; }
+        }
+
         private ISugarQueryable<Location> ApplySorting(
             ISugarQueryable<Location> query,
             string sortBy,
@@ -985,12 +1504,22 @@ namespace BlazorApp.Api.Services.React
                 return isDescending
                     ? query.OrderByDescending(l =>
                         SqlFunc.Subqueryable<ProductLocation>()
-                            .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                            .InnerJoin<Product>((pl, p) =>
+                                pl.ProductCode == p.ProductCode && !p.IsDeleted
+                            )
+                            .Where((pl, p) =>
+                                !pl.IsDeleted && pl.LocationGuid == l.LocationGuid
+                            )
                             .Any()
                     )
                     : query.OrderBy(l =>
                         SqlFunc.Subqueryable<ProductLocation>()
-                            .Where(pl => pl.LocationGuid == l.LocationGuid && !pl.IsDeleted)
+                            .InnerJoin<Product>((pl, p) =>
+                                pl.ProductCode == p.ProductCode && !p.IsDeleted
+                            )
+                            .Where((pl, p) =>
+                                !pl.IsDeleted && pl.LocationGuid == l.LocationGuid
+                            )
                             .Any()
                     );
             }

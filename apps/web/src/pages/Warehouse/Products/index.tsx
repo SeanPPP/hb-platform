@@ -310,6 +310,7 @@ const WAREHOUSE_PRODUCT_DEFAULT_COLUMN_ORDER = [
     'isActive',
     'productType',
     'barcode',
+    'locationCodes',
     'name',
     'packingQty',
     'volume',
@@ -1560,6 +1561,16 @@ export default function WarehouseProductsPage() {
             </div>) : ('--'),
         },
         {
+            key: 'locationCodes',
+            title: t('location.location', '货位'),
+            dataIndex: 'locationCodes',
+            width: 132,
+            ...textFilterProps('locationCodes', t('warehouse.filterLocation', '按货位筛选')),
+            render: (value: string[] | undefined) => value?.length ? (<Space size={4} wrap>
+              {value.map((locationCode) => <Tag key={locationCode}>{locationCode}</Tag>)}
+            </Space>) : ('--'),
+        },
+        {
             key: 'name',
             title: t('column.productName'),
             dataIndex: 'name',
@@ -1834,7 +1845,7 @@ export default function WarehouseProductsPage() {
                 columnWidth: 56,
                 selectedRowKeys,
                 onChange: setSelectedRowKeys,
-            }} scroll={{ x: 2260, y: 620 }} pagination={{
+            }} scroll={{ x: 2390, y: 620 }} pagination={{
                 current: page,
                 pageSize,
                 total,

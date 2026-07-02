@@ -344,6 +344,284 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetAntdTableDataAsync_ReturnsPickingLocationCodesOnly()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-LOCATION-LIST-001",
+                "ITEM-LOCATION-LIST-001",
+                "货位列表商品",
+                null
+            );
+            await SeedLocationAsync("loc-picking-list-002", "PICK-A-02", 1);
+            await SeedLocationAsync("loc-picking-list-001", "PICK-A-01", 1);
+            await SeedLocationAsync("loc-storage-list-001", "STOCK-A-99", 2);
+            await SeedProductLocationAsync("P-LOCATION-LIST-001", "loc-picking-list-002");
+            await SeedProductLocationAsync("P-LOCATION-LIST-001", "loc-picking-list-001");
+            await SeedProductLocationAsync("P-LOCATION-LIST-001", "loc-storage-list-001");
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+            });
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal(1, result.Total);
+            Assert.Equal(new[] { "PICK-A-01", "PICK-A-02" }, item.LocationCodes);
+            Assert.DoesNotContain("STOCK-A-99", item.LocationCodes);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_FiltersByPickingLocationCodeAndBarcode()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-LOCATION-FILTER-001",
+                "ITEM-LOCATION-FILTER-001",
+                "货位筛选命中商品",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-LOCATION-FILTER-002",
+                "ITEM-LOCATION-FILTER-002",
+                "货位筛选未命中商品",
+                null
+            );
+            await SeedLocationAsync("loc-picking-filter-001", "PICK-FILTER-01", 1);
+            await SeedLocationAsync("loc-picking-filter-002", "PICK-FILTER-02", 1);
+            await SeedLocationAsync("loc-storage-filter-001", "STOCK-FILTER-01", 2);
+            await SeedProductLocationAsync("P-LOCATION-FILTER-001", "loc-picking-filter-001");
+            await SeedProductLocationAsync("P-LOCATION-FILTER-002", "loc-picking-filter-002");
+            await SeedProductLocationAsync("P-LOCATION-FILTER-002", "loc-storage-filter-001");
+
+            var service = CreateService();
+
+            var codeResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["locationCodes"] = new[] { "__filter:eq:PICK-FILTER-01" },
+                },
+            });
+            var barcodeResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["locationCodes"] = new[] { "PICK-FILTER-02-BAR" },
+                },
+            });
+            var storageResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["locationCodes"] = new[] { "STOCK-FILTER-01" },
+                },
+            });
+
+            Assert.Equal("P-LOCATION-FILTER-001", Assert.Single(codeResult.Items).ProductCode);
+            Assert.Equal("P-LOCATION-FILTER-002", Assert.Single(barcodeResult.Items).ProductCode);
+            Assert.Empty(storageResult.Items);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_GlobalSearchMatchesPickingLocationCodeAndBarcode()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-LOCATION-SEARCH-001",
+                "ITEM-LOCATION-SEARCH-001",
+                "货位搜索命中商品",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-LOCATION-SEARCH-002",
+                "ITEM-LOCATION-SEARCH-002",
+                "货位搜索未命中商品",
+                null
+            );
+            await SeedLocationAsync("loc-picking-search-001", "PICK-SEARCH-01", 1);
+            await SeedLocationAsync("loc-storage-search-001", "STOCK-SEARCH-01", 2);
+            await SeedProductLocationAsync("P-LOCATION-SEARCH-001", "loc-picking-search-001");
+            await SeedProductLocationAsync("P-LOCATION-SEARCH-002", "loc-storage-search-001");
+
+            var service = CreateService();
+
+            var codeResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "PICK-SEARCH",
+            });
+            var barcodeResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "PICK-SEARCH-01-BAR",
+            });
+            var storageResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "STOCK-SEARCH",
+            });
+
+            Assert.Equal("P-LOCATION-SEARCH-001", Assert.Single(codeResult.Items).ProductCode);
+            Assert.Equal("P-LOCATION-SEARCH-001", Assert.Single(barcodeResult.Items).ProductCode);
+            Assert.Empty(storageResult.Items);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_GlobalSearchMatchesCodeLikeProductFields()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-GLOBAL-CODE-001",
+                "HB246-BD-001",
+                "代码型搜索命中商品",
+                null,
+                barcode: "9525812460744",
+                supplierCode: "CN246-BD",
+                supplierName: "代码供应商",
+                localSupplierCode: "AU246-BD",
+                localSupplierName: "Local Code Supplier"
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-GLOBAL-CODE-002",
+                "HB999-ZZ-002",
+                "代码型搜索未命中商品",
+                null,
+                barcode: "9525819999999",
+                supplierCode: "CN999-ZZ",
+                localSupplierCode: "AU999-ZZ"
+            );
+            var service = CreateService();
+            var searches = new[]
+            {
+                "P-GLOBAL-CODE-001",
+                "HB246-BD",
+                "246-bd",
+                "9525812460744",
+                "CN246-BD",
+                "AU246-BD",
+            };
+
+            foreach (var search in searches)
+            {
+                var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+                {
+                    Page = 1,
+                    PageSize = 20,
+                    GlobalSearch = search,
+                });
+
+                Assert.Equal("P-GLOBAL-CODE-001", Assert.Single(result.Items).ProductCode);
+            }
+
+            var omittedHbPrefixResult = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "246-bd",
+            });
+
+            // 派生 HB 前缀只用于 HB 货号，不扩散到条码、供应商或商品名称。
+            Assert.Equal("P-GLOBAL-CODE-001", Assert.Single(omittedHbPrefixResult.Items).ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_OmittedHbPrefixOnlyMatchesItemNumber()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-OMITTED-HB-001",
+                "HB246-BD-001",
+                "省略 HB 前缀命中货号",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-OMITTED-HB-002",
+                "ITEM-GLOBAL-HB-ONLY-002",
+                "HB246-BD 干扰商品",
+                null,
+                barcode: "HB246-BD-BAR",
+                supplierCode: "HB246-BD-SUP",
+                localSupplierCode: "HB246-BD-LOCAL"
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "246-bd",
+            });
+
+            // 省略 HB 前缀只补到货号字段；其它代码列即使以 HB246-BD 开头也不应被派生命中。
+            Assert.Equal("P-OMITTED-HB-001", Assert.Single(result.Items).ProductCode);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_GlobalSearchTreatsCodeLikeKeywordAsCodeOnly()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-GLOBAL-TEXT-001",
+                "ITEM-GLOBAL-TEXT-001",
+                "夜光珠 5.5MM",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-GLOBAL-TEXT-002",
+                "ITEM-GLOBAL-TEXT-002",
+                "普通圆珠",
+                null
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "5.5",
+            });
+
+            Assert.Empty(result.Items);
+        }
+
+        [Fact]
+        public async Task GetAntdTableDataAsync_GlobalSearchKeepsTextMatchForNameKeyword()
+        {
+            await SeedWarehouseTableProductAsync(
+                "P-GLOBAL-NAME-001",
+                "ITEM-GLOBAL-NAME-001",
+                "夜光珠",
+                null
+            );
+            await SeedWarehouseTableProductAsync(
+                "P-GLOBAL-NAME-002",
+                "ITEM-GLOBAL-NAME-002",
+                "普通圆珠",
+                null
+            );
+
+            var service = CreateService();
+
+            var result = await service.GetAntdTableDataAsync(new ReactTableRequestDto
+            {
+                Page = 1,
+                PageSize = 20,
+                GlobalSearch = "夜光珠",
+            });
+
+            Assert.Equal("P-GLOBAL-NAME-001", Assert.Single(result.Items).ProductCode);
+        }
+
+        [Fact]
         public async Task GetAntdTableDataAsync_FiltersWarehouseStatusTypeAndRanges()
         {
             var baseUpdatedAt = new DateTime(2026, 6, 16, 10, 30, 0, DateTimeKind.Utc);
@@ -2075,6 +2353,17 @@ namespace BlazorApp.Api.Tests
                 LocationBarcode = $"{locationCode}-BAR",
                 LocationType = locationType,
                 Status = 1,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedProductLocationAsync(string productCode, string locationGuid)
+        {
+            await _db.Insertable(new ProductLocation
+            {
+                Guid = $"{productCode}-{locationGuid}",
+                ProductCode = productCode,
+                LocationGuid = locationGuid,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
         }

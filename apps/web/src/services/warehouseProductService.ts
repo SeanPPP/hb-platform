@@ -121,6 +121,8 @@ export interface WarehouseProductListItem {
   nameEn?: string
   itemNumber: string
   barcode?: string
+  locationCodes?: string[]
+  locationBarcodes?: string[]
   categoryName?: string
   warehouseCategoryGUID?: string
   categoryPath?: string
@@ -498,6 +500,22 @@ function readRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
+function readStringArray(...values: unknown[]): string[] | undefined {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const items = value
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+      if (items.length) return items
+    }
+    if (typeof value === 'string' && value.trim()) {
+      return value.split(',').map((item) => item.trim()).filter(Boolean)
+    }
+  }
+
+  return undefined
+}
+
 function transformWarehouseProduct(raw: Record<string, unknown>): WarehouseProductListItem {
   const localSupplier = readRecord(raw.localSupplier ?? raw.LocalSupplier)
 
@@ -508,6 +526,8 @@ function transformWarehouseProduct(raw: Record<string, unknown>): WarehouseProdu
     nameEn: readString(raw.englishName, raw.EnglishName),
     itemNumber: readString(raw.itemNumber, raw.ItemNumber) ?? '',
     barcode: readString(raw.barcode, raw.Barcode),
+    locationCodes: readStringArray(raw.locationCodes, raw.LocationCodes, raw.locationCode, raw.LocationCode),
+    locationBarcodes: readStringArray(raw.locationBarcodes, raw.LocationBarcodes),
     categoryName: readString(raw.categoryName, raw.CategoryName),
     warehouseCategoryGUID:
       readString(

@@ -38,6 +38,7 @@ try {
     filters: {
       productName: ['收纳箱'],
       localSupplierCode: ['LS-001'],
+      locationCodes: ['A-01'],
       volume: ['gte:1.5', 'lte:9.9'],
       createdAt: ['gte:2026-06-01', 'lte:2026-06-15'],
       domesticSupplierCode: ['SHOULD-BE-OVERRIDDEN'],
@@ -51,6 +52,7 @@ try {
     {
       productName: ['收纳箱'],
       localSupplierCode: ['LS-001'],
+      locationCodes: ['A-01'],
       volume: ['gte:1.5', 'lte:9.9'],
       createdAt: ['gte:2026-06-01', 'lte:2026-06-15'],
       domesticSupplierCode: ['SUP-001'],
@@ -214,6 +216,8 @@ try {
           LocalSupplierName: 'DATS',
           SupplierCode: 'CN-001',
           SupplierName: '国内供应商一',
+          LocationCodes: ['A-01-01-01'],
+          LocationBarcodes: ['LOC-A-01'],
         },
         {
           ProductCode: 'P002',
@@ -228,6 +232,7 @@ try {
           },
           supplierCode: 'CN-002',
           supplierName: '国内供应商二',
+          locationCodes: 'B-02-02-02, B-02-02-03',
         },
       ],
       total: 2,
@@ -251,6 +256,8 @@ try {
       domesticSupplierName: item.domesticSupplierName,
       localSupplierCode: item.localSupplierCode,
       localSupplierName: item.localSupplierName,
+      locationCodes: item.locationCodes,
+      locationBarcodes: item.locationBarcodes,
     })),
     [
       {
@@ -261,6 +268,8 @@ try {
         domesticSupplierName: '国内供应商一',
         localSupplierCode: '200',
         localSupplierName: 'DATS',
+        locationCodes: ['A-01-01-01'],
+        locationBarcodes: ['LOC-A-01'],
       },
       {
         categoryName: '收纳',
@@ -270,6 +279,8 @@ try {
         domesticSupplierName: '国内供应商二',
         localSupplierCode: 'COS',
         localSupplierName: 'Costco AU',
+        locationCodes: ['B-02-02-02', 'B-02-02-03'],
+        locationBarcodes: undefined,
       },
     ],
     '仓库商品列表应保留分类与供应商字段，并兼容澳洲供应商大小写和嵌套字段',

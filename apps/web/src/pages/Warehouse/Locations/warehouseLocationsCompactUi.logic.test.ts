@@ -115,7 +115,7 @@ async function main() {
     assert(locationsPageSource.includes('Modal.confirm'), 'HQ 同步应二次确认')
     assert(locationsPageSource.includes('setSyncingFromHq(true)'), '确认同步后应进入 loading 状态')
     assert(locationsPageSource.includes('await syncLocationsFromHq()'), '页面应等待一键同步完成')
-    assert(locationsPageSource.includes('await loadData(1, pageSize)'), '同步成功后应刷新第一页')
+    assert(locationsPageSource.includes('await loadDataWithColumnFilters(1, pageSize)'), '同步成功后应刷新第一页')
     assert(locationsPageSource.includes('loading={syncingFromHq}'), '同步按钮应绑定 loading 状态')
     assert(locationsPageSource.includes('disabled={syncingFromHq || loading}'), '同步按钮应在同步或列表加载中禁用')
     assert(locationsPageSource.includes("t('warehouseLocations.syncFromHq'"), '同步按钮应使用仓库标签文案')

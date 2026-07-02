@@ -190,6 +190,42 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task GetPagedListAsync_UsageIgnoresDeletedProducts()
+        {
+            await SeedPagedLocationsAsync();
+            await SeedDeletedProductOnlyLocationAsync();
+            var service = CreateService();
+
+            var used = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                IsUsed = true,
+                SortBy = "LocationCode",
+                SortDirection = "asc",
+            });
+            var unused = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                IsUsed = false,
+                SortBy = "LocationCode",
+                SortDirection = "asc",
+            });
+            var usageDescending = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                SortBy = "Usage",
+                SortDirection = "desc",
+            });
+
+            Assert.Equal(new[] { "B-01-01-01" }, used.Items.Select(item => item.LocationCode));
+            Assert.Contains(unused.Items, item => item.LocationCode == "D-01-01-01");
+            Assert.DoesNotContain(usageDescending.Items.Take(1), item => item.LocationCode == "D-01-01-01");
+        }
+
+        [Fact]
         public async Task GetPagedListAsync_BatchLoadsProductsForCurrentPage()
         {
             await SeedPagedLocationsAsync();
@@ -212,6 +248,144 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("9320000000011", boundLocation.Barcode);
             Assert.Equal("Paged product", boundLocation.ProductName);
             Assert.Equal(12, boundLocation.MiddlePackageQuantity);
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_ProductColumnFiltersApplyBeforePaging()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var page = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = "LocationCode",
+                SortDirection = "asc",
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productItemNumber"] = new[] { "__filter:eq:HB-PAGED-001" },
+                },
+            });
+
+            Assert.Equal(1, page.Total);
+            var item = Assert.Single(page.Items);
+            Assert.Equal("B-01-01-01", item.LocationCode);
+            Assert.Equal("HB-PAGED-001", Assert.Single(item.Products).ItemNumber);
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_ProductColumnFiltersIgnoreDeletedProductLinks()
+        {
+            await SeedBoundProductLocationAsync();
+            var service = CreateService();
+
+            var byDeletedProduct = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productBarcode"] = new[] { "__filter:eq:DELETED-BARCODE" },
+                },
+            });
+            var byDeletedLink = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productBarcode"] = new[] { "__filter:eq:DELETED-LINK-BARCODE" },
+                },
+            });
+
+            Assert.Equal(0, byDeletedProduct.Total);
+            Assert.Empty(byDeletedProduct.Items);
+            Assert.Equal(0, byDeletedLink.Total);
+            Assert.Empty(byDeletedLink.Items);
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_LocationAndProductColumnFiltersUseAndSemantics()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var matching = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["locationCode"] = new[] { "__filter:starts:B-" },
+                    ["productName"] = new[] { "__filter:contains:Paged" },
+                },
+            });
+            var mismatching = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["locationCode"] = new[] { "__filter:starts:A-" },
+                    ["productName"] = new[] { "__filter:contains:Paged" },
+                },
+            });
+
+            Assert.Equal(new[] { "B-01-01-01" }, matching.Items.Select(item => item.LocationCode));
+            Assert.Equal(0, mismatching.Total);
+            Assert.Empty(mismatching.Items);
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_LocationTypeColumnFilterUsesStorageValue()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var page = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["locationType"] = new[] { "2" },
+                },
+            });
+
+            Assert.Equal(new[] { "A-01-01-01" }, page.Items.Select(item => item.LocationCode));
+        }
+
+        [Fact]
+        public async Task GetPagedListAsync_UsageAndProductColumnFiltersCombine()
+        {
+            await SeedPagedLocationsAsync();
+            var service = CreateService();
+
+            var used = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                IsUsed = true,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productBarcode"] = new[] { "__filter:starts:932" },
+                },
+            });
+            var unused = await service.GetPagedListAsync(new LocationReactFilterDto
+            {
+                PageNumber = 1,
+                PageSize = 10,
+                IsUsed = false,
+                Filters = new Dictionary<string, string[]>
+                {
+                    ["productBarcode"] = new[] { "__filter:starts:932" },
+                },
+            });
+
+            Assert.Equal(new[] { "B-01-01-01" }, used.Items.Select(item => item.LocationCode));
+            Assert.Equal(0, unused.Total);
+            Assert.Empty(unused.Items);
         }
 
         public void Dispose()
@@ -273,6 +447,25 @@ namespace BlazorApp.Api.Tests
                 ProductCode = "P-DELETED",
                 LocationGuid = "loc-001",
                 IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-deleted-link",
+                ProductCode = "P-DELETED-LINK",
+                ProductName = "Deleted link product",
+                ItemNumber = "HB-DELETED-LINK",
+                Barcode = "DELETED-LINK-BARCODE",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new ProductLocation
+            {
+                Guid = "product-location-deleted-link",
+                ProductCode = "P-DELETED-LINK",
+                LocationGuid = "loc-001",
+                IsDeleted = true,
             }).ExecuteCommandAsync();
         }
 
@@ -399,6 +592,40 @@ namespace BlazorApp.Api.Tests
                 Guid = "product-location-page-001",
                 ProductCode = "P-PAGED-001",
                 LocationGuid = "loc-page-b",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
+
+        private async Task SeedDeletedProductOnlyLocationAsync()
+        {
+            await _db.Insertable(new Location
+            {
+                LocationGuid = "loc-deleted-product-only",
+                LocationCode = "D-01-01-01",
+                LocationBarcode = "LOC-D",
+                LocationType = 1,
+                Status = 1,
+                UpdatedAt = new DateTime(2026, 1, 4, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedBy = "deleted-product",
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new Product
+            {
+                UUID = "product-page-deleted-only",
+                ProductCode = "P-PAGED-DELETED",
+                ProductName = "Deleted only product",
+                ItemNumber = "HB-PAGED-DELETED",
+                Barcode = "9320000000099",
+                IsActive = false,
+                IsDeleted = true,
+            }).ExecuteCommandAsync();
+
+            await _db.Insertable(new ProductLocation
+            {
+                Guid = "product-location-page-deleted-only",
+                ProductCode = "P-PAGED-DELETED",
+                LocationGuid = "loc-deleted-product-only",
                 IsDeleted = false,
             }).ExecuteCommandAsync();
         }
