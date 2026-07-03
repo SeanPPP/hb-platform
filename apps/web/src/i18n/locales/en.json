@@ -176,6 +176,7 @@
       "status": "Status",
       "totalPieces": "Total Pieces",
       "totalAmount": "Total Amount",
+      "domesticPriceTotal": "Domestic Price Total",
       "totalVolume": "Total Volume",
       "totalVolumeCbm": "Total Volume (m³)",
       "itemNumber": "Item No.",

@@ -4006,8 +4006,10 @@ export default function ContainerDetailPage() {
               <Descriptions.Item label={t('containers.fields.freight')}>
                 {headerEditing ? <InputNumber value={headerForm.运费} precision={2} controls={false} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 运费: value ?? undefined }))} /> : formatNumber(container?.运费)}
               </Descriptions.Item>
+              {/* 合计金额来自货柜主表汇总，编辑态也保持只读。 */}
+              <Descriptions.Item label={t('containers.fields.domesticPriceTotal')}>{formatCurrency(container?.合计金额, '¥')}</Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.totalVolume')}>{formatNumber(container?.总体积, 4)}</Descriptions.Item>
-              <Descriptions.Item label={t('containers.fields.remark')} span={4}>
+              <Descriptions.Item label={t('containers.fields.remark')} span={3}>
                 {headerEditing ? <Input.TextArea value={headerForm.备注} rows={2} onChange={(event) => setHeaderForm((prev) => ({ ...prev, 备注: event.target.value }))} /> : container?.备注 || '--'}
               </Descriptions.Item>
             </Descriptions>

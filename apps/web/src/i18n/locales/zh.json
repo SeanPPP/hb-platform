@@ -176,6 +176,7 @@
       "status": "状态",
       "totalPieces": "合计件数",
       "totalAmount": "合计金额",
+      "domesticPriceTotal": "国内价格合计",
       "totalVolume": "总体积",
       "totalVolumeCbm": "总体积 (m³)",
       "itemNumber": "货号",
