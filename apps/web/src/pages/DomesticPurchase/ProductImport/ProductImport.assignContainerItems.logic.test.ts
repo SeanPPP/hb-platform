@@ -104,6 +104,17 @@ assertDeepEqual(
 )
 
 assertDeepEqual(
+  [
+    pageSource.includes("import { isValidEAN13 } from '../../../utils/barcode'"),
+    pageSource.includes('const isNonEan13Barcode = Boolean(barcode && !isValidEAN13(barcode))'),
+    pageSource.includes("status={isNonEan13Barcode ? 'warning' : undefined}"),
+    pageSource.includes("t('productImport.notEan13Barcode', '不是 EAN13 条码')"),
+  ],
+  [true, true, true, true],
+  '商品导入条码列应标明非 EAN13 条码，但不阻断检测和保存流程',
+)
+
+assertDeepEqual(
   buildAssignContainerItems([
     createProduct({
       newProduct: {
