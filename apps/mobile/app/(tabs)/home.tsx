@@ -398,6 +398,14 @@ export default function Home() {
     );
   }, []);
 
+  const handleSelectCategoryFilter = useCallback((categoryGUID?: string) => {
+    setSelectedCategoryGUID((currentValue) =>
+      currentValue === categoryGUID ? undefined : categoryGUID
+    );
+    // 分类选择完成后回到商品列表；展开箭头不走这个回调，保持只展开分类树。
+    setFiltersVisible(false);
+  }, []);
+
   const renderCategoryTree = useCallback(
     (nodes: StoreOrderCategoryNode[], depth = 0): React.ReactNode =>
       nodes.map((node) => {
@@ -411,11 +419,7 @@ export default function Home() {
               <Button
                 compact
                 mode={isSelected ? "contained-tonal" : "text"}
-                onPress={() =>
-                  setSelectedCategoryGUID((currentValue) =>
-                    currentValue === node.categoryGUID ? undefined : node.categoryGUID
-                  )
-                }
+                onPress={() => handleSelectCategoryFilter(node.categoryGUID)}
                 style={styles.categoryTreeButton}
                 contentStyle={styles.categoryTreeButtonContent}
                 labelStyle={styles.categoryTreeButtonLabel}
@@ -438,7 +442,7 @@ export default function Home() {
           </View>
         );
       }),
-    [expandedCategoryGUIDs, selectedCategoryGUID, toggleCategoryExpanded]
+    [expandedCategoryGUIDs, handleSelectCategoryFilter, selectedCategoryGUID, toggleCategoryExpanded]
   );
 
   async function handleAddToCart(product: StoreOrderProductItem) {
@@ -828,7 +832,7 @@ export default function Home() {
             <View style={styles.filtersSection}>
               <View style={styles.filtersSectionHeader}>
                 <Text variant="labelLarge">{t("filters.category")}</Text>
-                <Button compact onPress={() => setSelectedCategoryGUID(undefined)}>
+                <Button compact onPress={() => handleSelectCategoryFilter(undefined)}>
                   {t("filters.allCategories")}
                 </Button>
               </View>
@@ -836,7 +840,7 @@ export default function Home() {
                 <Button
                   compact
                   mode={!selectedCategoryGUID ? "contained-tonal" : "text"}
-                  onPress={() => setSelectedCategoryGUID(undefined)}
+                  onPress={() => handleSelectCategoryFilter(undefined)}
                   contentStyle={styles.resetFilterButtonContent}
                 >
                   {t("filters.all")}
