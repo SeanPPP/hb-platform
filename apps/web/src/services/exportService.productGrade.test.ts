@@ -98,16 +98,41 @@ withWindowOrigin('https://erp.example.com', () => {
     'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/a b.jpg?size=500',
   )
 
-  assertEqual(candidates.length, 2, '白名单跨域图片应保留直连并追加代理兜底')
+  assertEqual(candidates.length, 2, '白名单跨域图片应优先走代理并保留直连兜底')
   assertEqual(
     candidates[0],
-    'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/a%20b.jpg?size=500',
-    '白名单跨域图片直连地址应先归一化',
+    '/api/react/v1/image-proxy?url=https%3A%2F%2Fhotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com%2FYW200%2Fa%2520b.jpg%3Fsize%3D500',
+    '白名单跨域图片代理地址应排在第一位',
   )
   assertEqual(
     candidates[1],
-    '/api/react/v1/image-proxy?url=https%3A%2F%2Fhotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com%2FYW200%2Fa%2520b.jpg%3Fsize%3D500',
-    '白名单跨域图片代理地址应编码原始 URL',
+    'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200/a%20b.jpg?size=500&hbImageExport=1',
+    '白名单跨域图片直连兜底应追加导出参数',
+  )
+})
+
+withWindowOrigin('https://erp.example.com', () => {
+  const candidates = getImageDownloadCandidates(
+    'https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com/HB100/a.jpg?size=500&token=abc',
+  )
+
+  assertEqual(
+    candidates[1],
+    'https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com/HB100/a.jpg?size=500&token=abc&hbImageExport=1',
+    '已有 query 参数的白名单直连兜底应保留原 query 并追加导出参数',
+  )
+})
+
+withWindowOrigin('https://erp.example.com', () => {
+  const candidates = getImageDownloadCandidates(
+    'https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com/HB100/signed.jpg?size=500&q-signature=abc123&q-key-time=1%3B2',
+  )
+
+  assertEqual(candidates.length, 2, '签名 COS 图片仍应保留代理优先和直连兜底')
+  assertEqual(
+    candidates[1],
+    'https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com/HB100/signed.jpg?size=500&q-signature=abc123&q-key-time=1%3B2',
+    '签名 COS 直连兜底不应追加导出参数，避免破坏签名校验',
   )
 })
 
