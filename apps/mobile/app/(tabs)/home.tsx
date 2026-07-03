@@ -29,6 +29,12 @@ import { useProductGrades } from "@/modules/shop/use-product-grades";
 import { useProducts } from "@/modules/shop/use-products";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
+import {
+  buildCategoryNameMap,
+  buildHomeProductQuery,
+  flattenVisibleCategories,
+  type VisibleCategoryRow,
+} from "@/modules/shop/home-filters";
 import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
@@ -41,28 +47,6 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 function resolveDisplayCategories(tree: StoreOrderCategoryNode[]) {
   const allNode = tree.find((item) => item.categoryName.toLowerCase().includes("all"));
   return allNode?.children?.length ? allNode.children : tree;
-}
-
-function findCategoryName(
-  nodes: StoreOrderCategoryNode[],
-  categoryGUID: string | undefined
-): string | undefined {
-  if (!categoryGUID) {
-    return undefined;
-  }
-
-  for (const node of nodes) {
-    if (node.categoryGUID === categoryGUID) {
-      return node.categoryName;
-    }
-
-    const childName = findCategoryName(node.children ?? [], categoryGUID);
-    if (childName) {
-      return childName;
-    }
-  }
-
-  return undefined;
 }
 
 function normalizeGradeValue(value: string | null | undefined) {
@@ -245,15 +229,21 @@ export default function Home() {
   const categoriesQuery = useQuery({
     queryKey: ["shopCategories"],
     queryFn: getCategoryTree,
+    staleTime: 30 * 60 * 1000,
   });
 
   const categoryOptions = useMemo(
     () => resolveDisplayCategories(categoriesQuery.data ?? []),
     [categoriesQuery.data]
   );
+  const categoryNameMap = useMemo(() => buildCategoryNameMap(categoryOptions), [categoryOptions]);
+  const visibleCategoryRows = useMemo(
+    () => flattenVisibleCategories(categoryOptions, expandedCategoryGUIDs),
+    [categoryOptions, expandedCategoryGUIDs]
+  );
   const selectedCategoryName = useMemo(
-    () => findCategoryName(categoryOptions, selectedCategoryGUID) ?? t("filters.all"),
-    [categoryOptions, selectedCategoryGUID, t]
+    () => (selectedCategoryGUID ? categoryNameMap.get(selectedCategoryGUID) : undefined) ?? t("filters.all"),
+    [categoryNameMap, selectedCategoryGUID, t]
   );
   const productGradesQuery = useProductGrades();
   const gradeOptions = useMemo(() => productGradesQuery.data ?? [], [productGradesQuery.data]);
@@ -267,15 +257,19 @@ export default function Home() {
       selectedGrade
     );
   }, [gradeOptions, selectedGrade, t]);
-  const productsQuery = useProducts({
-    storeCode: selectedStoreCode ?? undefined,
-    itemNumber: keyword || undefined,
-    categoryGUID: selectedCategoryGUID,
-    grade: selectedGrade,
-    pageNumber,
-    pageSize: 18,
-    sortBy: "Default",
-  });
+  const productQuery = useMemo(
+    () =>
+      buildHomeProductQuery({
+        storeCode: selectedStoreCode,
+        keyword,
+        categoryGUID: selectedCategoryGUID,
+        grade: selectedGrade,
+        pageNumber,
+        pageSize: 18,
+      }),
+    [keyword, pageNumber, selectedCategoryGUID, selectedGrade, selectedStoreCode]
+  );
+  const productsQuery = useProducts(productQuery);
 
   useEffect(() => {
     setPageNumber(1);
@@ -406,43 +400,37 @@ export default function Home() {
     setFiltersVisible(false);
   }, []);
 
-  const renderCategoryTree = useCallback(
-    (nodes: StoreOrderCategoryNode[], depth = 0): React.ReactNode =>
-      nodes.map((node) => {
-        const hasChildren = Boolean(node.children?.length);
-        const isExpanded = expandedCategoryGUIDs.includes(node.categoryGUID);
-        const isSelected = selectedCategoryGUID === node.categoryGUID;
+  const renderCategoryRow = useCallback(
+    ({ item }: { item: VisibleCategoryRow }) => {
+      const { node, depth, hasChildren, isExpanded } = item;
+      const isSelected = selectedCategoryGUID === node.categoryGUID;
 
-        return (
-          <View key={node.categoryGUID} style={[styles.categoryTreeNode, depth ? { marginLeft: depth * 14 } : null]}>
-            <View style={[styles.categoryTreeRow, isSelected ? styles.categoryTreeRowSelected : null]}>
-              <Button
-                compact
-                mode={isSelected ? "contained-tonal" : "text"}
-                onPress={() => handleSelectCategoryFilter(node.categoryGUID)}
-                style={styles.categoryTreeButton}
-                contentStyle={styles.categoryTreeButtonContent}
-                labelStyle={styles.categoryTreeButtonLabel}
-              >
-                {node.categoryName}
-              </Button>
-              {hasChildren ? (
-                <IconButton
-                  icon={isExpanded ? "chevron-up" : "chevron-down"}
-                  size={18}
-                  onPress={() => toggleCategoryExpanded(node.categoryGUID)}
-                  style={styles.categoryTreeToggle}
-                />
-              ) : null}
-            </View>
-
-            {hasChildren && isExpanded ? (
-              <View style={styles.categoryTreeChildren}>{renderCategoryTree(node.children ?? [], depth + 1)}</View>
+      return (
+        <View style={[styles.categoryTreeNode, depth ? { marginLeft: depth * 14 } : null]}>
+          <View style={[styles.categoryTreeRow, isSelected ? styles.categoryTreeRowSelected : null]}>
+            <Button
+              compact
+              mode={isSelected ? "contained-tonal" : "text"}
+              onPress={() => handleSelectCategoryFilter(node.categoryGUID)}
+              style={styles.categoryTreeButton}
+              contentStyle={styles.categoryTreeButtonContent}
+              labelStyle={styles.categoryTreeButtonLabel}
+            >
+              {node.categoryName}
+            </Button>
+            {hasChildren ? (
+              <IconButton
+                icon={isExpanded ? "chevron-up" : "chevron-down"}
+                size={18}
+                onPress={() => toggleCategoryExpanded(node.categoryGUID)}
+                style={styles.categoryTreeToggle}
+              />
             ) : null}
           </View>
-        );
-      }),
-    [expandedCategoryGUIDs, handleSelectCategoryFilter, selectedCategoryGUID, toggleCategoryExpanded]
+        </View>
+      );
+    },
+    [handleSelectCategoryFilter, selectedCategoryGUID, toggleCategoryExpanded]
   );
 
   async function handleAddToCart(product: StoreOrderProductItem) {
@@ -749,7 +737,7 @@ export default function Home() {
         )}
       />
 
-      {productsQuery.isLoading || storesLoading ? <LoadingOverlay /> : null}
+      {productsQuery.isFetching || storesLoading ? <LoadingOverlay /> : null}
 
       <Portal>
         <Modal
@@ -817,7 +805,7 @@ export default function Home() {
           onDismiss={() => setFiltersVisible(false)}
           contentContainerStyle={styles.filtersModal}
         >
-          <ScrollView contentContainerStyle={styles.filtersModalContent}>
+          <View style={styles.filtersModalContent}>
             <View style={styles.filtersModalHeader}>
               <View style={styles.filtersModalTitleWrap}>
                 <Text variant="titleMedium">{t("filterTitle")}</Text>
@@ -836,7 +824,7 @@ export default function Home() {
                   {t("filters.allCategories")}
                 </Button>
               </View>
-              <View style={styles.categoryTreeWrap}>
+              <View style={[styles.categoryTreeWrap, { maxHeight: Math.max(260, windowHeight - 260) }]}>
                 <Button
                   compact
                   mode={!selectedCategoryGUID ? "contained-tonal" : "text"}
@@ -845,10 +833,23 @@ export default function Home() {
                 >
                   {t("filters.all")}
                 </Button>
-                {renderCategoryTree(categoryOptions)}
+                {categoriesQuery.isLoading ? (
+                  <Text variant="bodyMedium">{t("common:loading")}</Text>
+                ) : (
+                  <FlatList
+                    data={filtersVisible ? visibleCategoryRows : []}
+                    keyExtractor={(item) => item.node.categoryGUID}
+                    renderItem={renderCategoryRow}
+                    contentContainerStyle={styles.categoryTreeListContent}
+                    keyboardShouldPersistTaps="handled"
+                    initialNumToRender={18}
+                    maxToRenderPerBatch={18}
+                    windowSize={5}
+                  />
+                )}
               </View>
             </View>
-          </ScrollView>
+          </View>
         </Modal>
       </Portal>
 
@@ -1117,6 +1118,9 @@ const styles = StyleSheet.create({
   categoryTreeWrap: {
     gap: 6,
   },
+  categoryTreeListContent: {
+    gap: 6,
+  },
   categoryTreeNode: {
     gap: 6,
   },
@@ -1147,9 +1151,6 @@ const styles = StyleSheet.create({
   },
   categoryTreeToggle: {
     margin: 0,
-  },
-  categoryTreeChildren: {
-    gap: 6,
   },
   searchRow: {
     flexDirection: "row",

@@ -10,6 +10,7 @@ using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
@@ -138,7 +139,8 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
                 localContext,
                 NullLogger<ScheduledTaskLogService>.Instance
             ),
-            Mock.Of<IStoreRetailPriceHqSyncService>()
+            Mock.Of<IStoreRetailPriceHqSyncService>(),
+            new MemoryCache(new MemoryCacheOptions())
         );
     }
 

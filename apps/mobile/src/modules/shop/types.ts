@@ -54,6 +54,7 @@ export interface StoreOrderScanLookupAddResult {
 
 export interface StoreOrderProductQuery {
   storeCode?: string;
+  /** Home 单搜索框用 itemNumber 承载“货号或条码”关键词，后端保持 ItemNumber OR Barcode 语义。 */
   itemNumber?: string;
   productName?: string;
   categoryGUID?: string;

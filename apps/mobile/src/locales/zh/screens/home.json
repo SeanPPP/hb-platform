@@ -3,7 +3,7 @@
   "filterTitle": "过滤面板",
   "gradeFilterTitle": "等级筛选",
   "scanResultHint": "当前为扫码结果，点清除按钮恢复全部商品",
-  "searchPlaceholder": "按货号搜索",
+  "searchPlaceholder": "按货号/条码搜索",
   "searchToggleOpen": "展开搜索框",
   "searchToggleClose": "收起搜索框",
   "cameraQuery": "相机查询",

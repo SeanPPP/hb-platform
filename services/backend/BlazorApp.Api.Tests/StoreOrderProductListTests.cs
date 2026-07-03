@@ -113,6 +113,87 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPagedListAsync_HomeSearchMatchesItemNumberAndBarcodeWithinChildCategoryAndGrade()
+    {
+        await SeedWarehouseCategoryAsync("CAT-PARENT", "Parent");
+        await SeedWarehouseCategoryAsync("CAT-CHILD", "Child", "CAT-PARENT");
+        await SeedWarehouseCategoryAsync("CAT-OTHER", "Other");
+        await SeedProductAsync(
+            "P-HOME-ITEM",
+            "HB-HOME-001",
+            barcode: "BAR-OTHER",
+            warehouseCategoryGuid: "CAT-CHILD"
+        );
+        await SeedWarehouseProductAsync("P-HOME-ITEM");
+        await SeedProductGradeAsync("P-HOME-ITEM", "A");
+        await SeedProductAsync(
+            "P-HOME-BAR",
+            "ZZ-001",
+            barcode: "BAR-HOME-001",
+            warehouseCategoryGuid: "CAT-CHILD"
+        );
+        await SeedWarehouseProductAsync("P-HOME-BAR");
+        await SeedProductGradeAsync("P-HOME-BAR", "A");
+        await SeedProductAsync(
+            "P-HOME-WRONG-GRADE",
+            "HB-HOME-002",
+            barcode: "BAR-HOME-002",
+            warehouseCategoryGuid: "CAT-CHILD"
+        );
+        await SeedWarehouseProductAsync("P-HOME-WRONG-GRADE");
+        await SeedProductGradeAsync("P-HOME-WRONG-GRADE", "B");
+        await SeedProductAsync(
+            "P-HOME-WRONG-CAT",
+            "HB-HOME-003",
+            barcode: "BAR-HOME-003",
+            warehouseCategoryGuid: "CAT-OTHER"
+        );
+        await SeedWarehouseProductAsync("P-HOME-WRONG-CAT");
+        await SeedProductGradeAsync("P-HOME-WRONG-CAT", "A");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "HOME",
+            CategoryGUID = "CAT-PARENT",
+            Grade = "A",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal(
+            new[] { "P-HOME-BAR", "P-HOME-ITEM" },
+            result.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray()
+        );
+        Assert.All(result.Items, item => Assert.Equal("A", item.Grade));
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_HomeTwoStepPagingPreservesDefaultSortOrder()
+    {
+        await SeedProductAsync("P-SORT-003", "SORT-003");
+        await SeedWarehouseProductAsync("P-SORT-003");
+        await SeedProductAsync("P-SORT-001", "SORT-001");
+        await SeedWarehouseProductAsync("P-SORT-001");
+        await SeedProductAsync("P-SORT-002", "SORT-002");
+        await SeedWarehouseProductAsync("P-SORT-002");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "SORT",
+            PageNumber = 2,
+            PageSize = 1,
+            SortBy = "Default",
+        });
+
+        Assert.Equal(3, result.Total);
+        var item = Assert.Single(result.Items);
+        // 二段式查询先取分页 ProductCode，再回查展示字段，必须保留原分页排序。
+        Assert.Equal("P-SORT-002", item.ProductCode);
+    }
+
+    [Fact]
     public async Task GetPagedListAsync_ExcludeExistingWarehouseProducts_ReturnsOnlyProductMasterRows()
     {
         await SeedLocalSupplierAsync("200", "Hot Bargain");
@@ -3084,7 +3165,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         decimal? purchasePrice = null,
         bool isActive = true,
         bool isDeleted = false,
-        string? productName = null
+        string? productName = null,
+        string? warehouseCategoryGuid = null
     )
     {
         await _db.Insertable(new Product
@@ -3098,6 +3180,34 @@ public sealed class StoreOrderProductListTests : IDisposable
             PurchasePrice = purchasePrice,
             IsActive = isActive,
             IsDeleted = isDeleted,
+            WarehouseCategoryGUID = warehouseCategoryGuid,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedWarehouseCategoryAsync(
+        string categoryGuid,
+        string categoryName,
+        string? parentGuid = null
+    )
+    {
+        await _db.Insertable(new WarehouseCategory
+        {
+            CategoryGUID = categoryGuid,
+            CategoryName = categoryName,
+            ParentGUID = parentGuid,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedProductGradeAsync(string productCode, string grade)
+    {
+        await _db.Insertable(new ProductGrade
+        {
+            Id = $"{productCode}-{grade}",
+            ProductCode = productCode,
+            Grade = grade,
+            IsDeleted = false,
         }).ExecuteCommandAsync();
     }
 
