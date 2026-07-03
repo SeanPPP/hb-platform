@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const VALID_CHANNELS = new Set(["preview", "production"]);
 const VALID_PROFILES = new Set(["preview", "production"]);
+const VALID_NATIVE_INSTALLER_OPTIONS = new Set(["enabled", "disabled"]);
 const PLATFORM = "android";
 const REGISTRATION_PATH = "/api/mobile-app-builds/ota-updates";
 const CURRENT_USER_PATH = "/api/Auth/current";
@@ -24,6 +25,7 @@ const HELP_TEXT = `
   --profile <preview|production>       写入 OTA 包的 App build profile。
   --runtime-version <version>          OTA 目标 runtimeVersion。
   --message <message>                  EAS Update 发布说明。
+  --native-installer <enabled|disabled> 是否启用原生 APK 安装器环境变量，默认 enabled；1.0.1 旧包 OTA 必须 disabled。
   --dry-run                            只打印命令和补录 JSON，不发布 OTA，也不登记后台。
   --mock-output-file <path>            配合 --dry-run，解析已保存的 EAS 输出用于验证。
   --help, -h                           显示帮助。
@@ -37,6 +39,7 @@ function parseArgs(argv) {
   const options = {
     dryRun: false,
     help: false,
+    nativeInstaller: "enabled",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -71,6 +74,9 @@ function parseArgs(argv) {
         case "--message":
           options.message = next;
           break;
+        case "--native-installer":
+          options.nativeInstaller = next;
+          break;
         case "--mock-output-file":
           options.mockOutputFile = next;
           break;
@@ -89,6 +95,8 @@ function parseArgs(argv) {
 }
 
 function validateOptions(options) {
+  const nativeInstaller = options.nativeInstaller ?? "enabled";
+
   if (!VALID_CHANNELS.has(options.channel)) {
     throw new Error("--channel 必须是 preview 或 production");
   }
@@ -103,6 +111,14 @@ function validateOptions(options) {
 
   if (!options.message?.trim()) {
     throw new Error("--message 不能为空");
+  }
+
+  if (!VALID_NATIVE_INSTALLER_OPTIONS.has(nativeInstaller)) {
+    throw new Error("--native-installer 必须是 enabled 或 disabled");
+  }
+
+  if (options.runtimeVersion.trim() === "1.0.1" && nativeInstaller !== "disabled") {
+    throw new Error("--runtime-version 1.0.1 是旧 APK 过渡 OTA，必须设置 --native-installer disabled");
   }
 }
 
@@ -285,7 +301,10 @@ export function buildTokenPreflightUrl(baseUrl, token = "") {
 }
 
 function buildEasCommand(options) {
-  // 旧 APK 过渡 OTA 必须关闭原生安装器，防止旧 runtime 加载新 native module。
+  const nativeInstallerEnabled = (options.nativeInstaller ?? "enabled") !== "disabled";
+  // 后台登记 token 只留在父进程，避免传给 EAS CLI 子进程。
+  const { HBWEB_API_TOKEN: _hbwebApiToken, ...publishEnv } = process.env;
+
   return {
     command: "npx",
     args: [
@@ -300,9 +319,9 @@ function buildEasCommand(options) {
       "--json",
     ],
     env: {
-      ...process.env,
+      ...publishEnv,
       EXPO_PUBLIC_APP_BUILD_PROFILE: options.profile,
-      EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: "false",
+      EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: String(nativeInstallerEnabled),
       EXPO_PUBLIC_RUNTIME_VERSION: options.runtimeVersion,
     },
   };
@@ -556,7 +575,7 @@ export async function runPublishOtaUpdate(
   logger.log(`执行命令：${printableCommand}`);
   logger.log("本次 OTA 环境变量：");
   logger.log(`- EXPO_PUBLIC_APP_BUILD_PROFILE=${options.profile}`);
-  logger.log("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false");
+  logger.log(`- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=${easCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED}`);
   logger.log(`- EXPO_PUBLIC_RUNTIME_VERSION=${options.runtimeVersion}`);
 
   const stdout = options.dryRun

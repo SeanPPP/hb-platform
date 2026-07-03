@@ -16,6 +16,7 @@ import {
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { AnimatedEmptyStateGraphic } from "@/components/ui/AnimatedEmptyStateGraphic";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
@@ -694,28 +695,31 @@ export default function Home() {
         contentContainerStyle={productListContentStyle}
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
-          <EmptyState
-            title={
-              productsQuery.isError
-                ? t("empty.productsLoadFailedTitle")
-                : hasNoAssignedStores
-                  ? t("empty.noAssignedStoresTitle")
-                : selectedStoreCode
-                  ? t("empty.noProductsTitle")
-                  : t("empty.selectStoreTitle")
-            }
-            description={
-              productsQuery.isError
-                ? t("empty.productsLoadFailedDescription")
-                : hasNoAssignedStores
-                  ? t("empty.noAssignedStoresDescription")
-                : selectedStoreCode
-                  ? t("empty.noProductsDescription")
-                  : t("empty.selectStoreDescription")
-            }
-            actionLabel={productsQuery.isError ? t("common:actions.retry") : undefined}
-            onAction={productsQuery.isError ? () => void productsQuery.refetch() : undefined}
-          />
+          <View style={styles.homeEmptyState}>
+            <AnimatedEmptyStateGraphic />
+            <EmptyState
+              title={
+                productsQuery.isError
+                  ? t("empty.productsLoadFailedTitle")
+                  : hasNoAssignedStores
+                    ? t("empty.noAssignedStoresTitle")
+                  : selectedStoreCode
+                    ? t("empty.noProductsTitle")
+                    : t("empty.selectStoreTitle")
+              }
+              description={
+                productsQuery.isError
+                  ? t("empty.productsLoadFailedDescription")
+                  : hasNoAssignedStores
+                    ? t("empty.noAssignedStoresDescription")
+                  : selectedStoreCode
+                    ? t("empty.noProductsDescription")
+                    : t("empty.selectStoreDescription")
+              }
+              actionLabel={productsQuery.isError ? t("common:actions.retry") : undefined}
+              onAction={productsQuery.isError ? () => void productsQuery.refetch() : undefined}
+            />
+          </View>
         }
         ListFooterComponent={
           displayProducts.length ? (
@@ -1263,6 +1267,13 @@ const styles = StyleSheet.create({
   },
   listContentCompact: {
     paddingBottom: 0,
+  },
+  homeEmptyState: {
+    flexGrow: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingTop: 28,
   },
   columnWrapper: {
     justifyContent: "space-between",

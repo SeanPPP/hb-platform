@@ -14,6 +14,8 @@ type NativeAppUpdateTestDependencies = NativeAppUpdateDependencies & {
   getDownloadUrl?: (build: NativeAppBuildInfo) => string | null;
 };
 
+type CachedApkTestFile = { exists: true; size: number; isDirectory: false; modificationTime: number };
+
 function createDependencies(
   overrides?: Partial<NativeAppUpdateDependencies> & {
     getDownloadUrl?: (build: NativeAppBuildInfo) => string | null;
@@ -52,6 +54,15 @@ function createDependencies(
     deleted,
     ...overrides,
   } as NativeAppUpdateTestDependencies;
+}
+
+function createCachedApkFiles(entries: Array<[string, number]>) {
+  return new Map<string, CachedApkTestFile>(
+    entries.map(([fileName, modificationTime]) => [
+      `file:///cache/${fileName}`,
+      { exists: true, size: 1024, isDirectory: false, modificationTime },
+    ])
+  );
 }
 
 async function run() {
@@ -123,6 +134,96 @@ async function run() {
   }
 
   {
+    const files = createCachedApkFiles([
+      ["hb-build-7.apk", 40],
+      ["hb-build-8.apk", 30],
+      ["hb-build-9.apk", 20],
+      ["hb-build-10.apk", 10],
+    ]);
+    const dependencies = createDependencies({
+      readDirectory: async () => [
+        "hb-build-7.apk",
+        "hb-build-8.apk",
+        "hb-build-9.apk",
+        "hb-build-10.apk",
+        "hb-build-11.apk",
+        "other.apk",
+        "note.txt",
+      ],
+      getFileInfo: async (fileUri) => files.get(fileUri) ?? { exists: false },
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        files.set(fileUri, { exists: true, size: 1024, isDirectory: false, modificationTime: 1 });
+        return { uri: fileUri, status: 200, mimeType: "application/vnd.android.package-archive" };
+      },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        files.delete(fileUri);
+      },
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "下载新版 APK 后仍应返回可安装状态");
+    assert.deepEqual(
+      dependencies.deleted,
+      ["file:///cache/hb-build-9.apk", "file:///cache/hb-build-10.apk"],
+      "新版下载后只应删除最旧的本 App APK"
+    );
+    assert.equal(files.has("file:///cache/hb-build-11.apk"), true, "当前准备安装的 APK 即使更旧也必须保留");
+    assert.equal(dependencies.deleted.includes("file:///cache/other.apk"), false, "非 hb-*.apk 文件不应删除");
+  }
+
+  {
+    const dependencies = createDependencies({
+      readDirectory: async () => {
+        throw new Error("read directory failed");
+      },
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "读目录失败不应阻断安装提示");
+    assert.equal(dependencies.downloaded.length, 1, "读目录失败前仍应完成 APK 下载");
+    assert.deepEqual(dependencies.deleted, [], "读目录失败时不应误删文件");
+  }
+
+  {
+    const files = createCachedApkFiles([
+      ["hb-build-7.apk", 7],
+      ["hb-build-8.apk", 8],
+      ["hb-build-9.apk", 9],
+      ["hb-build-10.apk", 10],
+    ]);
+    const dependencies = createDependencies({
+      readDirectory: async () => [
+        "hb-build-7.apk",
+        "hb-build-8.apk",
+        "hb-build-9.apk",
+        "hb-build-10.apk",
+        "hb-build-11.apk",
+      ],
+      getFileInfo: async (fileUri) => files.get(fileUri) ?? { exists: false },
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        files.set(fileUri, { exists: true, size: 1024, isDirectory: false, modificationTime: 11 });
+        return { uri: fileUri, status: 200, mimeType: "application/vnd.android.package-archive" };
+      },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        throw new Error(`delete failed: ${fileUri}`);
+      },
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "downloaded", "删除旧 APK 失败不应阻断安装提示");
+    assert.equal(files.has("file:///cache/hb-build-11.apk"), true, "删除失败时当前 APK 仍应保留");
+    assert.deepEqual(
+      dependencies.deleted,
+      ["file:///cache/hb-build-8.apk", "file:///cache/hb-build-7.apk"],
+      "删除失败也只应尝试清理超额的本 App APK"
+    );
+  }
+
+  {
     const dependencies = createDependencies({
       getDownloadUrl: (build) => `https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=${build.buildProfile}`,
     });
@@ -163,6 +264,42 @@ async function run() {
 
     assert.equal(result.status, "not-available", "当前安装包已是最新时不应下载");
     assert.equal(dependencies.downloaded.length, 0, "无新包时不应触发下载");
+  }
+
+  {
+    const files = createCachedApkFiles([
+      ["hb-build-7.apk", 7],
+      ["hb-build-8.apk", 8],
+      ["hb-build-9.apk", 9],
+      ["hb-build-10.apk", 10],
+      ["hb-build-11.apk", 11],
+    ]);
+    const dependencies = createDependencies({
+      getCurrentBuildVersion: () => "11",
+      readDirectory: async () => [
+        "hb-build-7.apk",
+        "hb-build-8.apk",
+        "hb-build-9.apk",
+        "hb-build-10.apk",
+        "hb-build-11.apk",
+        "other.apk",
+      ],
+      getFileInfo: async (fileUri) => files.get(fileUri) ?? { exists: false },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        files.delete(fileUri);
+      },
+    });
+    const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "无新版 APK 时仍应完成检查");
+    assert.equal(dependencies.downloaded.length, 0, "无新版 APK 时不应下载");
+    assert.deepEqual(
+      dependencies.deleted,
+      ["file:///cache/hb-build-8.apk", "file:///cache/hb-build-7.apk"],
+      "无新版 APK 时也应只保留最近 3 个本 App APK"
+    );
+    assert.equal(dependencies.deleted.includes("file:///cache/other.apk"), false, "非本 App APK 不应被清理");
   }
 
   {

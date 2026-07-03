@@ -28,6 +28,13 @@ export type NativeAppUpdateApiClient = {
   ) => Promise<{ data: unknown }>;
 };
 
+type NativeAppFileInfo = {
+  exists: boolean;
+  size?: number;
+  isDirectory?: boolean;
+  modificationTime?: number;
+};
+
 export type NativeAppUpdateDependencies = {
   apiClient: NativeAppUpdateApiClient;
   downloadFile: (url: string, fileUri: string) => Promise<{
@@ -36,13 +43,17 @@ export type NativeAppUpdateDependencies = {
     mimeType?: string | null;
   }>;
   deleteFile?: (fileUri: string) => Promise<void>;
-  getFileInfo: (fileUri: string) => Promise<{ exists: boolean; size?: number }>;
+  getFileInfo: (fileUri: string) => Promise<NativeAppFileInfo>;
   getCurrentBuildVersion: () => string | null;
   getBuildProfile: () => string | null;
   getDownloadDirectory: () => string | null;
   getDownloadUrl?: (build: NativeAppBuildInfo) => string | null;
+  readDirectory?: (directory: string) => Promise<string[]>;
   platform: NativeAppUpdatePlatform;
 };
+
+const MAX_CACHED_APK_FILES = 3;
+const APP_APK_FILE_NAME_PATTERN = /^hb-[^/]+\.apk$/i;
 
 type LegacyNativeAppUpdateDependencies = Pick<
   NativeAppUpdateDependencies,
@@ -154,10 +165,14 @@ function isNewerBuild(build: NativeAppBuildInfo | null, currentBuild: number | n
 
 function buildApkFileUri(directory: string, build: NativeAppBuildInfo) {
   const safeBuildId = build.easBuildId.replace(/[^a-zA-Z0-9._-]/g, "-");
-  return `${directory.replace(/\/?$/, "/")}hb-${safeBuildId}.apk`;
+  return buildFileUri(directory, `hb-${safeBuildId}.apk`);
 }
 
-function isUsableApkFile(info: { exists: boolean; size?: number }) {
+function buildFileUri(directory: string, fileName: string) {
+  return `${directory.replace(/\/?$/, "/")}${fileName}`;
+}
+
+function isUsableApkFile(info: NativeAppFileInfo) {
   return info.exists && (info.size == null || info.size > 0);
 }
 
@@ -175,6 +190,71 @@ function isRejectedApkMimeType(mimeType: string | null | undefined) {
   );
 }
 
+async function cleanupDownloadedApkFiles(
+  dependencies: NativeAppUpdateDependencies,
+  downloadDirectory: string,
+  protectedFileUri?: string
+) {
+  if (!dependencies.readDirectory || !dependencies.deleteFile) {
+    return;
+  }
+
+  let fileNames: string[];
+  try {
+    fileNames = await dependencies.readDirectory(downloadDirectory);
+  } catch {
+    return;
+  }
+
+  const apkFiles: Array<{ fileName: string; fileUri: string; modificationTime: number }> = [];
+  for (const fileName of fileNames) {
+    if (!APP_APK_FILE_NAME_PATTERN.test(fileName)) {
+      continue;
+    }
+
+    const fileUri = buildFileUri(downloadDirectory, fileName);
+    try {
+      const info = await dependencies.getFileInfo(fileUri);
+      if (info.exists && !info.isDirectory) {
+        apkFiles.push({ fileName, fileUri, modificationTime: info.modificationTime ?? 0 });
+      }
+    } catch {
+      // 缓存清理不应影响安装提示；单个文件异常时跳过即可。
+    }
+  }
+
+  apkFiles.sort((left, right) => {
+    if (right.modificationTime !== left.modificationTime) {
+      return right.modificationTime - left.modificationTime;
+    }
+    return right.fileName.localeCompare(left.fileName);
+  });
+
+  const keepFileUris = new Set<string>();
+  if (protectedFileUri) {
+    // 当前准备安装的 APK 必须保留，即使它不是目录里 modificationTime 最新的文件。
+    keepFileUris.add(protectedFileUri);
+  }
+
+  for (const apkFile of apkFiles) {
+    if (keepFileUris.size >= MAX_CACHED_APK_FILES) {
+      break;
+    }
+    keepFileUris.add(apkFile.fileUri);
+  }
+
+  for (const apkFile of apkFiles) {
+    if (keepFileUris.has(apkFile.fileUri)) {
+      continue;
+    }
+    try {
+      await dependencies.deleteFile(apkFile.fileUri);
+    } catch {
+      // 删除失败留给下次检查重试，不能阻断本次更新流程。
+    }
+  }
+}
+
 export async function checkAndDownloadNativeAppUpdate(
   dependencies: NativeAppUpdateDependencies
 ): Promise<NativeAppUpdateCheckResult> {
@@ -190,6 +270,7 @@ export async function checkAndDownloadNativeAppUpdate(
 
   const build = await fetchLatestBuild(dependencies);
   if (!isNewerBuild(build, currentBuild)) {
+    await cleanupDownloadedApkFiles(dependencies, downloadDirectory);
     return { status: "not-available" };
   }
 
@@ -219,6 +300,8 @@ export async function checkAndDownloadNativeAppUpdate(
       throw new Error("APK 下载失败，文件为空或不存在");
     }
   }
+
+  await cleanupDownloadedApkFiles(dependencies, downloadDirectory, fileUri);
 
   return { status: "downloaded", build: build!, fileUri };
 }
