@@ -21,6 +21,16 @@ assert.equal(branchRows[0]?.revenueDelta, 20);
 assert.equal(branchRows[0]?.revenueDeltaRatio, 0.2);
 assert.equal(branchRows[0]?.averageTransaction, 20);
 
+const highGrowthRows = normalizeBranchRevenueRows([
+  {
+    BranchCode: "S2",
+    Revenue: 250,
+    RevenueLY: 100,
+  },
+]);
+
+assert.equal(highGrowthRows[0]?.revenueDeltaRatio, 1.5);
+
 const hourlyRows = normalizeHourlyRevenueRows([
   {
     Hour: "09:00",

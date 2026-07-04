@@ -63,7 +63,9 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     {
         var targetDate = new DateTime(2026, 7, 4);
         await SeedStoreAsync("S1", "分店一");
-        await SeedOrderAsync("ORDER-SPLIT", "S1", targetDate.AddHours(9), 3);
+        await SeedOrderAsync("ORDER-SPLIT", "S1", targetDate.AddHours(9), 1);
+        await SeedSaleDetailAsync("ORDER-SPLIT", "DETAIL-1", "P-1", 2, 40m, null);
+        await SeedSaleDetailAsync("ORDER-SPLIT", "DETAIL-2", "P-2", 3, 60m, null);
         await SeedPaymentAsync("PAY-1", "ORDER-SPLIT", 40m, targetDate.AddHours(9).AddMinutes(2));
         await SeedPaymentAsync("PAY-2", "ORDER-SPLIT", 60m, targetDate.AddHours(9).AddMinutes(3));
 
@@ -80,8 +82,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.NotNull(allRow);
         Assert.Equal(1, branchRow!.OrderCount);
         Assert.Equal(1, allRow!.OrderCount);
-        Assert.Equal(3, branchRow.TotalQuantity);
-        Assert.Equal(3, allRow.TotalQuantity);
+        Assert.Equal(5, branchRow.TotalQuantity);
+        Assert.Equal(5, allRow.TotalQuantity);
         Assert.Equal(100m, branchRow.TotalAmount);
         Assert.Equal(100m, allRow.TotalAmount);
     }

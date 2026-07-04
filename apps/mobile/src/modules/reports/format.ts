@@ -18,15 +18,12 @@ export function formatRatio(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "--";
   }
-  const normalized = Math.abs(value) > 1 ? value : value * 100;
+  const normalized = value * 100;
   const sign = normalized > 0 ? "+" : "";
   return `${sign}${normalized.toFixed(1)}%`;
 }
 
 export function getDeltaIntent(value: number | null | undefined, ratio?: number | null): ReportIntent {
-  if (ratio === null) {
-    return "neutral";
-  }
   if (typeof value !== "number" || !Number.isFinite(value) || value === 0) {
     return "neutral";
   }

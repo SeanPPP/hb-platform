@@ -496,7 +496,7 @@ namespace BlazorApp.Api.Services
                     hour.HasValue ? hour.Value.ToString() : "0-23"
                 );
 
-                // 金额从支付明细取，数量和订单数从订单头取，避免拆分支付时把订单指标重复累计。
+                // 金额取支付明细、销量取销售明细、订单数取订单头，避免拆分支付放大非金额指标。
                 var hourlyRevenueRows = await _posmContext
                     .Db.Queryable<PaymentDetail, SalesOrder>(
                         (pd, so) => pd.OrderGuid == so.OrderGuid
@@ -530,6 +530,39 @@ namespace BlazorApp.Api.Services
                     )
                     .ToListAsync();
 
+                var hourlyQuantityRows = await _posmContext
+                    .Db.Queryable<SalesOrderDetail, SalesOrder>(
+                        (detail, so) => detail.OrderGuid == so.OrderGuid
+                    )
+                    .Where(
+                        (detail, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime >= rangeStart
+                            && so.OrderTime < rangeEnd
+                    )
+                    .GroupBy(
+                        (detail, so) =>
+                            new
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                so.BranchCode,
+                            }
+                    )
+                    .Select(
+                        (detail, so) =>
+                            new HourlyStatisticSourceRow
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                BranchCode = so.BranchCode,
+                                TotalQuantity = SqlFunc.AggregateSum(detail.Quantity) ?? 0,
+                            }
+                    )
+                    .ToListAsync();
+
                 var hourlyOrderRows = await _posmContext
                     .Db.Queryable<SalesOrder>()
                     .Where(
@@ -556,7 +589,6 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
                                 OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
                                 CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
                             }
@@ -564,6 +596,7 @@ namespace BlazorApp.Api.Services
                     .ToListAsync();
 
                 var allHourlyData = hourlyRevenueRows
+                    .Concat(hourlyQuantityRows)
                     .Concat(hourlyOrderRows)
                     .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
                     .Select(group => new HourlyStatisticSourceRow
@@ -3848,7 +3881,7 @@ namespace BlazorApp.Api.Services
                     hour.HasValue ? hour.Value.ToString() : "0-23"
                 );
 
-                // 金额从支付明细取，数量和订单数从订单头取，避免拆分支付时把订单指标重复累计。
+                // 金额取支付明细、销量取销售明细、订单数取订单头，避免拆分支付放大非金额指标。
                 var hourlyRevenueRows = await posmContext
                     .Db.Queryable<PaymentDetail, SalesOrder>(
                         (pd, so) => pd.OrderGuid == so.OrderGuid
@@ -3882,6 +3915,39 @@ namespace BlazorApp.Api.Services
                     )
                     .ToListAsync();
 
+                var hourlyQuantityRows = await posmContext
+                    .Db.Queryable<SalesOrderDetail, SalesOrder>(
+                        (detail, so) => detail.OrderGuid == so.OrderGuid
+                    )
+                    .Where(
+                        (detail, so) =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime >= rangeStart
+                            && so.OrderTime < rangeEnd
+                    )
+                    .GroupBy(
+                        (detail, so) =>
+                            new
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                so.BranchCode,
+                            }
+                    )
+                    .Select(
+                        (detail, so) =>
+                            new HourlyStatisticSourceRow
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                BranchCode = so.BranchCode,
+                                TotalQuantity = SqlFunc.AggregateSum(detail.Quantity) ?? 0,
+                            }
+                    )
+                    .ToListAsync();
+
                 var hourlyOrderRows = await posmContext
                     .Db.Queryable<SalesOrder>()
                     .Where(
@@ -3908,7 +3974,6 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
                                 OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
                                 CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
                             }
@@ -3916,6 +3981,7 @@ namespace BlazorApp.Api.Services
                     .ToListAsync();
 
                 var allHourlyData = hourlyRevenueRows
+                    .Concat(hourlyQuantityRows)
                     .Concat(hourlyOrderRows)
                     .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
                     .Select(group => new HourlyStatisticSourceRow
