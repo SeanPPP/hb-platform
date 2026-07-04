@@ -66,6 +66,12 @@ public static class ServiceRegistration
             client.BaseAddress = GetApiBaseAddress();
             client.Timeout = TimeSpan.FromSeconds(3);
         });
+        services.AddHttpClient<IPosRuntimeStatusApiClient, PosRuntimeStatusApiClient>(client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = TimeSpan.FromSeconds(3);
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<ICashierLoginApiClient, CashierLoginApiClient>(client =>
         {
             client.BaseAddress = GetApiBaseAddress();
@@ -232,7 +238,7 @@ public static class ServiceRegistration
         services.AddSingleton<ISpecialProductsWorkflowService, SpecialProductsWorkflowService>();
         services.AddSingleton<IReceiptReturnsWorkflowService, ReceiptReturnsWorkflowService>();
         services.AddSingleton<ICustomerDisplayOrchestrator, CustomerDisplayOrchestrator>();
-        services.AddSingleton<IUserFeedbackService, WindowsMessageBeepUserFeedbackService>();
+        services.AddSingleton<IUserFeedbackService, WpfAudioUserFeedbackService>();
         services.AddSingleton<IApplicationExitService, WpfApplicationExitService>();
         services.AddSingleton<IConfirmationDialogService, WpfConfirmationDialogService>();
         services.AddSingleton<ICardRecoveryResultDialogService, CardRecoveryResultDialogService>();
@@ -324,6 +330,7 @@ public static class ServiceRegistration
             cashierSessionContext: sp.GetRequiredService<ICashierSessionContext>(),
             cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
             emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
+            runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
             enforceCashierPermissions: true));
         services.AddSingleton<MainWindow>();
 

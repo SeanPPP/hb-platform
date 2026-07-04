@@ -45,6 +45,9 @@ using (var scope = app.Services.CreateScope())
 
     if (HasConnectionString(app.Configuration, "PosmConnection", "HBPOSMConnection"))
     {
+        var deviceRuntimeStatusSchemaInitializer = scope.ServiceProvider.GetRequiredService<IDeviceRuntimeStatusSchemaInitializer>();
+        await deviceRuntimeStatusSchemaInitializer.InitializeAsync();
+
         var linklyCloudBackendAsyncSchemaInitializer = scope.ServiceProvider.GetRequiredService<ILinklyCloudBackendAsyncSchemaInitializer>();
         await linklyCloudBackendAsyncSchemaInitializer.InitializeAsync();
 

@@ -7,6 +7,7 @@
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:orders="clr-namespace:Hbpos.Contracts.Orders;assembly=Hbpos.Contracts"
+             xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              mc:Ignorable="d"
              d:DesignHeight="688"
              d:DesignWidth="1366"
@@ -140,6 +141,14 @@
                     <Setter Property="BorderBrush" Value="#FF6D28D9" />
                 </Trigger>
             </Style.Triggers>
+        </Style>
+
+        <Style x:Key="VoucherEntryKeyButtonStyle" TargetType="Button" BasedOn="{StaticResource PosNumberButtonStyle}">
+            <Setter Property="MinHeight" Value="46" />
+            <Setter Property="Margin" Value="3" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="FontSize" Value="20" />
+            <Setter Property="FontWeight" Value="Black" />
         </Style>
     </UserControl.Resources>
 
@@ -519,7 +528,7 @@
                         <TextBlock Grid.Column="2" Text="{Binding CardMethodText}" VerticalAlignment="Center" TextAlignment="Left" FontSize="17" FontWeight="Black" Foreground="White" />
                     </Grid>
                 </Button>
-                <Button Command="{Binding SelectVoucherCommand}" Style="{StaticResource VoucherMethodButtonStyle}">
+                <Button Command="{Binding OpenVoucherEntryCommand}" Style="{StaticResource VoucherMethodButtonStyle}">
                     <Grid Style="{StaticResource PaymentMethodContentGridStyle}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="46" />
@@ -556,21 +565,6 @@
                         <TextBlock Grid.Column="2" Text="{Binding InstallmentMethodText}" VerticalAlignment="Center" TextAlignment="Left" FontSize="17" FontWeight="Black" Foreground="White" />
                     </Grid>
                 </Button>
-                <TextBox Text="{Binding VoucherCodeText, UpdateSourceTrigger=PropertyChanged}"
-                         materialDesign:HintAssist.Hint="{loc:Loc payment.voucher.code}"
-                         Height="40"
-                         Margin="0,8,0,0">
-                    <TextBox.Style>
-                        <Style TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsVoucherCodeEntryVisible}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBox.Style>
-                </TextBox>
             </StackPanel>
 
             <Border Grid.Row="2" Margin="24,8,24,8" Padding="14" Background="White" BorderBrush="#FFE2E2E6" BorderThickness="1" CornerRadius="12">
@@ -685,7 +679,7 @@
                                                         </Style>
                                                     </TextBlock.Style>
                                                 </TextBlock>
-                                                <Button Grid.Column="3" Command="{Binding DataContext.RemoveTenderCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" Width="30" Height="30" Margin="10,0,0,0" Style="{StaticResource TitleBarButtonStyle}">
+                                                <Button Grid.Column="3" Command="{Binding DataContext.RemoveTenderCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding}" services:ButtonFeedback.Cue="Delete" Width="30" Height="30" Margin="10,0,0,0" Style="{StaticResource TitleBarButtonStyle}">
                                                     <materialDesign:PackIcon Kind="DeleteOutline" Width="18" Height="18" />
                                                 </Button>
                                             </Grid>
@@ -711,6 +705,153 @@
                 </Grid>
             </Border>
 
+        </Grid>
+
+        <Grid Grid.ColumnSpan="3"
+              Panel.ZIndex="20"
+              Background="#99000000"
+              Visibility="{Binding IsVoucherEntryDialogOpen, Converter={StaticResource BooleanToVisibilityConverter}}">
+            <Border Width="620"
+                    MaxWidth="620"
+                    Padding="22"
+                    Background="White"
+                    BorderBrush="#FFE2E2E6"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="44" Height="44" Background="#FFEAF7EF" CornerRadius="10">
+                            <materialDesign:PackIcon Kind="TicketPercent"
+                                                     Width="26"
+                                                     Height="26"
+                                                     Foreground="{StaticResource PosSuccessBrush}"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Grid.Column="1"
+                                   Text="{loc:Loc payment.voucher.dialogTitle}"
+                                   Margin="12,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="22"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosPrimaryBrush}" />
+                        <Button Grid.Column="2"
+                                Command="{Binding CancelVoucherEntryCommand}"
+                                Width="34"
+                                Height="34"
+                                Padding="0"
+                                Style="{StaticResource TitleBarButtonStyle}">
+                            <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                        </Button>
+                    </Grid>
+
+                    <TextBlock Grid.Row="1"
+                               Text="{loc:Loc payment.voucher.scanOrEnter}"
+                               Margin="0,14,0,10"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+
+                    <TextBox x:Name="VoucherEntryTextBox"
+                             Grid.Row="2"
+                             Text="{Binding VoucherEntryText, UpdateSourceTrigger=PropertyChanged}"
+                             materialDesign:HintAssist.Hint="{loc:Loc payment.voucher.code}"
+                             Height="56"
+                             FontSize="24"
+                             FontWeight="Black"
+                             CharacterCasing="Upper"
+                             Style="{StaticResource PosSearchTextBoxStyle}" />
+
+                    <Grid Grid.Row="3" Margin="0,14,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <UniformGrid Grid.Row="0" Columns="6">
+                            <Button Content="1" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="1" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="2" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="2" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="3" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="3" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="4" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="4" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="5" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="5" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="6" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="6" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="7" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="7" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="8" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="8" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="9" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="9" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="0" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="0" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="-" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="-" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Command="{Binding VoucherEntryKeyCommand}" CommandParameter="Back" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <materialDesign:PackIcon Kind="BackspaceOutline" Width="22" Height="22" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Button>
+                            <Button Content="A" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="A" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="B" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="B" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="C" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="C" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="D" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="D" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="E" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="E" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="F" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="F" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="G" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="G" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="H" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="H" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="I" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="I" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="J" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="J" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="K" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="K" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="L" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="L" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="M" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="M" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="N" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="N" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="O" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="O" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="P" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="P" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="Q" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="Q" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="R" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="R" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="S" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="S" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="T" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="T" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="U" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="U" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="V" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="V" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="W" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="W" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="X" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="X" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="Y" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="Y" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="Z" Command="{Binding VoucherEntryKeyCommand}" CommandParameter="Z" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Command="{Binding VoucherEntryKeyCommand}" CommandParameter="Clear" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <materialDesign:PackIcon Kind="CloseCircleOutline" Width="22" Height="22" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Button>
+                        </UniformGrid>
+
+                        <Grid Grid.Row="1" Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Button Command="{Binding CancelVoucherEntryCommand}"
+                                    Style="{StaticResource PosSecondaryButtonStyle}"
+                                    MinHeight="48">
+                                <TextBlock Text="{Binding CancelText}" FontWeight="Black" />
+                            </Button>
+                            <Button Grid.Column="2"
+                                    Command="{Binding ConfirmVoucherEntryCommand}"
+                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                    MinHeight="48">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="Check" Width="18" Height="18" Margin="0,0,8,0" />
+                                    <TextBlock Text="{loc:Loc payment.voucher.confirm}" FontWeight="Black" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </UserControl>

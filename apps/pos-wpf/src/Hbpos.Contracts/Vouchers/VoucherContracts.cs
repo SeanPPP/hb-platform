@@ -26,7 +26,18 @@ public sealed record StoreVoucherLockResponse(
     string VoucherCode,
     decimal LockedAmount,
     string ReservationToken,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    decimal? RemainingAmountAfterLock = null);
+
+public sealed record StoreVoucherReleaseRequest(
+    string StoreCode,
+    string VoucherCode,
+    string ReservationToken);
+
+public sealed record StoreVoucherReleaseResponse(
+    string VoucherCode,
+    string ReservationToken,
+    bool Released);
 
 public sealed record StoreVoucherIssueRefundRequest(
     string StoreCode,

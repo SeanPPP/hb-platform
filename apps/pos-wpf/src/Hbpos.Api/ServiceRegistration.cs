@@ -36,6 +36,8 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IDeviceService, DeviceService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
+        services.AddScoped<IDeviceRuntimeStatusSchemaSqlExecutor, SqlSugarDeviceRuntimeStatusSchemaSqlExecutor>();
+        services.AddScoped<IDeviceRuntimeStatusSchemaInitializer, SqlSugarDeviceRuntimeStatusSchemaInitializer>();
         services.AddScoped<ICashierService, CashierService>();
         services.AddScoped<ICatalogService, CatalogService>();
         services.AddScoped<IPromotionRuleService, PromotionRuleService>();

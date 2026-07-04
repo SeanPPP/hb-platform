@@ -181,6 +181,55 @@ public sealed class DeviceServiceTests
         Assert.Equal(0, repository.TransactionCallCount);
     }
 
+    [Fact]
+    public async Task UpdateRuntimeStatusAsync_KeepsSameCashierLoginTimeAndClearsEmptyCashier()
+    {
+        var firstNow = new DateTime(2026, 7, 1, 10, 0, 0);
+        var secondNow = new DateTime(2026, 7, 1, 10, 1, 0);
+        var repository = new FakeDeviceRegistrationRepository();
+        var service = new DeviceService(repository, LoadStoreAsync, () => firstNow);
+
+        var firstResult = await service.UpdateRuntimeStatusAsync(
+            "HW-001",
+            "POS-001",
+            "1002",
+            true,
+            "CASHIER-1",
+            "Alice",
+            CancellationToken.None);
+        var secondResult = await new DeviceService(repository, LoadStoreAsync, () => secondNow)
+            .UpdateRuntimeStatusAsync(
+                "HW-001",
+                "POS-001",
+                "1002",
+                true,
+                "CASHIER-1",
+                "Alice",
+                CancellationToken.None);
+
+        Assert.True(firstResult);
+        Assert.True(secondResult);
+        Assert.Equal(firstNow, repository.LastRuntimeStatus!.CashierLoginAt);
+        Assert.Equal(secondNow, repository.LastRuntimeStatus.LastHeartbeatAt);
+        Assert.Equal("CASHIER-1", repository.LastRuntimeStatus.CashierId);
+
+        var clearResult = await new DeviceService(repository, LoadStoreAsync, () => secondNow.AddMinutes(1))
+            .UpdateRuntimeStatusAsync(
+                "HW-001",
+                "POS-001",
+                "1002",
+                false,
+                null,
+                null,
+                CancellationToken.None);
+
+        Assert.True(clearResult);
+        Assert.False(repository.LastRuntimeStatus!.IsOnline);
+        Assert.Null(repository.LastRuntimeStatus.CashierId);
+        Assert.Null(repository.LastRuntimeStatus.CashierName);
+        Assert.Null(repository.LastRuntimeStatus.CashierLoginAt);
+    }
+
     private static Task<DeviceStoreInfo?> LoadStoreAsync(string storeCode, CancellationToken cancellationToken)
     {
         DeviceStoreInfo? store = storeCode switch
@@ -206,6 +255,8 @@ public sealed class DeviceServiceTests
         public List<DeviceRegistrationCreateRequest> CreatedRegistrations { get; } = [];
 
         public int TransactionCallCount { get; private set; }
+
+        public RuntimeStatusSnapshot? LastRuntimeStatus { get; private set; }
 
         public Task<DeviceRegistrationRecord?> FindByDeviceCodeAsync(
             string deviceCode,
@@ -245,6 +296,31 @@ public sealed class DeviceServiceTests
             return Task.CompletedTask;
         }
 
+        public Task<int> UpdateRuntimeStatusAsync(
+            DeviceRuntimeStatusUpdateRequest request,
+            CancellationToken cancellationToken)
+        {
+            var nextCashierId = string.IsNullOrWhiteSpace(request.CashierId) ? null : request.CashierId.Trim();
+            var nextCashierName = string.IsNullOrWhiteSpace(request.CashierName) ? null : request.CashierName.Trim();
+            var cashierLoginAt = LastRuntimeStatus?.CashierLoginAt;
+            if (nextCashierId is null && nextCashierName is null)
+            {
+                cashierLoginAt = null;
+            }
+            else if (LastRuntimeStatus?.CashierId != nextCashierId || cashierLoginAt is null)
+            {
+                cashierLoginAt = request.ReportedAt;
+            }
+
+            LastRuntimeStatus = new RuntimeStatusSnapshot(
+                request.IsOnline,
+                request.ReportedAt,
+                nextCashierId,
+                nextCashierName,
+                cashierLoginAt);
+            return Task.FromResult(1);
+        }
+
         public async Task ExecuteInTransactionAsync(
             Func<CancellationToken, Task> action,
             CancellationToken cancellationToken)
@@ -253,4 +329,11 @@ public sealed class DeviceServiceTests
             await action(cancellationToken);
         }
     }
+
+    private sealed record RuntimeStatusSnapshot(
+        bool IsOnline,
+        DateTime LastHeartbeatAt,
+        string? CashierId,
+        string? CashierName,
+        DateTime? CashierLoginAt);
 }

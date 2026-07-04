@@ -380,8 +380,34 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         builder.Blank();
         builder.Text("Thank you for your purchase!", ReceiptPrintAlignment.Center, isEmphasized: true);
         builder.Blank();
+        AppendVoucherBalanceSections(builder, receipt.Payments);
 
         return builder.Build();
+    }
+
+    private static void AppendVoucherBalanceSections(
+        ReceiptDocumentBuilder builder,
+        IEnumerable<ReceiptPaymentLine> payments)
+    {
+        foreach (var payment in payments)
+        {
+            var voucherCode = payment.DisplayReference;
+            var remainingBalance = payment.VoucherRemainingBalance;
+            if (string.IsNullOrWhiteSpace(voucherCode) || remainingBalance is null)
+            {
+                continue;
+            }
+
+            // 中文注释：余额券面跟随完整小票打印和重印，不单独发起第二个打印任务。
+            builder.Separator();
+            builder.Text("VOUCHER BALANCE", ReceiptPrintAlignment.Center, isEmphasized: true);
+            builder.Blank();
+            builder.Text($"Voucher: {voucherCode}");
+            builder.Text($"Balance: {Money(remainingBalance.Value)}", isEmphasized: true);
+            builder.Barcode(voucherCode);
+            builder.QrCode(voucherCode);
+            builder.Blank();
+        }
     }
 
     private static string FirstNonBlank(params string[] values)

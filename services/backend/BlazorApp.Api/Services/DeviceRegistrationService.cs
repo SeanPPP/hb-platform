@@ -382,6 +382,60 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 更新设备运行状态
+        /// </summary>
+        public async Task<bool> UpdateRuntimeStatusAsync(
+            string hardwareId,
+            bool isOnline,
+            string? cashierId,
+            string? cashierName)
+        {
+            try
+            {
+                var device = await GetDeviceByHardwareIdAsync(hardwareId);
+                if (device == null)
+                {
+                    _logger.LogWarning("运行状态上报失败，设备不存在: {HardwareId}", hardwareId);
+                    return false;
+                }
+
+                var now = _now();
+                var nextCashierId = string.IsNullOrWhiteSpace(cashierId) ? null : cashierId.Trim();
+                var nextCashierName = string.IsNullOrWhiteSpace(cashierName) ? null : cashierName.Trim();
+                var hasCashier = nextCashierId is not null || nextCashierName is not null;
+
+                // 中文注释：心跳只写运行态字段，不更新注册审计字段，避免后台“最后更新”被15秒心跳刷屏。
+                device.是否在线 = isOnline;
+                device.最后心跳时间 = now;
+                if (!hasCashier)
+                {
+                    device.当前收银员ID = null;
+                    device.当前收银员姓名 = null;
+                    device.收银员登录时间 = null;
+                }
+                else
+                {
+                    var cashierChanged =
+                        !string.Equals(device.当前收银员ID, nextCashierId, StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(device.当前收银员姓名, nextCashierName, StringComparison.Ordinal);
+                    device.当前收银员ID = nextCashierId;
+                    device.当前收银员姓名 = nextCashierName;
+                    if (cashierChanged || device.收银员登录时间 is null)
+                    {
+                        device.收银员登录时间 = now;
+                    }
+                }
+
+                return await _posmContext.DeviceRegistrationDb.UpdateAsync(device);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新设备运行状态失败: {HardwareId}", hardwareId);
+                throw;
+            }
+        }
+
+        /// <summary>
         /// 验证设备授权码并在授权码不匹配时返回数据库中的最新授权码（仅限启用设备）
         /// </summary>
         /// <param name="hardwareId">硬件ID</param>

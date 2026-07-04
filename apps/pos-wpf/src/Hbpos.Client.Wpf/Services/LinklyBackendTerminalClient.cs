@@ -2300,11 +2300,24 @@ public sealed class LinklyBackendTerminalClient(
 
     private static bool IsFinal(LinklyCloudBackendSessionResponse status)
     {
-        return string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase) ||
+        return HasResolvedCompletedOutcome(status) ||
             string.Equals(status.Status, StatusFailed, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(status.Status, StatusNotSubmitted, StringComparison.OrdinalIgnoreCase) ||
             IsCancelledStatus(status.Status) ||
             HasOfficialPendingSuccess(status);
+    }
+
+    private static bool HasResolvedCompletedOutcome(LinklyCloudBackendSessionResponse status)
+    {
+        if (!string.Equals(status.Status, StatusCompleted, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Linkly OK/sendkey 后可能先返回 Completed，但交易通知和结果字段稍后才到；结果未解析前继续等待同一 session。
+        return status.TransactionSuccess.HasValue ||
+            !string.IsNullOrWhiteSpace(NormalizeOptional(status.ResponseCode)) ||
+            (status.Notifications ?? []).Any(IsTransactionNotification);
     }
 
     private static bool IsCompletedOrPendingSuccess(LinklyCloudBackendSessionResponse status)

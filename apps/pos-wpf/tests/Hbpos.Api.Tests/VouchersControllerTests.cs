@@ -18,6 +18,7 @@ public sealed class VouchersControllerTests
     {
         Assert.Equal("{voucherCode}", GetHttpGetTemplate(nameof(VouchersController.Get)));
         Assert.Equal("lock", GetHttpPostTemplate(nameof(VouchersController.Lock)));
+        Assert.Equal("release", GetHttpPostTemplate(nameof(VouchersController.Release)));
         Assert.Equal("refund", GetHttpPostTemplate(nameof(VouchersController.IssueRefund)));
         Assert.Equal("issue", GetHttpPostTemplate(nameof(VouchersController.Issue)));
         Assert.NotNull(typeof(VouchersController)
@@ -77,6 +78,54 @@ public sealed class VouchersControllerTests
         var apiResult = Assert.IsType<ApiResult<StoreVoucherLockResponse>>(badRequest.Value);
         Assert.False(apiResult.Success);
         Assert.Equal("REQUESTED_AMOUNT_INVALID", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Release_ReturnsWrappedVoucherResponse()
+    {
+        var service = new FakeStoreVoucherService();
+        var controller = new VouchersController(service);
+        SetAuthenticatedDevice(controller, "S01", "POS-01");
+
+        var result = await controller.Release(new StoreVoucherReleaseRequest("S01", "V001", "token-1"), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<StoreVoucherReleaseResponse>>(ok.Value);
+        Assert.True(apiResult.Success);
+        Assert.NotNull(apiResult.Data);
+        Assert.True(apiResult.Data.Released);
+        Assert.Equal("S01", service.ReleaseRequest?.StoreCode);
+        Assert.Equal("V001", service.ReleaseRequest?.VoucherCode);
+        Assert.Equal("token-1", service.ReleaseRequest?.ReservationToken);
+    }
+
+    [Fact]
+    public async Task Release_ReturnsForbiddenWhenDeviceStoreDoesNotMatch()
+    {
+        var controller = new VouchersController(new FakeStoreVoucherService());
+        SetAuthenticatedDevice(controller, "S02", "POS-02");
+
+        var result = await controller.Release(new StoreVoucherReleaseRequest("S01", "V001", "token-1"), CancellationToken.None);
+
+        var forbidden = Assert.IsType<ObjectResult>(result.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+        var apiResult = Assert.IsType<ApiResult<StoreVoucherReleaseResponse>>(forbidden.Value);
+        Assert.False(apiResult.Success);
+        Assert.Equal("DEVICE_SCOPE_FORBIDDEN", apiResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Release_ReturnsBadRequestWhenReservationTokenMissing()
+    {
+        var controller = new VouchersController(new FakeStoreVoucherService());
+        SetAuthenticatedDevice(controller, "S01", "POS-01");
+
+        var result = await controller.Release(new StoreVoucherReleaseRequest("S01", "V001", string.Empty), CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var apiResult = Assert.IsType<ApiResult<StoreVoucherReleaseResponse>>(badRequest.Value);
+        Assert.False(apiResult.Success);
+        Assert.Equal("RESERVATION_TOKEN_REQUIRED", apiResult.ErrorCode);
     }
 
     [Fact]
@@ -227,6 +276,11 @@ public sealed class VouchersControllerTests
         public StoreVoucherLockResponse LockResponse { get; init; } =
             new("V001", 5m, "token-1", DateTimeOffset.UtcNow.AddMinutes(5));
 
+        public StoreVoucherReleaseResponse ReleaseResponse { get; init; } =
+            new("V001", "token-1", true);
+
+        public StoreVoucherReleaseRequest? ReleaseRequest { get; private set; }
+
         public StoreVoucherIssueRefundResponse RefundResponse { get; init; } =
             new("RF001", 15m, 15m, "1", DateTimeOffset.UtcNow.AddMonths(12));
 
@@ -246,6 +300,14 @@ public sealed class VouchersControllerTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(LockResponse);
+        }
+
+        public Task<StoreVoucherReleaseResponse> ReleaseAsync(
+            StoreVoucherReleaseRequest request,
+            CancellationToken cancellationToken)
+        {
+            ReleaseRequest = request;
+            return Task.FromResult(ReleaseResponse);
         }
 
         public Task<StoreVoucherIssueRefundResponse> IssueRefundAsync(

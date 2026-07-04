@@ -182,6 +182,9 @@
   <data name="payment.method.installment" xml:space="preserve"><value>Installment</value></data>
   <data name="payment.action.addCash" xml:space="preserve"><value>Add Cash Tender</value></data>
   <data name="payment.voucher.code" xml:space="preserve"><value>Voucher code</value></data>
+  <data name="payment.voucher.dialogTitle" xml:space="preserve"><value>Voucher payment</value></data>
+  <data name="payment.voucher.scanOrEnter" xml:space="preserve"><value>Scan the voucher barcode or enter the voucher number.</value></data>
+  <data name="payment.voucher.confirm" xml:space="preserve"><value>Add voucher</value></data>
   <data name="payment.remaining" xml:space="preserve"><value>Remaining</value></data>
   <data name="payment.refund.remaining" xml:space="preserve"><value>Refund Remaining</value></data>
   <data name="payment.status.tenderAdded" xml:space="preserve"><value>Payment tender added.</value></data>
@@ -445,6 +448,10 @@
   <data name="payment.status.duplicateVoucher" xml:space="preserve"><value>This voucher has already been added.</value></data>
   <data name="payment.status.voucherCodeRequired" xml:space="preserve"><value>Enter a voucher code before adding voucher payment.</value></data>
   <data name="payment.status.duplicatePaymentMethod" xml:space="preserve"><value>This payment method has already been added.</value></data>
+  <data name="payment.status.paymentMethodOrder" xml:space="preserve"><value>Add tenders in voucher, cash, then card order.</value></data>
+  <data name="payment.status.cardMustBeFinalTender" xml:space="preserve"><value>Card must be the final payment tender.</value></data>
+  <data name="payment.status.voucherReleased" xml:space="preserve"><value>Voucher payment has been rolled back.</value></data>
+  <data name="payment.status.voucherReleaseFailed" xml:space="preserve"><value>Voucher rollback failed. Retry or wait for the lock to expire.</value></data>
   <data name="payment.status.cardProcessing" xml:space="preserve"><value>Waiting for card terminal result...</value></data>
   <data name="payment.status.cardCancelled" xml:space="preserve"><value>Card payment cancelled.</value></data>
   <data name="payment.status.cardTimedOut" xml:space="preserve"><value>Card payment timed out.</value></data>

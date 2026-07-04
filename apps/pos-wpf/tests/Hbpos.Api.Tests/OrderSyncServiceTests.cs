@@ -1303,5 +1303,14 @@ public sealed class OrderSyncServiceTests
             reservations.Remove(token);
             return Task.CompletedTask;
         }
+
+        public Task<bool> ReleaseAsync(
+            string token,
+            string storeCode,
+            string voucherCode,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(reservations.Remove(token));
+        }
     }
 }

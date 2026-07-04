@@ -70,6 +70,17 @@ public sealed class ServiceRegistrationTests
     }
 
     [Fact]
+    public void AddHbposApiServices_RegistersDeviceRuntimeStatusSchemaInitializer()
+    {
+        var services = new ServiceCollection();
+
+        services.AddHbposApiServices();
+
+        var descriptor = Assert.Single(services, x => x.ServiceType == typeof(IDeviceRuntimeStatusSchemaInitializer));
+        Assert.Equal(typeof(SqlSugarDeviceRuntimeStatusSchemaInitializer), descriptor.ImplementationType);
+    }
+
+    [Fact]
     public void AddHbposApiServices_configures_linkly_cloud_backend_http_clients_above_business_wait()
     {
         var services = new ServiceCollection();

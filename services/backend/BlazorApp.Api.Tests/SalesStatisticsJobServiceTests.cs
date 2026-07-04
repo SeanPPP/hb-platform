@@ -50,6 +50,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         _posmDb.CodeFirst.InitTables(
             typeof(SalesOrder),
             typeof(SalesOrderDetail),
+            typeof(SalesReturnRecord),
             typeof(PosmProductSupplierMapping),
             typeof(POSM_设备注册信息表)
         );
@@ -244,6 +245,180 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.Equal(SalesStatisticRefreshStatus.Failed, state!.Status);
         Assert.Contains("分店营业额统计缺失", state.ErrorMessage, StringComparison.Ordinal);
         Assert.Contains("1018", state.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_老系统负数退货明细直接冲减商品统计()
+    {
+        var targetDate = new DateTime(2026, 5, 1);
+        await SeedProductAsync("P-LEGACY-RETURN");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-LEGACY-SALE",
+            detailGuid: "DETAIL-LEGACY-SALE",
+            productCode: "P-LEGACY-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(9),
+            quantity: 2,
+            actualAmount: 20m,
+            supplierCode: "200"
+        );
+        await SeedSaleAsync(
+            orderGuid: "ORDER-LEGACY-RETURN",
+            detailGuid: "DETAIL-LEGACY-RETURN",
+            productCode: "P-LEGACY-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            quantity: -1,
+            actualAmount: -10m,
+            supplierCode: "200"
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 10m, 1);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == targetDate && x.BranchCode == "1018" && x.ProductCode == "P-LEGACY-RETURN")
+            .FirstAsync();
+        var state = await LoadRefreshStateAsync(targetDate);
+
+        Assert.NotNull(stat);
+        Assert.Equal(1, stat!.TotalQuantity);
+        Assert.Equal(10m, stat.TotalAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_旧库没有退货表时仍按明细表统计()
+    {
+        var targetDate = new DateTime(2026, 5, 1);
+        _posmDb.DbMaintenance.DropTable<SalesReturnRecord>();
+        await SeedProductAsync("P-LEGACY-NO-RETURN-TABLE");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-LEGACY-NO-TABLE-SALE",
+            detailGuid: "DETAIL-LEGACY-NO-TABLE-SALE",
+            productCode: "P-LEGACY-NO-RETURN-TABLE",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(9),
+            quantity: 2,
+            actualAmount: 20m,
+            supplierCode: "200"
+        );
+        await SeedSaleAsync(
+            orderGuid: "ORDER-LEGACY-NO-TABLE-RETURN",
+            detailGuid: "DETAIL-LEGACY-NO-TABLE-RETURN",
+            productCode: "P-LEGACY-NO-RETURN-TABLE",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            quantity: -1,
+            actualAmount: -10m,
+            supplierCode: "200"
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 10m, 1);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == targetDate && x.BranchCode == "1018" && x.ProductCode == "P-LEGACY-NO-RETURN-TABLE")
+            .FirstAsync();
+        var state = await LoadRefreshStateAsync(targetDate);
+
+        Assert.NotNull(stat);
+        Assert.Equal(1, stat!.TotalQuantity);
+        Assert.Equal(10m, stat.TotalAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_新系统退货表补充冲减商品统计()
+    {
+        var targetDate = new DateTime(2026, 5, 1);
+        await SeedProductAsync("P-NEW-RETURN");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-NEW-SALE",
+            detailGuid: "DETAIL-NEW-SALE",
+            productCode: "P-NEW-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(9),
+            quantity: 2,
+            actualAmount: 20m,
+            supplierCode: "200"
+        );
+        await SeedReturnRecordAsync(
+            returnOrderGuid: "ORDER-NEW-RETURN",
+            returnDetailGuid: "DETAIL-NEW-RETURN",
+            originalOrderGuid: "ORDER-NEW-SALE",
+            originalDetailGuid: "DETAIL-NEW-SALE",
+            productCode: "P-NEW-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            returnQuantity: 1m,
+            returnAmount: 10m
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 10m, 1);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == targetDate && x.BranchCode == "1018" && x.ProductCode == "P-NEW-RETURN")
+            .FirstAsync();
+        var state = await LoadRefreshStateAsync(targetDate);
+
+        Assert.NotNull(stat);
+        Assert.Equal(1, stat!.TotalQuantity);
+        Assert.Equal(10m, stat.TotalAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_双表同一退货明细不重复冲减()
+    {
+        var targetDate = new DateTime(2026, 5, 1);
+        await SeedProductAsync("P-DUP-RETURN");
+        await SeedSaleAsync(
+            orderGuid: "ORDER-DUP-SALE",
+            detailGuid: "DETAIL-DUP-SALE",
+            productCode: "P-DUP-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(9),
+            quantity: 2,
+            actualAmount: 20m,
+            supplierCode: "200"
+        );
+        await SeedSaleAsync(
+            orderGuid: "ORDER-DUP-RETURN",
+            detailGuid: "DETAIL-DUP-RETURN",
+            productCode: "P-DUP-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            quantity: -1,
+            actualAmount: -10m,
+            supplierCode: "200"
+        );
+        await SeedReturnRecordAsync(
+            returnOrderGuid: "ORDER-DUP-RETURN",
+            returnDetailGuid: "DETAIL-DUP-RETURN",
+            originalOrderGuid: "ORDER-DUP-SALE",
+            originalDetailGuid: "DETAIL-DUP-SALE",
+            productCode: "P-DUP-RETURN",
+            branchCode: "1018",
+            orderTime: targetDate.AddHours(10),
+            returnQuantity: 1m,
+            returnAmount: 10m,
+            insertOrder: false
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1018", 10m, 1);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var stat = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == targetDate && x.BranchCode == "1018" && x.ProductCode == "P-DUP-RETURN")
+            .FirstAsync();
+        var state = await LoadRefreshStateAsync(targetDate);
+
+        Assert.NotNull(stat);
+        Assert.Equal(1, stat!.TotalQuantity);
+        Assert.Equal(10m, stat.TotalAmount);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
     }
 
     [Fact]
@@ -809,6 +984,46 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             Quantity = quantity,
             ActualAmount = actualAmount,
             LastUploadTime = DateTime.Now,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedReturnRecordAsync(
+        string returnOrderGuid,
+        string returnDetailGuid,
+        string originalOrderGuid,
+        string originalDetailGuid,
+        string productCode,
+        string? branchCode,
+        DateTime orderTime,
+        decimal returnQuantity,
+        decimal returnAmount,
+        bool insertOrder = true
+    )
+    {
+        if (insertOrder)
+        {
+            await _posmDb.Insertable(new SalesOrder
+            {
+                OrderGuid = returnOrderGuid,
+                BranchCode = branchCode,
+                DeviceCode = null,
+                OrderTime = orderTime,
+                Status = 1,
+                LastUploadTime = orderTime.AddMinutes(5),
+            }).ExecuteCommandAsync();
+        }
+
+        await _posmDb.Insertable(new SalesReturnRecord
+        {
+            ReturnDetailGuid = returnDetailGuid,
+            ReturnOrderGuid = returnOrderGuid,
+            OriginalOrderGuid = originalOrderGuid,
+            OriginalOrderDetailGuid = originalDetailGuid,
+            ProductCode = productCode,
+            ReturnQuantity = returnQuantity,
+            ReturnAmount = returnAmount,
+            CreatedTime = orderTime.AddMinutes(6),
+            UpdatedTime = orderTime.AddMinutes(7),
         }).ExecuteCommandAsync();
     }
 

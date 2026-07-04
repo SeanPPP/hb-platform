@@ -136,6 +136,23 @@ namespace BlazorApp.Api.Services
                 new();
         }
 
+        private sealed class ProductStoreDailySourceRow
+        {
+            public DateTime Date { get; set; }
+            public string? OrderGuid { get; set; }
+            public string? DetailGuid { get; set; }
+            public string? BranchCode { get; set; }
+            public string? DeviceCode { get; set; }
+            public DateTime? OrderLastUploadTime { get; set; }
+            public string? ProductCode { get; set; }
+            public string? SupplierCode { get; set; }
+            public string? ProductName { get; set; }
+            public string? Barcode { get; set; }
+            public int Quantity { get; set; }
+            public decimal ActualAmount { get; set; }
+            public DateTime? DetailLastUploadTime { get; set; }
+        }
+
         private sealed class StoreStatisticPaymentRow
         {
             public string? OrderGuid { get; set; }
@@ -1382,8 +1399,8 @@ namespace BlazorApp.Api.Services
                     )
                     .MaxAsync(o => o.LastUploadTime);
 
-                // 商品统计以稳定的单日明细读取为基础，分店 fallback 和成本快照在内存中处理。
-                var rawRows = await posmContext
+                // 商品统计以明细表为主；老系统退货也在明细表中，负数会自然冲减。
+                var detailRows = await posmContext
                     .Db.Queryable<SalesOrder>()
                     .LeftJoin<SalesOrderDetail>((o, d) => o.OrderGuid == d.OrderGuid)
                     .Where(o =>
@@ -1393,22 +1410,96 @@ namespace BlazorApp.Api.Services
                         && o.OrderTime >= targetDate
                         && o.OrderTime < nextDate
                     )
-                    .Select((o, d) => new
+                    .Select((o, d) => new ProductStoreDailySourceRow
                     {
                         Date = o.OrderTime!.Value.Date,
-                        o.OrderGuid,
-                        o.BranchCode,
-                        o.DeviceCode,
+                        OrderGuid = o.OrderGuid,
+                        DetailGuid = d.OrderDetailGuid,
+                        BranchCode = o.BranchCode,
+                        DeviceCode = o.DeviceCode,
                         OrderLastUploadTime = o.LastUploadTime,
-                        d.ProductCode,
-                        d.SupplierCode,
-                        d.ProductName,
-                        d.Barcode,
+                        ProductCode = d.ProductCode,
+                        SupplierCode = d.SupplierCode,
+                        ProductName = d.ProductName,
+                        Barcode = d.Barcode,
                         Quantity = d.Quantity ?? 0,
                         ActualAmount = d.ActualAmount ?? 0m,
                         DetailLastUploadTime = d.LastUploadTime,
                     })
                     .ToListAsync();
+
+                var detailGuidSet = detailRows
+                    .Select(x => x.DetailGuid)
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var returnTableName = posmContext.Db.EntityMaintenance.GetTableName(typeof(SalesReturnRecord));
+                var supplementalReturnRows = new List<ProductStoreDailySourceRow>();
+                var hasReturnTable = posmContext.Db.DbMaintenance.GetTableInfoList(false)
+                    .Any(table => string.Equals(table.Name, returnTableName, StringComparison.OrdinalIgnoreCase));
+                // 旧 POSM 库可能没有新退货表；缺表时只按明细表里的负数退货统计。
+                if (hasReturnTable)
+                {
+                    var returnRows = await posmContext.Db.Queryable<SalesReturnRecord>()
+                        .LeftJoin<SalesOrder>((r, o) => r.ReturnOrderGuid == o.OrderGuid)
+                        .LeftJoin<SalesOrderDetail>((r, o, d) => r.OriginalOrderDetailGuid == d.OrderDetailGuid)
+                        .Where((r, o, d) =>
+                            o.Status != null
+                            && (o.Status == 1 || o.Status == 4)
+                            && o.OrderTime != null
+                            && o.OrderTime >= targetDate
+                            && o.OrderTime < nextDate
+                        )
+                        .Select((r, o, d) => new
+                        {
+                            r.ReturnDetailGuid,
+                            ReturnProductCode = r.ProductCode,
+                            ReturnQuantity = r.ReturnQuantity,
+                            ReturnAmount = r.ReturnAmount,
+                            ReturnCreatedTime = r.CreatedTime,
+                            ReturnUpdatedTime = r.UpdatedTime,
+                            o.OrderGuid,
+                            o.BranchCode,
+                            o.DeviceCode,
+                            o.OrderTime,
+                            OrderLastUploadTime = o.LastUploadTime,
+                            DetailProductCode = d.ProductCode,
+                            d.SupplierCode,
+                            d.ProductName,
+                            d.Barcode,
+                        })
+                        .ToListAsync();
+
+                    // 新系统退货只落 sales_return_record；若同一明细已在明细表中，跳过避免重复冲减。
+                    supplementalReturnRows = returnRows
+                        .Where(x =>
+                            string.IsNullOrWhiteSpace(x.ReturnDetailGuid)
+                            || !detailGuidSet.Contains(x.ReturnDetailGuid)
+                        )
+                        .Select(x => new ProductStoreDailySourceRow
+                        {
+                            Date = x.OrderTime!.Value.Date,
+                            OrderGuid = x.OrderGuid,
+                            DetailGuid = x.ReturnDetailGuid,
+                            BranchCode = x.BranchCode,
+                            DeviceCode = x.DeviceCode,
+                            OrderLastUploadTime = x.OrderLastUploadTime,
+                            ProductCode = string.IsNullOrWhiteSpace(x.ReturnProductCode)
+                                ? x.DetailProductCode
+                                : x.ReturnProductCode,
+                            SupplierCode = x.SupplierCode,
+                            ProductName = x.ProductName,
+                            Barcode = x.Barcode,
+                            Quantity = -(int)Math.Abs(x.ReturnQuantity ?? 0m),
+                            ActualAmount = -Math.Abs(x.ReturnAmount ?? 0m),
+                            DetailLastUploadTime = x.ReturnUpdatedTime ?? x.ReturnCreatedTime,
+                        })
+                        .ToList();
+                }
+
+                var rawRows = detailRows
+                    .Concat(supplementalReturnRows)
+                    .ToList();
 
                 var deviceCodes = rawRows
                     .Where(x => string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.DeviceCode))

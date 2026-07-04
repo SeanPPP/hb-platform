@@ -1454,6 +1454,7 @@
                 </StackPanel>
                 <Button Grid.Column="2"
                         Command="{Binding AppUpdate.InstallUpdateCommand}"
+                        services:ButtonFeedback.Cue="VersionNotice"
                         Style="{StaticResource PosSecondaryButtonStyle}"
                         MinWidth="112"
                         Height="36"
@@ -1519,6 +1520,7 @@
                 </StackPanel>
                 <Button Grid.Column="2"
                         Command="{Binding AppUpdate.InstallUpdateCommand}"
+                        services:ButtonFeedback.Cue="VersionNotice"
                         Style="{StaticResource PosSecondaryButtonStyle}"
                         MinWidth="118"
                         Height="36"
@@ -1614,6 +1616,7 @@
                                          BorderThickness="0" />
                         </StackPanel>
                         <Button Command="{Binding AppUpdate.RetryForceUpdateCommand}"
+                                services:ButtonFeedback.Cue="Download"
                                 MinWidth="104"
                                 Height="44"
                                 Margin="0,0,10,0"
@@ -1636,6 +1639,7 @@
                             </StackPanel>
                         </Button>
                         <Button Command="{Binding AppUpdate.InstallUpdateCommand}"
+                                services:ButtonFeedback.Cue="VersionNotice"
                                 MinWidth="148"
                                 Height="44"
                                 Style="{StaticResource PosPrimaryButtonStyle}"

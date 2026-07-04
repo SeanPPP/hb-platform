@@ -15,6 +15,9 @@ namespace BlazorApp.Api.Controllers
     [Route("api")]
     public class DeviceRegistrationController : ControllerBase
     {
+        private const string BearerPrefix = "Bearer ";
+        private const string DeviceHardwareIdHeader = "X-HBPOS-Hardware-Id";
+
         private readonly IDeviceRegistrationService _deviceService;
         private readonly ILogger<DeviceRegistrationController> _logger;
         private readonly IMapper _mapper;
@@ -104,6 +107,53 @@ namespace BlazorApp.Api.Controllers
             {
                 _logger.LogError(ex, "分页获取设备列表失败");
                 return StatusCode(500, new { success = false, message = "获取设备列表失败" });
+            }
+        }
+
+        /// <summary>
+        /// WPF设备运行状态上报
+        /// </summary>
+        [HttpPost("devices/runtime-status")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ReportRuntimeStatus(
+            [FromBody] DeviceRuntimeStatusUpdateDto request
+        )
+        {
+            try
+            {
+                var hardwareId = ReadHeader(DeviceHardwareIdHeader);
+                var authCode = ReadBearerToken();
+                if (string.IsNullOrWhiteSpace(hardwareId) || string.IsNullOrWhiteSpace(authCode))
+                {
+                    return Unauthorized(new { success = false, message = "设备授权信息缺失" });
+                }
+
+                var isAuthorized = await _deviceService.ValidateDeviceAuthCodeAsync(
+                    hardwareId,
+                    authCode
+                );
+                if (!isAuthorized)
+                {
+                    return Unauthorized(new { success = false, message = "设备授权无效" });
+                }
+
+                var updated = await _deviceService.UpdateRuntimeStatusAsync(
+                    hardwareId,
+                    request.IsOnline,
+                    request.CurrentCashierId,
+                    request.CurrentCashierName
+                );
+                if (!updated)
+                {
+                    return NotFound(new { success = false, message = "设备不存在" });
+                }
+
+                return Ok(new { success = true, message = "设备运行状态已更新" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "设备运行状态上报失败");
+                return StatusCode(500, new { success = false, message = "设备运行状态上报失败" });
             }
         }
 
@@ -738,6 +788,25 @@ namespace BlazorApp.Api.Controllers
                 3 => "已锁定",
                 _ => "未知状态",
             };
+        }
+
+        private string? ReadHeader(string headerName)
+        {
+            return Request.Headers.TryGetValue(headerName, out var values)
+                ? values.ToString().Trim()
+                : null;
+        }
+
+        private string? ReadBearerToken()
+        {
+            var authorization = ReadHeader("Authorization");
+            if (string.IsNullOrWhiteSpace(authorization)
+                || !authorization.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return authorization[BearerPrefix.Length..].Trim();
         }
 
         /// <summary>

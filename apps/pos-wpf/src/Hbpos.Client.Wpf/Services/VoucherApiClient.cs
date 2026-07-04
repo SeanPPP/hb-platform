@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Globalization;
 using System.Text.Json;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
@@ -17,6 +18,10 @@ public interface IVoucherApiClient : IVoucherTenderClient
 
     Task<StoreVoucherLockResponse> LockAsync(
         StoreVoucherLockRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<StoreVoucherReleaseResponse> ReleaseAsync(
+        StoreVoucherReleaseRequest request,
         CancellationToken cancellationToken = default);
 
     Task<StoreVoucherIssueRefundResponse> IssueRefundVoucherAsync(
@@ -46,6 +51,13 @@ public sealed class VoucherApiClient(HttpClient httpClient, ILocalizationService
         CancellationToken cancellationToken = default)
     {
         return PostAsync<StoreVoucherLockRequest, StoreVoucherLockResponse>("api/v1/vouchers/lock", request, cancellationToken);
+    }
+
+    public Task<StoreVoucherReleaseResponse> ReleaseAsync(
+        StoreVoucherReleaseRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return PostAsync<StoreVoucherReleaseRequest, StoreVoucherReleaseResponse>("api/v1/vouchers/release", request, cancellationToken);
     }
 
     public Task<StoreVoucherIssueRefundResponse> IssueRefundVoucherAsync(
@@ -89,12 +101,34 @@ public sealed class VoucherApiClient(HttpClient httpClient, ILocalizationService
         var locked = await LockAsync(
             new StoreVoucherLockRequest(session.StoreCode, query.Voucher.VoucherCode, lockAmount),
             cancellationToken);
-        // 正向代金券支付必须保存锁定令牌，订单上传时后端用它完成最终核销。
+        var remainingAfterLock = locked.RemainingAmountAfterLock.GetValueOrDefault();
+        var reference = remainingAfterLock > 0m
+            ? $"VOUCHER:{locked.VoucherCode}:{locked.ReservationToken}:{remainingAfterLock.ToString("0.00", CultureInfo.InvariantCulture)}"
+            : $"VOUCHER:{locked.VoucherCode}:{locked.ReservationToken}";
+
+        // 中文注释：前三段仍供上传完成核销；第 4 段只使用后端锁券后的确认余额，避免本地旧快照错印。
         return new PaymentAuthorizationResult(
             true,
-            $"VOUCHER:{locked.VoucherCode}:{locked.ReservationToken}",
+            reference,
             locked.VoucherCode,
             locked.LockedAmount);
+    }
+
+    public async Task<bool> ReleaseAsync(
+        PosSessionState session,
+        string voucherCode,
+        string reservationToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(voucherCode) || string.IsNullOrWhiteSpace(reservationToken))
+        {
+            return false;
+        }
+
+        var released = await ReleaseAsync(
+            new StoreVoucherReleaseRequest(session.StoreCode, voucherCode.Trim(), reservationToken.Trim()),
+            cancellationToken);
+        return released.Released;
     }
 
     public async Task<PaymentAuthorizationResult> IssueRefundAsync(

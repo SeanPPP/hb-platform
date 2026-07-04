@@ -42,6 +42,8 @@ public sealed class StoreVoucherServiceTests
 
         Assert.Equal(6m, first.LockedAmount);
         Assert.Equal(4m, second.LockedAmount);
+        Assert.Equal(4m, first.RemainingAmountAfterLock);
+        Assert.Equal(0m, second.RemainingAmountAfterLock);
         Assert.NotEqual(first.ReservationToken, second.ReservationToken);
     }
 
@@ -75,6 +77,30 @@ public sealed class StoreVoucherServiceTests
         timeProvider.UtcNow = timeProvider.UtcNow.AddMinutes(6);
         var fresh = await service.ReserveAsync("S01", "V001", 10m, 10m, CancellationToken.None);
 
+        Assert.Equal(10m, fresh.LockedAmount);
+    }
+
+    [Fact]
+    public async Task ReleaseAsync_MarksReservationReleasedAndRestoresLockableAmount()
+    {
+        await using var fixture = await StoreVoucherSqliteFixture.CreateAsync();
+        var timeProvider = new MutableFakeTimeProvider(DateTimeOffset.Parse("2026-05-26T10:00:00Z"));
+        await fixture.SeedVoucherAsync(CreateVoucher(remainingAmount: 10m));
+        var service = new StoreVoucherService(
+            new SqlSugarStoreVoucherRepository(fixture.DbContext),
+            new SqlSugarStoreVoucherReservationService(fixture.DbContext, timeProvider));
+
+        var locked = await service.LockAsync(new StoreVoucherLockRequest("S01", "V001", 6m), CancellationToken.None);
+        var released = await service.ReleaseAsync(
+            new StoreVoucherReleaseRequest("S01", "V001", locked.ReservationToken),
+            CancellationToken.None);
+        var fresh = await service.LockAsync(new StoreVoucherLockRequest("S01", "V001", 10m), CancellationToken.None);
+        var releasedEntity = await fixture.GetReservationEntityAsync(locked.ReservationToken);
+
+        Assert.True(released.Released);
+        Assert.Equal("V001", released.VoucherCode);
+        Assert.Equal(locked.ReservationToken, released.ReservationToken);
+        Assert.Equal("released", releasedEntity?.Status);
         Assert.Equal(10m, fresh.LockedAmount);
     }
 
@@ -486,6 +512,15 @@ public sealed class StoreVoucherServiceTests
         public Task ConsumeAsync(string token, CancellationToken cancellationToken)
         {
             return Task.CompletedTask;
+        }
+
+        public Task<bool> ReleaseAsync(
+            string token,
+            string storeCode,
+            string voucherCode,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(true);
         }
     }
 

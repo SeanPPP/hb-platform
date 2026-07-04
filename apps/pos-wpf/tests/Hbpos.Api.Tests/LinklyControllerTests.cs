@@ -824,6 +824,9 @@ public sealed class LinklyControllerTests
                 services.RemoveAll<IStoreSchemaInitializer>();
                 services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
 
+                services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
+                services.AddSingleton<IDeviceRuntimeStatusSchemaInitializer>(new NoOpDeviceRuntimeStatusSchemaInitializer());
+
                 services.RemoveAll<ILinklyCloudCredentialSchemaInitializer>();
                 services.AddSingleton(schemaInitializer ?? new NoOpLinklyCloudCredentialSchemaInitializer());
 
@@ -856,6 +859,14 @@ public sealed class LinklyControllerTests
     }
 
     private sealed class NoOpStoreSchemaInitializer : IStoreSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpDeviceRuntimeStatusSchemaInitializer : IDeviceRuntimeStatusSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {

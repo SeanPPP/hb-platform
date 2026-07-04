@@ -1129,8 +1129,21 @@ public sealed class LinklyBackendTerminalClientTests
         var failedTransaction = Assert.Single(result.CardTransactions!);
         Assert.Equal("Q6", failedTransaction.ResponseCode);
         Assert.Equal("SIGNATURE ERROR", failedTransaction.ResponseText);
-        var signatureState = Assert.Single(dialog.States.Where(state => state.DisplayText == "SIGNATURE OK?"));
-        Assert.False(signatureState.SupportsCancelPayment);
+        var signatureStates = dialog.States.Where(state => state.DisplayText == "SIGNATURE OK?").ToArray();
+        Assert.Collection(
+            signatureStates,
+            pending =>
+            {
+                Assert.Equal("Pending", pending.Status);
+                Assert.False(pending.IsFinal);
+                Assert.False(pending.SupportsCancelPayment);
+            },
+            completedWithoutResult =>
+            {
+                Assert.Equal("Completed", completedWithoutResult.Status);
+                Assert.False(completedWithoutResult.IsFinal);
+                Assert.False(completedWithoutResult.SupportsCancelPayment);
+            });
         Assert.Equal(0, dialog.CloseCallCount);
     }
 
@@ -2374,6 +2387,109 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.True(finalState.IsFinal);
         Assert.Contains("unfinished card transaction", finalState.DisplayText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_continues_polling_when_sendkey_returns_completed_without_transaction_result()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return requests.Count switch
+            {
+                1 => new HttpResponseMessage(HttpStatusCode.NotFound),
+                2 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "completed-race-session",
+                        "status": "Pending",
+                        "txnRef": "260601120031",
+                        "displayText": "PRESS OK",
+                        "okKeyFlag": true,
+                        "receiptText": null,
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 202,
+                        "notifications": []
+                      }
+                    }
+                    """),
+                3 => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "completed-race-session",
+                        "status": "Completed",
+                        "txnRef": "260601120031",
+                        "responseCode": null,
+                        "responseText": null,
+                        "transactionSuccess": null,
+                        "displayText": "APPROVED",
+                        "okKeyFlag": true,
+                        "receiptText": "APPROVED RECEIPT",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": null,
+                        "lastHttpStatus": 200,
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "sessionId": "completed-race-session",
+                        "status": "Completed",
+                        "txnRef": "260601120031",
+                        "responseCode": "00",
+                        "responseText": "APPROVED",
+                        "transactionSuccess": true,
+                        "displayText": "APPROVED",
+                        "receiptText": "APPROVED RECEIPT",
+                        "recoveryCount": 0,
+                        "receiptPrintedAt": "2026-06-01T02:00:04Z",
+                        "lastHttpStatus": 200,
+                        "notifications": [
+                          {
+                            "type": "transaction",
+                            "payloadJson": "{\"Response\":{\"Success\":true,\"ResponseCode\":\"00\",\"ResponseText\":\"APPROVED\",\"AuthCode\":\"AUTH1\",\"TxnRef\":\"260601120031\"}}",
+                            "receivedAt": "2026-06-01T02:00:03Z"
+                          }
+                        ]
+                      }
+                    }
+                    """)
+            };
+        });
+        var dialog = new FakeLinklyTerminalDialogService();
+        dialog.EnqueueAction(new LinklyTerminalDialogAction("OK", null));
+        var client = CreateClient(handler, dialog);
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.Equal("00", result.ResponseCode);
+        Assert.Equal("APPROVED", result.ResponseText);
+        Assert.Collection(
+            requests,
+            active => Assert.Equal(HttpMethod.Get, active.Method),
+            start => Assert.Equal(HttpMethod.Post, start.Method),
+            sendKey => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/completed-race-session/sendkey", sendKey.RequestUri!.AbsoluteUri),
+            status => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/transactions/completed-race-session/status?environment=Sandbox", status.RequestUri!.AbsoluteUri));
     }
 
     [Fact]

@@ -823,6 +823,15 @@ public sealed class InstallmentServiceTests
             reservations.Remove(token);
             return Task.CompletedTask;
         }
+
+        public Task<bool> ReleaseAsync(
+            string token,
+            string storeCode,
+            string voucherCode,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(reservations.Remove(token));
+        }
     }
 
     private sealed class MutableFakeTimeProvider(DateTimeOffset now) : TimeProvider

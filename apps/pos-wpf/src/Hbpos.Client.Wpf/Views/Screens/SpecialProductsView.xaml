@@ -5,6 +5,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              mc:Ignorable="d"
              d:DesignHeight="688"
              d:DesignWidth="1366"
@@ -72,8 +73,9 @@
                     <Border Background="#FFE8F0FE" CornerRadius="18" Padding="14,8" Margin="0,0,10,0">
                         <TextBlock Text="{Binding OnlineStateText}" FontSize="12" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" />
                     </Border>
-                    <Button Command="{Binding DownloadCommand}"
-                            Style="{StaticResource PosPrimaryButtonStyle}"
+                     <Button Command="{Binding DownloadCommand}"
+                             services:ButtonFeedback.Cue="Download"
+                             Style="{StaticResource PosPrimaryButtonStyle}"
                             MinHeight="64"
                             Padding="16,0"
                             Margin="0,0,10,0">
@@ -447,6 +449,7 @@
                         </Button>
                         <Button Command="{Binding RemoveSpecialProductCommand}"
                                 CommandParameter="{Binding SelectedSpecialItem}"
+                                services:ButtonFeedback.Cue="Delete"
                                 Style="{StaticResource TouchIconButtonStyle}"
                                 MinWidth="58"
                                 MinHeight="44"

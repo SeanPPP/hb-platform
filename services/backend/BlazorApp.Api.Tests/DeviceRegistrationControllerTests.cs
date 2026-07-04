@@ -6,6 +6,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -210,6 +211,81 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("1004", data.StoreCode);
             Assert.Equal("Sunnybank", data.StoreName);
         }
+
+        [Fact]
+        public async Task ReportRuntimeStatus_UpdatesAuthorizedDeviceOnly()
+        {
+            var service = new Mock<IDeviceRegistrationService>();
+            service
+                .Setup(x => x.ValidateDeviceAuthCodeAsync("HW-001", "AUTH-001"))
+                .ReturnsAsync(true);
+            service
+                .Setup(x => x.UpdateRuntimeStatusAsync("HW-001", true, "CASHIER-1", "Alice"))
+                .ReturnsAsync(true);
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>()
+            );
+            controller.ControllerContext.HttpContext = new DefaultHttpContext();
+            controller.Request.Headers.Authorization = "Bearer AUTH-001";
+            controller.Request.Headers["X-HBPOS-Hardware-Id"] = "HW-001";
+
+            var result = await controller.ReportRuntimeStatus(
+                new DeviceRuntimeStatusUpdateDto
+                {
+                    IsOnline = true,
+                    CurrentCashierId = "CASHIER-1",
+                    CurrentCashierName = "Alice",
+                }
+            );
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var successProperty = ok.Value!.GetType().GetProperty("success");
+            Assert.True((bool)successProperty!.GetValue(ok.Value)!);
+            service.Verify(
+                x => x.UpdateRuntimeStatusAsync("HW-001", true, "CASHIER-1", "Alice"),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public async Task ReportRuntimeStatus_ReturnsUnauthorized_WhenDeviceAuthIsInvalid()
+        {
+            var service = new Mock<IDeviceRegistrationService>();
+            service
+                .Setup(x => x.ValidateDeviceAuthCodeAsync("HW-001", "WRONG"))
+                .ReturnsAsync(false);
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>()
+            );
+            controller.ControllerContext.HttpContext = new DefaultHttpContext();
+            controller.Request.Headers.Authorization = "Bearer WRONG";
+            controller.Request.Headers["X-HBPOS-Hardware-Id"] = "HW-001";
+
+            var result = await controller.ReportRuntimeStatus(
+                new DeviceRuntimeStatusUpdateDto
+                {
+                    IsOnline = true,
+                    CurrentCashierId = "CASHIER-1",
+                    CurrentCashierName = "Alice",
+                }
+            );
+
+            Assert.IsType<UnauthorizedObjectResult>(result);
+            service.Verify(
+                x => x.UpdateRuntimeStatusAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>()),
+                Times.Never
+            );
+        }
     }
 
     public sealed class DeviceRegistrationServiceTests : IDisposable
@@ -317,6 +393,64 @@ namespace BlazorApp.Api.Tests
             Assert.Equal(1, total);
             Assert.Equal("hbmobile-ios", device.设备硬件识别码);
             Assert.Equal("iOS", device.设备系统);
+        }
+
+        [Fact]
+        public async Task UpdateRuntimeStatusAsync_KeepsCashierLoginTimeForSameCashierAndClearsWhenEmpty()
+        {
+            await _db.Insertable(new POSM_设备注册信息表
+            {
+                设备硬件识别码 = "HW-001",
+                系统设备编号 = "POS-001",
+                设备授权码 = "AUTH-001",
+                设备状态 = (int)DeviceStatus.启用,
+                设备类型 = "POS",
+                设备系统 = "Windows",
+                分店代码 = "S001",
+                创建时间 = DateTime.UtcNow,
+                最后修改时间 = new DateTime(2026, 1, 1, 9, 0, 0),
+            }).ExecuteCommandAsync();
+            var firstNow = new DateTime(2026, 7, 1, 10, 0, 0);
+            var secondNow = new DateTime(2026, 7, 1, 10, 1, 0);
+
+            var firstResult = await CreateService(firstNow).UpdateRuntimeStatusAsync(
+                "HW-001",
+                true,
+                "CASHIER-1",
+                "Alice"
+            );
+            var secondResult = await CreateService(secondNow).UpdateRuntimeStatusAsync(
+                "HW-001",
+                true,
+                "CASHIER-1",
+                "Alice"
+            );
+
+            var device = await _db.Queryable<POSM_设备注册信息表>()
+                .FirstAsync(item => item.设备硬件识别码 == "HW-001");
+            Assert.True(firstResult);
+            Assert.True(secondResult);
+            Assert.True(device.是否在线);
+            Assert.Equal(secondNow, device.最后心跳时间);
+            Assert.Equal("CASHIER-1", device.当前收银员ID);
+            Assert.Equal("Alice", device.当前收银员姓名);
+            Assert.Equal(firstNow, device.收银员登录时间);
+            Assert.Equal(new DateTime(2026, 1, 1, 9, 0, 0), device.最后修改时间);
+
+            var clearResult = await CreateService(secondNow.AddMinutes(1)).UpdateRuntimeStatusAsync(
+                "HW-001",
+                false,
+                null,
+                null
+            );
+
+            device = await _db.Queryable<POSM_设备注册信息表>()
+                .FirstAsync(item => item.设备硬件识别码 == "HW-001");
+            Assert.True(clearResult);
+            Assert.False(device.是否在线);
+            Assert.Null(device.当前收银员ID);
+            Assert.Null(device.当前收银员姓名);
+            Assert.Null(device.收银员登录时间);
         }
 
         [Fact]

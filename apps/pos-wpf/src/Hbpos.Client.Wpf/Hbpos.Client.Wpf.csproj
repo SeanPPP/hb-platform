@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <None Include="Native\printer.sdk.dll" CopyToOutputDirectory="PreserveNewest" TargetPath="printer.sdk.dll" />
+    <Content Include="WAV\**\*.*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
