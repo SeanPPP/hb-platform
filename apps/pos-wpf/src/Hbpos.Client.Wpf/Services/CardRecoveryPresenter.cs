@@ -35,7 +35,7 @@ internal sealed class CardRecoveryPresenter
     private readonly Func<PosSessionState>? _getSession;
     private readonly Action<PosSessionState>? _setSession;
     private readonly Action<LocalOrder>? _onCardRecoveryOrderCompleted;
-    private readonly Action? _onCardRecoveryDraftRestored;
+    private readonly Action<IReadOnlyList<PaymentTender>?, string?>? _onCardRecoveryDraftRestored;
     private readonly Func<Task>? _refreshPendingSyncAsync;
     private readonly Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? _printReceiptAsync;
     private readonly Func<bool>? _canPrintReceipt;
@@ -64,7 +64,7 @@ internal sealed class CardRecoveryPresenter
         Func<PosSessionState>? getSession = null,
         Action<PosSessionState>? setSession = null,
         Action<LocalOrder>? onCardRecoveryOrderCompleted = null,
-        Action? onCardRecoveryDraftRestored = null,
+        Action<IReadOnlyList<PaymentTender>?, string?>? onCardRecoveryDraftRestored = null,
         Func<Task>? refreshPendingSyncAsync = null,
         Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? printReceiptAsync = null,
         Func<bool>? canPrintReceipt = null,
@@ -203,13 +203,16 @@ internal sealed class CardRecoveryPresenter
 
         if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
         {
-            _onCardRecoveryDraftRestored?.Invoke();
-            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
+            var restoredTenders = result.RestoredTenders;
+            var hasRestoredTenders = restoredTenders is { Count: > 0 };
 
-            if (navigateToPaymentOnDraft && _navigateToPaymentOnDraft is not null)
+            if ((navigateToPaymentOnDraft || hasRestoredTenders) && _navigateToPaymentOnDraft is not null)
             {
                 await _navigateToPaymentOnDraft();
             }
+
+            _onCardRecoveryDraftRestored?.Invoke(restoredTenders, hasRestoredTenders ? result.Message : null);
+            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
 
             ShowRecoveredCardDraftDialog(result);
             return true;

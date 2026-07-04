@@ -5,6 +5,7 @@
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              mc:Ignorable="d"
              d:DesignHeight="688"
              d:DesignWidth="1366"
@@ -257,6 +258,7 @@
                                         <DataTemplate>
                                             <Button Command="{Binding DataContext.RemovePendingLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                                     CommandParameter="{Binding}"
+                                                    services:ButtonFeedback.Cue="Delete"
                                                     Style="{StaticResource ReturnTableDangerIconButtonStyle}">
                                                 <materialDesign:PackIcon Kind="Delete" Width="18" Height="18" Foreground="White" />
                                             </Button>

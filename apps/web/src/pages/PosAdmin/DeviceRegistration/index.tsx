@@ -22,6 +22,7 @@ import {
   getDeviceRegistrationDetail,
   getDeviceRegistrations,
   getStoreOptions,
+  isDeviceRuntimeOnline,
   lockDevice,
   updateDeviceRegistration,
 } from '../../../services/deviceRegistrationService'
@@ -83,6 +84,37 @@ function renderDeviceSystemTag(value?: string | null) {
   return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : '--'
 }
 
+function renderRuntimeStatus(record: DeviceRegistrationItem, t: ReturnType<typeof useTranslation>['t']) {
+  const online = isDeviceRuntimeOnline(record)
+  return (
+    <Space direction="vertical" size={0}>
+      <Tag color={online ? 'green' : 'default'}>
+        {online ? t('posAdmin.devices.online') : t('posAdmin.devices.offline')}
+      </Tag>
+      <Typography.Text type="secondary">
+        {formatDateTime(record.lastHeartbeatAt)}
+      </Typography.Text>
+    </Space>
+  )
+}
+
+function renderCashierStatus(record: DeviceRegistrationItem, t: ReturnType<typeof useTranslation>['t']) {
+  const online = isDeviceRuntimeOnline(record)
+  if (!online || !record.currentCashierName) {
+    return <Tag>{t('posAdmin.devices.cashierNotLoggedIn')}</Tag>
+  }
+
+  return (
+    <Space direction="vertical" size={0}>
+      <Typography.Text>{record.currentCashierName}</Typography.Text>
+      <Tag color="green">{t('posAdmin.devices.cashierLoggedIn')}</Tag>
+      <Typography.Text type="secondary">
+        {formatDateTime(record.cashierLoginAt)}
+      </Typography.Text>
+    </Space>
+  )
+}
+
 type DeviceEditFormValues = UpdateDeviceRegistrationPayload
 
 export default function DeviceRegistrationPage() {
@@ -111,8 +143,10 @@ export default function DeviceRegistrationPage() {
     }
   }
 
-  async function loadDevices() {
-    setLoading(true)
+  async function loadDevices(showLoading = true) {
+    if (showLoading) {
+      setLoading(true)
+    }
     try {
       const result = await getDeviceRegistrations({
         page: 1,
@@ -126,7 +160,9 @@ export default function DeviceRegistrationPage() {
       console.error(t('posAdmin.devices.loadFailed'), error)
       message.error(t('posAdmin.devices.loadFailed'))
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
@@ -136,6 +172,11 @@ export default function DeviceRegistrationPage() {
 
   useEffect(() => {
     void loadDevices()
+    const intervalId = window.setInterval(() => {
+      void loadDevices(false)
+    }, 15_000)
+
+    return () => window.clearInterval(intervalId)
   }, [selectedStoreCode, selectedDeviceType, selectedDeviceSystem])
 
   async function runAction(
@@ -268,6 +309,18 @@ export default function DeviceRegistrationPage() {
         render: (value: string | null | undefined) => renderDeviceSystemTag(value),
       },
       {
+        title: t('posAdmin.devices.onlineStatus'),
+        key: 'onlineStatus',
+        width: 150,
+        render: (_value, record) => renderRuntimeStatus(record, t),
+      },
+      {
+        title: t('posAdmin.devices.currentCashier'),
+        key: 'currentCashier',
+        width: 180,
+        render: (_value, record) => renderCashierStatus(record, t),
+      },
+      {
         title: t('column.status'),
         dataIndex: 'statusDescription',
         width: 120,
@@ -391,7 +444,7 @@ export default function DeviceRegistrationPage() {
             loading={loading}
             columns={columns}
             dataSource={items}
-            scroll={{ x: access.canManageDeviceRegistration ? 1320 : 1020 }}
+            scroll={{ x: access.canManageDeviceRegistration ? 1650 : 1350 }}
             pagination={false}
           />
         </Space>

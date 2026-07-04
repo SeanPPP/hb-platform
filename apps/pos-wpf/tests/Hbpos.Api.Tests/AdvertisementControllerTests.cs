@@ -192,6 +192,9 @@ public sealed class AdvertisementControllerTests
                 services.RemoveAll<IStoreSchemaInitializer>();
                 services.AddSingleton<IStoreSchemaInitializer>(new NoOpStoreSchemaInitializer());
 
+                services.RemoveAll<IDeviceRuntimeStatusSchemaInitializer>();
+                services.AddSingleton<IDeviceRuntimeStatusSchemaInitializer>(new NoOpDeviceRuntimeStatusSchemaInitializer());
+
                 services.RemoveAll<IAdvertisementSchemaInitializer>();
                 services.AddSingleton(advertisementSchemaInitializer);
 
@@ -232,6 +235,14 @@ public sealed class AdvertisementControllerTests
     }
 
     private sealed class NoOpStoreSchemaInitializer : IStoreSchemaInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NoOpDeviceRuntimeStatusSchemaInitializer : IDeviceRuntimeStatusSchemaInitializer
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {

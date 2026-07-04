@@ -57,7 +57,13 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState)
         );
-        _posmDb.CodeFirst.InitTables(typeof(SalesOrder), typeof(SalesOrderDetail), typeof(PaymentDetail), typeof(POSM_设备注册信息表));
+        _posmDb.CodeFirst.InitTables(
+            typeof(SalesOrder),
+            typeof(SalesOrderDetail),
+            typeof(SalesReturnRecord),
+            typeof(PaymentDetail),
+            typeof(POSM_设备注册信息表)
+        );
     }
 
     [Fact]

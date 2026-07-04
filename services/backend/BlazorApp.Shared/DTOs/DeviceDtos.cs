@@ -158,6 +158,52 @@ namespace BlazorApp.Shared.DTOs
         /// 最后修改人
         /// </summary>
         public string? LastModifiedBy { get; set; }
+
+        /// <summary>
+        /// 是否在线
+        /// </summary>
+        public bool IsOnline { get; set; }
+
+        /// <summary>
+        /// 最后心跳时间
+        /// </summary>
+        public DateTime? LastHeartbeatAt { get; set; }
+
+        /// <summary>
+        /// 当前收银员ID
+        /// </summary>
+        public string? CurrentCashierId { get; set; }
+
+        /// <summary>
+        /// 当前收银员姓名
+        /// </summary>
+        public string? CurrentCashierName { get; set; }
+
+        /// <summary>
+        /// 收银员登录时间
+        /// </summary>
+        public DateTime? CashierLoginAt { get; set; }
+    }
+
+    /// <summary>
+    /// 设备运行状态上报DTO
+    /// </summary>
+    public class DeviceRuntimeStatusUpdateDto
+    {
+        /// <summary>
+        /// 是否在线
+        /// </summary>
+        public bool IsOnline { get; set; }
+
+        /// <summary>
+        /// 当前收银员ID
+        /// </summary>
+        public string? CurrentCashierId { get; set; }
+
+        /// <summary>
+        /// 当前收银员姓名
+        /// </summary>
+        public string? CurrentCashierName { get; set; }
     }
 
     /// <summary>

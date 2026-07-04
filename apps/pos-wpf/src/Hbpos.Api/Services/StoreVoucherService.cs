@@ -20,6 +20,10 @@ public interface IStoreVoucherService
         StoreVoucherLockRequest request,
         CancellationToken cancellationToken);
 
+    Task<StoreVoucherReleaseResponse> ReleaseAsync(
+        StoreVoucherReleaseRequest request,
+        CancellationToken cancellationToken);
+
     Task<StoreVoucherIssueRefundResponse> IssueRefundAsync(
         StoreVoucherIssueRefundRequest request,
         CancellationToken cancellationToken);
@@ -104,7 +108,36 @@ public sealed class StoreVoucherService(
             normalizedVoucherCode,
             reservation.LockedAmount,
             reservation.Token,
-            reservation.ExpiresAt);
+            reservation.ExpiresAt,
+            reservation.RemainingAmountAfterLock);
+    }
+
+    public async Task<StoreVoucherReleaseResponse> ReleaseAsync(
+        StoreVoucherReleaseRequest request,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStoreCode = NormalizeRequired(request.StoreCode, nameof(request.StoreCode));
+        var normalizedVoucherCode = NormalizeRequired(request.VoucherCode, nameof(request.VoucherCode));
+        var normalizedToken = NormalizeRequired(request.ReservationToken, nameof(request.ReservationToken));
+        logger?.LogInformation(
+            "Voucher release start store={StoreCode} voucher={VoucherCode} token={ReservationToken}",
+            normalizedStoreCode,
+            normalizedVoucherCode,
+            ShortToken(normalizedToken));
+
+        var released = await reservationService.ReleaseAsync(
+            normalizedToken,
+            normalizedStoreCode,
+            normalizedVoucherCode,
+            cancellationToken);
+
+        logger?.LogInformation(
+            "Voucher release completed store={StoreCode} voucher={VoucherCode} token={ReservationToken} released={Released}",
+            normalizedStoreCode,
+            normalizedVoucherCode,
+            ShortToken(normalizedToken),
+            released);
+        return new StoreVoucherReleaseResponse(normalizedVoucherCode, normalizedToken, released);
     }
 
     public async Task<StoreVoucherIssueRefundResponse> IssueRefundAsync(
@@ -628,6 +661,12 @@ public interface IStoreVoucherReservationService
         CancellationToken cancellationToken);
 
     Task ConsumeAsync(string token, CancellationToken cancellationToken);
+
+    Task<bool> ReleaseAsync(
+        string token,
+        string storeCode,
+        string voucherCode,
+        CancellationToken cancellationToken);
 }
 
 public sealed record StoreVoucherReservation(
@@ -635,7 +674,8 @@ public sealed record StoreVoucherReservation(
     string StoreCode,
     string VoucherCode,
     decimal LockedAmount,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    decimal? RemainingAmountAfterLock = null);
 
 public sealed class SqlSugarStoreVoucherReservationService(
     HbposSqlSugarContext dbContext,
@@ -646,6 +686,7 @@ public sealed class SqlSugarStoreVoucherReservationService(
     private const string PendingStatus = "pending";
     private const string ClaimedStatus = "claimed";
     private const string ConsumedStatus = "consumed";
+    private const string ReleasedStatus = "released";
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public async Task<StoreVoucherReservation?> GetAsync(string token, CancellationToken cancellationToken)
@@ -767,6 +808,10 @@ public sealed class SqlSugarStoreVoucherReservationService(
             };
             await db.Insertable(entity).ExecuteCommandAsync(cancellationToken);
             await db.Ado.CommitTranAsync();
+            var remainingAmountAfterLock = decimal.Round(
+                Math.Max(0m, (voucher.RemainingAmount ?? 0m) - reservedAmount - entity.LockedAmount),
+                2,
+                MidpointRounding.AwayFromZero);
             logger?.LogInformation(
                 "Voucher reservation reserve completed store={StoreCode} voucher={VoucherCode} lockedAmount={LockedAmount} reservedAmount={ReservedAmount} token={ReservationToken} expiresAt={ExpiresAt:O}",
                 normalizedStoreCode,
@@ -775,7 +820,7 @@ public sealed class SqlSugarStoreVoucherReservationService(
                 reservedAmount,
                 ShortToken(entity.Token),
                 entity.ExpiresAtUtc);
-            return Map(entity);
+            return Map(entity) with { RemainingAmountAfterLock = remainingAmountAfterLock };
         }
         catch (Exception ex)
         {
@@ -854,6 +899,37 @@ public sealed class SqlSugarStoreVoucherReservationService(
         logger?.LogInformation(
             "Voucher reservation consumed token={ReservationToken}",
             ShortToken(normalizedToken));
+    }
+
+    public async Task<bool> ReleaseAsync(
+        string token,
+        string storeCode,
+        string voucherCode,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var normalizedToken = NormalizeRequired(token, nameof(token));
+        var normalizedStoreCode = NormalizeRequired(storeCode, nameof(storeCode));
+        var normalizedVoucherCode = NormalizeRequired(voucherCode, nameof(voucherCode));
+        await EnsureTableAsync(cancellationToken);
+
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        // release 只回退仍在 pending 的匹配 reservation，避免误释放已核销或其他门店的锁定。
+        var affectedRows = await dbContext.PosmDb.Updateable<StoreVoucherReservationEntity>()
+            .SetColumns(x => x.Status == ReleasedStatus)
+            .SetColumns(x => x.ConsumedAtUtc == now)
+            .Where(x => x.Token == normalizedToken)
+            .Where(x => x.Status == PendingStatus)
+            .Where(x => x.StoreCode == normalizedStoreCode)
+            .Where(x => x.VoucherCode == normalizedVoucherCode)
+            .ExecuteCommandAsync(cancellationToken);
+        logger?.LogInformation(
+            "Voucher reservation release token={ReservationToken} store={StoreCode} voucher={VoucherCode} released={Released}",
+            ShortToken(normalizedToken),
+            normalizedStoreCode,
+            normalizedVoucherCode,
+            affectedRows == 1);
+        return affectedRows == 1;
     }
 
     private async Task EnsureTableAsync(CancellationToken cancellationToken)

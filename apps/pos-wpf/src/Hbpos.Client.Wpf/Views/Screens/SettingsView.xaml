@@ -6,6 +6,7 @@
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              mc:Ignorable="d"
              d:DesignHeight="688"
              d:DesignWidth="1366"
@@ -113,9 +114,10 @@
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center" />
                                 </Border>
-                                <Button DockPanel.Dock="Right"
-                                        Command="{Binding DownloadCatalogCommand}"
-                                        Style="{StaticResource PosPrimaryButtonStyle}"
+                                 <Button DockPanel.Dock="Right"
+                                         Command="{Binding DownloadCatalogCommand}"
+                                         services:ButtonFeedback.Cue="Download"
+                                         Style="{StaticResource PosPrimaryButtonStyle}"
                                         Height="42"
                                         MinWidth="138"
                                         Margin="18,0,0,0">
@@ -241,9 +243,10 @@
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center" />
                                 </Border>
-                                <Button DockPanel.Dock="Right"
-                                        Command="{Binding ResetTestSalesDataCommand}"
-                                        Style="{StaticResource PosSecondaryButtonStyle}"
+                                 <Button DockPanel.Dock="Right"
+                                         Command="{Binding ResetTestSalesDataCommand}"
+                                         services:ButtonFeedback.Cue="Delete"
+                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                         Height="42"
                                         MinWidth="168"
                                         Margin="18,0,0,0">
@@ -417,9 +420,10 @@
                                             </ComboBox.ItemTemplate>
                                         </ComboBox>
                                     </StackPanel>
-                                    <Button Grid.Column="1"
-                                            Command="{Binding LoadLocationsCommand}"
-                                            Style="{StaticResource PosSecondaryButtonStyle}"
+                                     <Button Grid.Column="1"
+                                             Command="{Binding LoadLocationsCommand}"
+                                             services:ButtonFeedback.Cue="Download"
+                                             Style="{StaticResource PosSecondaryButtonStyle}"
                                             MinWidth="156"
                                             Height="42"
                                             Margin="14,22,0,0"

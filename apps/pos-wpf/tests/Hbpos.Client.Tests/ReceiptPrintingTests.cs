@@ -52,6 +52,40 @@ public sealed class ReceiptPrintingTests
     }
 
     [Fact]
+    public void Receipt_text_formatter_prints_remaining_voucher_balance_as_complete_voucher_section()
+    {
+        var receipt = CreateReceipt(
+            Guid.NewGuid(),
+            paymentReference: "VOUCHER:VC200:LOCK-1:12.34",
+            paymentMethod: PaymentMethodKind.Voucher);
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+
+        Assert.Contains("VOUCHER BALANCE", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Voucher: VC200", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Balance: $12.34", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "VC200");
+        Assert.Contains(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "VC200");
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_skips_remaining_voucher_section_without_positive_balance()
+    {
+        var receipt = CreateReceipt(
+            Guid.NewGuid(),
+            paymentReference: "VOUCHER:VC201:LOCK-1:0.00",
+            paymentMethod: PaymentMethodKind.Voucher);
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+
+        Assert.DoesNotContain("VOUCHER BALANCE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain(document.Elements, element => element.Kind == ReceiptPrintElementKind.Barcode && element.Text == "VC201");
+        Assert.DoesNotContain(document.Elements, element => element.Kind == ReceiptPrintElementKind.QrCode && element.Text == "VC201");
+    }
+
+    [Fact]
     public void Receipt_text_formatter_masks_full_pan_in_embedded_bank_receipt_text()
     {
         var receipt = CreateReceipt(
@@ -327,8 +361,29 @@ public sealed class ReceiptPrintingTests
         decimal? tenderedAmount = null,
         decimal? changeAmount = null,
         string paymentReference = "ANZ:123",
-        string bankReceiptText = "APPROVED CARD RECEIPT")
+        string bankReceiptText = "APPROVED CARD RECEIPT",
+        PaymentMethodKind paymentMethod = PaymentMethodKind.Card)
     {
+        var cardTransactions = paymentMethod == PaymentMethodKind.Card
+            ? new[]
+            {
+                new CardTransactionDto(
+                    "Linkly",
+                    "TXN-1",
+                    "AUTH1",
+                    "VISA",
+                    411111,
+                    "****1111",
+                    "M1",
+                    "00",
+                    "APPROVED",
+                    "123456",
+                    new DateTimeOffset(2026, 5, 27, 9, 1, 0, TimeSpan.Zero),
+                    9.00m,
+                    bankReceiptText)
+            }
+            : null;
+
         return new ReceiptDetails(
             orderGuid,
             "S001",
@@ -344,25 +399,10 @@ public sealed class ReceiptPrintingTests
             ],
             [
                 new ReceiptPaymentLine(
-                    PaymentMethodKind.Card,
+                    paymentMethod,
                     9.00m,
                     paymentReference,
-                    [
-                        new CardTransactionDto(
-                            "Linkly",
-                            "TXN-1",
-                            "AUTH1",
-                            "VISA",
-                            411111,
-                            "****1111",
-                            "M1",
-                            "00",
-                            "APPROVED",
-                            "123456",
-                            new DateTimeOffset(2026, 5, 27, 9, 1, 0, TimeSpan.Zero),
-                            9.00m,
-                            bankReceiptText)
-                    ])
+                    cardTransactions)
             ],
             tenderedAmount,
             changeAmount);

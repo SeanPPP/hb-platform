@@ -14,6 +14,15 @@ public interface IDeviceService
         DeviceReregisterRequest request,
         DeviceReregisterContext currentDevice,
         CancellationToken cancellationToken);
+
+    Task<bool> UpdateRuntimeStatusAsync(
+        string hardwareId,
+        string deviceCode,
+        string storeCode,
+        bool isOnline,
+        string? cashierId,
+        string? cashierName,
+        CancellationToken cancellationToken);
 }
 
 public interface IDeviceRegistrationRepository
@@ -37,6 +46,10 @@ public interface IDeviceRegistrationRepository
 
     Task CreateRegistrationAsync(
         DeviceRegistrationCreateRequest request,
+        CancellationToken cancellationToken);
+
+    Task<int> UpdateRuntimeStatusAsync(
+        DeviceRuntimeStatusUpdateRequest request,
         CancellationToken cancellationToken);
 
     Task ExecuteInTransactionAsync(
@@ -100,6 +113,15 @@ public sealed class DeviceRegistrationCreateRequest
     public string DeviceSystem { get; init; } = "Windows";
 }
 
+public sealed record DeviceRuntimeStatusUpdateRequest(
+    string HardwareId,
+    string DeviceCode,
+    string StoreCode,
+    bool IsOnline,
+    string? CashierId,
+    string? CashierName,
+    DateTime ReportedAt);
+
 public sealed class DeviceService : IDeviceService
 {
     private const int PendingStatus = -1;
@@ -111,22 +133,27 @@ public sealed class DeviceService : IDeviceService
     private readonly HbposSqlSugarContext? dbContext;
     private readonly IDeviceRegistrationRepository deviceRegistrationRepository;
     private readonly Func<string, CancellationToken, Task<DeviceStoreInfo?>> loadStoreAsync;
+    private readonly Func<DateTime> nowProvider;
 
     public DeviceService(
         HbposSqlSugarContext dbContext,
-        IDeviceRegistrationRepository deviceRegistrationRepository)
+        IDeviceRegistrationRepository deviceRegistrationRepository,
+        Func<DateTime>? nowProvider = null)
     {
         this.dbContext = dbContext;
         this.deviceRegistrationRepository = deviceRegistrationRepository;
         loadStoreAsync = LoadStoreAsync;
+        this.nowProvider = nowProvider ?? (() => DateTime.Now);
     }
 
     public DeviceService(
         IDeviceRegistrationRepository deviceRegistrationRepository,
-        Func<string, CancellationToken, Task<DeviceStoreInfo?>> loadStoreAsync)
+        Func<string, CancellationToken, Task<DeviceStoreInfo?>> loadStoreAsync,
+        Func<DateTime>? nowProvider = null)
     {
         this.deviceRegistrationRepository = deviceRegistrationRepository;
         this.loadStoreAsync = loadStoreAsync;
+        this.nowProvider = nowProvider ?? (() => DateTime.Now);
     }
 
     public async Task<DeviceRegisterResponse> RegisterAsync(
@@ -401,6 +428,38 @@ public sealed class DeviceService : IDeviceService
             null);
     }
 
+    public async Task<bool> UpdateRuntimeStatusAsync(
+        string hardwareId,
+        string deviceCode,
+        string storeCode,
+        bool isOnline,
+        string? cashierId,
+        string? cashierName,
+        CancellationToken cancellationToken)
+    {
+        var normalizedHardwareId = Normalize(hardwareId);
+        var normalizedDeviceCode = Normalize(deviceCode);
+        var normalizedStoreCode = Normalize(storeCode);
+        if (string.IsNullOrEmpty(normalizedHardwareId)
+            || string.IsNullOrEmpty(normalizedDeviceCode)
+            || string.IsNullOrEmpty(normalizedStoreCode))
+        {
+            return false;
+        }
+
+        var rows = await deviceRegistrationRepository.UpdateRuntimeStatusAsync(
+            new DeviceRuntimeStatusUpdateRequest(
+                normalizedHardwareId,
+                normalizedDeviceCode,
+                normalizedStoreCode,
+                isOnline,
+                NormalizeOptional(cashierId),
+                NormalizeOptional(cashierName),
+                nowProvider()),
+            cancellationToken);
+        return rows > 0;
+    }
+
     internal static string CreateDeviceCode(string storeCode, DateTime localTime)
     {
         return $"POS_{storeCode}_{localTime:HHmm}";
@@ -485,6 +544,12 @@ public sealed class DeviceService : IDeviceService
     private static string Normalize(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static string? NormalizeOptional(string? value)
+    {
+        var normalized = Normalize(value);
+        return normalized.Length == 0 ? null : normalized;
     }
 }
 
@@ -608,6 +673,41 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             new SugarParameter("@Remark", request.Remark),
             new SugarParameter("@CreatedAt", request.CreatedAt),
             new SugarParameter("@CreatedBy", request.CreatedBy));
+    }
+
+    public Task<int> UpdateRuntimeStatusAsync(
+        DeviceRuntimeStatusUpdateRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：心跳只更新当前授权设备的运行态字段；同一收银员连续上报时保留原登录时间。
+        const string sql = """
+            UPDATE [POSM_设备注册信息表]
+            SET [是否在线] = @IsOnline,
+                [最后心跳时间] = @ReportedAt,
+                [收银员登录时间] = CASE
+                    WHEN @HasCashier = 0 THEN NULL
+                    WHEN ISNULL([当前收银员ID], '') = ISNULL(@CashierId, '')
+                         AND [收银员登录时间] IS NOT NULL THEN [收银员登录时间]
+                    ELSE @ReportedAt
+                END,
+                [当前收银员ID] = @CashierId,
+                [当前收银员姓名] = @CashierName
+            WHERE [设备硬件识别码] = @HardwareId
+              AND [系统设备编号] = @DeviceCode
+              AND [分店代码] = @StoreCode;
+            """;
+
+        var hasCashier = request.CashierId is not null || request.CashierName is not null;
+        return dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            sql,
+            new SugarParameter("@IsOnline", request.IsOnline),
+            new SugarParameter("@ReportedAt", request.ReportedAt),
+            new SugarParameter("@HasCashier", hasCashier ? 1 : 0),
+            new SugarParameter("@CashierId", request.CashierId),
+            new SugarParameter("@CashierName", request.CashierName),
+            new SugarParameter("@HardwareId", request.HardwareId),
+            new SugarParameter("@DeviceCode", request.DeviceCode),
+            new SugarParameter("@StoreCode", request.StoreCode));
     }
 
     public async Task ExecuteInTransactionAsync(

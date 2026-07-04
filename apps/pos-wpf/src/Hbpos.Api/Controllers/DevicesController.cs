@@ -11,6 +11,11 @@ namespace Hbpos.Api.Controllers;
 [Route("api/v1/devices")]
 public sealed class DevicesController(IDeviceService deviceService) : ControllerBase
 {
+    public sealed record DeviceRuntimeStatusRequest(
+        bool IsOnline,
+        string? CurrentCashierId,
+        string? CurrentCashierName);
+
     [AllowAnonymous]
     [HttpPost("register")]
     public async Task<ActionResult<ApiResult<DeviceRegisterResponse>>> Register(
@@ -54,5 +59,39 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
             new DeviceReregisterContext(deviceCode, storeCode, hardwareId),
             cancellationToken);
         return Ok(ApiResult<DeviceReregisterResponse>.Ok(response));
+    }
+
+    [Authorize]
+    [HttpPost("runtime-status")]
+    public async Task<ActionResult<ApiResult<object>>> ReportRuntimeStatus(
+        [FromBody] DeviceRuntimeStatusRequest request,
+        CancellationToken cancellationToken)
+    {
+        var hardwareId = User?.FindFirstValue(DeviceAuthConstants.HardwareIdClaim);
+        var deviceCode = User?.FindFirstValue(DeviceAuthConstants.DeviceCodeClaim);
+        var storeCode = User?.FindFirstValue(DeviceAuthConstants.StoreCodeClaim);
+        if (string.IsNullOrWhiteSpace(hardwareId)
+            || string.IsNullOrWhiteSpace(deviceCode)
+            || string.IsNullOrWhiteSpace(storeCode))
+        {
+            return Unauthorized(ApiResult<object>.Fail(
+                "DEVICE_AUTH_REQUIRED",
+                "Device authorization is required."));
+        }
+
+        var updated = await deviceService.UpdateRuntimeStatusAsync(
+            hardwareId,
+            deviceCode,
+            storeCode,
+            request.IsOnline,
+            request.CurrentCashierId,
+            request.CurrentCashierName,
+            cancellationToken);
+        if (!updated)
+        {
+            return NotFound(ApiResult<object>.Fail("DEVICE_NOT_FOUND", "Device was not found."));
+        }
+
+        return Ok(ApiResult<object>.Ok(new { }));
     }
 }

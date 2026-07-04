@@ -37,6 +37,65 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_approved_partial_amount_restores_tender_without_saving_or_acknowledging()
+    {
+        var draft = CreateDraft(cardAmount: 5m);
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL",
+            txnRef: "TXN-PARTIAL",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus("Completed", sessionId: "SESSION-PARTIAL", txnRef: "TXN-PARTIAL", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        var restoredTender = Assert.Single(result.RestoredTenders!);
+        Assert.Equal(PaymentMethodKind.Card, restoredTender.Method);
+        Assert.Equal(5m, restoredTender.Amount);
+        Assert.Equal("CARD_ATTEMPT:aaaaaaaabbbbccccddddeeeeeeeeeeee", restoredTender.IdempotencyKey);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Null(attempts.AcknowledgedAt);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_invalid_draft_requires_review_without_leaving_restored_cart()
+    {
+        var draft = CreateDraft(cardAmount: 15m);
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-INVALID",
+            txnRef: "TXN-INVALID",
+            draft: draft,
+            amount: 15m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus("Completed", sessionId: "SESSION-INVALID", txnRef: "TXN-INVALID", responseCode: "00", responseText: "APPROVED", transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.RequiresReview, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_uses_terminal_scope_when_attempt_cashier_differs_from_current_session()
     {
         var attempt = CreateAttempt(
@@ -172,6 +231,56 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal("LOCAL-TXN-001", localTerminal.LastTxnRef);
         Assert.Equal(1, orders.SaveCount);
         Assert.Equal("ANZ:LOCAL-TXN-001", result.Order!.Payments.Single().Reference);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_local_ip_approved_partial_amount_restores_tender_without_saving_order()
+    {
+        var draft = CreateDraft(cardAmount: 5m);
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "LOCAL-TXN-PARTIAL",
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:LOCAL-TXN-PARTIAL",
+            "ANZ Linkly",
+            5m,
+            [CreateLocalCardTransaction("LOCAL-TXN-PARTIAL", "00", "APPROVED", 5m)],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            "LOCAL-TXN-PARTIAL",
+            "00",
+            "APPROVED"));
+        var cart = new PosCartService();
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        var restoredTender = Assert.Single(result.RestoredTenders!);
+        Assert.Equal(PaymentMethodKind.Card, restoredTender.Method);
+        Assert.Equal(5m, restoredTender.Amount);
+        Assert.Equal("CARD_ATTEMPT:aaaaaaaabbbbccccddddeeeeeeeeeeee", restoredTender.IdempotencyKey);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal("ANZ:LOCAL-TXN-PARTIAL", attempts.PaymentReference);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal(1, localTerminal.RecoverCallCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Single(cart.Lines);
     }
 
     [Fact]
@@ -1075,9 +1184,12 @@ public sealed class CardPaymentRecoveryServiceTests
         LocalCardPaymentAttemptStatus status = LocalCardPaymentAttemptStatus.SessionStarted,
         DateTimeOffset? acknowledgedAt = null,
         string cashierId = "C001",
-        LinklyConnectionMode connectionMode = LinklyConnectionMode.CloudBackendAsync)
+        LinklyConnectionMode connectionMode = LinklyConnectionMode.CloudBackendAsync,
+        decimal? amount = null,
+        CardPaymentOrderDraft? draft = null)
     {
         var now = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+        var attemptDraft = draft ?? CreateDraft();
         return new LocalCardPaymentAttempt(
             Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
             sessionId,
@@ -1086,9 +1198,9 @@ public sealed class CardPaymentRecoveryServiceTests
             "Sandbox",
             connectionMode.ToString(),
             "P",
-            10m,
+            amount ?? Math.Abs(attemptDraft.CardAmount),
             status,
-            JsonSerializer.Serialize(CreateDraft(), JsonOptions),
+            JsonSerializer.Serialize(attemptDraft, JsonOptions),
             "S001",
             "POS-01",
             cashierId,
@@ -1104,7 +1216,8 @@ public sealed class CardPaymentRecoveryServiceTests
     private static CardTransactionDto CreateLocalCardTransaction(
         string txnRef,
         string responseCode,
-        string responseText)
+        string responseText,
+        decimal amount = 10m)
     {
         return new CardTransactionDto(
             "ANZ",
@@ -1118,7 +1231,7 @@ public sealed class CardPaymentRecoveryServiceTests
             responseText,
             null,
             DateTimeOffset.UtcNow,
-            10m,
+            amount,
             "MERCHANT COPY");
     }
 
@@ -1157,7 +1270,10 @@ public sealed class CardPaymentRecoveryServiceTests
             null);
     }
 
-    private static CardPaymentOrderDraft CreateDraft()
+    private static CardPaymentOrderDraft CreateDraft(
+        decimal actualAmount = 10m,
+        decimal cardAmount = 10m,
+        IReadOnlyList<PaymentTender>? currentTenders = null)
     {
         return new CardPaymentOrderDraft(
             CreateOrderGuid(),
@@ -1173,15 +1289,15 @@ public sealed class CardPaymentRecoveryServiceTests
                     "ITEM-10",
                     null,
                     1m,
-                    10m,
+                    Math.Abs(actualAmount),
                     0m,
                     null,
                     PriceSourceKind.StoreRetailPrice,
                     "Store price")
             ]),
-            [],
-            10m,
-            10m,
+            currentTenders ?? [],
+            actualAmount,
+            cardAmount,
             "P",
             null,
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));

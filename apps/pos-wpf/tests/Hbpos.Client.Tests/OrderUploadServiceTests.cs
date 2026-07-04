@@ -253,6 +253,51 @@ public sealed class OrderUploadServiceTests
         }
     }
 
+    [Fact]
+    public async Task UploadOrderAsync_ignores_voucher_balance_suffix_when_mapping_payment()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"hbpos-voucher-upload-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var orders = new LocalOrderRepository(store);
+            var uploadRepository = new LocalOrderUploadRepository(store);
+            var order = CreateLocalOrder() with
+            {
+                Payments =
+                [
+                    new LocalPayment(
+                        Guid.NewGuid(),
+                        PaymentMethodKind.Voucher,
+                        5.00m,
+                        "VOUCHER:ABC123:token-1:12.34")
+                ]
+            };
+            var apiClient = new CapturingOrderSyncApiClient(order.OrderGuid);
+
+            await schema.InitializeAsync();
+            await orders.SavePendingOrderAsync(order);
+
+            var uploadService = new OrderUploadService(orders, apiClient, uploadRepository);
+            await uploadService.UploadOrderAsync(order.OrderGuid);
+
+            var payment = Assert.Single(apiClient.LastRequest!.Payments);
+            Assert.Equal(PaymentMethodKind.Voucher, payment.Method);
+            Assert.Equal("ABC123", payment.Reference);
+            Assert.Equal("token-1", payment.ReservationToken);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath))
+            {
+                File.Delete(databasePath);
+            }
+        }
+    }
+
     private static LocalOrder CreateLocalOrder()
     {
         return new LocalOrder(

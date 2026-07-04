@@ -27,7 +27,8 @@ public sealed record CardPaymentRecoveryResult(
     decimal ChangeAmount = 0m,
     PosSessionState? UpdatedSession = null,
     CardPaymentRecoveryDialogDetails? DialogDetails = null,
-    CardPaymentRecoveryBankReceipt? BankReceipt = null)
+    CardPaymentRecoveryBankReceipt? BankReceipt = null,
+    IReadOnlyList<PaymentTender>? RestoredTenders = null)
 {
     public static CardPaymentRecoveryResult None { get; } = new(CardPaymentRecoveryOutcome.None, string.Empty);
 }
@@ -252,8 +253,15 @@ public sealed class CardPaymentRecoveryService(
         if (IsApproved(status))
         {
             var result = await CompleteApprovedAttemptAsync(cart, session, settings, attempt, draft, status, cancellationToken);
-            LogRecoveryResult(settings, attempt, status, result.Outcome, "approved-order-completed");
-            return result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") };
+            var reason = result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? "approved-order-completed"
+                : result.Outcome == CardPaymentRecoveryOutcome.DraftRestored
+                    ? "approved-tender-restored"
+                    : "approved-requires-review";
+            LogRecoveryResult(settings, attempt, status, result.Outcome, reason);
+            return result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") }
+                : result;
         }
 
         if (IsDeclinedOrFailed(status))
@@ -357,8 +365,15 @@ public sealed class CardPaymentRecoveryService(
         if (authorization.Approved)
         {
             var result = await CompleteApprovedLocalAttemptAsync(cart, currentSession, attempt, draft, authorization, cancellationToken);
-            LogRecoveryResult(settings, attempt, null, result.Outcome, "local-approved-order-completed");
-            return result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") };
+            var reason = result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? "local-approved-order-completed"
+                : result.Outcome == CardPaymentRecoveryOutcome.DraftRestored
+                    ? "local-approved-tender-restored"
+                    : "local-approved-requires-review";
+            LogRecoveryResult(settings, attempt, null, result.Outcome, reason);
+            return result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted
+                ? result with { Message = T("cardRecovery.linkly.approved", "The previous card payment was successful. The order has been recovered and saved automatically.") }
+                : result;
         }
 
         if (HasLocalFinalResult(authorization))
@@ -594,7 +609,36 @@ public sealed class CardPaymentRecoveryService(
         var cashTenderedAmount = tenders
             .Where(tender => tender.Method == PaymentMethodKind.Cash)
             .Sum(tender => tender.Amount);
-        var checkoutResult = checkout.CreatePaymentOrder(cart, draft.Session, tenders, cashTenderedAmount);
+        if (IsApprovedTenderPartial(draft, tenders))
+        {
+            return await RestoreApprovedTenderAsync(
+                attempt,
+                status.ResponseCode,
+                status.ResponseText,
+                cardTender.Reference,
+                tenders,
+                BuildDialogDetails(attempt, status),
+                cancellationToken);
+        }
+
+        PaymentCheckoutResult checkoutResult;
+        try
+        {
+            checkoutResult = checkout.CreatePaymentOrder(cart, draft.Session, tenders, cashTenderedAmount);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return await MarkApprovedRecoveryRequiresReviewAsync(
+                cart,
+                attempt,
+                status.ResponseCode,
+                status.ResponseText,
+                cardTender.Reference,
+                BuildDialogDetails(attempt, status),
+                ex,
+                cancellationToken);
+        }
+
         var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
         var existingOrder = await orderRepository.GetOrderAsync(draft.OrderGuid, cancellationToken);
         if (existingOrder is null)
@@ -653,7 +697,36 @@ public sealed class CardPaymentRecoveryService(
         var cashTenderedAmount = tenders
             .Where(tender => tender.Method == PaymentMethodKind.Cash)
             .Sum(tender => tender.Amount);
-        var checkoutResult = checkout.CreatePaymentOrder(cart, draft.Session, tenders, cashTenderedAmount);
+        if (IsApprovedTenderPartial(draft, tenders))
+        {
+            return await RestoreApprovedTenderAsync(
+                attempt,
+                firstTransaction?.ResponseCode ?? authorization.ResponseCode,
+                firstTransaction?.ResponseText ?? authorization.ResponseText,
+                cardTender.Reference,
+                tenders,
+                BuildDialogDetails(attempt, authorization),
+                cancellationToken);
+        }
+
+        PaymentCheckoutResult checkoutResult;
+        try
+        {
+            checkoutResult = checkout.CreatePaymentOrder(cart, draft.Session, tenders, cashTenderedAmount);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return await MarkApprovedRecoveryRequiresReviewAsync(
+                cart,
+                attempt,
+                firstTransaction?.ResponseCode ?? authorization.ResponseCode,
+                firstTransaction?.ResponseText ?? authorization.ResponseText,
+                cardTender.Reference,
+                BuildDialogDetails(attempt, authorization),
+                ex,
+                cancellationToken);
+        }
+
         var order = checkoutResult.Order with { OrderGuid = draft.OrderGuid };
         var existingOrder = await orderRepository.GetOrderAsync(draft.OrderGuid, cancellationToken);
         if (existingOrder is null)
@@ -686,6 +759,86 @@ public sealed class CardPaymentRecoveryService(
             currentSession with { PendingSyncCount = pendingSyncCount },
             BuildDialogDetails(attempt, authorization));
     }
+
+    private async Task<CardPaymentRecoveryResult> RestoreApprovedTenderAsync(
+        LocalCardPaymentAttempt attempt,
+        string? responseCode,
+        string? responseText,
+        string? paymentReference,
+        IReadOnlyList<PaymentTender> tenders,
+        CardPaymentRecoveryDialogDetails dialogDetails,
+        CancellationToken cancellationToken)
+    {
+        await attemptRepository.UpdateOutcomeAsync(
+            attempt.AttemptGuid,
+            LocalCardPaymentAttemptStatus.Approved,
+            responseCode,
+            responseText,
+            paymentReference,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+
+        // 中文注释：终端已批准但未覆盖整单时，只恢复购物车和 tender，让收银员在付款页补齐差额。
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            T("cardRecovery.linkly.approvedTenderRestored", "The previous card payment was approved and restored as a tender. Complete the remaining payment amount before finishing the order."),
+            TenderedAmount: tenders.Sum(tender => tender.Amount),
+            DialogDetails: dialogDetails,
+            RestoredTenders: tenders);
+    }
+
+    private async Task<CardPaymentRecoveryResult> MarkApprovedRecoveryRequiresReviewAsync(
+        PosCartService cart,
+        LocalCardPaymentAttempt attempt,
+        string? responseCode,
+        string? responseText,
+        string? paymentReference,
+        CardPaymentRecoveryDialogDetails dialogDetails,
+        InvalidOperationException exception,
+        CancellationToken cancellationToken)
+    {
+        ConsoleLog.Write(
+            "CardRecovery",
+            $"recover approved draft invalid attemptGuid={attempt.AttemptGuid} error={exception.GetType().Name} message={exception.Message}");
+
+        // 中文注释：无效 draft 进入主管确认时不能留下可继续收款的购物车，避免已批准卡款被重复收取。
+        cart.Clear();
+
+        await attemptRepository.UpdateOutcomeAsync(
+            attempt.AttemptGuid,
+            LocalCardPaymentAttemptStatus.RequiresReview,
+            responseCode,
+            responseText ?? exception.Message,
+            paymentReference,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.Unknown,
+            T("cardRecovery.linkly.approvedRecoveryRequiresReview", "The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing."),
+            DialogDetails: dialogDetails);
+    }
+
+    private static bool IsApprovedTenderPartial(CardPaymentOrderDraft draft, IReadOnlyList<PaymentTender> tenders)
+    {
+        var actualAmount = RoundCurrency(draft.ActualAmount);
+        var tenderTotal = RoundCurrency(tenders.Sum(tender => tender.Amount));
+
+        if (actualAmount > 0m)
+        {
+            return tenderTotal > 0m && tenderTotal < actualAmount;
+        }
+
+        if (actualAmount < 0m)
+        {
+            return tenderTotal < 0m && tenderTotal > actualAmount;
+        }
+
+        return false;
+    }
+
+    private static decimal RoundCurrency(decimal amount) =>
+        decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
 
     private static CardPaymentRecoveryDialogDetails BuildDialogDetails(
         LocalCardPaymentAttempt attempt,

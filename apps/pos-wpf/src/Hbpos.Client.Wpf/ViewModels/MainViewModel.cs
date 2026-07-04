@@ -79,6 +79,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly ICashierLoginService? _cashierLoginService;
     private readonly EmergencyOverridePasswordService? _emergencyOverridePasswordService;
+    private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
     private readonly bool _enforceCashierPermissions;
     private readonly PosTerminalWorkflowFactory _posTerminalWorkflowFactory;
     private readonly MainChildViewModelFactory _mainChildViewModelFactory;
@@ -90,7 +91,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly DeviceReregistrationCoordinator _deviceReregistrationCoordinator;
     private readonly CatalogStartupCoordinator _catalogStartupCoordinator;
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
-    private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(30) };
+    private readonly DispatcherTimer _connectivityTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _catalogDownloadHideTimer = new();
 
     private bool _isApplyingCulture;
@@ -358,6 +359,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ICashierSessionContext? cashierSessionContext = null,
         ICashierLoginService? cashierLoginService = null,
         EmergencyOverridePasswordService? emergencyOverridePasswordService = null,
+        IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         bool enforceCashierPermissions = false)
     {
         _core = core;
@@ -417,6 +419,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _cashierLoginService = cashierLoginService;
         _emergencyOverridePasswordService = emergencyOverridePasswordService;
+        _runtimeStatusApiClient = runtimeStatusApiClient;
         _enforceCashierPermissions = enforceCashierPermissions;
         _windowOwnerProvider = windowOwnerProvider;
         AppUpdate = appUpdateState ?? new AppUpdateState();
@@ -560,9 +563,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 PosTerminal?.RefreshCart();
                 CashPayment?.RefreshCart();
             },
-            onCardRecoveryDraftRestored: () =>
+            onCardRecoveryDraftRestored: (restoredTenders, restoredStatusMessage) =>
             {
                 PosTerminal?.RefreshCart();
+                if (restoredTenders is { Count: > 0 })
+                {
+                    CashPayment?.RestoreRecoveredPaymentTenders(restoredTenders, restoredStatusMessage);
+                    return;
+                }
+
                 CashPayment?.RefreshCart();
             },
             refreshPendingSyncAsync: () => RefreshPendingSyncAsync(),
@@ -910,6 +919,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             ApplyCashierSession(emergencySession!);
             StatusMessage = emergencyMessage;
+            await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
             await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
             return true;
         }
@@ -934,6 +944,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         StatusMessage = result.Session.IsOfflineCached
             ? "已使用离线缓存登录收银员"
             : "收银员登录成功";
+        await ReportRuntimeStatusSafeAsync(Session.IsOnline, cancellationToken);
         await RecoverPendingStartupCardPaymentAttemptAfterLoginAsync();
         return true;
     }
@@ -1418,6 +1429,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Session = Session with { IsOnline = isOnline };
             }
 
+            await ReportRuntimeStatusSafeAsync(isOnline, cancellationToken);
+
             if (isOnline && autoRetryOrders)
             {
                 await TryAutoRetryPendingOrdersAsync(cancellationToken);
@@ -1438,6 +1451,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Session = Session with { IsOnline = false };
             }
 
+            await ReportRuntimeStatusSafeAsync(false, cancellationToken);
             return false;
         }
         finally
@@ -1759,6 +1773,38 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async void OnConnectivityTimerTick(object? sender, EventArgs e)
     {
         await RefreshOnlineStateAsync(CancellationToken.None, autoRetryOrders: true);
+    }
+
+    public Task ReportOfflineForShutdownAsync()
+    {
+        return ReportRuntimeStatusSafeAsync(false, CancellationToken.None, clearCashier: true);
+    }
+
+    private async Task ReportRuntimeStatusSafeAsync(
+        bool isOnline,
+        CancellationToken cancellationToken,
+        bool clearCashier = false)
+    {
+        if (_runtimeStatusApiClient is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var cashier = clearCashier ? null : Session.CashierSession ?? _cashierSessionContext.CurrentSession;
+            // 中文注释：运行状态上报是后台看板信息，失败不能阻断本机收银和离线缓存流程。
+            await _runtimeStatusApiClient.ReportAsync(
+                new PosRuntimeStatusReport(
+                    isOnline,
+                    cashier?.CashierId,
+                    cashier?.CashierName),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write("RuntimeStatus", $"runtime status report failed error={ex.Message}");
+        }
     }
 
     private void OnCatalogDownloadHideTimerTick(object? sender, EventArgs e)

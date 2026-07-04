@@ -114,6 +114,20 @@ namespace BlazorApp.Api.Interfaces
         Task<bool> ValidateDeviceAuthCodeAsync(string hardwareId, string authCode);
 
         /// <summary>
+        /// 更新设备运行状态
+        /// </summary>
+        /// <param name="hardwareId">设备硬件识别码</param>
+        /// <param name="isOnline">是否在线</param>
+        /// <param name="cashierId">当前收银员ID</param>
+        /// <param name="cashierName">当前收银员姓名</param>
+        /// <returns></returns>
+        Task<bool> UpdateRuntimeStatusAsync(
+            string hardwareId,
+            bool isOnline,
+            string? cashierId,
+            string? cashierName);
+
+        /// <summary>
         /// 验证设备授权码并在授权码不匹配时返回数据库中的最新授权码（仅限启用设备）
         /// </summary>
         /// <param name="hardwareId">硬件ID</param>

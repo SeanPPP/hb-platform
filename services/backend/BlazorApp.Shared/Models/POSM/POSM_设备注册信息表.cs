@@ -71,6 +71,38 @@ namespace BlazorApp.Shared.Models.POSM
         [SugarColumn(Length = 500, IsNullable = true)]
         public string? 备注 { get; set; }
 
+        #region 运行状态字段
+        /// <summary>
+        /// 是否在线
+        /// </summary>
+        [SugarColumn(IsNullable = false)]
+        public bool 是否在线 { get; set; }
+
+        /// <summary>
+        /// 最后心跳时间
+        /// </summary>
+        [SugarColumn(IsNullable = true)]
+        public DateTime? 最后心跳时间 { get; set; }
+
+        /// <summary>
+        /// 当前收银员ID
+        /// </summary>
+        [SugarColumn(Length = 100, IsNullable = true)]
+        public string? 当前收银员ID { get; set; }
+
+        /// <summary>
+        /// 当前收银员姓名
+        /// </summary>
+        [SugarColumn(Length = 100, IsNullable = true)]
+        public string? 当前收银员姓名 { get; set; }
+
+        /// <summary>
+        /// 收银员登录时间
+        /// </summary>
+        [SugarColumn(IsNullable = true)]
+        public DateTime? 收银员登录时间 { get; set; }
+        #endregion
+
         #region 审计字段
         /// <summary>
         /// 创建时间

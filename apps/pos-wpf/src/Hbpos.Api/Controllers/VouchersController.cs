@@ -80,6 +80,43 @@ public sealed class VouchersController(IStoreVoucherService voucherService) : Co
     }
 
     [Authorize]
+    [HttpPost("release")]
+    public async Task<ActionResult<ApiResult<StoreVoucherReleaseResponse>>> Release(
+        [FromBody] StoreVoucherReleaseRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.StoreCode))
+        {
+            return BadRequest(ApiResult<StoreVoucherReleaseResponse>.Fail("STORE_CODE_REQUIRED", "storeCode is required"));
+        }
+
+        if (string.IsNullOrWhiteSpace(request.VoucherCode))
+        {
+            return BadRequest(ApiResult<StoreVoucherReleaseResponse>.Fail("VOUCHER_CODE_REQUIRED", "voucherCode is required"));
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ReservationToken))
+        {
+            return BadRequest(ApiResult<StoreVoucherReleaseResponse>.Fail("RESERVATION_TOKEN_REQUIRED", "reservationToken is required"));
+        }
+
+        if (!this.IsDeviceScopeAllowed(request.StoreCode!))
+        {
+            return DeviceAuthorizationExtensions.DeviceScopeForbidden<StoreVoucherReleaseResponse>("Device is not authorized for this store.");
+        }
+
+        try
+        {
+            var response = await voucherService.ReleaseAsync(request, cancellationToken);
+            return Ok(ApiResult<StoreVoucherReleaseResponse>.Ok(response));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResult<StoreVoucherReleaseResponse>.Fail("VOUCHER_RELEASE_INVALID", ex.Message));
+        }
+    }
+
+    [Authorize]
     [HttpPost("refund")]
     public async Task<ActionResult<ApiResult<StoreVoucherIssueRefundResponse>>> IssueRefund(
         [FromBody] StoreVoucherIssueRefundRequest request,

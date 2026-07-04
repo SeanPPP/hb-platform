@@ -60,6 +60,7 @@ public partial class App : Application
             await _host.StartAsync();
             var localization = _host.Services.GetRequiredService<ILocalizationService>();
             LocalizationResourceProvider.Instance.Configure(localization);
+            ButtonFeedbackRouter.Register(_host.Services.GetRequiredService<IUserFeedbackService>());
             _startupProgressState?.SetStage(HostStartedPercent, localization.T("startup.stage.startingLocalComponents"));
 
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
@@ -125,6 +126,12 @@ public partial class App : Application
             {
                 try
                 {
+                    var mainViewModel = _host.Services.GetService<MainViewModel>();
+                    if (mainViewModel is not null)
+                    {
+                        await mainViewModel.ReportOfflineForShutdownAsync();
+                    }
+
                     // 退出入口同样是 async void，StopAsync 失败时记录日志后继续释放资源。
                     await _host.StopAsync(TimeSpan.FromSeconds(3));
                 }

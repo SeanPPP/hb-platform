@@ -11,6 +11,7 @@ import request, { unwrapApiData } from '../utils/request'
 
 const DEVICE_API_BASE = '/api'
 const REACT_API_BASE = '/api/react/v1/device-registration'
+export const DEVICE_RUNTIME_ONLINE_STALE_MS = 45_000
 
 function getString(raw: Record<string, unknown>, ...keys: string[]) {
   for (const key of keys) {
@@ -33,6 +34,28 @@ function getNullableString(raw: Record<string, unknown>, ...keys: string[]) {
     }
   }
   return null
+}
+
+function getBoolean(raw: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = raw[key]
+    if (typeof value === 'boolean') {
+      return value
+    }
+  }
+  return false
+}
+
+export function isDeviceRuntimeOnline(
+  item: Pick<DeviceRegistrationItem, 'isOnline' | 'lastHeartbeatAt'>,
+  now = Date.now()
+) {
+  if (!item.isOnline || !item.lastHeartbeatAt) {
+    return false
+  }
+
+  const heartbeatTime = Date.parse(item.lastHeartbeatAt)
+  return !Number.isNaN(heartbeatTime) && now - heartbeatTime <= DEVICE_RUNTIME_ONLINE_STALE_MS
 }
 
 function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
@@ -76,6 +99,16 @@ function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
         : typeof raw.LastModifiedBy === 'string'
           ? raw.LastModifiedBy
           : null,
+    isOnline: getBoolean(raw, 'isOnline', 'IsOnline', '是否在线'),
+    lastHeartbeatAt: getNullableString(raw, 'lastHeartbeatAt', 'LastHeartbeatAt', '最后心跳时间'),
+    currentCashierId: getNullableString(raw, 'currentCashierId', 'CurrentCashierId', '当前收银员ID'),
+    currentCashierName: getNullableString(
+      raw,
+      'currentCashierName',
+      'CurrentCashierName',
+      '当前收银员姓名'
+    ),
+    cashierLoginAt: getNullableString(raw, 'cashierLoginAt', 'CashierLoginAt', '收银员登录时间'),
   }
 }
 
@@ -101,6 +134,16 @@ export function normalizeDeviceRegistrationDetail(
     lastModified: getNullableString(raw, 'lastModified', '最后修改时间', 'LastModified'),
     createdBy: getNullableString(raw, 'createdBy', '创建人', 'CreatedBy'),
     lastModifiedBy: getNullableString(raw, 'lastModifiedBy', '最后修改人', 'LastModifiedBy'),
+    isOnline: getBoolean(raw, 'isOnline', '是否在线', 'IsOnline'),
+    lastHeartbeatAt: getNullableString(raw, 'lastHeartbeatAt', '最后心跳时间', 'LastHeartbeatAt'),
+    currentCashierId: getNullableString(raw, 'currentCashierId', '当前收银员ID', 'CurrentCashierId'),
+    currentCashierName: getNullableString(
+      raw,
+      'currentCashierName',
+      '当前收银员姓名',
+      'CurrentCashierName'
+    ),
+    cashierLoginAt: getNullableString(raw, 'cashierLoginAt', '收银员登录时间', 'CashierLoginAt'),
   }
 }
 

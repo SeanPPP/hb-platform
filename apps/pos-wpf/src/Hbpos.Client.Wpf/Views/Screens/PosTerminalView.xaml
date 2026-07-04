@@ -7,6 +7,7 @@
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
              xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
              mc:Ignorable="d"
              d:DesignHeight="688"
@@ -757,9 +758,10 @@
                         <DataGridTemplateColumn Header="" Width="58" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Button Command="{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                            CommandParameter="{Binding}"
-                                            Style="{StaticResource CartDeleteButtonStyle}"
+                                     <Button Command="{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                             CommandParameter="{Binding}"
+                                             services:ButtonFeedback.Cue="Delete"
+                                             Style="{StaticResource CartDeleteButtonStyle}"
                                             HorizontalAlignment="Center"
                                             VerticalAlignment="Center"
                                             ToolTip="{loc:Loc Remove}">
@@ -836,9 +838,10 @@
                             <TextBlock Grid.Column="1" Text="{Binding ActualAmount, StringFormat={}{0:C2}}" FontSize="28" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" TextAlignment="Right" Margin="16,0,0,0" />
                         </Grid>
                     </Grid>
-                    <Button Grid.Row="1"
-                            Command="{Binding OpenPaymentCommand}"
-                            Height="52"
+                     <Button Grid.Row="1"
+                             Command="{Binding OpenPaymentCommand}"
+                             services:ButtonFeedback.Cue="Checkout"
+                             Height="52"
                             Style="{StaticResource PosBlueGradientButtonStyle}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="Cash" Width="20" Height="20" Foreground="White" Margin="0,0,10,0" />
@@ -1059,7 +1062,7 @@
                         <TextBlock Text="{Binding HoldOrderText}" Style="{StaticResource PosStitchTileLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding OpenCashDrawerCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding OpenCashDrawerCommand}" services:ButtonFeedback.Cue="CashDrawer" Style="{StaticResource PosStitchActionButtonStyle}">
                     <StackPanel>
                         <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
                             <materialDesign:PackIcon Kind="CashRegister" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />

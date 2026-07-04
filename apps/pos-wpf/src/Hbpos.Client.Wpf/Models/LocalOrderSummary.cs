@@ -1,3 +1,4 @@
+using System.Globalization;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 
@@ -41,6 +42,8 @@ public sealed record ReceiptPaymentLine(
     IReadOnlyList<CardTransactionDto>? CardTransactions = null)
 {
     public string? DisplayReference => PaymentReferenceDisplay.Format(Method, Reference);
+
+    public decimal? VoucherRemainingBalance => PaymentReferenceDisplay.GetVoucherRemainingBalance(Method, Reference);
 
     public string? CardSummary => CardTransactions is { Count: > 0 }
         ? PaymentReferenceDisplay.FormatCardSummary(CardTransactions[0])
@@ -87,6 +90,26 @@ public static class PaymentReferenceDisplay
 
         var cardReference = CardRefundReference.GetDisplayReference(reference);
         return LinklyBackendPaymentReference.GetDisplayReference(cardReference);
+    }
+
+    public static decimal? GetVoucherRemainingBalance(PaymentMethodKind method, string? reference)
+    {
+        if (method != PaymentMethodKind.Voucher || string.IsNullOrWhiteSpace(reference))
+        {
+            return null;
+        }
+
+        var parts = reference.Split(':', StringSplitOptions.TrimEntries);
+        if (parts.Length < 4 || !parts[0].Equals("VOUCHER", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        // 中文注释：余额段是本地打印扩展，非法或非正数余额都按无余额处理。
+        return decimal.TryParse(parts[3], NumberStyles.Number, CultureInfo.InvariantCulture, out var balance) &&
+            balance > 0m
+                ? balance
+                : null;
     }
 
     public static string? FormatCardSummary(CardTransactionDto transaction)

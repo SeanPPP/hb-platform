@@ -13,6 +13,11 @@ export interface DeviceRegistrationItem {
   lastModified?: string | null
   createdBy?: string | null
   lastModifiedBy?: string | null
+  isOnline: boolean
+  lastHeartbeatAt?: string | null
+  currentCashierId?: string | null
+  currentCashierName?: string | null
+  cashierLoginAt?: string | null
 }
 
 export interface DeviceRegistrationDetail extends DeviceRegistrationItem {}

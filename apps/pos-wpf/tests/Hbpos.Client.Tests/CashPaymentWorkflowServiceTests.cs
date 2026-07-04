@@ -832,6 +832,44 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Payment_workflow_releases_voucher_reservation_from_tender_reference()
+    {
+        var vouchers = new ApprovedVoucherTenderClient("VOUCHER:VC100:LOCK-1:15.00");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            voucherTenderClient: vouchers);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var released = await workflow.ReleaseVoucherTenderAsync(
+            new PaymentTender(PaymentMethodKind.Voucher, 5m, "VOUCHER:VC100:LOCK-1:15.00"),
+            session);
+
+        Assert.True(released);
+        Assert.Equal(1, vouchers.ReleaseCallCount);
+        Assert.Equal("VC100", vouchers.LastReleaseVoucherCode);
+        Assert.Equal("LOCK-1", vouchers.LastReleaseReservationToken);
+    }
+
+    [Fact]
+    public async Task Payment_workflow_returns_false_when_voucher_release_throws()
+    {
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            voucherTenderClient: new ThrowingVoucherTenderClient());
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var released = await workflow.ReleaseVoucherTenderAsync(
+            new PaymentTender(PaymentMethodKind.Voucher, 5m, "VOUCHER:VC100:LOCK-1:15.00"),
+            session);
+
+        Assert.False(released);
+    }
+
+    [Fact]
     public async Task Payment_workflow_retries_failed_voucher_upload_without_saving_duplicate_order()
     {
         var cart = new PosCartService();
@@ -884,6 +922,29 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.True(tender.Succeeded);
         Assert.NotNull(tender.Tender);
         Assert.Equal(-7.80m, tender.Tender.Amount);
+    }
+
+    [Fact]
+    public async Task Payment_workflow_blocks_partial_card_before_terminal_authorization()
+    {
+        var cardTerminal = new ApprovedCardTerminalClient("CARD-PARTIAL");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: cardTerminal);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [],
+            amountText: "5");
+
+        Assert.False(tender.Succeeded);
+        Assert.Equal("payment.status.cardMustBeFinalTender", tender.StatusKey);
+        Assert.Equal(0, cardTerminal.AuthorizeCallCount);
     }
 
     [Fact]
@@ -1866,11 +1927,14 @@ public sealed class CashPaymentWorkflowServiceTests
 
     private sealed class ApprovedCardTerminalClient(string reference) : ICardTerminalClient
     {
+        public int AuthorizeCallCount { get; private set; }
+
         public Task<PaymentAuthorizationResult> AuthorizeAsync(
             decimal amount,
             PosSessionState session,
             CancellationToken cancellationToken = default)
         {
+            AuthorizeCallCount++;
             return Task.FromResult(new PaymentAuthorizationResult(true, reference));
         }
 
@@ -1891,9 +1955,15 @@ public sealed class CashPaymentWorkflowServiceTests
     {
         public int IssueRefundCallCount { get; private set; }
 
+        public int ReleaseCallCount { get; private set; }
+
         public string? LastOrderReference { get; private set; }
 
         public string? LastIdempotencyKey { get; private set; }
+
+        public string? LastReleaseVoucherCode { get; private set; }
+
+        public string? LastReleaseReservationToken { get; private set; }
 
         public Task<PaymentAuthorizationResult> RedeemAsync(
             decimal amount,
@@ -1919,6 +1989,18 @@ public sealed class CashPaymentWorkflowServiceTests
             return Task.FromResult(approveRefund
                 ? new PaymentAuthorizationResult(true, reference, AuthorizedAmount: authorizedAmount ?? amount)
                 : new PaymentAuthorizationResult(false, null, "issue failed"));
+        }
+
+        public Task<bool> ReleaseAsync(
+            PosSessionState session,
+            string voucherCode,
+            string reservationToken,
+            CancellationToken cancellationToken = default)
+        {
+            ReleaseCallCount++;
+            LastReleaseVoucherCode = voucherCode;
+            LastReleaseReservationToken = reservationToken;
+            return Task.FromResult(true);
         }
     }
 
@@ -1952,6 +2034,47 @@ public sealed class CashPaymentWorkflowServiceTests
             return Task.FromResult(FailIssueRefund
                 ? new PaymentAuthorizationResult(false, null, "issue failed")
                 : new PaymentAuthorizationResult(true, reference, AuthorizedAmount: amount));
+        }
+
+        public Task<bool> ReleaseAsync(
+            PosSessionState session,
+            string voucherCode,
+            string reservationToken,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class ThrowingVoucherTenderClient : IVoucherTenderClient
+    {
+        public Task<PaymentAuthorizationResult> RedeemAsync(
+            decimal amount,
+            PosSessionState session,
+            string? voucherCode,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<PaymentAuthorizationResult> IssueRefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string orderReference,
+            string idempotencyKey,
+            string? reason = null,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<bool> ReleaseAsync(
+            PosSessionState session,
+            string voucherCode,
+            string reservationToken,
+            CancellationToken cancellationToken = default)
+        {
+            throw new HttpRequestException("release unavailable");
         }
     }
 

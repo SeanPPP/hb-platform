@@ -45,9 +45,11 @@ public sealed class MainViewModelScannerTests
     public async Task Cashier_login_overlay_stays_open_until_cashier_session_exists()
     {
         var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
         var viewModel = CreateAuthorizedMainViewModel(
             new FakeCustomerDisplayWindowService(),
-            cashierLoginService: new FakeCashierLoginService(cashierSession));
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus);
 
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
 
@@ -58,6 +60,33 @@ public sealed class MainViewModelScannerTests
 
         Assert.False(viewModel.IsCashierLoginOverlayOpen);
         Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        var report = Assert.Single(runtimeStatus.Reports);
+        Assert.False(report.IsOnline);
+        Assert.Equal("CASHIER-1", report.CashierId);
+        Assert.Equal("Alice", report.CashierName);
+    }
+
+    [Fact]
+    public async Task Cashier_login_keeps_login_success_when_runtime_status_report_fails()
+    {
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var runtimeStatus = new RecordingRuntimeStatusApiClient
+        {
+            ReportException = new InvalidOperationException("runtime status unavailable")
+        };
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.CashierBarcodeInput = "BAR-1";
+
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.Equal(1, runtimeStatus.CallCount);
     }
 
     [Fact]
@@ -407,7 +436,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Partial_card_tender_stays_on_payment_screen_and_blocks_back_to_pos()
+    public async Task Partial_card_tender_is_blocked_and_back_to_pos_allowed()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("1042", "SKU-PARTIAL-CARD", "930PART"));
@@ -427,11 +456,14 @@ public sealed class MainViewModelScannerTests
         payment.TenderAmountText = "5";
 
         await payment.SelectCardCommand.ExecuteAsync(null);
-        payment.BackToPosCommand.Execute(null);
 
         Assert.Same(payment, viewModel.CurrentScreen);
-        Assert.Single(payment.PaymentTenders);
-        Assert.Equal("Remove added tenders or complete the payment before returning to POS.", payment.StatusMessage);
+        Assert.Empty(payment.PaymentTenders);
+        Assert.Equal("Card must be the final payment tender.", payment.StatusMessage);
+
+        payment.BackToPosCommand.Execute(null);
+
+        Assert.Same(viewModel.PosTerminal, viewModel.CurrentScreen);
     }
 
     [Fact]
@@ -2680,6 +2712,29 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Connectivity_refresh_reports_runtime_status_with_current_cashier()
+    {
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            runtimeStatusApiClient: runtimeStatus);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.CashierBarcodeInput = "BAR-1";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+        runtimeStatus.Reports.Clear();
+        await InvokeRefreshOnlineStateAsync(viewModel);
+
+        var report = Assert.Single(runtimeStatus.Reports);
+        Assert.True(report.IsOnline);
+        Assert.Equal("CASHIER-1", report.CashierId);
+        Assert.Equal("Alice", report.CashierName);
+    }
+
+    [Fact]
     public async Task Connectivity_refresh_swallows_auto_retry_snapshot_refresh_failure()
     {
         var syncQueue = new FakeSyncQueueRepository
@@ -2906,6 +2961,44 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(viewModel.CardRecoveryResultDialog);
         Assert.Equal("Previous card transaction was not completed", viewModel.CardRecoveryResultDialog!.Title);
         Assert.False(viewModel.CardRecoveryResultDialog.CanPrintReceipt);
+    }
+
+    [Fact]
+    public async Task Card_payment_recovery_restored_tender_during_startup_opens_payment_screen()
+    {
+        var cart = new PosCartService();
+        var recoveredTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            5m,
+            "ANZ:RECOVERED-PARTIAL",
+            IdempotencyKey: "CARD_ATTEMPT:aaaaaaaabbbbccccddddeeeeeeeeeeee");
+        var recovery = new FakeCardPaymentRecoveryService((recoveredCart, _, _) =>
+        {
+            recoveredCart.AddItem(CreateItem("1042", "SKU-RECOVER-PARTIAL", "930RECOVERPARTIAL"));
+            return Task.FromResult(new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.DraftRestored,
+                "Recovered approved card tender.",
+                RestoredTenders: [recoveredTender]));
+        });
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cardPaymentRecoveryService: recovery,
+            cart: cart);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var recovered = await InvokeRecoverCardPaymentAttemptAsync(viewModel, navigateToPaymentOnDraft: false);
+
+        Assert.True(recovered);
+        Assert.Equal(1, recovery.CallCount);
+        Assert.Same(viewModel.CashPayment, viewModel.CurrentScreen);
+        Assert.True(viewModel.IsCashPaymentScreenActive);
+        Assert.False(viewModel.IsPosTerminalScreenActive);
+        var tender = Assert.Single(viewModel.CashPayment!.PaymentTenders);
+        Assert.Equal(PaymentMethodKind.Card, tender.Method);
+        Assert.Equal(5m, tender.Amount);
+        Assert.Equal("CARD_ATTEMPT:aaaaaaaabbbbccccddddeeeeeeeeeeee", tender.IdempotencyKey);
+        Assert.Equal("Recovered approved card tender.", viewModel.CashPayment.StatusMessage);
+        Assert.Single(cart.Lines);
     }
 
     [Fact]
@@ -3385,6 +3478,7 @@ public sealed class MainViewModelScannerTests
         IRawScannerService? rawScannerService = null,
         ICashierSessionContext? cashierSessionContext = null,
         ICashierLoginService? cashierLoginService = null,
+        IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
         bool enforceCashierPermissions = false)
     {
@@ -3437,6 +3531,7 @@ public sealed class MainViewModelScannerTests
             cashDrawerService: cashDrawerService,
             cashierSessionContext: cashierSessionContext,
             cashierLoginService: cashierLoginService,
+            runtimeStatusApiClient: runtimeStatusApiClient,
             enforceCashierPermissions: enforceCashierPermissions);
     }
 
@@ -4291,6 +4386,29 @@ public sealed class MainViewModelScannerTests
             }
 
             return Task.FromResult(_responses.Count > 0 && _responses.Dequeue());
+        }
+    }
+
+    private sealed class RecordingRuntimeStatusApiClient : IPosRuntimeStatusApiClient
+    {
+        public List<PosRuntimeStatusReport> Reports { get; } = [];
+
+        public int CallCount { get; private set; }
+
+        public Exception? ReportException { get; init; }
+
+        public Task ReportAsync(
+            PosRuntimeStatusReport report,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            if (ReportException is not null)
+            {
+                return Task.FromException(ReportException);
+            }
+
+            Reports.Add(report);
+            return Task.CompletedTask;
         }
     }
 

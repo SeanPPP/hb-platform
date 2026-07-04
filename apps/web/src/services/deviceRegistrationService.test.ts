@@ -3,6 +3,7 @@ import {
   buildUpdateDeviceRegistrationPayload,
   disableDevice,
   getDeviceRegistrations,
+  isDeviceRuntimeOnline,
   lockDevice,
   normalizeDeviceRegistrationDetail,
 } from './deviceRegistrationService'
@@ -88,6 +89,53 @@ assertEqual(
   normalizedCamelDetail.remark,
   'camel field',
   'Should normalize camelCase remark field',
+)
+assertEqual(
+  normalizedCamelDetail.isOnline,
+  false,
+  'Should normalize missing runtime online field as false'
+)
+
+const normalizedRuntimeDetail = normalizeDeviceRegistrationDetail({
+  id: 14,
+  hardwareId: 'HW-RUN-01',
+  systemDeviceNumber: 'POS-RUN-01',
+  deviceType: 'POS',
+  deviceSystem: 'Windows',
+  status: 1,
+  isOnline: true,
+  lastHeartbeatAt: '2026-07-01T10:00:00Z',
+  currentCashierId: 'CASHIER-1',
+  currentCashierName: 'Alice',
+  cashierLoginAt: '2026-07-01T09:55:00Z',
+})
+
+assertEqual(normalizedRuntimeDetail.isOnline, true, 'Should normalize runtime online status')
+assertEqual(
+  normalizedRuntimeDetail.lastHeartbeatAt,
+  '2026-07-01T10:00:00Z',
+  'Should normalize last heartbeat time',
+)
+assertEqual(
+  normalizedRuntimeDetail.currentCashierName,
+  'Alice',
+  'Should normalize current cashier name',
+)
+assertEqual(
+  isDeviceRuntimeOnline(
+    normalizedRuntimeDetail,
+    Date.parse('2026-07-01T10:00:44Z')
+  ),
+  true,
+  'Runtime status should stay online inside the 45 second heartbeat window',
+)
+assertEqual(
+  isDeviceRuntimeOnline(
+    normalizedRuntimeDetail,
+    Date.parse('2026-07-01T10:00:46Z')
+  ),
+  false,
+  'Runtime status should become offline after the 45 second heartbeat window',
 )
 
 const updateValuesWithRuntimeExtras = {

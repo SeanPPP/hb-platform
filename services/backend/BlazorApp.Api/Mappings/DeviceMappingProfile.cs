@@ -45,7 +45,12 @@ namespace BlazorApp.Api.Mappings
                 .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => src.创建时间))
                 .ForMember(dest => dest.LastModified, opt => opt.MapFrom(src => src.最后修改时间))
                 .ForMember(dest => dest.CreatedBy, opt => opt.MapFrom(src => src.创建人))
-                .ForMember(dest => dest.LastModifiedBy, opt => opt.MapFrom(src => src.最后修改人));
+                .ForMember(dest => dest.LastModifiedBy, opt => opt.MapFrom(src => src.最后修改人))
+                .ForMember(dest => dest.IsOnline, opt => opt.MapFrom(src => src.是否在线))
+                .ForMember(dest => dest.LastHeartbeatAt, opt => opt.MapFrom(src => src.最后心跳时间))
+                .ForMember(dest => dest.CurrentCashierId, opt => opt.MapFrom(src => src.当前收银员ID))
+                .ForMember(dest => dest.CurrentCashierName, opt => opt.MapFrom(src => src.当前收银员姓名))
+                .ForMember(dest => dest.CashierLoginAt, opt => opt.MapFrom(src => src.收银员登录时间));
         }
 
         /// <summary>

@@ -29,6 +29,14 @@ public interface ICashPaymentWorkflowService
         CancellationToken cancellationToken = default,
         PosCartSnapshot? cartSnapshot = null);
 
+    Task<bool> ReleaseVoucherTenderAsync(
+        PaymentTender tender,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(false);
+    }
+
     Task<CashPaymentWorkflowResult> CompleteAsync(
         PosCartService cart,
         PosSessionState session,
@@ -253,6 +261,40 @@ public sealed class CashPaymentWorkflowService(
         };
     }
 
+    public async Task<bool> ReleaseVoucherTenderAsync(
+        PaymentTender tender,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        if (tender.Method != PaymentMethodKind.Voucher)
+        {
+            return false;
+        }
+
+        var (voucherCode, reservationToken) = ParseVoucherReservationFromReference(tender.Reference);
+        if (string.IsNullOrWhiteSpace(voucherCode) || string.IsNullOrWhiteSpace(reservationToken))
+        {
+            return false;
+        }
+
+        try
+        {
+            // 中文注释：释放锁定只使用前三段，余额打印扩展段不会参与后端释放。
+            return await _voucherTenderClient.ReleaseAsync(session, voucherCode, reservationToken, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.Write(
+                "VoucherRelease",
+                $"release failed voucher={LogValue(voucherCode)} token={LogValue(reservationToken)} error={ex.GetType().Name} message={LogValue(ex.Message)}");
+            return false;
+        }
+    }
+
     public async Task<CashPaymentWorkflowResult> CompleteAsync(
         PosCartService cart,
         PosSessionState session,
@@ -432,6 +474,14 @@ public sealed class CashPaymentWorkflowService(
                 "CardRefund",
                 $"workflow blocked card {(isRefund ? "refund" : "payment")} reason=amount-exceeds-remaining amount={amount:0.00} remaining={remainingAmount:0.00} originalReference={LogValue(referenceText)}");
             return PaymentTenderAttemptResult.Fail(exceedsRemainingStatusKey);
+        }
+
+        if (!isRefund && amount < remainingAmount)
+        {
+            ConsoleLog.Write(
+                "CardRefund",
+                $"workflow blocked card payment reason=amount-below-remaining amount={amount:0.00} remaining={remainingAmount:0.00}");
+            return PaymentTenderAttemptResult.Fail("payment.status.cardMustBeFinalTender");
         }
 
         var operation = isRefund ? "refund" : "payment";
@@ -1379,6 +1429,14 @@ public sealed class CashPaymentWorkflowService(
                 : reference;
     }
 
+    private static (string? VoucherCode, string? ReservationToken) ParseVoucherReservationFromReference(string? reference)
+    {
+        var parts = (reference ?? string.Empty).Split(':', StringSplitOptions.TrimEntries);
+        return parts.Length >= 3 && parts[0].Equals("VOUCHER", StringComparison.OrdinalIgnoreCase)
+            ? (parts[1], parts[2])
+            : (null, null);
+    }
+
     private static string? NormalizeVoucherCode(string? voucherCode)
     {
         return string.IsNullOrWhiteSpace(voucherCode) ? null : voucherCode.Trim();
@@ -1516,6 +1574,12 @@ public interface IVoucherTenderClient
         string idempotencyKey,
         string? reason = null,
         CancellationToken cancellationToken = default);
+
+    Task<bool> ReleaseAsync(
+        PosSessionState session,
+        string voucherCode,
+        string reservationToken,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record PaymentAuthorizationResult(
@@ -1624,6 +1688,15 @@ public sealed class UnavailableVoucherTenderClient : IVoucherTenderClient
         CancellationToken cancellationToken = default)
     {
         return Task.FromResult(new PaymentAuthorizationResult(false));
+    }
+
+    public Task<bool> ReleaseAsync(
+        PosSessionState session,
+        string voucherCode,
+        string reservationToken,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(false);
     }
 }
 

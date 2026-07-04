@@ -16,8 +16,13 @@ public sealed class DevicesControllerTests
         Assert.Equal("register", GetHttpPostTemplate(nameof(DevicesController.Register)));
         Assert.Equal("verify", GetHttpPostTemplate(nameof(DevicesController.Verify)));
         Assert.Equal("reregister", GetHttpPostTemplate(nameof(DevicesController.Reregister)));
+        Assert.Equal("runtime-status", GetHttpPostTemplate(nameof(DevicesController.ReportRuntimeStatus)));
         Assert.NotNull(typeof(DevicesController)
             .GetMethod(nameof(DevicesController.Reregister))?
+            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            .SingleOrDefault());
+        Assert.NotNull(typeof(DevicesController)
+            .GetMethod(nameof(DevicesController.ReportRuntimeStatus))?
             .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
             .SingleOrDefault());
     }
@@ -130,6 +135,18 @@ public sealed class DevicesControllerTests
         public DeviceReregisterRequest? LastReregisterRequest { get; private set; }
 
         public DeviceReregisterContext? LastReregisterContext { get; private set; }
+
+        public Task<bool> UpdateRuntimeStatusAsync(
+            string hardwareId,
+            string deviceCode,
+            string storeCode,
+            bool isOnline,
+            string? cashierId,
+            string? cashierName,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(true);
+        }
 
         public Task<DeviceRegisterResponse> RegisterAsync(
             DeviceRegisterRequest request,

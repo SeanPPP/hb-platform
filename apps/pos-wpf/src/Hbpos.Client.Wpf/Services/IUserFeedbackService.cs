@@ -2,10 +2,16 @@ namespace Hbpos.Client.Wpf.Services;
 
 public enum UserFeedbackCue
 {
+    ButtonClick,
     ScanAdded,
     ScanMultipleMatches,
     ScanNoMatch,
-    OperationError
+    OperationError,
+    Delete,
+    Checkout,
+    CashDrawer,
+    Download,
+    VersionNotice
 }
 
 public interface IUserFeedbackService

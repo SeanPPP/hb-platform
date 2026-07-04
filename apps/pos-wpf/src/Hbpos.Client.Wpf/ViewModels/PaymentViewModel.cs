@@ -58,6 +58,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private string _voucherCodeText = string.Empty;
 
     [ObservableProperty]
+    private string _voucherEntryText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isVoucherEntryDialogOpen;
+
+    [ObservableProperty]
     private decimal _changeDue;
 
     [ObservableProperty]
@@ -166,7 +172,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             () => AddTenderByMethodAsync(PaymentMethodKind.Card),
             () => CanAddTender(PaymentMethodKind.Card, allowDefaultAmount: true));
         SelectVoucherCommand = new AsyncRelayCommand(() => AddTenderByMethodAsync(PaymentMethodKind.Voucher), () => CanAddTender(PaymentMethodKind.Voucher, allowDefaultAmount: true));
-        RemoveTenderCommand = new RelayCommand<PaymentTender>(RemoveTender, CanRemoveTender);
+        OpenVoucherEntryCommand = new RelayCommand(OpenVoucherEntry, CanOpenVoucherEntry);
+        VoucherEntryKeyCommand = new RelayCommand<string>(ApplyVoucherEntryKey, _ => CanUseVoucherEntryDialog());
+        ConfirmVoucherEntryCommand = new AsyncRelayCommand(ConfirmVoucherEntryAsync, CanConfirmVoucherEntry);
+        CancelVoucherEntryCommand = new RelayCommand(CancelVoucherEntry, () => IsVoucherEntryDialogOpen);
+        RemoveTenderCommand = new AsyncRelayCommand<PaymentTender?>(RemoveTenderAsync, CanRemoveTender);
         ConfirmPaymentCommand = new AsyncRelayCommand(ConfirmPaymentAsync, CanConfirmPayment);
         CancelCommand = new RelayCommand(CancelPayment, CanCancelPayment);
         BackToPosCommand = new RelayCommand(BackToPos, CanBackToPos);
@@ -211,7 +221,15 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand SelectVoucherCommand { get; }
 
-    public IRelayCommand<PaymentTender> RemoveTenderCommand { get; }
+    public IRelayCommand OpenVoucherEntryCommand { get; }
+
+    public IRelayCommand<string> VoucherEntryKeyCommand { get; }
+
+    public IAsyncRelayCommand ConfirmVoucherEntryCommand { get; }
+
+    public IRelayCommand CancelVoucherEntryCommand { get; }
+
+    public IAsyncRelayCommand<PaymentTender?> RemoveTenderCommand { get; }
 
     public IAsyncRelayCommand ConfirmPaymentCommand { get; }
 
@@ -360,11 +378,25 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         NotifyPaymentCommandStates();
     }
 
+    partial void OnVoucherEntryTextChanged(string value)
+    {
+        VoucherEntryKeyCommand.NotifyCanExecuteChanged();
+        ConfirmVoucherEntryCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsVoucherEntryDialogOpenChanged(bool value)
+    {
+        VoucherEntryKeyCommand.NotifyCanExecuteChanged();
+        ConfirmVoucherEntryCommand.NotifyCanExecuteChanged();
+        CancelVoucherEntryCommand.NotifyCanExecuteChanged();
+    }
+
     partial void OnSelectedPaymentMethodChanged(PaymentMethodKind value)
     {
         SelectCashCommand.NotifyCanExecuteChanged();
         SelectCardCommand.NotifyCanExecuteChanged();
         SelectVoucherCommand.NotifyCanExecuteChanged();
+        OpenVoucherEntryCommand.NotifyCanExecuteChanged();
         QuickCashCommand.NotifyCanExecuteChanged();
         ShowInstallmentCenterCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsCashSelected));
@@ -408,6 +440,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsQuickCashVisible));
         OnPropertyChanged(nameof(IsVoucherCodeEntryVisible));
         OnPropertyChanged(nameof(IsInstallmentEntryVisible));
+        OpenVoucherEntryCommand.NotifyCanExecuteChanged();
         ShowInstallmentCenterCommand.NotifyCanExecuteChanged();
     }
 
@@ -431,6 +464,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         InstallmentCustomerPhone = string.Empty;
         PaymentTenders.Clear();
         VoucherCodeText = string.Empty;
+        VoucherEntryText = string.Empty;
+        IsVoucherEntryDialogOpen = false;
         TenderAmountText = string.Empty;
         _statusKey = GetReadyStatusKey();
         _statusTextOverride = null;
@@ -474,6 +509,25 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         NotifyPaymentCommandStates();
     }
 
+    internal void RestoreRecoveredPaymentTenders(IReadOnlyList<PaymentTender> tenders, string? statusMessage)
+    {
+        PaymentTenders.Clear();
+        foreach (var tender in tenders)
+        {
+            PaymentTenders.Add(tender);
+        }
+
+        TenderAmountText = string.Empty;
+        VoucherCodeText = string.Empty;
+        VoucherEntryText = string.Empty;
+        IsVoucherEntryDialogOpen = false;
+
+        // 中文注释：恢复已批准卡 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
+        RefreshCart();
+        SetStatus("payment.status.cardTenderAdded", statusMessage);
+        NotifyPaymentCommandStates();
+    }
+
     private void AppendTenderAmount(string? value)
     {
         if (IsPaymentInteractionLocked || _cardSession.IsActive || _cardSession.HasUnknownResult)
@@ -509,6 +563,85 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             AddTenderByMethodAsync);
     }
 
+    private void OpenVoucherEntry()
+    {
+        if (!CanOpenVoucherEntry())
+        {
+            return;
+        }
+
+        SelectedPaymentMethod = PaymentMethodKind.Voucher;
+        VoucherEntryText = VoucherCodeText;
+        IsVoucherEntryDialogOpen = true;
+    }
+
+    private bool CanOpenVoucherEntry()
+    {
+        return CanAddTender(PaymentMethodKind.Voucher, allowDefaultAmount: true);
+    }
+
+    private void ApplyVoucherEntryKey(string? key)
+    {
+        if (!CanUseVoucherEntryDialog() || string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        if (key.Equals("Back", StringComparison.OrdinalIgnoreCase))
+        {
+            VoucherEntryText = VoucherEntryText.Length > 0 ? VoucherEntryText[..^1] : string.Empty;
+            return;
+        }
+
+        if (key.Equals("Clear", StringComparison.OrdinalIgnoreCase))
+        {
+            VoucherEntryText = string.Empty;
+            return;
+        }
+
+        if (key.Length == 1 && (char.IsLetterOrDigit(key[0]) || key[0] == '-'))
+        {
+            VoucherEntryText += key.ToUpperInvariant();
+        }
+    }
+
+    private async Task ConfirmVoucherEntryAsync()
+    {
+        if (!IsVoucherEntryDialogOpen)
+        {
+            return;
+        }
+
+        var tenderCountBeforeConfirm = PaymentTenders.Count;
+        VoucherCodeText = VoucherEntryText.Trim();
+
+        // 中文注释：确认时复用现有代金券付款命令，空码、重复付款和后端失败都沿用原状态提示。
+        await SelectVoucherCommand.ExecuteAsync(null);
+        if (PaymentTenders.Count <= tenderCountBeforeConfirm)
+        {
+            return;
+        }
+
+        VoucherEntryText = string.Empty;
+        IsVoucherEntryDialogOpen = false;
+    }
+
+    private bool CanConfirmVoucherEntry()
+    {
+        return CanUseVoucherEntryDialog();
+    }
+
+    private bool CanUseVoucherEntryDialog()
+    {
+        return IsVoucherEntryDialogOpen && IsPaymentInteractionEnabled;
+    }
+
+    private void CancelVoucherEntry()
+    {
+        VoucherEntryText = string.Empty;
+        IsVoucherEntryDialogOpen = false;
+    }
+
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
         if (!TryRequirePermission(GetTenderPermission(method)))
@@ -537,6 +670,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         {
             SetStatus("payment.installment.status.invalidAmount");
             NotifyPaymentCommandStates();
+            return;
+        }
+
+        if (TrySetRegularPaymentTenderOrderStatus(method, amountText))
+        {
             return;
         }
 
@@ -576,12 +714,24 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException) when (isCard)
         {
+            if (!IsCurrentPaymentEntry(paymentEntryVersion))
+            {
+                return;
+            }
+
             _cardSession.HandleOperationCanceledException(cardPaymentCts, paymentEntryVersion);
+            await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
         }
         catch (Exception ex) when (isCard && ex is not OperationCanceledException)
         {
+            if (!IsCurrentPaymentEntry(paymentEntryVersion))
+            {
+                return;
+            }
+
             _cardSession.HandleUnexpectedException(ex, paymentEntryVersion);
+            await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
         }
         finally
@@ -602,6 +752,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             (!result.Succeeded || result.Tender is null))
         {
             _cardSession.TryHandleCancelledResult(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
+            await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
         }
 
@@ -610,6 +761,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _cardSession.SetCancellationStatus(wasManuallyCancelled: true);
             _cardSession.ResetManualCancellationState();
             NotifyPaymentCommandStates();
+            await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
         }
 
@@ -624,7 +776,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
             if (isCard)
             {
+                var resultUnknown = CardPaymentSession.IsCardResultUnknownStatusKey(result.StatusKey);
                 _cardSession.TryHandleFailedResult(result);
+                if (!resultUnknown)
+                {
+                    await ReleaseVoucherTendersAfterCardFailureAsync();
+                }
+
                 return;
             }
 
@@ -664,7 +822,70 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void RemoveTender(PaymentTender? tender)
+    private bool TrySetRegularPaymentTenderOrderStatus(PaymentMethodKind method, string? amountText)
+    {
+        if (!IsPaymentMode)
+        {
+            return false;
+        }
+
+        if (method == PaymentMethodKind.Voucher &&
+            PaymentTenders.Any(tender => tender.Method == PaymentMethodKind.Cash))
+        {
+            SetStatus("payment.status.paymentMethodOrder");
+            NotifyPaymentCommandStates();
+            return true;
+        }
+
+        if (method == PaymentMethodKind.Card &&
+            _workflowService.TryParseTenderedAmount(amountText, out var tenderAmount) &&
+            tenderAmount > 0m &&
+            tenderAmount < RemainingAmount)
+        {
+            SetStatus("payment.status.cardMustBeFinalTender");
+            NotifyPaymentCommandStates();
+            return true;
+        }
+
+        // 中文注释：恢复出的 partial card tender 只允许补齐差额，是否结清仍由完成付款校验兜底。
+        return false;
+    }
+
+    private async Task<bool> ReleaseVoucherTendersAfterCardFailureAsync()
+    {
+        if (!IsPaymentMode)
+        {
+            return true;
+        }
+
+        var voucherTenders = PaymentTenders
+            .Where(tender => tender.Method == PaymentMethodKind.Voucher)
+            .ToList();
+        if (voucherTenders.Count == 0)
+        {
+            return true;
+        }
+
+        foreach (var tender in voucherTenders)
+        {
+            if (!await _workflowService.ReleaseVoucherTenderAsync(tender, Session))
+            {
+                SetStatus("payment.status.voucherReleaseFailed");
+                NotifyPaymentCommandStates();
+                return false;
+            }
+
+            PaymentTenders.Remove(tender);
+        }
+
+        RecalculateTenderSummary();
+        TenderAmountText = string.Empty;
+        SetStatus("payment.status.voucherReleased");
+        NotifyPaymentCommandStates();
+        return true;
+    }
+
+    private async Task RemoveTenderAsync(PaymentTender? tender)
     {
         if (!TryRequirePermission(Permissions.PosTerminal.Payment.RemoveTender))
         {
@@ -682,10 +903,34 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (IsRecoveredCardAttemptTender(tender))
+        {
+            // 中文注释：恢复出的已批准卡款是真实扣款，不能像普通本地 tender 一样删除。
+            return;
+        }
+
+        if (IsPaymentMode && tender.Method == PaymentMethodKind.Voucher)
+        {
+            if (!await _workflowService.ReleaseVoucherTenderAsync(tender, Session))
+            {
+                SetStatus("payment.status.voucherReleaseFailed");
+                NotifyPaymentCommandStates();
+                return;
+            }
+
+            RemoveTenderFromList(tender, "payment.status.voucherReleased");
+            return;
+        }
+
+        RemoveTenderFromList(tender, "payment.status.tenderRemoved");
+    }
+
+    private void RemoveTenderFromList(PaymentTender tender, string statusKey)
+    {
         PaymentTenders.Remove(tender);
         RecalculateTenderSummary();
         TenderAmountText = string.Empty;
-        SetStatus("payment.status.tenderRemoved");
+        SetStatus(statusKey);
         NotifyPaymentCommandStates();
     }
 
@@ -694,7 +939,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         return tender is not null &&
             IsPaymentInteractionEnabled &&
             !_cardSession.IsActive &&
-            _pendingVoucherUploadOrderGuid is null;
+            _pendingVoucherUploadOrderGuid is null &&
+            !IsRecoveredCardAttemptTender(tender);
+    }
+
+    private static bool IsRecoveredCardAttemptTender(PaymentTender tender)
+    {
+        return tender.Method == PaymentMethodKind.Card &&
+            tender.IdempotencyKey?.StartsWith("CARD_ATTEMPT:", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private async Task ConfirmPaymentAsync()
@@ -1641,6 +1893,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         SelectCashCommand.NotifyCanExecuteChanged();
         SelectCardCommand.NotifyCanExecuteChanged();
         SelectVoucherCommand.NotifyCanExecuteChanged();
+        OpenVoucherEntryCommand.NotifyCanExecuteChanged();
+        VoucherEntryKeyCommand.NotifyCanExecuteChanged();
+        ConfirmVoucherEntryCommand.NotifyCanExecuteChanged();
+        CancelVoucherEntryCommand.NotifyCanExecuteChanged();
         QuickCashCommand.NotifyCanExecuteChanged();
         RemoveTenderCommand.NotifyCanExecuteChanged();
         ConfirmPaymentCommand.NotifyCanExecuteChanged();
