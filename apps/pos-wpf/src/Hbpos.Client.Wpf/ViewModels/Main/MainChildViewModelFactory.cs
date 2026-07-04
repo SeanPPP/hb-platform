@@ -119,7 +119,8 @@ internal sealed class MainChildViewModelFactory
         PosSessionState session,
         Func<Task> onSuspendedOrderRecalledAsync,
         Action showPos,
-        Func<TransactionHistoryViewModel, Task> printSelectedHistoryReceiptAsync)
+        Func<TransactionHistoryViewModel, Task> printSelectedHistoryReceiptAsync,
+        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null)
     {
         var viewModel = new TransactionHistoryViewModel(
             _receiptQueryService,
@@ -132,7 +133,9 @@ internal sealed class MainChildViewModelFactory
             _receiptTextFormatter,
             _receiptPrinterSettingsStore,
             _cashierSessionContext,
-            _enforceCashierPermissions);
+            _enforceCashierPermissions,
+            _installmentOrderService,
+            continueInstallmentPaymentAsync);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }
@@ -280,7 +283,8 @@ internal sealed class MainChildViewModelFactory
             recoverPreviousCardTransactionAsync,
             linklyFallbackPromptCoordinator,
             _cashierSessionContext,
-            _enforceCashierPermissions);
+            _enforceCashierPermissions,
+            _installmentOrderService);
     }
 
     public DailyCloseViewModel CreateDailyCloseViewModel(

@@ -81,6 +81,9 @@
   <data name="ConfirmPayment" xml:space="preserve">
     <value>确认支付</value>
   </data>
+  <data name="Customer" xml:space="preserve">
+    <value>顾客</value>
+  </data>
   <data name="CustomerDisplay" xml:space="preserve">
     <value>客显</value>
   </data>
@@ -179,6 +182,9 @@
   </data>
   <data name="PaymentSuccessful" xml:space="preserve">
     <value>支付成功</value>
+  </data>
+  <data name="Phone" xml:space="preserve">
+    <value>电话</value>
   </data>
   <data name="PendingSync" xml:space="preserve">
     <value>待同步</value>
@@ -473,6 +479,45 @@
   </data>
   <data name="payment.method.installment" xml:space="preserve">
     <value>分期付款</value>
+  </data>
+  <data name="payment.installment.customerName" xml:space="preserve">
+    <value>顾客姓名 *</value>
+  </data>
+  <data name="payment.installment.customerPhone" xml:space="preserve">
+    <value>顾客电话 *</value>
+  </data>
+  <data name="payment.installment.outstanding" xml:space="preserve">
+    <value>未付余额</value>
+  </data>
+  <data name="payment.installment.status.onlineRequired" xml:space="preserve">
+    <value>分期付款需要在线模式。</value>
+  </data>
+  <data name="payment.installment.status.customerRequired" xml:space="preserve">
+    <value>顾客姓名和电话必填。</value>
+  </data>
+  <data name="payment.installment.status.firstPaymentBelowMinimum" xml:space="preserve">
+    <value>分期首付款至少 $20.00。</value>
+  </data>
+  <data name="payment.installment.status.totalBelowMinimum" xml:space="preserve">
+    <value>分期订单总额至少 $50.00。</value>
+  </data>
+  <data name="payment.installment.status.invalidAmount" xml:space="preserve">
+    <value>分期付款金额必须大于 0，且不能超过未付余额。</value>
+  </data>
+  <data name="payment.installment.status.singleTenderOnly" xml:space="preserve">
+    <value>分期模式一次只能确认一笔付款。</value>
+  </data>
+  <data name="payment.installment.status.noRepaymentAllowed" xml:space="preserve">
+    <value>该分期单不能继续补款。</value>
+  </data>
+  <data name="payment.installment.status.actionFailed" xml:space="preserve">
+    <value>分期付款失败。</value>
+  </data>
+  <data name="payment.installment.status.created" xml:space="preserve">
+    <value>分期单已创建。</value>
+  </data>
+  <data name="payment.installment.status.repaymentRecorded" xml:space="preserve">
+    <value>分期补款已记录。</value>
   </data>
   <data name="payment.action.addCash" xml:space="preserve">
     <value>添加现金</value>
@@ -1376,6 +1421,15 @@
   </data>
   <data name="history.source.online" xml:space="preserve">
     <value>在线</value>
+  </data>
+  <data name="history.source.installments" xml:space="preserve">
+    <value>分期订单</value>
+  </data>
+  <data name="history.installment.paid" xml:space="preserve">
+    <value>已付</value>
+  </data>
+  <data name="history.installment.continuePayment" xml:space="preserve">
+    <value>继续支付</value>
   </data>
   <data name="history.payment.suspended" xml:space="preserve">
     <value>挂单</value>

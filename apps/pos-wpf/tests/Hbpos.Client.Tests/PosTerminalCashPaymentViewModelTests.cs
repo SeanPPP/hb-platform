@@ -4,6 +4,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using Hbpos.Contracts.Promotions;
 
@@ -3814,6 +3815,226 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
     }
 
+    [Fact]
+    public void Payment_page_installment_toggle_can_be_closed_before_confirm_and_prepare_resets()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-TOGGLE", "Installment Tea", "939001", PriceSourceKind.StoreRetailPrice, 55m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: new FakeInstallmentOrderService());
+
+        viewModel.IsInstallmentPaymentEnabled = true;
+
+        Assert.True(viewModel.IsInstallmentPaymentEnabled);
+        Assert.False(viewModel.IsInstallmentSwitchLocked);
+
+        viewModel.IsInstallmentPaymentEnabled = false;
+
+        Assert.False(viewModel.IsInstallmentPaymentEnabled);
+
+        viewModel.IsInstallmentPaymentEnabled = true;
+        viewModel.PrepareForEntry(Session);
+
+        Assert.False(viewModel.IsInstallmentPaymentEnabled);
+        Assert.False(viewModel.IsInstallmentSwitchLocked);
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_requires_customer_details()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-CUSTOMER", "Customer Tea", "939002", PriceSourceKind.StoreRetailPrice, 55m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: new FakeInstallmentOrderService())
+        {
+            IsInstallmentPaymentEnabled = true,
+            TenderAmountText = "20"
+        };
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+
+        viewModel.InstallmentCustomerName = "Alice";
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+
+        viewModel.InstallmentCustomerPhone = "0400111222";
+        Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_rejects_first_payment_below_minimum()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-MIN-DOWN", "Minimum Down Tea", "939004", PriceSourceKind.StoreRetailPrice, 80m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: new FakeInstallmentOrderService())
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "19.99"
+        };
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_rejects_order_total_below_minimum()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-MIN-TOTAL", "Minimum Total Tea", "939005", PriceSourceKind.StoreRetailPrice, 49.99m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: new FakeInstallmentOrderService())
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "20"
+        };
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_creates_order_with_partial_first_payment_without_completing_regular_order()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-CREATE", "Partial Installment Tea", "939003", PriceSourceKind.StoreRetailPrice, 80m));
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService();
+        var completed = false;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            installmentOrderService: installmentService)
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "20"
+        };
+        viewModel.PaymentCompleted += (_, _) => completed = true;
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.False(completed);
+        Assert.Equal(0, workflow.CompletePaymentCallCount);
+        Assert.NotNull(installmentService.LastCreateRequest);
+        Assert.Equal("Alice", installmentService.LastCreateRequest!.CustomerName);
+        Assert.Equal("0400111222", installmentService.LastCreateRequest.CustomerPhone);
+        Assert.Equal(20m, installmentService.LastCreateRequest.DownPaymentAmount);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(viewModel.PaymentTenders);
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_splits_voucher_reference_for_create_request()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-VOUCHER", "Voucher Installment Tea", "939006", PriceSourceKind.StoreRetailPrice, 80m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, 20m, "VOUCHER:VIP001:LOCK-001")
+        };
+        var installmentService = new FakeInstallmentOrderService();
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            installmentOrderService: installmentService)
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "20",
+            VoucherCodeText = "VIP001"
+        };
+
+        await viewModel.SelectVoucherCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.NotNull(installmentService.LastCreateRequest);
+        Assert.Equal("VIP001", installmentService.LastCreateRequest!.DownPayment.Reference);
+        Assert.Equal("LOCK-001", installmentService.LastCreateRequest.DownPayment.ReservationToken);
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_records_payment_without_regular_checkout()
+    {
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService();
+        var order = CreateInstallmentOrder("IO-20260703-0001", "Bob", "0400222333", paidAmount: 30m, outstandingAmount: 90m);
+        var viewModel = new PaymentViewModel(
+            new PosCartService(),
+            workflow,
+            Session,
+            installmentOrderService: installmentService);
+
+        viewModel.PrepareForInstallmentRepayment(Session, order);
+        viewModel.TenderAmountText = "30";
+
+        Assert.True(viewModel.IsInstallmentPaymentEnabled);
+        Assert.True(viewModel.IsInstallmentSwitchLocked);
+        Assert.False(viewModel.CanEditInstallmentCustomer);
+
+        viewModel.IsInstallmentPaymentEnabled = false;
+        Assert.True(viewModel.IsInstallmentPaymentEnabled);
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, workflow.CompletePaymentCallCount);
+        Assert.NotNull(installmentService.LastRepaymentRequest);
+        Assert.Equal(order.OrderId, installmentService.LastRepaymentRequest!.InstallmentGuid);
+        Assert.Equal(30m, installmentService.LastRepaymentRequest.Payment.Amount);
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_splits_voucher_reference_for_append_request()
+    {
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            TenderToAdd = new PaymentTender(PaymentMethodKind.Voucher, 30m, "VOUCHER:VIP002:LOCK-002")
+        };
+        var installmentService = new FakeInstallmentOrderService();
+        var order = CreateInstallmentOrder("IO-20260703-0003", "Bob", "0400222333", paidAmount: 30m, outstandingAmount: 90m);
+        var viewModel = new PaymentViewModel(
+            new PosCartService(),
+            workflow,
+            Session,
+            installmentOrderService: installmentService);
+
+        viewModel.PrepareForInstallmentRepayment(Session, order);
+        viewModel.TenderAmountText = "30";
+        viewModel.VoucherCodeText = "VIP002";
+
+        await viewModel.SelectVoucherCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.NotNull(installmentService.LastRepaymentRequest);
+        Assert.Equal("VIP002", installmentService.LastRepaymentRequest!.Payment.Reference);
+        Assert.Equal("LOCK-002", installmentService.LastRepaymentRequest.Payment.ReservationToken);
+    }
+
     private static PosSessionState Session => new("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
 
     private static PosSessionState OfflineSession => Session with { IsOnline = false };
@@ -3864,6 +4085,32 @@ public sealed class PosTerminalCashPaymentViewModelTests
             QuantityFactor: 1m,
             UpdatedAt: DateTimeOffset.UtcNow,
             ProductImage: productImage);
+    }
+
+    private static InstallmentOrderSummary CreateInstallmentOrder(
+        string orderNumber,
+        string customerName,
+        string phone,
+        decimal paidAmount,
+        decimal outstandingAmount)
+    {
+        return new InstallmentOrderSummary(
+            Guid.NewGuid(),
+            orderNumber,
+            customerName,
+            phone,
+            paidAmount + outstandingAmount,
+            20m,
+            paidAmount,
+            outstandingAmount,
+            0,
+            outstandingAmount > 0m,
+            outstandingAmount == 0m,
+            outstandingAmount > 0m,
+            outstandingAmount > 0m,
+            outstandingAmount > 0m ? "待补款" : "待提货",
+            "POS-01",
+            DateTimeOffset.Now);
     }
 
     private static void SetUnsafeQuantity(CartLine line, decimal quantity)
@@ -4308,6 +4555,83 @@ public sealed class PosTerminalCashPaymentViewModelTests
             decimal tenderedAmount,
             decimal changeAmount,
             CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class FakeInstallmentOrderService : IInstallmentOrderService
+    {
+        public InstallmentOrderCreateRequest? LastCreateRequest { get; private set; }
+
+        public InstallmentOrderRepaymentRequest? LastRepaymentRequest { get; private set; }
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<InstallmentOrderSummary>>([]);
+        }
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> SearchAsync(PosSessionState session, string? keyword, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<InstallmentOrderSummary>>([]);
+        }
+
+        public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<LocalInstallmentOrder?>(null);
+        }
+
+        public Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentAppendPaymentResponse>> AppendPaymentAsync(PosSessionState session, InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentConfirmPickupResponse>> ConfirmPickupAsync(PosSessionState session, InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentCancelResponse>> CancelWithRefundAsync(PosSessionState session, InstallmentCancelRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentVoidResponse>> VoidCancelAsync(PosSessionState session, InstallmentVoidRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderCreateResult> CreateOrderAsync(InstallmentOrderCreateRequest request, CancellationToken cancellationToken = default)
+        {
+            LastCreateRequest = request;
+            return Task.FromResult(new InstallmentOrderCreateResult(
+                true,
+                "分期单已创建。",
+                CreateInstallmentOrder("IO-NEW", request.CustomerName, request.CustomerPhone, request.DownPaymentAmount, request.CartSnapshot.ActualAmount - request.DownPaymentAmount)));
+        }
+
+        public Task<InstallmentOrderActionResult> AddRepaymentAsync(InstallmentOrderRepaymentRequest request, CancellationToken cancellationToken = default)
+        {
+            LastRepaymentRequest = request;
+            return Task.FromResult(new InstallmentOrderActionResult(true, "补款已记录。"));
+        }
+
+        public Task<InstallmentOrderActionResult> CancelWithRefundAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderActionResult> VoidCancelAsync(Guid orderId, PosSessionState session, string? reason = null, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
         }

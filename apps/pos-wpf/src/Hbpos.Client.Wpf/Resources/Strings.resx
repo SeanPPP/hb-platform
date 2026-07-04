@@ -35,6 +35,7 @@
   <data name="ClearCart" xml:space="preserve"><value>Clear Cart</value></data>
   <data name="Confirm" xml:space="preserve"><value>Confirm</value></data>
   <data name="ConfirmPayment" xml:space="preserve"><value>Confirm Payment</value></data>
+  <data name="Customer" xml:space="preserve"><value>Customer</value></data>
   <data name="CustomerDisplay" xml:space="preserve"><value>Customer Display</value></data>
   <data name="Device" xml:space="preserve"><value>Device</value></data>
   <data name="Display" xml:space="preserve"><value>Display</value></data>
@@ -68,6 +69,7 @@
   <data name="Pay" xml:space="preserve"><value>Pay</value></data>
   <data name="Payment" xml:space="preserve"><value>Payment</value></data>
   <data name="PaymentSuccessful" xml:space="preserve"><value>Payment Successful</value></data>
+  <data name="Phone" xml:space="preserve"><value>Phone</value></data>
   <data name="PendingSync" xml:space="preserve"><value>Pending Sync</value></data>
   <data name="PosTerminal" xml:space="preserve"><value>POS Terminal</value></data>
   <data name="Price" xml:space="preserve"><value>Price</value></data>
@@ -180,6 +182,19 @@
   <data name="payment.method.refundVoucher" xml:space="preserve"><value>Refund Voucher</value></data>
   <data name="payment.method.account" xml:space="preserve"><value>Credit Account</value></data>
   <data name="payment.method.installment" xml:space="preserve"><value>Installment</value></data>
+  <data name="payment.installment.customerName" xml:space="preserve"><value>Customer name *</value></data>
+  <data name="payment.installment.customerPhone" xml:space="preserve"><value>Customer phone *</value></data>
+  <data name="payment.installment.outstanding" xml:space="preserve"><value>Outstanding</value></data>
+  <data name="payment.installment.status.onlineRequired" xml:space="preserve"><value>Installment payment requires online mode.</value></data>
+  <data name="payment.installment.status.customerRequired" xml:space="preserve"><value>Customer name and phone are required.</value></data>
+  <data name="payment.installment.status.firstPaymentBelowMinimum" xml:space="preserve"><value>First installment payment must be at least $20.00.</value></data>
+  <data name="payment.installment.status.totalBelowMinimum" xml:space="preserve"><value>Installment orders must be at least $50.00.</value></data>
+  <data name="payment.installment.status.invalidAmount" xml:space="preserve"><value>Installment payment amount must be greater than zero and not exceed the outstanding amount.</value></data>
+  <data name="payment.installment.status.singleTenderOnly" xml:space="preserve"><value>Installment mode accepts one payment at a time.</value></data>
+  <data name="payment.installment.status.noRepaymentAllowed" xml:space="preserve"><value>This installment order cannot receive more payments.</value></data>
+  <data name="payment.installment.status.actionFailed" xml:space="preserve"><value>Installment payment failed.</value></data>
+  <data name="payment.installment.status.created" xml:space="preserve"><value>Installment order created.</value></data>
+  <data name="payment.installment.status.repaymentRecorded" xml:space="preserve"><value>Installment repayment recorded.</value></data>
   <data name="payment.action.addCash" xml:space="preserve"><value>Add Cash Tender</value></data>
   <data name="payment.voucher.code" xml:space="preserve"><value>Voucher code</value></data>
   <data name="payment.remaining" xml:space="preserve"><value>Remaining</value></data>
@@ -474,6 +489,9 @@
   <data name="pos.terminal.actions.exitApplication" xml:space="preserve"><value>Exit</value></data>
   <data name="history.source.local" xml:space="preserve"><value>Local</value></data>
   <data name="history.source.online" xml:space="preserve"><value>Online</value></data>
+  <data name="history.source.installments" xml:space="preserve"><value>Installments</value></data>
+  <data name="history.installment.paid" xml:space="preserve"><value>Paid</value></data>
+  <data name="history.installment.continuePayment" xml:space="preserve"><value>Continue Payment</value></data>
   <data name="history.payment.suspended" xml:space="preserve"><value>Suspended</value></data>
   <data name="history.status.pendingRecall" xml:space="preserve"><value>Pending recall</value></data>
   <data name="suspended.recall" xml:space="preserve"><value>Recall Suspended</value></data>
