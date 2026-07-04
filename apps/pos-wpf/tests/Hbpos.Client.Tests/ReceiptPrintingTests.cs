@@ -1,12 +1,88 @@
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
 public sealed class ReceiptPrintingTests
 {
+    [Fact]
+    public void Installment_receipt_mapper_builds_deposit_receipt_document()
+    {
+        var depositTime = new DateTimeOffset(2026, 7, 4, 12, 30, 0, TimeSpan.Zero);
+        var repaymentTime = new DateTimeOffset(2026, 7, 4, 12, 45, 0, TimeSpan.Zero);
+        var order = new LocalInstallmentOrder(
+            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            "IO-20260704-0001",
+            "S001",
+            "POS-01",
+            "user-1",
+            "Alice",
+            "Bob Buyer",
+            "0400111222",
+            depositTime,
+            new DateTimeOffset(2026, 7, 4, 12, 31, 0, TimeSpan.Zero),
+            80m,
+            20m,
+            20m,
+            35m,
+            45m,
+            InstallmentStatus.Active,
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    "SKU-INST",
+                    null,
+                    "Installment Tea",
+                    "939003",
+                    1m,
+                    80m,
+                    0m,
+                    80m)
+            ],
+            [
+                new InstallmentPaymentDto(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Cash,
+                    20m,
+                    "CASH",
+                    InstallmentPaymentStatus.Recorded,
+                    depositTime,
+                    "user-1",
+                    "POS-01"),
+                new InstallmentPaymentDto(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Card,
+                    15m,
+                    "CARD-REF",
+                    InstallmentPaymentStatus.Recorded,
+                    repaymentTime,
+                    "user-1",
+                    "POS-01")
+            ],
+            null);
+        var formatter = new ReceiptTextFormatter();
+
+        var receipt = InstallmentReceiptMapper.CreateReceipt(order);
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, order.CreatedAt);
+
+        Assert.Contains("INSTALLMENT ORDER", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("IO-20260704-0001", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Bob Buyer", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("0400111222", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Deposit paid: $20.00", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Balance due: $45.00", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Payment history:", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains($"{depositTime.ToLocalTime():yyyy-MM-dd HH:mm} Cash $20.00", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains($"{repaymentTime.ToLocalTime():yyyy-MM-dd HH:mm} Card $15.00", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Ref: CARD-REF", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Installment Tea", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Cash", document.PlainText, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Receipt_text_formatter_builds_print_commands_and_preview_from_same_document()
     {

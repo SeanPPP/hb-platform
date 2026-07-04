@@ -89,7 +89,11 @@ public sealed record ReceiptDetails(
     IReadOnlyList<ReceiptPreviewLine> Lines,
     IReadOnlyList<ReceiptPaymentLine> Payments,
     decimal? TenderedAmount = null,
-    decimal? ChangeAmount = null)
+    decimal? ChangeAmount = null,
+    string? DocumentTitle = null,
+    string? StatusText = null,
+    string? OrderDisplay = null,
+    IReadOnlyList<string>? ExtraInfoLines = null)
 {
     public string TransactionIdDisplay => $"#{OrderGuid.ToString("N")[..10].ToUpperInvariant()}";
 

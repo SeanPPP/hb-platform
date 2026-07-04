@@ -4081,6 +4081,76 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public void Payment_page_installment_customer_dialog_confirms_touch_keyboard_edits()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-CUSTOMER-DIALOG", "Customer Dialog Tea", "939007", PriceSourceKind.StoreRetailPrice, 55m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: new FakeInstallmentOrderService())
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222"
+        };
+
+        viewModel.OpenInstallmentCustomerDialogCommand.Execute(null);
+
+        Assert.True(viewModel.IsInstallmentCustomerDialogOpen);
+        Assert.Equal("Alice", viewModel.InstallmentCustomerDraftName);
+        Assert.Equal("0400111222", viewModel.InstallmentCustomerDraftPhone);
+
+        viewModel.SelectInstallmentCustomerFieldCommand.Execute("Name");
+        viewModel.InstallmentCustomerKeyCommand.Execute("Clear");
+        foreach (var key in new[] { "B", "O", "B", "Space", "2" })
+        {
+            viewModel.InstallmentCustomerKeyCommand.Execute(key);
+        }
+
+        viewModel.SelectInstallmentCustomerFieldCommand.Execute("Phone");
+        viewModel.InstallmentCustomerKeyCommand.Execute("Clear");
+        foreach (var key in new[] { "0", "4", "+", "1", "Back", "2" })
+        {
+            viewModel.InstallmentCustomerKeyCommand.Execute(key);
+        }
+
+        viewModel.ConfirmInstallmentCustomerDialogCommand.Execute(null);
+
+        Assert.False(viewModel.IsInstallmentCustomerDialogOpen);
+        Assert.Equal("BOB 2", viewModel.InstallmentCustomerName);
+        Assert.Equal("04+2", viewModel.InstallmentCustomerPhone);
+    }
+
+    [Fact]
+    public void Payment_page_installment_customer_dialog_cancel_keeps_original_values()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-CUSTOMER-CANCEL", "Customer Cancel Tea", "939008", PriceSourceKind.StoreRetailPrice, 55m));
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: new FakeInstallmentOrderService())
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222"
+        };
+
+        viewModel.OpenInstallmentCustomerDialogCommand.Execute(null);
+        viewModel.InstallmentCustomerDraftName = "Bob";
+        viewModel.InstallmentCustomerDraftPhone = "0400333444";
+
+        viewModel.CancelInstallmentCustomerDialogCommand.Execute(null);
+
+        Assert.False(viewModel.IsInstallmentCustomerDialogOpen);
+        Assert.Equal("Alice", viewModel.InstallmentCustomerName);
+        Assert.Equal("0400111222", viewModel.InstallmentCustomerPhone);
+    }
+
+    [Fact]
     public async Task Payment_page_new_installment_requires_customer_details()
     {
         var cart = new PosCartService();
@@ -4158,11 +4228,17 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var workflow = new FakeCashPaymentWorkflowService();
         var installmentService = new FakeInstallmentOrderService();
         var completed = false;
+        InstallmentOrderSummary? createdOrder = null;
         var viewModel = new PaymentViewModel(
             cart,
             workflow,
             Session,
-            installmentOrderService: installmentService)
+            installmentOrderService: installmentService,
+            onInstallmentOrderCreatedAsync: order =>
+            {
+                createdOrder = order;
+                return Task.CompletedTask;
+            })
         {
             IsInstallmentPaymentEnabled = true,
             InstallmentCustomerName = "Alice",
@@ -4180,6 +4256,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal("Alice", installmentService.LastCreateRequest!.CustomerName);
         Assert.Equal("0400111222", installmentService.LastCreateRequest.CustomerPhone);
         Assert.Equal(20m, installmentService.LastCreateRequest.DownPaymentAmount);
+        Assert.NotNull(createdOrder);
+        Assert.Equal("IO-NEW", createdOrder!.OrderNumber);
         Assert.Empty(cart.Lines);
         Assert.Empty(viewModel.PaymentTenders);
     }
@@ -4221,11 +4299,19 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var workflow = new FakeCashPaymentWorkflowService();
         var installmentService = new FakeInstallmentOrderService();
         var order = CreateInstallmentOrder("IO-20260703-0001", "Bob", "0400222333", paidAmount: 30m, outstandingAmount: 90m);
+        var createdCallbackCount = 0;
+        InstallmentOrderSummary? callbackOrder = null;
         var viewModel = new PaymentViewModel(
             new PosCartService(),
             workflow,
             Session,
-            installmentOrderService: installmentService);
+            installmentOrderService: installmentService,
+            onInstallmentOrderCreatedAsync: completedOrder =>
+            {
+                createdCallbackCount++;
+                callbackOrder = completedOrder;
+                return Task.CompletedTask;
+            });
 
         viewModel.PrepareForInstallmentRepayment(Session, order);
         viewModel.TenderAmountText = "30";
@@ -4233,6 +4319,9 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.IsInstallmentPaymentEnabled);
         Assert.True(viewModel.IsInstallmentSwitchLocked);
         Assert.False(viewModel.CanEditInstallmentCustomer);
+
+        viewModel.OpenInstallmentCustomerDialogCommand.Execute(null);
+        Assert.False(viewModel.IsInstallmentCustomerDialogOpen);
 
         viewModel.IsInstallmentPaymentEnabled = false;
         Assert.True(viewModel.IsInstallmentPaymentEnabled);
@@ -4244,6 +4333,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.NotNull(installmentService.LastRepaymentRequest);
         Assert.Equal(order.OrderId, installmentService.LastRepaymentRequest!.InstallmentGuid);
         Assert.Equal(30m, installmentService.LastRepaymentRequest.Payment.Amount);
+        Assert.Equal(1, createdCallbackCount);
+        Assert.Equal(order.OrderId, callbackOrder!.OrderId);
     }
 
     [Fact]

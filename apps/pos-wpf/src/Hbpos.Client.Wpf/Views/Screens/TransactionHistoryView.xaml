@@ -162,25 +162,16 @@
                         <DataGridTextColumn Header="#" Binding="{Binding DisplayOrderId}" Width="134" />
                         <DataGridTextColumn Header="{loc:Loc Store}" Binding="{Binding StoreCode}" Width="92" />
                         <DataGridTextColumn Header="{loc:Loc Terminal}" Binding="{Binding DeviceCode}" Width="106" />
-                        <DataGridTextColumn Header="{loc:Loc Cashier}" Binding="{Binding CashierName}" Width="116"
-                                            Visibility="{Binding DataContext.IsStandardSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc Customer}" Binding="{Binding CashierName}" Width="116"
-                                            Visibility="{Binding DataContext.IsInstallmentSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc Phone}" Binding="{Binding CustomerPhone}" Width="118"
-                                            Visibility="{Binding DataContext.IsInstallmentSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
+                        <DataGridTextColumn x:Name="StandardCashierColumn" Header="{loc:Loc Cashier}" Binding="{Binding CashierName}" Width="116" />
+                        <DataGridTextColumn x:Name="InstallmentCustomerColumn" Header="{loc:Loc Customer}" Binding="{Binding CashierName}" Width="116" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="InstallmentPhoneColumn" Header="{loc:Loc Phone}" Binding="{Binding CustomerPhone}" Width="118" Visibility="Collapsed" />
                         <DataGridTextColumn Header="{loc:Loc Time}" Binding="{Binding SoldAtDisplay}" Width="154" />
-                        <DataGridTextColumn Header="{loc:Loc Items}" Binding="{Binding LineCount}" Width="72"
-                                            Visibility="{Binding DataContext.IsStandardSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc Total}" Binding="{Binding TotalAmount, StringFormat={}{0:C2}}" Width="104"
-                                            Visibility="{Binding DataContext.IsInstallmentSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc Amount}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112"
-                                            Visibility="{Binding DataContext.IsStandardSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc payment.installment.outstanding}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112"
-                                            Visibility="{Binding DataContext.IsInstallmentSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc Payment}" Binding="{Binding PaymentSummary}" Width="108"
-                                            Visibility="{Binding DataContext.IsStandardSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
-                        <DataGridTextColumn Header="{loc:Loc history.installment.paid}" Binding="{Binding PaymentSummary}" Width="108"
-                                            Visibility="{Binding DataContext.IsInstallmentSourceSelected, Source={x:Reference HistoryOrdersGrid}, Converter={StaticResource BoolToVis}}" />
+                        <DataGridTextColumn x:Name="StandardItemsColumn" Header="{loc:Loc Items}" Binding="{Binding LineCount}" Width="72" />
+                        <DataGridTextColumn x:Name="InstallmentTotalColumn" Header="{loc:Loc Total}" Binding="{Binding TotalAmount, StringFormat={}{0:C2}}" Width="104" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="StandardAmountColumn" Header="{loc:Loc Amount}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112" />
+                        <DataGridTextColumn x:Name="InstallmentOutstandingColumn" Header="{loc:Loc payment.installment.outstanding}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="StandardPaymentColumn" Header="{loc:Loc Payment}" Binding="{Binding PaymentSummary}" Width="108" />
+                        <DataGridTextColumn x:Name="InstallmentPaidColumn" Header="{loc:Loc history.installment.paid}" Binding="{Binding PaymentSummary}" Width="108" Visibility="Collapsed" />
                         <DataGridTextColumn Header="{loc:Loc common.status}" Binding="{Binding StatusLabel}" Width="*" />
                         <DataGridTemplateColumn Header="{loc:Loc suspended.recall}" Width="100">
                             <DataGridTemplateColumn.CellTemplate>

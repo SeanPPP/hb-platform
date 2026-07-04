@@ -99,6 +99,18 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _installmentCustomerPhone = string.Empty;
 
+    [ObservableProperty]
+    private bool _isInstallmentCustomerDialogOpen;
+
+    [ObservableProperty]
+    private string _installmentCustomerDraftName = string.Empty;
+
+    [ObservableProperty]
+    private string _installmentCustomerDraftPhone = string.Empty;
+
+    [ObservableProperty]
+    private string _installmentCustomerEditTarget = "Name";
+
     public PaymentViewModel(
         PosCartService cart,
         CashCheckoutService checkout,
@@ -112,7 +124,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
-        IInstallmentOrderService? installmentOrderService = null)
+        IInstallmentOrderService? installmentOrderService = null,
+        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -124,7 +137,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             linklyFallbackPromptCoordinator,
             cashierSessionContext,
             enforcePermissionsWhenNoCashier,
-            installmentOrderService)
+            installmentOrderService,
+            onInstallmentOrderCreatedAsync)
     {
     }
 
@@ -139,7 +153,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
-        IInstallmentOrderService? installmentOrderService = null)
+        IInstallmentOrderService? installmentOrderService = null,
+        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null)
     {
         _cart = cart;
         _workflowService = workflowService;
@@ -156,7 +171,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _navigationActions = PaymentNavigationActions.FromLegacyCallbacks(
             onBackToPos,
             onShowInstallmentCenter,
-            recoverPreviousCardTransactionAsync);
+            recoverPreviousCardTransactionAsync,
+            onInstallmentOrderCreatedAsync);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _cardSession = new CardPaymentSession(this);
         _linklyFallbackPromptCoordinator?.SetPromptHandler(_cardSession.ConfirmLinklyFallbackAsync);
@@ -176,6 +192,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         VoucherEntryKeyCommand = new RelayCommand<string>(ApplyVoucherEntryKey, _ => CanUseVoucherEntryDialog());
         ConfirmVoucherEntryCommand = new AsyncRelayCommand(ConfirmVoucherEntryAsync, CanConfirmVoucherEntry);
         CancelVoucherEntryCommand = new RelayCommand(CancelVoucherEntry, () => IsVoucherEntryDialogOpen);
+        OpenInstallmentCustomerDialogCommand = new RelayCommand(OpenInstallmentCustomerDialog, CanOpenInstallmentCustomerDialog);
+        SelectInstallmentCustomerFieldCommand = new RelayCommand<string>(SelectInstallmentCustomerField, _ => IsInstallmentCustomerDialogOpen);
+        InstallmentCustomerKeyCommand = new RelayCommand<string>(ApplyInstallmentCustomerKey, _ => CanUseInstallmentCustomerDialog());
+        ConfirmInstallmentCustomerDialogCommand = new RelayCommand(ConfirmInstallmentCustomerDialog, CanUseInstallmentCustomerDialog);
+        CancelInstallmentCustomerDialogCommand = new RelayCommand(CancelInstallmentCustomerDialog, () => IsInstallmentCustomerDialogOpen);
         RemoveTenderCommand = new AsyncRelayCommand<PaymentTender?>(RemoveTenderAsync, CanRemoveTender);
         ConfirmPaymentCommand = new AsyncRelayCommand(ConfirmPaymentAsync, CanConfirmPayment);
         CancelCommand = new RelayCommand(CancelPayment, CanCancelPayment);
@@ -228,6 +249,16 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand ConfirmVoucherEntryCommand { get; }
 
     public IRelayCommand CancelVoucherEntryCommand { get; }
+
+    public IRelayCommand OpenInstallmentCustomerDialogCommand { get; }
+
+    public IRelayCommand<string> SelectInstallmentCustomerFieldCommand { get; }
+
+    public IRelayCommand<string> InstallmentCustomerKeyCommand { get; }
+
+    public IRelayCommand ConfirmInstallmentCustomerDialogCommand { get; }
+
+    public IRelayCommand CancelInstallmentCustomerDialogCommand { get; }
 
     public IAsyncRelayCommand<PaymentTender?> RemoveTenderCommand { get; }
 
@@ -322,6 +353,18 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public bool CanEditInstallmentCustomer => IsInstallmentPaymentEnabled && _installmentRepaymentOrder is null;
 
+    public string InstallmentCustomerNameDisplay => string.IsNullOrWhiteSpace(InstallmentCustomerName)
+        ? T("payment.installment.customerMissingName")
+        : InstallmentCustomerName;
+
+    public string InstallmentCustomerPhoneDisplay => string.IsNullOrWhiteSpace(InstallmentCustomerPhone)
+        ? T("payment.installment.customerMissingPhone")
+        : InstallmentCustomerPhone;
+
+    public bool IsInstallmentCustomerNameDraftActive => InstallmentCustomerEditTarget.Equals("Name", StringComparison.OrdinalIgnoreCase);
+
+    public bool IsInstallmentCustomerPhoneDraftActive => InstallmentCustomerEditTarget.Equals("Phone", StringComparison.OrdinalIgnoreCase);
+
     public string InstallmentOrderInfoText => _installmentRepaymentOrder is null
         ? string.Empty
         : $"{_installmentRepaymentOrder.OrderNumber} | {_installmentRepaymentOrder.CustomerName} | {_installmentRepaymentOrder.CustomerPhone} | {T("payment.installment.outstanding")}: {_installmentRepaymentOrder.OutstandingAmount:C2}";
@@ -354,11 +397,15 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             IsInstallmentSwitchLocked = false;
             InstallmentCustomerName = string.Empty;
             InstallmentCustomerPhone = string.Empty;
+            InstallmentCustomerDraftName = string.Empty;
+            InstallmentCustomerDraftPhone = string.Empty;
+            IsInstallmentCustomerDialogOpen = false;
         }
 
         OnPropertyChanged(nameof(IsInstallmentCustomerSectionVisible));
         OnPropertyChanged(nameof(CanEditInstallmentCustomer));
         OnPropertyChanged(nameof(InstallmentOrderInfoText));
+        OpenInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
         RecalculateTenderSummary();
         NotifyPaymentCommandStates();
     }
@@ -366,16 +413,33 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     partial void OnIsInstallmentSwitchLockedChanged(bool value)
     {
         OnPropertyChanged(nameof(CanEditInstallmentCustomer));
+        OpenInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnInstallmentCustomerNameChanged(string value)
     {
+        OnPropertyChanged(nameof(InstallmentCustomerNameDisplay));
         NotifyPaymentCommandStates();
     }
 
     partial void OnInstallmentCustomerPhoneChanged(string value)
     {
+        OnPropertyChanged(nameof(InstallmentCustomerPhoneDisplay));
         NotifyPaymentCommandStates();
+    }
+
+    partial void OnIsInstallmentCustomerDialogOpenChanged(bool value)
+    {
+        SelectInstallmentCustomerFieldCommand.NotifyCanExecuteChanged();
+        InstallmentCustomerKeyCommand.NotifyCanExecuteChanged();
+        ConfirmInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
+        CancelInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnInstallmentCustomerEditTargetChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsInstallmentCustomerNameDraftActive));
+        OnPropertyChanged(nameof(IsInstallmentCustomerPhoneDraftActive));
     }
 
     partial void OnVoucherEntryTextChanged(string value)
@@ -441,6 +505,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsVoucherCodeEntryVisible));
         OnPropertyChanged(nameof(IsInstallmentEntryVisible));
         OpenVoucherEntryCommand.NotifyCanExecuteChanged();
+        OpenInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
         ShowInstallmentCenterCommand.NotifyCanExecuteChanged();
     }
 
@@ -462,6 +527,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         IsInstallmentPaymentEnabled = false;
         InstallmentCustomerName = string.Empty;
         InstallmentCustomerPhone = string.Empty;
+        InstallmentCustomerDraftName = string.Empty;
+        InstallmentCustomerDraftPhone = string.Empty;
+        IsInstallmentCustomerDialogOpen = false;
         PaymentTenders.Clear();
         VoucherCodeText = string.Empty;
         VoucherEntryText = string.Empty;
@@ -640,6 +708,119 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         VoucherEntryText = string.Empty;
         IsVoucherEntryDialogOpen = false;
+    }
+
+    private void OpenInstallmentCustomerDialog()
+    {
+        if (!CanOpenInstallmentCustomerDialog())
+        {
+            return;
+        }
+
+        InstallmentCustomerDraftName = InstallmentCustomerName;
+        InstallmentCustomerDraftPhone = InstallmentCustomerPhone;
+        InstallmentCustomerEditTarget = "Name";
+        IsInstallmentCustomerDialogOpen = true;
+    }
+
+    private bool CanOpenInstallmentCustomerDialog()
+    {
+        return CanEditInstallmentCustomer && IsPaymentInteractionEnabled;
+    }
+
+    private void SelectInstallmentCustomerField(string? target)
+    {
+        if (!IsInstallmentCustomerDialogOpen || string.IsNullOrWhiteSpace(target))
+        {
+            return;
+        }
+
+        if (target.Equals("Phone", StringComparison.OrdinalIgnoreCase))
+        {
+            InstallmentCustomerEditTarget = "Phone";
+            return;
+        }
+
+        InstallmentCustomerEditTarget = "Name";
+    }
+
+    private void ApplyInstallmentCustomerKey(string? key)
+    {
+        if (!CanUseInstallmentCustomerDialog() || string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        if (key.Equals("Back", StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateActiveInstallmentCustomerDraft(value => value.Length > 0 ? value[..^1] : string.Empty);
+            return;
+        }
+
+        if (key.Equals("Clear", StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateActiveInstallmentCustomerDraft(_ => string.Empty);
+            return;
+        }
+
+        if (key.Equals("Space", StringComparison.OrdinalIgnoreCase) && IsInstallmentCustomerNameDraftActive)
+        {
+            InstallmentCustomerDraftName += " ";
+            return;
+        }
+
+        if (key.Length != 1)
+        {
+            return;
+        }
+
+        var character = key[0];
+        if (IsInstallmentCustomerNameDraftActive && char.IsLetterOrDigit(character))
+        {
+            InstallmentCustomerDraftName += char.ToUpperInvariant(character);
+            return;
+        }
+
+        if (IsInstallmentCustomerPhoneDraftActive &&
+            (char.IsDigit(character) || character is '+' or '-'))
+        {
+            InstallmentCustomerDraftPhone += character;
+        }
+    }
+
+    private bool CanUseInstallmentCustomerDialog()
+    {
+        return IsInstallmentCustomerDialogOpen && CanEditInstallmentCustomer && IsPaymentInteractionEnabled;
+    }
+
+    private void ConfirmInstallmentCustomerDialog()
+    {
+        if (!IsInstallmentCustomerDialogOpen)
+        {
+            return;
+        }
+
+        InstallmentCustomerName = InstallmentCustomerDraftName.Trim();
+        InstallmentCustomerPhone = InstallmentCustomerDraftPhone.Trim();
+        IsInstallmentCustomerDialogOpen = false;
+    }
+
+    private void CancelInstallmentCustomerDialog()
+    {
+        InstallmentCustomerDraftName = string.Empty;
+        InstallmentCustomerDraftPhone = string.Empty;
+        IsInstallmentCustomerDialogOpen = false;
+    }
+
+    private void UpdateActiveInstallmentCustomerDraft(Func<string, string> update)
+    {
+        if (IsInstallmentCustomerPhoneDraftActive)
+        {
+            InstallmentCustomerDraftPhone = update(InstallmentCustomerDraftPhone);
+            return;
+        }
+
+        InstallmentCustomerDraftName = update(InstallmentCustomerDraftName);
     }
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
@@ -1055,12 +1236,24 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                     return;
                 }
 
+                var completedOrder = repaymentResult.Order ?? repaymentOrder;
                 PaymentTenders.Clear();
-                _installmentRepaymentOrder = repaymentResult.Order ?? repaymentOrder;
+                _installmentRepaymentOrder = completedOrder;
                 TenderAmountText = string.Empty;
                 RecalculateTenderSummary();
                 SetStatus("payment.installment.status.repaymentRecorded", repaymentResult.Message);
                 OnPropertyChanged(nameof(InstallmentOrderInfoText));
+                if (_navigationActions.InstallmentOrderCreatedAsync is not null)
+                {
+                    // 分期补录成功后复用外层自动打印和回 POS 流程，避免收银员继续停在已完成的补录页。
+                    _installmentRepaymentOrder = null;
+                    IsInstallmentSwitchLocked = false;
+                    IsInstallmentPaymentEnabled = false;
+                    InstallmentCustomerName = string.Empty;
+                    InstallmentCustomerPhone = string.Empty;
+                    await _navigationActions.InstallmentOrderCreatedAsync(completedOrder);
+                }
+
                 return;
             }
 
@@ -1083,6 +1276,21 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             PaymentTenders.Clear();
             _cart.Clear();
             TenderAmountText = string.Empty;
+            if (_navigationActions.InstallmentOrderCreatedAsync is not null && createResult.Order is { } createdOrder)
+            {
+                // 分期首单由外层统一打印小票并回到 POS，付款页不再停留在补款模式。
+                _installmentRepaymentOrder = null;
+                IsInstallmentSwitchLocked = false;
+                IsInstallmentPaymentEnabled = false;
+                InstallmentCustomerName = string.Empty;
+                InstallmentCustomerPhone = string.Empty;
+                RefreshCart();
+                SetStatus("payment.installment.status.created", createResult.Message);
+                OnPropertyChanged(nameof(InstallmentOrderInfoText));
+                await _navigationActions.InstallmentOrderCreatedAsync(createdOrder);
+                return;
+            }
+
             if (createResult.Order is { CanAddRepayment: true } nextOrder)
             {
                 // 中文注释：首付成功后转为原分期单补款模式，后续付款都写回同一张分期单。
@@ -1897,6 +2105,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         VoucherEntryKeyCommand.NotifyCanExecuteChanged();
         ConfirmVoucherEntryCommand.NotifyCanExecuteChanged();
         CancelVoucherEntryCommand.NotifyCanExecuteChanged();
+        OpenInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
+        SelectInstallmentCustomerFieldCommand.NotifyCanExecuteChanged();
+        InstallmentCustomerKeyCommand.NotifyCanExecuteChanged();
+        ConfirmInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
+        CancelInstallmentCustomerDialogCommand.NotifyCanExecuteChanged();
         QuickCashCommand.NotifyCanExecuteChanged();
         RemoveTenderCommand.NotifyCanExecuteChanged();
         ConfirmPaymentCommand.NotifyCanExecuteChanged();
@@ -1961,6 +2174,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         nameof(CardMethodText),
         nameof(VoucherMethodText),
         nameof(InstallmentMethodText),
+        nameof(InstallmentCustomerNameDisplay),
+        nameof(InstallmentCustomerPhoneDisplay),
+        nameof(InstallmentOrderInfoText),
         nameof(CancelText)
     ];
 

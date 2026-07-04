@@ -608,6 +608,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _checkForAppUpdateAsync,
             BeginDeviceReregistrationAsync,
             () => _cardRecoveryPresenter!.RecoverActiveCardPaymentSessionFromPaymentAsync(),
+            OnInstallmentOrderCreatedAsync,
             setScreen: OnScreenChanged,
             onPaymentCreated: vm =>
             {
@@ -1850,6 +1851,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task OnInstallmentOrderCreatedAsync(InstallmentOrderSummary order)
+    {
+        try
+        {
+            var localOrder = await _installmentOrderService.GetLocalOrderAsync(order.OrderId);
+            if (localOrder is not null)
+            {
+                await PrintReceiptWithShellPermissionAsync(
+                    InstallmentReceiptMapper.CreateReceipt(localOrder),
+                    ReceiptPrintReason.InstallmentAuto);
+            }
+        }
+        finally
+        {
+            // 分期首单完成后无论打印结果如何都回到 POS，避免收银员继续在已清空的付款页操作。
+            CashPayment?.PrepareForEntry(Session);
+            _screenNavigator.ResetForNewTransaction();
+            PosTerminal?.RefreshCart();
+        }
+    }
+
     private async Task<ReceiptPrintResult> PrintLatestReceiptAsync() =>
         await _receiptCoordinator.PrintLatestAsync();
 
@@ -1869,7 +1891,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task<ReceiptPrintResult> PrintReceiptWithShellPermissionAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
     {
         // 关键逻辑：自动卡支付/恢复小票是系统完成交易流程，不等同于人工补打上一张。
-        if (reason != ReceiptPrintReason.CardAuto &&
+        if (reason is not ReceiptPrintReason.CardAuto and not ReceiptPrintReason.InstallmentAuto &&
             !TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
         {
             return new ReceiptPrintResult(false, StatusMessage, receipt.OrderGuid);

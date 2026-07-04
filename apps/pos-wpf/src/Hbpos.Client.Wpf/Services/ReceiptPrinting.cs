@@ -15,6 +15,7 @@ public enum ReceiptPrintReason
     LastReceipt,
     Reprint,
     CardAuto,
+    InstallmentAuto,
     Test
 }
 
@@ -283,15 +284,35 @@ public sealed class ReceiptTextFormatter : IReceiptTextFormatter
         }
 
         builder.Blank();
-        builder.Text("===== TAX INVOICE =====", ReceiptPrintAlignment.Center);
+        builder.Text(string.IsNullOrWhiteSpace(receipt.DocumentTitle)
+            ? "===== TAX INVOICE ====="
+            : receipt.DocumentTitle.Trim(), ReceiptPrintAlignment.Center);
         builder.Blank();
-        builder.Text("*** Paid ***", ReceiptPrintAlignment.Center, isEmphasized: true);
-        builder.Blank();
-        builder.Text($"Order: {orderId}");
+        var statusText = string.IsNullOrWhiteSpace(receipt.StatusText)
+            ? "*** Paid ***"
+            : receipt.StatusText.Trim();
+        if (!string.IsNullOrWhiteSpace(statusText))
+        {
+            builder.Text(statusText, ReceiptPrintAlignment.Center, isEmphasized: true);
+            builder.Blank();
+        }
+
+        var displayOrderId = string.IsNullOrWhiteSpace(receipt.OrderDisplay)
+            ? orderId
+            : receipt.OrderDisplay.Trim();
+        builder.Text($"Order: {displayOrderId}");
         builder.Text($"Date: {receipt.SoldAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
         builder.Text($"Cashier: {receipt.CashierName}");
         builder.Text($"Store: {receipt.StoreCode}");
         builder.Text($"Device: {receipt.DeviceCode}");
+        foreach (var infoLine in receipt.ExtraInfoLines ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(infoLine))
+            {
+                builder.Text(infoLine.Trim());
+            }
+        }
+
         builder.Separator();
         builder.Text(FitColumns("ITEM", "QTY", "PRICE", 25, 5, 12));
         builder.Separator();

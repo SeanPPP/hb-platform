@@ -11,6 +11,99 @@ namespace Hbpos.Api.Tests;
 
 public sealed class InstallmentServiceTests
 {
+    [Theory]
+    [InlineData(nameof(InstallmentOrderEntity.PickedUpAt))]
+    [InlineData(nameof(InstallmentOrderEntity.CancellationKind))]
+    [InlineData(nameof(InstallmentOrderEntity.CancelledAt))]
+    public void Installment_order_lifecycle_columns_are_nullable(string propertyName)
+    {
+        var property = typeof(InstallmentOrderEntity).GetProperty(propertyName);
+
+        Assert.NotNull(property);
+        var column = property!.GetCustomAttribute<SugarColumn>();
+        Assert.NotNull(column);
+        Assert.True(column!.IsNullable);
+    }
+
+    [Fact]
+    public void Installment_order_schema_repair_makes_legacy_lifecycle_columns_nullable()
+    {
+        var field = typeof(SqlSugarInstallmentRepository).GetField(
+            "EnsureNullableLifecycleColumnsSql",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        Assert.NotNull(field);
+        var sql = Assert.IsType<string>(field!.GetRawConstantValue());
+        Assert.Contains("OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')", sql);
+        Assert.Contains("sys.columns", sql);
+        Assert.Contains("[is_nullable] = 0", sql);
+        Assert.Contains("ALTER COLUMN [PickedUpAt] DATETIME2 NULL", sql);
+        Assert.Contains("ALTER COLUMN [CancellationKind] INT NULL", sql);
+        Assert.Contains("ALTER COLUMN [CancelledAt] DATETIME2 NULL", sql);
+        Assert.Contains("OBJECT_ID(N'[dbo].[InstallmentPayment]', N'U')", sql);
+        Assert.Contains("[name] = N'CardTransactionsJson'", sql);
+        Assert.Contains("[max_length] <> -1", sql);
+        Assert.Contains("ALTER COLUMN [CardTransactionsJson] NVARCHAR(MAX) NULL", sql);
+    }
+
+    [Fact]
+    public void Sql_repository_guid_filters_do_not_format_guid_inside_query_expression()
+    {
+        var source = ReadInstallmentServiceSource();
+        var forbiddenSnippets = new[]
+        {
+            "x.PaymentGuid == payment.PaymentGuid.ToString(\"D\")",
+            "x.PaymentGuid == refund.PaymentGuid.ToString(\"D\")",
+            "x.InstallmentGuid == installmentGuid.ToString(\"D\")",
+            "x.PaymentGuid == paymentGuid.ToString(\"D\")"
+        };
+
+        foreach (var snippet in forbiddenSnippets)
+        {
+            Assert.DoesNotContain(snippet, source);
+        }
+    }
+
+    [Fact]
+    public void Sql_server_guid_filter_uses_string_constant_without_format_function()
+    {
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-sql-preview;Trusted_Connection=True;",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            IsAutoCloseConnection = true
+        });
+        var paymentGuidText = Guid.Parse("7e9464fc-a8b3-41b2-9645-6ee21a31a5e9").ToString("D");
+
+        var sql = db.Queryable<InstallmentPaymentEntity>()
+            .Where(x => x.PaymentGuid == paymentGuidText)
+            .ToSqlString();
+
+        Assert.DoesNotContain("FORMAT(", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Sql_repository_create_allows_order_without_pickup_or_cancellation_info()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(
+            repository,
+            new FakeReservationService(),
+            new MutableFakeTimeProvider(DateTimeOffset.Parse("2026-05-21T10:00:00Z")));
+
+        var response = await service.CreateAsync(
+            CreateRequest(totalAmount: 60m, downPaymentAmount: 20m),
+            CancellationToken.None);
+        var stored = await repository.GetDetailsAsync(response.InstallmentGuid, CancellationToken.None);
+
+        Assert.NotNull(stored);
+        Assert.Null(stored!.PickupInfo);
+        Assert.Null(stored.CancellationInfo);
+        Assert.Equal(InstallmentStatus.Active, stored.Status);
+    }
+
     [Fact]
     public async Task Create_rejects_down_payment_below_minimum()
     {
@@ -419,6 +512,22 @@ public sealed class InstallmentServiceTests
     private static InstallmentService CreateService(FakeReservationService? reservation = null)
     {
         return new InstallmentService(new InMemoryInstallmentRepository(), reservation ?? new FakeReservationService());
+    }
+
+    private static string ReadInstallmentServiceSource([CallerFilePath] string testFilePath = "")
+    {
+        var testsDirectory = Path.GetDirectoryName(testFilePath)
+            ?? throw new InvalidOperationException("Cannot resolve test source directory.");
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            testsDirectory,
+            "..",
+            "..",
+            "src",
+            "Hbpos.Api",
+            "Services",
+            "InstallmentService.cs"));
+
+        return File.ReadAllText(sourcePath);
     }
 
     private static InstallmentCreateRequest CreateRequest(

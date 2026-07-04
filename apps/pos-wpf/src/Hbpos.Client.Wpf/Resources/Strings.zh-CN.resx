@@ -480,11 +480,41 @@
   <data name="payment.method.installment" xml:space="preserve">
     <value>分期付款</value>
   </data>
+  <data name="payment.installment.switchHelp" xml:space="preserve">
+    <value>收取首付款并记录顾客信息</value>
+  </data>
   <data name="payment.installment.customerName" xml:space="preserve">
     <value>顾客姓名 *</value>
   </data>
+  <data name="payment.installment.customerNamePlaceholder" xml:space="preserve">
+    <value>请输入顾客姓名</value>
+  </data>
   <data name="payment.installment.customerPhone" xml:space="preserve">
     <value>顾客电话 *</value>
+  </data>
+  <data name="payment.installment.customerPhonePlaceholder" xml:space="preserve">
+    <value>请输入顾客电话</value>
+  </data>
+  <data name="payment.installment.customerInfo" xml:space="preserve">
+    <value>顾客信息</value>
+  </data>
+  <data name="payment.installment.customerMissingName" xml:space="preserve">
+    <value>顾客姓名必填</value>
+  </data>
+  <data name="payment.installment.customerMissingPhone" xml:space="preserve">
+    <value>顾客电话必填</value>
+  </data>
+  <data name="payment.installment.editCustomer" xml:space="preserve">
+    <value>编辑</value>
+  </data>
+  <data name="payment.installment.customerDialogTitle" xml:space="preserve">
+    <value>编辑顾客信息</value>
+  </data>
+  <data name="payment.installment.customerDialogHelp" xml:space="preserve">
+    <value>请输入本次分期订单必填的顾客姓名和电话。</value>
+  </data>
+  <data name="payment.installment.saveCustomer" xml:space="preserve">
+    <value>保存顾客信息</value>
   </data>
   <data name="payment.installment.outstanding" xml:space="preserve">
     <value>未付余额</value>

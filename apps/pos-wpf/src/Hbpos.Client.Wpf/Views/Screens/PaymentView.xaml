@@ -127,46 +127,52 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="InstallmentMethodButtonStyle" TargetType="Button" BasedOn="{StaticResource PosPaymentMethodButtonStyle}">
-            <Setter Property="MinHeight" Value="74" />
-            <Setter Property="Padding" Value="14,10" />
-            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="Background" Value="#FF7C3AED" />
-            <Setter Property="BorderBrush" Value="#FF7C3AED" />
-            <Setter Property="Foreground" Value="White" />
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FF6D28D9" />
-                    <Setter Property="BorderBrush" Value="#FF6D28D9" />
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-
         <Style x:Key="InstallmentMethodToggleStyle" TargetType="ToggleButton">
-            <Setter Property="MinHeight" Value="74" />
-            <Setter Property="Padding" Value="14,10" />
+            <Setter Property="MinHeight" Value="86" />
+            <Setter Property="Padding" Value="14,12" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="Background" Value="#FF7C3AED" />
-            <Setter Property="BorderBrush" Value="#FF7C3AED" />
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFCBD5E1" />
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#FF6D28D9" />
-                    <Setter Property="BorderBrush" Value="#FF6D28D9" />
-                </Trigger>
-                <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="#FF5B21B6" />
-                    <Setter Property="BorderBrush" Value="White" />
-                </Trigger>
-                <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Opacity" Value="0.88" />
-                    <Setter Property="Cursor" Value="Arrow" />
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF94A3B8" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFEFF6FF" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF2563EB" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="InstallmentCustomerDialogTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
+            <Setter Property="Height" Value="56" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontSize" Value="22" />
+            <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="Transparent" />
         </Style>
 
         <Style x:Key="VoucherEntryKeyButtonStyle" TargetType="Button" BasedOn="{StaticResource PosNumberButtonStyle}">
@@ -187,6 +193,7 @@
 
         <Grid Grid.Column="0" Background="{StaticResource PosScreenBackgroundBrush}">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
@@ -217,7 +224,79 @@
                 </StackPanel>
             </Border>
 
-            <DataGrid Grid.Row="1"
+            <Border Grid.Row="1" Margin="20,0,20,10" Padding="12" Background="White" BorderBrush="#FFCBD5E1" BorderThickness="1" CornerRadius="8">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsInstallmentCustomerSectionVisible}" Value="True">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Border Width="38" Height="38" Background="#FFE0F2FE" CornerRadius="10" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="AccountEdit"
+                                                 Width="23"
+                                                 Height="23"
+                                                 Foreground="{StaticResource PosPrimaryBrush}"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="10,0,12,0" VerticalAlignment="Center">
+                        <TextBlock Text="{loc:Loc payment.installment.customerInfo}" FontSize="13" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                        <WrapPanel Margin="0,4,0,0">
+                            <TextBlock Text="{Binding InstallmentCustomerNameDisplay}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                            <TextBlock Text="  |  " FontSize="12" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                            <TextBlock Text="{Binding InstallmentCustomerPhoneDisplay}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosMutedForegroundBrush}" />
+                        </WrapPanel>
+                        <TextBlock Text="{Binding InstallmentOrderInfoText}"
+                                   Margin="0,4,0,0"
+                                   FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <Button Grid.Column="2"
+                            Command="{Binding OpenInstallmentCustomerDialogCommand}"
+                            MinWidth="76"
+                            MinHeight="36"
+                            Padding="10,0">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Pencil" Width="15" Height="15" Margin="0,0,5,0" />
+                            <TextBlock Text="{loc:Loc payment.installment.editCustomer}" FontWeight="Black" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <DataGrid Grid.Row="2"
                       ItemsSource="{Binding CartLines}"
                       IsReadOnly="True"
                       RowBackground="White"
@@ -238,7 +317,7 @@
                 </DataGrid.Columns>
             </DataGrid>
 
-            <Border Grid.Row="2" Padding="20,16" Background="#E8FFFFFF" BorderBrush="#FFE2E2E6" BorderThickness="0,1,0,0">
+            <Border Grid.Row="3" Padding="20,16" Background="#E8FFFFFF" BorderBrush="#FFE2E2E6" BorderThickness="0,1,0,0">
                 <Grid Grid.IsSharedSizeScope="True">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -582,75 +661,49 @@
                             </Style.Triggers>
                         </Style>
                     </ToggleButton.Style>
-                    <Grid Style="{StaticResource PaymentMethodContentGridStyle}">
+                    <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="46" />
-                            <ColumnDefinition Width="14" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="62" />
                         </Grid.ColumnDefinitions>
-                        <Border Grid.Column="0" Width="46" Height="46" Background="#33FFFFFF" CornerRadius="10">
-                            <materialDesign:PackIcon Kind="CalendarClock" Width="28" Height="28" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Grid.Column="0" Width="46" Height="46" Background="#FFE0F2FE" CornerRadius="10">
+                            <materialDesign:PackIcon Kind="CalendarClock" Width="28" Height="28" Foreground="#FF2563EB" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Grid.Column="2" Text="{Binding InstallmentMethodText}" VerticalAlignment="Center" TextAlignment="Left" FontSize="17" FontWeight="Black" Foreground="White" />
+                        <StackPanel Grid.Column="1" Margin="14,0,12,0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding InstallmentMethodText}" FontSize="17" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                            <TextBlock Text="{loc:Loc payment.installment.switchHelp}" Margin="0,4,0,0" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosMutedForegroundBrush}" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Border Grid.Column="2" Width="54" Height="30" CornerRadius="15" VerticalAlignment="Center" HorizontalAlignment="Right">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="#FFE5E7EB" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsInstallmentPaymentEnabled}" Value="True">
+                                            <Setter Property="Background" Value="#FF2563EB" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <Grid>
+                                <Ellipse Width="24" Height="24" Fill="White" VerticalAlignment="Center">
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="HorizontalAlignment" Value="Left" />
+                                            <Setter Property="Margin" Value="3,0,0,0" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsInstallmentPaymentEnabled}" Value="True">
+                                                    <Setter Property="HorizontalAlignment" Value="Right" />
+                                                    <Setter Property="Margin" Value="0,0,3,0" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
+                                </Ellipse>
+                            </Grid>
+                        </Border>
                     </Grid>
                 </ToggleButton>
-                <StackPanel Margin="0,8,0,0">
-                    <StackPanel.Style>
-                        <Style TargetType="StackPanel">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsInstallmentCustomerSectionVisible}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </StackPanel.Style>
-                    <TextBlock Text="{Binding InstallmentOrderInfoText}"
-                               Margin="2,0,2,8"
-                               FontSize="12"
-                               FontWeight="Bold"
-                               Foreground="{StaticResource PosMutedForegroundBrush}">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="False">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                    </TextBlock>
-                    <TextBox Text="{Binding InstallmentCustomerName, UpdateSourceTrigger=PropertyChanged}"
-                             materialDesign:HintAssist.Hint="{loc:Loc payment.installment.customerName}"
-                             Height="40"
-                             Margin="0,0,0,8">
-                        <TextBox.Style>
-                            <Style TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
-                                <Setter Property="IsReadOnly" Value="True" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="True">
-                                        <Setter Property="IsReadOnly" Value="False" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBox.Style>
-                    </TextBox>
-                    <TextBox Text="{Binding InstallmentCustomerPhone, UpdateSourceTrigger=PropertyChanged}"
-                             materialDesign:HintAssist.Hint="{loc:Loc payment.installment.customerPhone}"
-                             Height="40">
-                        <TextBox.Style>
-                            <Style TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
-                                <Setter Property="IsReadOnly" Value="True" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="True">
-                                        <Setter Property="IsReadOnly" Value="False" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBox.Style>
-                    </TextBox>
-                </StackPanel>
                 <TextBox Text="{Binding VoucherCodeText, UpdateSourceTrigger=PropertyChanged}"
                          materialDesign:HintAssist.Hint="{loc:Loc payment.voucher.code}"
                          Height="40"
@@ -950,6 +1003,214 @@
                                 </StackPanel>
                             </Button>
                         </Grid>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid Grid.ColumnSpan="3"
+              Panel.ZIndex="21"
+              Background="#99000000"
+              Visibility="{Binding IsInstallmentCustomerDialogOpen, Converter={StaticResource BooleanToVisibilityConverter}}">
+            <Border Width="720"
+                    MaxWidth="720"
+                    Padding="22"
+                    Background="White"
+                    BorderBrush="#FFE2E2E6"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Width="44" Height="44" Background="#FFE0F2FE" CornerRadius="10">
+                            <materialDesign:PackIcon Kind="AccountEdit"
+                                                     Width="26"
+                                                     Height="26"
+                                                     Foreground="{StaticResource PosPrimaryBrush}"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Grid.Column="1"
+                                   Text="{loc:Loc payment.installment.customerDialogTitle}"
+                                   Margin="12,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="22"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosPrimaryBrush}" />
+                        <Button Grid.Column="2"
+                                Command="{Binding CancelInstallmentCustomerDialogCommand}"
+                                Width="34"
+                                Height="34"
+                                Padding="0"
+                                Style="{StaticResource TitleBarButtonStyle}">
+                            <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
+                        </Button>
+                    </Grid>
+
+                    <TextBlock Grid.Row="1"
+                               Text="{loc:Loc payment.installment.customerDialogHelp}"
+                               Margin="0,14,0,12"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="14" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="{loc:Loc payment.installment.customerName}" Margin="0,0,0,6" FontSize="13" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                            <Border CornerRadius="8" BorderThickness="2" Background="White">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="#FF94A3B8" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsInstallmentCustomerNameDraftActive}" Value="True">
+                                                <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBox x:Name="InstallmentCustomerDraftNameTextBox"
+                                         Text="{Binding InstallmentCustomerDraftName, UpdateSourceTrigger=PropertyChanged}"
+                                         materialDesign:HintAssist.Hint="{loc:Loc payment.installment.customerNamePlaceholder}"
+                                         GotKeyboardFocus="InstallmentCustomerDraftNameTextBoxGotKeyboardFocus"
+                                         Style="{StaticResource InstallmentCustomerDialogTextBoxStyle}" />
+                            </Border>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="{loc:Loc payment.installment.customerPhone}" Margin="0,0,0,6" FontSize="13" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" />
+                            <Border CornerRadius="8" BorderThickness="2" Background="White">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="#FF94A3B8" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsInstallmentCustomerPhoneDraftActive}" Value="True">
+                                                <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBox x:Name="InstallmentCustomerDraftPhoneTextBox"
+                                         Text="{Binding InstallmentCustomerDraftPhone, UpdateSourceTrigger=PropertyChanged}"
+                                         materialDesign:HintAssist.Hint="{loc:Loc payment.installment.customerPhonePlaceholder}"
+                                         GotKeyboardFocus="InstallmentCustomerDraftPhoneTextBoxGotKeyboardFocus"
+                                         Style="{StaticResource InstallmentCustomerDialogTextBoxStyle}" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Grid.Row="3" Margin="0,14,0,0">
+                        <UniformGrid Columns="6"
+                                     Visibility="{Binding IsInstallmentCustomerNameDraftActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Button Content="1" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="1" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="2" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="2" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="3" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="3" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="4" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="4" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="5" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="5" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="6" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="6" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="7" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="7" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="8" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="8" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="9" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="9" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="0" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="0" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Space" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <TextBlock Text="{loc:Loc common.space}" FontSize="14" FontWeight="Black" />
+                            </Button>
+                            <Button Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Back" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <materialDesign:PackIcon Kind="BackspaceOutline" Width="22" Height="22" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Button>
+                            <Button Content="A" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="A" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="B" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="B" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="C" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="C" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="D" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="D" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="E" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="E" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="F" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="F" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="G" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="G" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="H" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="H" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="I" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="I" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="J" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="J" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="K" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="K" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="L" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="L" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="M" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="M" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="N" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="N" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="O" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="O" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="P" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="P" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="Q" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Q" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="R" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="R" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="S" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="S" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="T" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="T" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="U" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="U" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="V" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="V" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="W" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="W" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="X" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="X" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="Y" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Y" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="Z" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Z" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Clear" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <materialDesign:PackIcon Kind="CloseCircleOutline" Width="22" Height="22" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Button>
+                        </UniformGrid>
+
+                        <UniformGrid Columns="3"
+                                     Visibility="{Binding IsInstallmentCustomerPhoneDraftActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <Button Content="1" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="1" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="2" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="2" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="3" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="3" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="4" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="4" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="5" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="5" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="6" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="6" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="7" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="7" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="8" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="8" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="9" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="9" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="+" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="+" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="0" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="0" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Content="-" Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="-" Style="{StaticResource VoucherEntryKeyButtonStyle}" />
+                            <Button Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Clear" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <materialDesign:PackIcon Kind="CloseCircleOutline" Width="22" Height="22" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Button>
+                            <Button Command="{Binding InstallmentCustomerKeyCommand}" CommandParameter="Back" Style="{StaticResource VoucherEntryKeyButtonStyle}">
+                                <materialDesign:PackIcon Kind="BackspaceOutline" Width="22" Height="22" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Button>
+                        </UniformGrid>
+                    </Grid>
+
+                    <Grid Grid.Row="4" Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button Command="{Binding CancelInstallmentCustomerDialogCommand}"
+                                Style="{StaticResource PosSecondaryButtonStyle}"
+                                MinHeight="48">
+                            <TextBlock Text="{Binding CancelText}" FontWeight="Black" />
+                        </Button>
+                        <Button Grid.Column="2"
+                                Command="{Binding ConfirmInstallmentCustomerDialogCommand}"
+                                Style="{StaticResource PosPrimaryButtonStyle}"
+                                MinHeight="48">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="Check" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc payment.installment.saveCustomer}" FontWeight="Black" />
+                            </StackPanel>
+                        </Button>
                     </Grid>
                 </Grid>
             </Border>
