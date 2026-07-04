@@ -218,6 +218,107 @@ public sealed class InstallmentOrderServiceTests
     }
 
     [Fact]
+    public async Task CreateOrderAsync_uses_preauthorized_card_down_payment_without_authorizing_again()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var cardTransactions = new[]
+            {
+                new CardTransactionDto("ANZ", "TXN-PAID", "654321", "VISA", 4, "****4321", "MID", "00", "APPROVED", "43", DateTimeOffset.UtcNow, 30m, "receipt")
+            };
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient
+            {
+                CreateResponse = CreateCreateResponse()
+            };
+            var cardTerminalClient = new RecordingCardTerminalClient(
+                new PaymentAuthorizationResult(true, "ANZ:SHOULD-NOT-RUN", AuthorizedAmount: 30m));
+            var service = new InstallmentOrderService(repository, apiClient, cardTerminalClient: cardTerminalClient);
+
+            await schema.InitializeAsync();
+
+            var result = await service.CreateOrderAsync(
+                new InstallmentOrderCreateRequest(
+                    CreateOnlineSession(),
+                    CreateCartSnapshot(),
+                    "张三",
+                    "0400111222",
+                    30m,
+                    new InstallmentPaymentDraft(
+                        Guid.Parse("12345678-1111-2222-3333-555555555555"),
+                        PaymentMethodKind.Card,
+                        30m,
+                        "ANZ:TXN-PAID",
+                        CardTransactions: cardTransactions,
+                        IdempotencyKey: "existing-card-tender"),
+                    "周末取货"));
+
+            Assert.True(result.Succeeded);
+            Assert.Equal(0, cardTerminalClient.AuthorizeCallCount);
+            Assert.Equal(1, apiClient.CreateCallCount);
+            Assert.NotNull(apiClient.LastCreateRequest);
+            Assert.Equal("ANZ:TXN-PAID", apiClient.LastCreateRequest!.DownPayment.Reference);
+            Assert.Same(cardTransactions, apiClient.LastCreateRequest.DownPayment.CardTransactions);
+            Assert.Equal("existing-card-tender", apiClient.LastCreateRequest.DownPayment.IdempotencyKey);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task CreateOrderAsync_authorizes_card_down_payment_when_only_idempotency_key_exists()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient
+            {
+                CreateResponse = CreateCreateResponse()
+            };
+            var cardTerminalClient = new RecordingCardTerminalClient(
+                new PaymentAuthorizationResult(true, "ANZ:TXN-IDEMP", AuthorizedAmount: 30m));
+            var service = new InstallmentOrderService(repository, apiClient, cardTerminalClient: cardTerminalClient);
+
+            await schema.InitializeAsync();
+
+            var result = await service.CreateOrderAsync(
+                new InstallmentOrderCreateRequest(
+                    CreateOnlineSession(),
+                    CreateCartSnapshot(),
+                    "张三",
+                    "0400111222",
+                    30m,
+                    new InstallmentPaymentDraft(
+                        Guid.Parse("12345678-1111-2222-3333-666666666666"),
+                        PaymentMethodKind.Card,
+                        30m,
+                        "draft-reference",
+                        IdempotencyKey: "client-key-only"),
+                    "周末取货"));
+
+            Assert.True(result.Succeeded);
+            Assert.Equal(1, cardTerminalClient.AuthorizeCallCount);
+            Assert.NotNull(apiClient.LastCreateRequest);
+            Assert.Equal("ANZ:TXN-IDEMP", apiClient.LastCreateRequest!.DownPayment.Reference);
+            Assert.Equal("client-key-only", apiClient.LastCreateRequest.DownPayment.IdempotencyKey);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task CreateOrderAsync_does_not_call_api_when_card_down_payment_authorization_fails()
     {
         var databasePath = CreateTempDatabasePath();

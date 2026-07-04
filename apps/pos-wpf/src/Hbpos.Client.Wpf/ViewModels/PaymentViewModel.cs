@@ -13,8 +13,12 @@ namespace Hbpos.Client.Wpf.ViewModels;
 
 public partial class PaymentViewModel : ObservableObject, IDisposable
 {
+    private const decimal MinimumInstallmentTotalAmount = 50m;
+    private const decimal MinimumInstallmentFirstPaymentAmount = 20m;
+
     private readonly PosCartService _cart;
     private readonly ICashPaymentWorkflowService _workflowService;
+    private readonly IInstallmentOrderService _installmentOrderService;
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
@@ -38,6 +42,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private decimal _pendingVoucherChangeAmount;
     private int _paymentEntryVersion;
     private decimal _workflowRemainingAmount;
+    private InstallmentOrderSummary? _installmentRepaymentOrder;
     private bool _disposed;
 
     [ObservableProperty]
@@ -76,6 +81,18 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private CardPaymentErrorOverlayViewModel? _cardPaymentErrorOverlay;
 
+    [ObservableProperty]
+    private bool _isInstallmentPaymentEnabled;
+
+    [ObservableProperty]
+    private bool _isInstallmentSwitchLocked;
+
+    [ObservableProperty]
+    private string _installmentCustomerName = string.Empty;
+
+    [ObservableProperty]
+    private string _installmentCustomerPhone = string.Empty;
+
     public PaymentViewModel(
         PosCartService cart,
         CashCheckoutService checkout,
@@ -88,7 +105,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IInstallmentOrderService? installmentOrderService = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -99,7 +117,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             recoverPreviousCardTransactionAsync,
             linklyFallbackPromptCoordinator,
             cashierSessionContext,
-            enforcePermissionsWhenNoCashier)
+            enforcePermissionsWhenNoCashier,
+            installmentOrderService)
     {
     }
 
@@ -113,10 +132,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
+        bool enforcePermissionsWhenNoCashier = false,
+        IInstallmentOrderService? installmentOrderService = null)
     {
         _cart = cart;
         _workflowService = workflowService;
+        _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _session = session;
         _localization = localization;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
@@ -279,6 +300,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public bool IsInstallmentEntryVisible => IsPaymentMode;
 
+    public bool IsInstallmentCustomerSectionVisible => IsInstallmentPaymentEnabled;
+
+    public bool CanEditInstallmentCustomer => IsInstallmentPaymentEnabled && _installmentRepaymentOrder is null;
+
+    public string InstallmentOrderInfoText => _installmentRepaymentOrder is null
+        ? string.Empty
+        : $"{_installmentRepaymentOrder.OrderNumber} | {_installmentRepaymentOrder.CustomerName} | {_installmentRepaymentOrder.CustomerPhone} | {T("payment.installment.outstanding")}: {_installmentRepaymentOrder.OutstandingAmount:C2}";
+
     public bool IsConfirmPaymentVisible => CanConfirmPayment();
 
     partial void OnTenderAmountTextChanged(string value)
@@ -288,6 +317,45 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     }
 
     partial void OnVoucherCodeTextChanged(string value)
+    {
+        NotifyPaymentCommandStates();
+    }
+
+    partial void OnIsInstallmentPaymentEnabledChanged(bool value)
+    {
+        if (IsInstallmentSwitchLocked && !value)
+        {
+            // 中文注释：历史分期补款必须锁定在分期模式，避免误切回普通付款。
+            IsInstallmentPaymentEnabled = true;
+            return;
+        }
+
+        if (!value)
+        {
+            _installmentRepaymentOrder = null;
+            IsInstallmentSwitchLocked = false;
+            InstallmentCustomerName = string.Empty;
+            InstallmentCustomerPhone = string.Empty;
+        }
+
+        OnPropertyChanged(nameof(IsInstallmentCustomerSectionVisible));
+        OnPropertyChanged(nameof(CanEditInstallmentCustomer));
+        OnPropertyChanged(nameof(InstallmentOrderInfoText));
+        RecalculateTenderSummary();
+        NotifyPaymentCommandStates();
+    }
+
+    partial void OnIsInstallmentSwitchLockedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanEditInstallmentCustomer));
+    }
+
+    partial void OnInstallmentCustomerNameChanged(string value)
+    {
+        NotifyPaymentCommandStates();
+    }
+
+    partial void OnInstallmentCustomerPhoneChanged(string value)
     {
         NotifyPaymentCommandStates();
     }
@@ -356,6 +424,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
         IsPaymentInteractionLocked = false;
+        _installmentRepaymentOrder = null;
+        IsInstallmentSwitchLocked = false;
+        IsInstallmentPaymentEnabled = false;
+        InstallmentCustomerName = string.Empty;
+        InstallmentCustomerPhone = string.Empty;
         PaymentTenders.Clear();
         VoucherCodeText = string.Empty;
         TenderAmountText = string.Empty;
@@ -369,6 +442,24 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    public void PrepareForInstallmentRepayment(PosSessionState session, InstallmentOrderSummary order)
+    {
+        PrepareForEntry(session);
+
+        // 中文注释：历史页续付直接进入普通支付页，但目标金额来自原分期单余额。
+        _installmentRepaymentOrder = order;
+        InstallmentCustomerName = order.CustomerName;
+        InstallmentCustomerPhone = order.CustomerPhone;
+        IsInstallmentPaymentEnabled = true;
+        IsInstallmentSwitchLocked = true;
+        PaymentMode = CalculatePaymentMode();
+        RecalculateTenderSummary();
+        SetStatus(GetReadyStatusKey());
+        OnPropertyChanged(nameof(CanEditInstallmentCustomer));
+        OnPropertyChanged(nameof(InstallmentOrderInfoText));
+        NotifyPaymentCommandStates();
     }
 
     public void RefreshCart()
@@ -425,11 +516,27 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (IsInstallmentPaymentEnabled && PaymentTenders.Count > 0)
+        {
+            SetStatus("payment.installment.status.singleTenderOnly");
+            NotifyPaymentCommandStates();
+            return;
+        }
+
         if (!TryApplyAddTenderPlan(
                 _tenderController.CreateAddTenderPlan(BuildAddTenderRequest(method)),
                 out var amountText,
                 out var referenceText))
         {
+            return;
+        }
+
+        if (IsInstallmentPaymentEnabled &&
+            _workflowService.TryParseTenderedAmount(amountText, out var plannedAmount) &&
+            plannedAmount > GetPaymentTargetAmount())
+        {
+            SetStatus("payment.installment.status.invalidAmount");
+            NotifyPaymentCommandStates();
             return;
         }
 
@@ -456,12 +563,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             result = await _workflowService.AddTenderAsync(
                 method,
                 Session,
-                ActualAmount,
+                GetPaymentTargetAmount(),
                 PaymentTenders.ToList(),
                 amountText,
                 referenceText,
                 isCard ? cardPaymentCts?.Token ?? CancellationToken.None : CancellationToken.None,
-                isCard ? _cart.CreateSnapshot() : null);
+                isCard && !IsInstallmentRepaymentMode ? _cart.CreateSnapshot() : null);
             if (isCard && cardPaymentCts?.IsCancellationRequested == true)
             {
                 cardPaymentWasManuallyCancelled = _cardSession.IsManualCancellation(cardPaymentCts);
@@ -543,6 +650,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         SetStatus(result.StatusKey, result.StatusMessage);
         NotifyPaymentCommandStates();
         if (isCard &&
+            !IsInstallmentPaymentEnabled &&
             !cardPaymentWasManuallyCancelled &&
             IsSettlementComplete() &&
             (IsPaymentMode || IsRefundMode))
@@ -613,6 +721,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (IsInstallmentPaymentEnabled)
+        {
+            await ConfirmInstallmentPaymentAsync();
+            return;
+        }
+
         if (TrySetOfflineVoucherRefundTenderStatus())
         {
             return;
@@ -665,6 +779,174 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CompleteSuccessfulPayment(result);
     }
 
+    private async Task ConfirmInstallmentPaymentAsync()
+    {
+        if (!ValidateInstallmentConfirmation(out var tender))
+        {
+            NotifyPaymentCommandStates();
+            return;
+        }
+
+        IsPaymentInteractionLocked = true;
+        try
+        {
+            if (_installmentRepaymentOrder is { } repaymentOrder)
+            {
+                var repaymentResult = await _installmentOrderService.AddRepaymentAsync(
+                    new InstallmentOrderRepaymentRequest(
+                        repaymentOrder.OrderId,
+                        Session,
+                        CreateInstallmentPaymentDraft(tender)));
+                if (!repaymentResult.Succeeded)
+                {
+                    SetStatus("payment.installment.status.actionFailed", repaymentResult.Message);
+                    return;
+                }
+
+                PaymentTenders.Clear();
+                _installmentRepaymentOrder = repaymentResult.Order ?? repaymentOrder;
+                TenderAmountText = string.Empty;
+                RecalculateTenderSummary();
+                SetStatus("payment.installment.status.repaymentRecorded", repaymentResult.Message);
+                OnPropertyChanged(nameof(InstallmentOrderInfoText));
+                return;
+            }
+
+            var cartSnapshot = CreateInstallmentCartSnapshot();
+            var createResult = await _installmentOrderService.CreateOrderAsync(
+                new InstallmentOrderCreateRequest(
+                    Session,
+                    cartSnapshot,
+                    InstallmentCustomerName.Trim(),
+                    InstallmentCustomerPhone.Trim(),
+                    tender.Amount,
+                    CreateInstallmentPaymentDraft(tender),
+                    string.Empty));
+            if (!createResult.Succeeded)
+            {
+                SetStatus("payment.installment.status.actionFailed", createResult.Message);
+                return;
+            }
+
+            PaymentTenders.Clear();
+            _cart.Clear();
+            TenderAmountText = string.Empty;
+            if (createResult.Order is { CanAddRepayment: true } nextOrder)
+            {
+                // 中文注释：首付成功后转为原分期单补款模式，后续付款都写回同一张分期单。
+                _installmentRepaymentOrder = nextOrder;
+                InstallmentCustomerName = nextOrder.CustomerName;
+                InstallmentCustomerPhone = nextOrder.CustomerPhone;
+                IsInstallmentPaymentEnabled = true;
+                IsInstallmentSwitchLocked = true;
+            }
+            else
+            {
+                _installmentRepaymentOrder = null;
+                IsInstallmentSwitchLocked = false;
+                IsInstallmentPaymentEnabled = false;
+                InstallmentCustomerName = string.Empty;
+                InstallmentCustomerPhone = string.Empty;
+            }
+
+            RefreshCart();
+            SetStatus("payment.installment.status.created", createResult.Message);
+            OnPropertyChanged(nameof(InstallmentOrderInfoText));
+        }
+        finally
+        {
+            IsPaymentInteractionLocked = false;
+            NotifyPaymentCommandStates();
+        }
+    }
+
+    private bool ValidateInstallmentConfirmation(out PaymentTender tender)
+    {
+        tender = null!;
+
+        if (!Session.IsOnline)
+        {
+            SetStatus("payment.installment.status.onlineRequired");
+            return false;
+        }
+
+        if (PaymentTenders.Count != 1)
+        {
+            SetStatus(GetNoTendersStatusKey());
+            return false;
+        }
+
+        tender = PaymentTenders[0];
+        var targetAmount = GetPaymentTargetAmount();
+        if (tender.Amount <= 0m || tender.Amount > targetAmount)
+        {
+            SetStatus("payment.installment.status.invalidAmount");
+            return false;
+        }
+
+        if (_installmentRepaymentOrder is { } repaymentOrder)
+        {
+            if (!repaymentOrder.CanAddRepayment || repaymentOrder.OutstandingAmount <= 0m)
+            {
+                SetStatus("payment.installment.status.noRepaymentAllowed");
+                return false;
+            }
+
+            return true;
+        }
+
+        if (_cart.IsEmpty || _cart.HasNonIntegerQuantity || _cart.HasZeroPriceLine)
+        {
+            TrySetBlockingCartIssueStatus();
+            return false;
+        }
+
+        if (ActualAmount < MinimumInstallmentTotalAmount)
+        {
+            SetStatus("payment.installment.status.totalBelowMinimum");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(InstallmentCustomerName) ||
+            string.IsNullOrWhiteSpace(InstallmentCustomerPhone))
+        {
+            SetStatus("payment.installment.status.customerRequired");
+            return false;
+        }
+
+        if (tender.Amount < MinimumInstallmentFirstPaymentAmount)
+        {
+            SetStatus("payment.installment.status.firstPaymentBelowMinimum");
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanConfirmInstallmentPayment()
+    {
+        if (!Session.IsOnline ||
+            PaymentTenders.Count != 1 ||
+            PaymentTenders[0].Amount <= 0m ||
+            PaymentTenders[0].Amount > GetPaymentTargetAmount())
+        {
+            return false;
+        }
+
+        if (_installmentRepaymentOrder is { } repaymentOrder)
+        {
+            return repaymentOrder.CanAddRepayment && repaymentOrder.OutstandingAmount > 0m;
+        }
+
+        return !_cart.IsEmpty &&
+            !_cart.HasNonIntegerQuantity &&
+            !_cart.HasZeroPriceLine &&
+            ActualAmount >= MinimumInstallmentTotalAmount &&
+            PaymentTenders[0].Amount >= MinimumInstallmentFirstPaymentAmount &&
+            !string.IsNullOrWhiteSpace(InstallmentCustomerName) &&
+            !string.IsNullOrWhiteSpace(InstallmentCustomerPhone);
+    }
+
     private async Task RetryPendingVoucherUploadAsync()
     {
         if (_pendingVoucherUploadOrderGuid is null)
@@ -710,7 +992,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _cardSession.IsActive ||
             _cardSession.HasUnknownResult ||
             _pendingVoucherUploadOrderGuid is not null ||
-            _cart.IsEmpty || _cart.HasNonIntegerQuantity || _cart.HasZeroPriceLine || IsZeroSettlementMode)
+            IsZeroSettlementMode ||
+            (!IsInstallmentRepaymentMode && (_cart.IsEmpty || _cart.HasNonIntegerQuantity || _cart.HasZeroPriceLine)))
+        {
+            return false;
+        }
+
+        if (IsInstallmentPaymentEnabled && PaymentTenders.Count > 0)
         {
             return false;
         }
@@ -728,7 +1016,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         var remainingAmount = PaymentStrategies[method].ResolveDefaultAmount(
             IsRefundMode,
-            ActualAmount,
+            GetPaymentTargetAmount(),
             GetCashRemainingAmount,
             GetExternalRemainingAmount,
             GetRefundRemainingAmount);
@@ -748,7 +1036,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        return method == PaymentMethodKind.Cash || amount <= remainingAmount;
+        return IsInstallmentPaymentEnabled
+            ? amount <= remainingAmount
+            : method == PaymentMethodKind.Cash || amount <= remainingAmount;
     }
 
     private bool CanConfirmPayment()
@@ -761,6 +1051,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         if (_pendingVoucherUploadOrderGuid is not null)
         {
             return true;
+        }
+
+        if (IsInstallmentPaymentEnabled)
+        {
+            return CanConfirmInstallmentPayment();
         }
 
         return !_cart.IsEmpty &&
@@ -798,15 +1093,16 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private void RecalculateTenderSummary()
     {
+        var targetAmount = GetPaymentTargetAmount();
         TotalTendered = _workflowService.CalculateTenderedAmount(PaymentTenders.ToList());
-        _workflowRemainingAmount = _workflowService.CalculateRemainingAmount(ActualAmount, PaymentTenders.ToList());
+        _workflowRemainingAmount = _workflowService.CalculateRemainingAmount(targetAmount, PaymentTenders.ToList());
         RemainingAmount = Math.Abs(_workflowRemainingAmount);
         ChangeDue = IsPaymentMode &&
             PaymentTenders.Count == 0 &&
             _workflowService.TryParseTenderedAmount(TenderAmountText, out var tenderedAmount)
-                ? Math.Max(0m, CashRoundingPolicy.CalculateCashChange(ActualAmount, [], tenderedAmount))
+                ? Math.Max(0m, CashRoundingPolicy.CalculateCashChange(targetAmount, [], tenderedAmount))
                 : IsPaymentMode
-                    ? _workflowService.CalculateChange(PaymentTenders.ToList(), ActualAmount)
+                    ? _workflowService.CalculateChange(PaymentTenders.ToList(), targetAmount)
                     : 0m;
         OnPropertyChanged(nameof(QuickCashAmounts));
     }
@@ -832,7 +1128,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         var amount = PaymentStrategies[SelectedPaymentMethod].ResolveDefaultAmount(
             IsRefundMode,
-            ActualAmount,
+            GetPaymentTargetAmount(),
             GetCashRemainingAmount,
             GetExternalRemainingAmount,
             GetRefundRemainingAmount);
@@ -863,7 +1159,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         var amount = PaymentStrategies[method].ResolveDefaultAmount(
             IsRefundMode,
-            ActualAmount,
+            GetPaymentTargetAmount(),
             GetCashRemainingAmount,
             GetExternalRemainingAmount,
             GetRefundRemainingAmount);
@@ -873,7 +1169,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private decimal GetExternalRemainingAmount()
     {
         var tenderedAmount = PaymentTenders.Sum(tender => tender.Amount);
-        return Math.Abs(decimal.Round(ActualAmount - tenderedAmount, 2, MidpointRounding.AwayFromZero));
+        return Math.Abs(decimal.Round(GetPaymentTargetAmount() - tenderedAmount, 2, MidpointRounding.AwayFromZero));
     }
 
     private bool HasTenderForMethod(PaymentMethodKind method)
@@ -991,6 +1287,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private PaymentEntryMode CalculatePaymentMode()
     {
+        if (IsInstallmentRepaymentMode)
+        {
+            return PaymentEntryMode.Payment;
+        }
+
         if (ActualAmount < 0m)
         {
             return PaymentEntryMode.Refund;
@@ -1008,7 +1309,49 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     {
         return IsRefundMode
             ? new CashRoundingPolicy().NormalizeCashTender(GetRefundRemainingAmount(PaymentMethodKind.Cash))
-            : CashRoundingPolicy.GetCashPayableAmount(ActualAmount, PaymentTenders.ToList());
+            : CashRoundingPolicy.GetCashPayableAmount(GetPaymentTargetAmount(), PaymentTenders.ToList());
+    }
+
+    private bool IsInstallmentRepaymentMode => _installmentRepaymentOrder is not null;
+
+    private decimal GetPaymentTargetAmount()
+    {
+        return _installmentRepaymentOrder?.OutstandingAmount ?? ActualAmount;
+    }
+
+    private PosCartServiceSnapshot CreateInstallmentCartSnapshot()
+    {
+        // 中文注释：分期创建要保存商品明细，使用和分期中心相同的轻量购物车快照结构。
+        return new PosCartServiceSnapshot(
+            _cart.TotalAmount,
+            _cart.DiscountAmount,
+            _cart.ActualAmount,
+            _cart.Lines.Select(line => new PosCartLineServiceSnapshot(
+                line.ProductCode,
+                line.ReferenceCode,
+                line.DisplayName,
+                line.LookupCode,
+                line.ItemNumber,
+                line.Quantity,
+                line.UnitPrice,
+                line.DiscountAmount,
+                line.ActualAmount)).ToList());
+    }
+
+    private static InstallmentPaymentDraft CreateInstallmentPaymentDraft(PaymentTender tender)
+    {
+        var (reference, reservationToken) = tender.Method == PaymentMethodKind.Voucher
+            ? OrderUploadService.ParseVoucherReference(tender.Reference)
+            : (tender.Reference, null);
+
+        return new InstallmentPaymentDraft(
+            Guid.NewGuid(),
+            tender.Method,
+            tender.Amount,
+            reference,
+            reservationToken,
+            tender.CardTransactions,
+            tender.IdempotencyKey ?? (tender.Method == PaymentMethodKind.Card ? $"preauthorized-card:{Guid.NewGuid():D}" : null));
     }
 
     private decimal GetRefundRemainingAmount(PaymentMethodKind method)

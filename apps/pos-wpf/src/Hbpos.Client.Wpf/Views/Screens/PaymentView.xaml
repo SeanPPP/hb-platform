@@ -141,6 +141,32 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <Style x:Key="InstallmentMethodToggleStyle" TargetType="ToggleButton">
+            <Setter Property="MinHeight" Value="74" />
+            <Setter Property="Padding" Value="14,10" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="#FF7C3AED" />
+            <Setter Property="BorderBrush" Value="#FF7C3AED" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FF6D28D9" />
+                    <Setter Property="BorderBrush" Value="#FF6D28D9" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="#FF5B21B6" />
+                    <Setter Property="BorderBrush" Value="White" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.88" />
+                    <Setter Property="Cursor" Value="Arrow" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </UserControl.Resources>
 
     <Grid>
@@ -532,18 +558,21 @@
                         <TextBlock Grid.Column="2" Text="{Binding VoucherMethodText}" VerticalAlignment="Center" TextAlignment="Left" FontSize="17" FontWeight="Black" Foreground="White" />
                     </Grid>
                 </Button>
-                <Button Command="{Binding ShowInstallmentCenterCommand}"
-                        Margin="0,8,0,0">
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource InstallmentMethodButtonStyle}">
+                <ToggleButton IsChecked="{Binding IsInstallmentPaymentEnabled, Mode=TwoWay}"
+                              Margin="0,8,0,0">
+                    <ToggleButton.Style>
+                        <Style TargetType="ToggleButton" BasedOn="{StaticResource InstallmentMethodToggleStyle}">
                             <Setter Property="Visibility" Value="Visible" />
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsInstallmentEntryVisible}" Value="False">
                                     <Setter Property="Visibility" Value="Collapsed" />
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding IsInstallmentSwitchLocked}" Value="True">
+                                    <Setter Property="IsEnabled" Value="False" />
+                                </DataTrigger>
                             </Style.Triggers>
                         </Style>
-                    </Button.Style>
+                    </ToggleButton.Style>
                     <Grid Style="{StaticResource PaymentMethodContentGridStyle}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="46" />
@@ -555,7 +584,64 @@
                         </Border>
                         <TextBlock Grid.Column="2" Text="{Binding InstallmentMethodText}" VerticalAlignment="Center" TextAlignment="Left" FontSize="17" FontWeight="Black" Foreground="White" />
                     </Grid>
-                </Button>
+                </ToggleButton>
+                <StackPanel Margin="0,8,0,0">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsInstallmentCustomerSectionVisible}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <TextBlock Text="{Binding InstallmentOrderInfoText}"
+                               Margin="2,0,2,8"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBox Text="{Binding InstallmentCustomerName, UpdateSourceTrigger=PropertyChanged}"
+                             materialDesign:HintAssist.Hint="{loc:Loc payment.installment.customerName}"
+                             Height="40"
+                             Margin="0,0,0,8">
+                        <TextBox.Style>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
+                                <Setter Property="IsReadOnly" Value="True" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="True">
+                                        <Setter Property="IsReadOnly" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBox.Style>
+                    </TextBox>
+                    <TextBox Text="{Binding InstallmentCustomerPhone, UpdateSourceTrigger=PropertyChanged}"
+                             materialDesign:HintAssist.Hint="{loc:Loc payment.installment.customerPhone}"
+                             Height="40">
+                        <TextBox.Style>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource PosSearchTextBoxStyle}">
+                                <Setter Property="IsReadOnly" Value="True" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CanEditInstallmentCustomer}" Value="True">
+                                        <Setter Property="IsReadOnly" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBox.Style>
+                    </TextBox>
+                </StackPanel>
                 <TextBox Text="{Binding VoucherCodeText, UpdateSourceTrigger=PropertyChanged}"
                          materialDesign:HintAssist.Hint="{loc:Loc payment.voucher.code}"
                          Height="40"

@@ -12,7 +12,8 @@ namespace Hbpos.Client.Wpf.ViewModels;
 public enum TransactionHistorySource
 {
     LocalOrders,
-    RemoteOrders
+    RemoteOrders,
+    InstallmentOrders
 }
 
 public sealed record HistorySourceOption(TransactionHistorySource Source, string Label);
@@ -33,9 +34,15 @@ public sealed record HistoryOrderListItem(
     string PaymentSummary,
     string StatusLabel,
     bool IsSuspendedOrder = false,
-    bool CanRecall = false)
+    bool CanRecall = false,
+    InstallmentOrderSummary? InstallmentOrder = null,
+    bool IsInstallmentOrder = false,
+    bool CanContinueInstallmentPayment = false,
+    string CustomerPhone = "")
 {
     public string ShortOrderId => OrderGuid.ToString("N")[..8].ToUpperInvariant();
+
+    public string DisplayOrderId => InstallmentOrder?.OrderNumber ?? ShortOrderId;
 
     public string SoldAtDisplay => OccurredAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm", CultureInfo.CurrentCulture);
 }
@@ -45,9 +52,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly IReceiptQueryService? _receiptQueryService;
     private readonly ISuspendedOrderService? _suspendedOrderService;
     private readonly IRemoteOrderHistoryService? _remoteOrderHistoryService;
+    private readonly IInstallmentOrderService _installmentOrderService;
     private readonly IReceiptTextFormatter _receiptTextFormatter;
     private readonly IReceiptPrinterSettingsStore? _receiptPrinterSettingsStore;
     private readonly Func<Task>? _onSuspendedOrderRecalledAsync;
+    private readonly Func<InstallmentOrderSummary, Task>? _continueInstallmentPaymentAsync;
     private readonly Action? _returnToPos;
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
@@ -104,17 +113,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, initialize: true)
     {
     }
 
@@ -129,8 +138,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IReceiptTextFormatter? receiptTextFormatter = null,
         IReceiptPrinterSettingsStore? receiptPrinterSettingsStore = null,
         ICashierSessionContext? cashierSessionContext = null,
-        bool enforcePermissionsWhenNoCashier = false)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, initialize: true)
+        bool enforcePermissionsWhenNoCashier = false,
+        IInstallmentOrderService? installmentOrderService = null,
+        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, initialize: true)
     {
     }
 
@@ -146,12 +157,16 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         IReceiptPrinterSettingsStore? receiptPrinterSettingsStore,
         ICashierSessionContext? cashierSessionContext,
         bool enforcePermissionsWhenNoCashier,
+        IInstallmentOrderService? installmentOrderService,
+        Func<InstallmentOrderSummary, Task>? continueInstallmentPaymentAsync,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
         _suspendedOrderService = suspendedOrderService;
         _remoteOrderHistoryService = remoteOrderHistoryService;
+        _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _onSuspendedOrderRecalledAsync = onSuspendedOrderRecalledAsync;
+        _continueInstallmentPaymentAsync = continueInstallmentPaymentAsync;
         _returnToPos = returnToPos;
         _localization = localization;
         _receiptTextFormatter = receiptTextFormatter ?? new ReceiptTextFormatter();
@@ -183,6 +198,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ReturnToPosCommand = new RelayCommand(ReturnToPos, CanReturnToPos);
         RecallSelectedCommand = new AsyncRelayCommand(RecallSelectedAsync, CanRecallSelected);
         RecallOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(RecallOrderAsync, CanRecallOrder);
+        ContinueInstallmentPaymentCommand = new AsyncRelayCommand<HistoryOrderListItem>(ContinueInstallmentPaymentAsync, CanContinueInstallmentPayment);
         ReprintCommand = new RelayCommand(ReprintSelected, CanReprintSelected);
         RefundCommand = new RelayCommand(() => { }, () => false);
     }
@@ -209,6 +225,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     public IAsyncRelayCommand<HistoryOrderListItem> RecallOrderCommand { get; }
 
+    public IAsyncRelayCommand<HistoryOrderListItem> ContinueInstallmentPaymentCommand { get; }
+
     public IRelayCommand ReprintCommand { get; }
 
     public IRelayCommand RefundCommand { get; }
@@ -218,6 +236,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public bool IsRecallVisible => SelectedOrder?.CanRecall == true;
 
     public bool IsReprintVisible => CanReprintSelected();
+
+    public bool IsContinueInstallmentPaymentVisible => CanContinueInstallmentPayment(SelectedOrder);
 
     public bool IsLocalSourceSelected
     {
@@ -243,6 +263,20 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
+    public bool IsInstallmentSourceSelected
+    {
+        get => SelectedSource == TransactionHistorySource.InstallmentOrders;
+        set
+        {
+            if (value)
+            {
+                SetSelectedSource(TransactionHistorySource.InstallmentOrders);
+            }
+        }
+    }
+
+    public bool IsStandardSourceSelected => !IsInstallmentSourceSelected;
+
     public string TitleText => T("TransactionHistory");
 
     public string SearchHintText => T("history.search");
@@ -261,6 +295,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             var orders = SelectedSource switch
             {
                 TransactionHistorySource.RemoteOrders => await LoadRemoteOrdersAsync(cancellationToken),
+                TransactionHistorySource.InstallmentOrders => await LoadInstallmentOrdersAsync(cancellationToken),
                 _ => await LoadLocalAndSuspendedOrdersAsync(cancellationToken)
             };
 
@@ -300,9 +335,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsReprintVisible));
         OnPropertyChanged(nameof(IsLocalSourceSelected));
         OnPropertyChanged(nameof(IsOnlineSourceSelected));
+        OnPropertyChanged(nameof(IsInstallmentSourceSelected));
+        OnPropertyChanged(nameof(IsStandardSourceSelected));
+        OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         ReprintCommand?.NotifyCanExecuteChanged();
         RecallSelectedCommand?.NotifyCanExecuteChanged();
         RecallOrderCommand?.NotifyCanExecuteChanged();
+        ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
         if (!_suppressSourceAutoLoad)
         {
             _ = LoadAsync(CancellationToken.None);
@@ -314,8 +353,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ReprintCommand?.NotifyCanExecuteChanged();
         RecallSelectedCommand?.NotifyCanExecuteChanged();
         RecallOrderCommand?.NotifyCanExecuteChanged();
+        ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsRecallVisible));
         OnPropertyChanged(nameof(IsReprintVisible));
+        OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
 
         if (_suppressSelectedOrderLoad)
         {
@@ -450,11 +491,59 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             order.StatusLabel)).ToList();
     }
 
+    private async Task<IReadOnlyList<HistoryOrderListItem>> LoadInstallmentOrdersAsync(CancellationToken cancellationToken)
+    {
+        var orders = await _installmentOrderService.SearchAsync(
+            Session,
+            NormalizeKeyword(SearchText),
+            cancellationToken);
+        var from = ParseDateFrom(DateFrom);
+        var to = ParseDateTo(DateTo);
+        return orders
+            .Where(order => SelectedTerminalDeviceCode is null ||
+                string.Equals(order.DeviceCode, SelectedTerminalDeviceCode, StringComparison.OrdinalIgnoreCase))
+            .Where(order => from is null || order.UpdatedAt >= from.Value)
+            .Where(order => to is null || order.UpdatedAt <= to.Value)
+            .OrderByDescending(order => order.UpdatedAt)
+            .Select(order => new HistoryOrderListItem(
+                order.OrderId,
+                TransactionHistorySource.InstallmentOrders,
+                Session.StoreCode,
+                order.DeviceCode,
+                order.CustomerName,
+                order.UpdatedAt,
+                order.TotalAmount,
+                0m,
+                order.OutstandingAmount,
+                0,
+                $"{T("history.installment.paid")}: {order.PaidAmount:C2}",
+                order.Status,
+                InstallmentOrder: order,
+                IsInstallmentOrder: true,
+                CanContinueInstallmentPayment: order.CanAddRepayment,
+                CustomerPhone: order.CustomerPhone))
+            .ToList();
+    }
+
     private async Task LoadSelectedReceiptAsync(CancellationToken cancellationToken)
     {
         if (SelectedOrder is null)
         {
             ClearReceiptPreview();
+            return;
+        }
+
+        if (SelectedOrder.IsInstallmentOrder)
+        {
+            // 中文注释：分期来源没有普通小票明细，右侧预览显示分期金额摘要。
+            ReceiptLines.Clear();
+            Payments.Clear();
+            ReceiptPreviewRows.Clear();
+            PreviewSubtotal = SelectedOrder.TotalAmount;
+            PreviewDiscount = SelectedOrder.InstallmentOrder?.PaidAmount ?? 0m;
+            PreviewTotal = SelectedOrder.ActualAmount;
+            PreviewOrderId = SelectedOrder.DisplayOrderId;
+            PreviewSoldAt = SelectedOrder.SoldAtDisplay;
             return;
         }
 
@@ -507,6 +596,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         return order?.CanRecall == true;
     }
 
+    private bool CanContinueInstallmentPayment(HistoryOrderListItem? order)
+    {
+        return _continueInstallmentPaymentAsync is not null &&
+            order?.InstallmentOrder is not null &&
+            order.CanContinueInstallmentPayment;
+    }
+
     private bool CanReprintSelected()
     {
         return SelectedOrder is { IsSuspendedOrder: false, Source: TransactionHistorySource.LocalOrders };
@@ -543,6 +639,16 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         {
             StatusMessage = ex.Message;
         }
+    }
+
+    private async Task ContinueInstallmentPaymentAsync(HistoryOrderListItem? order)
+    {
+        if (!CanContinueInstallmentPayment(order) || _continueInstallmentPaymentAsync is null)
+        {
+            return;
+        }
+
+        await _continueInstallmentPaymentAsync(order!.InstallmentOrder!);
     }
 
     private void ReprintSelected()
@@ -633,6 +739,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         SourceOptions.Clear();
         SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.LocalOrders, T("history.source.local")));
         SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.RemoteOrders, T("history.source.online")));
+        SourceOptions.Add(new HistorySourceOption(TransactionHistorySource.InstallmentOrders, T("history.source.installments")));
         SelectedSourceOption = SourceOptions.First(option => option.Source == selectedSource);
         _suppressSourceAutoLoad = false;
     }
@@ -666,6 +773,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(ReceiptPreviewLabel));
         OnPropertyChanged(nameof(ReprintLabel));
         OnPropertyChanged(nameof(RefundLabel));
+        OnPropertyChanged(nameof(IsInstallmentSourceSelected));
+        OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
     }
 
     private void LocalizeSuspendedRows()
@@ -705,6 +814,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "history.allTerminals" => "All Terminals",
             "history.source.local" => "Local",
             "history.source.online" => "Online",
+            "history.source.installments" => "Installments",
+            "history.installment.paid" => "Paid",
+            "history.installment.continuePayment" => "Continue payment",
             "history.payment.suspended" => "Suspended",
             "history.status.pendingRecall" => "Pending recall",
             _ => key

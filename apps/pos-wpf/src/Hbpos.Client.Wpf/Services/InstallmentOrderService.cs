@@ -158,12 +158,11 @@ public sealed class InstallmentOrderService(
         var installmentGuid = Guid.NewGuid();
         var payment = request.DownPayment with
         {
-            Amount = Math.Min(request.DownPayment.Amount, request.CartSnapshot.ActualAmount),
-            IdempotencyKey = EnsureIdempotencyKey(request.DownPayment.IdempotencyKey, installmentGuid)
+            Amount = Math.Min(request.DownPayment.Amount, request.CartSnapshot.ActualAmount)
         };
-        if (payment.Method == PaymentMethodKind.Card)
+        if (payment.Method == PaymentMethodKind.Card && !HasExistingCardAuthorization(payment))
         {
-            // 银行卡首付必须先由终端授权，成功后再创建分期单。
+            // 银行卡首付必须先由终端授权；普通支付页传入已授权 tender 时不可再次请求终端。
             var authorization = await _cardTerminalClient.AuthorizeAsync(payment.Amount, request.Session, cancellationToken);
             if (!authorization.Approved)
             {
@@ -177,6 +176,11 @@ public sealed class InstallmentOrderService(
                 CardTransactions = authorization.CardTransactions ?? payment.CardTransactions
             };
         }
+
+        payment = payment with
+        {
+            IdempotencyKey = EnsureIdempotencyKey(payment.IdempotencyKey, installmentGuid)
+        };
 
         var apiRequest = new InstallmentCreateRequest(
             installmentGuid,
@@ -356,6 +360,12 @@ public sealed class InstallmentOrderService(
     }
 
     private static string EnsureIdempotencyKey(string? value, Guid scope) => string.IsNullOrWhiteSpace(value) ? $"{scope:D}:{Guid.NewGuid():D}" : value.Trim();
+
+    private static bool HasExistingCardAuthorization(InstallmentPaymentDraft payment)
+    {
+        // 只有终端交易明细能证明银行卡已收款；幂等键不能替代授权。
+        return payment.CardTransactions is { Count: > 0 };
+    }
 
     private static string GetStatusText(LocalInstallmentOrder order)
     {

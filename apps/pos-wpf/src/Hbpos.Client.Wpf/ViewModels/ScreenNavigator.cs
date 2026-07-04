@@ -235,6 +235,21 @@ internal sealed class ScreenNavigator
         await Task.CompletedTask;
     }
 
+    public Task ShowInstallmentRepaymentAsync(InstallmentOrderSummary order)
+    {
+        PrepareCachedCashPaymentScreen();
+        if (CashPayment is null)
+        {
+            ShowPos();
+            return Task.CompletedTask;
+        }
+
+        // 中文注释：历史分期续付复用普通支付页，只替换收款目标为原分期单余额。
+        CashPayment.PrepareForInstallmentRepayment(Session, order);
+        SetCurrentScreen(CashPayment);
+        return Task.CompletedTask;
+    }
+
     public async Task ShowPaymentSuccessLatestAsync()
     {
         var lastCompletedOrder = _getLastCompletedOrder();
@@ -606,7 +621,8 @@ internal sealed class ScreenNavigator
             Session,
             OnSuspendedOrderRecalledAsync,
             ShowPos,
-            viewModel => _printSelectedHistoryReceiptAsync(viewModel));
+            viewModel => _printSelectedHistoryReceiptAsync(viewModel),
+            ShowInstallmentRepaymentAsync);
     }
 
     public InstallmentCenterViewModel CreateInstallmentCenterViewModel()

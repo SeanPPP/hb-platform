@@ -113,7 +113,7 @@ public sealed class OrderUploadService(
             CardTransactions: payment.CardTransactions);
     }
 
-    private static (string VoucherCode, string ReservationToken) ParseVoucherReference(string? reference)
+    internal static (string VoucherCode, string ReservationToken) ParseVoucherReference(string? reference)
     {
         var parts = (reference ?? string.Empty).Split(':', StringSplitOptions.TrimEntries);
         return parts.Length >= 3 && parts[0].Equals("VOUCHER", StringComparison.OrdinalIgnoreCase)

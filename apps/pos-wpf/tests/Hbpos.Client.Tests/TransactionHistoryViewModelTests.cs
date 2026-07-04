@@ -2,6 +2,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
@@ -35,6 +36,7 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal("POS-09", viewModel.TerminalFilterText);
         Assert.True(viewModel.IsLocalSourceSelected);
         Assert.False(viewModel.IsOnlineSourceSelected);
+        Assert.True(viewModel.IsStandardSourceSelected);
     }
 
     [Fact]
@@ -452,12 +454,94 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal("\u5168\u90E8\u7EC8\u7AEF", viewModel.TerminalFilterText);
     }
 
+    [Fact]
+    public async Task Installment_history_source_loads_orders_and_continues_payment()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-0001", "张三", "0400111222", paidAmount: 30m, outstandingAmount: 90m);
+        InstallmentOrderSummary? continuedOrder = null;
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: new CapturingInstallmentOrderService { Orders = [order] },
+            continueInstallmentPaymentAsync: selected =>
+            {
+                continuedOrder = selected;
+                return Task.CompletedTask;
+            });
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        Assert.False(viewModel.IsStandardSourceSelected);
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.IsInstallmentOrder);
+        Assert.Equal(order.OrderNumber, row.DisplayOrderId);
+        Assert.Equal(order.CustomerName, row.CashierName);
+        Assert.Equal(order.OutstandingAmount, row.ActualAmount);
+        Assert.True(row.CanContinueInstallmentPayment);
+        Assert.True(viewModel.IsContinueInstallmentPaymentVisible);
+        Assert.True(viewModel.ContinueInstallmentPaymentCommand.CanExecute(row));
+
+        await viewModel.ContinueInstallmentPaymentCommand.ExecuteAsync(row);
+
+        Assert.Same(order, continuedOrder);
+    }
+
+    [Fact]
+    public async Task Installment_history_paid_off_order_hides_continue_payment()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-0002", "李四", "0400333444", paidAmount: 120m, outstandingAmount: 0m);
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: new CapturingInstallmentOrderService { Orders = [order] },
+            continueInstallmentPaymentAsync: _ => Task.CompletedTask);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.False(row.CanContinueInstallmentPayment);
+        Assert.False(viewModel.IsContinueInstallmentPaymentVisible);
+        Assert.False(viewModel.ContinueInstallmentPaymentCommand.CanExecute(row));
+    }
+
     private static PosSessionState CreateSession(
         string storeCode = "S001",
         string storeName = "Main Store",
         string deviceCode = "POS-01")
     {
         return new PosSessionState("HB POS", storeCode, storeName, deviceCode, "C001", "Alice", true, 0);
+    }
+
+    private static InstallmentOrderSummary CreateInstallmentOrder(
+        string orderNumber,
+        string customerName,
+        string phone,
+        decimal paidAmount,
+        decimal outstandingAmount)
+    {
+        return new InstallmentOrderSummary(
+            Guid.NewGuid(),
+            orderNumber,
+            customerName,
+            phone,
+            paidAmount + outstandingAmount,
+            20m,
+            paidAmount,
+            outstandingAmount,
+            0,
+            outstandingAmount > 0m,
+            outstandingAmount == 0m,
+            outstandingAmount > 0m,
+            outstandingAmount > 0m,
+            outstandingAmount > 0m ? "待补款" : "待提货",
+            "POS-01",
+            DateTimeOffset.Now);
     }
 
     private sealed class CapturingReceiptQueryService : IReceiptQueryService
@@ -568,6 +652,76 @@ public sealed class TransactionHistoryViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new OrderReturnRecordCreateResponse(request.ReturnOrderGuid, []));
+        }
+    }
+
+    private sealed class CapturingInstallmentOrderService : IInstallmentOrderService
+    {
+        public IReadOnlyList<InstallmentOrderSummary> Orders { get; init; } = [];
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Orders);
+        }
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> SearchAsync(PosSessionState session, string? keyword, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Orders);
+        }
+
+        public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<LocalInstallmentOrder?>(null);
+        }
+
+        public Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentAppendPaymentResponse>> AppendPaymentAsync(PosSessionState session, InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentConfirmPickupResponse>> ConfirmPickupAsync(PosSessionState session, InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentCancelResponse>> CancelWithRefundAsync(PosSessionState session, InstallmentCancelRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentWriteResult<InstallmentVoidResponse>> VoidCancelAsync(PosSessionState session, InstallmentVoidRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderCreateResult> CreateOrderAsync(InstallmentOrderCreateRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderActionResult> AddRepaymentAsync(InstallmentOrderRepaymentRequest request, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderActionResult> CancelWithRefundAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderActionResult> VoidCancelAsync(Guid orderId, PosSessionState session, string? reason = null, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
         }
     }
 }
