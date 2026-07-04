@@ -134,6 +134,252 @@ async function run() {
   }
 
   {
+    const certificateErrors = [
+      "NET::ERR_CERT_DATE_INVALID",
+      "javax.net.ssl.SSLHandshakeException: CertPathValidatorException",
+      "CERTIFICATE_VERIFY_FAILED: Trust anchor for certification path not found",
+    ];
+    for (const certificateError of certificateErrors) {
+      let fileExists = false;
+      let attempts = 0;
+      const dependencies = createDependencies({
+        apiClient: {
+          get: async () => ({
+            data: {
+              easBuildId: "build-11",
+              appVersion: "1.0.2",
+              appBuildVersion: "11",
+              artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+              buildProfile: "production",
+            },
+          }),
+        },
+        getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+        getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+        downloadFile: async (url, fileUri) => {
+          dependencies.downloaded.push(`${url} -> ${fileUri}`);
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error(certificateError);
+          }
+          fileExists = true;
+          return { uri: fileUri, status: 200, mimeType: "application/vnd.android.package-archive" };
+        },
+        deleteFile: async (fileUri) => {
+          dependencies.deleted.push(fileUri);
+          fileExists = false;
+        },
+      });
+      const result = await checkAndDownloadNativeAppUpdate(dependencies);
+
+      assert.equal(result.status, "downloaded", `稳定入口证书错误后应重试最终 APK 地址: ${certificateError}`);
+      assert.deepEqual(
+        dependencies.downloaded,
+        [
+          "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production -> file:///cache/hb-build-11.apk",
+          "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk -> file:///cache/hb-build-11.apk",
+        ],
+        `证书异常后只应从稳定入口切到 COS 最终文件一次: ${certificateError}`
+      );
+      assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "重试前应删除半成品 APK");
+    }
+  }
+
+  {
+    let fileExists = false;
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+      getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        fileExists = true;
+        return {
+          uri: fileUri,
+          status: 200,
+          mimeType: "text/html; charset=utf-8",
+        };
+      },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        fileExists = false;
+      },
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /文件类型异常/,
+      "稳定入口返回 HTML 错误页时不应按证书异常兜底"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "HTML 错误页不应重试最终文件地址");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "HTML 半成品仍应清理");
+  }
+
+  {
+    let fileExists = false;
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+      getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        fileExists = true;
+        return {
+          uri: fileUri,
+          status: 503,
+          mimeType: "application/vnd.android.package-archive",
+        };
+      },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        fileExists = false;
+      },
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /HTTP 状态码: 503/,
+      "稳定入口非 2xx 时不应按证书异常兜底"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "503 不应重试最终文件地址");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "503 半成品仍应清理");
+  }
+
+  {
+    for (const mimeType of ["application/json", "application/problem+json", "application/problem+xml"]) {
+      let fileExists = false;
+      const dependencies = createDependencies({
+        apiClient: {
+          get: async () => ({
+            data: {
+              easBuildId: "build-11",
+              appVersion: "1.0.2",
+              appBuildVersion: "11",
+              artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+              buildProfile: "production",
+            },
+          }),
+        },
+        getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+        getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+        downloadFile: async (url, fileUri) => {
+          dependencies.downloaded.push(`${url} -> ${fileUri}`);
+          fileExists = true;
+          return {
+            uri: fileUri,
+            status: 200,
+            mimeType,
+          };
+        },
+        deleteFile: async (fileUri) => {
+          dependencies.deleted.push(fileUri);
+          fileExists = false;
+        },
+      });
+
+      await assert.rejects(
+        () => checkAndDownloadNativeAppUpdate(dependencies),
+        /文件类型异常/,
+        `稳定入口返回 ${mimeType} 时不应按证书异常兜底`
+      );
+      assert.equal(dependencies.downloaded.length, 1, `${mimeType} 错误响应不应重试最终文件地址`);
+      assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], `${mimeType} 半成品仍应清理`);
+    }
+  }
+
+  {
+    let fileExists = false;
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: (build) => getBuildBoundNativeAppDownloadUrl("https://hotbargain.vip/api", build),
+      getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        fileExists = true;
+        return { uri: fileUri, status: 503, mimeType: "application/vnd.android.package-archive" };
+      },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        fileExists = false;
+      },
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /HTTP 状态码: 503/,
+      "非 download.hotbargain.top 稳定入口失败时不应绕过后端入口"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "hotbargain.vip 入口失败时不应重试最终地址");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "失败文件仍应清理");
+  }
+
+  {
+    let fileExists = false;
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://download.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+      getFileInfo: async () => ({ exists: fileExists, size: fileExists ? 1024 : undefined }),
+      downloadFile: async (url, fileUri) => {
+        dependencies.downloaded.push(`${url} -> ${fileUri}`);
+        fileExists = true;
+        throw new Error("certificate has expired");
+      },
+      deleteFile: async (fileUri) => {
+        dependencies.deleted.push(fileUri);
+        fileExists = false;
+      },
+    });
+
+    await assert.rejects(
+      () => checkAndDownloadNativeAppUpdate(dependencies),
+      /certificate has expired/,
+      "最终地址仍在坏证书域名时不应继续兜底"
+    );
+    assert.equal(dependencies.downloaded.length, 1, "最终地址仍在坏证书域名时不应重试");
+    assert.deepEqual(dependencies.deleted, ["file:///cache/hb-build-11.apk"], "证书失败文件仍应清理");
+  }
+
+  {
     const files = createCachedApkFiles([
       ["hb-build-7.apk", 40],
       ["hb-build-8.apk", 30],
@@ -236,6 +482,117 @@ async function run() {
       "旧 APK OTA 应返回稳定下载入口"
     );
     assert.equal(dependencies.downloaded.length, 0, "旧 APK OTA 不应下载 APK 文件");
+  }
+
+  {
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "available", "旧浏览器 download.hotbargain.top 入口应提示更新");
+    assert.equal(
+      result.status === "available" ? result.url : "",
+      "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+      "旧浏览器遇到 download.hotbargain.top 时应跳到最终 APK 地址"
+    );
+  }
+
+  {
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "http://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "旧浏览器坏证书入口缺少 HTTPS 最终地址时不应提示下载");
+  }
+
+  {
+    const unstableUrl = "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production";
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: unstableUrl,
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => unstableUrl,
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "旧浏览器最终地址等于坏证书入口时不应原地回退");
+  }
+
+  {
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://download.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://download.hotbargain.top/mobile-app-builds/android-latest/download?profile=production",
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "not-available", "旧浏览器最终地址仍在坏证书域名时不应提示下载");
+  }
+
+  {
+    const dependencies = createDependencies({
+      apiClient: {
+        get: async () => ({
+          data: {
+            easBuildId: "build-11",
+            appVersion: "1.0.2",
+            appBuildVersion: "11",
+            artifactUrl: "https://cos.hotbargain.top/mobile-app-builds/production/build-11.apk",
+            buildProfile: "production",
+          },
+        }),
+      },
+      getDownloadUrl: () => "https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=production",
+    });
+    const result = await checkLegacyNativeAppUpdate(dependencies);
+
+    assert.equal(result.status, "available", "旧浏览器 hotbargain.vip 入口应提示更新");
+    assert.equal(
+      result.status === "available" ? result.url : "",
+      "https://hotbargain.vip/api/mobile-app-builds/android-latest/download?profile=production",
+      "旧浏览器 hotbargain.vip 入口应保持稳定入口"
+    );
   }
 
   {

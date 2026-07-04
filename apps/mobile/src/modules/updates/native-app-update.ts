@@ -186,8 +186,59 @@ function isRejectedApkMimeType(mimeType: string | null | undefined) {
     normalized.startsWith("text/") ||
     normalized === "application/json" ||
     normalized === "application/xml" ||
-    normalized === "application/xhtml+xml"
+    normalized === "application/xhtml+xml" ||
+    normalized.endsWith("+json") ||
+    normalized.endsWith("+xml")
   );
+}
+
+function getFallbackArtifactUrl(build: NativeAppBuildInfo, stableDownloadUrl: string) {
+  try {
+    const artifactUrl = new URL(build.artifactUrl);
+    const stableUrl = new URL(stableDownloadUrl);
+    // 兜底地址必须是最终 HTTPS 文件，且不能和稳定入口或坏证书域名相同，避免原地重试。
+    return artifactUrl.protocol === "https:" &&
+      artifactUrl.toString() !== stableUrl.toString() &&
+      !isDownloadHotbargainHost(artifactUrl.toString())
+      ? artifactUrl.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDownloadHotbargainHost(url: string) {
+  try {
+    return new URL(url).hostname === "download.hotbargain.top";
+  } catch {
+    return false;
+  }
+}
+
+function shouldUseFallbackForLegacyDownload(stableDownloadUrl: string) {
+  // 只有证书易失败的 download.hotbargain.top 旧浏览器跳转才改走最终文件地址。
+  return isDownloadHotbargainHost(stableDownloadUrl);
+}
+
+function isCertificateDownloadError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  // 原生层常把证书错误写成 ERR_CERT_*、SSLHandshakeException 等连续 token，不能只匹配独立单词。
+  return /cert|certificate|ssl|tls|handshake|trust anchor/i.test(message);
+}
+
+async function downloadNativeAppApk(
+  dependencies: NativeAppUpdateDependencies,
+  downloadUrl: string,
+  fileUri: string
+) {
+  const download = await dependencies.downloadFile(downloadUrl, fileUri);
+  if (download.status != null && (download.status < 200 || download.status >= 300)) {
+    throw new Error(`APK 下载失败，HTTP 状态码: ${download.status}`);
+  }
+  if (isRejectedApkMimeType(download.mimeType)) {
+    // 下载地址偶发返回 HTML/JSON/XML 错误页时不能继续提示安装，否则用户会打开一个无效 APK。
+    throw new Error(`APK 下载失败，文件类型异常: ${download.mimeType}`);
+  }
 }
 
 async function cleanupDownloadedApkFiles(
@@ -283,15 +334,23 @@ export async function checkAndDownloadNativeAppUpdate(
 
     // APK 检查默认静默下载；优先走后端稳定入口，避免 EAS artifact 临时链接过期后出现“文件不存在”。
     const downloadUrl = dependencies.getDownloadUrl?.(build!) || build!.artifactUrl;
-    const download = await dependencies.downloadFile(downloadUrl, fileUri);
-    if (download.status != null && (download.status < 200 || download.status >= 300)) {
+    try {
+      await downloadNativeAppApk(dependencies, downloadUrl, fileUri);
+    } catch (error) {
       await dependencies.deleteFile?.(fileUri);
-      throw new Error(`APK 下载失败，HTTP 状态码: ${download.status}`);
-    }
-    if (isRejectedApkMimeType(download.mimeType)) {
-      await dependencies.deleteFile?.(fileUri);
-      // 下载地址偶发返回 HTML/JSON 错误页时不能继续提示安装，否则用户会打开一个无效 APK。
-      throw new Error(`APK 下载失败，文件类型异常: ${download.mimeType}`);
+      const fallbackUrl = isDownloadHotbargainHost(downloadUrl) && isCertificateDownloadError(error)
+        ? getFallbackArtifactUrl(build!, downloadUrl)
+        : null;
+      if (!fallbackUrl) {
+        throw error;
+      }
+      // download.hotbargain.top 证书异常时，只重试一次最终 APK 文件地址。
+      try {
+        await downloadNativeAppApk(dependencies, fallbackUrl, fileUri);
+      } catch (fallbackError) {
+        await dependencies.deleteFile?.(fileUri);
+        throw fallbackError;
+      }
     }
 
     const downloaded = await dependencies.getFileInfo(fileUri);
@@ -325,5 +384,13 @@ export async function checkLegacyNativeAppUpdate(
   }
 
   // 旧 APK 的 OTA 只能打开浏览器下载，不能依赖新安装包才具备的原生安装器能力。
+  if (shouldUseFallbackForLegacyDownload(stableDownloadUrl)) {
+    const fallbackUrl = getFallbackArtifactUrl(build!, stableDownloadUrl);
+    // 坏证书域名不能再回退给浏览器；最终地址仍在同域名时也宁可不提示。
+    return fallbackUrl && !isDownloadHotbargainHost(fallbackUrl)
+      ? { status: "available", build: build!, url: fallbackUrl }
+      : { status: "not-available" };
+  }
+
   return { status: "available", build: build!, url: stableDownloadUrl };
 }
