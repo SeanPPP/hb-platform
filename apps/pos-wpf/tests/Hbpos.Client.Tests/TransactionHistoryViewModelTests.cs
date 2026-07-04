@@ -458,13 +458,18 @@ public sealed class TransactionHistoryViewModelTests
     public async Task Installment_history_source_loads_orders_and_continues_payment()
     {
         var order = CreateInstallmentOrder("IO-20260703-0001", "张三", "0400111222", paidAmount: 30m, outstandingAmount: 90m);
+        var localOrder = CreateLocalInstallmentOrder(order);
         InstallmentOrderSummary? continuedOrder = null;
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService(),
             new CapturingSuspendedOrderService(),
             new CapturingRemoteOrderHistoryService(),
             CreateSession(),
-            installmentOrderService: new CapturingInstallmentOrderService { Orders = [order] },
+            installmentOrderService: new CapturingInstallmentOrderService
+            {
+                Orders = [order],
+                LocalOrders = { [order.OrderId] = localOrder }
+            },
             continueInstallmentPaymentAsync: selected =>
             {
                 continuedOrder = selected;
@@ -483,6 +488,12 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(row.CanContinueInstallmentPayment);
         Assert.True(viewModel.IsContinueInstallmentPaymentVisible);
         Assert.True(viewModel.ContinueInstallmentPaymentCommand.CanExecute(row));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains(order.OrderNumber, StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains(order.CustomerName, StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("TAX INVOICE", StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Receipt Tea", StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Cash", StringComparison.Ordinal) && preview.Text.Contains("$30.00", StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Balance due", StringComparison.Ordinal) && preview.Text.Contains("$90.00", StringComparison.Ordinal));
 
         await viewModel.ContinueInstallmentPaymentCommand.ExecuteAsync(row);
 
@@ -493,12 +504,17 @@ public sealed class TransactionHistoryViewModelTests
     public async Task Installment_history_paid_off_order_hides_continue_payment()
     {
         var order = CreateInstallmentOrder("IO-20260703-0002", "李四", "0400333444", paidAmount: 120m, outstandingAmount: 0m);
+        var localOrder = CreateLocalInstallmentOrder(order);
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService(),
             new CapturingSuspendedOrderService(),
             new CapturingRemoteOrderHistoryService(),
             CreateSession(),
-            installmentOrderService: new CapturingInstallmentOrderService { Orders = [order] },
+            installmentOrderService: new CapturingInstallmentOrderService
+            {
+                Orders = [order],
+                LocalOrders = { [order.OrderId] = localOrder }
+            },
             continueInstallmentPaymentAsync: _ => Task.CompletedTask);
 
         viewModel.IsInstallmentSourceSelected = true;
@@ -508,6 +524,39 @@ public sealed class TransactionHistoryViewModelTests
         Assert.False(row.CanContinueInstallmentPayment);
         Assert.False(viewModel.IsContinueInstallmentPaymentVisible);
         Assert.False(viewModel.ContinueInstallmentPaymentCommand.CanExecute(row));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains(order.OrderNumber, StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("TAX INVOICE", StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Balance due", StringComparison.Ordinal) && preview.Text.Contains("$0.00", StringComparison.Ordinal));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Pickup: Pending", StringComparison.Ordinal));
+        Assert.DoesNotContain(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains(nameof(InstallmentStatus.PaidOff), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Installment_history_paid_off_order_confirms_pickup_from_selected_row()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-0003", "BBB", "0430990026", paidAmount: 55m, outstandingAmount: 0m);
+        var installmentService = new CapturingInstallmentOrderService { Orders = [order] };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanConfirmInstallmentPickup);
+        Assert.True(viewModel.IsConfirmInstallmentPickupVisible);
+        Assert.True(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
+        Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("TAX INVOICE", StringComparison.Ordinal));
+        Assert.DoesNotContain(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("===== INSTALLMENT =====", StringComparison.Ordinal));
+
+        await viewModel.ConfirmInstallmentPickupCommand.ExecuteAsync(row);
+
+        Assert.Equal(order.OrderId, installmentService.LastConfirmPickupOrderId);
+        Assert.Equal("confirmed", viewModel.StatusMessage);
     }
 
     private static PosSessionState CreateSession(
@@ -542,6 +591,31 @@ public sealed class TransactionHistoryViewModelTests
             outstandingAmount > 0m ? "待补款" : "待提货",
             "POS-01",
             DateTimeOffset.Now);
+    }
+
+    private static LocalInstallmentOrder CreateLocalInstallmentOrder(InstallmentOrderSummary order)
+    {
+        return new LocalInstallmentOrder(
+            order.OrderId,
+            order.OrderId,
+            order.OrderNumber,
+            "S001",
+            order.DeviceCode,
+            "C001",
+            "Alice",
+            order.CustomerName,
+            order.CustomerPhone,
+            DateTimeOffset.Now.AddMinutes(-5),
+            order.UpdatedAt,
+            order.TotalAmount,
+            20m,
+            order.DownPaymentAmount,
+            order.PaidAmount,
+            order.OutstandingAmount,
+            order.OutstandingAmount > 0m ? InstallmentStatus.Active : InstallmentStatus.PaidOff,
+            [new InstallmentLineDto(Guid.NewGuid(), "P001", null, "Receipt Tea", "930001", 1m, order.TotalAmount, 0m, order.TotalAmount)],
+            [new InstallmentPaymentDto(Guid.NewGuid(), PaymentMethodKind.Cash, order.PaidAmount, null, InstallmentPaymentStatus.Recorded, DateTimeOffset.Now, "C001", order.DeviceCode)],
+            null);
     }
 
     private sealed class CapturingReceiptQueryService : IReceiptQueryService
@@ -659,6 +733,10 @@ public sealed class TransactionHistoryViewModelTests
     {
         public IReadOnlyList<InstallmentOrderSummary> Orders { get; init; } = [];
 
+        public Dictionary<Guid, LocalInstallmentOrder> LocalOrders { get; } = [];
+
+        public Guid? LastConfirmPickupOrderId { get; private set; }
+
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Orders);
@@ -671,7 +749,7 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<LocalInstallmentOrder?>(null);
+            return Task.FromResult(LocalOrders.TryGetValue(installmentGuid, out var order) ? order : null);
         }
 
         public Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default)
@@ -721,7 +799,9 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            LastConfirmPickupOrderId = orderId;
+            var order = Orders.FirstOrDefault(order => order.OrderId == orderId);
+            return Task.FromResult(new InstallmentOrderActionResult(order is not null, order is null ? "missing" : "confirmed", order));
         }
     }
 }

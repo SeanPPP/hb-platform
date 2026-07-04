@@ -69,7 +69,9 @@ public sealed class ReceiptPrintingTests
         var receipt = InstallmentReceiptMapper.CreateReceipt(order);
         var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, order.CreatedAt);
 
-        Assert.Contains("INSTALLMENT ORDER", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("INSTALLMENT ORDER", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Installment No: IO-20260704-0001", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("IO-20260704-0001", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Bob Buyer", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("0400111222", document.PlainText, StringComparison.Ordinal);
@@ -81,6 +83,64 @@ public sealed class ReceiptPrintingTests
         Assert.Contains("Ref: CARD-REF", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Installment Tea", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("Cash", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Installment_receipt_mapper_prints_pending_pickup_for_paid_off_order()
+    {
+        var order = CreateInstallmentOrder(
+            InstallmentStatus.PaidOff,
+            paidAmount: 80m,
+            balanceAmount: 0m);
+        var formatter = new ReceiptTextFormatter();
+
+        var receipt = InstallmentReceiptMapper.CreateReceipt(order);
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, order.CreatedAt);
+
+        Assert.Equal("*** Paid - Pickup Pending ***", receipt.StatusText);
+        Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("INSTALLMENT ORDER", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Installment No: IO-20260704-0002", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Balance due: $0.00", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Pickup: Pending", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Installment_receipt_mapper_does_not_mark_cancelled_zero_balance_order_as_pickup_pending()
+    {
+        var order = CreateInstallmentOrder(
+            InstallmentStatus.Cancelled,
+            paidAmount: 0m,
+            balanceAmount: 0m);
+        var formatter = new ReceiptTextFormatter();
+
+        var receipt = InstallmentReceiptMapper.CreateReceipt(order);
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, order.CreatedAt);
+
+        Assert.Equal("*** Installment Cancelled ***", receipt.StatusText);
+        Assert.DoesNotContain("Pickup: Pending", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("Paid - Pickup Pending", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Installment_receipt_mapper_prints_confirmed_pickup_details()
+    {
+        var pickedUpAt = new DateTimeOffset(2026, 7, 4, 13, 0, 0, TimeSpan.Zero);
+        var order = CreateInstallmentOrder(
+            InstallmentStatus.PickedUp,
+            paidAmount: 80m,
+            balanceAmount: 0m,
+            pickupInfo: new InstallmentPickupInfoDto(pickedUpAt, "Alice", "Customer collected at counter"));
+        var formatter = new ReceiptTextFormatter();
+
+        var receipt = InstallmentReceiptMapper.CreateReceipt(order);
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, order.CreatedAt);
+
+        Assert.Equal("*** Paid - Picked Up ***", receipt.StatusText);
+        Assert.Contains("Pickup: Confirmed", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains($"Picked up at: {pickedUpAt.ToLocalTime():yyyy-MM-dd HH:mm}", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Picked up by: Alice", document.PlainText, StringComparison.Ordinal);
+        Assert.Contains("Pickup note: Customer collected at counter", document.PlainText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -125,6 +185,19 @@ public sealed class ReceiptPrintingTests
         Assert.DoesNotContain(document.PreviewRows, row => row.Text.Contains("Change", StringComparison.Ordinal));
         Assert.DoesNotContain(document.Elements, element => element.Text.Contains("Tendered", StringComparison.Ordinal));
         Assert.DoesNotContain(document.Elements, element => element.Text.Contains("Change", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Receipt_text_formatter_prints_emergency_override_username_without_password_label()
+    {
+        var session = CashierSessionContext.CreateEmergencyOverride("S001", "POS-01", new DateOnly(2026, 6, 27));
+        var receipt = CreateReceipt(Guid.NewGuid(), cashierName: session.CashierName);
+        var formatter = new ReceiptTextFormatter();
+
+        var document = formatter.Build(receipt, ReceiptPrinterSettings.Default, receipt.SoldAt);
+
+        Assert.Contains("Cashier: EMERGENCY", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("\u8d85\u7ea7\u5bc6\u7801", document.PlainText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -438,7 +511,8 @@ public sealed class ReceiptPrintingTests
         decimal? changeAmount = null,
         string paymentReference = "ANZ:123",
         string bankReceiptText = "APPROVED CARD RECEIPT",
-        PaymentMethodKind paymentMethod = PaymentMethodKind.Card)
+        PaymentMethodKind paymentMethod = PaymentMethodKind.Card,
+        string cashierName = "Alice")
     {
         var cardTransactions = paymentMethod == PaymentMethodKind.Card
             ? new[]
@@ -464,7 +538,7 @@ public sealed class ReceiptPrintingTests
             orderGuid,
             "S001",
             "POS-01",
-            "Alice",
+            cashierName,
             new DateTimeOffset(2026, 5, 27, 9, 0, 0, TimeSpan.Zero),
             9.20m,
             0.20m,
@@ -482,6 +556,57 @@ public sealed class ReceiptPrintingTests
             ],
             tenderedAmount,
             changeAmount);
+    }
+
+    private static LocalInstallmentOrder CreateInstallmentOrder(
+        InstallmentStatus status,
+        decimal paidAmount,
+        decimal balanceAmount,
+        InstallmentPickupInfoDto? pickupInfo = null)
+    {
+        var createdAt = new DateTimeOffset(2026, 7, 4, 12, 30, 0, TimeSpan.Zero);
+        return new LocalInstallmentOrder(
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            "IO-20260704-0002",
+            "S001",
+            "POS-01",
+            "user-1",
+            "Alice",
+            "Bob Buyer",
+            "0400111222",
+            createdAt,
+            createdAt,
+            80m,
+            20m,
+            20m,
+            paidAmount,
+            balanceAmount,
+            status,
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    "SKU-INST",
+                    null,
+                    "Installment Tea",
+                    "939003",
+                    1m,
+                    80m,
+                    0m,
+                    80m)
+            ],
+            [
+                new InstallmentPaymentDto(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Cash,
+                    paidAmount,
+                    "CASH",
+                    InstallmentPaymentStatus.Recorded,
+                    createdAt,
+                    "user-1",
+                    "POS-01")
+            ],
+            pickupInfo);
     }
 
     private sealed class RecordingCardReceiptPrintedNotifier : ICardReceiptPrintedNotifier

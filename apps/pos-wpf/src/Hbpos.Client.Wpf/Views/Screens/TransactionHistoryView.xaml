@@ -17,6 +17,27 @@
             <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
             <Setter Property="Margin" Value="0,0,0,6" />
         </Style>
+        <Style x:Key="HistoryColumnHeaderStyle" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#FFF8FAFD" />
+            <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
+            <Setter Property="FontSize" Value="{StaticResource PosFontSizeSmall}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="MinHeight" Value="56" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}"
+                                   TextWrapping="Wrap"
+                                   LineStackingStrategy="BlockLineHeight"
+                                   LineHeight="15"
+                                   VerticalAlignment="Center" />
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </UserControl.Resources>
 
     <Grid>
@@ -154,6 +175,9 @@
                           RowBackground="White"
                           AlternatingRowBackground="#FFFAFBFF"
                           RowHeight="60"
+                          ColumnHeaderStyle="{StaticResource HistoryColumnHeaderStyle}"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto"
                           GridLinesVisibility="None"
                           BorderThickness="0"
                           HeadersVisibility="Column"
@@ -172,7 +196,7 @@
                         <DataGridTextColumn x:Name="InstallmentOutstandingColumn" Header="{loc:Loc payment.installment.outstanding}" Binding="{Binding ActualAmount, StringFormat={}{0:C2}}" Width="112" Visibility="Collapsed" />
                         <DataGridTextColumn x:Name="StandardPaymentColumn" Header="{loc:Loc Payment}" Binding="{Binding PaymentSummary}" Width="108" />
                         <DataGridTextColumn x:Name="InstallmentPaidColumn" Header="{loc:Loc history.installment.paid}" Binding="{Binding PaymentSummary}" Width="108" Visibility="Collapsed" />
-                        <DataGridTextColumn Header="{loc:Loc common.status}" Binding="{Binding StatusLabel}" Width="*" />
+                        <DataGridTextColumn Header="{loc:Loc common.status}" Binding="{Binding StatusLabel}" Width="150" />
                         <DataGridTemplateColumn Header="{loc:Loc suspended.recall}" Width="100">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -191,7 +215,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc history.installment.continuePayment}" Width="124">
+                        <DataGridTemplateColumn Header="{loc:Loc history.installment.continuePayment}" Width="140">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Button Command="{Binding DataContext.ContinueInstallmentPaymentCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
@@ -220,6 +244,20 @@
                     <Run Text=" " />
                     <Run Text="{loc:Loc history.transactions}" />
                 </TextBlock>
+                <Button DockPanel.Dock="Right"
+                        Command="{Binding ConfirmInstallmentPickupCommand}"
+                        CommandParameter="{Binding SelectedOrder}"
+                        Visibility="{Binding IsConfirmInstallmentPickupVisible, Converter={StaticResource BoolToVis}}"
+                        Height="40"
+                        MinWidth="140"
+                        Margin="12,0,0,0"
+                        Padding="14,0"
+                        Style="{StaticResource PosPrimaryButtonStyle}">
+                    <StackPanel Orientation="Horizontal">
+                        <materialDesign:PackIcon Kind="CheckCircle" Width="16" Height="16" Foreground="White" Margin="0,0,6,0" />
+                        <TextBlock Text="{loc:Loc installment.center.action.confirmPickup}" Foreground="White" FontWeight="Bold" />
+                    </StackPanel>
+                </Button>
                 <TextBlock DockPanel.Dock="Right"
                            Text="{Binding StatusMessage}"
                            Foreground="{StaticResource PosDangerBrush}"

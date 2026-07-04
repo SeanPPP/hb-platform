@@ -22,11 +22,14 @@ internal static class InstallmentReceiptMapper
             .ToList();
         var extraInfoLines = new List<string>
         {
+            $"Installment No: {order.InstallmentNumber}",
             $"Customer: {order.CustomerName}",
             $"Phone: {order.CustomerPhone}",
             $"Deposit paid: {Money(order.DownPaymentAmount)}",
             $"Balance due: {Money(order.BalanceAmount)}"
         };
+
+        AddPickupInfo(extraInfoLines, order);
 
         if (recordedPayments.Count > 0)
         {
@@ -52,10 +55,51 @@ internal static class InstallmentReceiptMapper
                 line.DiscountAmount,
                 line.ActualAmount)).ToList(),
             payments,
-            DocumentTitle: "===== INSTALLMENT ORDER =====",
-            StatusText: "*** Deposit Received ***",
+            StatusText: GetStatusText(order),
             OrderDisplay: order.InstallmentNumber,
             ExtraInfoLines: extraInfoLines);
+    }
+
+    private static void AddPickupInfo(List<string> extraInfoLines, LocalInstallmentOrder order)
+    {
+        if (order.PickupInfo is { } pickupInfo)
+        {
+            extraInfoLines.Add("Pickup: Confirmed");
+            extraInfoLines.Add($"Picked up at: {pickupInfo.PickedUpAt.ToLocalTime():yyyy-MM-dd HH:mm}");
+            extraInfoLines.Add($"Picked up by: {pickupInfo.PickedUpBy}");
+            if (!string.IsNullOrWhiteSpace(pickupInfo.Note))
+            {
+                extraInfoLines.Add($"Pickup note: {pickupInfo.Note}");
+            }
+
+            return;
+        }
+
+        if (order.Status == InstallmentStatus.PaidOff)
+        {
+            extraInfoLines.Add("Pickup: Pending");
+        }
+    }
+
+    private static string GetStatusText(LocalInstallmentOrder order)
+    {
+        // 分期付清后小票必须明确提货状态，避免把待提货误看成已交付。
+        if (order.PickupInfo is not null || order.Status == InstallmentStatus.PickedUp)
+        {
+            return "*** Paid - Picked Up ***";
+        }
+
+        if (order.Status == InstallmentStatus.Cancelled)
+        {
+            return "*** Installment Cancelled ***";
+        }
+
+        if (order.Status == InstallmentStatus.PaidOff)
+        {
+            return "*** Paid - Pickup Pending ***";
+        }
+
+        return "*** Deposit Received ***";
     }
 
     private static string FormatPaymentHistoryLine(InstallmentPaymentDto payment)

@@ -272,7 +272,8 @@ internal sealed class MainChildViewModelFactory
         Action? onShowInstallmentCenter = null,
         Func<Task<bool>>? recoverPreviousCardTransactionAsync = null,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator = null,
-        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null)
+        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
+        Func<bool>? confirmInstallmentFullFirstPayment = null)
     {
         return new PaymentViewModel(
             _cart,
@@ -286,7 +287,8 @@ internal sealed class MainChildViewModelFactory
             _cashierSessionContext,
             _enforceCashierPermissions,
             _installmentOrderService,
-            onInstallmentOrderCreatedAsync);
+            onInstallmentOrderCreatedAsync,
+            confirmInstallmentFullFirstPayment);
     }
 
     public DailyCloseViewModel CreateDailyCloseViewModel(

@@ -420,7 +420,8 @@ internal sealed class ScreenNavigator
                 ShowInstallmentCenter,
                 _recoverActiveCardPaymentSessionFromPaymentAsync,
                 _linklyFallbackPromptCoordinator,
-                _onInstallmentOrderCreatedAsync);
+                _onInstallmentOrderCreatedAsync,
+                ConfirmInstallmentFullFirstPayment);
             _onPaymentCreated(CashPayment);
         }
 
@@ -430,6 +431,13 @@ internal sealed class ScreenNavigator
         }
 
         _cachedCashPaymentScreen = CashPayment;
+    }
+
+    private bool ConfirmInstallmentFullFirstPayment()
+    {
+        return _confirmationDialogService.ConfirmInstallmentFullFirstPayment(
+            _localization.T("payment.installment.confirmFullFirstPayment.title"),
+            _localization.T("payment.installment.confirmFullFirstPayment.message"));
     }
 
     public void PrepareCachedSpecialProductsScreen()

@@ -12,6 +12,10 @@ public interface IConfirmationDialogService
     bool ConfirmExitApplication();
 
     bool ConfirmResetTestSalesData();
+
+    bool ConfirmInstallmentFullFirstPayment(string title, string message);
+
+    bool ConfirmInstallmentPickupAfterPaidOff(string title, string message);
 }
 
 public sealed class WpfApplicationExitService : IApplicationExitService
@@ -59,6 +63,34 @@ public sealed class WpfConfirmationDialogService : IConfirmationDialogService
             "重置测试销售数据",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        return result == MessageBoxResult.Yes;
+    }
+
+    public bool ConfirmInstallmentFullFirstPayment(string title, string message)
+    {
+        var owner = Application.Current?.MainWindow;
+        var result = MessageBox.Show(
+            owner,
+            message,
+            title,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        return result == MessageBoxResult.Yes;
+    }
+
+    public bool ConfirmInstallmentPickupAfterPaidOff(string title, string message)
+    {
+        var owner = Application.Current?.MainWindow;
+        var result = MessageBox.Show(
+            owner,
+            message,
+            title,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
             MessageBoxResult.No);
 
         return result == MessageBoxResult.Yes;

@@ -239,7 +239,13 @@ public sealed class LocalizationAndSettingsTests
             "installment.create.payment.status.card.ready",
             "installment.create.payment.status.voucher.missingCode",
             "installment.create.payment.status.voucher.missingToken",
-            "installment.create.payment.status.voucher.ready"
+            "installment.create.payment.status.voucher.ready",
+            "payment.installment.confirmFullFirstPayment.title",
+            "payment.installment.confirmFullFirstPayment.message",
+            "payment.installment.status.fullFirstPaymentCancelled",
+            "payment.installment.confirmPickupAfterPaidOff.title",
+            "payment.installment.confirmPickupAfterPaidOff.message",
+            "payment.installment.status.pickupConfirmFailed"
         ];
         var localization = new LocalizationService();
 

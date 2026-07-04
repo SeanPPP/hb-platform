@@ -519,6 +519,18 @@
   <data name="payment.installment.outstanding" xml:space="preserve">
     <value>未付余额</value>
   </data>
+  <data name="payment.installment.confirmFullFirstPayment.title" xml:space="preserve">
+    <value>确认创建分期单</value>
+  </data>
+  <data name="payment.installment.confirmFullFirstPayment.message" xml:space="preserve">
+    <value>分期首付款已覆盖整单金额。是否仍要创建分期单？</value>
+  </data>
+  <data name="payment.installment.confirmPickupAfterPaidOff.title" xml:space="preserve">
+    <value>确认提货</value>
+  </data>
+  <data name="payment.installment.confirmPickupAfterPaidOff.message" xml:space="preserve">
+    <value>该分期单已付清。是否现在确认顾客已提货？</value>
+  </data>
   <data name="payment.installment.status.onlineRequired" xml:space="preserve">
     <value>分期付款需要在线模式。</value>
   </data>
@@ -548,6 +560,12 @@
   </data>
   <data name="payment.installment.status.repaymentRecorded" xml:space="preserve">
     <value>分期补款已记录。</value>
+  </data>
+  <data name="payment.installment.status.fullFirstPaymentCancelled" xml:space="preserve">
+    <value>已取消本次全额首付分期确认。</value>
+  </data>
+  <data name="payment.installment.status.pickupConfirmFailed" xml:space="preserve">
+    <value>确认提货失败，小票已按待提货打印。{0}</value>
   </data>
   <data name="payment.action.addCash" xml:space="preserve">
     <value>添加现金</value>

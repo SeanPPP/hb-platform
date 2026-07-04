@@ -125,7 +125,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
-        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null)
+        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
+        Func<bool>? confirmInstallmentFullFirstPayment = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -138,7 +139,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             cashierSessionContext,
             enforcePermissionsWhenNoCashier,
             installmentOrderService,
-            onInstallmentOrderCreatedAsync)
+            onInstallmentOrderCreatedAsync,
+            confirmInstallmentFullFirstPayment)
     {
     }
 
@@ -154,7 +156,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
-        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null)
+        Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
+        Func<bool>? confirmInstallmentFullFirstPayment = null)
     {
         _cart = cart;
         _workflowService = workflowService;
@@ -172,7 +175,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onBackToPos,
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
-            onInstallmentOrderCreatedAsync);
+            onInstallmentOrderCreatedAsync,
+            confirmInstallmentFullFirstPayment);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _cardSession = new CardPaymentSession(this);
         _linklyFallbackPromptCoordinator?.SetPromptHandler(_cardSession.ConfirmLinklyFallbackAsync);
@@ -847,7 +851,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         if (IsInstallmentPaymentEnabled &&
             _workflowService.TryParseTenderedAmount(amountText, out var plannedAmount) &&
-            plannedAmount > GetPaymentTargetAmount())
+            !IsInstallmentTenderAmountAllowed(method, plannedAmount, GetPaymentTargetAmount()))
         {
             SetStatus("payment.installment.status.invalidAmount");
             NotifyPaymentCommandStates();
@@ -1223,13 +1227,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         IsPaymentInteractionLocked = true;
         try
         {
+            var appliedTender = GetInstallmentAppliedTender(tender);
             if (_installmentRepaymentOrder is { } repaymentOrder)
             {
                 var repaymentResult = await _installmentOrderService.AddRepaymentAsync(
                     new InstallmentOrderRepaymentRequest(
                         repaymentOrder.OrderId,
                         Session,
-                        CreateInstallmentPaymentDraft(tender)));
+                        CreateInstallmentPaymentDraft(appliedTender)));
                 if (!repaymentResult.Succeeded)
                 {
                     SetStatus("payment.installment.status.actionFailed", repaymentResult.Message);
@@ -1258,14 +1263,22 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             }
 
             var cartSnapshot = CreateInstallmentCartSnapshot();
+            if (appliedTender.Amount >= GetPaymentTargetAmount() &&
+                _navigationActions.ConfirmInstallmentFullFirstPayment?.Invoke() == false)
+            {
+                // 中文注释：首付已可结清整单时先二次确认；确认后仍按分期创建，取消则保留当前收款状态。
+                SetStatus("payment.installment.status.fullFirstPaymentCancelled");
+                return;
+            }
+
             var createResult = await _installmentOrderService.CreateOrderAsync(
                 new InstallmentOrderCreateRequest(
                     Session,
                     cartSnapshot,
                     InstallmentCustomerName.Trim(),
                     InstallmentCustomerPhone.Trim(),
-                    tender.Amount,
-                    CreateInstallmentPaymentDraft(tender),
+                    appliedTender.Amount,
+                    CreateInstallmentPaymentDraft(appliedTender),
                     string.Empty));
             if (!createResult.Succeeded)
             {
@@ -1338,7 +1351,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         tender = PaymentTenders[0];
         var targetAmount = GetPaymentTargetAmount();
-        if (tender.Amount <= 0m || tender.Amount > targetAmount)
+        if (!IsInstallmentTenderAmountAllowed(tender.Method, tender.Amount, targetAmount))
         {
             SetStatus("payment.installment.status.invalidAmount");
             return false;
@@ -1374,7 +1387,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return false;
         }
 
-        if (tender.Amount < MinimumInstallmentFirstPaymentAmount)
+        if (GetInstallmentAppliedPaymentAmount(tender) < MinimumInstallmentFirstPaymentAmount)
         {
             SetStatus("payment.installment.status.firstPaymentBelowMinimum");
             return false;
@@ -1385,10 +1398,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanConfirmInstallmentPayment()
     {
+        var tender = PaymentTenders.Count == 1 ? PaymentTenders[0] : null;
         if (!Session.IsOnline ||
             PaymentTenders.Count != 1 ||
-            PaymentTenders[0].Amount <= 0m ||
-            PaymentTenders[0].Amount > GetPaymentTargetAmount())
+            tender is null ||
+            !IsInstallmentTenderAmountAllowed(tender.Method, tender.Amount, GetPaymentTargetAmount()))
         {
             return false;
         }
@@ -1402,7 +1416,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             !_cart.HasNonIntegerQuantity &&
             !_cart.HasZeroPriceLine &&
             ActualAmount >= MinimumInstallmentTotalAmount &&
-            PaymentTenders[0].Amount >= MinimumInstallmentFirstPaymentAmount &&
+            GetInstallmentAppliedPaymentAmount(tender) >= MinimumInstallmentFirstPaymentAmount &&
             !string.IsNullOrWhiteSpace(InstallmentCustomerName) &&
             !string.IsNullOrWhiteSpace(InstallmentCustomerPhone);
     }
@@ -1497,7 +1511,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         return IsInstallmentPaymentEnabled
-            ? amount <= remainingAmount
+            ? IsInstallmentTenderAmountAllowed(method, amount, remainingAmount)
             : method == PaymentMethodKind.Cash || amount <= remainingAmount;
     }
 
@@ -1777,6 +1791,29 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private decimal GetPaymentTargetAmount()
     {
         return _installmentRepaymentOrder?.OutstandingAmount ?? ActualAmount;
+    }
+
+    private static bool IsInstallmentTenderAmountAllowed(PaymentMethodKind method, decimal amount, decimal targetAmount)
+    {
+        return targetAmount > 0m &&
+            amount > 0m &&
+            (method == PaymentMethodKind.Cash || amount <= targetAmount);
+    }
+
+    private PaymentTender GetInstallmentAppliedTender(PaymentTender tender)
+    {
+        var appliedAmount = GetInstallmentAppliedPaymentAmount(tender);
+        return appliedAmount == tender.Amount
+            ? tender
+            : tender with { Amount = appliedAmount };
+    }
+
+    private decimal GetInstallmentAppliedPaymentAmount(PaymentTender tender)
+    {
+        // 中文注释：现金可以超付用于找零，但分期服务只记录真正抵扣未付金额的部分。
+        return tender.Method == PaymentMethodKind.Cash
+            ? Math.Min(tender.Amount, GetPaymentTargetAmount())
+            : tender.Amount;
     }
 
     private PosCartServiceSnapshot CreateInstallmentCartSnapshot()

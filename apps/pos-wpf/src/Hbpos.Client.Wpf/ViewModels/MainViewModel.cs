@@ -11,6 +11,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 using Microsoft.Extensions.DependencyInjection;
@@ -1858,6 +1859,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var localOrder = await _installmentOrderService.GetLocalOrderAsync(order.OrderId);
             if (localOrder is not null)
             {
+                localOrder = await ConfirmInstallmentPickupAfterPaidOffAsync(order, localOrder);
                 await PrintReceiptWithShellPermissionAsync(
                     InstallmentReceiptMapper.CreateReceipt(localOrder),
                     ReceiptPrintReason.InstallmentAuto);
@@ -1870,6 +1872,64 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _screenNavigator.ResetForNewTransaction();
             PosTerminal?.RefreshCart();
         }
+    }
+
+    private async Task<LocalInstallmentOrder> ConfirmInstallmentPickupAfterPaidOffAsync(
+        InstallmentOrderSummary order,
+        LocalInstallmentOrder localOrder)
+    {
+        if (!ShouldConfirmInstallmentPickupAfterPaidOff(order, localOrder))
+        {
+            return localOrder;
+        }
+
+        var confirmed = _confirmationDialogService.ConfirmInstallmentPickupAfterPaidOff(
+            _localization.T("payment.installment.confirmPickupAfterPaidOff.title"),
+            _localization.T("payment.installment.confirmPickupAfterPaidOff.message"));
+        if (!confirmed)
+        {
+            return localOrder;
+        }
+
+        try
+        {
+            // 分期付清后先确认提货，确认成功后重新读取本地快照，确保自动小票打印真实提货状态。
+            var result = await _installmentOrderService.ConfirmPickupAsync(order.OrderId, Session);
+            if (!result.Succeeded)
+            {
+                SetInstallmentPickupConfirmFailedStatus(result.Message);
+                return localOrder;
+            }
+
+            return await _installmentOrderService.GetLocalOrderAsync(order.OrderId) ?? localOrder;
+        }
+        catch (Exception ex)
+        {
+            SetInstallmentPickupConfirmFailedStatus(ex.Message);
+            return localOrder;
+        }
+    }
+
+    private static bool ShouldConfirmInstallmentPickupAfterPaidOff(
+        InstallmentOrderSummary order,
+        LocalInstallmentOrder localOrder)
+    {
+        if (localOrder.PickupInfo is not null)
+        {
+            return false;
+        }
+
+        var localPaidOff = localOrder.Status == InstallmentStatus.PaidOff && localOrder.BalanceAmount <= 0m;
+        var summaryPaidOff = order.CanConfirmPickup && order.OutstandingAmount <= 0m;
+        return localPaidOff || summaryPaidOff;
+    }
+
+    private void SetInstallmentPickupConfirmFailedStatus(string? message)
+    {
+        StatusMessage = string.Format(
+            _localization.CurrentCulture,
+            _localization.T("payment.installment.status.pickupConfirmFailed"),
+            string.IsNullOrWhiteSpace(message) ? _localization.T("payment.installment.status.actionFailed") : message);
     }
 
     private async Task<ReceiptPrintResult> PrintLatestReceiptAsync() =>

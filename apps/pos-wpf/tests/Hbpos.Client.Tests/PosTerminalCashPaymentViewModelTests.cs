@@ -4263,6 +4263,84 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_new_installment_full_cash_payment_cancel_keeps_tender_and_cart()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-CASH-FULL-CANCEL", "Full Cash Cancel Tea", "939010", PriceSourceKind.StoreRetailPrice, 80m));
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService();
+        var confirmCallCount = 0;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            installmentOrderService: installmentService,
+            confirmInstallmentFullFirstPayment: () =>
+            {
+                confirmCallCount++;
+                return false;
+            })
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "100"
+        };
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, confirmCallCount);
+        Assert.Null(installmentService.LastCreateRequest);
+        Assert.Equal(0, workflow.CompletePaymentCallCount);
+        Assert.Single(cart.Lines);
+        Assert.Single(viewModel.PaymentTenders);
+        Assert.Equal(20m, viewModel.ChangeDue);
+        Assert.Equal("payment.installment.status.fullFirstPaymentCancelled", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_allows_cash_overpay_with_change_and_applies_order_amount()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-INST-CASH-OVERPAY", "Cash Overpay Installment Tea", "939009", PriceSourceKind.StoreRetailPrice, 80m));
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService();
+        var confirmCallCount = 0;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            installmentOrderService: installmentService,
+            confirmInstallmentFullFirstPayment: () =>
+            {
+                confirmCallCount++;
+                return true;
+            })
+        {
+            IsInstallmentPaymentEnabled = true,
+            InstallmentCustomerName = "Alice",
+            InstallmentCustomerPhone = "0400111222",
+            TenderAmountText = "100"
+        };
+
+        Assert.True(viewModel.SelectCashCommand.CanExecute(null));
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        Assert.Equal(20m, viewModel.ChangeDue);
+        Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, confirmCallCount);
+        Assert.Equal(0, workflow.CompletePaymentCallCount);
+        Assert.NotNull(installmentService.LastCreateRequest);
+        Assert.Equal(80m, installmentService.LastCreateRequest!.DownPaymentAmount);
+        Assert.Equal(80m, installmentService.LastCreateRequest.DownPayment.Amount);
+    }
+
+    [Fact]
     public async Task Payment_page_new_installment_splits_voucher_reference_for_create_request()
     {
         var cart = new PosCartService();
@@ -4335,6 +4413,36 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal(30m, installmentService.LastRepaymentRequest.Payment.Amount);
         Assert.Equal(1, createdCallbackCount);
         Assert.Equal(order.OrderId, callbackOrder!.OrderId);
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_allows_cash_overpay_with_change_and_applies_outstanding_amount()
+    {
+        var workflow = new FakeCashPaymentWorkflowService();
+        var installmentService = new FakeInstallmentOrderService();
+        var order = CreateInstallmentOrder("IO-20260703-0004", "Bob", "0400222333", paidAmount: 30m, outstandingAmount: 48m);
+        var viewModel = new PaymentViewModel(
+            new PosCartService(),
+            workflow,
+            Session,
+            installmentOrderService: installmentService,
+            confirmInstallmentFullFirstPayment: () => throw new InvalidOperationException("Repayments must not show first-payment confirmation."));
+
+        viewModel.PrepareForInstallmentRepayment(Session, order);
+        viewModel.TenderAmountText = "50";
+
+        Assert.True(viewModel.SelectCashCommand.CanExecute(null));
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+
+        Assert.Equal(2m, viewModel.ChangeDue);
+        Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
+
+        await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        Assert.NotNull(installmentService.LastRepaymentRequest);
+        Assert.Equal(order.OrderId, installmentService.LastRepaymentRequest!.InstallmentGuid);
+        Assert.Equal(48m, installmentService.LastRepaymentRequest.Payment.Amount);
     }
 
     [Fact]
