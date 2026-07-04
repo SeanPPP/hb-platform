@@ -75,6 +75,17 @@ assert.deepEqual(getLastYearIsoWeekPeriod(week), {
   endDate: "2025-06-29",
 });
 
+assert.deepEqual(getLastYearIsoWeekPeriod({ mode: "week", startDate: "2026-12-28", endDate: "2027-01-03" }), {
+  mode: "week",
+  startDate: "2025-12-22",
+  endDate: "2025-12-28",
+});
+assert.deepEqual(getLastYearSameWeekdayPeriod({ mode: "day", startDate: "2026-12-31", endDate: "2026-12-31" }), {
+  mode: "day",
+  startDate: "2025-12-25",
+  endDate: "2025-12-25",
+});
+
 const month = { mode: "month" as const, startDate: "2026-03-01", endDate: "2026-03-31" };
 assert.deepEqual(getPreviousRevenuePeriod(month), {
   mode: "month",

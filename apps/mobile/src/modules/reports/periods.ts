@@ -63,6 +63,10 @@ function dateFromIsoWeek(weekYear: number, week: number, weekday: number) {
   return addDays(weekOneStart, (week - 1) * 7 + weekday - 1);
 }
 
+function getIsoWeeksInYear(weekYear: number) {
+  return getIsoWeekInfo(new Date(weekYear, 11, 28)).week;
+}
+
 function endOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth() + 1, 0);
 }
@@ -133,7 +137,9 @@ export function getLastYearSameWeekdayPeriod(period: RevenuePeriod): RevenuePeri
 
 export function getLastYearIsoWeekPeriod(period: RevenuePeriod): RevenuePeriod {
   const { weekYear, week, weekday } = getIsoWeekInfo(parseDateKey(period.startDate));
-  const weekStart = dateFromIsoWeek(weekYear - 1, week, weekday);
+  const compareWeekYear = weekYear - 1;
+  const compareWeek = Math.min(week, getIsoWeeksInYear(compareWeekYear));
+  const weekStart = dateFromIsoWeek(compareWeekYear, compareWeek, weekday);
   return {
     mode: period.mode,
     startDate: formatDateKey(weekStart),

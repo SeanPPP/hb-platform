@@ -42,7 +42,9 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             typeof(StoreRetailPrice),
             typeof(HBLocalSupplier),
             typeof(ChinaSupplier),
+            typeof(Store),
             typeof(StoreSalesStatistic),
+            typeof(HourlySalesStatistic),
             typeof(StoreSupplierSalesDetail),
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState)
@@ -50,9 +52,38 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         _posmDb.CodeFirst.InitTables(
             typeof(SalesOrder),
             typeof(SalesOrderDetail),
+            typeof(PaymentDetail),
             typeof(PosmProductSupplierMapping),
             typeof(POSM_设备注册信息表)
         );
+    }
+
+    [Fact]
+    public async Task UpdateHourlyStatistics_拆分支付时写入唯一订单数()
+    {
+        var targetDate = new DateTime(2026, 7, 4);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedOrderAsync("ORDER-SPLIT", "S1", targetDate.AddHours(9), 3);
+        await SeedPaymentAsync("PAY-1", "ORDER-SPLIT", 40m, targetDate.AddHours(9).AddMinutes(2));
+        await SeedPaymentAsync("PAY-2", "ORDER-SPLIT", 60m, targetDate.AddHours(9).AddMinutes(3));
+
+        await CreateService().UpdateHourlyStatistics(targetDate, 9);
+
+        var branchRow = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.Hour == 9 && row.BranchCode == "S1")
+            .FirstAsync();
+        var allRow = await _localDb.Queryable<HourlySalesStatistic>()
+            .Where(row => row.Date == targetDate && row.Hour == 9 && row.BranchCode == "ALL")
+            .FirstAsync();
+
+        Assert.NotNull(branchRow);
+        Assert.NotNull(allRow);
+        Assert.Equal(1, branchRow!.OrderCount);
+        Assert.Equal(1, allRow!.OrderCount);
+        Assert.Equal(3, branchRow.TotalQuantity);
+        Assert.Equal(3, allRow.TotalQuantity);
+        Assert.Equal(100m, branchRow.TotalAmount);
+        Assert.Equal(100m, allRow.TotalAmount);
     }
 
     [Fact]
@@ -809,6 +840,51 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             Quantity = quantity,
             ActualAmount = actualAmount,
             LastUploadTime = DateTime.Now,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedStoreAsync(string storeCode, string storeName)
+    {
+        await _localDb.Insertable(new Store
+        {
+            StoreGUID = Guid.NewGuid().ToString("N"),
+            StoreCode = storeCode,
+            StoreName = storeName,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedOrderAsync(
+        string orderGuid,
+        string branchCode,
+        DateTime orderTime,
+        int itemCount
+    )
+    {
+        await _posmDb.Insertable(new SalesOrder
+        {
+            OrderGuid = orderGuid,
+            BranchCode = branchCode,
+            OrderTime = orderTime,
+            Status = 1,
+            ItemCount = itemCount,
+            LastUploadTime = orderTime.AddMinutes(5),
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedPaymentAsync(
+        string paymentGuid,
+        string orderGuid,
+        decimal amount,
+        DateTime createdTime
+    )
+    {
+        await _posmDb.Insertable(new PaymentDetail
+        {
+            PaymentGuid = paymentGuid,
+            OrderGuid = orderGuid,
+            Amount = amount,
+            CreatedTime = createdTime,
+            LastUploadTime = createdTime.AddMinutes(1),
         }).ExecuteCommandAsync();
     }
 

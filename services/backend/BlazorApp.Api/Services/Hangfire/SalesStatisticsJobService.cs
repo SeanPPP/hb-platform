@@ -159,6 +159,17 @@ namespace BlazorApp.Api.Services
             public string? DeviceCode { get; set; }
         }
 
+        private sealed class HourlyStatisticSourceRow
+        {
+            public DateTime Date { get; set; }
+            public int Hour { get; set; }
+            public string? BranchCode { get; set; }
+            public decimal TotalAmount { get; set; }
+            public int TotalQuantity { get; set; }
+            public int OrderCount { get; set; }
+            public int CustomerCount { get; set; }
+        }
+
         private sealed class StoreSupplierSourceRow
         {
             public DateTime Date { get; set; }
@@ -476,6 +487,8 @@ namespace BlazorApp.Api.Services
                 var targetHours = hour.HasValue
                     ? new[] { hour.Value }
                     : Enumerable.Range(0, 24).ToArray();
+                var rangeStart = hour.HasValue ? date.Date.AddHours(hour.Value) : date.Date;
+                var rangeEnd = hour.HasValue ? rangeStart.AddHours(1) : date.Date.AddDays(1);
 
                 _logger.LogInformation(
                     "开始更新分时统计数据: {Date}, 小时: {Hours}",
@@ -483,8 +496,8 @@ namespace BlazorApp.Api.Services
                     hour.HasValue ? hour.Value.ToString() : "0-23"
                 );
 
-                // 从POSM数据库查询分时销售数据，按支付明细统计营业额
-                var allHourlyData = await _posmContext
+                // 金额从支付明细取，数量和订单数从订单头取，避免拆分支付时把订单指标重复累计。
+                var hourlyRevenueRows = await _posmContext
                     .Db.Queryable<PaymentDetail, SalesOrder>(
                         (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
@@ -493,8 +506,8 @@ namespace BlazorApp.Api.Services
                             so.Status != null
                             && (so.Status == 1 || so.Status == 4)
                             && so.OrderTime != null
-                            && so.OrderTime.Value.Date == date
-                            && targetHours.Contains(so.OrderTime.Value.Hour)
+                            && so.OrderTime >= rangeStart
+                            && so.OrderTime < rangeEnd
                     )
                     .GroupBy(
                         (pd, so) =>
@@ -507,18 +520,63 @@ namespace BlazorApp.Api.Services
                     )
                     .Select(
                         (pd, so) =>
-                            new
+                            new HourlyStatisticSourceRow
                             {
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                            }
+                    )
+                    .ToListAsync();
+
+                var hourlyOrderRows = await _posmContext
+                    .Db.Queryable<SalesOrder>()
+                    .Where(
+                        so =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime >= rangeStart
+                            && so.OrderTime < rangeEnd
+                    )
+                    .GroupBy(
+                        so =>
+                            new
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                so.BranchCode,
+                            }
+                    )
+                    .Select(
+                        so =>
+                            new HourlyStatisticSourceRow
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                BranchCode = so.BranchCode,
                                 TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
                                 OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
                                 CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
                             }
                     )
                     .ToListAsync();
+
+                var allHourlyData = hourlyRevenueRows
+                    .Concat(hourlyOrderRows)
+                    .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
+                    .Select(group => new HourlyStatisticSourceRow
+                    {
+                        Date = group.Key.Date,
+                        Hour = group.Key.Hour,
+                        BranchCode = group.Key.BranchCode,
+                        TotalAmount = group.Sum(row => row.TotalAmount),
+                        TotalQuantity = group.Sum(row => row.TotalQuantity),
+                        OrderCount = group.Sum(row => row.OrderCount),
+                        CustomerCount = group.Sum(row => row.CustomerCount),
+                    })
+                    .ToList();
 
                 if (!allHourlyData.Any())
                 {
@@ -558,6 +616,7 @@ namespace BlazorApp.Api.Services
                             BranchName = "All Stores",
                             TotalAmount = hourlyDataForHour.Sum(d => d.TotalAmount),
                             TotalQuantity = (int)hourlyDataForHour.Sum(d => d.TotalQuantity),
+                            OrderCount = hourlyDataForHour.Sum(d => d.OrderCount),
                             CustomerCount = hourlyDataForHour.Sum(d => d.CustomerCount),
                             AverageOrderValue =
                                 hourlyDataForHour.Sum(d => d.OrderCount) > 0
@@ -595,6 +654,7 @@ namespace BlazorApp.Api.Services
                         BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = data.TotalAmount,
                         TotalQuantity = (int)data.TotalQuantity,
+                        OrderCount = data.OrderCount,
                         CustomerCount = data.CustomerCount,
                         AverageOrderValue =
                             data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
@@ -3779,6 +3839,8 @@ namespace BlazorApp.Api.Services
                 var targetHours = hour.HasValue
                     ? new[] { hour.Value }
                     : Enumerable.Range(0, 24).ToArray();
+                var rangeStart = hour.HasValue ? date.Date.AddHours(hour.Value) : date.Date;
+                var rangeEnd = hour.HasValue ? rangeStart.AddHours(1) : date.Date.AddDays(1);
 
                 logger.LogInformation(
                     "开始更新分时统计数据: {Date}, 小时: {Hours}",
@@ -3786,8 +3848,8 @@ namespace BlazorApp.Api.Services
                     hour.HasValue ? hour.Value.ToString() : "0-23"
                 );
 
-                // 从POSM数据库查询分时销售数据，按支付明细统计营业额
-                var allHourlyData = await posmContext
+                // 金额从支付明细取，数量和订单数从订单头取，避免拆分支付时把订单指标重复累计。
+                var hourlyRevenueRows = await posmContext
                     .Db.Queryable<PaymentDetail, SalesOrder>(
                         (pd, so) => pd.OrderGuid == so.OrderGuid
                     )
@@ -3796,8 +3858,8 @@ namespace BlazorApp.Api.Services
                             so.Status != null
                             && (so.Status == 1 || so.Status == 4)
                             && so.OrderTime != null
-                            && so.OrderTime.Value.Date == date
-                            && targetHours.Contains(so.OrderTime.Value.Hour)
+                            && so.OrderTime >= rangeStart
+                            && so.OrderTime < rangeEnd
                     )
                     .GroupBy(
                         (pd, so) =>
@@ -3810,18 +3872,63 @@ namespace BlazorApp.Api.Services
                     )
                     .Select(
                         (pd, so) =>
-                            new
+                            new HourlyStatisticSourceRow
                             {
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                            }
+                    )
+                    .ToListAsync();
+
+                var hourlyOrderRows = await posmContext
+                    .Db.Queryable<SalesOrder>()
+                    .Where(
+                        so =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime >= rangeStart
+                            && so.OrderTime < rangeEnd
+                    )
+                    .GroupBy(
+                        so =>
+                            new
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                so.BranchCode,
+                            }
+                    )
+                    .Select(
+                        so =>
+                            new HourlyStatisticSourceRow
+                            {
+                                Date = so.OrderTime!.Value.Date,
+                                Hour = so.OrderTime!.Value.Hour,
+                                BranchCode = so.BranchCode,
                                 TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
                                 OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
                                 CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
                             }
                     )
                     .ToListAsync();
+
+                var allHourlyData = hourlyRevenueRows
+                    .Concat(hourlyOrderRows)
+                    .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
+                    .Select(group => new HourlyStatisticSourceRow
+                    {
+                        Date = group.Key.Date,
+                        Hour = group.Key.Hour,
+                        BranchCode = group.Key.BranchCode,
+                        TotalAmount = group.Sum(row => row.TotalAmount),
+                        TotalQuantity = group.Sum(row => row.TotalQuantity),
+                        OrderCount = group.Sum(row => row.OrderCount),
+                        CustomerCount = group.Sum(row => row.CustomerCount),
+                    })
+                    .ToList();
 
                 if (!allHourlyData.Any())
                 {
@@ -3861,6 +3968,7 @@ namespace BlazorApp.Api.Services
                             BranchName = "All Stores",
                             TotalAmount = hourlyDataForHour.Sum(d => d.TotalAmount),
                             TotalQuantity = (int)hourlyDataForHour.Sum(d => d.TotalQuantity),
+                            OrderCount = hourlyDataForHour.Sum(d => d.OrderCount),
                             CustomerCount = hourlyDataForHour.Sum(d => d.CustomerCount),
                             AverageOrderValue =
                                 hourlyDataForHour.Sum(d => d.OrderCount) > 0
@@ -3898,6 +4006,7 @@ namespace BlazorApp.Api.Services
                         BranchName = store?.StoreName ?? branchCode,
                         TotalAmount = data.TotalAmount,
                         TotalQuantity = (int)data.TotalQuantity,
+                        OrderCount = data.OrderCount,
                         CustomerCount = data.CustomerCount,
                         AverageOrderValue =
                             data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
