@@ -292,6 +292,16 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="reports"
+        options={{
+          href: isRouteVisible("reports") ? undefined : null,
+          title: t("tabs.reports"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="chart-line" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="store-vouchers"
         options={{
           href: isRouteVisible("store-vouchers") ? undefined : null,

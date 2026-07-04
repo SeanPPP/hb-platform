@@ -172,6 +172,18 @@ public class ControllerAuthorizationMetadataTests
             nameof(MobileAppBuildsController.CreateOtaRollbackCommand),
             Permissions.System.ManageAppDownloads
         );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetExecutiveBranchPerformance),
+            Permissions.Reports.View
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetExecutiveHourlyTraffic),
+            Permissions.Reports.View
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetBranchDailyPerformance),
+            Permissions.Reports.View
+        );
         yield return Policy<ServiceApiTokensController>(
             nameof(ServiceApiTokensController.List),
             Permissions.System.ManageAppDownloads

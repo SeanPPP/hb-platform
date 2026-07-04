@@ -40,6 +40,7 @@
     "installmentOrders": "Installments",
     "advertisements": "Advertisements",
     "promotions": "Promotions",
+    "reports": "Reports",
     "storeVouchers": "Vouchers",
     "seasonalCards": "Seasonal Cards",
     "attendance": "Attendance",
@@ -97,5 +98,32 @@
     "multipleCart": "Multiple products matched the barcode. Choose one to add.",
     "failed": "Failed to process the scan",
     "selected": "Matched product selected"
+  },
+  "reports": {
+    "title": "Reports",
+    "sections": {
+      "revenue": "Revenue",
+      "product": "Product Analysis"
+    },
+    "periods": {
+      "day": "Day",
+      "week": "Week",
+      "month": "Month"
+    },
+    "actions": {
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "shortcuts": {
+      "yesterday": "Yesterday",
+      "lastWeek": "Last week",
+      "lastMonth": "Last month"
+    },
+    "states": {
+      "empty": "No revenue data",
+      "errorTitle": "Failed to load revenue data"
+    },
+    "transactions": "{{count}} txns",
+    "compareRevenue": "LY {{value}}"
   }
 }

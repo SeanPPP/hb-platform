@@ -2721,18 +2721,21 @@ namespace BlazorApp.Api.Services.React
         /// <returns>分店业绩排名列表</returns>
         public async Task<List<ExecutiveBranchPerformanceDto>> GetExecutiveBranchPerformanceAsync(
             DateRangeDto dateRange,
-            int topN = 100,
+            int? topN = null,
             List<string>? branchCodes = null
         )
         {
             try
             {
                 ValidateDateRange(dateRange);
+                var normalizedBranchCodes = NormalizeBranchCodes(branchCodes);
+                if (branchCodes != null && normalizedBranchCodes.Count == 0)
+                    return new List<ExecutiveBranchPerformanceDto>();
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
                 var cacheKey =
-                    $"ExecutiveBranchPerformance_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN}_{string.Join(",", branchCodes ?? new List<string>())}";
+                    $"ExecutiveBranchPerformance_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", normalizedBranchCodes)}";
 
                 if (
                     _cache.TryGetValue<List<ExecutiveBranchPerformanceDto>>(
@@ -2750,38 +2753,15 @@ namespace BlazorApp.Api.Services.React
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date;
 
-                // 获取所有分店
-                var stores = await _context
-                    .Db.Queryable<Store>()
-                    .Where(s => !s.IsDeleted)
-                    .Select(s => new { s.StoreCode, s.StoreName })
-                    .ToListAsync();
-
-                var storeDict = stores.ToDictionary(
-                    s => s.StoreCode ?? string.Empty,
-                    s => s.StoreName ?? s.StoreCode ?? string.Empty
-                );
-
-                // 查询当前期分店销售数据
-                var currentQuery = _context
-                    .Db.Queryable<DailySalesStatistic>()
-                    .Where(s => s.Date >= startDate && s.Date <= endDate);
-
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    // 需要从 StoreSalesStatistic 表获取分店级别的数据
-                    currentQuery = null!;
-                }
-
                 // 使用 StoreSalesStatistic 表查询分店销售数据
                 var branchCurrentQuery = _context
                     .Db.Queryable<StoreSalesStatistic>()
                     .Where(s => s.Date >= startDate && s.Date <= endDate);
 
-                if (branchCodes != null && branchCodes.Any())
+                if (normalizedBranchCodes.Count > 0)
                 {
                     branchCurrentQuery = branchCurrentQuery.Where(s =>
-                        branchCodes.Contains(s.BranchCode)
+                        normalizedBranchCodes.Contains(s.BranchCode)
                     );
                 }
 
@@ -2790,10 +2770,9 @@ namespace BlazorApp.Api.Services.React
                     .Select(s => new
                     {
                         BranchCode = s.BranchCode,
+                        BranchName = SqlFunc.AggregateMax(s.BranchName),
                         Revenue = SqlFunc.AggregateSum(s.TotalAmount),
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
-                        Aov = SqlFunc.AggregateSum(s.TotalAmount)
-                            / SqlFunc.AggregateSum(s.OrderCount),
                     })
                     .ToListAsync();
 
@@ -2804,9 +2783,9 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<StoreSalesStatistic>()
                     .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
 
-                if (branchCodes != null && branchCodes.Any())
+                if (normalizedBranchCodes.Count > 0)
                 {
-                    lyQuery = lyQuery.Where(s => branchCodes.Contains(s.BranchCode));
+                    lyQuery = lyQuery.Where(s => normalizedBranchCodes.Contains(s.BranchCode));
                 }
 
                 var lyData = await lyQuery
@@ -2816,8 +2795,6 @@ namespace BlazorApp.Api.Services.React
                         BranchCode = s.BranchCode,
                         RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
                         OrderCountLY = SqlFunc.AggregateSum(s.OrderCount),
-                        AovLY = SqlFunc.AggregateSum(s.TotalAmount)
-                            / SqlFunc.AggregateSum(s.OrderCount),
                     })
                     .ToListAsync();
 
@@ -2827,24 +2804,20 @@ namespace BlazorApp.Api.Services.React
                     {
                         s.RevenueLY,
                         s.OrderCountLY,
-                        s.AovLY,
                     }
                 );
 
                 // 构建结果并排序
-                var result = currentData
+                IEnumerable<ExecutiveBranchPerformanceDto> result = currentData
                     .Select(
                         (item, index) =>
                             new ExecutiveBranchPerformanceDto
                             {
                                 Rank = index + 1,
                                 BranchCode = item.BranchCode,
-                                BranchName = storeDict.TryGetValue(
-                                    item.BranchCode,
-                                    out var branchName
-                                )
-                                    ? branchName
-                                    : item.BranchCode,
+                                BranchName = string.IsNullOrWhiteSpace(item.BranchName)
+                                    ? item.BranchCode
+                                    : item.BranchName,
                                 Revenue = item.Revenue,
                                 RevenueLY = lyDict.TryGetValue(item.BranchCode, out var lyItem)
                                     ? lyItem.RevenueLY
@@ -2853,14 +2826,22 @@ namespace BlazorApp.Api.Services.React
                                 OrderCountLY = lyDict.TryGetValue(item.BranchCode, out var lyItem2)
                                     ? lyItem2.OrderCountLY
                                     : 0,
-                                Aov = item.Aov,
+                                // AOV 在内存侧计算，避免统计表出现 0 单数时触发数据库除零。
+                                Aov = item.OrderCount > 0 ? item.Revenue / item.OrderCount : 0,
                                 AovLY = lyDict.TryGetValue(item.BranchCode, out var lyItem3)
-                                    ? lyItem3.AovLY
-                                    : 0,
+                                    && lyItem3.OrderCountLY > 0
+                                        ? lyItem3.RevenueLY / lyItem3.OrderCountLY
+                                        : 0,
                             }
                     )
-                    .OrderByDescending(x => x.Revenue)
-                    .Take(topN)
+                    .OrderByDescending(x => x.Revenue);
+
+                if (topN.HasValue && topN.Value > 0)
+                {
+                    result = result.Take(topN.Value);
+                }
+
+                var rankedResult = result
                     .Select(
                         (item, index) =>
                             new ExecutiveBranchPerformanceDto
@@ -2883,14 +2864,14 @@ namespace BlazorApp.Api.Services.React
                     .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
                     .SetSlidingExpiration(TimeSpan.FromMinutes(5));
 
-                _cache.Set(cacheKey, result, cacheOptions);
+                _cache.Set(cacheKey, rankedResult, cacheOptions);
 
-                return result;
+                return rankedResult;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetExecutiveBranchPerformanceAsync failed");
-                return new List<ExecutiveBranchPerformanceDto>();
+                throw;
             }
         }
 
@@ -2909,11 +2890,14 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 ValidateDateRange(dateRange);
+                var normalizedBranchCodes = NormalizeBranchCodes(branchCodes);
+                if (branchCodes != null && normalizedBranchCodes.Count == 0)
+                    return new List<ExecutiveHourlyTrafficDto>();
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
                 var cacheKey =
-                    $"ExecutiveHourlyTraffic_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", branchCodes ?? new List<string>())}";
+                    $"ExecutiveHourlyTraffic_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
                 if (
                     _cache.TryGetValue<List<ExecutiveHourlyTrafficDto>>(
@@ -2931,42 +2915,32 @@ namespace BlazorApp.Api.Services.React
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date;
 
-                var normalizedBranchCodes = branchCodes?
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code!.Trim())
-                    .Distinct()
-                    .ToList();
-
                 var query = _context
                     .Db.Queryable<HourlySalesStatistic>()
                     .Where(s => s.Date >= startDate && s.Date <= endDate);
 
-                if (normalizedBranchCodes != null && normalizedBranchCodes.Any())
+                if (normalizedBranchCodes.Count > 0)
                 {
                     query = query.Where(s =>
                         s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
                     );
                 }
 
-                var hourlyData = await query
+                var hourlyData = (await query
                     .GroupBy(s => new { s.BranchCode, s.Hour })
                     .Select(s => new
                     {
                         BranchCode = s.BranchCode,
+                        BranchName = SqlFunc.AggregateMax(s.BranchName),
                         Hour = s.Hour,
                         Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                        OrderCount = SqlFunc.AggregateSum(s.OrderCount ?? 0),
                     })
                     .OrderBy(s => s.BranchCode)
-                    .ToListAsync()
-                    .ContinueWith(t => t.Result.OrderBy(x => x.Hour).ToList());
-
-                var branchCodeSet = hourlyData
-                    .Select(h => h.BranchCode)
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code!)
-                    .Distinct()
-                    .ToHashSet();
-                var storeMap = await GetStoreNameMapAsync(branchCodeSet);
+                    .ToListAsync())
+                    .OrderBy(x => x.BranchCode)
+                    .ThenBy(x => x.Hour)
+                    .ToList();
 
                 var lyStartDate = dateRange.CompareStartDate;
                 var lyEndDate = dateRange.CompareEndDate;
@@ -2975,7 +2949,7 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<HourlySalesStatistic>()
                     .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
 
-                if (normalizedBranchCodes != null && normalizedBranchCodes.Any())
+                if (normalizedBranchCodes.Count > 0)
                 {
                     lyQuery = lyQuery.Where(s =>
                         s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
@@ -2989,12 +2963,13 @@ namespace BlazorApp.Api.Services.React
                         BranchCode = s.BranchCode,
                         Hour = s.Hour,
                         RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
+                        OrderCountLY = SqlFunc.AggregateSum(s.OrderCount ?? 0),
                     })
                     .ToListAsync();
 
                 var lyDict = lyHourlyData.ToDictionary(
                     s => (s.BranchCode, s.Hour),
-                    s => s.RevenueLY
+                    s => new { s.RevenueLY, s.OrderCountLY }
                 );
 
                 var result = hourlyData
@@ -3002,9 +2977,10 @@ namespace BlazorApp.Api.Services.React
                     .Select(branchGroup =>
                     {
                         var branchCode = branchGroup.Key ?? string.Empty;
-                        var branchName = storeMap.TryGetValue(branchCode, out var name)
-                            ? name
-                            : branchCode;
+                        var branchName = branchGroup
+                            .Select(item => item.BranchName)
+                            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                            ?? branchCode;
                         var branchMaxRevenue = branchGroup.Max(x => x.Revenue);
                         var peakThreshold = branchMaxRevenue * 0.8m;
 
@@ -3016,9 +2992,13 @@ namespace BlazorApp.Api.Services.React
                             Revenue = item.Revenue,
                             RevenueLY = lyDict.TryGetValue(
                                 (branchCode, item.Hour),
-                                out var lyRevenue
+                                out var ly
                             )
-                                ? lyRevenue
+                                ? ly.RevenueLY
+                                : 0,
+                            OrderCount = item.OrderCount,
+                            OrderCountLY = lyDict.TryGetValue((branchCode, item.Hour), out var lyOrder)
+                                ? lyOrder.OrderCountLY
                                 : 0,
                             Percentage =
                                 branchMaxRevenue > 0
@@ -3042,7 +3022,142 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetExecutiveHourlyTrafficAsync failed");
-                return new List<ExecutiveHourlyTrafficDto>();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 获取分店每日营业额
+        /// </summary>
+        /// <param name="dateRange">日期范围</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>分店每日营业额列表</returns>
+        public async Task<List<BranchDailyPerformanceDto>> GetBranchDailyPerformanceAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                ValidateDateRange(dateRange);
+                var normalizedBranchCodes = NormalizeBranchCodes(branchCodes);
+                if (branchCodes != null && normalizedBranchCodes.Count == 0)
+                    return new List<BranchDailyPerformanceDto>();
+
+                var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
+                var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                var cacheKey =
+                    $"BranchDailyPerformance_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
+
+                if (
+                    _cache.TryGetValue<List<BranchDailyPerformanceDto>>(
+                        cacheKey,
+                        out var cachedResult
+                    )
+                    && cachedResult != null
+                    && cachedResult.Count != 0
+                )
+                {
+                    _logger.LogInformation("从缓存获取分店每日营业额: {CacheKey}", cacheKey);
+                    return cachedResult;
+                }
+
+                var startDate = dateRange.StartDate.Date;
+                var endDate = dateRange.EndDate.Date;
+
+                var currentQuery = _context
+                    .Db.Queryable<StoreSalesStatistic>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+                if (normalizedBranchCodes.Count > 0)
+                {
+                    currentQuery = currentQuery.Where(s =>
+                        normalizedBranchCodes.Contains(s.BranchCode)
+                    );
+                }
+
+                var currentData = await currentQuery
+                    .GroupBy(s => new { s.Date, s.BranchCode, s.BranchName })
+                    .Select(s => new
+                    {
+                        Date = s.Date,
+                        BranchCode = s.BranchCode,
+                        BranchName = s.BranchName,
+                        Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                        OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                    })
+                    .ToListAsync();
+
+                var lyDict = new Dictionary<(string BranchCode, DateTime Date), (decimal Revenue, int OrderCount)>();
+                if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                {
+                    var lyStartDate = dateRange.CompareStartDate.Value.Date;
+                    var lyEndDate = dateRange.CompareEndDate.Value.Date;
+
+                    var lyQuery = _context
+                        .Db.Queryable<StoreSalesStatistic>()
+                        .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
+
+                    if (normalizedBranchCodes.Count > 0)
+                    {
+                        lyQuery = lyQuery.Where(s => normalizedBranchCodes.Contains(s.BranchCode));
+                    }
+
+                    var lyData = await lyQuery
+                        .GroupBy(s => new { s.Date, s.BranchCode })
+                        .Select(s => new
+                        {
+                            Date = s.Date,
+                            BranchCode = s.BranchCode,
+                            Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                            OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        })
+                        .ToListAsync();
+
+                    lyDict = lyData.ToDictionary(
+                        row => (row.BranchCode, row.Date.Date),
+                        row => (row.Revenue, row.OrderCount)
+                    );
+                }
+
+                // 按当前区间和对比区间的相同偏移天数配对，兼容同周和同月份规则。
+                var compareStartDate = dateRange.CompareStartDate?.Date;
+                var result = currentData
+                    .Select(row =>
+                    {
+                        var compareDate = compareStartDate?.AddDays((row.Date.Date - startDate).Days);
+                        var ly = compareDate.HasValue
+                            && lyDict.TryGetValue((row.BranchCode, compareDate.Value), out var matched)
+                                ? matched
+                                : (Revenue: 0m, OrderCount: 0);
+
+                        return new BranchDailyPerformanceDto
+                        {
+                            Date = row.Date.Date,
+                            BranchCode = row.BranchCode,
+                            BranchName = row.BranchName,
+                            Revenue = row.Revenue,
+                            RevenueLY = ly.Revenue,
+                            OrderCount = row.OrderCount,
+                            OrderCountLY = ly.OrderCount,
+                        };
+                    })
+                    .OrderBy(row => row.Date)
+                    .ThenByDescending(row => row.Revenue)
+                    .ToList();
+
+                var cacheOptions = new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                _cache.Set(cacheKey, result, cacheOptions);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetBranchDailyPerformanceAsync failed");
+                throw;
             }
         }
 
@@ -3391,6 +3506,16 @@ namespace BlazorApp.Api.Services.React
             }
 
             return compareDate;
+        }
+
+        private static List<string> NormalizeBranchCodes(List<string>? branchCodes)
+        {
+            return branchCodes?
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!.Trim())
+                    .Distinct()
+                    .ToList()
+                ?? new List<string>();
         }
 
         private async Task<Dictionary<string, string>> GetStoreNameMapAsync(

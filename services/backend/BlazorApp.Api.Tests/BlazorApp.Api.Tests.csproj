@@ -59,6 +59,7 @@
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
+    <Compile Include="SalesDashboardReportRevenueTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />

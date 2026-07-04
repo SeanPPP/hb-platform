@@ -293,6 +293,14 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "reports",
+                TitleKey = "tabs.reports",
+                Icon = "chart-box-outline",
+                Permission = Permissions.Reports.View,
+                Order = 59,
+            },
+            new()
+            {
                 RouteName = "settings",
                 TitleKey = "tabs.settings",
                 Icon = "account-circle-outline",

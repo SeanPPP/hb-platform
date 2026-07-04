@@ -68,12 +68,12 @@ assertEqual(
 
 assertEqual(
   getVisibleTabRouteNames({
-    routeNames: ["home", "attendance", "device-management", "settings"],
+    routeNames: ["home", "attendance", "device-management", "reports", "settings"],
     isDeviceMode: true,
     canViewAttendanceManagement: true,
   }).join(","),
   "home,attendance-personal,settings",
-  "shared visible routes expand legacy attendance and hide management-only routes in device mode"
+  "shared visible routes expand legacy attendance and hide management-only/report routes in device mode"
 );
 
 assertEqual(
@@ -107,10 +107,10 @@ assertEqual(
 assertEqual(
   resolveDefaultTabRoute({
     isDeviceMode: true,
-    routeNames: ["device-management", "settings"],
+    routeNames: ["device-management", "reports", "settings"],
   }),
   "/(tabs)/settings",
-  "device mode never defaults to device management"
+  "device mode never defaults to device management or reports"
 );
 
 assertEqual(
@@ -131,6 +131,17 @@ assertEqual(
   }),
   "/(tabs)/settings",
   "device mode redirects away from device management"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "reports",
+    hasAppliedDefaultRoute: false,
+    isDeviceMode: true,
+    routeNames: ["reports", "settings"],
+  }),
+  "/(tabs)/settings",
+  "device mode redirects away from reports"
 );
 
 assertEqual(
@@ -200,6 +211,12 @@ assertEqual(
 );
 
 assertEqual(
+  TAB_PATHS.reports,
+  "/(tabs)/reports",
+  "reports route is registered as a valid tab path"
+);
+
+assertEqual(
   TAB_PATHS["store-vouchers"],
   "/(tabs)/store-vouchers",
   "store vouchers route is registered as a valid tab path"
@@ -253,6 +270,17 @@ assertEqual(
   }),
   null,
   "promotions route is allowed when app menu exposes it"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "reports",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "reports", "settings"],
+  }),
+  null,
+  "reports route is allowed when app menu exposes it for account sessions"
 );
 
 assertEqual(

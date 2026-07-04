@@ -40,6 +40,7 @@
     "installmentOrders": "分期订单",
     "advertisements": "广告素材",
     "promotions": "促销",
+    "reports": "报告",
     "storeVouchers": "门店代金券",
     "seasonalCards": "季节卡片",
     "attendance": "考勤",
@@ -97,5 +98,32 @@
     "multipleCart": "条码匹配到多个商品，请选择后加入购物车",
     "failed": "扫码处理失败",
     "selected": "已选择匹配商品"
+  },
+  "reports": {
+    "title": "报告",
+    "sections": {
+      "revenue": "营业额",
+      "product": "商品经营分析"
+    },
+    "periods": {
+      "day": "日",
+      "week": "周",
+      "month": "月"
+    },
+    "actions": {
+      "previous": "上一期",
+      "next": "下一期"
+    },
+    "shortcuts": {
+      "yesterday": "昨日",
+      "lastWeek": "上周",
+      "lastMonth": "上月"
+    },
+    "states": {
+      "empty": "暂无营业额数据",
+      "errorTitle": "营业额数据加载失败"
+    },
+    "transactions": "{{count}} 笔",
+    "compareRevenue": "同期 {{value}}"
   }
 }

@@ -964,6 +964,16 @@ namespace BlazorApp.Shared.DTOs
         public decimal RevenueLY { get; set; }
 
         /// <summary>
+        /// 当前期订单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 去年同期订单数
+        /// </summary>
+        public int OrderCountLY { get; set; }
+
+        /// <summary>
         /// 占高峰期的百分比 (0-100)
         /// </summary>
         public int Percentage { get; set; }
@@ -972,6 +982,48 @@ namespace BlazorApp.Shared.DTOs
         /// 是否为高峰时段
         /// </summary>
         public bool IsPeak { get; set; }
+    }
+
+    /// <summary>
+    /// 分店每日营业额 DTO
+    /// 用于移动端周/月营业额下钻明细
+    /// </summary>
+    public class BranchDailyPerformanceDto
+    {
+        /// <summary>
+        /// 统计日期
+        /// </summary>
+        public DateTime Date { get; set; }
+
+        /// <summary>
+        /// 分店代码
+        /// </summary>
+        public string BranchCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 分店名称
+        /// </summary>
+        public string BranchName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 当前期销售额
+        /// </summary>
+        public decimal Revenue { get; set; }
+
+        /// <summary>
+        /// 去年同期销售额
+        /// </summary>
+        public decimal RevenueLY { get; set; }
+
+        /// <summary>
+        /// 当前期订单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 去年同期订单数
+        /// </summary>
+        public int OrderCountLY { get; set; }
     }
 
     /// <summary>

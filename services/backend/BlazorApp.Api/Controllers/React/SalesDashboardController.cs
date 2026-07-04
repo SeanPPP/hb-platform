@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -93,6 +94,39 @@ namespace BlazorApp.Api.Controllers.React
 
             // 返回用户关联的分店代码
             return user.Data.Stores?.Select(s => s.StoreCode).ToList();
+        }
+
+        private async Task<(bool HasAccess, List<string>? BranchCodes)> ResolveTargetBranchCodesAsync(
+            List<string>? branchCodes
+        )
+        {
+            var requestedBranchCodes = NormalizeBranchCodes(branchCodes);
+            if (branchCodes != null && requestedBranchCodes.Count == 0)
+                return (false, new List<string>());
+
+            if (IsAdmin())
+                return (true, branchCodes != null ? requestedBranchCodes : null);
+
+            var userBranchCodes = NormalizeBranchCodes(await GetUserBranchCodesAsync());
+            if (userBranchCodes.Count == 0)
+                return (false, new List<string>());
+
+            if (requestedBranchCodes.Count == 0)
+                return (true, userBranchCodes);
+
+            // 普通用户只能查询自己关联分店与请求分店的交集。
+            var allowedBranchCodes = requestedBranchCodes.Intersect(userBranchCodes).ToList();
+            return (allowedBranchCodes.Count > 0, allowedBranchCodes);
+        }
+
+        private static List<string> NormalizeBranchCodes(IEnumerable<string>? branchCodes)
+        {
+            return branchCodes?
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct()
+                    .ToList()
+                ?? new List<string>();
         }
 
         /// <summary>
@@ -1057,18 +1091,23 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>分店业绩排名列表</returns>
         [HttpGet("executive-branch-performance")]
+        [Authorize(Policy = Permissions.Reports.View)]
         public async Task<IActionResult> GetExecutiveBranchPerformance(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
             [FromQuery] DateTime? compareStartDate = null,
             [FromQuery] DateTime? compareEndDate = null,
             [FromQuery] CompareMode compareMode = CompareMode.ByDate,
-            [FromQuery] int topN = 100,
+            [FromQuery] int? topN = null,
             [FromQuery] List<string>? branchCodes = null
         )
         {
             try
             {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
                 {
@@ -1083,7 +1122,7 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetExecutiveBranchPerformanceAsync(
                     dateRange,
                     topN,
-                    branchCodes
+                    branchScope.BranchCodes
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -1106,6 +1145,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>每小时流量密度列表</returns>
         [HttpGet("executive-hourly-traffic")]
+        [Authorize(Policy = Permissions.Reports.View)]
         public async Task<IActionResult> GetExecutiveHourlyTraffic(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -1117,6 +1157,10 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
                 {
@@ -1128,12 +1172,65 @@ namespace BlazorApp.Api.Controllers.React
                 };
 
                 // 调用服务获取 Executive 每小时流量
-                var result = await _service.GetExecutiveHourlyTrafficAsync(dateRange, branchCodes);
+                var result = await _service.GetExecutiveHourlyTrafficAsync(
+                    dateRange,
+                    branchScope.BranchCodes
+                );
                 return Ok(new { success = true, data = result });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetExecutiveHourlyTraffic failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取分店每日营业额
+        /// GET api/react/v1/dashboard/branch-daily-performance
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="compareMode">对比模式</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>分店每日营业额列表</returns>
+        [HttpGet("branch-daily-performance")]
+        [Authorize(Policy = Permissions.Reports.View)]
+        public async Task<IActionResult> GetBranchDailyPerformance(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] CompareMode compareMode = CompareMode.ByDate,
+            [FromQuery] List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    CompareStartDate = compareStartDate,
+                    CompareEndDate = compareEndDate,
+                    CompareMode = compareMode,
+                };
+
+                var result = await _service.GetBranchDailyPerformanceAsync(
+                    dateRange,
+                    branchScope.BranchCodes
+                );
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetBranchDailyPerformance failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
