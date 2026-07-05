@@ -48,6 +48,7 @@ namespace BlazorApp.Api.Tests
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
@@ -296,13 +297,10 @@ namespace BlazorApp.Api.Tests
             await SeedScheduleAsync("draft-schedule", "BRI", "staff-user", new DateTime(2026, 5, 18), "Draft");
             var service = CreateService("staff-user", "staff", "StoreStaff");
 
-            var result = await service.PunchAsync(new AttendancePunchRequestDto
-            {
-                StoreCode = "BRI",
-                StoreTimeZone = "Australia/Brisbane",
-                PunchType = "ClockIn",
-                PunchTimeUtc = DateTime.Parse("2026-05-17T23:00:00Z").ToUniversalTime(),
-            });
+            var result = await service.PunchAsync(CreatePunchRequest(
+                "ClockIn",
+                "2026-05-17T23:00:00Z"
+            ));
 
             Assert.True(result.Success);
             Assert.Equal("NoSchedule", result.Data!.Status);
@@ -313,7 +311,7 @@ namespace BlazorApp.Api.Tests
         [InlineData("Australia/Brisbane", "2026-05-20T14:30:00Z", "2026-05-21")]
         [InlineData("Australia/Melbourne", "2026-05-20T14:30:00Z", "2026-05-21")]
         [InlineData("Unexpected/Zone", "2026-05-20T14:30:00Z", "2026-05-21")]
-        public async Task PunchAsync_StoresLocalTimeAndWorkDateBySupportedStoreTimeZone(
+        public async Task PunchAsync_StoresLocalTimeAndWorkDateByResolvedStoreTimeZone(
             string storeTimeZone,
             string punchTimeUtc,
             string expectedWorkDate
@@ -322,20 +320,38 @@ namespace BlazorApp.Api.Tests
             await SeedStoreScopeAsync();
             var service = CreateService("staff-user", "staff", "StoreStaff");
 
-            var result = await service.PunchAsync(new AttendancePunchRequestDto
-            {
-                StoreCode = "BRI",
-                StoreTimeZone = storeTimeZone,
-                PunchType = "ClockIn",
-                PunchTimeUtc = DateTime.Parse(punchTimeUtc).ToUniversalTime(),
-            });
+            var result = await service.PunchAsync(CreatePunchRequest(
+                "ClockIn",
+                punchTimeUtc,
+                storeTimeZone
+            ));
 
             Assert.True(result.Success);
             Assert.Equal(expectedWorkDate, result.Data!.WorkDate.ToString("yyyy-MM-dd"));
-            Assert.Equal(
-                storeTimeZone.StartsWith("Australia/") ? storeTimeZone : "Australia/Sydney",
-                result.Data.StoreTimeZone
-            );
+            Assert.Equal("Australia/Brisbane", result.Data.StoreTimeZone);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenBrisbaneStoreTimeZoneMissing_UsesBrisbaneTimeZone()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.PunchAsync(new AttendancePunchRequestDto
+            {
+                StoreCode = "BRI",
+                PunchType = "ClockIn",
+                PunchTimeUtc = DateTime.Parse("2026-01-01T13:30:00Z").ToUniversalTime(),
+                LocationLatitude = -27.4698,
+                LocationLongitude = 153.0251,
+                LocationAccuracy = 12.5,
+                LocationPermissionStatus = "granted",
+                LocationCapturedAtUtc = DateTime.UtcNow,
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("Australia/Brisbane", result.Data!.StoreTimeZone);
+            Assert.Equal("2026-01-01", result.Data.WorkDate.ToString("yyyy-MM-dd"));
         }
 
         [Theory]
@@ -352,17 +368,165 @@ namespace BlazorApp.Api.Tests
             var service = CreateService("staff-user", "staff", "StoreStaff");
             await SeedScheduleAsync();
 
-            var result = await service.PunchAsync(new AttendancePunchRequestDto
-            {
-                StoreCode = "BRI",
-                StoreTimeZone = "Australia/Brisbane",
-                PunchType = punchType,
-                PunchTimeUtc = DateTime.Parse(punchTimeUtc).ToUniversalTime(),
-            });
+            var result = await service.PunchAsync(CreatePunchRequest(
+                punchType,
+                punchTimeUtc
+            ));
 
             Assert.True(result.Success);
             Assert.Equal(expectedStatus, result.Data!.Status);
             Assert.Equal(1, await _db.Queryable<AttendanceApproval>().CountAsync());
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenLocationMissing_ReturnsLocationRequired()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.PunchAsync(new AttendancePunchRequestDto
+            {
+                StoreCode = "BRI",
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockIn",
+                PunchTimeUtc = DateTime.Parse("2026-05-18T00:00:00Z").ToUniversalTime(),
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("LOCATION_REQUIRED", result.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenLocationCapturedAtIsStale_ReturnsLocationRequired()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+
+            var result = await service.PunchAsync(new AttendancePunchRequestDto
+            {
+                StoreCode = "BRI",
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockIn",
+                PunchTimeUtc = DateTime.UtcNow,
+                LocationLatitude = -27.4698,
+                LocationLongitude = 153.0251,
+                LocationAccuracy = 12.5,
+                LocationPermissionStatus = "granted",
+                LocationCapturedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal("LOCATION_REQUIRED", result.ErrorCode);
+            Assert.Equal("定位采集时间无效", result.Message);
+        }
+
+        [Fact]
+        public async Task PunchAsync_WhenLocationProvided_StoresLocationAuditFields()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var capturedAt = DateTime.UtcNow;
+
+            var result = await service.PunchAsync(new AttendancePunchRequestDto
+            {
+                StoreCode = "BRI",
+                StoreTimeZone = "Australia/Brisbane",
+                PunchType = "ClockIn",
+                PunchTimeUtc = DateTime.Parse("2026-05-18T00:00:00Z").ToUniversalTime(),
+                DeviceId = "hbmobile-test-device",
+                LocationLatitude = -27.4698,
+                LocationLongitude = 153.0251,
+                LocationAccuracy = 12.5,
+                LocationPermissionStatus = "granted",
+                LocationCapturedAtUtc = capturedAt,
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(-27.4698, result.Data!.LocationLatitude);
+            Assert.Equal(153.0251, result.Data.LocationLongitude);
+            Assert.Equal(12.5, result.Data.LocationAccuracy);
+            Assert.Equal("granted", result.Data.LocationPermissionStatus);
+            Assert.Equal(capturedAt, result.Data.LocationCapturedAtUtc);
+
+            var stored = await _db.Queryable<AttendancePunch>()
+                .FirstAsync(item => item.PunchGuid == result.Data.PunchGuid);
+            Assert.NotNull(stored);
+            Assert.Equal("hbmobile-test-device", stored.DeviceId);
+            Assert.Equal(-27.4698, stored.LocationLatitude);
+            Assert.Equal(153.0251, stored.LocationLongitude);
+            Assert.Equal(12.5, stored.LocationAccuracyMeters);
+            Assert.Equal(capturedAt, stored.LocationCapturedAtUtc);
+        }
+
+        [Fact]
+        public async Task CreateLocationSampleAsync_WhenStoreAllowed_SavesShiftSample()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("staff-user", "staff", "StoreStaff");
+            var capturedAt = DateTime.UtcNow;
+
+            var result = await service.CreateLocationSampleAsync(new AttendanceLocationSampleRequestDto
+            {
+                StoreCode = "BRI",
+                HardwareId = "hbmobile-test-device",
+                SystemDeviceNumber = "SYS-001",
+                DeviceSystem = "iOS",
+                EventType = "ShiftSample",
+                LocationLatitude = -27.4705,
+                LocationLongitude = 153.0260,
+                LocationAccuracy = 18.2,
+                LocationPermissionStatus = "granted",
+                LocationCapturedAtUtc = capturedAt,
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal("staff-user", result.Data!.UserGuid);
+            Assert.Equal("BRI", result.Data.StoreCode);
+            Assert.Equal("SYS-001", result.Data.SystemDeviceNumber);
+            Assert.Equal("ShiftSample", result.Data.EventType);
+            Assert.Equal(-27.4705, result.Data.LocationLatitude);
+            Assert.Equal(153.0260, result.Data.LocationLongitude);
+            Assert.Equal(18.2, result.Data.LocationAccuracy);
+            Assert.Equal(capturedAt, result.Data.LocationCapturedAtUtc);
+
+            var stored = await _db.Queryable<AttendanceLocationSample>()
+                .FirstAsync(item => item.SampleGuid == result.Data.SampleGuid);
+            Assert.NotNull(stored);
+            Assert.Equal("hbmobile-test-device", stored.HardwareId);
+            Assert.Equal("iOS", stored.DeviceSystem);
+        }
+
+        [Fact]
+        public async Task GetLocationSamplesAsync_WhenDateIsStoreLocalDate_ReturnsBrisbaneEarlySample()
+        {
+            await SeedStoreScopeAsync();
+            var service = CreateService("manager-user", "manager", "StoreManager");
+            var capturedAtUtc = DateTime.Parse("2026-01-01T13:20:00Z").ToUniversalTime();
+
+            await _db.Insertable(new AttendanceLocationSample
+            {
+                SampleGuid = "brisbane-early-sample",
+                UserGuid = "staff-user",
+                StoreCode = "BRI",
+                EventType = "ShiftSample",
+                LocationLatitude = -27.4705,
+                LocationLongitude = 153.0260,
+                LocationCapturedAtUtc = capturedAtUtc,
+                CreatedAt = capturedAtUtc,
+            }).ExecuteCommandAsync();
+
+            var result = await service.GetLocationSamplesAsync(new AttendanceLocationSampleQueryDto
+            {
+                StoreCode = "BRI",
+                UserGuid = "staff-user",
+                FromDate = new DateTime(2026, 1, 1),
+                ToDate = new DateTime(2026, 1, 1),
+            });
+
+            Assert.True(result.Success);
+            var sample = Assert.Single(result.Data!);
+            Assert.Equal("brisbane-early-sample", sample.SampleGuid);
+            Assert.Equal(capturedAtUtc, sample.LocationCapturedAtUtc);
         }
 
         [Fact]
@@ -675,6 +839,28 @@ namespace BlazorApp.Api.Tests
             {
                 SqliteTempFileCleanup.DeleteIfExists(_dbPath);
             }
+        }
+
+        private static AttendancePunchRequestDto CreatePunchRequest(
+            string punchType,
+            string punchTimeUtc,
+            string storeTimeZone = "Australia/Brisbane",
+            string storeCode = "BRI"
+        )
+        {
+            var punchAtUtc = DateTime.Parse(punchTimeUtc).ToUniversalTime();
+            return new AttendancePunchRequestDto
+            {
+                StoreCode = storeCode,
+                StoreTimeZone = storeTimeZone,
+                PunchType = punchType,
+                PunchTimeUtc = punchAtUtc,
+                LocationLatitude = -27.4698,
+                LocationLongitude = 153.0251,
+                LocationAccuracy = 12.5,
+                LocationPermissionStatus = "granted",
+                LocationCapturedAtUtc = DateTime.UtcNow,
+            };
         }
 
         private AttendanceReactService CreateService(string userGuid, string username, params string[] roles)

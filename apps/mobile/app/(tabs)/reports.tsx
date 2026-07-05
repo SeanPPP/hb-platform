@@ -1,5 +1,5 @@
-import { RevenueReportScreen } from "@/modules/reports/RevenueReportScreen";
+import { ReportsHubScreen } from "@/modules/reports/reports-hub-screen";
 
 export default function ReportsRoute() {
-  return <RevenueReportScreen />;
+  return <ReportsHubScreen />;
 }

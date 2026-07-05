@@ -35,6 +35,8 @@
     <Compile Include="StoreUsersReactServiceTests.cs" />
     <Compile Include="UserStoreManagementRelationTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />
+    <Compile Include="UserLoginDeviceAuditServiceTests.cs" />
+    <Compile Include="RequiredLocationValidatorTests.cs" />
     <Compile Include="AttendancePublicHolidaySyncHelperTests.cs" />
     <Compile Include="AttendancePublicHolidaySyncServiceTests.cs" />
     <Compile Include="SeedDataServiceTests.cs" />

@@ -41,6 +41,7 @@
     "advertisements": "广告素材",
     "promotions": "促销",
     "reports": "报告",
+    "productReport": "商品报告",
     "storeVouchers": "门店代金券",
     "seasonalCards": "季节卡片",
     "attendance": "考勤",
@@ -102,8 +103,8 @@
   "reports": {
     "title": "报告",
     "sections": {
-      "revenue": "营业额",
-      "product": "商品经营分析"
+      "revenue": "营业额报告",
+      "product": "商品报告"
     },
     "periods": {
       "day": "日",
@@ -115,15 +116,98 @@
       "next": "下一期"
     },
     "shortcuts": {
+      "today": "今日",
       "yesterday": "昨日",
+      "thisWeek": "本周",
       "lastWeek": "上周",
+      "thisMonth": "本月",
       "lastMonth": "上月"
+    },
+    "metrics": {
+      "current": "本期",
+      "compare": "同期",
+      "revenue": "营业额",
+      "growthRate": "增长率",
+      "newGrowth": "新增",
+      "transactions": "客单数",
+      "averageTransaction": "客单价"
     },
     "states": {
       "empty": "暂无营业额数据",
       "errorTitle": "营业额数据加载失败"
     },
+    "accessibility": {
+      "openHourlyDetail": "查看 {{branch}} 分时营业额明细",
+      "openDailyDetail": "查看 {{branch}} 每日营业额明细"
+    },
     "transactions": "{{count}} 笔",
     "compareRevenue": "同期 {{value}}"
+  },
+  "productReport": {
+    "title": "商品报告",
+    "tabs": {
+      "australia": "澳洲供应商",
+      "china": "中国供应商"
+    },
+    "filters": {
+      "store": "分店",
+      "allStores": "全部分店",
+      "startDate": "开始日期",
+      "endDate": "结束日期",
+      "productSearch": "货号或条码"
+    },
+    "shortcuts": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "thisWeek": "本周",
+      "lastWeek": "上周",
+      "thisMonth": "本月",
+      "lastMonth": "上月"
+    },
+    "sections": {
+      "suppliers": "供应商",
+      "products": "商品明细"
+    },
+    "columns": {
+      "itemNumber": "货号",
+      "image": "图片",
+      "product": "货号/名称",
+      "name": "名称",
+      "quantity": "数量",
+      "amount": "金额",
+      "averagePrice": "均价"
+    },
+    "metrics": {
+      "revenue": "营业额",
+      "totalShare": "总占比",
+      "supplierShare": "营业额占比",
+      "chinaShare": "中国货占比",
+      "orders": "客单数",
+      "aov": "客单价",
+      "growthRate": "增长率",
+      "newGrowth": "新增",
+      "compare": "同期"
+    },
+    "actions": {
+      "branchDetail": "分店",
+      "clearSupplier": "清除供应商",
+      "searchProduct": "查询",
+      "clearProductSearch": "清除查询",
+      "previous": "上一页",
+      "next": "下一页"
+    },
+    "states": {
+      "invalidDate": "日期格式需为 YYYY-MM-DD，且开始日期不能晚于结束日期。",
+      "emptySuppliers": "暂无供应商数据",
+      "emptyProducts": "暂无商品明细",
+      "emptySupplierBranches": "暂无分店数据",
+      "emptyProductSearch": "没有匹配的商品明细",
+      "loading": "加载中...",
+      "error": "加载失败，请稍后重试"
+    },
+    "drilldown": {
+      "supplier": "供应商分店数据",
+      "product": "商品分店数据"
+    }
   }
 }

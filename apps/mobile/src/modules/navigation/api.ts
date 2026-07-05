@@ -1,5 +1,5 @@
-import type { AppNavigationMenuItem } from "@/modules/navigation/types";
-import { SUPPORTED_APP_MENU_ROUTE_NAMES } from "@/modules/navigation/default-route";
+import { SUPPORTED_APP_MENU_ROUTE_NAMES } from "./default-route";
+import type { AppNavigationMenuItem } from "./types";
 
 export function normalizeAppNavigationMenu(payload: unknown): AppNavigationMenuItem[] {
   if (!Array.isArray(payload)) {

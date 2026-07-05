@@ -1,5 +1,6 @@
 using AutoMapper;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
@@ -19,18 +20,21 @@ namespace BlazorApp.Api.Controllers
         private readonly ILogger<DeviceRegistrationController> _logger;
         private readonly IMapper _mapper;
         private readonly IStoreService _storeService;
+        private readonly UserLoginDeviceAuditService? _loginDeviceAuditService;
 
         public DeviceRegistrationController(
             IDeviceRegistrationService deviceService,
             ILogger<DeviceRegistrationController> logger,
             IMapper mapper,
-            IStoreService storeService
+            IStoreService storeService,
+            UserLoginDeviceAuditService? loginDeviceAuditService = null
         )
         {
             _deviceService = deviceService;
             _logger = logger;
             _mapper = mapper;
             _storeService = storeService;
+            _loginDeviceAuditService = loginDeviceAuditService;
         }
 
         /// <summary>
@@ -553,6 +557,24 @@ namespace BlazorApp.Api.Controllers
                     );
                 }
 
+                var locationValidation = RequiredLocationValidator.Validate(
+                    request.LocationLatitude,
+                    request.LocationLongitude,
+                    request.LocationPermissionStatus,
+                    request.LocationCapturedAtUtc,
+                    "设备登录需要位置信息",
+                    TimeSpan.FromMinutes(5)
+                );
+                if (!locationValidation.Success)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = locationValidation.Message,
+                        errorCode = locationValidation.ErrorCode,
+                    });
+                }
+
                 // 使用新的验证和更新方法
                 var (isValid, newAuthCode) =
                     await _deviceService.ValidateAndUpdateDeviceAuthCodeAsync(
@@ -560,7 +582,33 @@ namespace BlazorApp.Api.Controllers
                         request.AuthCode
                     );
 
-                var responseData = new { isValid = isValid, newAuthCode = newAuthCode };
+                var device = isValid ? await _deviceService.GetDeviceByHardwareIdAsync(request.HardwareId) : null;
+                LoginDeviceAuditResult? audit = null;
+                if (isValid && _loginDeviceAuditService != null)
+                {
+                    var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+                    var userAgent = Request.Headers["User-Agent"].ToString();
+                    audit = await _loginDeviceAuditService.RecordDeviceLoginAsync(new DeviceLoginAuditInput(
+                        HardwareId: request.HardwareId,
+                        SystemDeviceNumber: request.SystemDeviceNumber ?? device?.系统设备编号,
+                        DeviceSystem: request.DeviceSystem ?? device?.设备系统,
+                        StoreCode: device?.分店代码,
+                        LoginIp: ipAddress,
+                        UserAgent: userAgent,
+                        LocationLatitude: request.LocationLatitude,
+                        LocationLongitude: request.LocationLongitude,
+                        LocationAccuracy: request.LocationAccuracy,
+                        LocationCapturedAtUtc: request.LocationCapturedAtUtc
+                    ));
+                }
+
+                var responseData = new
+                {
+                    isValid = isValid,
+                    newAuthCode = newAuthCode,
+                    isDeviceSwitched = audit?.IsDeviceSwitched ?? false,
+                    isCommonDevice = audit?.IsCommonDevice ?? false,
+                };
 
                 if (isValid)
                 {

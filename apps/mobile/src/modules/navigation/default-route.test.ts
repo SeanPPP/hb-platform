@@ -110,7 +110,7 @@ assertEqual(
     routeNames: ["device-management", "reports", "settings"],
   }),
   "/(tabs)/settings",
-  "device mode never defaults to device management or reports"
+  "device mode never defaults to device management or report routes"
 );
 
 assertEqual(

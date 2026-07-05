@@ -32,6 +32,10 @@ import {
   type LoginErrorDescriptor,
 } from "@/modules/auth/login-errors";
 import { prepareDeviceLoginSession } from "@/modules/auth/device-login-session";
+import {
+  collectLoginDeviceLocation,
+  isRequiredLocationError,
+} from "@/modules/attendance/required-location";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import { checkLoginUpdateRestartPrompt } from "@/modules/updates/login-update-restart-prompt";
@@ -274,7 +278,8 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await loginFn({ username, password });
+      const auditPayload = await collectLoginDeviceLocation(registeredDevice);
+      await loginFn({ username, password, ...auditPayload });
       router.replace(
         resolveDefaultTabRoute({
           isDeviceMode: false,
@@ -282,7 +287,11 @@ export default function Login() {
         }) as Parameters<typeof router.replace>[0]
       );
     } catch (err) {
-      setError(translateLoginError(getFriendlyLoginErrorDescriptor(err)));
+      setError(
+        isRequiredLocationError(err)
+          ? t("errors.locationRequired")
+          : translateLoginError(getFriendlyLoginErrorDescriptor(err)),
+      );
       setSnackbarVisible(true);
     } finally {
       setLoading(false);
@@ -297,10 +306,11 @@ export default function Login() {
     setError("");
     setDeviceLoginLoading(true);
     try {
+      const auditPayload = await collectLoginDeviceLocation(registeredDevice);
       const isReady = await prepareDeviceLoginSession(registeredDevice, {
         clearAccountSession: clearLocalAuthSession,
         syncDeviceFromProfile,
-        validateDevice,
+        validateDevice: () => validateDevice(auditPayload),
       });
       if (isReady) {
         router.replace(
@@ -315,7 +325,11 @@ export default function Login() {
       setError(t("device.notReadyMessage"));
       setSnackbarVisible(true);
     } catch (err) {
-      setError(translateLoginError(getFriendlyDeviceLoginErrorDescriptor(err)));
+      setError(
+        isRequiredLocationError(err)
+          ? t("errors.locationRequired")
+          : translateLoginError(getFriendlyDeviceLoginErrorDescriptor(err)),
+      );
       setSnackbarVisible(true);
     } finally {
       setDeviceLoginLoading(false);

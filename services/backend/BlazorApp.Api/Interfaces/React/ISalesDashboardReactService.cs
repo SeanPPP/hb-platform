@@ -57,12 +57,14 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? localSupplierCodes = null,
             List<string>? chinaSupplierCodes = null,
             int pageIndex = 1,
-            int pageSize = 100
+            int pageSize = 100,
+            string? productSearch = null
         );
 
         Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
             DateRangeDto dateRange,
-            string productCode
+            string productCode,
+            List<string>? branchCodes = null
         );
 
         Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(

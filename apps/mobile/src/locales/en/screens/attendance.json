@@ -40,9 +40,9 @@
     "info": {
       "location": "Location",
       "network": "Network",
-      "locationDependencyMissing": "GPS capture is not enabled in this build and needs approved location dependencies",
-      "locationPermissionDenied": "Location permission was denied. This punch will be sent for manual review",
-      "locationUnavailable": "Location data is unavailable. This punch will be sent for manual review",
+      "locationDependencyMissing": "GPS capture is not enabled in this build. Update the app before punching.",
+      "locationPermissionDenied": "Location permission was denied. Login and punches require the current location.",
+      "locationUnavailable": "Location data is unavailable. Please try again.",
       "networkAvailable": "Backend reachability check completed",
       "networkAvailableWithTimeZone": "Backend reachability check completed, store timezone {{timeZone}}",
       "networkUnavailable": "Network reachability check failed. This punch will be sent for manual review",
@@ -73,9 +73,14 @@
       "alertSelectedDate": "You are viewing a selected date. Punch actions are only available for today.",
       "alertHoliday": "This day is marked as {{holidayName}}. Confirm with the store before punching.",
       "alertVerificationCaptured": "This punch will include the current verification data.",
-      "alertVerificationSentForReview": "This punch can still be submitted and will include the current verification state for review.",
+      "alertVerificationSentForReview": "Location capture and network verification are required before punching.",
       "alertNoSchedule": "There is no shift for this date. Contact the manager if work needs to be arranged."
     }
+  },
+  "backgroundLocation": {
+    "title": "Shift location notice",
+    "description": "After clock-in, the app records your current location every 20 minutes until clock-out. It is used only for attendance review, not advertising tracking.",
+    "confirm": "Continue"
   },
   "week": {
     "empty": "No schedule this week",
@@ -205,7 +210,8 @@
     "approve": "Approve",
     "reject": "Reject",
     "createSchedule": "Create schedule",
-    "publishWeek": "Publish week"
+    "publishWeek": "Publish week",
+    "viewLocation": "View location"
   },
   "punchTypes": {
     "ClockIn": "Clock in",
@@ -256,6 +262,11 @@
     "punchSuccess": "Punch submitted.",
     "punchFailed": "Punch failed.",
     "punchVerificationSentForReview": "Location or network verification is incomplete. The punch was prepared with review metadata.",
+    "locationRequiredForPunch": "Punching requires your current precise location. Allow location access and try again.",
+    "backgroundLocationRequiredForClockIn": "After clock-in, the app must record a shift location every 20 minutes. Allow always-on location and try again.",
+    "locationTrackingFailed": "The punch was submitted, but shift location tracking could not start. Reopen the app or contact an administrator.",
+    "openMapFailedTitle": "Cannot open map",
+    "openMapFailed": "No map app is available on this device, or the system refused to open the map link.",
     "availabilitySaved": "Availability saved.",
     "availabilityCancelled": "Availability cancelled.",
     "leaveSubmitted": "Leave request submitted.",

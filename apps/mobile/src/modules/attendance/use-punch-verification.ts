@@ -7,6 +7,10 @@ import {
 import type {
   AttendancePunchVerificationState,
 } from "@/modules/attendance/types";
+import {
+  collectRequiredLocation,
+  isRequiredLocationError,
+} from "@/modules/attendance/required-location";
 
 const NETWORK_CHECK_TIMEOUT_MS = 5000;
 
@@ -61,19 +65,52 @@ async function verifyNetworkReachability() {
 }
 
 async function collectVerificationState(): Promise<AttendancePunchVerificationState> {
-  const network = await verifyNetworkReachability();
+  const [networkResult, locationResult] = await Promise.allSettled([
+    verifyNetworkReachability(),
+    collectRequiredLocation(),
+  ]);
   const checkedAt = new Date().toISOString();
+  const network =
+    networkResult.status === "fulfilled"
+      ? networkResult.value
+      : {
+          status: "unavailable" as const,
+          reason: "networkUnreachable" as const,
+          verificationStatus: "offline" as const,
+        };
+
+  if (locationResult.status === "fulfilled") {
+    const location = locationResult.value;
+    return {
+      checkedAt,
+      location: {
+        status: "available",
+        reason: "captured",
+        permissionStatus: location.locationPermissionStatus,
+        latitude: location.locationLatitude,
+        longitude: location.locationLongitude,
+        accuracy: location.locationAccuracy,
+      },
+      network,
+      payload: {
+        ...location,
+        networkVerificationStatus: network.verificationStatus,
+      },
+    };
+  }
+
+  const denied = isRequiredLocationError(locationResult.reason);
 
   return {
     checkedAt,
     location: {
-      status: "unknown",
-      reason: "dependencyMissing",
-      permissionStatus: "unavailable",
+      status: denied ? "permissionDenied" : "unavailable",
+      reason: denied ? "permissionDenied" : "unknown",
+      permissionStatus: denied ? "denied" : "unavailable",
     },
     network,
     payload: {
-      locationPermissionStatus: "unavailable",
+      locationPermissionStatus: denied ? "denied" : "unavailable",
       networkVerificationStatus: network.verificationStatus,
     },
   };

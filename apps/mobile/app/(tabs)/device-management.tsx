@@ -24,6 +24,8 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 
 type StatusFilter = "all" | "pendingConfirmation" | "active" | "disabled" | "locked" | "unregistered";
+type DeviceSystemFilter = "all" | "Android" | "iOS" | "Windows" | "Mac";
+type DeviceTypeFilter = "all" | "Mobile" | "PDA" | "POS" | "Admin";
 type DeviceAction = "activate" | "disable" | "lock";
 type DeviceRow = DeviceManagementDevice & {
   systemDeviceNumber?: string | null;
@@ -33,6 +35,8 @@ type DeviceRow = DeviceManagementDevice & {
 };
 
 const STATUS_FILTERS: StatusFilter[] = ["all", "pendingConfirmation", "active", "disabled", "locked", "unregistered"];
+const DEVICE_SYSTEM_FILTERS: DeviceSystemFilter[] = ["all", "Android", "iOS", "Windows", "Mac"];
+const DEVICE_TYPE_FILTERS: DeviceTypeFilter[] = ["all", "Mobile", "PDA", "POS", "Admin"];
 const PAGE_SIZE = 20;
 
 function getDeviceKey(item: DeviceRow) {
@@ -90,6 +94,16 @@ function statusFilterToQueryValue(status: StatusFilter) {
   }
 }
 
+function deviceSystemFilterToQueryValue(deviceSystem: DeviceSystemFilter) {
+  // 全部选项只存在于前端 UI，避免把 all 传给后端枚举筛选。
+  return deviceSystem === "all" ? undefined : deviceSystem;
+}
+
+function deviceTypeFilterToQueryValue(deviceType: DeviceTypeFilter) {
+  // 全部选项只存在于前端 UI，避免把 all 传给后端枚举筛选。
+  return deviceType === "all" ? undefined : deviceType;
+}
+
 function getStatusStyle(statusKey: DeviceStatusKey) {
   switch (statusKey) {
     case "active":
@@ -143,6 +157,8 @@ function DeviceManagementAdminContent({
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [deviceSystemFilter, setDeviceSystemFilter] = useState<DeviceSystemFilter>("all");
+  const [deviceTypeFilter, setDeviceTypeFilter] = useState<DeviceTypeFilter>("all");
   const [pageNumber, setPageNumber] = useState(1);
   const [pagedDevices, setPagedDevices] = useState<DeviceRow[]>([]);
   const [busyDeviceKey, setBusyDeviceKey] = useState<string | null>(null);
@@ -157,11 +173,13 @@ function DeviceManagementAdminContent({
     () => ({
       keyword: trimmedKeyword || undefined,
       status: statusFilterToQueryValue(statusFilter),
+      deviceSystem: deviceSystemFilterToQueryValue(deviceSystemFilter),
+      deviceType: deviceTypeFilterToQueryValue(deviceTypeFilter),
       storeCode: managedStoreCode || null,
       pageNumber,
       pageSize: PAGE_SIZE,
     }),
-    [managedStoreCode, pageNumber, statusFilter, trimmedKeyword]
+    [deviceSystemFilter, deviceTypeFilter, managedStoreCode, pageNumber, statusFilter, trimmedKeyword]
   );
 
   const devicesQuery = useDeviceManagementDevices(query);
@@ -169,13 +187,25 @@ function DeviceManagementAdminContent({
   const devices = pagedDevices;
   const total = devicesQuery.data?.pagination.totalCount ?? devices.length;
   const hasNextPage = pageNumber < (devicesQuery.data?.pagination.totalPages ?? 1);
-  const hasActiveFilters = Boolean(trimmedKeyword || managedStoreCode || statusFilter !== "all");
-  const activeFilterCount = [trimmedKeyword, managedStoreCode, statusFilter !== "all"].filter(Boolean).length;
+  const hasActiveFilters = Boolean(
+    trimmedKeyword ||
+      managedStoreCode ||
+      statusFilter !== "all" ||
+      deviceSystemFilter !== "all" ||
+      deviceTypeFilter !== "all"
+  );
+  const activeFilterCount = [
+    trimmedKeyword,
+    managedStoreCode,
+    statusFilter !== "all",
+    deviceSystemFilter !== "all",
+    deviceTypeFilter !== "all",
+  ].filter(Boolean).length;
 
   useEffect(() => {
     setPageNumber(1);
     setPagedDevices([]);
-  }, [managedStoreCode, statusFilter, trimmedKeyword]);
+  }, [deviceSystemFilter, deviceTypeFilter, managedStoreCode, statusFilter, trimmedKeyword]);
 
   useEffect(() => {
     if (!devicesQuery.data?.devices) {
@@ -201,6 +231,8 @@ function DeviceManagementAdminContent({
   const clearFilters = useCallback(() => {
     setManagedStoreCode(null);
     setStatusFilter("all");
+    setDeviceSystemFilter("all");
+    setDeviceTypeFilter("all");
     setKeywordInput("");
     setKeyword("");
   }, []);
@@ -432,6 +464,16 @@ function DeviceManagementAdminContent({
                       {t(`filters.${statusFilter}`)}
                     </Chip>
                   ) : null}
+                  {deviceSystemFilter !== "all" ? (
+                    <Chip compact icon="cellphone">
+                      {t(`filters.systemOptions.${deviceSystemFilter}`)}
+                    </Chip>
+                  ) : null}
+                  {deviceTypeFilter !== "all" ? (
+                    <Chip compact icon="view-grid-outline">
+                      {t(`filters.typeOptions.${deviceTypeFilter}`)}
+                    </Chip>
+                  ) : null}
                   {trimmedKeyword ? (
                     <Chip compact icon="magnify">
                       {trimmedKeyword}
@@ -502,6 +544,8 @@ function DeviceManagementAdminContent({
                   {t("filters.current", {
                     store: managedStore?.storeName || t("currentStore.allStores"),
                     status: t(`filters.${statusFilter}`),
+                    system: t(`filters.systemOptions.${deviceSystemFilter}`),
+                    type: t(`filters.typeOptions.${deviceTypeFilter}`),
                   })}
                 </Text>
               </View>
@@ -546,6 +590,38 @@ function DeviceManagementAdminContent({
                     onPress={() => setStatusFilter(status)}
                   >
                     {t(`filters.${status}`)}
+                  </Chip>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.filtersSection}>
+              <Text variant="labelLarge">{t("filters.systemTitle")}</Text>
+              <View style={styles.statusChipGrid}>
+                {DEVICE_SYSTEM_FILTERS.map((deviceSystem) => (
+                  <Chip
+                    key={deviceSystem}
+                    mode={deviceSystemFilter === deviceSystem ? "flat" : "outlined"}
+                    selected={deviceSystemFilter === deviceSystem}
+                    onPress={() => setDeviceSystemFilter(deviceSystem)}
+                  >
+                    {t(`filters.systemOptions.${deviceSystem}`)}
+                  </Chip>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.filtersSection}>
+              <Text variant="labelLarge">{t("filters.typeTitle")}</Text>
+              <View style={styles.statusChipGrid}>
+                {DEVICE_TYPE_FILTERS.map((deviceType) => (
+                  <Chip
+                    key={deviceType}
+                    mode={deviceTypeFilter === deviceType ? "flat" : "outlined"}
+                    selected={deviceTypeFilter === deviceType}
+                    onPress={() => setDeviceTypeFilter(deviceType)}
+                  >
+                    {t(`filters.typeOptions.${deviceType}`)}
                   </Chip>
                 ))}
               </View>

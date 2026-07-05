@@ -511,7 +511,20 @@ public class NavigationServiceTests
         var item = Assert.Single(menu, item => item.RouteName == "reports");
         Assert.Equal("tabs.reports", item.TitleKey);
         Assert.Equal("chart-box-outline", item.Icon);
-        Assert.Equal(Permissions.Reports.View, item.Permission);
+        Assert.Equal(Permissions.Reports.ProductMovementView, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsReportsWithProductMovementPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, item => item.RouteName == "reports");
+        Assert.Equal("tabs.reports", item.TitleKey);
+        Assert.Equal("chart-box-outline", item.Icon);
+        Assert.Equal(Permissions.Reports.ProductMovementView, item.Permission);
     }
 
     [Fact]

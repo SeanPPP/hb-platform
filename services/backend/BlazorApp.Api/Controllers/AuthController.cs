@@ -23,6 +23,7 @@ namespace BlazorApp.Api.Controllers
         private readonly IUserService _userService;
         private readonly ILogger<AuthController> _logger;
         private readonly IClientIpResolver _clientIpResolver;
+        private readonly UserLoginDeviceAuditService? _loginDeviceAuditService;
 
         /// <summary>
         /// 构造函数 - 依赖注入认证服务、数据库上下文和角色服务
@@ -33,13 +34,15 @@ namespace BlazorApp.Api.Controllers
         /// <param name="userService">用户服务</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="clientIpResolver">客户端公网 IP 解析器</param>
+        /// <param name="loginDeviceAuditService">App 登录设备与定位审计服务</param>
         public AuthController(
             IAuthService authService,
             SqlSugarContext dbContext,
             IRoleService roleService,
             IUserService userService,
             ILogger<AuthController> logger,
-            IClientIpResolver? clientIpResolver = null
+            IClientIpResolver? clientIpResolver = null,
+            UserLoginDeviceAuditService? loginDeviceAuditService = null
         )
         {
             _authService = authService;
@@ -48,6 +51,7 @@ namespace BlazorApp.Api.Controllers
             _userService = userService;
             _logger = logger;
             _clientIpResolver = clientIpResolver ?? new ClientIpResolver(new ConfigurationBuilder().Build());
+            _loginDeviceAuditService = loginDeviceAuditService;
         }
 
         /// <summary>
@@ -77,6 +81,22 @@ namespace BlazorApp.Api.Controllers
             if (!ModelState.IsValid)
             {
                 return ApiResponse<TokenResponse>.Error("请求数据格式无效");
+            }
+
+            var locationValidation = RequiredLocationValidator.Validate(
+                request.LocationLatitude,
+                request.LocationLongitude,
+                request.LocationPermissionStatus,
+                request.LocationCapturedAtUtc,
+                "登录需要位置信息",
+                TimeSpan.FromMinutes(5)
+            );
+            if (!locationValidation.Success)
+            {
+                return ApiResponse<TokenResponse>.Error(
+                    locationValidation.Message,
+                    locationValidation.ErrorCode
+                );
             }
 
             var tokenResponse = await AuthenticateAndIssueTokensAsync(request);
@@ -454,7 +474,26 @@ namespace BlazorApp.Api.Controllers
                 .UpdateColumns(item => new { item.LastLoginAt, item.LastLoginIp, item.UpdatedAt })
                 .ExecuteCommandAsync();
 
-            return await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
+            var tokenResponse = await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
+            if (_loginDeviceAuditService != null)
+            {
+                var audit = await _loginDeviceAuditService.RecordAsync(user, new LoginDeviceAuditInput(
+                    LoginSource: "AppLogin",
+                    HardwareId: request.HardwareId,
+                    SystemDeviceNumber: request.SystemDeviceNumber,
+                    DeviceSystem: request.DeviceSystem,
+                    StoreCode: request.StoreCode,
+                    LoginIp: ipAddress,
+                    UserAgent: userAgent,
+                    LocationLatitude: request.LocationLatitude,
+                    LocationLongitude: request.LocationLongitude,
+                    LocationAccuracy: request.LocationAccuracy,
+                    LocationCapturedAtUtc: request.LocationCapturedAtUtc
+                ));
+                tokenResponse.IsDeviceSwitched = audit.IsDeviceSwitched;
+                tokenResponse.IsCommonDevice = audit.IsCommonDevice;
+            }
+            return tokenResponse;
         }
 
         private async Task<List<string>> GetDirectUserPermissionCodesAsync(string userGuid)
@@ -486,6 +525,8 @@ namespace BlazorApp.Api.Controllers
             {
                 AccessTokenExpiry = tokenResponse.AccessTokenExpiry,
                 RefreshTokenExpiry = tokenResponse.RefreshTokenExpiry,
+                IsDeviceSwitched = tokenResponse.IsDeviceSwitched,
+                IsCommonDevice = tokenResponse.IsCommonDevice,
             };
         }
     }

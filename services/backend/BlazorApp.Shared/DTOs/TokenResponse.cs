@@ -34,6 +34,16 @@ namespace BlazorApp.Shared.DTOs
         /// 响应消息
         /// </summary>
         public string Message { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 本次 App 登录是否相对上次登录切换了设备。
+        /// </summary>
+        public bool IsDeviceSwitched { get; set; }
+
+        /// <summary>
+        /// 本次 App 登录设备是否为常用设备。
+        /// </summary>
+        public bool IsCommonDevice { get; set; }
     }
 
     /// <summary>

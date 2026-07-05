@@ -138,6 +138,7 @@
     "refreshPendingMessage": "当前设备还不能直接进入 App，请等待后台确认或检查设备状态。",
     "refreshFailedTitle": "刷新失败",
     "refreshFailedMessage": "设备状态刷新失败，请稍后重试。",
+    "locationRequiredMessage": "设备登录需要采集当前位置。请允许精确定位后重试。",
     "unbindDeviceTitle": "解绑本机设备",
     "unbindDeviceMessage": "解绑后会清除本机设备会话，并将后台设备记录更新为未注册。确定继续吗？",
     "rebindDeviceTitle": "重新绑定设备",

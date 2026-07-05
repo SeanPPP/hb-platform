@@ -41,6 +41,21 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true, Length = 100)]
         public string? DeviceId { get; set; }
 
+        [SugarColumn(IsNullable = true)]
+        public double? LocationLatitude { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public double? LocationLongitude { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public double? LocationAccuracyMeters { get; set; }
+
+        [SugarColumn(IsNullable = true, Length = 30)]
+        public string? LocationPermissionStatus { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public DateTime? LocationCapturedAtUtc { get; set; }
+
         [SugarColumn(IsNullable = false, Length = 30)]
         public string Source { get; set; } = "App";
 

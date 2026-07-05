@@ -1,9 +1,10 @@
 import { create } from "zustand";
-import type { CurrentUser, AccessControl } from "@/modules/auth/types";
+import type { CurrentUser, AccessControl, LoginRequest } from "@/modules/auth/types";
 import { buildAccess } from "@/shared/utils/access";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { SecureStorage } from "@/shared/storage/secure";
 import { subscribeUnauthenticatedSession } from "@/modules/auth/auth-session-events";
+import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tracking-control";
 import {
   loginApi,
   getCurrentUserApi,
@@ -18,7 +19,7 @@ interface AuthState {
   access: AccessControl;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (payload: { username: string; password: string }) => Promise<void>;
+  login: (payload: LoginRequest) => Promise<void>;
   logout: () => Promise<void>;
   restoreSession: () => Promise<boolean>;
   clearLocalSession: () => Promise<void>;
@@ -34,8 +35,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true });
     try {
       const tokenRes = await loginApi({
-        username: payload.username,
-        password: payload.password,
+        ...payload,
         passwordFormat: "raw",
       });
       await SecureStorage.setToken(tokenRes.accessToken);
@@ -89,21 +89,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await useAppNavigationStore.getState().fetchMenu();
       return true;
     } catch {
-      await SecureStorage.clearAll();
-      await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
-      useCartStore.getState().reset();
-      useAppNavigationStore.getState().reset();
-      set({
-        user: null,
-        access: buildAccess(null),
-        isAuthenticated: false,
-        isLoading: false,
-      });
+      await get().clearLocalSession();
       return false;
     }
   },
 
   async clearLocalSession() {
+    // 关键位置：账号会话失效时同步停止后台定位，防止打卡中的定位任务脱离登录态继续运行。
+    await stopAttendanceLocationTracking().catch((error) => {
+      console.warn("[attendance-location] 停止后台定位失败", error);
+    });
     await SecureStorage.clearAll();
     await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
     useCartStore.getState().reset();
@@ -118,6 +113,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 }));
 
 subscribeUnauthenticatedSession(() => {
+  void stopAttendanceLocationTracking().catch((error) => {
+    console.warn("[attendance-location] 会话失效时停止后台定位失败", error);
+  });
   void AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
   useCartStore.getState().reset();
   useAppNavigationStore.getState().reset();

@@ -14,6 +14,7 @@ import { useAutomaticNativeAppUpdate } from "@/modules/updates/use-automatic-nat
 import { i18n, initI18n } from "@/shared/i18n/i18n";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
 import { useDeviceStore } from "@/store/device-store";
+import "@/modules/attendance/location-tracking";
 
 const queryClient = new QueryClient({
   defaultOptions: {

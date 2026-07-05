@@ -356,6 +356,16 @@ namespace BlazorApp.Shared.DTOs
         public int TotalQuantity { get; set; }
 
         /// <summary>
+        /// 客单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 客单价
+        /// </summary>
+        public decimal AverageTransaction { get; set; }
+
+        /// <summary>
         /// 销售该供应商产品的分店数量
         /// </summary>
         public int StoreCount { get; set; }
@@ -364,6 +374,16 @@ namespace BlazorApp.Shared.DTOs
         /// 对比期间总销售额
         /// </summary>
         public decimal? CompareTotalAmount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单数
+        /// </summary>
+        public int? CompareOrderCount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单价
+        /// </summary>
+        public decimal? CompareAverageTransaction { get; set; }
 
         /// <summary>
         /// 销售额增长率
@@ -408,6 +428,16 @@ namespace BlazorApp.Shared.DTOs
         public int TotalQuantity { get; set; }
 
         /// <summary>
+        /// 客单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 客单价
+        /// </summary>
+        public decimal AverageTransaction { get; set; }
+
+        /// <summary>
         /// 销售该供应商产品的分店数量
         /// </summary>
         public int StoreCount { get; set; }
@@ -416,6 +446,16 @@ namespace BlazorApp.Shared.DTOs
         /// 对比期间总销售额
         /// </summary>
         public decimal? CompareTotalAmount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单数
+        /// </summary>
+        public int? CompareOrderCount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单价
+        /// </summary>
+        public decimal? CompareAverageTransaction { get; set; }
 
         /// <summary>
         /// 销售额增长率
@@ -470,9 +510,29 @@ namespace BlazorApp.Shared.DTOs
         public int TotalQuantity { get; set; }
 
         /// <summary>
+        /// 客单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 客单价
+        /// </summary>
+        public decimal AverageTransaction { get; set; }
+
+        /// <summary>
         /// 对比期间总销售额
         /// </summary>
         public decimal? CompareTotalAmount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单数
+        /// </summary>
+        public int? CompareOrderCount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单价
+        /// </summary>
+        public decimal? CompareAverageTransaction { get; set; }
 
         /// <summary>
         /// 销售额增长率
@@ -714,6 +774,31 @@ namespace BlazorApp.Shared.DTOs
         /// 折扣销售数量
         /// </summary>
         public int DiscountedQuantity { get; set; }
+
+        /// <summary>
+        /// 销售金额
+        /// </summary>
+        public decimal SalesAmount { get; set; }
+
+        /// <summary>
+        /// 对比期销售金额
+        /// </summary>
+        public decimal CompareSalesAmount { get; set; }
+
+        /// <summary>
+        /// 对比期销售数量
+        /// </summary>
+        public int CompareQuantity { get; set; }
+
+        /// <summary>
+        /// 平均单价
+        /// </summary>
+        public decimal AverageUnitPrice { get; set; }
+
+        /// <summary>
+        /// 对比期平均单价
+        /// </summary>
+        public decimal CompareAverageUnitPrice { get; set; }
     }
 
     /// <summary>
@@ -760,6 +845,36 @@ namespace BlazorApp.Shared.DTOs
         /// 总销售数量
         /// </summary>
         public int TotalQuantity { get; set; }
+
+        /// <summary>
+        /// 客单数
+        /// </summary>
+        public int OrderCount { get; set; }
+
+        /// <summary>
+        /// 客单价
+        /// </summary>
+        public decimal AverageTransaction { get; set; }
+
+        /// <summary>
+        /// 对比期间总销售额
+        /// </summary>
+        public decimal? CompareTotalAmount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单数
+        /// </summary>
+        public int? CompareOrderCount { get; set; }
+
+        /// <summary>
+        /// 对比期间客单价
+        /// </summary>
+        public decimal? CompareAverageTransaction { get; set; }
+
+        /// <summary>
+        /// 销售额增长率
+        /// </summary>
+        public decimal? TotalAmountGrowth { get; set; }
     }
 
     /// <summary>

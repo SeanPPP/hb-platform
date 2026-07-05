@@ -46,7 +46,7 @@ const normalized = normalizeAppNavigationMenu([
     routeName: "reports",
     titleKey: "tabs.reports",
     icon: "chart-line",
-    permission: "Reports.View",
+    permission: "Reports.ProductMovement.View",
     order: 22.7,
   },
   {

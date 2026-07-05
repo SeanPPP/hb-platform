@@ -174,7 +174,39 @@ public class ControllerAuthorizationMetadataTests
         );
         yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetExecutiveBranchPerformance),
-            Permissions.Reports.View
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetSupplierSalesRank),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierSalesRankAsync),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetSupplierStoreSales),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierStoreSales),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetAustralianSupplierStoreSalesDetails),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierStoreSalesDetails),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetEnhancedSalesProductDetails),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetProductSalesByAllBranches),
+            Permissions.Reports.ProductMovementView
         );
         yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetExecutiveHourlyTraffic),

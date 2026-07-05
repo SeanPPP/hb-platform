@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import {
@@ -44,10 +44,16 @@ import {
   updateAvailability,
 } from "@/modules/attendance/api";
 import {
+  ensureAttendanceBackgroundLocationPermission,
+  startAttendanceLocationTracking,
+  stopAttendanceLocationTracking,
+} from "@/modules/attendance/location-tracking";
+import {
   PUBLIC_HOLIDAY_SYNC_DAYS_AHEAD,
   normalizeAustralianHolidayJurisdiction,
   resolveAustralianHolidayJurisdiction,
 } from "@/modules/attendance/public-holiday-sync";
+import { getAttendanceDeviceContext } from "@/modules/attendance/required-location";
 import type {
   AttendanceAvailabilityPayload,
   AttendancePunchPayload,
@@ -729,19 +735,97 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
     storeCode: payload.storeCode || selectedStoreCode,
   });
 
+  const confirmBackgroundLocationUsage = useCallback(
+    () =>
+      new Promise<boolean>((resolve) => {
+        Alert.alert(
+          t("backgroundLocation.title"),
+          t("backgroundLocation.description"),
+          [
+            {
+              text: t("common:cancel"),
+              style: "cancel",
+              onPress: () => resolve(false),
+            },
+            {
+              text: t("backgroundLocation.confirm"),
+              onPress: () => resolve(true),
+            },
+          ],
+          {
+            cancelable: true,
+            onDismiss: () => resolve(false),
+          },
+        );
+      }),
+    [t],
+  );
+
   const handlePunch = async (punchType: AttendancePunchType) => {
     const nextVerification = await refreshVerification();
+
+    if (nextVerification.location.status !== "available") {
+      showMessage(t("messages.locationRequiredForPunch"));
+      return;
+    }
+
+    if (punchType === "ClockIn") {
+      const confirmed = await confirmBackgroundLocationUsage();
+      if (!confirmed) {
+        return;
+      }
+
+      const backgroundAllowed = await ensureAttendanceBackgroundLocationPermission();
+      if (!backgroundAllowed) {
+        showMessage(t("messages.backgroundLocationRequiredForClockIn"));
+        return;
+      }
+    }
+
+    const deviceContext = await getAttendanceDeviceContext();
+    let didStartLocationTracking = false;
+    if (punchType === "ClockIn" && selectedStoreCode) {
+      try {
+        await startAttendanceLocationTracking({
+          storeCode: selectedStoreCode,
+          ...deviceContext,
+        });
+        didStartLocationTracking = true;
+      } catch (error) {
+        showMessage(getErrorMessage(error, "messages.locationTrackingFailed"));
+        return;
+      }
+    }
+
     const payload: AttendancePunchPayload = {
       punchType,
       storeCode: selectedStoreCode,
+      deviceId: deviceContext.hardwareId,
+      hardwareId: deviceContext.hardwareId,
+      systemDeviceNumber: deviceContext.systemDeviceNumber,
+      deviceSystem: deviceContext.deviceSystem,
       ...nextVerification.payload,
     };
 
-    if (nextVerification.location.status !== "available") {
-      showMessage(t("messages.punchVerificationSentForReview"));
+    try {
+      await punchMutation.mutateAsync(payload);
+    } catch {
+      if (didStartLocationTracking) {
+        await stopAttendanceLocationTracking().catch((error) => {
+          console.warn("[attendance-location] 打卡失败后停止后台定位失败", error);
+        });
+      }
+      return;
     }
 
-    punchMutation.mutate(payload);
+    if (punchType === "ClockOut") {
+      try {
+        // 关键位置：ClockOut 成功后立即停止后台定位，结束本班次定位样本。
+        await stopAttendanceLocationTracking();
+      } catch (error) {
+        showMessage(getErrorMessage(error, "messages.locationTrackingFailed"));
+      }
+    }
   };
 
   const handleCreateSchedule = (payload: AttendanceSchedulePayload) => {

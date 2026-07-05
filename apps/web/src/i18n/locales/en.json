@@ -2259,7 +2259,10 @@
         "addShift": "Add Shift",
         "publishWeek": "Publish This Week",
         "approve": "Approve",
-        "reject": "Reject"
+        "reject": "Reject",
+        "viewMap": "Map",
+        "viewSamples": "Samples",
+        "openExternalMap": "Open external map"
       },
       "drawer": {
         "createSchedule": "New Schedule",
@@ -2268,7 +2271,9 @@
         "editHoliday": "Edit Public Holiday",
         "batchHoliday": "Batch Set Public Holidays",
         "approve": "Approve Review",
-        "reject": "Reject Review"
+        "reject": "Reject Review",
+        "locationMap": "Location Map",
+        "locationSamples": "Shift Location Samples"
       },
       "fields": {
         "store": "Store",
@@ -2283,6 +2288,11 @@
         "punchType": "Punch Type",
         "punchTimeLocal": "Local Punch Time",
         "timeZone": "Time Zone",
+        "location": "Location",
+        "locationSamples": "Shift Samples",
+        "locationAccuracy": "Accuracy",
+        "locationCapturedAt": "Captured At",
+        "deviceSystem": "Device System",
         "applicant": "Applicant",
         "sourceType": "Source",
         "reviewedAt": "Reviewed At",
@@ -2383,7 +2393,11 @@
         "publishWeekSuccess": "This week's schedule has been published",
         "publishWeekFailed": "Failed to publish this week's schedule",
         "reviewSuccess": "Review submitted",
-        "reviewFailed": "Failed to submit review"
+        "reviewFailed": "Failed to submit review",
+        "locationNotRecorded": "Location not recorded",
+        "externalMapNotice": "External maps are not loaded by default. Opening the map sends this coordinate to the map provider.",
+        "loadLocationSamplesFailed": "Failed to load shift location samples",
+        "locationSamplesEmpty": "No shift location samples"
       }
     },
     "devices": {

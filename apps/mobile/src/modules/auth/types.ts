@@ -2,6 +2,15 @@ export interface LoginRequest {
   username: string;
   password: string;
   passwordFormat?: "raw" | "clientSha256";
+  hardwareId?: string;
+  systemDeviceNumber?: string;
+  deviceSystem?: string;
+  storeCode?: string;
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationAccuracy?: number;
+  locationPermissionStatus?: string;
+  locationCapturedAtUtc?: string;
 }
 
 export interface TokenResponse {
@@ -11,6 +20,8 @@ export interface TokenResponse {
   refreshTokenExpiry: string;
   success: boolean;
   message: string;
+  isDeviceSwitched?: boolean;
+  isCommonDevice?: boolean;
 }
 
 export interface RefreshTokenRequest {

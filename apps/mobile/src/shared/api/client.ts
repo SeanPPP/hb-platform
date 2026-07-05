@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import { SecureStorage } from "@/shared/storage/secure";
 import { DeviceStorage } from "@/modules/device/storage";
 import { emitUnauthenticatedSession } from "@/modules/auth/auth-session-events";
+import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tracking-control";
 import { isUnauthenticatedApiPayload } from "@/shared/api/auth-error";
 import { buildApiBaseUrl, DEFAULT_API_BASE_URL, getStoredApiHost } from "@/shared/api/config";
 import { extractApiErrorMessage } from "@/shared/api/error-message";
@@ -50,6 +51,16 @@ let refreshQueue: Array<{
 
 function isLoginRequest(config?: InternalAxiosRequestConfig | null) {
   return Boolean(config?.url?.includes("/auth/login"));
+}
+
+function shouldSkipAuthRedirect(config?: InternalAxiosRequestConfig | null) {
+  if (!config) {
+    return false;
+  }
+
+  const rawSkipHeader = config.headers?.["X-Skip-Auth-Redirect"];
+  const skipHeaderValue = Array.isArray(rawSkipHeader) ? rawSkipHeader[0] : rawSkipHeader;
+  return skipHeaderValue === "1";
 }
 
 function shouldSkipCenterLog(config?: InternalAxiosRequestConfig | null) {
@@ -129,6 +140,15 @@ function reportApiErrorLog(
   });
 }
 
+async function invalidateLocalSession(message?: string) {
+  // 401/会话失效时必须直接停掉班中后台定位；不能只依赖 UI store 订阅者。
+  await stopAttendanceLocationTracking().catch((error) => {
+    console.warn("[attendance-location] 会话失效时停止后台定位失败", error);
+  });
+  await SecureStorage.clearAll();
+  emitUnauthenticatedSession({ message });
+}
+
 async function redirectToLoginAfterUnauthenticated(message?: string) {
   if (isRedirectingToLogin) {
     return;
@@ -136,8 +156,7 @@ async function redirectToLoginAfterUnauthenticated(message?: string) {
 
   isRedirectingToLogin = true;
   try {
-    await SecureStorage.clearAll();
-    emitUnauthenticatedSession({ message });
+    await invalidateLocalSession(message);
     router.replace("/(auth)/login");
   } finally {
     isRedirectingToLogin = false;
@@ -164,13 +183,17 @@ apiClient.interceptors.request.use(
 );
 
 apiClient.interceptors.response.use(
-  (response) => {
+  async (response) => {
     if (
       isUnauthenticatedApiPayload(response.data) &&
       !isLoginRequest(response.config as InternalAxiosRequestConfig)
     ) {
       const message = extractApiErrorMessage(response.data, "Unauthorized");
-      void redirectToLoginAfterUnauthenticated(message);
+      if (shouldSkipAuthRedirect(response.config as InternalAxiosRequestConfig)) {
+        await invalidateLocalSession(message);
+      } else {
+        await redirectToLoginAfterUnauthenticated(message);
+      }
       throw new Error(message);
     }
 
@@ -188,9 +211,15 @@ apiClient.interceptors.response.use(
   },
   async (error: AxiosError) => {
     const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const skipAuthRedirect = shouldSkipAuthRedirect(original);
+
     if (error.response?.status === 401 && original?._retry && !isLoginRequest(original)) {
       const message = extractApiErrorMessage(error, error.message);
-      await redirectToLoginAfterUnauthenticated(message);
+      if (!skipAuthRedirect) {
+        await redirectToLoginAfterUnauthenticated(message);
+      } else {
+        await invalidateLocalSession(message);
+      }
       return Promise.reject(new Error(message));
     }
 
@@ -225,9 +254,15 @@ apiClient.interceptors.response.use(
       } catch (refreshErr) {
         refreshQueue.forEach((cb) => cb.reject(refreshErr as Error));
         refreshQueue = [];
-        await redirectToLoginAfterUnauthenticated(
-          refreshErr instanceof Error ? refreshErr.message : undefined
-        );
+        if (!skipAuthRedirect) {
+          await redirectToLoginAfterUnauthenticated(
+            refreshErr instanceof Error ? refreshErr.message : undefined
+          );
+        } else {
+          await invalidateLocalSession(
+            refreshErr instanceof Error ? refreshErr.message : undefined
+          );
+        }
         return Promise.reject(refreshErr);
       } finally {
         isRefreshing = false;

@@ -11,6 +11,7 @@ import type {
   AttendanceHolidaySyncResult,
   AttendanceLeaveRequest,
   AttendanceLeaveRequestPayload,
+  AttendanceLocationSamplePayload,
   AttendancePublishWeekPayload,
   AttendancePunch,
   AttendancePunchPayload,
@@ -91,6 +92,17 @@ function asNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
+function asOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 function formatDateOnly(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -153,6 +165,11 @@ function normalizePunch(raw: ApiRecord): AttendancePunch {
     punchTimeLocal: asOptionalString(pick(raw, "punchTimeLocal", "PunchTimeLocal")),
     status: asString(pick(raw, "status", "Status"), "Normal"),
     statusReason: asOptionalString(pick(raw, "statusReason", "StatusReason", "reason", "Reason")),
+    locationLatitude: asOptionalNumber(pick(raw, "locationLatitude", "LocationLatitude")),
+    locationLongitude: asOptionalNumber(pick(raw, "locationLongitude", "LocationLongitude")),
+    locationAccuracy: asOptionalNumber(pick(raw, "locationAccuracy", "LocationAccuracy", "locationAccuracyMeters", "LocationAccuracyMeters")),
+    locationPermissionStatus: asOptionalString(pick(raw, "locationPermissionStatus", "LocationPermissionStatus")),
+    locationCapturedAtUtc: asOptionalString(pick(raw, "locationCapturedAtUtc", "LocationCapturedAtUtc")),
   };
 }
 
@@ -526,6 +543,19 @@ export async function punchAttendance(
     sanitizePayload({ ...payload }),
   );
   return normalizePunch(isRecord(response.data) ? response.data : {});
+}
+
+export async function createAttendanceLocationSample(
+  payload: AttendanceLocationSamplePayload,
+  options?: { skipAuthRedirect?: boolean },
+): Promise<void> {
+  await apiClient.post(
+    `${ATTENDANCE_BASE}/location-samples`,
+    sanitizePayload({ ...payload }),
+    options?.skipAuthRedirect
+      ? { headers: { "X-Skip-Auth-Redirect": "1" } }
+      : undefined,
+  );
 }
 
 export async function getMyLeaveRequests(): Promise<AttendanceLeaveRequest[]> {

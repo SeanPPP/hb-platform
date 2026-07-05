@@ -6,6 +6,8 @@ export interface DeviceManagementQuery {
   keyword?: string;
   storeCode?: string | null;
   status?: DeviceStatus | number | null;
+  deviceSystem?: string | null;
+  deviceType?: string | null;
 }
 
 export interface DeviceManagementDevice {

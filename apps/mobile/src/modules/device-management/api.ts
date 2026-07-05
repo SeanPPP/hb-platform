@@ -120,13 +120,15 @@ export function normalizeDeviceManagementListResponse(payload: unknown): DeviceM
   };
 }
 
-function buildListParams(query: DeviceManagementQuery) {
+export function buildListParams(query: DeviceManagementQuery) {
   return {
     page: query.pageNumber,
     pageSize: query.pageSize,
     keyword: query.keyword?.trim() || undefined,
     storeCode: query.storeCode || undefined,
     status: query.status ?? undefined,
+    deviceSystem: query.deviceSystem?.trim() || undefined,
+    deviceType: query.deviceType?.trim() || undefined,
   };
 }
 

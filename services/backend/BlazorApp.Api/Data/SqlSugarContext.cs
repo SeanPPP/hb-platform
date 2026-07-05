@@ -486,9 +486,11 @@ namespace BlazorApp.Api.Data
                 typeof(ProductCategory),
                 typeof(ProductGrade),
                 typeof(EmployeeProfile),
+                typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
@@ -1073,9 +1075,11 @@ namespace BlazorApp.Api.Data
             Console.WriteLine("✓ EmployeeProfile表创建成功");
 
             _db.CodeFirst.InitTables(
+                typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),

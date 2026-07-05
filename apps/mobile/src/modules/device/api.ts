@@ -164,6 +164,8 @@ export async function validateDeviceAuthApi(
       (typeof data.newAuthCode === "string" && data.newAuthCode) ||
       (typeof data.NewAuthCode === "string" && data.NewAuthCode) ||
       null,
+    isDeviceSwitched: Boolean(data.isDeviceSwitched ?? data.IsDeviceSwitched),
+    isCommonDevice: Boolean(data.isCommonDevice ?? data.IsCommonDevice),
   };
 }
 

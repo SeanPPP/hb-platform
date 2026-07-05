@@ -73,6 +73,11 @@ export interface AttendancePunch {
   punchTimeLocal?: string;
   status: AttendancePunchStatus;
   statusReason?: string;
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationAccuracy?: number;
+  locationPermissionStatus?: AttendanceLocationPermissionStatus | string;
+  locationCapturedAtUtc?: string;
 }
 
 export interface AttendancePunchVerificationPayload {
@@ -80,6 +85,7 @@ export interface AttendancePunchVerificationPayload {
   locationLongitude?: number;
   locationAccuracy?: number;
   locationPermissionStatus?: AttendanceLocationPermissionStatus | string;
+  locationCapturedAtUtc?: string;
   networkVerificationStatus?: AttendanceNetworkVerificationStatus | string;
 }
 
@@ -87,6 +93,23 @@ export interface AttendancePunchPayload
   extends AttendancePunchVerificationPayload {
   punchType: AttendancePunchType;
   storeCode?: string;
+  deviceId?: string;
+  hardwareId?: string;
+  systemDeviceNumber?: string;
+  deviceSystem?: string;
+}
+
+export interface AttendanceLocationSamplePayload {
+  storeCode: string;
+  hardwareId?: string;
+  systemDeviceNumber?: string;
+  deviceSystem?: string;
+  eventType?: string;
+  locationLatitude: number;
+  locationLongitude: number;
+  locationAccuracy?: number;
+  locationPermissionStatus?: AttendanceLocationPermissionStatus | string;
+  locationCapturedAtUtc?: string;
 }
 
 export interface AttendanceVerificationFieldState {

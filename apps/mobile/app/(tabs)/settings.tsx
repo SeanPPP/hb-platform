@@ -27,6 +27,7 @@ import { useDeviceStore } from "@/store/device-store";
 import { useStores } from "@/modules/shop/use-stores";
 import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
 import { resolveDeviceStoreDisplayName } from "@/modules/device/store-display";
+import { isRequiredLocationError } from "@/modules/attendance/required-location";
 import { buildAppUpdateInfoRows } from "@/modules/updates/app-update-info";
 import {
   checkAndDownloadAppUpdate,
@@ -494,7 +495,9 @@ export default function Settings() {
     } catch (error) {
       Alert.alert(
         t("dialogs.refreshFailedTitle"),
-        getErrorMessage(error, "dialogs.refreshFailedMessage")
+        isRequiredLocationError(error)
+          ? t("dialogs.locationRequiredMessage")
+          : getErrorMessage(error, "dialogs.refreshFailedMessage")
       );
     } finally {
       setIsSubmitting(false);

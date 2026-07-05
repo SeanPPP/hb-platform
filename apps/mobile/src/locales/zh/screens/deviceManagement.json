@@ -33,14 +33,30 @@
     "button": "筛选",
     "buttonWithCount": "筛选（{{count}}）",
     "clear": "清空",
-    "current": "{{store}} · {{status}}",
+    "current": "{{store}} · {{status}} · {{system}} · {{type}}",
     "disabled": "禁用",
     "keyword": "关键词",
     "locked": "锁定",
     "pendingConfirmation": "待确认",
     "status": "状态",
     "store": "分店",
+    "systemTitle": "系统类型",
     "title": "筛选设备",
+    "typeTitle": "设备类型",
+    "systemOptions": {
+      "all": "全部系统",
+      "Android": "Android",
+      "iOS": "iOS",
+      "Windows": "Windows",
+      "Mac": "Mac"
+    },
+    "typeOptions": {
+      "all": "全部类型",
+      "Mobile": "手机",
+      "PDA": "PDA",
+      "POS": "POS",
+      "Admin": "后台"
+    },
     "unregistered": "未注册"
   },
   "messages": {
@@ -49,7 +65,7 @@
     "disableFailed": "禁用设备失败",
     "disableSuccess": "设备已禁用",
     "emptyDescription": "当前还没有已登记设备。",
-    "emptySearchDescription": "换个关键词、状态或分店再试试。",
+    "emptySearchDescription": "换个关键词、状态、分店、系统或设备类型再试试。",
     "emptySearchTitle": "没有匹配设备",
     "emptyTitle": "暂无设备",
     "loadFailedDescription": "请稍后重试。",

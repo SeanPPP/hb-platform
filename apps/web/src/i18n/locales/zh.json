@@ -2259,7 +2259,10 @@
         "addShift": "添加班次",
         "publishWeek": "发布本周",
         "approve": "通过",
-        "reject": "拒绝"
+        "reject": "拒绝",
+        "viewMap": "地图",
+        "viewSamples": "样本",
+        "openExternalMap": "打开外部地图"
       },
       "drawer": {
         "createSchedule": "新建排班",
@@ -2268,7 +2271,9 @@
         "editHoliday": "编辑公共假期",
         "batchHoliday": "批量设置公共假期",
         "approve": "通过审核",
-        "reject": "拒绝审核"
+        "reject": "拒绝审核",
+        "locationMap": "位置地图",
+        "locationSamples": "班中定位样本"
       },
       "fields": {
         "store": "分店",
@@ -2283,6 +2288,11 @@
         "punchType": "打卡类型",
         "punchTimeLocal": "本地打卡时间",
         "timeZone": "时区",
+        "location": "位置",
+        "locationSamples": "班中样本",
+        "locationAccuracy": "定位精度",
+        "locationCapturedAt": "采集时间",
+        "deviceSystem": "设备系统",
         "applicant": "申请人",
         "sourceType": "来源",
         "reviewedAt": "审核时间",
@@ -2383,7 +2393,11 @@
         "publishWeekSuccess": "本周排班已发布",
         "publishWeekFailed": "发布本周排班失败",
         "reviewSuccess": "审核已提交",
-        "reviewFailed": "提交审核失败"
+        "reviewFailed": "提交审核失败",
+        "locationNotRecorded": "未记录位置",
+        "externalMapNotice": "默认不加载第三方地图。点击下方按钮会把该坐标发送给外部地图服务。",
+        "loadLocationSamplesFailed": "加载班中定位样本失败",
+        "locationSamplesEmpty": "暂无班中定位样本"
       }
     },
     "devices": {

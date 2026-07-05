@@ -40,9 +40,9 @@
     "info": {
       "location": "位置",
       "network": "网络",
-      "locationDependencyMissing": "当前版本未接入 GPS 采集能力，需审批新增定位依赖",
-      "locationPermissionDenied": "定位权限被拒绝，本次将按人工复核信息提交",
-      "locationUnavailable": "暂未采集到定位信息，本次将按人工复核信息提交",
+      "locationDependencyMissing": "当前版本未接入 GPS 采集能力，请更新应用后再打卡",
+      "locationPermissionDenied": "定位权限被拒绝，登录和打卡需要当前位置",
+      "locationUnavailable": "暂未采集到定位信息，请稍后重试",
       "networkAvailable": "已完成后端连通性校验",
       "networkAvailableWithTimeZone": "已完成后端连通性校验，门店时区 {{timeZone}}",
       "networkUnavailable": "未能完成网络连通性校验，本次将按人工复核信息提交",
@@ -73,9 +73,14 @@
       "alertSelectedDate": "当前查看的是所选日期记录，只有当天才能执行打卡。",
       "alertHoliday": "今日标记为 {{holidayName}}，请按门店安排确认是否需要打卡。",
       "alertVerificationCaptured": "本次打卡将携带当前采集到的校验信息提交。",
-      "alertVerificationSentForReview": "本次打卡仍可提交，但会附带当前校验状态供后端复核。",
+      "alertVerificationSentForReview": "打卡前必须完成定位采集和网络校验。",
       "alertNoSchedule": "当前日期没有排班，若需上班请先联系店长安排。"
     }
+  },
+  "backgroundLocation": {
+    "title": "班中定位说明",
+    "description": "上班打卡后，App 会在你下班打卡前每 20 分钟记录一次当前位置，只用于考勤核对，不用于广告跟踪。",
+    "confirm": "继续打卡"
   },
   "week": {
     "empty": "暂无本周排班",
@@ -205,7 +210,8 @@
     "approve": "通过",
     "reject": "拒绝",
     "createSchedule": "创建排班",
-    "publishWeek": "发布本周"
+    "publishWeek": "发布本周",
+    "viewLocation": "查看位置"
   },
   "punchTypes": {
     "ClockIn": "上班",
@@ -256,6 +262,11 @@
     "punchSuccess": "打卡已提交",
     "punchFailed": "打卡失败",
     "punchVerificationSentForReview": "定位或网络校验未完成，已按复核信息一并提交。",
+    "locationRequiredForPunch": "打卡需要采集当前位置。请允许精确定位后重试。",
+    "backgroundLocationRequiredForClockIn": "上班打卡后需要每 20 分钟记录一次班中位置，请允许始终定位后重试。",
+    "locationTrackingFailed": "打卡已提交，但班中定位任务启动失败，请重新打开应用或联系管理员。",
+    "openMapFailedTitle": "无法打开地图",
+    "openMapFailed": "当前设备没有可用的地图应用或系统拒绝打开地图链接。",
     "availabilitySaved": "可上班时间已保存",
     "availabilityCancelled": "可上班时间已取消",
     "leaveSubmitted": "请假申请已提交",

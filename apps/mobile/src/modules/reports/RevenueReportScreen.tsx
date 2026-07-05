@@ -184,6 +184,13 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
   const renderSummaryRow = ({ item }: { item: BranchRevenueRow }) => (
     <Pressable
       style={styles.tableRow}
+      accessibilityRole="button"
+      accessibilityLabel={t(
+        mode === "day"
+          ? "reports.accessibility.openHourlyDetail"
+          : "reports.accessibility.openDailyDetail",
+        { branch: item.branchName || item.branchCode }
+      )}
       onPress={() => setDrilldown({ type: mode === "day" ? "hourly" : "daily", branch: item })}
     >
       <View style={styles.branchColumn}>
@@ -470,27 +477,30 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   detailTable: {
-    minWidth: 520,
+    minWidth: 312,
+    width: "100%",
   },
   detailTableRow: {
-    gap: 8,
-    paddingHorizontal: 10,
+    minHeight: 42,
+    gap: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
   },
   detailPeriodColumn: {
-    width: 76,
+    width: 48,
     minWidth: 0,
   },
   detailAmountColumn: {
-    width: 92,
+    width: 68,
     minWidth: 0,
   },
   detailGrowthColumn: {
     flex: 0,
-    width: 82,
+    width: 64,
     minWidth: 0,
   },
   detailCountColumn: {
-    width: 64,
+    width: 44,
     minWidth: 0,
   },
   tableCellText: {
@@ -526,8 +536,8 @@ const styles = StyleSheet.create({
   modal: {
     alignSelf: "stretch",
     maxHeight: "82%",
-    marginHorizontal: 18,
-    marginVertical: 24,
+    marginHorizontal: 12,
+    marginVertical: 18,
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "#D1D5DB",
@@ -535,14 +545,16 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   modalContent: {
-    gap: 12,
-    padding: 14,
+    gap: 8,
+    padding: 10,
   },
   modalTableViewport: {
     alignSelf: "stretch",
+    flexShrink: 1,
   },
   modalList: {
-    maxHeight: 420,
+    flexGrow: 0,
+    maxHeight: 360,
   },
   modalHeader: {
     flexDirection: "row",

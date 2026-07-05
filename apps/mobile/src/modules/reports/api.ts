@@ -17,7 +17,9 @@ export interface BranchRevenueRow {
   revenueDelta: number;
   revenueDeltaRatio: number | null;
   transactions: number;
+  compareTransactions: number;
   averageTransaction: number;
+  compareAverageTransaction: number;
 }
 
 export interface HourlyRevenueRow {
@@ -29,6 +31,9 @@ export interface HourlyRevenueRow {
   revenueDelta: number;
   revenueDeltaRatio: number | null;
   transactions: number;
+  compareTransactions: number;
+  averageTransaction: number;
+  compareAverageTransaction: number;
 }
 
 export interface DailyRevenueRow {
@@ -41,6 +46,9 @@ export interface DailyRevenueRow {
   revenueDelta: number;
   revenueDeltaRatio: number | null;
   transactions: number;
+  compareTransactions: number;
+  averageTransaction: number;
+  compareAverageTransaction: number;
 }
 
 async function getApiClient() {
@@ -95,6 +103,14 @@ function getRatio(delta: number, compareRevenue: number, explicitRatio: unknown)
     return normalizedRatio;
   }
   return compareRevenue !== 0 ? delta / compareRevenue : null;
+}
+
+function getAverageTransaction(revenue: number, transactions: number, explicitAverage: unknown) {
+  const average = asNullableNumber(explicitAverage);
+  if (average !== null) {
+    return average;
+  }
+  return transactions > 0 ? revenue / transactions : 0;
 }
 
 function parseHour(value: unknown, fallback: number) {
@@ -154,6 +170,8 @@ function normalizeBranchRow(raw: unknown, index: number): BranchRevenueRow {
   const revenue = asNumber(pick(item, "revenue", "Revenue", "salesAmount", "SalesAmount", "turnover", "Turnover"));
   const compareRevenue = asNumber(pick(item, "revenueLY", "RevenueLY", "compareRevenue", "CompareRevenue", "previousRevenue", "PreviousRevenue", "totalRevenueLY", "TotalRevenueLY"));
   const revenueDelta = asNumber(pick(item, "revenueDelta", "RevenueDelta", "difference", "Difference"), revenue - compareRevenue);
+  const transactions = asNumber(pick(item, "transactions", "Transactions", "orderCount", "OrderCount", "receiptCount", "ReceiptCount"));
+  const compareTransactions = asNumber(pick(item, "transactionsLY", "TransactionsLY", "orderCountLY", "OrderCountLY", "receiptCountLY", "ReceiptCountLY"));
   return {
     id: branchCode || String(index),
     branchCode,
@@ -162,8 +180,10 @@ function normalizeBranchRow(raw: unknown, index: number): BranchRevenueRow {
     compareRevenue,
     revenueDelta,
     revenueDeltaRatio: getRatio(revenueDelta, compareRevenue, pick(item, "revenueDeltaRatio", "RevenueDeltaRatio", "growthRate", "GrowthRate")),
-    transactions: asNumber(pick(item, "transactions", "Transactions", "orderCount", "OrderCount", "receiptCount", "ReceiptCount")),
-    averageTransaction: asNumber(pick(item, "aov", "Aov", "averageTransaction", "AverageTransaction", "avgTransaction", "AvgTransaction")),
+    transactions,
+    compareTransactions,
+    averageTransaction: getAverageTransaction(revenue, transactions, pick(item, "aov", "Aov", "averageTransaction", "AverageTransaction", "avgTransaction", "AvgTransaction")),
+    compareAverageTransaction: getAverageTransaction(compareRevenue, compareTransactions, pick(item, "aovLY", "AovLY", "averageTransactionLY", "AverageTransactionLY", "avgTransactionLY", "AvgTransactionLY")),
   };
 }
 
@@ -174,6 +194,8 @@ function normalizeHourlyRow(raw: unknown, index: number): HourlyRevenueRow {
   const revenue = asNumber(pick(item, "revenue", "Revenue", "salesAmount", "SalesAmount", "turnover", "Turnover"));
   const compareRevenue = asNumber(pick(item, "revenueLY", "RevenueLY", "compareRevenue", "CompareRevenue", "previousRevenue", "PreviousRevenue"));
   const revenueDelta = asNumber(pick(item, "revenueDelta", "RevenueDelta", "difference", "Difference"), revenue - compareRevenue);
+  const transactions = asNumber(pick(item, "transactions", "Transactions", "orderCount", "OrderCount", "receiptCount", "ReceiptCount"));
+  const compareTransactions = asNumber(pick(item, "transactionsLY", "TransactionsLY", "orderCountLY", "OrderCountLY", "receiptCountLY", "ReceiptCountLY"));
   return {
     id: String(hour),
     hour,
@@ -182,7 +204,10 @@ function normalizeHourlyRow(raw: unknown, index: number): HourlyRevenueRow {
     compareRevenue,
     revenueDelta,
     revenueDeltaRatio: getRatio(revenueDelta, compareRevenue, pick(item, "revenueDeltaRatio", "RevenueDeltaRatio", "growthRate", "GrowthRate")),
-    transactions: asNumber(pick(item, "transactions", "Transactions", "orderCount", "OrderCount", "receiptCount", "ReceiptCount")),
+    transactions,
+    compareTransactions,
+    averageTransaction: getAverageTransaction(revenue, transactions, pick(item, "aov", "Aov", "averageTransaction", "AverageTransaction", "avgTransaction", "AvgTransaction")),
+    compareAverageTransaction: getAverageTransaction(compareRevenue, compareTransactions, pick(item, "aovLY", "AovLY", "averageTransactionLY", "AverageTransactionLY", "avgTransactionLY", "AvgTransactionLY")),
   };
 }
 
@@ -193,6 +218,8 @@ function normalizeDailyRow(raw: unknown, index: number): DailyRevenueRow {
   const revenue = asNumber(pick(item, "revenue", "Revenue", "salesAmount", "SalesAmount", "turnover", "Turnover"));
   const compareRevenue = asNumber(pick(item, "revenueLY", "RevenueLY", "compareRevenue", "CompareRevenue", "previousRevenue", "PreviousRevenue"));
   const revenueDelta = asNumber(pick(item, "revenueDelta", "RevenueDelta", "difference", "Difference"), revenue - compareRevenue);
+  const transactions = asNumber(pick(item, "transactions", "Transactions", "orderCount", "OrderCount", "receiptCount", "ReceiptCount"));
+  const compareTransactions = asNumber(pick(item, "transactionsLY", "TransactionsLY", "orderCountLY", "OrderCountLY", "receiptCountLY", "ReceiptCountLY"));
   return {
     id: `${date}-${branchCode || index}`,
     date,
@@ -202,7 +229,10 @@ function normalizeDailyRow(raw: unknown, index: number): DailyRevenueRow {
     compareRevenue,
     revenueDelta,
     revenueDeltaRatio: getRatio(revenueDelta, compareRevenue, pick(item, "revenueDeltaRatio", "RevenueDeltaRatio", "growthRate", "GrowthRate")),
-    transactions: asNumber(pick(item, "transactions", "Transactions", "orderCount", "OrderCount", "receiptCount", "ReceiptCount")),
+    transactions,
+    compareTransactions,
+    averageTransaction: getAverageTransaction(revenue, transactions, pick(item, "aov", "Aov", "averageTransaction", "AverageTransaction", "avgTransaction", "AvgTransaction")),
+    compareAverageTransaction: getAverageTransaction(compareRevenue, compareTransactions, pick(item, "aovLY", "AovLY", "averageTransactionLY", "AverageTransactionLY", "avgTransactionLY", "AvgTransactionLY")),
   };
 }
 
