@@ -8,7 +8,7 @@ import {
   PanResponder,
   Pressable,
   StyleSheet,
-  TextInput,
+  TextInput as NativeTextInput,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -22,6 +22,7 @@ import {
   Searchbar,
   Snackbar,
   Text,
+  TextInput as PaperTextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
@@ -48,6 +49,8 @@ import type { StoreOrderCartItem } from "@/modules/shop/types";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 const SWIPE_ACTION_WIDTH = 92;
+// 与 Web 端购物车备注长度保持一致。
+const ORDER_REMARKS_MAX_LENGTH = 500;
 const PRODUCT_GRADE_CONFIG: Record<string, { color: string }> = {
   A: { color: "#722ED1" },
   B: { color: "#1890FF" },
@@ -292,6 +295,8 @@ export default function Cart() {
   const [keyword, setKeyword] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [filtersVisible, setFiltersVisible] = useState(false);
+  const [submitDialogVisible, setSubmitDialogVisible] = useState(false);
+  const [orderRemarks, setOrderRemarks] = useState("");
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
@@ -370,12 +375,30 @@ export default function Cart() {
   );
 
   useEffect(() => {
+    if (!submitDialogVisible) {
+      return;
+    }
+
+    // 填写必填备注时暂停隐藏扫码输入，避免它定时抢走备注输入焦点。
+    hidScanner.pauseHiddenInputFocus();
+    return () => {
+      hidScanner.resumeHiddenInputFocus();
+    };
+  }, [
+    hidScanner.pauseHiddenInputFocus,
+    hidScanner.resumeHiddenInputFocus,
+    submitDialogVisible,
+  ]);
+
+  useEffect(() => {
     setPage(1);
   }, [pageSize, selectedStoreCode]);
 
   useEffect(() => {
     setPriorityProductCode(null);
     setOpenSwipeDetailGUID(null);
+    setSubmitDialogVisible(false);
+    setOrderRemarks("");
   }, [selectedStoreCode]);
 
   useEffect(() => {
@@ -474,12 +497,21 @@ export default function Cart() {
       return;
     }
 
+    // 备注是仓库处理订单的必填信息，提交前必须再次按 trim 后的值校验。
+    const trimmedRemarks = orderRemarks.trim();
+    if (!trimmedRemarks) {
+      setSnackbarMessage(t("messages.remarkRequired"));
+      return;
+    }
+
     setSubmitPending(true);
     try {
-      await submitStoreOrder(selectedStoreCode);
+      await submitStoreOrder(selectedStoreCode, trimmedRemarks);
       await queryClient.invalidateQueries({ queryKey: ["cartSummary", selectedStoreCode] });
       setPriorityProductCode(null);
       setOpenSwipeDetailGUID(null);
+      setSubmitDialogVisible(false);
+      setOrderRemarks("");
       setPage(1);
       setSnackbarMessage(t("messages.submitSuccess"));
       router.push("/(tabs)/orders");
@@ -491,15 +523,22 @@ export default function Cart() {
   }
 
   function confirmSubmitCart() {
-    Alert.alert(t("confirm.submitTitle"), t("confirm.submitMessage"), [
-      { text: t("common:actions.cancel"), style: "cancel" },
-      {
-        text: t("common:actions.submit"),
-        onPress: () => {
-          void handleSubmitCart();
-        },
-      },
-    ]);
+    if (cartMutationPendingRef.current) {
+      setSnackbarMessage(t("common:loading"));
+      return;
+    }
+
+    if (!selectedStoreCode) {
+      setSnackbarMessage(t("messages.needStore"));
+      return;
+    }
+
+    if (!cartQuery.total) {
+      setSnackbarMessage(t("messages.emptyCart"));
+      return;
+    }
+
+    setSubmitDialogVisible(true);
   }
 
   function renderCartItem({ item }: { item: StoreOrderCartItem }) {
@@ -755,6 +794,67 @@ export default function Cart() {
             </Button>
           </View>
         </Modal>
+
+        <Modal
+          visible={submitDialogVisible}
+          onDismiss={() => {
+            if (!submitPending) {
+              setSubmitDialogVisible(false);
+            }
+          }}
+          contentContainerStyle={styles.submitModal}
+        >
+          <Text variant="titleMedium" style={styles.submitModalTitle}>
+            {t("confirm.submitTitle")}
+          </Text>
+          <Text variant="bodyMedium" style={styles.submitModalMessage}>
+            {t("confirm.submitMessage")}
+          </Text>
+          <PaperTextInput
+            mode="outlined"
+            label={t("remarks.label")}
+            placeholder={t("remarks.placeholder")}
+            value={orderRemarks}
+            onChangeText={(value) => setOrderRemarks(value.slice(0, ORDER_REMARKS_MAX_LENGTH))}
+            multiline
+            numberOfLines={3}
+            maxLength={ORDER_REMARKS_MAX_LENGTH}
+            disabled={submitPending}
+            style={styles.submitRemarksInput}
+          />
+          <Text variant="labelSmall" style={styles.submitRemarksCounter}>
+            {t("remarks.counter", {
+              count: orderRemarks.length,
+              max: ORDER_REMARKS_MAX_LENGTH,
+            })}
+          </Text>
+          <View style={styles.submitModalActions}>
+            <Button
+              mode="contained-tonal"
+              disabled={submitPending}
+              onPress={() => setSubmitDialogVisible(false)}
+              style={styles.submitModalButton}
+            >
+              {t("common:actions.cancel")}
+            </Button>
+            <Button
+              mode="contained"
+              loading={submitPending}
+              disabled={
+                !selectedStoreCode ||
+                !cartQuery.total ||
+                cartMutationPending ||
+                !orderRemarks.trim()
+              }
+              onPress={() => {
+                void handleSubmitCart();
+              }}
+              style={[styles.submitModalButton, styles.submitModalSubmitButton]}
+            >
+              {t("common:actions.submit")}
+            </Button>
+          </View>
+        </Modal>
       </Portal>
 
       <ScanResultPicker
@@ -772,7 +872,7 @@ export default function Cart() {
       />
 
       {hidScanner.mode === "textInput" && hidScanner.textInputProps ? (
-        <TextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
+        <NativeTextInput style={styles.hiddenInput} {...hidScanner.textInputProps} />
       ) : null}
 
       <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
@@ -882,6 +982,40 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     padding: 16,
     gap: 14,
+  },
+  submitModal: {
+    margin: 18,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 18,
+    gap: 12,
+  },
+  submitModalTitle: {
+    color: "#0F172A",
+    fontWeight: "800",
+  },
+  submitModalMessage: {
+    color: "#6B7280",
+  },
+  submitRemarksInput: {
+    backgroundColor: "#FFFFFF",
+  },
+  submitRemarksCounter: {
+    alignSelf: "flex-end",
+    color: "#6B7280",
+  },
+  submitModalActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  submitModalButton: {
+    flex: 1,
+    borderRadius: 8,
+  },
+  submitModalSubmitButton: {
+    backgroundColor: "#111111",
   },
   filtersHeader: {
     flexDirection: "row",
