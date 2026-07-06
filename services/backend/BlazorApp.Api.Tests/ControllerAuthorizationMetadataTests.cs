@@ -684,8 +684,9 @@ public class ControllerAuthorizationMetadataTests
 
     [Theory]
     [InlineData(Permissions.Stores.View)]
-    [InlineData(Permissions.Orders.Create)]
-    public async Task StoresController_AllStoresByName_AllowsStoreViewOrOrderCreate(
+    [InlineData(Permissions.DeviceRegistration.View)]
+    [InlineData(Permissions.DeviceRegistration.Manage)]
+    public async Task StoresController_AllStoresByName_AllowsExpectedGlobalStoreConsumers(
         string allowedPermission
     )
     {
@@ -699,6 +700,53 @@ public class ControllerAuthorizationMetadataTests
 
         Assert.IsType<OkObjectResult>(result);
         storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_AllowsPureWarehouseStaffWithOrderCreate()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.GetAllStoresByNameAsync())
+            .ReturnsAsync(ApiResponse<List<StoreDto>>.OK(new List<StoreDto>()));
+        var controller = CreateStoresController(
+            Permissions.Orders.Create,
+            storeService,
+            "WarehouseStaff"
+        );
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<OkObjectResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_ForbidsOrderCreateWithoutWarehouseStaffRole()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        var controller = CreateStoresController(Permissions.Orders.Create, storeService);
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<ForbidResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_ForbidsWarehouseStaffWithoutOrderCreate()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        var controller = CreateStoresController(
+            Permissions.Warehouse.Manage,
+            storeService,
+            "WarehouseStaff"
+        );
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<ForbidResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Never);
     }
 
     [Fact]
@@ -824,9 +872,13 @@ public class ControllerAuthorizationMetadataTests
 
     private static StoresController CreateStoresController(
         string? allowedPermission,
-        Mock<IStoreService> storeService
+        Mock<IStoreService> storeService,
+        params string[] roleNames
     )
     {
+        var allowedPermissions = string.IsNullOrWhiteSpace(allowedPermission)
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(new[] { allowedPermission }, StringComparer.OrdinalIgnoreCase);
         var authorizationService = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorizationService
             .Setup(service => service.AuthorizeAsync(
@@ -835,10 +887,11 @@ public class ControllerAuthorizationMetadataTests
                 It.IsAny<string>()))
             .ReturnsAsync(
                 (ClaimsPrincipal _, object? _, string policyName) =>
-                    policyName == allowedPermission
+                    allowedPermissions.Contains(policyName)
                         ? AuthorizationResult.Success()
                         : AuthorizationResult.Failed()
             );
+        var claims = roleNames.Select(roleName => new Claim(ClaimTypes.Role, roleName));
 
         return new StoresController(
             storeService.Object,
@@ -852,7 +905,7 @@ public class ControllerAuthorizationMetadataTests
                 HttpContext = new DefaultHttpContext
                 {
                     User = new ClaimsPrincipal(
-                        new ClaimsIdentity(Array.Empty<Claim>(), authenticationType: "test")
+                        new ClaimsIdentity(claims, authenticationType: "test")
                     )
                 },
             },

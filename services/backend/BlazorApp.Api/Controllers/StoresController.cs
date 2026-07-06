@@ -67,11 +67,38 @@ namespace BlazorApp.Api.Controllers
 
         private async Task<bool> CanReadAllStoresByNameAsync()
         {
-            // 关键逻辑：全分店列表既服务后台分店查看，也服务仓库员工 Orders.Create 专用购物车选店。
-            return (await _authorizationService.AuthorizeAsync(User, null, Permissions.Stores.View))
-                .Succeeded
-                || (await _authorizationService.AuthorizeAsync(User, null, Permissions.Orders.Create))
-                    .Succeeded;
+            // 关键逻辑：Orders.Create 不是通用全分店读取权限，只给纯仓库员工代建购物车选店放行。
+            if (await HasPermissionAsync(Permissions.Stores.View))
+            {
+                return true;
+            }
+
+            if (
+                await HasPermissionAsync(Permissions.DeviceRegistration.View)
+                || await HasPermissionAsync(Permissions.DeviceRegistration.Manage)
+            )
+            {
+                return true;
+            }
+
+            return IsWarehouseStaffOnly() && await HasPermissionAsync(Permissions.Orders.Create);
+        }
+
+        private async Task<bool> HasPermissionAsync(string permission)
+        {
+            return (await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded;
+        }
+
+        private bool IsWarehouseStaffOnly()
+        {
+            return HasAnyRole("WarehouseStaff", "仓库员工")
+                && !HasAnyRole("Admin", "管理员")
+                && !HasAnyRole("WarehouseManager", "仓库经理");
+        }
+
+        private bool HasAnyRole(params string[] roles)
+        {
+            return roles.Any(User.IsInRole);
         }
 
         /// <summary>
