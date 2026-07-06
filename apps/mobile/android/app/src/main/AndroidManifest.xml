@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <!-- 后台考勤定位：原生 android 目录存在时 app.json 权限不会自动合并，必须在 Manifest 固定声明。 -->
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
   <uses-permission android:name="android.permission.BLUETOOTH"/>
   <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
@@ -9,6 +14,8 @@
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <!-- APK 自更新：下载新版 APK 后需要交给系统安装器。 -->
+  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>

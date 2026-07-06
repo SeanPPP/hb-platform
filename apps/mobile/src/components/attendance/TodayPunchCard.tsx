@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
-import { Card, Chip, Text } from "react-native-paper";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
+import { Button, Card, Chip, Text } from "react-native-paper";
 import type {
   AttendancePunchVerificationState,
   AttendancePunchType,
   AttendanceToday,
 } from "@/modules/attendance/types";
+import { openLocationInSystemMap } from "@/modules/attendance/required-location";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 function formatTime(value?: string) {
@@ -162,6 +163,7 @@ export function TodayPunchCard({
             })
           : t("today.dailyRecords.noSchedule"),
       muted: !clockInPunch,
+      punch: clockInPunch,
     },
     {
       key: "clockOut",
@@ -183,6 +185,7 @@ export function TodayPunchCard({
             })
           : t("today.dailyRecords.awaitingShift"),
       muted: !clockOutPunch,
+      punch: clockOutPunch,
     },
   ];
 
@@ -303,41 +306,75 @@ export function TodayPunchCard({
         <View style={styles.recordsCard}>
           <Text variant="titleMedium">{t("today.dailyRecords.title")}</Text>
           <View style={styles.recordList}>
-            {records.map((record) => (
-              <View
-                key={record.key}
-                style={[styles.recordItem, { borderLeftColor: record.accent }]}
-              >
+            {records.map((record) => {
+              const punchLocation = record.punch &&
+                record.punch.locationLatitude !== undefined &&
+                record.punch.locationLongitude !== undefined
+                ? {
+                    latitude: record.punch.locationLatitude,
+                    longitude: record.punch.locationLongitude,
+                  }
+                : null;
+
+              return (
                 <View
-                  style={[
-                    styles.recordIcon,
-                    { backgroundColor: record.iconBg },
-                  ]}
+                  key={record.key}
+                  style={[styles.recordItem, { borderLeftColor: record.accent }]}
                 >
-                  <Text variant="labelSmall">
-                    {t(
-                      record.key === "clockIn"
-                        ? "today.dailyRecords.clockInBadge"
-                        : "today.dailyRecords.clockOutBadge",
-                    )}
-                  </Text>
-                </View>
-                <View style={styles.recordBody}>
-                  <View style={styles.recordHeader}>
-                    <Text variant="titleSmall">{record.title}</Text>
-                    <Text variant="labelMedium" style={styles.muted}>
-                      {record.time}
+                  <View
+                    style={[
+                      styles.recordIcon,
+                      { backgroundColor: record.iconBg },
+                    ]}
+                  >
+                    <Text variant="labelSmall">
+                      {t(
+                        record.key === "clockIn"
+                          ? "today.dailyRecords.clockInBadge"
+                          : "today.dailyRecords.clockOutBadge",
+                      )}
                     </Text>
                   </View>
-                  <Text
-                    variant="bodySmall"
-                    style={record.muted ? styles.muted : undefined}
-                  >
-                    {record.body}
-                  </Text>
+                  <View style={styles.recordBody}>
+                    <View style={styles.recordHeader}>
+                      <Text variant="titleSmall">{record.title}</Text>
+                      <Text variant="labelMedium" style={styles.muted}>
+                        {record.time}
+                      </Text>
+                    </View>
+                    <Text
+                      variant="bodySmall"
+                      style={record.muted ? styles.muted : undefined}
+                    >
+                      {record.body}
+                    </Text>
+                    {punchLocation ? (
+                      <Button
+                        compact
+                        icon="map-marker"
+                        mode="text"
+                        onPress={async () => {
+                          const opened = await openLocationInSystemMap(
+                            punchLocation.latitude,
+                            punchLocation.longitude,
+                            record.title,
+                          );
+                          if (!opened) {
+                            Alert.alert(
+                              t("messages.openMapFailedTitle"),
+                              t("messages.openMapFailed"),
+                            );
+                          }
+                        }}
+                        style={styles.locationButton}
+                      >
+                        {t("actions.viewLocation")}
+                      </Button>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
-            ))}
+              );
+            })}
             <View style={styles.alertItem}>
               <View style={styles.alertIcon}>
                 <Text variant="labelSmall" style={styles.alertIconText}>
@@ -436,6 +473,10 @@ const styles = StyleSheet.create({
   },
   metaChipText: {
     color: "#4B5563",
+  },
+  locationButton: {
+    alignSelf: "flex-start",
+    marginLeft: -8,
   },
   metaHeader: {
     alignItems: "center",

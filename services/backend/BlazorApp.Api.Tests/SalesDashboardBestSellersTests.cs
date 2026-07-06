@@ -20,6 +20,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using SqlSugar;
 using Xunit;
@@ -1623,7 +1624,23 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             new ScheduledTaskLogService(context, NullLogger<ScheduledTaskLogService>.Instance),
             context,
             NullLogger<StatisticsJobTriggerController>.Instance,
-            cacheWarmer ?? Mock.Of<ISalesDashboardCacheWarmer>()
+            cacheWarmer ?? Mock.Of<ISalesDashboardCacheWarmer>(),
+            CreateAlignmentService(context)
+        );
+    }
+
+    private SalesStatisticsAlignmentService CreateAlignmentService(SqlSugarContext context)
+    {
+        return new SalesStatisticsAlignmentService(
+            context,
+            CreatePosmSqlSugarContext(_posmDb),
+            new ScheduledTaskLeaseService(
+                context,
+                Options.Create(new ScheduledTaskOptions { InstanceId = "test-api" }),
+                NullLogger<ScheduledTaskLeaseService>.Instance
+            ),
+            Mock.Of<IServiceScopeFactory>(),
+            NullLogger<SalesStatisticsAlignmentService>.Instance
         );
     }
 

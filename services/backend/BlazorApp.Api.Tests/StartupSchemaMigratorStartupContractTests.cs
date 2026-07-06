@@ -62,6 +62,9 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("IF OBJECT_ID('ServiceApiToken', 'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID('WpfAppRelease', 'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NULL", migrator);
+        Assert.Contains("IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NULL", migrator);
+        Assert.Contains("ADD [CartOwnerUserGuid] nvarchar(50) NULL", migrator);
+        Assert.Contains("CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppBuild_EasBuildId]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_Group_Platform]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_ServiceApiToken_TokenHash]", migrator);
@@ -247,6 +250,37 @@ public sealed class StartupSchemaMigratorStartupContractTests
             executeAfterAddIndex > addColumnIndex && executeAfterAddIndex < normalizeIndex,
             "CashRegisterUsers.UserGUID 补列必须先作为独立 batch 执行，再执行引用 UserGUID 的清理/回填 SQL。"
         );
+    }
+
+    [Fact]
+    public async Task StartupSchemaMigrator_WarehouseCartOwnerColumnFailureIsNotSwallowed()
+    {
+        var repoRoot = FindRepoRoot();
+        var migratorPath = Path.Combine(
+            repoRoot,
+            "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+        );
+
+        var migrator = await File.ReadAllTextAsync(migratorPath);
+
+        var addColumnIndex = migrator.IndexOf(
+            "ADD [CartOwnerUserGuid] nvarchar(50) NULL",
+            StringComparison.Ordinal
+        );
+        var throwIndex = migrator.IndexOf(
+            "THROW 51000, 'WareHouseOrder.CartOwnerUserGuid migration failed', 1;",
+            StringComparison.Ordinal
+        );
+        var indexWarningIndex = migrator.IndexOf(
+            "logger.LogWarning(ex, \"仓库订货购物车归属索引迁移失败\");",
+            StringComparison.Ordinal
+        );
+
+        // 关键位置：CartOwnerUserGuid 缺列会让所有活动购物车 scope 查询失败，补列不能被 catch 吞掉。
+        Assert.True(addColumnIndex >= 0, "仓库购物车 owner 补列 SQL 必须存在。");
+        Assert.True(throwIndex > addColumnIndex, "补列后必须验证列存在，不存在就抛错阻断启动。");
+        Assert.True(indexWarningIndex > throwIndex, "只有索引创建可以降级 warning，必需列不能降级。");
+        Assert.DoesNotContain("仓库订货购物车归属字段迁移失败", migrator);
     }
 
     [Fact]

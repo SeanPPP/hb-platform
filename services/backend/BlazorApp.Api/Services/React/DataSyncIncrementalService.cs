@@ -8,6 +8,7 @@ using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
 using BlazorApp.Shared.Models.POSM;
+using Microsoft.Extensions.Caching.Memory;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -23,6 +24,7 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<DataSyncIncrementalService> _logger;
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
+        private readonly IMemoryCache _cache;
         private const string StoreRetailPricesIncrementalTaskType = "SyncStoreRetailPricesIncremental";
 
         public DataSyncIncrementalService(
@@ -34,7 +36,8 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<DataSyncIncrementalService> logger,
             ScheduledTaskLogService taskLogService,
-            IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService
+            IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService,
+            IMemoryCache cache
         )
         {
             _localContext = localContext;
@@ -46,6 +49,7 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _taskLogService = taskLogService;
             _storeRetailPriceHqSyncService = storeRetailPriceHqSyncService;
+            _cache = cache;
         }
 
         public async Task<SyncResult> SyncPosmProductSupplierMappingsIncrementalAsync(
@@ -1960,6 +1964,12 @@ namespace BlazorApp.Api.Services.React
                 result.AddedCount = added;
                 result.UpdatedCount = updated;
                 result.ErrorCount = errors;
+
+                if (added + updated > 0)
+                {
+                    // 仓库分类增量同步直接写 WarehouseCategory，需同步清理移动端分类树缓存。
+                    WarehouseCategoryReactService.InvalidateTreeCache(_cache);
+                }
 
                 if (result.IsSuccess)
                     await _taskLogService.LogTaskSuccessAsync(taskLog.Id);

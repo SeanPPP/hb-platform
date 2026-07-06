@@ -8,6 +8,7 @@ export type AppTabPath =
   | "/(tabs)/installment-orders"
   | "/(tabs)/advertisements"
   | "/(tabs)/promotions"
+  | "/(tabs)/reports"
   | "/(tabs)/store-vouchers"
   | "/(tabs)/seasonal-cards"
   | "/(tabs)/attendance-personal"
@@ -28,6 +29,7 @@ export const TAB_PATHS: Record<string, AppTabPath> = {
   "installment-orders": "/(tabs)/installment-orders",
   advertisements: "/(tabs)/advertisements",
   promotions: "/(tabs)/promotions",
+  reports: "/(tabs)/reports",
   "store-vouchers": "/(tabs)/store-vouchers",
   "seasonal-cards": "/(tabs)/seasonal-cards",
   "attendance-personal": "/(tabs)/attendance-personal",
@@ -45,6 +47,7 @@ export const SETTINGS_FALLBACK_ROUTE_NAME = "settings";
 const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
   "attendance-management",
   "device-management",
+  "reports",
 ]);
 const LEGACY_ATTENDANCE_ROUTE_NAME = "attendance";
 export const SUPPORTED_APP_MENU_ROUTE_NAMES = new Set([
@@ -76,6 +79,24 @@ export function expandAttendanceRouteNames(
   });
 
   return expandedRouteNames;
+}
+
+interface AccountTabRouteNamesOptions {
+  canCreateOrder?: boolean;
+  isWarehouseStaffOnly?: boolean;
+}
+
+export function filterAccountTabRouteNames(
+  routeNames: Iterable<string>,
+  { canCreateOrder = false, isWarehouseStaffOnly = false }: AccountTabRouteNamesOptions = {}
+) {
+  const orderedRouteNames = Array.from(routeNames);
+  if (!isWarehouseStaffOnly || canCreateOrder) {
+    return orderedRouteNames;
+  }
+
+  // 纯仓库员工只有显式 Orders.Create 才能进入自己的专用购物车。
+  return orderedRouteNames.filter((routeName) => routeName !== "cart");
 }
 
 interface VisibleTabRouteNamesOptions {

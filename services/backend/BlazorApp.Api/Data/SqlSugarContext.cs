@@ -329,6 +329,8 @@ namespace BlazorApp.Api.Data
         // 定时任务日志实体
         public SimpleClient<ScheduledTaskLog> ScheduledTaskLogDb =>
             new SimpleClient<ScheduledTaskLog>(_db);
+        public SimpleClient<ScheduledTaskLease> ScheduledTaskLeaseDb =>
+            new SimpleClient<ScheduledTaskLease>(_db);
 
         // 发票邮件 SMTP 配置实体
         public SimpleClient<InvoiceEmailConfiguration> InvoiceEmailConfigurationDb =>
@@ -476,6 +478,7 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskLog),
                 typeof(ScheduledTaskRuntimeControl),
                 typeof(ScheduledTaskInstanceState),
+                typeof(ScheduledTaskLease),
                 typeof(InvoiceEmailConfiguration),
                 typeof(StoreOrderInvoiceEmailSendRecord),
                 typeof(ApplicationLog),
@@ -486,9 +489,11 @@ namespace BlazorApp.Api.Data
                 typeof(ProductCategory),
                 typeof(ProductGrade),
                 typeof(EmployeeProfile),
+                typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
@@ -1073,9 +1078,11 @@ namespace BlazorApp.Api.Data
             Console.WriteLine("✓ EmployeeProfile表创建成功");
 
             _db.CodeFirst.InitTables(
+                typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
@@ -1151,6 +1158,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_LocalSupplier_Code_Unique\" ON \"LocalSupplier\" (\"LocalSupplierCode\")",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_WareHouseOrder_OrderNo_Unique\" ON \"WareHouseOrder\" (\"OrderNo\") WHERE \"OrderNo\" IS NOT NULL",
+                ["IX_WareHouseOrder_CartScope"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_WareHouseOrder_CartScope\" ON \"WareHouseOrder\" (\"StoreCode\", \"FlowStatus\", \"IsDeleted\", \"CartOwnerUserGuid\")",
                 ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''",
 
@@ -1370,6 +1379,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_ProductCode' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_ProductCode ON [CartItem](ProductCode)",
                 ["IX_CartItem_AddedAt"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_AddedAt' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_AddedAt ON [CartItem](AddedAt)",
+                ["IX_WareHouseOrder_CartScope"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_CartScope' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid])",
                 ["IX_LocalSupplier_Status"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Status' AND object_id = OBJECT_ID('LocalSupplier')) CREATE INDEX IX_LocalSupplier_Status ON [LocalSupplier](Status)",
                 ["IX_LocalSupplier_Name"] =
@@ -1632,6 +1643,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Search' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Search ON [Product](ProductName, ProductCode, ItemNumber, Barcode)",
                 // 扫码加购热路径：快速定位当前门店购物车和订单明细，避免大表回表扫描。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_StoreCode_FlowStatus_IsDeleted' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_StoreCode_FlowStatus_IsDeleted] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted])",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_CartScope' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrderDetails_OrderGUID_IsDeleted_ProductCode' AND object_id = OBJECT_ID('WareHouseOrderDetails')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrderDetails_OrderGUID_IsDeleted_ProductCode] ON [WareHouseOrderDetails] ([OrderGUID], [IsDeleted], [ProductCode])",
                 // ProductLocation 活跃映射覆盖索引，支撑订货明细货位排序的 ProductLocation -> Location 聚合。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductLocation_ProductCode_Active' AND object_id = OBJECT_ID('ProductLocation')) CREATE INDEX IX_ProductLocation_ProductCode_Active ON [ProductLocation]([ProductCode]) INCLUDE([LocationGuid]) WHERE [IsDeleted] = 0 AND [ProductCode] IS NOT NULL AND [LocationGuid] IS NOT NULL",

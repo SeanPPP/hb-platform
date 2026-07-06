@@ -293,6 +293,15 @@ namespace BlazorApp.Api.Services
             },
             new()
             {
+                RouteName = "reports",
+                TitleKey = "tabs.reports",
+                Icon = "chart-box-outline",
+                // 移动端报告入口承载营业额和商品报告；ProductMovementView 兼容 Reports.View。
+                Permission = Permissions.Reports.ProductMovementView,
+                Order = 59,
+            },
+            new()
+            {
                 RouteName = "settings",
                 TitleKey = "tabs.settings",
                 Icon = "account-circle-outline",

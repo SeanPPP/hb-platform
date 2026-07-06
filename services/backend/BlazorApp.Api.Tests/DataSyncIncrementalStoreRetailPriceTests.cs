@@ -9,6 +9,7 @@ using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
@@ -132,7 +133,8 @@ public sealed class DataSyncIncrementalStoreRetailPriceTests : IDisposable
                 localContext,
                 NullLogger<ScheduledTaskLogService>.Instance
             ),
-            hqSyncService
+            hqSyncService,
+            new MemoryCache(new MemoryCacheOptions())
         );
     }
 

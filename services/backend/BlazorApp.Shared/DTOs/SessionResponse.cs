@@ -14,5 +14,15 @@ namespace BlazorApp.Shared.DTOs
         /// 刷新令牌过期时间。
         /// </summary>
         public DateTime RefreshTokenExpiry { get; set; }
+
+        /// <summary>
+        /// 本次 App 登录是否相对上次登录切换了设备。
+        /// </summary>
+        public bool IsDeviceSwitched { get; set; }
+
+        /// <summary>
+        /// 本次 App 登录设备是否为常用设备。
+        /// </summary>
+        public bool IsCommonDevice { get; set; }
     }
 }

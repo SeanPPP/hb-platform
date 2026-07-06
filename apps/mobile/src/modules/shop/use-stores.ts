@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getStoresByUserGuid } from "@/modules/shop/api";
+import { getAllStores, getStoresByUserGuid } from "@/modules/shop/api";
 import { useAuthStore } from "@/store/auth-store";
 import { useCartStore } from "@/store/cart-store";
 import { useDeviceStore } from "@/store/device-store";
@@ -8,6 +8,7 @@ import { AppAsyncStorage } from "@/shared/storage/async-storage";
 import { STORE_SELECTION_STORAGE_KEY, type Store } from "@/modules/shop/types";
 import { normalizeShopStores, sortShopStores } from "@/modules/shop/store-normalization";
 import { getAssignedStoresForSession, resolveScopedStoreCode } from "@/modules/shop/store-scope";
+import { shouldLoadAllStoresForWarehouseCart } from "@/modules/shop/warehouse-cart-access";
 
 export function useStores() {
   const user = useAuthStore((state) => state.user);
@@ -22,6 +23,7 @@ export function useStores() {
   const [isHydratingSelection, setIsHydratingSelection] = useState(false);
   const userGuid = user?.userGUID ?? null;
   const hasUserSession = Boolean(isAuthenticated && userGuid);
+  const useAllStoresForWarehouseCart = shouldLoadAllStoresForWarehouseCart(access);
   const isDeviceMode = Boolean(
     deviceSession?.hardwareId &&
       deviceSession.authCode &&
@@ -39,7 +41,7 @@ export function useStores() {
     [deviceSession?.storeCode, deviceSession?.storeName]
   );
   const storesQuery = useQuery({
-    queryKey: ["userStores", userGuid, deviceSession?.storeCode],
+    queryKey: ["userStores", userGuid, deviceSession?.storeCode, useAllStoresForWarehouseCart],
     enabled: !isDeviceMode && Boolean(userGuid),
     queryFn: async () => {
       if (!userGuid) {
@@ -47,6 +49,16 @@ export function useStores() {
       }
 
       const embeddedStores = sortShopStores(normalizeShopStores(user?.stores));
+
+      if (useAllStoresForWarehouseCart) {
+        const stores = sortShopStores(await getAllStores());
+        console.info("[useStores] loaded all stores for warehouse cart", {
+          count: stores.length,
+          endpoint: "/stores/all-by-name",
+          userGuid,
+        });
+        return stores;
+      }
 
       try {
         const apiStores = sortShopStores(await getStoresByUserGuid(userGuid));
@@ -193,6 +205,7 @@ export function useStores() {
       queryStatus: storesQuery.status,
       roleNames: user?.roleNames ?? [],
       storeCount: effectiveStores.length,
+      useAllStoresForWarehouseCart,
       userGuid: userGuid ?? "",
     }),
     [
@@ -204,6 +217,7 @@ export function useStores() {
       storesQuery.fetchStatus,
       storesQuery.status,
       user?.roleNames,
+      useAllStoresForWarehouseCart,
       userGuid,
     ]
   );

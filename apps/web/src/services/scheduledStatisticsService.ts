@@ -56,6 +56,7 @@ export interface ScheduledStatisticsJobResult {
   totalDays?: number
   processedDays?: number
   failedDates?: string[]
+  skippedDates?: string[]
 }
 
 function normalizeResult(payload: ApiResponse<ScheduledStatisticsJobResult> | ScheduledStatisticsJobResult) {

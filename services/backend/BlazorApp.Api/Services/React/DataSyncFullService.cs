@@ -7,6 +7,7 @@ using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Caching.Memory;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
@@ -22,6 +23,7 @@ namespace BlazorApp.Api.Services.React
         private readonly ILogger<DataSyncFullService> _logger;
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly IStoreRetailPriceHqSyncService _storeRetailPriceHqSyncService;
+        private readonly IMemoryCache _cache;
 
         public DataSyncFullService(
             SqlSugarContext localContext,
@@ -32,7 +34,8 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<DataSyncFullService> logger,
             ScheduledTaskLogService taskLogService,
-            IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService
+            IStoreRetailPriceHqSyncService storeRetailPriceHqSyncService,
+            IMemoryCache cache
         )
         {
             _localContext = localContext;
@@ -44,6 +47,7 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _taskLogService = taskLogService;
             _storeRetailPriceHqSyncService = storeRetailPriceHqSyncService;
+            _cache = cache;
         }
 
         /// <summary>
@@ -1868,6 +1872,8 @@ namespace BlazorApp.Api.Services.React
                     }
                     hqDb.Dispose();
                     await _localContext.Db.Ado.CommitTranAsync();
+                    // 全量同步会先清空 WarehouseCategory，事务成功后必须清理移动端分类树缓存。
+                    WarehouseCategoryReactService.InvalidateTreeCache(_cache);
                     result.AddedCount = added;
                     result.ErrorCount = errors;
                     result.IsSuccess = errors == 0;

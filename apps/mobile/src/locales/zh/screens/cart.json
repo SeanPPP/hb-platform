@@ -34,6 +34,11 @@
     "submitTitle": "提交购物车",
     "submitMessage": "确定要提交当前门店购物车吗？"
   },
+  "remarks": {
+    "label": "订单备注（选填）",
+    "placeholder": "可填写给仓库的备注",
+    "counter": "{{count}} / {{max}}"
+  },
   "pagination": {
     "previous": "上一页",
     "next": "下一页",

@@ -14,13 +14,20 @@ import {
   Portal,
   Searchbar,
   Text,
+  TextInput as PaperTextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { AnimatedEmptyStateGraphic } from "@/components/ui/AnimatedEmptyStateGraphic";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
 import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
 import { getCategoryTree } from "@/modules/shop/api";
+import {
+  canSubmitCartQuantityEdit,
+  parseCartQuantityInput,
+  shouldSubmitCartQuantityUpdate,
+} from "@/modules/shop/cart-quantity-input";
 import { shouldClearActiveCartMutation } from "@/modules/shop/cart-mutation-state";
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
@@ -28,6 +35,12 @@ import { useProductGrades } from "@/modules/shop/use-product-grades";
 import { useProducts } from "@/modules/shop/use-products";
 import { useStores } from "@/modules/shop/use-stores";
 import { useUpdateCartQuantity } from "@/modules/shop/use-update-cart-quantity";
+import {
+  buildCategoryNameMap,
+  buildHomeProductQuery,
+  flattenVisibleCategories,
+  type VisibleCategoryRow,
+} from "@/modules/shop/home-filters";
 import { useCameraScan, type CameraScanMode } from "@/modules/scanner/use-camera-scan";
 import { useHidBarcodeScanner } from "@/modules/scanner/use-hid-barcode-scanner";
 import { useScanResult } from "@/modules/scanner/use-scan-result";
@@ -40,28 +53,6 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 function resolveDisplayCategories(tree: StoreOrderCategoryNode[]) {
   const allNode = tree.find((item) => item.categoryName.toLowerCase().includes("all"));
   return allNode?.children?.length ? allNode.children : tree;
-}
-
-function findCategoryName(
-  nodes: StoreOrderCategoryNode[],
-  categoryGUID: string | undefined
-): string | undefined {
-  if (!categoryGUID) {
-    return undefined;
-  }
-
-  for (const node of nodes) {
-    if (node.categoryGUID === categoryGUID) {
-      return node.categoryName;
-    }
-
-    const childName = findCategoryName(node.children ?? [], categoryGUID);
-    if (childName) {
-      return childName;
-    }
-  }
-
-  return undefined;
 }
 
 function normalizeGradeValue(value: string | null | undefined) {
@@ -104,6 +95,10 @@ export default function Home() {
   const [pageNumber, setPageNumber] = useState(1);
   const [noticeMessage, setNoticeMessage] = useState("");
   const [activeCartMutationProductCode, setActiveCartMutationProductCode] = useState<string | null>(null);
+  const [quantityEditorProduct, setQuantityEditorProduct] = useState<StoreOrderProductItem | null>(null);
+  const [quantityEditorStoreCode, setQuantityEditorStoreCode] = useState<string | null>(null);
+  const [quantityDraft, setQuantityDraft] = useState("");
+  const [quantityEditorError, setQuantityEditorError] = useState("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -113,6 +108,7 @@ export default function Home() {
   ), [language, t]);
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
+  const quantityEditorBusy = Boolean(quantityEditorProduct && updateCartQuantity.isPending);
   const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
   const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -192,7 +188,7 @@ export default function Home() {
   });
   const cameraScan = useCameraScan({
     ignoreWhileProcessing: cameraScanMode === "continuous",
-    resetKey: `${cameraScanMode}:${selectedStoreCode ?? ""}:${autoAddWhenSingle ? "add" : "lookup"}`,
+    resetKey: `${cameraScanMode}:${selectedStoreCode ?? ""}:${autoAddWhenSingle ? "add-to-cart" : "lookup"}`,
     onBarcode: async (barcode) => {
       if (cameraScanMode === "single") {
         // 单次扫码命中后先收起相机，后续查询/加购反馈沿用原链路。
@@ -206,16 +202,16 @@ export default function Home() {
       await scanResult.handleBarcode(barcode, "hid");
     },
   });
-  const handleSearchFocus = useCallback(() => {
+  const pauseHiddenScannerFocus = useCallback(() => {
     if (resumeHiddenScannerFocusTimerRef.current) {
       clearTimeout(resumeHiddenScannerFocusTimerRef.current);
       resumeHiddenScannerFocusTimerRef.current = null;
     }
 
-    // 手动输入搜索时暂停隐藏扫码输入，避免它定时抢走搜索框焦点。
+    // 手动输入搜索或数量时暂停隐藏扫码输入，避免它定时抢走当前输入框焦点。
     hidScanner.pauseHiddenInputFocus();
   }, [hidScanner.pauseHiddenInputFocus]);
-  const handleSearchBlur = useCallback(() => {
+  const resumeHiddenScannerFocusSoon = useCallback(() => {
     if (resumeHiddenScannerFocusTimerRef.current) {
       clearTimeout(resumeHiddenScannerFocusTimerRef.current);
     }
@@ -226,6 +222,8 @@ export default function Home() {
       hidScanner.resumeHiddenInputFocus();
     }, 250);
   }, [hidScanner.resumeHiddenInputFocus]);
+  const handleSearchFocus = pauseHiddenScannerFocus;
+  const handleSearchBlur = resumeHiddenScannerFocusSoon;
 
   useFocusEffect(
     useCallback(() => {
@@ -244,15 +242,21 @@ export default function Home() {
   const categoriesQuery = useQuery({
     queryKey: ["shopCategories"],
     queryFn: getCategoryTree,
+    staleTime: 30 * 60 * 1000,
   });
 
   const categoryOptions = useMemo(
     () => resolveDisplayCategories(categoriesQuery.data ?? []),
     [categoriesQuery.data]
   );
+  const categoryNameMap = useMemo(() => buildCategoryNameMap(categoryOptions), [categoryOptions]);
+  const visibleCategoryRows = useMemo(
+    () => flattenVisibleCategories(categoryOptions, expandedCategoryGUIDs),
+    [categoryOptions, expandedCategoryGUIDs]
+  );
   const selectedCategoryName = useMemo(
-    () => findCategoryName(categoryOptions, selectedCategoryGUID) ?? t("filters.all"),
-    [categoryOptions, selectedCategoryGUID, t]
+    () => (selectedCategoryGUID ? categoryNameMap.get(selectedCategoryGUID) : undefined) ?? t("filters.all"),
+    [categoryNameMap, selectedCategoryGUID, t]
   );
   const productGradesQuery = useProductGrades();
   const gradeOptions = useMemo(() => productGradesQuery.data ?? [], [productGradesQuery.data]);
@@ -266,15 +270,19 @@ export default function Home() {
       selectedGrade
     );
   }, [gradeOptions, selectedGrade, t]);
-  const productsQuery = useProducts({
-    storeCode: selectedStoreCode ?? undefined,
-    itemNumber: keyword || undefined,
-    categoryGUID: selectedCategoryGUID,
-    grade: selectedGrade,
-    pageNumber,
-    pageSize: 18,
-    sortBy: "Default",
-  });
+  const productQuery = useMemo(
+    () =>
+      buildHomeProductQuery({
+        storeCode: selectedStoreCode,
+        keyword,
+        categoryGUID: selectedCategoryGUID,
+        grade: selectedGrade,
+        pageNumber,
+        pageSize: 18,
+      }),
+    [keyword, pageNumber, selectedCategoryGUID, selectedGrade, selectedStoreCode]
+  );
+  const productsQuery = useProducts(productQuery);
 
   useEffect(() => {
     setPageNumber(1);
@@ -285,6 +293,20 @@ export default function Home() {
     setScannedProducts(null);
     setScannedProductTraceIds({});
   }, [selectedStoreCode]);
+
+  useEffect(() => {
+    const currentStoreCode = normalizeStoreCode(selectedStoreCode);
+    if (!quantityEditorStoreCode || quantityEditorStoreCode === currentStoreCode) {
+      return;
+    }
+
+    // 门店切换后关闭旧门店数量编辑器，防止旧商品数量写入新门店订货车。
+    setQuantityEditorProduct(null);
+    setQuantityEditorStoreCode(null);
+    setQuantityDraft("");
+    setQuantityEditorError("");
+    resumeHiddenScannerFocusSoon();
+  }, [quantityEditorStoreCode, resumeHiddenScannerFocusSoon, selectedStoreCode]);
 
   useEffect(() => {
     if (
@@ -397,47 +419,45 @@ export default function Home() {
     );
   }, []);
 
-  const renderCategoryTree = useCallback(
-    (nodes: StoreOrderCategoryNode[], depth = 0): React.ReactNode =>
-      nodes.map((node) => {
-        const hasChildren = Boolean(node.children?.length);
-        const isExpanded = expandedCategoryGUIDs.includes(node.categoryGUID);
-        const isSelected = selectedCategoryGUID === node.categoryGUID;
+  const handleSelectCategoryFilter = useCallback((categoryGUID?: string) => {
+    setSelectedCategoryGUID((currentValue) =>
+      currentValue === categoryGUID ? undefined : categoryGUID
+    );
+    // 分类选择完成后回到商品列表；展开箭头不走这个回调，保持只展开分类树。
+    setFiltersVisible(false);
+  }, []);
 
-        return (
-          <View key={node.categoryGUID} style={[styles.categoryTreeNode, depth ? { marginLeft: depth * 14 } : null]}>
-            <View style={[styles.categoryTreeRow, isSelected ? styles.categoryTreeRowSelected : null]}>
-              <Button
-                compact
-                mode={isSelected ? "contained-tonal" : "text"}
-                onPress={() =>
-                  setSelectedCategoryGUID((currentValue) =>
-                    currentValue === node.categoryGUID ? undefined : node.categoryGUID
-                  )
-                }
-                style={styles.categoryTreeButton}
-                contentStyle={styles.categoryTreeButtonContent}
-                labelStyle={styles.categoryTreeButtonLabel}
-              >
-                {node.categoryName}
-              </Button>
-              {hasChildren ? (
-                <IconButton
-                  icon={isExpanded ? "chevron-up" : "chevron-down"}
-                  size={18}
-                  onPress={() => toggleCategoryExpanded(node.categoryGUID)}
-                  style={styles.categoryTreeToggle}
-                />
-              ) : null}
-            </View>
+  const renderCategoryRow = useCallback(
+    ({ item }: { item: VisibleCategoryRow }) => {
+      const { node, depth, hasChildren, isExpanded } = item;
+      const isSelected = selectedCategoryGUID === node.categoryGUID;
 
-            {hasChildren && isExpanded ? (
-              <View style={styles.categoryTreeChildren}>{renderCategoryTree(node.children ?? [], depth + 1)}</View>
+      return (
+        <View style={[styles.categoryTreeNode, depth ? { marginLeft: depth * 14 } : null]}>
+          <View style={[styles.categoryTreeRow, isSelected ? styles.categoryTreeRowSelected : null]}>
+            <Button
+              compact
+              mode={isSelected ? "contained-tonal" : "text"}
+              onPress={() => handleSelectCategoryFilter(node.categoryGUID)}
+              style={styles.categoryTreeButton}
+              contentStyle={styles.categoryTreeButtonContent}
+              labelStyle={styles.categoryTreeButtonLabel}
+            >
+              {node.categoryName}
+            </Button>
+            {hasChildren ? (
+              <IconButton
+                icon={isExpanded ? "chevron-up" : "chevron-down"}
+                size={18}
+                onPress={() => toggleCategoryExpanded(node.categoryGUID)}
+                style={styles.categoryTreeToggle}
+              />
             ) : null}
           </View>
-        );
-      }),
-    [expandedCategoryGUIDs, selectedCategoryGUID, toggleCategoryExpanded]
+        </View>
+      );
+    },
+    [handleSelectCategoryFilter, selectedCategoryGUID, toggleCategoryExpanded]
   );
 
   async function handleAddToCart(product: StoreOrderProductItem) {
@@ -463,6 +483,86 @@ export default function Home() {
 
   function getCurrentCartQuantity(productCode: string) {
     return displayDynamicDataMap[productCode]?.cartQuantity ?? 0;
+  }
+
+  function handleEditCartQuantity(product: StoreOrderProductItem, currentQuantity: number) {
+    pauseHiddenScannerFocus();
+    setQuantityEditorProduct(product);
+    setQuantityEditorStoreCode(selectedStoreCodeRef.current);
+    setQuantityDraft(String(currentQuantity));
+    setQuantityEditorError("");
+  }
+
+  function resetQuantityEditor() {
+    setQuantityEditorProduct(null);
+    setQuantityEditorStoreCode(null);
+    setQuantityDraft("");
+    setQuantityEditorError("");
+    resumeHiddenScannerFocusSoon();
+  }
+
+  function handleDismissQuantityEditor() {
+    if (quantityEditorBusy) {
+      return;
+    }
+
+    resetQuantityEditor();
+  }
+
+  async function handleConfirmQuantityEdit() {
+    if (!quantityEditorProduct || quantityEditorBusy) {
+      return;
+    }
+
+    if (
+      !canSubmitCartQuantityEdit({
+        currentStoreCode: selectedStoreCodeRef.current,
+        editorStoreCode: quantityEditorStoreCode,
+        isPending: updateCartQuantity.isPending,
+      })
+    ) {
+      // 分店已切换或已有提交在路上时不继续写后端，避免编辑弹窗串门店或重复提交。
+      if (!updateCartQuantity.isPending) {
+        resetQuantityEditor();
+      }
+      return;
+    }
+
+    const nextQuantity = parseCartQuantityInput(quantityDraft);
+    if (nextQuantity === null) {
+      setQuantityEditorError(t("quantityEditor.invalidQuantity"));
+      return;
+    }
+
+    const product = quantityEditorProduct;
+    const currentQuantity = getCurrentCartQuantity(product.productCode);
+    if (!shouldSubmitCartQuantityUpdate(currentQuantity, nextQuantity)) {
+      // 数量没有变化时不触发后端写入，避免 0 -> 0 这类无意义更新落成零数量明细。
+      resetQuantityEditor();
+      return;
+    }
+
+    const mutationStoreCode = quantityEditorStoreCode;
+    setQuantityEditorError("");
+    setActiveCartMutationProductCode(product.productCode);
+
+    try {
+      // 复用 useUpdateCartQuantity 的乐观快照：onMutate 立即改数量，失败由 onError 回滚。
+      await updateCartQuantity.mutateAsync({
+        nextQuantity,
+        product,
+        scanTraceId: scannedProductTraceIds[product.productCode],
+      });
+      resetQuantityEditor();
+    } catch (error) {
+      const message = getErrorMessage(error, "messages.updateQtyFailed");
+      setQuantityEditorError(message);
+      setNoticeMessage(message);
+    } finally {
+      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+        setActiveCartMutationProductCode(null);
+      }
+    }
   }
 
   async function handleIncreaseCartQuantity(product: StoreOrderProductItem) {
@@ -694,28 +794,31 @@ export default function Home() {
         contentContainerStyle={productListContentStyle}
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
-          <EmptyState
-            title={
-              productsQuery.isError
-                ? t("empty.productsLoadFailedTitle")
-                : hasNoAssignedStores
-                  ? t("empty.noAssignedStoresTitle")
-                : selectedStoreCode
-                  ? t("empty.noProductsTitle")
-                  : t("empty.selectStoreTitle")
-            }
-            description={
-              productsQuery.isError
-                ? t("empty.productsLoadFailedDescription")
-                : hasNoAssignedStores
-                  ? t("empty.noAssignedStoresDescription")
-                : selectedStoreCode
-                  ? t("empty.noProductsDescription")
-                  : t("empty.selectStoreDescription")
-            }
-            actionLabel={productsQuery.isError ? t("common:actions.retry") : undefined}
-            onAction={productsQuery.isError ? () => void productsQuery.refetch() : undefined}
-          />
+          <View style={styles.homeEmptyState}>
+            <AnimatedEmptyStateGraphic />
+            <EmptyState
+              title={
+                productsQuery.isError
+                  ? t("empty.productsLoadFailedTitle")
+                  : hasNoAssignedStores
+                    ? t("empty.noAssignedStoresTitle")
+                  : selectedStoreCode
+                    ? t("empty.noProductsTitle")
+                    : t("empty.selectStoreTitle")
+              }
+              description={
+                productsQuery.isError
+                  ? t("empty.productsLoadFailedDescription")
+                  : hasNoAssignedStores
+                    ? t("empty.noAssignedStoresDescription")
+                  : selectedStoreCode
+                    ? t("empty.noProductsDescription")
+                    : t("empty.selectStoreDescription")
+              }
+              actionLabel={productsQuery.isError ? t("common:actions.retry") : undefined}
+              onAction={productsQuery.isError ? () => void productsQuery.refetch() : undefined}
+            />
+          </View>
         }
         ListFooterComponent={
           displayProducts.length ? (
@@ -736,12 +839,68 @@ export default function Home() {
             isUpdatingCart={activeCartMutationProductCode === item.productCode}
             onAddToCart={handleAddToCart}
             onDecreaseCartQuantity={handleDecreaseCartQuantity}
+            onEditCartQuantity={handleEditCartQuantity}
             onIncreaseCartQuantity={handleIncreaseCartQuantity}
           />
         )}
       />
 
-      {productsQuery.isLoading || storesLoading ? <LoadingOverlay /> : null}
+      {productsQuery.isFetching || storesLoading ? <LoadingOverlay /> : null}
+
+      <Portal>
+        <Modal
+          visible={Boolean(quantityEditorProduct)}
+          onDismiss={handleDismissQuantityEditor}
+          contentContainerStyle={styles.quantityEditorModal}
+        >
+          <Text variant="titleMedium">{t("quantityEditor.title")}</Text>
+          <Text variant="bodySmall" numberOfLines={2} style={styles.secondaryText}>
+            {quantityEditorProduct
+              ? t("quantityEditor.product", {
+                  name: quantityEditorProduct.productName || quantityEditorProduct.productCode,
+                })
+              : ""}
+          </Text>
+          {/* 编辑弹窗只收集覆盖数量；确认时统一走后端订货数量 mutation。 */}
+          <PaperTextInput
+            mode="outlined"
+            label={t("quantityEditor.inputLabel")}
+            value={quantityDraft}
+            onChangeText={(value) => {
+              setQuantityDraft(value);
+              setQuantityEditorError("");
+            }}
+            keyboardType="number-pad"
+            autoFocus
+            disabled={quantityEditorBusy}
+            error={Boolean(quantityEditorError)}
+            onFocus={pauseHiddenScannerFocus}
+            onBlur={() => {
+              if (!quantityEditorProduct) {
+                resumeHiddenScannerFocusSoon();
+              }
+            }}
+          />
+          {quantityEditorError ? (
+            <Text variant="bodySmall" style={styles.quantityEditorError}>
+              {quantityEditorError}
+            </Text>
+          ) : null}
+          <View style={styles.quantityEditorActions}>
+            <Button onPress={handleDismissQuantityEditor} disabled={quantityEditorBusy}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button
+              mode="contained"
+              onPress={() => void handleConfirmQuantityEdit()}
+              loading={quantityEditorBusy}
+              disabled={quantityEditorBusy}
+            >
+              {t("common:actions.confirm")}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
 
       <Portal>
         <Modal
@@ -809,7 +968,7 @@ export default function Home() {
           onDismiss={() => setFiltersVisible(false)}
           contentContainerStyle={styles.filtersModal}
         >
-          <ScrollView contentContainerStyle={styles.filtersModalContent}>
+          <View style={styles.filtersModalContent}>
             <View style={styles.filtersModalHeader}>
               <View style={styles.filtersModalTitleWrap}>
                 <Text variant="titleMedium">{t("filterTitle")}</Text>
@@ -824,23 +983,36 @@ export default function Home() {
             <View style={styles.filtersSection}>
               <View style={styles.filtersSectionHeader}>
                 <Text variant="labelLarge">{t("filters.category")}</Text>
-                <Button compact onPress={() => setSelectedCategoryGUID(undefined)}>
+                <Button compact onPress={() => handleSelectCategoryFilter(undefined)}>
                   {t("filters.allCategories")}
                 </Button>
               </View>
-              <View style={styles.categoryTreeWrap}>
+              <View style={[styles.categoryTreeWrap, { maxHeight: Math.max(260, windowHeight - 260) }]}>
                 <Button
                   compact
                   mode={!selectedCategoryGUID ? "contained-tonal" : "text"}
-                  onPress={() => setSelectedCategoryGUID(undefined)}
+                  onPress={() => handleSelectCategoryFilter(undefined)}
                   contentStyle={styles.resetFilterButtonContent}
                 >
                   {t("filters.all")}
                 </Button>
-                {renderCategoryTree(categoryOptions)}
+                {categoriesQuery.isLoading ? (
+                  <Text variant="bodyMedium">{t("common:loading")}</Text>
+                ) : (
+                  <FlatList
+                    data={filtersVisible ? visibleCategoryRows : []}
+                    keyExtractor={(item) => item.node.categoryGUID}
+                    renderItem={renderCategoryRow}
+                    contentContainerStyle={styles.categoryTreeListContent}
+                    keyboardShouldPersistTaps="handled"
+                    initialNumToRender={18}
+                    maxToRenderPerBatch={18}
+                    windowSize={5}
+                  />
+                )}
               </View>
             </View>
-          </ScrollView>
+          </View>
         </Modal>
       </Portal>
 
@@ -1109,6 +1281,9 @@ const styles = StyleSheet.create({
   categoryTreeWrap: {
     gap: 6,
   },
+  categoryTreeListContent: {
+    gap: 6,
+  },
   categoryTreeNode: {
     gap: 6,
   },
@@ -1139,9 +1314,6 @@ const styles = StyleSheet.create({
   },
   categoryTreeToggle: {
     margin: 0,
-  },
-  categoryTreeChildren: {
-    gap: 6,
   },
   searchRow: {
     flexDirection: "row",
@@ -1264,6 +1436,13 @@ const styles = StyleSheet.create({
   listContentCompact: {
     paddingBottom: 0,
   },
+  homeEmptyState: {
+    flexGrow: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingTop: 28,
+  },
   columnWrapper: {
     justifyContent: "space-between",
     gap: 0,
@@ -1287,6 +1466,22 @@ const styles = StyleSheet.create({
   },
   filtersModalContent: {
     gap: 16,
+  },
+  quantityEditorModal: {
+    margin: 16,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+    gap: 12,
+  },
+  quantityEditorError: {
+    color: "#BA1A1A",
+  },
+  quantityEditorActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
   },
   filtersModalHeader: {
     flexDirection: "row",

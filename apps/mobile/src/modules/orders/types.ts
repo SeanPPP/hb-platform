@@ -69,6 +69,7 @@ export interface StoreOrderDetailLine {
   amount: number;
   importPrice: number;
   importAmount: number;
+  allocatedImportAmount?: number;
   volume?: number;
   totalVolume?: number;
   orderVolume?: number;
@@ -86,6 +87,7 @@ export interface StoreOrderDetail {
   totalAmount: number;
   totalQuantity: number;
   totalImportAmount: number;
+  totalAllocatedImportAmount?: number;
   totalVolume: number;
   totalOrderVolume?: number;
   totalAllocVolume?: number;
@@ -137,6 +139,7 @@ export interface StoreOrderCartItem {
   amount: number;
   importPrice: number;
   importAmount: number;
+  allocatedImportAmount?: number;
   volume?: number;
   totalVolume?: number;
   minOrderQuantity: number;
@@ -154,6 +157,7 @@ export interface StoreOrderCart {
   totalAmount: number;
   totalQuantity: number;
   totalImportAmount: number;
+  totalAllocatedImportAmount?: number;
   totalVolume: number;
   remarks?: string;
   shippingFee?: number;

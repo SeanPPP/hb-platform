@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import {
   buildOtaRegistrationPayload,
@@ -197,11 +199,35 @@ const silentLogger = {
   log() {},
   warn() {},
 };
+function createCollectingLogger() {
+  const logs = [];
+  const warns = [];
+
+  return {
+    logs,
+    warns,
+    logger: {
+      log(message) {
+        logs.push(String(message));
+      },
+      warn(message) {
+        warns.push(String(message));
+      },
+    },
+  };
+}
+
 const publishOptions = {
   channel: "preview",
   profile: "preview",
-  runtimeVersion: "1.0.1",
+  runtimeVersion: "1.0.2",
   message: "JSON OTA 发布",
+};
+const legacyPublishOptions = {
+  ...publishOptions,
+  runtimeVersion: "1.0.1",
+  message: "提示测试机下载安装新版 APK",
+  nativeInstaller: "disabled",
 };
 
 process.env.HBWEB_API_BASE_URL = "https://hotbargain.vip";
@@ -234,6 +260,30 @@ try {
       },
     }),
     /发布 OTA 前必须配置 HBWEB_API_BASE_URL 和 HBWEB_API_TOKEN/,
+  );
+  assert.equal(easRunCount, 0);
+
+  await assert.rejects(
+    runPublishOtaUpdate({ ...publishOptions, nativeInstaller: "maybe" }, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /--native-installer 必须是 enabled 或 disabled/,
+  );
+  assert.equal(easRunCount, 0);
+
+  await assert.rejects(
+    runPublishOtaUpdate({ ...publishOptions, runtimeVersion: "1.0.1" }, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /--runtime-version 1\.0\.1 是旧 APK 过渡 OTA，必须设置 --native-installer disabled/,
   );
   assert.equal(easRunCount, 0);
 
@@ -394,6 +444,67 @@ try {
   assert.equal(publishFetchCalls[1].url, "https://hotbargain.vip/api/mobile-app-builds/ota-updates");
   assert.equal(publishFetchCalls[1].init.headers.Authorization, "Bearer test-token");
 
+  const defaultPublishLogger = createCollectingLogger();
+  let defaultEasCommand = null;
+  await runPublishOtaUpdate(publishOptions, {
+    logger: defaultPublishLogger.logger,
+    preflightOtaRegistrationFn: async () => {},
+    registerOtaUpdateFn: async () => ({
+      skipped: false,
+      url: "https://hotbargain.vip/api/mobile-app-builds/ota-updates",
+    }),
+    runCommandFn: async (command) => {
+      defaultEasCommand = command;
+      return { stdout: jsonOutput };
+    },
+  });
+  assert.equal(defaultEasCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED, "true");
+  assert.equal(defaultEasCommand.env.HBWEB_API_TOKEN, undefined);
+  assert.ok(
+    defaultPublishLogger.logs.includes("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=true"),
+  );
+
+  const disabledPublishLogger = createCollectingLogger();
+  let disabledEasCommand = null;
+  await runPublishOtaUpdate({ ...publishOptions, nativeInstaller: "disabled" }, {
+    logger: disabledPublishLogger.logger,
+    preflightOtaRegistrationFn: async () => {},
+    registerOtaUpdateFn: async () => ({
+      skipped: false,
+      url: "https://hotbargain.vip/api/mobile-app-builds/ota-updates",
+    }),
+    runCommandFn: async (command) => {
+      disabledEasCommand = command;
+      return { stdout: jsonOutput };
+    },
+  });
+  assert.equal(disabledEasCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED, "false");
+  assert.equal(disabledEasCommand.env.HBWEB_API_TOKEN, undefined);
+  assert.ok(
+    disabledPublishLogger.logs.includes("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false"),
+  );
+
+  const legacyPublishLogger = createCollectingLogger();
+  let legacyEasCommand = null;
+  await runPublishOtaUpdate(legacyPublishOptions, {
+    logger: legacyPublishLogger.logger,
+    preflightOtaRegistrationFn: async () => {},
+    registerOtaUpdateFn: async () => ({
+      skipped: false,
+      url: "https://hotbargain.vip/api/mobile-app-builds/ota-updates",
+    }),
+    runCommandFn: async (command) => {
+      legacyEasCommand = command;
+      return { stdout: jsonOutput };
+    },
+  });
+  assert.equal(legacyEasCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED, "false");
+  assert.equal(legacyEasCommand.env.EXPO_PUBLIC_RUNTIME_VERSION, "1.0.1");
+  assert.equal(legacyEasCommand.env.HBWEB_API_TOKEN, undefined);
+  assert.ok(
+    legacyPublishLogger.logs.includes("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false"),
+  );
+
   const serviceTokenPublishFetchCalls = [];
   process.env.HBWEB_API_TOKEN = "hbsvc_publish_token";
   globalThis.fetch = async (url, init) => {
@@ -486,5 +597,25 @@ try {
     process.env.HBWEB_API_TOKEN = originalToken;
   }
 }
+
+const packageJson = JSON.parse(
+  await readFile(path.resolve("package.json"), "utf8"),
+);
+assert.match(
+  packageJson.scripts["ota:legacy-apk-notice:preview"],
+  /--native-installer disabled/,
+);
+assert.match(
+  packageJson.scripts["ota:legacy-apk-notice:preview"],
+  /--runtime-version 1\.0\.1/,
+);
+assert.match(
+  packageJson.scripts["ota:legacy-apk-notice:production"],
+  /--native-installer disabled/,
+);
+assert.match(
+  packageJson.scripts["ota:legacy-apk-notice:production"],
+  /--runtime-version 1\.0\.1/,
+);
 
 console.log("publish OTA update script tests passed.");

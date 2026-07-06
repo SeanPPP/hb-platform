@@ -3,7 +3,7 @@
   "filterTitle": "Filters",
   "gradeFilterTitle": "Grade filter",
   "scanResultHint": "Showing scan results. Clear the filter to return to the full product list.",
-  "searchPlaceholder": "Search by item number",
+  "searchPlaceholder": "Search by item number/barcode",
   "searchToggleOpen": "Expand search",
   "searchToggleClose": "Collapse search",
   "cameraQuery": "Camera lookup",
@@ -46,6 +46,12 @@
     "needPermissionTitle": "Camera permission required",
     "needPermissionDescription": "Enable camera access to scan products directly from the product page.",
     "grantPermission": "Enable camera permission"
+  },
+  "quantityEditor": {
+    "title": "Edit order quantity",
+    "product": "Product: {{name}}",
+    "inputLabel": "Order quantity",
+    "invalidQuantity": "Enter 0 or a whole number"
   },
   "messages": {
     "storesLoadFailed": "Failed to load stores. Please try again later.",

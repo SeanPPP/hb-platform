@@ -36,6 +36,8 @@ import {
   DEFAULT_ORDER_LIST_PAGE_SIZE,
   filterOrderDetailLinesByItemNumber,
   formatOrderDate,
+  getOrderDetailLineAllocatedImportAmount,
+  getOrderDetailTotalAllocatedImportAmount,
   getOrderRowNumber,
 } from "@/modules/orders/order-list-display";
 import { buildOrderLineLabelPayload } from "@/modules/orders/order-label-payload";
@@ -227,7 +229,7 @@ const OrderLineCard = memo(function OrderLineCard({
             <Text variant="labelSmall" style={styles.detailMetaLabel}>
               {t("fields.allocAmount")}
             </Text>
-            <Text variant="bodyMedium">{formatMoney(item.importAmount)}</Text>
+            <Text variant="bodyMedium">{formatMoney(getOrderDetailLineAllocatedImportAmount(item))}</Text>
           </View>
         </View>
         {item.barcode ? (
@@ -381,7 +383,11 @@ function OrderDetailContent({
               <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderedQty")} value={formatNumber(detail?.totalQuantity)} />
               <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.allocQty")} value={formatNumber(detail?.totalAllocQuantity)} />
               <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderAmount")} value={formatMoney(detail?.totalAmount)} />
-              <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.allocAmount")} value={formatMoney(detail?.totalImportAmount)} />
+              <SummaryMetric
+                style={styles.detailSummaryMetric}
+                label={t("summary.allocAmount")}
+                value={formatMoney(getOrderDetailTotalAllocatedImportAmount(detail))}
+              />
               <SummaryMetric style={styles.detailSummaryMetric} label={t("summary.orderVolume")} value={formatNumber(detail?.totalOrderVolume, 4)} />
             </ScrollView>
           </Card.Content>

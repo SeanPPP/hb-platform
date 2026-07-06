@@ -35,6 +35,8 @@
     <Compile Include="StoreUsersReactServiceTests.cs" />
     <Compile Include="UserStoreManagementRelationTests.cs" />
     <Compile Include="AttendanceReactServiceTests.cs" />
+    <Compile Include="UserLoginDeviceAuditServiceTests.cs" />
+    <Compile Include="RequiredLocationValidatorTests.cs" />
     <Compile Include="AttendancePublicHolidaySyncHelperTests.cs" />
     <Compile Include="AttendancePublicHolidaySyncServiceTests.cs" />
     <Compile Include="SeedDataServiceTests.cs" />
@@ -57,8 +59,10 @@
     <Compile Include="DataSyncIncrementalStoreRetailPriceTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
+    <Compile Include="SalesStatisticsAlignmentServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
+    <Compile Include="SalesDashboardReportRevenueTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />

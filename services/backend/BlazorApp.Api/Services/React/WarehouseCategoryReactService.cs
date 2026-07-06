@@ -4,29 +4,40 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.Extensions.Caching.Memory;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React
 {
     public class WarehouseCategoryReactService : IWarehouseCategoryReactService
     {
+        internal const string TreeCacheKey = "WarehouseCategoryReactService:Tree";
+        private static readonly TimeSpan TreeCacheDuration = TimeSpan.FromMinutes(30);
         private readonly SqlSugarContext _context;
         private readonly IMapper _mapper;
         private readonly ILogger<WarehouseCategoryReactService> _logger;
+        private readonly IMemoryCache _cache;
 
         public WarehouseCategoryReactService(
             SqlSugarContext context,
             IMapper mapper,
-            ILogger<WarehouseCategoryReactService> logger
+            ILogger<WarehouseCategoryReactService> logger,
+            IMemoryCache cache
         )
         {
             _context = context;
             _mapper = mapper;
             _logger = logger;
+            _cache = cache;
         }
 
         public async Task<List<WarehouseCategoryDto>> GetTreeAsync()
         {
+            if (_cache.TryGetValue<List<WarehouseCategoryDto>>(TreeCacheKey, out var cachedTree))
+            {
+                return cachedTree ?? new List<WarehouseCategoryDto>();
+            }
+
             var sw = Stopwatch.StartNew();
             var all = await _context
                 .WarehouseCategoryDb.AsQueryable()
@@ -74,7 +85,23 @@ namespace BlazorApp.Api.Services.React
                     dtoRoots[0].Children?.Count ?? 0
                 );
             }
+            _cache.Set(
+                TreeCacheKey,
+                dtoRoots,
+                new MemoryCacheEntryOptions().SetAbsoluteExpiration(TreeCacheDuration)
+            );
             return dtoRoots;
+        }
+
+        private void InvalidateTreeCache()
+        {
+            InvalidateTreeCache(_cache);
+        }
+
+        internal static void InvalidateTreeCache(IMemoryCache cache)
+        {
+            // 分类树变更后让移动端下次打开筛选拿到新树，HQ 同步服务也复用同一个失效入口。
+            cache.Remove(TreeCacheKey);
         }
 
         public async Task<PagedResult<WarehouseCategoryDto>> GetListAsync(
@@ -118,6 +145,7 @@ namespace BlazorApp.Api.Services.React
             var result = await _context.WarehouseCategoryDb.AsInsertable(entity).ExecuteCommandAsync();
             if (result <= 0)
                 throw new InvalidOperationException("Create failed");
+            InvalidateTreeCache();
             return _mapper.Map<WarehouseCategoryDto>(entity);
         }
 
@@ -133,6 +161,7 @@ namespace BlazorApp.Api.Services.React
             var ok = await _context.WarehouseCategoryDb.UpdateAsync(existing);
             if (!ok)
                 throw new InvalidOperationException("Update failed");
+            InvalidateTreeCache();
             return _mapper.Map<WarehouseCategoryDto>(existing);
         }
 
@@ -150,7 +179,12 @@ namespace BlazorApp.Api.Services.React
                 .AnyAsync();
             if (hasProducts)
                 throw new InvalidOperationException("Has products");
-            return await _context.WarehouseCategoryDb.DeleteByIdAsync(categoryGuid);
+            var deleted = await _context.WarehouseCategoryDb.DeleteByIdAsync(categoryGuid);
+            if (deleted)
+            {
+                InvalidateTreeCache();
+            }
+            return deleted;
         }
 
         public async Task<bool> BatchMoveAsync(BatchMoveCategoriesDto dto)
@@ -174,6 +208,10 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(result.ErrorException, "BatchMove failed");
             }
+            else
+            {
+                InvalidateTreeCache();
+            }
             return result.IsSuccess;
         }
 
@@ -191,6 +229,10 @@ namespace BlazorApp.Api.Services.React
                     })
                     .Where(c => c.CategoryGUID == id)
                     .ExecuteCommandAsync();
+            }
+            if (affected > 0)
+            {
+                InvalidateTreeCache();
             }
             return affected;
         }
@@ -215,6 +257,10 @@ namespace BlazorApp.Api.Services.React
             if (!result.IsSuccess)
             {
                 _logger.LogError(result.ErrorException, "BatchSort failed");
+            }
+            else
+            {
+                InvalidateTreeCache();
             }
             return result.IsSuccess;
         }

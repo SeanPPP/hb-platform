@@ -6,8 +6,14 @@ import {
   unbindDeviceApi,
   validateDeviceAuthApi,
 } from "@/modules/device/api";
+import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tracking-control";
+import { collectLoginDeviceLocation } from "@/modules/attendance/required-location";
 import { DeviceStorage } from "@/modules/device/storage";
-import type { DeviceProfile, PersistedDeviceSession } from "@/modules/device/types";
+import type {
+  DeviceProfile,
+  DeviceValidationRequest,
+  PersistedDeviceSession,
+} from "@/modules/device/types";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 
 interface DeviceState {
@@ -17,7 +23,7 @@ interface DeviceState {
   hydrate: () => Promise<PersistedDeviceSession | null>;
   register: (payload: { storeCode: string; storeName?: string | null }) => Promise<PersistedDeviceSession>;
   syncFromProfile: (profile: DeviceProfile, options?: { storeName?: string | null }) => Promise<PersistedDeviceSession>;
-  validate: () => Promise<boolean>;
+  validate: (auditPayload?: Partial<DeviceValidationRequest>) => Promise<boolean>;
   unbind: () => Promise<void>;
   clear: () => Promise<void>;
 }
@@ -91,7 +97,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     return session;
   },
 
-  async validate() {
+  async validate(auditPayload) {
     const currentSession = get().session ?? (await DeviceStorage.getSession());
     if (!currentSession?.hardwareId || !currentSession.authCode) {
       set({ session: null, isReady: true, isLoading: false });
@@ -101,9 +107,16 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     set({ isLoading: true });
 
     try {
+      const locationAuditPayload = auditPayload ?? (await collectLoginDeviceLocation());
       const validation = await validateDeviceAuthApi({
+        ...locationAuditPayload,
         hardwareId: currentSession.hardwareId,
         authCode: currentSession.authCode,
+        systemDeviceNumber:
+          locationAuditPayload.systemDeviceNumber ??
+          currentSession.systemDeviceNumber ??
+          undefined,
+        deviceSystem: locationAuditPayload.deviceSystem ?? getCurrentDeviceSystem(),
       });
 
       if (!validation.isValid) {
@@ -194,6 +207,10 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   async clear() {
+    // 关键位置：设备会话被清理时同步停止班中定位，避免旧设备上下文继续上传。
+    await stopAttendanceLocationTracking().catch((error) => {
+      console.warn("[attendance-location] 清理设备时停止后台定位失败", error);
+    });
     await DeviceStorage.clearSession();
     useAppNavigationStore.getState().reset();
     set({ session: null, isReady: true, isLoading: false });

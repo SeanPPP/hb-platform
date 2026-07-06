@@ -43,6 +43,13 @@ const normalized = normalizeAppNavigationMenu([
     order: 22.6,
   },
   {
+    routeName: "reports",
+    titleKey: "tabs.reports",
+    icon: "chart-line",
+    permission: "Reports.ProductMovement.View",
+    order: 22.7,
+  },
+  {
     routeName: "seasonal-cards",
     titleKey: "tabs.seasonalCards",
     icon: "cards-outline",
@@ -51,7 +58,7 @@ const normalized = normalizeAppNavigationMenu([
   },
 ]);
 
-assertEqual(normalized.length, 6, "normalizer keeps legacy attendance routes, advertisements, promotions, and seasonal cards");
+assertEqual(normalized.length, 7, "normalizer keeps legacy attendance routes, advertisements, promotions, reports, and seasonal cards");
 assertEqual(normalized[0]?.routeName, "attendance", "legacy attendance route stays available");
 assertEqual(
   normalized[1]?.routeName,
@@ -75,6 +82,11 @@ assertEqual(
 );
 assertEqual(
   normalized[5]?.routeName,
+  "reports",
+  "reports route remains available"
+);
+assertEqual(
+  normalized[6]?.routeName,
   "seasonal-cards",
   "seasonal cards route remains available"
 );

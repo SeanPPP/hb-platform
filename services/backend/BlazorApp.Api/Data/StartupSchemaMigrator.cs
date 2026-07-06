@@ -16,8 +16,62 @@ namespace BlazorApp.Api.Data
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
             await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
+            await EnsureAttendanceLocationSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
+            await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureWarehouseOrderCartOwnerSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string ensureColumnSql =
+                @"
+	IF OBJECT_ID('WareHouseOrder', 'U') IS NOT NULL
+	BEGIN
+	    IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NULL
+	    BEGIN
+	        ALTER TABLE [WareHouseOrder]
+	        ADD [CartOwnerUserGuid] nvarchar(50) NULL;
+	    END;
+
+	    IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NULL
+	    BEGIN
+	        THROW 51000, 'WareHouseOrder.CartOwnerUserGuid migration failed', 1;
+	    END;
+	END;";
+
+            // 关键逻辑：CartOwnerUserGuid 是运行时必需列，补列失败必须阻断启动，不能让接口带着缺列运行。
+            await db.Ado.ExecuteCommandAsync(ensureColumnSql);
+
+            const string ensureIndexSql =
+                @"
+	IF OBJECT_ID('WareHouseOrder', 'U') IS NOT NULL
+	BEGIN
+	    IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NOT NULL
+	       AND NOT EXISTS (
+	           SELECT *
+	           FROM sys.indexes
+	           WHERE name = 'IX_WareHouseOrder_CartScope'
+	             AND object_id = OBJECT_ID('WareHouseOrder')
+	       )
+	    BEGIN
+	        -- 关键逻辑：活动购物车按分店 + owner 隔离；NULL owner 保留原分店购物车语义。
+	        CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope]
+	        ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid]);
+	    END;
+	END;";
+
+            try
+            {
+                await db.Ado.ExecuteCommandAsync(ensureIndexSql);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "仓库订货购物车归属索引迁移失败");
+            }
         }
 
         private static async Task EnsureCashRegisterUsersSchemaAsync(
@@ -358,6 +412,118 @@ END;";
             // 关键位置：移动端自更新依赖构建表、OTA 表和 COS 状态字段，启动时补齐可降低旧库发布风险。
             await db.Ado.ExecuteCommandAsync(sql);
             logger.LogInformation("移动端 APK 构建和 OTA 更新表检查完成");
+        }
+
+        private static async Task EnsureAttendanceLocationSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql =
+                @"
+IF OBJECT_ID('UserLoginDeviceRecord', 'U') IS NULL
+BEGIN
+    CREATE TABLE [UserLoginDeviceRecord] (
+        [Id] int IDENTITY(1,1) NOT NULL CONSTRAINT [PK_UserLoginDeviceRecord] PRIMARY KEY,
+        [RecordGuid] nvarchar(50) NOT NULL,
+        [UserGuid] nvarchar(50) NULL,
+        [Username] nvarchar(100) NULL,
+        [HardwareId] nvarchar(100) NULL,
+        [SystemDeviceNumber] nvarchar(100) NULL,
+        [DeviceSystem] nvarchar(30) NULL,
+        [StoreCode] nvarchar(50) NULL,
+        [LoginSource] nvarchar(30) NOT NULL,
+        [LoginAtUtc] datetime2 NOT NULL,
+        [LoginIp] nvarchar(50) NULL,
+        [UserAgent] nvarchar(500) NULL,
+        [LocationLatitude] float NULL,
+        [LocationLongitude] float NULL,
+        [LocationAccuracyMeters] float NULL,
+        [LocationCapturedAtUtc] datetime2 NULL,
+        [IsDeviceSwitched] bit NOT NULL CONSTRAINT [DF_UserLoginDeviceRecord_IsDeviceSwitched] DEFAULT(0),
+        [IsCommonDevice] bit NOT NULL CONSTRAINT [DF_UserLoginDeviceRecord_IsCommonDevice] DEFAULT(0),
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL
+    );
+END;
+
+IF OBJECT_ID('AttendanceLocationSample', 'U') IS NULL
+BEGIN
+    CREATE TABLE [AttendanceLocationSample] (
+        [Id] int IDENTITY(1,1) NOT NULL CONSTRAINT [PK_AttendanceLocationSample] PRIMARY KEY,
+        [SampleGuid] nvarchar(50) NOT NULL,
+        [UserGuid] nvarchar(50) NOT NULL,
+        [StoreCode] nvarchar(50) NULL,
+        [HardwareId] nvarchar(100) NULL,
+        [SystemDeviceNumber] nvarchar(100) NULL,
+        [DeviceSystem] nvarchar(30) NULL,
+        [EventType] nvarchar(30) NOT NULL,
+        [LocationLatitude] float NOT NULL,
+        [LocationLongitude] float NOT NULL,
+        [LocationAccuracyMeters] float NULL,
+        [LocationPermissionStatus] nvarchar(30) NULL,
+        [LocationCapturedAtUtc] datetime2 NOT NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL
+    );
+END;
+
+IF OBJECT_ID('AttendancePunch', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('AttendancePunch', 'LocationLatitude') IS NULL
+        ALTER TABLE [AttendancePunch] ADD [LocationLatitude] float NULL;
+    IF COL_LENGTH('AttendancePunch', 'LocationLongitude') IS NULL
+        ALTER TABLE [AttendancePunch] ADD [LocationLongitude] float NULL;
+    IF COL_LENGTH('AttendancePunch', 'LocationAccuracyMeters') IS NULL
+        ALTER TABLE [AttendancePunch] ADD [LocationAccuracyMeters] float NULL;
+    IF COL_LENGTH('AttendancePunch', 'LocationPermissionStatus') IS NULL
+        ALTER TABLE [AttendancePunch] ADD [LocationPermissionStatus] nvarchar(30) NULL;
+    IF COL_LENGTH('AttendancePunch', 'LocationCapturedAtUtc') IS NULL
+        ALTER TABLE [AttendancePunch] ADD [LocationCapturedAtUtc] datetime2 NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_UserLoginDeviceRecord_User_LoginAt'
+      AND object_id = OBJECT_ID('UserLoginDeviceRecord')
+)
+BEGIN
+    CREATE INDEX [IX_UserLoginDeviceRecord_User_LoginAt]
+    ON [UserLoginDeviceRecord]([UserGuid], [LoginAtUtc]);
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_UserLoginDeviceRecord_Hardware_LoginAt'
+      AND object_id = OBJECT_ID('UserLoginDeviceRecord')
+)
+BEGIN
+    CREATE INDEX [IX_UserLoginDeviceRecord_Hardware_LoginAt]
+    ON [UserLoginDeviceRecord]([HardwareId], [LoginAtUtc]);
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_AttendanceLocationSample_Store_User_Captured'
+      AND object_id = OBJECT_ID('AttendanceLocationSample')
+)
+BEGIN
+    CREATE INDEX [IX_AttendanceLocationSample_Store_User_Captured]
+    ON [AttendanceLocationSample]([StoreCode], [UserGuid], [LocationCapturedAtUtc]);
+END;";
+
+            // 关键位置：定位审计是 App 登录和考勤的合规记录，老库启动必须无损补齐。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("考勤定位和登录设备审计表检查完成");
         }
 
         private static async Task EnsureServiceApiTokenSchemaAsync(

@@ -138,6 +138,7 @@
     "refreshPendingMessage": "This device cannot enter the app directly yet. Please wait for backend approval or check its status.",
     "refreshFailedTitle": "Refresh failed",
     "refreshFailedMessage": "Failed to refresh the device status. Please try again later.",
+    "locationRequiredMessage": "Device login requires your current precise location. Allow location access and try again.",
     "unbindDeviceTitle": "Unbind this device",
     "unbindDeviceMessage": "This clears the local device session and marks the backend device record as unregistered. Continue?",
     "rebindDeviceTitle": "Rebind device",

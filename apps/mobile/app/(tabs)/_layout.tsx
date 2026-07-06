@@ -8,6 +8,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
 import {
+  filterAccountTabRouteNames,
   getVisibleTabRouteNames,
   resolveTabRouteCorrection,
 } from "@/modules/navigation/default-route";
@@ -31,6 +32,8 @@ export default function TabsLayout() {
   const canViewAttendanceManagement = useAuthStore(
     (state) => state.access.canViewAttendanceManagement
   );
+  const canCreateOrder = useAuthStore((state) => state.access.canCreateOrder);
+  const isWarehouseStaffOnly = useAuthStore((state) => state.access.isWarehouseStaffOnly);
   const hasRestored = useRef(false);
   const hasAppliedDefaultRoute = useRef(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
@@ -129,25 +132,33 @@ export default function TabsLayout() {
   ]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
+  const accountRouteNames = useMemo(
+    () =>
+      filterAccountTabRouteNames(
+        navigationItems.map((item) => item.routeName),
+        { canCreateOrder, isWarehouseStaffOnly }
+      ),
+    [canCreateOrder, isWarehouseStaffOnly, navigationItems]
+  );
   const visibleRouteNames = useMemo(
     () =>
       new Set(
         getVisibleTabRouteNames({
-          routeNames: navigationItems.map((item) => item.routeName),
+          routeNames: accountRouteNames,
           isDeviceMode,
           canViewAttendanceManagement,
         })
       ),
-    [canViewAttendanceManagement, isDeviceMode, navigationItems]
+    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
   );
   const orderedVisibleRouteNames = useMemo(
     () =>
       getVisibleTabRouteNames({
-        routeNames: navigationItems.map((item) => item.routeName),
+        routeNames: accountRouteNames,
         isDeviceMode,
         canViewAttendanceManagement,
       }),
-    [canViewAttendanceManagement, isDeviceMode, navigationItems]
+    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
   );
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
@@ -288,6 +299,16 @@ export default function TabsLayout() {
           title: t("tabs.promotions"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="reports"
+        options={{
+          href: isRouteVisible("reports") ? undefined : null,
+          title: t("tabs.reports"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="chart-line" color={color} size={size} />
           ),
         }}
       />

@@ -100,6 +100,11 @@ namespace BlazorApp.Shared.DTOs
         public string? StoreTimeZone { get; set; }
         public DateTime? PunchTimeUtc { get; set; }
         public string? DeviceId { get; set; }
+        public double? LocationLatitude { get; set; }
+        public double? LocationLongitude { get; set; }
+        public double? LocationAccuracy { get; set; }
+        public string? LocationPermissionStatus { get; set; }
+        public DateTime? LocationCapturedAtUtc { get; set; }
         public string? Remark { get; set; }
     }
 
@@ -125,8 +130,53 @@ namespace BlazorApp.Shared.DTOs
         public DateTime PunchTimeLocal { get; set; }
         public string Status { get; set; } = string.Empty;
         public string? DeviceId { get; set; }
+        public double? LocationLatitude { get; set; }
+        public double? LocationLongitude { get; set; }
+        public double? LocationAccuracy { get; set; }
+        public string? LocationPermissionStatus { get; set; }
+        public DateTime? LocationCapturedAtUtc { get; set; }
         public string Source { get; set; } = string.Empty;
         public string? Remark { get; set; }
+    }
+
+    public class AttendanceLocationSampleRequestDto
+    {
+        public string? StoreCode { get; set; }
+        public string? HardwareId { get; set; }
+        public string? SystemDeviceNumber { get; set; }
+        public string? DeviceSystem { get; set; }
+        public string EventType { get; set; } = "ShiftInterval";
+        public double? LocationLatitude { get; set; }
+        public double? LocationLongitude { get; set; }
+        public double? LocationAccuracy { get; set; }
+        public string? LocationPermissionStatus { get; set; }
+        public DateTime? LocationCapturedAtUtc { get; set; }
+    }
+
+    public class AttendanceLocationSampleQueryDto
+    {
+        public string? StoreCode { get; set; }
+        public string? UserGuid { get; set; }
+        public DateTime? FromDate { get; set; }
+        public DateTime? ToDate { get; set; }
+        public string? StoreTimeZone { get; set; }
+    }
+
+    public class AttendanceLocationSampleDto
+    {
+        public string SampleGuid { get; set; } = string.Empty;
+        public string UserGuid { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public string? HardwareId { get; set; }
+        public string? SystemDeviceNumber { get; set; }
+        public string? DeviceSystem { get; set; }
+        public string EventType { get; set; } = string.Empty;
+        public double LocationLatitude { get; set; }
+        public double LocationLongitude { get; set; }
+        public double? LocationAccuracy { get; set; }
+        public string? LocationPermissionStatus { get; set; }
+        public DateTime LocationCapturedAtUtc { get; set; }
+        public DateTime CreatedAt { get; set; }
     }
 
     public class AttendanceTodayDto

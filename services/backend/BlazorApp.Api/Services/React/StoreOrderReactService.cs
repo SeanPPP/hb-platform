@@ -56,6 +56,19 @@ namespace BlazorApp.Api.Services.React
             public string? SupplierName { get; set; }
         }
 
+        private sealed class ProductSearchFilter
+        {
+            public string? UnifiedKeyword { get; set; }
+            public string? ItemOrBarcodeKeyword { get; set; }
+            public string? ProductNameKeyword { get; set; }
+            public string Mode { get; set; } = "none";
+        }
+
+        private sealed class StoreOrderProductPageKey
+        {
+            public string ProductCode { get; set; } = string.Empty;
+        }
+
         private sealed class StoreOrderDetailLocationSortRow
         {
             public string ProductCode { get; set; } = string.Empty;
@@ -121,12 +134,17 @@ namespace BlazorApp.Api.Services.React
             return barcode?.Trim().Length ?? 0;
         }
 
-        private static string GetCartMutationLockKey(string? storeCode)
+        private static string GetCartMutationLockKey(string? storeCode, string? cartOwnerUserGuid)
         {
             var normalized = storeCode?.Trim();
-            return string.IsNullOrWhiteSpace(normalized)
+            var storeKey = string.IsNullOrWhiteSpace(normalized)
                 ? "unknown"
                 : normalized.ToUpperInvariant();
+            var ownerKey = string.IsNullOrWhiteSpace(cartOwnerUserGuid)
+                ? "store"
+                : cartOwnerUserGuid.Trim().ToUpperInvariant();
+
+            return $"{storeKey}:{ownerKey}";
         }
 
         private static bool ShouldRollbackCartMutationResult<T>(T result)
@@ -146,7 +164,8 @@ namespace BlazorApp.Api.Services.React
             Func<Task<T>> action
         )
         {
-            var lockKey = GetCartMutationLockKey(storeCode);
+            var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
+            var lockKey = GetCartMutationLockKey(storeCode, cartOwnerUserGuid);
             var heldLocks = CartMutationLockScope.Value;
             if (heldLocks?.Contains(lockKey) == true)
             {
@@ -170,8 +189,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _db.Ado.BeginTranAsync();
                     transactionStarted = true;
-                    // ponytail: 同店购物车写入统一进数据库应用锁；跨实例也按门店串行。
-                    await AcquireCartMutationDatabaseLockAsync(_db, storeCode);
+                    // ponytail: 同店同 owner 购物车写入统一进数据库应用锁；跨实例也按购物车归属串行。
+                    await AcquireCartMutationDatabaseLockAsync(_db, storeCode, cartOwnerUserGuid);
                     var result = await action();
                     if (ShouldRollbackCartMutationResult(result))
                     {
@@ -203,7 +222,8 @@ namespace BlazorApp.Api.Services.React
 
         private static async Task AcquireCartMutationDatabaseLockAsync(
             ISqlSugarClient db,
-            string? storeCode
+            string? storeCode,
+            string? cartOwnerUserGuid
         )
         {
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
@@ -221,7 +241,10 @@ namespace BlazorApp.Api.Services.React
                     @LockTimeout = 2000;
                 SELECT @Result;
                 """,
-                new SugarParameter("@Resource", $"StoreOrderCart:{GetCartMutationLockKey(storeCode)}")
+                new SugarParameter(
+                    "@Resource",
+                    $"StoreOrderCart:{GetCartMutationLockKey(storeCode, cartOwnerUserGuid)}"
+                )
             );
 
             if (lockResult < 0)
@@ -267,6 +290,60 @@ namespace BlazorApp.Api.Services.React
                 claim.Type == ClaimTypes.Role
                 && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
             );
+        }
+
+        private bool HasAnyRole(params string[] roles)
+        {
+            return roles.Any(HasRole);
+        }
+
+        private bool IsWarehouseStaffOnly()
+        {
+            return HasAnyRole("WarehouseStaff", "仓库员工")
+                && !HasAnyRole("Admin", "管理员")
+                && !HasAnyRole("WarehouseManager", "仓库经理");
+        }
+
+        private string ResolveCurrentUserGuid()
+        {
+            var user = _httpContextAccessor.HttpContext?.User;
+            return user?.FindFirst("userId")?.Value
+                ?? user?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? user?.FindFirst("userGuid")?.Value
+                ?? user?.FindFirst("userGUID")?.Value
+                ?? user?.FindFirst("UserGuid")?.Value
+                ?? user?.FindFirst("sub")?.Value
+                ?? string.Empty;
+        }
+
+        private string? ResolveActiveCartOwnerUserGuid()
+        {
+            if (!IsWarehouseStaffOnly())
+            {
+                return null;
+            }
+
+            var userGuid = ResolveCurrentUserGuid().Trim();
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                throw new InvalidOperationException("无法识别当前仓库员工");
+            }
+
+            return userGuid;
+        }
+
+        private static ISugarQueryable<WareHouseOrder> ApplyActiveCartScope(
+            ISugarQueryable<WareHouseOrder> query,
+            string? cartOwnerUserGuid
+        )
+        {
+            if (string.IsNullOrWhiteSpace(cartOwnerUserGuid))
+            {
+                // 关键逻辑：NULL/空 owner 是原分店共享购物车，避免仓库员工专用车混入门店购物车。
+                return query.Where(o => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid));
+            }
+
+            return query.Where(o => o.CartOwnerUserGuid == cartOwnerUserGuid);
         }
 
         private bool HasElevatedOrderAccess()
@@ -346,10 +423,13 @@ namespace BlazorApp.Api.Services.React
                 filter
             );
             var q = CreateDefaultWarehouseProductQuery(_db, includeInactiveForQuickAdd);
+            var searchFilter = CreateProductSearchFilter(filter);
+            var categoryFilterCount = 0;
 
             if (!string.IsNullOrWhiteSpace(filter.CategoryGUID))
             {
                 var categoryIds = GetAllSubCategoryIds(filter.CategoryGUID);
+                categoryFilterCount = categoryIds.Count;
                 _logger.LogInformation(
                     "Category Filter: Found {Count} categories (including self) for root {CategoryGUID}",
                     categoryIds.Count,
@@ -379,40 +459,11 @@ namespace BlazorApp.Api.Services.React
                                 && dp.SupplierCode == supplierCode
                                 && !dp.IsDeleted
                             )
-                            .Any()
+                    .Any()
                 );
             }
 
-            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
-            {
-                q = q.Where(
-                    (p, wp, wc, ls) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
-                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
-                );
-            }
-            else
-            {
-                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
-                {
-                    var keyword = filter.ItemNumber.Trim().ToLower();
-                    q = q.Where(
-                        (p, wp, wc, ls) =>
-                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
-                    );
-                }
-
-                if (!string.IsNullOrWhiteSpace(filter.ProductName))
-                {
-                    var keyword = filter.ProductName.Trim().ToLower();
-                    q = q.Where(
-                        (p, wp, wc, ls) =>
-                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                    );
-                }
-            }
+            q = ApplyWarehouseProductSearch(q, searchFilter);
 
             if (normalizedGrades.Count > 0)
             {
@@ -432,33 +483,11 @@ namespace BlazorApp.Api.Services.React
             q = ApplyWarehouseProductSort(q, filter);
 
             var countSw = Stopwatch.StartNew();
-            var total = await q.CountAsync();
+            var total = await q.Clone().CountAsync();
             countSw.Stop();
 
             var listSw = Stopwatch.StartNew();
-            var items = await q.Select(
-                    (p, wp, wc, ls) =>
-                        new StoreOrderProductDto
-                        {
-                            ProductCode = p.ProductCode ?? string.Empty,
-                            ItemNumber = p.ItemNumber,
-                            Barcode = p.Barcode,
-                            ProductName = p.ProductName,
-                            ProductImage = p.ProductImage,
-                            CategoryName = wc.CategoryName,
-                            WarehouseCategoryGUID = p.WarehouseCategoryGUID,
-                            LocalSupplierCode = p.LocalSupplierCode,
-                            LocalSupplierName = ls.Name,
-                            OEMPrice = wp.OEMPrice,
-                            MinOrderQuantity = wp.MinOrderQuantity ?? 1,
-                            StockQuantity = wp.StockQuantity ?? 0,
-                            PackQty = p.MiddlePackageQuantity,
-                            ImportPrice = wp.ImportPrice,
-                        }
-                )
-                .Skip((filter.PageNumber - 1) * filter.PageSize)
-                .Take(filter.PageSize)
-                .ToListAsync();
+            var items = await QueryWarehouseProductItemsByPagedProductCodesAsync(q, filter);
             listSw.Stop();
 
             var gradeSw = Stopwatch.StartNew();
@@ -467,10 +496,12 @@ namespace BlazorApp.Api.Services.React
 
             totalSw.Stop();
             _logger.LogInformation(
-                "[shop-home-perf] stage=products.service.done pageNumber={PageNumber} pageSize={PageSize} category={CategoryGUID} keywordLength={KeywordLength} gradeCount={GradeCount} total={Total} itemCount={ItemCount} countMs={CountMs} listMs={ListMs} gradeMs={GradeMs} totalMs={TotalMs}",
+                "[shop-home-perf] stage=products.service.done pageNumber={PageNumber} pageSize={PageSize} category={CategoryGUID} categoryCount={CategoryCount} searchMode={SearchMode} keywordLength={KeywordLength} gradeCount={GradeCount} total={Total} itemCount={ItemCount} countMs={CountMs} listMs={ListMs} gradeMs={GradeMs} totalMs={TotalMs}",
                 filter.PageNumber,
                 filter.PageSize,
                 filter.CategoryGUID,
+                categoryFilterCount,
+                searchFilter.Mode,
                 filter.ItemNumber?.Length ?? 0,
                 normalizedGrades.Count,
                 total,
@@ -651,36 +682,7 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
-            {
-                q = q.Where(
-                    (p, wc, ls) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
-                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
-                );
-            }
-            else
-            {
-                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
-                {
-                    var keyword = filter.ItemNumber.Trim().ToLower();
-                    q = q.Where(
-                        (p, wc, ls) =>
-                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
-                    );
-                }
-
-                if (!string.IsNullOrWhiteSpace(filter.ProductName))
-                {
-                    var keyword = filter.ProductName.Trim().ToLower();
-                    q = q.Where(
-                        (p, wc, ls) =>
-                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                    );
-                }
-            }
+            q = ApplyProductMasterSearch(q, CreateProductSearchFilter(filter));
 
             if (normalizedGrades.Count > 0)
             {
@@ -804,36 +806,7 @@ namespace BlazorApp.Api.Services.React
                 );
             }
 
-            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
-            {
-                q = q.Where(
-                    (p, wp, wc) =>
-                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(unifiedKeyword))
-                        || (p.Barcode != null && p.Barcode.ToLower().Contains(unifiedKeyword))
-                        || (p.ProductName != null && p.ProductName.ToLower().Contains(unifiedKeyword))
-                );
-            }
-            else
-            {
-                if (!string.IsNullOrWhiteSpace(filter.ItemNumber))
-                {
-                    var keyword = filter.ItemNumber.Trim().ToLower();
-                    q = q.Where(
-                        (p, wp, wc) =>
-                            (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
-                            || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
-                    );
-                }
-
-                if (!string.IsNullOrWhiteSpace(filter.ProductName))
-                {
-                    var keyword = filter.ProductName.Trim().ToLower();
-                    q = q.Where(
-                        (p, wp, wc) =>
-                            p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
-                    );
-                }
-            }
+            q = ApplyOrderPickerProductSearch(q, CreateProductSearchFilter(filter));
 
             if (normalizedGrades.Count > 0)
             {
@@ -1168,6 +1141,80 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            return items
+                .OrderBy(item =>
+                    orderMap.TryGetValue(item.ProductCode, out var order) ? order : int.MaxValue
+                )
+                .ToList();
+        }
+
+        private async Task<List<StoreOrderProductDto>> QueryWarehouseProductItemsByPagedProductCodesAsync(
+            ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier> query,
+            StoreOrderFilterDto filter
+        )
+        {
+            var normalizedPageNumber = Math.Max(filter.PageNumber, 1);
+            var normalizedPageSize = Math.Max(filter.PageSize, 1);
+            var pageKeys = await query
+                .Clone()
+                .Select(
+                    (p, wp, wc, ls) =>
+                        new StoreOrderProductPageKey
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                        }
+                )
+                .Skip((normalizedPageNumber - 1) * normalizedPageSize)
+                .Take(normalizedPageSize)
+                .ToListAsync();
+
+            var productCodes = pageKeys
+                .Select(item => item.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (productCodes.Count == 0)
+            {
+                return new List<StoreOrderProductDto>();
+            }
+
+            var orderMap = pageKeys
+                .Select((item, index) => new { item.ProductCode, Index = index })
+                .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                .GroupBy(item => item.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().Index,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            // 先分页 ProductCode，再回查首屏字段，避免分类/关键词路径投影整个商品池。
+            var items = await query
+                .Clone()
+                .Where((p, wp, wc, ls) => p.ProductCode != null && productCodes.Contains(p.ProductCode))
+                .Select(
+                    (p, wp, wc, ls) =>
+                        new StoreOrderProductDto
+                        {
+                            ProductCode = p.ProductCode ?? string.Empty,
+                            ItemNumber = p.ItemNumber,
+                            Barcode = p.Barcode,
+                            ProductName = p.ProductName,
+                            ProductImage = p.ProductImage,
+                            CategoryName = wc.CategoryName,
+                            WarehouseCategoryGUID = p.WarehouseCategoryGUID,
+                            LocalSupplierCode = p.LocalSupplierCode,
+                            LocalSupplierName = ls.Name,
+                            OEMPrice = wp.OEMPrice,
+                            MinOrderQuantity = wp.MinOrderQuantity ?? 1,
+                            StockQuantity = wp.StockQuantity ?? 0,
+                            PackQty = p.MiddlePackageQuantity,
+                            ImportPrice = wp.ImportPrice,
+                        }
+                )
+                .ToListAsync();
 
             return items
                 .OrderBy(item =>
@@ -1689,6 +1736,158 @@ namespace BlazorApp.Api.Services.React
                 _ => query.OrderBy((p, wc, ls) => p.ItemNumber, OrderByType.Asc)
                     .OrderBy((p, wc, ls) => p.ProductCode, OrderByType.Asc),
             };
+        }
+
+        private static ProductSearchFilter CreateProductSearchFilter(StoreOrderFilterDto filter)
+        {
+            if (TryGetUnifiedProductSearchKeyword(filter, out var unifiedKeyword))
+            {
+                return new ProductSearchFilter
+                {
+                    UnifiedKeyword = unifiedKeyword,
+                    Mode = "unified",
+                };
+            }
+
+            var itemOrBarcodeKeyword = NormalizeProductSearchKeyword(filter.ItemNumber);
+            var productNameKeyword = NormalizeProductSearchKeyword(filter.ProductName);
+
+            return new ProductSearchFilter
+            {
+                ItemOrBarcodeKeyword = itemOrBarcodeKeyword,
+                ProductNameKeyword = productNameKeyword,
+                Mode = itemOrBarcodeKeyword != null && productNameKeyword != null
+                    ? "split"
+                    : itemOrBarcodeKeyword != null
+                        ? "item-or-barcode"
+                        : productNameKeyword != null
+                            ? "product-name"
+                            : "none",
+            };
+        }
+
+        private static string? NormalizeProductSearchKeyword(string? value)
+        {
+            var keyword = value?.Trim().ToLower();
+            return string.IsNullOrWhiteSpace(keyword) ? null : keyword;
+        }
+
+        private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier>
+            ApplyWarehouseProductSearch(
+                ISugarQueryable<Product, WarehouseProduct, WarehouseCategory, HBLocalSupplier> query,
+                ProductSearchFilter search
+            )
+        {
+            if (!string.IsNullOrWhiteSpace(search.UnifiedKeyword))
+            {
+                var keyword = search.UnifiedKeyword;
+                return query.Where(
+                    (p, wp, wc, ls) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(search.ItemOrBarcodeKeyword))
+            {
+                var keyword = search.ItemOrBarcodeKeyword;
+                // Home 单搜索框使用这条路径，语义固定为货号或条码。
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(search.ProductNameKeyword))
+            {
+                var keyword = search.ProductNameKeyword;
+                query = query.Where(
+                    (p, wp, wc, ls) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                );
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Product, WarehouseCategory, HBLocalSupplier>
+            ApplyProductMasterSearch(
+                ISugarQueryable<Product, WarehouseCategory, HBLocalSupplier> query,
+                ProductSearchFilter search
+            )
+        {
+            if (!string.IsNullOrWhiteSpace(search.UnifiedKeyword))
+            {
+                var keyword = search.UnifiedKeyword;
+                return query.Where(
+                    (p, wc, ls) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(search.ItemOrBarcodeKeyword))
+            {
+                var keyword = search.ItemOrBarcodeKeyword;
+                query = query.Where(
+                    (p, wc, ls) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(search.ProductNameKeyword))
+            {
+                var keyword = search.ProductNameKeyword;
+                query = query.Where(
+                    (p, wc, ls) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                );
+            }
+
+            return query;
+        }
+
+        private static ISugarQueryable<Product, WarehouseProduct, WarehouseCategory>
+            ApplyOrderPickerProductSearch(
+                ISugarQueryable<Product, WarehouseProduct, WarehouseCategory> query,
+                ProductSearchFilter search
+            )
+        {
+            if (!string.IsNullOrWhiteSpace(search.UnifiedKeyword))
+            {
+                var keyword = search.UnifiedKeyword;
+                return query.Where(
+                    (p, wp, wc) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                        || (p.ProductName != null && p.ProductName.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(search.ItemOrBarcodeKeyword))
+            {
+                var keyword = search.ItemOrBarcodeKeyword;
+                query = query.Where(
+                    (p, wp, wc) =>
+                        (p.ItemNumber != null && p.ItemNumber.ToLower().Contains(keyword))
+                        || (p.Barcode != null && p.Barcode.ToLower().Contains(keyword))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(search.ProductNameKeyword))
+            {
+                var keyword = search.ProductNameKeyword;
+                query = query.Where(
+                    (p, wp, wc) =>
+                        p.ProductName != null && p.ProductName.ToLower().Contains(keyword)
+                );
+            }
+
+            return query;
         }
 
         private static bool ShouldIncludeInactiveWarehouseProductsForQuickAdd(
@@ -2292,9 +2491,27 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                var allCategories = _db.Queryable<WarehouseCategory>().ToList();
+                var allCategories = _db.Queryable<WarehouseCategory>()
+                    .Select(c => new WarehouseCategory
+                    {
+                        CategoryGUID = c.CategoryGUID,
+                        ParentGUID = c.ParentGUID,
+                    })
+                    .ToList();
                 var result = new List<string> { categoryGuid };
-                GetSubCategoriesRecursive(categoryGuid, allCategories, result);
+                var seen = new HashSet<string>(StringComparer.Ordinal) { categoryGuid };
+                var childrenByParent = allCategories
+                    .Where(c =>
+                        !string.IsNullOrWhiteSpace(c.ParentGUID)
+                        && !string.IsNullOrWhiteSpace(c.CategoryGUID)
+                    )
+                    .GroupBy(c => c.ParentGUID!, StringComparer.Ordinal)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.Select(c => c.CategoryGUID).ToList(),
+                        StringComparer.Ordinal
+                    );
+                GetSubCategoriesRecursive(categoryGuid, childrenByParent, seen, result);
                 return result;
             }
             catch (Exception ex)
@@ -2310,20 +2527,22 @@ namespace BlazorApp.Api.Services.React
 
         private void GetSubCategoriesRecursive(
             string parentGuid,
-            List<WarehouseCategory> allCategories,
+            IReadOnlyDictionary<string, List<string>> childrenByParent,
+            HashSet<string> seen,
             List<string> result
         )
         {
-            var children = allCategories.Where(c => c.ParentGUID == parentGuid).ToList();
-            foreach (var child in children)
+            if (!childrenByParent.TryGetValue(parentGuid, out var children))
             {
-                if (
-                    !string.IsNullOrEmpty(child.CategoryGUID)
-                    && !result.Contains(child.CategoryGUID)
-                )
+                return;
+            }
+
+            foreach (var childGuid in children)
+            {
+                if (!string.IsNullOrEmpty(childGuid) && seen.Add(childGuid))
                 {
-                    result.Add(child.CategoryGUID);
-                    GetSubCategoriesRecursive(child.CategoryGUID, allCategories, result);
+                    result.Add(childGuid);
+                    GetSubCategoriesRecursive(childGuid, childrenByParent, seen, result);
                 }
             }
         }
@@ -2332,12 +2551,13 @@ namespace BlazorApp.Api.Services.React
         {
             var totalSw = Stopwatch.StartNew();
             var traceId = GetScanTraceId();
+            var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
 
             // FlowStatus = 0 代表购物车
             var orderSw = Stopwatch.StartNew();
-            var order = await _db.Queryable<WareHouseOrder>()
-                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
-                .FirstAsync();
+            var orderQuery = _db.Queryable<WareHouseOrder>()
+                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted);
+            var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
             orderSw.Stop();
 
             if (order == null)
@@ -2380,6 +2600,9 @@ namespace BlazorApp.Api.Services.React
                             ImportAmount =
                                 d.ImportAmount
                                 ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            // 发货/发票金额单独返回，避免复用订货金额字段造成页面误读。
+                            AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                * (d.AllocQuantity ?? 0),
                             // 计算单件体积: 如果装箱数 > 0，则用箱体积 / 装箱数，否则直接用 UnitVolume
                             Volume =
                                 (dp.PackingQuantity > 0)
@@ -2416,6 +2639,7 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .Count(),
                 TotalImportAmount = details.Sum(x => x.ImportAmount),
+                TotalAllocatedImportAmount = details.Sum(x => x.AllocatedImportAmount),
                 TotalVolume = details.Sum(x => x.TotalVolume ?? 0),
                 TotalOrderVolume = details.Sum(x => x.OrderVolume ?? 0),
                 TotalAllocVolume = details.Sum(x => x.AllocVolume ?? 0),
@@ -2448,9 +2672,10 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartSummaryAsync(string storeCode)
         {
-            var order = await _db.Queryable<WareHouseOrder>()
-                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
-                .FirstAsync();
+            var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
+            var orderQuery = _db.Queryable<WareHouseOrder>()
+                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted);
+            var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
             if (order == null)
             {
@@ -2469,6 +2694,7 @@ namespace BlazorApp.Api.Services.React
                             Quantity = d.Quantity ?? 0,
                             AllocQuantity = d.AllocQuantity ?? 0,
                             ImportAmount = d.ImportAmount ?? ((d.ImportPrice ?? 0) * (d.Quantity ?? 0)),
+                            AllocatedImportAmount = (d.ImportPrice ?? 0) * (d.AllocQuantity ?? 0),
                             UnitVolume = (dp.PackingQuantity > 0)
                                 ? (dp.UnitVolume / dp.PackingQuantity)
                                 : dp.UnitVolume,
@@ -2490,6 +2716,7 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = order.OEMTotalAmount ?? 0,
                     TotalQuantity = (int)detailRows.Sum(row => row.Quantity),
                     TotalImportAmount = detailRows.Sum(row => row.ImportAmount),
+                    TotalAllocatedImportAmount = detailRows.Sum(row => row.AllocatedImportAmount),
                     TotalVolume = totalVolume,
                     TotalOrderVolume = totalVolume,
                     TotalAllocVolume = totalAllocVolume,
@@ -2517,6 +2744,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                 var now = DateTime.Now;
@@ -2525,11 +2753,11 @@ namespace BlazorApp.Api.Services.React
 
                 // 1. 获取或创建订单 (FlowStatus = 0)
                 var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (order == null)
                 {
@@ -2537,6 +2765,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         OrderGUID = UuidHelper.GenerateUuid7(),
                         StoreCode = request.StoreCode,
+                        CartOwnerUserGuid = cartOwnerUserGuid,
                         OrderDate = now,
                         FlowStatus = 0, // 购物车状态
                         IsDeleted = false,
@@ -2697,6 +2926,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                         var now = DateTime.Now;
@@ -2704,11 +2934,11 @@ namespace BlazorApp.Api.Services.React
                             _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                         var orderSw = Stopwatch.StartNew();
-                        var order = await _db.Queryable<WareHouseOrder>()
+                        var orderQuery = _db.Queryable<WareHouseOrder>()
                             .Where(o =>
                                 o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                            )
-                            .FirstAsync();
+                            );
+                        var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                         if (order == null)
                         {
@@ -2716,6 +2946,7 @@ namespace BlazorApp.Api.Services.React
                             {
                                 OrderGUID = UuidHelper.GenerateUuid7(),
                                 StoreCode = request.StoreCode,
+                                CartOwnerUserGuid = cartOwnerUserGuid,
                                 OrderDate = now,
                                 FlowStatus = 0,
                                 IsDeleted = false,
@@ -2909,6 +3140,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                 var now = DateTime.Now;
@@ -2917,11 +3149,11 @@ namespace BlazorApp.Api.Services.React
 
                 // 1. 获取购物车
                 var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (order == null)
                 {
@@ -3073,6 +3305,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                 var now = DateTime.Now;
@@ -3080,11 +3313,11 @@ namespace BlazorApp.Api.Services.React
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
                 orderSw.Stop();
 
                 if (order == null)
@@ -3380,6 +3613,9 @@ namespace BlazorApp.Api.Services.React
                             ImportAmount =
                                 d.ImportAmount
                                 ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            // 发货/发票金额单独返回，避免复用订货金额字段造成页面误读。
+                            AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                * (d.AllocQuantity ?? 0),
                             Volume =
                                 (dp.PackingQuantity > 0)
                                     ? (dp.UnitVolume / dp.PackingQuantity)
@@ -3403,8 +3639,26 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d => d.DetailGUID == request.DetailGUID && !d.IsDeleted)
+                    .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                    .Where((d, o) =>
+                        d.DetailGUID == request.DetailGUID
+                        && o.StoreCode == request.StoreCode
+                        && d.StoreCode == request.StoreCode
+                        && !d.IsDeleted
+                        && o.FlowStatus == 0
+                        && !o.IsDeleted
+                    )
+                    .WhereIF(
+                        string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid)
+                    )
+                    .WhereIF(
+                        !string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => o.CartOwnerUserGuid == cartOwnerUserGuid
+                    )
+                    .Select((d, o) => d)
                     .FirstAsync();
 
                 if (detail == null)
@@ -3419,7 +3673,24 @@ namespace BlazorApp.Api.Services.React
                 return await RunCartMutationLockedAsync(detail.StoreCode, async () =>
                 {
                 var lockedDetail = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d => d.DetailGUID == request.DetailGUID && !d.IsDeleted)
+                    .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                    .Where((d, o) =>
+                        d.DetailGUID == request.DetailGUID
+                        && o.StoreCode == request.StoreCode
+                        && d.StoreCode == request.StoreCode
+                        && !d.IsDeleted
+                        && o.FlowStatus == 0
+                        && !o.IsDeleted
+                    )
+                    .WhereIF(
+                        string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid)
+                    )
+                    .WhereIF(
+                        !string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => o.CartOwnerUserGuid == cartOwnerUserGuid
+                    )
+                    .Select((d, o) => d)
                     .FirstAsync();
 
                 if (lockedDetail == null)
@@ -3458,11 +3729,12 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(storeCode, async () =>
                 {
-                var cart = await _db.Queryable<WareHouseOrder>()
-                    .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
-                    .FirstAsync();
+                var cartQuery = _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted);
+                var cart = await ApplyActiveCartScope(cartQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (cart == null)
                 {
@@ -3507,13 +3779,14 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (order == null)
                 {
@@ -3578,6 +3851,11 @@ namespace BlazorApp.Api.Services.React
             return new DateTimeOffset(revisionAt).ToUnixTimeMilliseconds();
         }
 
+        private static decimal CalculateOrderImportAmount(decimal? quantity, decimal? importPrice)
+        {
+            return (quantity ?? 0) * (importPrice ?? 0);
+        }
+
         private async Task<StoreOrderCartMutationSummaryRow?> UpdateOrderTotalAsync(
             string orderGuid,
             DateTime? previousUpdatedAt = null
@@ -3640,8 +3918,9 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var cartSw = Stopwatch.StartNew();
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 // 1. 获取购物车数量 (FlowStatus = 0)，在数据库侧聚合，避免把整车明细拉回内存。
-                var cartItems = await _db.Queryable<WareHouseOrderDetails>()
+                var cartQuery = _db.Queryable<WareHouseOrderDetails>()
                     .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
                     .Where(
                         (d, o) =>
@@ -3653,7 +3932,11 @@ namespace BlazorApp.Api.Services.React
                     .Where(
                         (d, o) =>
                             d.ProductCode != null && productCodes.Contains(d.ProductCode)
-                    )
+                    );
+                cartQuery = string.IsNullOrWhiteSpace(cartOwnerUserGuid)
+                    ? cartQuery.Where((d, o) => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid))
+                    : cartQuery.Where((d, o) => o.CartOwnerUserGuid == cartOwnerUserGuid);
+                var cartItems = await cartQuery
                     .GroupBy((d, o) => d.ProductCode)
                     .Select(
                         (d, o) =>
@@ -5706,6 +5989,7 @@ FinalRows AS (
                         TotalAmount = result.Data.TotalAmount,
                         TotalQuantity = result.Data.TotalQuantity,
                         TotalImportAmount = result.Data.TotalImportAmount,
+                        TotalAllocatedImportAmount = result.Data.TotalAllocatedImportAmount,
                         TotalVolume = result.Data.TotalVolume,
                         TotalOrderVolume = result.Data.TotalOrderVolume,
                         TotalAllocVolume = result.Data.TotalAllocVolume,
@@ -6066,7 +6350,18 @@ FinalRows AS (
                         (d, p, wp, dp) => d.ImportPrice ?? wp.ImportPrice,
                         orderType
                     ),
-                    "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
+                    "importamount" => detailQuery.OrderBy(
+                        // 订货金额排序跟 ImportAmount 返回字段一致，历史持久金额优先。
+                        (d, p, wp, dp) =>
+                            d.ImportAmount
+                            ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                        orderType
+                    ),
+                    "allocatedimportamount" => detailQuery.OrderBy(
+                        // 发货/发票金额排序用独立字段，避免和订货金额混用。
+                        (d, p, wp, dp) => (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0),
+                        orderType
+                    ),
                     "isactive" => detailQuery.OrderBy((d, p, wp, dp) => wp.IsActive, orderType),
                     _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
                 };
@@ -6093,12 +6388,12 @@ FinalRows AS (
                             AllocQuantity = d.AllocQuantity,
                             Amount = d.OEMAmount ?? 0,
                             ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
+                            // ImportAmount 保持订货金额，发票金额走 AllocatedImportAmount。
                             ImportAmount =
                                 d.ImportAmount
-                                ?? (
-                                    (d.ImportPrice ?? (wp.ImportPrice ?? 0))
-                                    * (d.AllocQuantity ?? d.Quantity ?? 0)
-                                ),
+                                ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                * (d.AllocQuantity ?? 0),
                             Volume =
                                 (dp.PackingQuantity > 0)
                                     ? (dp.UnitVolume / dp.PackingQuantity)
@@ -6175,12 +6470,12 @@ FinalRows AS (
                                 AllocQuantity = d.AllocQuantity,
                                 Amount = d.OEMAmount ?? 0,
                                 ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
+                                // ImportAmount 保持订货金额，发票金额走 AllocatedImportAmount。
                                 ImportAmount =
                                     d.ImportAmount
-                                    ?? (
-                                        (d.ImportPrice ?? (wp.ImportPrice ?? 0))
-                                        * (d.AllocQuantity ?? d.Quantity ?? 0)
-                                    ),
+                                    ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                                AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                    * (d.AllocQuantity ?? 0),
                                 Volume =
                                     (dp.PackingQuantity > 0)
                                         ? (dp.UnitVolume / dp.PackingQuantity)
@@ -6231,11 +6526,13 @@ FinalRows AS (
                             TotalAllocQuantity = SqlFunc.AggregateSum(d.AllocQuantity ?? 0),
                             TotalSKU = SqlFunc.AggregateDistinctCount(d.ProductCode),
                             TotalImportAmount = SqlFunc.AggregateSum(
+                                // 订货金额保留历史持久金额，缺失时按订货数量兜底。
                                 d.ImportAmount
-                                    ?? (
-                                        (d.ImportPrice ?? (wp.ImportPrice ?? 0))
-                                        * (d.AllocQuantity ?? d.Quantity ?? 0)
-                                    )
+                                    ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0))
+                            ),
+                            TotalAllocatedImportAmount = SqlFunc.AggregateSum(
+                                // 发货/发票金额按发货数量重算，保证发票 Sub-Total 等于明细小计合计。
+                                (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0)
                             ),
                             TotalOrderVolume = SqlFunc.AggregateSum(
                                 (
@@ -6291,6 +6588,7 @@ FinalRows AS (
                 TotalAllocQuantity = (int)(summary?.TotalAllocQuantity ?? 0),
                 TotalSKU = summary?.TotalSKU ?? 0,
                 TotalImportAmount = summary?.TotalImportAmount ?? 0,
+                TotalAllocatedImportAmount = summary?.TotalAllocatedImportAmount ?? 0,
                 TotalVolume = summary?.TotalOrderVolume ?? 0,
                 TotalOrderVolume = summary?.TotalOrderVolume ?? 0,
                 TotalAllocVolume = summary?.TotalAllocVolume ?? 0,
@@ -7185,7 +7483,8 @@ FinalRows AS (
                 var allocQuantity = item.Quantity!.Value;
                 detail.AllocQuantity = allocQuantity;
                 detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
-                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                // ImportAmount 是订货金额；发货/发票金额只在 DTO 中按 AllocQuantity 派生。
+                detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
                 detail.UpdatedAt = now;
                 detail.UpdatedBy = currentUser;
 
@@ -7301,7 +7600,7 @@ FinalRows AS (
                         continue;
                     }
 
-                    var expectedImportAmount = (detail.AllocQuantity ?? 0) * warehouseImportPrice;
+                    var expectedImportAmount = CalculateOrderImportAmount(detail.Quantity, warehouseImportPrice);
                     var importPriceMatches = detail.ImportPrice.HasValue && detail.ImportPrice.Value == warehouseImportPrice;
                     var importAmountMatches = detail.ImportAmount.HasValue && detail.ImportAmount.Value == expectedImportAmount;
                     if (importPriceMatches && importAmountMatches)
@@ -7310,7 +7609,7 @@ FinalRows AS (
                         continue;
                     }
 
-                    // 受控地从仓库商品表回填订单明细进口价；即使价格相同，也要校正历史不准的进口金额。
+                    // 受控地从仓库商品表回填订单明细进口价；即使价格相同，也要校正历史不准的订货金额。
                     detail.ImportPrice = warehouseImportPrice;
                     detail.ImportAmount = expectedImportAmount;
                     detail.UpdatedAt = now;
@@ -7656,7 +7955,10 @@ FinalRows AS (
                     };
 
                     newDetail.OEMAmount = newDetail.AllocQuantity * newDetail.OEMPrice;
-                    newDetail.ImportAmount = newDetail.AllocQuantity * newDetail.ImportPrice;
+                    newDetail.ImportAmount = CalculateOrderImportAmount(
+                        newDetail.Quantity,
+                        newDetail.ImportPrice
+                    );
 
                     newDetails.Add(newDetail);
                 }
@@ -7840,7 +8142,8 @@ FinalRows AS (
 
             var allocQuantity = detail.AllocQuantity ?? 0;
             detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
-            detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+            // ImportAmount 是订货金额；发货/发票金额只在 DTO 中按 AllocQuantity 派生。
+            detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
             detail.UpdatedAt = now;
             detail.UpdatedBy = currentUser;
 
@@ -8047,7 +8350,8 @@ FinalRows AS (
 
                 var allocQuantity = detail.AllocQuantity ?? 0;
                 detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
-                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                // ImportAmount 是订货金额；发货/发票金额只在 DTO 中按 AllocQuantity 派生。
+                detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
                 detail.UpdatedAt = now;
                 detail.UpdatedBy = currentUser;
 
@@ -8389,7 +8693,7 @@ FinalRows AS (
                     OEMAmount = price * minQty,
                     AllocQuantity = minQty,
                     ImportPrice = finalImportPrice,
-                    ImportAmount = finalImportPrice * minQty,
+                    ImportAmount = 0,
                     IsDeleted = false,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -8427,8 +8731,8 @@ FinalRows AS (
                 else
                 {
                     detail.OEMAmount = detail.AllocQuantity * detail.OEMPrice;
-                    // 使用最新的 ImportPrice 计算
-                    detail.ImportAmount = detail.AllocQuantity * detail.ImportPrice;
+                    // 使用最新的 ImportPrice 计算订货金额；发货金额走 DTO 派生。
+                    detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
                     detail.UpdatedAt = now;
                     detail.UpdatedBy = currentUser;
                     await _db.Updateable(detail).ExecuteCommandAsync();

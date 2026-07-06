@@ -3,11 +3,15 @@ using System.Security.Claims;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -171,6 +175,50 @@ public class ControllerAuthorizationMetadataTests
         yield return Policy<MobileAppBuildsController>(
             nameof(MobileAppBuildsController.CreateOtaRollbackCommand),
             Permissions.System.ManageAppDownloads
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetExecutiveBranchPerformance),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetSupplierSalesRank),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierSalesRankAsync),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetSupplierStoreSales),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierStoreSales),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetAustralianSupplierStoreSalesDetails),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetChinaSupplierStoreSalesDetails),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetEnhancedSalesProductDetails),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetProductSalesByAllBranches),
+            Permissions.Reports.ProductMovementView
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetExecutiveHourlyTraffic),
+            Permissions.Reports.View
+        );
+        yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetBranchDailyPerformance),
+            Permissions.Reports.View
         );
         yield return Policy<ServiceApiTokensController>(
             nameof(ServiceApiTokensController.List),
@@ -634,6 +682,85 @@ public class ControllerAuthorizationMetadataTests
         Assert.True(string.IsNullOrWhiteSpace(authorizeAttribute.Roles));
     }
 
+    [Theory]
+    [InlineData(Permissions.Stores.View)]
+    [InlineData(Permissions.DeviceRegistration.View)]
+    [InlineData(Permissions.DeviceRegistration.Manage)]
+    public async Task StoresController_AllStoresByName_AllowsExpectedGlobalStoreConsumers(
+        string allowedPermission
+    )
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.GetAllStoresByNameAsync())
+            .ReturnsAsync(ApiResponse<List<StoreDto>>.OK(new List<StoreDto>()));
+        var controller = CreateStoresController(allowedPermission, storeService);
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<OkObjectResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_AllowsPureWarehouseStaffWithOrderCreate()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.GetAllStoresByNameAsync())
+            .ReturnsAsync(ApiResponse<List<StoreDto>>.OK(new List<StoreDto>()));
+        var controller = CreateStoresController(
+            Permissions.Orders.Create,
+            storeService,
+            "WarehouseStaff"
+        );
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<OkObjectResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_ForbidsOrderCreateWithoutWarehouseStaffRole()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        var controller = CreateStoresController(Permissions.Orders.Create, storeService);
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<ForbidResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_ForbidsWarehouseStaffWithoutOrderCreate()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        var controller = CreateStoresController(
+            Permissions.Warehouse.Manage,
+            storeService,
+            "WarehouseStaff"
+        );
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<ForbidResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_ForbidsWithoutBusinessPermission()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        var controller = CreateStoresController(allowedPermission: null, storeService);
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<ForbidResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Never);
+    }
+
     [Fact]
     public void ServiceApiTokensController_ManagementEndpointsRequireJwtBearerOnly()
     {
@@ -742,6 +869,48 @@ public class ControllerAuthorizationMetadataTests
 
     private static object[] Policy<TController>(string methodName, string expectedPolicy) =>
         new object[] { typeof(TController), methodName, expectedPolicy };
+
+    private static StoresController CreateStoresController(
+        string? allowedPermission,
+        Mock<IStoreService> storeService,
+        params string[] roleNames
+    )
+    {
+        var allowedPermissions = string.IsNullOrWhiteSpace(allowedPermission)
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(new[] { allowedPermission }, StringComparer.OrdinalIgnoreCase);
+        var authorizationService = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorizationService
+            .Setup(service => service.AuthorizeAsync(
+                It.IsAny<ClaimsPrincipal>(),
+                It.IsAny<object?>(),
+                It.IsAny<string>()))
+            .ReturnsAsync(
+                (ClaimsPrincipal _, object? _, string policyName) =>
+                    allowedPermissions.Contains(policyName)
+                        ? AuthorizationResult.Success()
+                        : AuthorizationResult.Failed()
+            );
+        var claims = roleNames.Select(roleName => new Claim(ClaimTypes.Role, roleName));
+
+        return new StoresController(
+            storeService.Object,
+            syncService: null!,
+            authorizationService.Object,
+            NullLogger<StoresController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(claims, authenticationType: "test")
+                    )
+                },
+            },
+        };
+    }
 
     private static MethodInfo GetDeclaredMethod(Type controllerType, string methodName) =>
         controllerType.GetMethods(

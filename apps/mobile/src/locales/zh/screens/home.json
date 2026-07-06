@@ -3,7 +3,7 @@
   "filterTitle": "过滤面板",
   "gradeFilterTitle": "等级筛选",
   "scanResultHint": "当前为扫码结果，点清除按钮恢复全部商品",
-  "searchPlaceholder": "按货号搜索",
+  "searchPlaceholder": "按货号/条码搜索",
   "searchToggleOpen": "展开搜索框",
   "searchToggleClose": "收起搜索框",
   "cameraQuery": "相机查询",
@@ -46,6 +46,12 @@
     "needPermissionTitle": "需要相机权限",
     "needPermissionDescription": "开启权限后，就能在商品页里直接用摄像头扫码查询商品。",
     "grantPermission": "开启相机权限"
+  },
+  "quantityEditor": {
+    "title": "编辑订货数量",
+    "product": "商品: {{name}}",
+    "inputLabel": "订货数量",
+    "invalidQuantity": "请输入 0 或正整数"
   },
   "messages": {
     "storesLoadFailed": "门店加载失败，请稍后重试",

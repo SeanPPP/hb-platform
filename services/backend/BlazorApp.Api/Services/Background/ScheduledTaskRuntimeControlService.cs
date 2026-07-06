@@ -35,7 +35,8 @@ namespace BlazorApp.Api.Services.Background
 
             var control = await GetOrCreateControlAsync();
             var instances = await QueryInstancesAsync();
-            var status = BuildStatus(control, instances);
+            var leaseSnapshot = await QueryLeaseSnapshotAsync();
+            var status = BuildStatus(control, instances, leaseSnapshot);
             return status.EffectiveSchedulerEnabled;
         }
 
@@ -43,8 +44,9 @@ namespace BlazorApp.Api.Services.Background
         {
             var control = await QueryControlAsync();
             var instances = await QueryInstancesAsync();
+            var leaseSnapshot = await QueryLeaseSnapshotAsync();
 
-            return BuildStatus(control, instances);
+            return BuildStatus(control, instances, leaseSnapshot);
         }
 
         public async Task<ScheduledTaskRuntimeControlStatusDto> UpdateControlAsync(
@@ -72,7 +74,13 @@ namespace BlazorApp.Api.Services.Background
             );
 
             var instances = await QueryInstancesAsync();
-            return BuildStatus(control, instances);
+            var leaseSnapshot = await QueryLeaseSnapshotAsync();
+            return BuildStatus(control, instances, leaseSnapshot);
+        }
+
+        public string GetCurrentInstanceId()
+        {
+            return ResolveInstanceId();
         }
 
         private async Task<ScheduledTaskRuntimeControl?> QueryControlAsync()
@@ -176,9 +184,49 @@ namespace BlazorApp.Api.Services.Background
             await _context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
+        private async Task<ScheduledTaskLeaseSnapshot> QueryLeaseSnapshotAsync()
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                var recentSince = now.AddHours(-24);
+                var rows = await _context.Db.Queryable<ScheduledTaskLease>()
+                    .Where(x =>
+                        (x.Status == ScheduledTaskLeaseStatus.Running && x.LeaseUntilUtc != null && x.LeaseUntilUtc > now)
+                        || x.UpdatedAtUtc >= recentSince
+                    )
+                    .Select(x => new
+                    {
+                        x.Status,
+                        x.LeaseUntilUtc,
+                        x.DuplicateSkipCount,
+                        x.UpdatedAtUtc,
+                    })
+                    .ToListAsync();
+
+                return new ScheduledTaskLeaseSnapshot(
+                    rows.Count(x =>
+                        x.Status == ScheduledTaskLeaseStatus.Running
+                        && x.LeaseUntilUtc.HasValue
+                        && x.LeaseUntilUtc.Value > now
+                    ),
+                    rows
+                        .Where(x => x.UpdatedAtUtc >= recentSince)
+                        .Sum(x => x.DuplicateSkipCount)
+                );
+            }
+            catch (Exception ex)
+            {
+                // 租约表是新增控制面数据，读取失败不能影响已有调度开关判断。
+                _logger.LogWarning(ex, "读取统计任务租约状态失败，运行控制状态将显示为 0");
+                return new ScheduledTaskLeaseSnapshot(0, 0);
+            }
+        }
+
         private ScheduledTaskRuntimeControlStatusDto BuildStatus(
             ScheduledTaskRuntimeControl? control,
-            List<ScheduledTaskInstanceState> instances
+            List<ScheduledTaskInstanceState> instances,
+            ScheduledTaskLeaseSnapshot leaseSnapshot
         )
         {
             var currentInstanceId = ResolveInstanceId();
@@ -201,6 +249,8 @@ namespace BlazorApp.Api.Services.Background
                 ActiveInstanceId = activeInstanceId,
                 UpdatedAtUtc = control?.UpdatedAtUtc ?? default,
                 UpdatedBy = control?.UpdatedByUser,
+                RunningLeaseCount = leaseSnapshot.RunningLeaseCount,
+                RecentDuplicateSkipCount = leaseSnapshot.RecentDuplicateSkipCount,
                 KnownInstances = instances
                     .Select(instance => new ScheduledTaskInstanceStateDto
                     {
@@ -233,5 +283,10 @@ namespace BlazorApp.Api.Services.Background
 
             return $"{Environment.MachineName}-{Environment.ProcessId}";
         }
+
+        private sealed record ScheduledTaskLeaseSnapshot(
+            int RunningLeaseCount,
+            int RecentDuplicateSkipCount
+        );
     }
 }

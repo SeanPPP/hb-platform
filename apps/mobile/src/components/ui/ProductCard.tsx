@@ -1,4 +1,4 @@
-import { Image, StyleSheet, View } from "react-native";
+import { Image, Pressable, StyleSheet, View } from "react-native";
 import { Badge, Card, IconButton, Text } from "react-native-paper";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { ProductDynamicDataMap, StoreOrderProductItem } from "@/modules/shop/types";
@@ -17,6 +17,7 @@ interface ProductCardProps {
   isUpdatingCart?: boolean;
   onAddToCart: (product: StoreOrderProductItem) => void;
   onDecreaseCartQuantity: (product: StoreOrderProductItem, currentQuantity: number) => void;
+  onEditCartQuantity: (product: StoreOrderProductItem, currentQuantity: number) => void;
   onIncreaseCartQuantity: (product: StoreOrderProductItem) => void;
 }
 
@@ -35,12 +36,14 @@ export function ProductCard({
   isUpdatingCart = false,
   onAddToCart,
   onDecreaseCartQuantity,
+  onEditCartQuantity,
   onIncreaseCartQuantity,
 }: ProductCardProps) {
   const { t } = useAppTranslation("common");
   const dynamicData = dynamicDataMap[product.productCode];
   const cartQuantity = dynamicData?.cartQuantity ?? 0;
   const hasCartQuantity = cartQuantity > 0;
+  const canEditQuantity = !disabled && !isUpdatingCart;
   const grade = product.grade?.trim().toUpperCase();
   const gradeColor = grade ? PRODUCT_GRADE_CONFIG[grade]?.color ?? "#999" : undefined;
 
@@ -94,11 +97,23 @@ export function ProductCard({
             onPress={() => onDecreaseCartQuantity(product, cartQuantity)}
             style={styles.quantityButton}
           />
-          <View style={styles.stepperQuantityWrap}>
+          {/* 数字只负责打开编辑器；后端写入和乐观回滚由 Home 页复用现有 mutation 处理。 */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("labels.editCartQuantity", { quantity: cartQuantity })}
+            disabled={!canEditQuantity}
+            hitSlop={10}
+            onPress={() => onEditCartQuantity(product, cartQuantity)}
+            style={({ pressed }) => [
+              styles.stepperQuantityWrap,
+              canEditQuantity ? styles.stepperQuantityEditable : null,
+              pressed && canEditQuantity ? styles.stepperQuantityPressed : null,
+            ]}
+          >
             <Text variant="labelMedium" style={styles.stepperQuantityText}>
               {cartQuantity}
             </Text>
-          </View>
+          </Pressable>
           <IconButton
             icon="plus"
             mode="contained-tonal"
@@ -216,6 +231,13 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "stretch",
+  },
+  stepperQuantityEditable: {
+    borderRadius: 4,
+  },
+  stepperQuantityPressed: {
+    backgroundColor: "#E1E8F0",
   },
   stepperQuantityText: {
     color: "#171C1F",

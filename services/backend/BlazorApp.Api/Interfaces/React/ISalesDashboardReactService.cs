@@ -57,12 +57,14 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? localSupplierCodes = null,
             List<string>? chinaSupplierCodes = null,
             int pageIndex = 1,
-            int pageSize = 100
+            int pageSize = 100,
+            string? productSearch = null
         );
 
         Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
             DateRangeDto dateRange,
-            string productCode
+            string productCode,
+            List<string>? branchCodes = null
         );
 
         Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(
@@ -90,12 +92,12 @@ namespace BlazorApp.Api.Interfaces.React
         /// 用于 Executive Sales Intelligence 页面
         /// </summary>
         /// <param name="dateRange">日期范围</param>
-        /// <param name="topN">返回前N条记录</param>
+        /// <param name="topN">返回前N条记录；为空返回全部</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>分店业绩排名列表</returns>
         Task<List<ExecutiveBranchPerformanceDto>> GetExecutiveBranchPerformanceAsync(
             DateRangeDto dateRange,
-            int topN = 100,
+            int? topN = null,
             List<string>? branchCodes = null
         );
 
@@ -107,6 +109,18 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>每小时流量密度列表</returns>
         Task<List<ExecutiveHourlyTrafficDto>> GetExecutiveHourlyTrafficAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null
+        );
+
+        /// <summary>
+        /// 获取分店每日营业额
+        /// 用于移动端周/月营业额下钻明细
+        /// </summary>
+        /// <param name="dateRange">日期范围</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>分店每日营业额列表</returns>
+        Task<List<BranchDailyPerformanceDto>> GetBranchDailyPerformanceAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
         );

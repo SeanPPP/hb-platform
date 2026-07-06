@@ -8,6 +8,13 @@ export interface DeviceRegistrationRequest {
 export interface DeviceValidationRequest {
   hardwareId: string
   authCode: string
+  systemDeviceNumber?: string
+  deviceSystem?: string
+  locationLatitude?: number
+  locationLongitude?: number
+  locationAccuracy?: number
+  locationPermissionStatus?: string
+  locationCapturedAtUtc?: string
 }
 
 export interface DeviceUnbindRequest {
@@ -18,6 +25,8 @@ export interface DeviceUnbindRequest {
 export interface DeviceValidationResult {
   isValid: boolean
   newAuthCode?: string | null
+  isDeviceSwitched?: boolean
+  isCommonDevice?: boolean
 }
 
 export interface DeviceProfile {

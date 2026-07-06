@@ -223,7 +223,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal(4.44m, detail.ImportPrice);
-        Assert.Equal(17.76m, detail.ImportAmount);
+        // ImportAmount 按订货数量计算，发票金额走 AllocatedImportAmount。
+        Assert.Equal(22.2m, detail.ImportAmount);
         Assert.Equal(3m, product.PurchasePrice);
         Assert.Equal(3m, warehouseProduct.ImportPrice);
         Assert.Equal(3m, storePrice.PurchasePrice);
@@ -259,7 +260,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal(5.55m, detail.ImportPrice);
-        Assert.Equal(22.20m, detail.ImportAmount);
+        Assert.Equal(27.75m, detail.ImportAmount);
         Assert.Equal(5.55m, product.PurchasePrice);
         Assert.Equal(5.55m, warehouseProduct.ImportPrice);
         Assert.Collection(
@@ -313,7 +314,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.True(result.Success);
         Assert.Equal(4m, detail.AllocQuantity);
         Assert.Equal(6.66m, detail.ImportPrice);
-        Assert.Equal(26.64m, detail.ImportAmount);
+        Assert.Equal(33.3m, detail.ImportAmount);
         Assert.Equal(3m, product.PurchasePrice);
         Assert.Equal(3m, warehouseProduct.ImportPrice);
     }
@@ -377,7 +378,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal(5m, detail.Quantity);
                 Assert.Equal(6m, detail.AllocQuantity);
                 Assert.Equal(30m, detail.OEMAmount);
-                Assert.Equal(18m, detail.ImportAmount);
+                Assert.Equal(15m, detail.ImportAmount);
                 Assert.Equal("tester", detail.UpdatedBy);
             },
             detail =>
@@ -386,12 +387,12 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal(9m, detail.Quantity);
                 Assert.Equal(3m, detail.AllocQuantity);
                 Assert.Equal(21m, detail.OEMAmount);
-                Assert.Equal(12m, detail.ImportAmount);
+                Assert.Equal(36m, detail.ImportAmount);
                 Assert.Equal("tester", detail.UpdatedBy);
             }
         );
         Assert.Equal(51m, order.OEMTotalAmount);
-        Assert.Equal(30m, order.ImportTotalAmount);
+        Assert.Equal(51m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -1154,6 +1155,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             OrderDate = new DateTime(2026, 6, 4),
             OutboundDate = includeOutboundDate ? new DateTime(2026, 6, 5) : null,
             TotalImportAmount = 8.5m,
+            TotalAllocatedImportAmount = 8.5m,
             ShippingFee = 1.5m,
             Items = new List<StoreOrderCartItemDto>
             {
@@ -1167,6 +1169,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                     Quantity = 2m,
                     AllocQuantity = 1m,
                     ImportPrice = 8.5m,
+                    AllocatedImportAmount = 8.5m,
                 },
             },
         };

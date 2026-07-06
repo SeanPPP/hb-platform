@@ -101,6 +101,16 @@ const IMAGE_PROXY_ALLOWED_HOSTS = new Set([
   'hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com',
   'hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com',
 ])
+const IMAGE_SIGNED_QUERY_PARAMS = new Set([
+  'q-signature',
+  'q-sign-algorithm',
+  'q-ak',
+  'q-sign-time',
+  'q-key-time',
+  'x-cos-signature',
+  'x-cos-security-token',
+  'signature',
+])
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -165,6 +175,24 @@ function canUseImageProxy(url: URL) {
   return IMAGE_PROXY_ALLOWED_HOSTS.has(url.hostname.toLowerCase())
 }
 
+function hasSignedImageQuery(url: URL) {
+  for (const key of url.searchParams.keys()) {
+    if (IMAGE_SIGNED_QUERY_PARAMS.has(key.toLowerCase())) return true
+  }
+  return false
+}
+
+function appendImageExportCacheBust(url: URL) {
+  const cacheBustedUrl = new URL(url.toString())
+  if (hasSignedImageQuery(cacheBustedUrl)) {
+    // 已签名的 COS URL 不能追加 query，否则直连兜底可能因签名校验失败失效。
+    return cacheBustedUrl.toString()
+  }
+  // 导出直连 COS 时追加稳定参数，避开页面图片无 CORS 缓存污染 canvas 导出。
+  cacheBustedUrl.searchParams.set('hbImageExport', '1')
+  return cacheBustedUrl.toString()
+}
+
 export function getImageDownloadCandidates(url: string) {
   const normalizedUrl = normalizeImageDownloadUrl(url)
   if (!normalizedUrl) return []
@@ -184,8 +212,8 @@ export function getImageDownloadCandidates(url: string) {
     }
 
     return [
-      normalizedUrl,
       `/api/react/v1/image-proxy?url=${encodeURIComponent(parsedUrl.toString())}`,
+      appendImageExportCacheBust(parsedUrl),
     ]
   } catch {}
 

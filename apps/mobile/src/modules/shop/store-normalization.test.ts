@@ -1,4 +1,8 @@
-import { normalizeShopStores, sortShopStores } from "./store-normalization";
+import {
+  normalizeShopStores,
+  normalizeShopStoresApiResponse,
+  sortShopStores,
+} from "./store-normalization";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) {
@@ -37,3 +41,27 @@ const sortedStores = sortShopStores([
 ]);
 
 assertEqual(sortedStores[0]?.storeCode, "A", "stores are sorted by display name");
+
+const camelCaseApiStores = normalizeShopStoresApiResponse({
+  data: {
+    items: [{ StoreCode: "2001", StoreName: "North" }],
+  },
+});
+
+assertEqual(
+  camelCaseApiStores[0]?.storeCode,
+  "2001",
+  "ApiResponse.data is unwrapped before store normalization"
+);
+
+const pascalCaseApiStores = normalizeShopStoresApiResponse({
+  Data: {
+    Items: [{ StoreCode: "2002", StoreName: "South" }],
+  },
+});
+
+assertEqual(
+  pascalCaseApiStores[0]?.storeCode,
+  "2002",
+  "ApiResponse.Data is unwrapped before store normalization"
+);

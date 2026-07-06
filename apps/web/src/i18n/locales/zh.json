@@ -176,6 +176,7 @@
       "status": "状态",
       "totalPieces": "合计件数",
       "totalAmount": "合计金额",
+      "domesticPriceTotal": "国内价格合计",
       "totalVolume": "总体积",
       "totalVolumeCbm": "总体积 (m³)",
       "itemNumber": "货号",
@@ -242,6 +243,7 @@
       "filterEnglishName": "英文名称过滤",
       "batchEnglishName": "请输入统一英文名称",
       "filterRemark": "备注过滤",
+      "filterValue": "筛选值",
       "minValue": "最小值",
       "maxValue": "最大值"
     },
@@ -728,6 +730,7 @@
     "storeRetailPriceShort": "零售",
     "structure": "结构",
     "localSupplier": "澳洲供应商",
+    "australianSupplier": "澳洲供应商",
     "currentStore": "当前订单分店",
     "orderTotalSKU": "总 SKU",
     "orderTotalQty": "订货总数",
@@ -769,6 +772,9 @@
     "createdCount": "新建 {{count}}",
     "updatedCount": "更新 {{count}}",
     "unmatchedCount": "未匹配 {{count}}"
+  },
+  "location": {
+    "location": "货位"
   },
   "message": {
     "createSuccess": "创建成功",
@@ -1241,6 +1247,8 @@
       "confirmDelete": "确认删除该分类？",
       "deleteBlockedHint": "若该分类存在子分类，后端会阻止删除。",
       "noCategoryData": "暂无分类数据",
+      "searchPlaceholder": "搜索分类名称",
+      "uncategorizedOption": "未分类商品",
       "enterItemNumber": "请输入货号",
       "enterDomesticSupplierCode": "请输入国内供应商代码",
       "selectDomesticSupplier": "请选择国内供应商",
@@ -1555,6 +1563,18 @@
     "batchImageUpload": "批量图片上传",
     "batchActivate": "批量上架",
     "batchDeactivate": "批量下架",
+    "batchEdit": "批量修改",
+    "batchSetCategory": "批量分类",
+    "batchEditTitle": "批量修改 ({{count}} 个商品)",
+    "batchCategoryTitle": "批量设置分类 ({{count}} 个商品)",
+    "batchEditEmptyHint": "留空不修改",
+    "batchEditKeepEmpty": "留空不修改",
+    "batchCategoryHint": "请选择目标分类，确认后会把已选商品设置到该分类。",
+    "batchEditSuccess": "批量修改成功",
+    "batchEditFailed": "批量修改失败",
+    "batchEditNoChanges": "请至少填写一个修改字段",
+    "batchUpdatePartialFailed": "{{count}} 个商品更新失败",
+    "resetColumns": "重置列",
     "createProduct": "新建商品",
     "includeLabelPrice": "包含零售列（贴牌价）",
     "includeBarcodeImage": "包含条码图片",
@@ -1611,7 +1631,23 @@
     "hqSyncJobResultStats": "新增 {{added}} 条，更新 {{updated}} 条，错误 {{errors}} 条",
     "active": "启用",
     "inactive": "停用",
+    "onShelf": "上架",
+    "offShelf": "下架",
     "searchProductFull": "搜索货号 / 条码 / 商品名称 / 供应商",
+    "searchProductByItemNumber": "按货号筛选",
+    "searchProductByEnglishName": "按英文名筛选",
+    "searchProductByBarcode": "按条码筛选",
+    "searchProductByName": "按商品名筛选",
+    "filterLocation": "按货位筛选",
+    "filterMode": {
+      "contains": "包含",
+      "equals": "等于",
+      "startsWith": "开头是",
+      "endsWith": "结尾是",
+      "range": "范围",
+      "greaterOrEqual": "大于等于",
+      "lessOrEqual": "小于等于"
+    },
     "allProductTypes": "全部商品类型",
     "allStatus": "全部状态",
     "normal": "普通",
@@ -1663,6 +1699,9 @@
     "createProductFailed": "商品创建失败",
     "loadCreateDataFailed": "加载创建数据失败",
     "loadDomesticFailed": "加载国内商品失败",
+    "loadLocalSupplierFailed": "加载澳洲供应商失败",
+    "selectProductsFirst": "请先选择商品",
+    "invalidSetCodeDetail": "套装明细条码、进货价和零售价不能为空",
     "noDataToExport": "没有可导出的数据",
     "preparingExport": "正在准备导出...",
     "startExport": "开始导出",
@@ -2220,7 +2259,10 @@
         "addShift": "添加班次",
         "publishWeek": "发布本周",
         "approve": "通过",
-        "reject": "拒绝"
+        "reject": "拒绝",
+        "viewMap": "地图",
+        "viewSamples": "样本",
+        "openExternalMap": "打开外部地图"
       },
       "drawer": {
         "createSchedule": "新建排班",
@@ -2229,7 +2271,9 @@
         "editHoliday": "编辑公共假期",
         "batchHoliday": "批量设置公共假期",
         "approve": "通过审核",
-        "reject": "拒绝审核"
+        "reject": "拒绝审核",
+        "locationMap": "位置地图",
+        "locationSamples": "班中定位样本"
       },
       "fields": {
         "store": "分店",
@@ -2244,6 +2288,11 @@
         "punchType": "打卡类型",
         "punchTimeLocal": "本地打卡时间",
         "timeZone": "时区",
+        "location": "位置",
+        "locationSamples": "班中样本",
+        "locationAccuracy": "定位精度",
+        "locationCapturedAt": "采集时间",
+        "deviceSystem": "设备系统",
         "applicant": "申请人",
         "sourceType": "来源",
         "reviewedAt": "审核时间",
@@ -2344,7 +2393,11 @@
         "publishWeekSuccess": "本周排班已发布",
         "publishWeekFailed": "发布本周排班失败",
         "reviewSuccess": "审核已提交",
-        "reviewFailed": "提交审核失败"
+        "reviewFailed": "提交审核失败",
+        "locationNotRecorded": "未记录位置",
+        "externalMapNotice": "默认不加载第三方地图。点击下方按钮会把该坐标发送给外部地图服务。",
+        "loadLocationSamplesFailed": "加载班中定位样本失败",
+        "locationSamplesEmpty": "暂无班中定位样本"
       }
     },
     "devices": {
@@ -4445,7 +4498,7 @@
     "orderVolumeLabel": "订货体积",
     "shipVolumeLabel": "发货体积",
     "orderAmountLabel": "预计销售额",
-    "importAmountLabel": "订单金额 ex GST",
+    "importAmountLabel": "发货金额 ex GST",
     "gstAmountLabel": "GST 10%",
     "freightLabel": "运费",
     "addressLabel": "地址",

@@ -22,16 +22,19 @@ namespace BlazorApp.Api.Controllers
     {
         private readonly IStoreService _storeService;
         private readonly StoreSyncService _syncService;
+        private readonly IAuthorizationService _authorizationService;
         private readonly ILogger<StoresController> _logger;
 
         public StoresController(
             IStoreService storeService,
             StoreSyncService syncService,
+            IAuthorizationService authorizationService,
             ILogger<StoresController> logger
         )
         {
             _storeService = storeService;
             _syncService = syncService;
+            _authorizationService = authorizationService;
             _logger = logger;
         }
 
@@ -44,6 +47,11 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
+                if (!await CanReadAllStoresByNameAsync())
+                {
+                    return Forbid();
+                }
+
                 var result = await _storeService.GetAllStoresByNameAsync();
                 return Ok(result);
             }
@@ -55,6 +63,42 @@ namespace BlazorApp.Api.Controllers
                     ApiResponse<List<StoreDto>>.Error("获取所有分店列表失败", "INTERNAL_ERROR")
                 );
             }
+        }
+
+        private async Task<bool> CanReadAllStoresByNameAsync()
+        {
+            // 关键逻辑：Orders.Create 不是通用全分店读取权限，只给纯仓库员工代建购物车选店放行。
+            if (await HasPermissionAsync(Permissions.Stores.View))
+            {
+                return true;
+            }
+
+            if (
+                await HasPermissionAsync(Permissions.DeviceRegistration.View)
+                || await HasPermissionAsync(Permissions.DeviceRegistration.Manage)
+            )
+            {
+                return true;
+            }
+
+            return IsWarehouseStaffOnly() && await HasPermissionAsync(Permissions.Orders.Create);
+        }
+
+        private async Task<bool> HasPermissionAsync(string permission)
+        {
+            return (await _authorizationService.AuthorizeAsync(User, null, permission)).Succeeded;
+        }
+
+        private bool IsWarehouseStaffOnly()
+        {
+            return HasAnyRole("WarehouseStaff", "仓库员工")
+                && !HasAnyRole("Admin", "管理员")
+                && !HasAnyRole("WarehouseManager", "仓库经理");
+        }
+
+        private bool HasAnyRole(params string[] roles)
+        {
+            return roles.Any(User.IsInRole);
         }
 
         /// <summary>

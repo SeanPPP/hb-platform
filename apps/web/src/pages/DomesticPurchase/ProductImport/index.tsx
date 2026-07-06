@@ -1,4 +1,4 @@
-import { ClearOutlined, DeleteOutlined, PlusOutlined, TranslationOutlined } from '@ant-design/icons'
+import { ClearOutlined, DeleteOutlined, PlusOutlined, TranslationOutlined, WarningOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Image, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -8,6 +8,7 @@ import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { assignProductsToContainer, checkContainerConflicts, getContainerList } from '../../../services/containerService'
 import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales } from '../../../services/domesticProductImportService'
 import { batchTranslate } from '../../../services/translationService'
+import { isValidEAN13 } from '../../../utils/barcode'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
 import { applyProductImportNameTranslations, buildAssignContainerItems, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, parseProductImportPasteText, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
@@ -743,10 +744,33 @@ export default function ProductImportPage() {
         title: t('domesticProducts.barcode', '条码'),
         dataIndex: ['newProduct', 'barcode'],
         key: 'barcode',
-        width: 130,
+        width: 150,
         onHeaderCell: () => ({ onClick: (e: React.MouseEvent) => handleHeaderClick('barcode', e) } as any),
         className: selectedColumnKey === 'barcode' ? 'col-selected' : undefined,
-        render: (_, record) => renderEditable('barcode', 'text', record),
+        render: (_, record) => {
+          const barcode = record.newProduct.barcode?.trim()
+          // 非 EAN13 只做醒目标识，检测和保存仍按原流程放行。
+          const isNonEan13Barcode = Boolean(barcode && !isValidEAN13(barcode))
+          const isDiff = record.diffFields?.includes('barcode')
+          const isColSelected = selectedColumnEditableKey === 'barcode'
+          return (
+            <Input
+              value={record.newProduct.barcode}
+              onChange={(e) => updateProduct(record.id, 'barcode', e.target.value)}
+              style={{
+                ...(isDiff ? { backgroundColor: '#fef3c7' } : {}),
+                ...(isColSelected ? { backgroundColor: '#e6f7ff' } : {}),
+              }}
+              status={isNonEan13Barcode ? 'warning' : undefined}
+              suffix={isNonEan13Barcode ? (
+                <Tooltip title={t('productImport.notEan13Barcode', '不是 EAN13 条码')}>
+                  <WarningOutlined style={{ color: '#f59e0b' }} />
+                </Tooltip>
+              ) : undefined}
+              size="small"
+            />
+          )
+        },
       },
       {
         title: t('domesticProducts.productName', '商品名称'),

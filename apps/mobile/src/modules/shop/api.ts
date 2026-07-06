@@ -17,7 +17,7 @@ import type {
 } from "@/modules/shop/types";
 import { resolveCartSkuCount } from "@/modules/shop/cart-summary-density";
 import { buildScanLookupPayload } from "@/modules/shop/scan-lookup-payload";
-import { normalizeShopStores } from "@/modules/shop/store-normalization";
+import { normalizeShopStores, normalizeShopStoresApiResponse } from "@/modules/shop/store-normalization";
 import { apiClient } from "@/shared/api/client";
 
 type ApiItem = Record<string, unknown>;
@@ -331,7 +331,7 @@ export async function getStoresByUserGuid(userGuid: string): Promise<Store[]> {
 
 export async function getAllStores(): Promise<Store[]> {
   const response = await apiClient.get("/stores/all-by-name");
-  return normalizeShopStores(response.data);
+  return normalizeShopStoresApiResponse(response.data);
 }
 
 export async function getCategoryTree(): Promise<StoreOrderCategoryNode[]> {

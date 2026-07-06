@@ -25,6 +25,12 @@ namespace BlazorApp.Shared.Models
         public string? StoreCode { get; set; }
 
         /// <summary>
+        /// 购物车归属用户GUID；NULL 表示分店共享购物车，仓库员工代建购物车使用当前仓库员工GUID隔离。
+        /// </summary>
+        [SugarColumn(IsNullable = true, Length = 50)]
+        public string? CartOwnerUserGuid { get; set; }
+
+        /// <summary>
         /// 订单号
         /// </summary>
         [SugarColumn(IsNullable = true, Length = 50)]

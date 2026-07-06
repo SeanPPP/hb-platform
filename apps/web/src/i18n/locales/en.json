@@ -176,6 +176,7 @@
       "status": "Status",
       "totalPieces": "Total Pieces",
       "totalAmount": "Total Amount",
+      "domesticPriceTotal": "Domestic Price Total",
       "totalVolume": "Total Volume",
       "totalVolumeCbm": "Total Volume (m³)",
       "itemNumber": "Item No.",
@@ -242,6 +243,7 @@
       "filterEnglishName": "Filter English name",
       "batchEnglishName": "Enter one English name for all target rows",
       "filterRemark": "Filter remark",
+      "filterValue": "Filter value",
       "minValue": "Min",
       "maxValue": "Max"
     },
@@ -728,6 +730,7 @@
     "storeRetailPriceShort": "Retail",
     "structure": "Structure",
     "localSupplier": "Local Supplier",
+    "australianSupplier": "Australian Supplier",
     "currentStore": "Current Order Store",
     "orderTotalSKU": "Total SKU",
     "orderTotalQty": "Order Total Qty",
@@ -769,6 +772,9 @@
     "createdCount": "Created {{count}}",
     "updatedCount": "Updated {{count}}",
     "unmatchedCount": "Unmatched {{count}}"
+  },
+  "location": {
+    "location": "Location"
   },
   "message": {
     "createSuccess": "Created successfully",
@@ -1241,6 +1247,8 @@
       "confirmDelete": "Delete this category?",
       "deleteBlockedHint": "If this category has child categories, the backend will block deletion.",
       "noCategoryData": "No category data",
+      "searchPlaceholder": "Search category name",
+      "uncategorizedOption": "Uncategorized Products",
       "enterItemNumber": "Please enter item no.",
       "enterDomesticSupplierCode": "Please enter domestic supplier code",
       "selectDomesticSupplier": "Please select domestic supplier",
@@ -1555,6 +1563,18 @@
     "batchImageUpload": "Batch Upload Images",
     "batchActivate": "Batch Activate",
     "batchDeactivate": "Batch Deactivate",
+    "batchEdit": "Batch Edit",
+    "batchSetCategory": "Batch Set Category",
+    "batchEditTitle": "Batch Edit ({{count}} products)",
+    "batchCategoryTitle": "Batch Set Category ({{count}} products)",
+    "batchEditEmptyHint": "Leave blank to keep unchanged",
+    "batchEditKeepEmpty": "Leave blank to keep unchanged",
+    "batchCategoryHint": "Choose a target category. The selected products will be assigned to it after saving.",
+    "batchEditSuccess": "Batch edit successful",
+    "batchEditFailed": "Batch edit failed",
+    "batchEditNoChanges": "Fill in at least one field to update",
+    "batchUpdatePartialFailed": "{{count}} products failed to update",
+    "resetColumns": "Reset Columns",
     "createProduct": "Create Product",
     "includeLabelPrice": "Include retail column (label price)",
     "includeBarcodeImage": "Include barcode images",
@@ -1611,7 +1631,23 @@
     "hqSyncJobResultStats": "{{added}} added, {{updated}} updated, {{errors}} errors",
     "active": "Active",
     "inactive": "Inactive",
+    "onShelf": "On Shelf",
+    "offShelf": "Off Shelf",
     "searchProductFull": "Search item no. / barcode / name / supplier",
+    "searchProductByItemNumber": "Filter by item no.",
+    "searchProductByEnglishName": "Filter by English name",
+    "searchProductByBarcode": "Filter by barcode",
+    "searchProductByName": "Filter by product name",
+    "filterLocation": "Filter by location",
+    "filterMode": {
+      "contains": "Contains",
+      "equals": "Equals",
+      "startsWith": "Starts with",
+      "endsWith": "Ends with",
+      "range": "Range",
+      "greaterOrEqual": "Greater than or equal",
+      "lessOrEqual": "Less than or equal"
+    },
     "allProductTypes": "All Types",
     "allStatus": "All Status",
     "normal": "Normal",
@@ -1663,6 +1699,9 @@
     "createProductFailed": "Failed to create product",
     "loadCreateDataFailed": "Failed to load creation data",
     "loadDomesticFailed": "Failed to load domestic products",
+    "loadLocalSupplierFailed": "Failed to load local suppliers",
+    "selectProductsFirst": "Please select products first",
+    "invalidSetCodeDetail": "Set detail barcode, purchase price, and retail price are required",
     "noDataToExport": "No data to export",
     "preparingExport": "Preparing export...",
     "startExport": "Start Export",
@@ -2220,7 +2259,10 @@
         "addShift": "Add Shift",
         "publishWeek": "Publish This Week",
         "approve": "Approve",
-        "reject": "Reject"
+        "reject": "Reject",
+        "viewMap": "Map",
+        "viewSamples": "Samples",
+        "openExternalMap": "Open external map"
       },
       "drawer": {
         "createSchedule": "New Schedule",
@@ -2229,7 +2271,9 @@
         "editHoliday": "Edit Public Holiday",
         "batchHoliday": "Batch Set Public Holidays",
         "approve": "Approve Review",
-        "reject": "Reject Review"
+        "reject": "Reject Review",
+        "locationMap": "Location Map",
+        "locationSamples": "Shift Location Samples"
       },
       "fields": {
         "store": "Store",
@@ -2244,6 +2288,11 @@
         "punchType": "Punch Type",
         "punchTimeLocal": "Local Punch Time",
         "timeZone": "Time Zone",
+        "location": "Location",
+        "locationSamples": "Shift Samples",
+        "locationAccuracy": "Accuracy",
+        "locationCapturedAt": "Captured At",
+        "deviceSystem": "Device System",
         "applicant": "Applicant",
         "sourceType": "Source",
         "reviewedAt": "Reviewed At",
@@ -2344,7 +2393,11 @@
         "publishWeekSuccess": "This week's schedule has been published",
         "publishWeekFailed": "Failed to publish this week's schedule",
         "reviewSuccess": "Review submitted",
-        "reviewFailed": "Failed to submit review"
+        "reviewFailed": "Failed to submit review",
+        "locationNotRecorded": "Location not recorded",
+        "externalMapNotice": "External maps are not loaded by default. Opening the map sends this coordinate to the map provider.",
+        "loadLocationSamplesFailed": "Failed to load shift location samples",
+        "locationSamplesEmpty": "No shift location samples"
       }
     },
     "devices": {
@@ -4445,7 +4498,7 @@
     "orderVolumeLabel": "Order Volume",
     "shipVolumeLabel": "Ship Volume",
     "orderAmountLabel": "Estimated Sales",
-    "importAmountLabel": "Order Amount ex GST",
+    "importAmountLabel": "Allocated Amount ex GST",
     "gstAmountLabel": "GST 10%",
     "freightLabel": "Freight",
     "addressLabel": "Address",
