@@ -986,26 +986,29 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task RemoveFromCart_ForbidsWarehouseStaffEvenWithOrderCreatePermission()
+    public async Task RemoveFromCart_AllowsWarehouseStaffWithOrderCreatePermission()
     {
+        var request = new RemoveFromCartRequestDto { StoreCode = "1024", DetailGUID = "detail-1" };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.RemoveFromCartAsync(request)).ReturnsAsync(ApiResponse<bool>.OK(true));
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
         var controller = CreateController(
             service,
             CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
-            CreateScopeService(),
+            scopeService,
             new[] { "WarehouseStaff" }
         );
 
-        var result = await controller.RemoveFromCart(
-            new RemoveFromCartRequestDto { StoreCode = "1024", DetailGUID = "detail-1" }
-        );
+        var result = await controller.RemoveFromCart(request);
 
-        Assert.IsType<ForbidResult>(result);
-        service.VerifyNoOtherCalls();
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.RemoveFromCartAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
     }
 
     [Fact]
-    public async Task SubmitOrder_ForbidsWarehouseStaffWithOrderCreatePermission()
+    public async Task SubmitOrder_AllowsWarehouseStaffWithOrderCreatePermission()
     {
         var request = new SubmitStoreOrderRequestDto { StoreCode = "S001" };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
@@ -1020,9 +1023,64 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         var result = await controller.SubmitOrder(request);
 
-        Assert.IsType<ForbidResult>(result);
-        service.Verify(item => item.SubmitOrderAsync(request), Times.Never);
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.SubmitOrderAsync(request), Times.Once);
         scopeService.Verify(item => item.CanAccessStoreCodeAsync(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetActiveCartSummary_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetActiveCartSummaryAsync("1024"))
+            .ReturnsAsync(
+                ApiResponse<StoreOrderCartDto?>.OK(
+                    new StoreOrderCartDto { OrderGUID = "cart-warehouse-1", StoreCode = "1024" }
+                )
+            );
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetActiveCartSummary("1024");
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetActiveCartSummaryAsync("1024"), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetDynamicData_AllowsWarehouseStaffWithOrderCreatePermission()
+    {
+        var request = new StoreOrderDynamicDataRequestDto
+        {
+            StoreCode = "1024",
+            ProductCodes = new List<string> { "P001" },
+        };
+        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.GetProductsDynamicDataAsync(request))
+            .ReturnsAsync(ApiResponse<List<StoreOrderDynamicDataDto>>.OK(new List<StoreOrderDynamicDataDto>()));
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
+        var controller = CreateController(
+            service,
+            CreateAuthorizationService(Permissions.Orders.Create),
+            scopeService,
+            new[] { "WarehouseStaff" }
+        );
+
+        var result = await controller.GetDynamicData(request);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.GetProductsDynamicDataAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
     }
 
     [Fact]

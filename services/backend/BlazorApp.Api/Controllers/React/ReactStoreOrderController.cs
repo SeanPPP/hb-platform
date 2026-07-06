@@ -276,12 +276,25 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<IActionResult?> RequireCartWritePermissionAsync(string? storeCode, string checkType)
         {
-            var permissions = IsWarehouseStaffOnly()
-                ? new[] { Permissions.Orders.Create }
-                : CartWritePermissions;
+            if (IsWarehouseStaffOnly())
+            {
+                // 关键逻辑：仓库员工使用自己的专用购物车代建任意分店订单，只认显式 Orders.Create，不走单店 scope。
+                return await RequireAnyPermissionAsync(Permissions.Orders.Create);
+            }
 
-            // WarehouseStaff 的购物车写入只认显式 Orders.Create，不把旧 Warehouse.Manage 当成订货写权限。
-            return await RequireAnyPermissionAsync(storeCode, checkType, permissions)
+            return await RequireAnyPermissionAsync(storeCode, checkType, CartWritePermissions)
+                ?? await RequireAssignedStoreScopeAsync(storeCode);
+        }
+
+        private async Task<IActionResult?> RequireCartReadPermissionAsync(string? storeCode, string checkType)
+        {
+            if (IsWarehouseStaffOnly())
+            {
+                // 仓库员工打开普通订货页时需要读取商品/购物车，但仍必须具备代建所需的 Orders.Create。
+                return await RequireAnyPermissionAsync(Permissions.Orders.Create);
+            }
+
+            return await RequireAnyPermissionAsync(storeCode, checkType, OrderReadPermissions)
                 ?? await RequireAssignedStoreScopeAsync(storeCode);
         }
 
@@ -812,9 +825,10 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var permissionSw = Stopwatch.StartNew();
-                var forbidden =
-                    await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireAssignedStoreScopeAsync(filter.StoreCode);
+                var forbidden = await RequireCartReadPermissionAsync(
+                    filter.StoreCode,
+                    ScanOrderFlowCheckType
+                );
                 permissionSw.Stop();
                 if (forbidden != null)
                 {
@@ -959,13 +973,10 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var permissionSw = Stopwatch.StartNew();
-                var forbidden =
-                    await RequireAnyPermissionAsync(
-                        request.StoreCode,
-                        "scan-order-flow",
-                        OrderReadPermissions
-                    )
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                var forbidden = await RequireCartReadPermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
                 permissionSw.Stop();
                 if (forbidden != null)
                 {
@@ -1098,9 +1109,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireAssignedStoreScopeAsync(storeCode);
+                var forbidden = await RequireCartReadPermissionAsync(storeCode, CartFlowCheckType);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1128,9 +1137,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireAssignedStoreScopeAsync(storeCode);
+                var forbidden = await RequireCartReadPermissionAsync(storeCode, CartFlowCheckType);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1336,8 +1343,7 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(CartWritePermissions)
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                    await RequireCartWritePermissionAsync(request.StoreCode, CartFlowCheckType);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1398,12 +1404,6 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                if (IsWarehouseStaffOnly())
-                {
-                    // 仓库员工不提交分店 FlowStatus=0 购物车；代建订单必须走 CreateOrder 生成正式单。
-                    return Forbid();
-                }
-
                 var forbidden = await RequireCartWritePermissionAsync(
                     request.StoreCode,
                     CartFlowCheckType
@@ -1439,9 +1439,10 @@ namespace BlazorApp.Api.Controllers.React
             try
             {
                 var permissionSw = Stopwatch.StartNew();
-                var forbidden =
-                    await RequireAnyPermissionAsync(OrderReadPermissions)
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                var forbidden = await RequireCartReadPermissionAsync(
+                    request.StoreCode,
+                    ScanOrderFlowCheckType
+                );
                 permissionSw.Stop();
                 if (forbidden != null)
                 {

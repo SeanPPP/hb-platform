@@ -1,6 +1,7 @@
 import {
   getVisibleTabRouteNames,
   expandAttendanceRouteNames,
+  filterAccountTabRouteNames,
   resolveDefaultTabRoute,
   resolveTabRouteCorrection,
   TAB_PATHS,
@@ -84,6 +85,32 @@ assertEqual(
   }).join(","),
   "home,attendance-personal,attendance-management,settings",
   "shared visible routes expand legacy attendance to management for users with management permission"
+);
+
+assertEqual(
+  filterAccountTabRouteNames(["home", "orders", "cart", "settings"], {
+    canCreateOrder: true,
+    isWarehouseStaffOnly: true,
+  }).join(","),
+  "home,orders,cart,settings",
+  "pure WarehouseStaff with Orders.Create keeps cart for dedicated warehouse cart"
+);
+
+assertEqual(
+  filterAccountTabRouteNames(["home", "orders", "cart", "settings"], {
+    canCreateOrder: false,
+    isWarehouseStaffOnly: true,
+  }).join(","),
+  "home,orders,settings",
+  "pure WarehouseStaff without Orders.Create removes cart even when app menu returns it"
+);
+
+assertEqual(
+  filterAccountTabRouteNames(["home", "orders", "cart", "settings"], {
+    isWarehouseStaffOnly: false,
+  }).join(","),
+  "home,orders,cart,settings",
+  "normal account menu keeps cart visible"
 );
 
 assertEqual(

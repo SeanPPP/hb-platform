@@ -22,16 +22,19 @@ namespace BlazorApp.Api.Controllers
     {
         private readonly IStoreService _storeService;
         private readonly StoreSyncService _syncService;
+        private readonly IAuthorizationService _authorizationService;
         private readonly ILogger<StoresController> _logger;
 
         public StoresController(
             IStoreService storeService,
             StoreSyncService syncService,
+            IAuthorizationService authorizationService,
             ILogger<StoresController> logger
         )
         {
             _storeService = storeService;
             _syncService = syncService;
+            _authorizationService = authorizationService;
             _logger = logger;
         }
 
@@ -44,6 +47,11 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
+                if (!await CanReadAllStoresByNameAsync())
+                {
+                    return Forbid();
+                }
+
                 var result = await _storeService.GetAllStoresByNameAsync();
                 return Ok(result);
             }
@@ -55,6 +63,15 @@ namespace BlazorApp.Api.Controllers
                     ApiResponse<List<StoreDto>>.Error("获取所有分店列表失败", "INTERNAL_ERROR")
                 );
             }
+        }
+
+        private async Task<bool> CanReadAllStoresByNameAsync()
+        {
+            // 关键逻辑：全分店列表既服务后台分店查看，也服务仓库员工 Orders.Create 专用购物车选店。
+            return (await _authorizationService.AuthorizeAsync(User, null, Permissions.Stores.View))
+                .Succeeded
+                || (await _authorizationService.AuthorizeAsync(User, null, Permissions.Orders.Create))
+                    .Succeeded;
         }
 
         /// <summary>

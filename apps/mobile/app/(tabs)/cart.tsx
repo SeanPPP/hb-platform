@@ -345,6 +345,7 @@ export default function Cart() {
     onAddedToCart: async (product) => {
       setPriorityProductCode(product.productCode);
     },
+    mode: "add-to-cart",
     storeCode: selectedStoreCode,
   });
   const globalCartMutationPending =

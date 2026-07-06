@@ -81,6 +81,24 @@ export function expandAttendanceRouteNames(
   return expandedRouteNames;
 }
 
+interface AccountTabRouteNamesOptions {
+  canCreateOrder?: boolean;
+  isWarehouseStaffOnly?: boolean;
+}
+
+export function filterAccountTabRouteNames(
+  routeNames: Iterable<string>,
+  { canCreateOrder = false, isWarehouseStaffOnly = false }: AccountTabRouteNamesOptions = {}
+) {
+  const orderedRouteNames = Array.from(routeNames);
+  if (!isWarehouseStaffOnly || canCreateOrder) {
+    return orderedRouteNames;
+  }
+
+  // 纯仓库员工只有显式 Orders.Create 才能进入自己的专用购物车。
+  return orderedRouteNames.filter((routeName) => routeName !== "cart");
+}
+
 interface VisibleTabRouteNamesOptions {
   routeNames: Iterable<string>;
   isDeviceMode?: boolean;

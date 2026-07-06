@@ -3,11 +3,15 @@ using System.Security.Claims;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Controllers.React;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -678,6 +682,37 @@ public class ControllerAuthorizationMetadataTests
         Assert.True(string.IsNullOrWhiteSpace(authorizeAttribute.Roles));
     }
 
+    [Theory]
+    [InlineData(Permissions.Stores.View)]
+    [InlineData(Permissions.Orders.Create)]
+    public async Task StoresController_AllStoresByName_AllowsStoreViewOrOrderCreate(
+        string allowedPermission
+    )
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        storeService
+            .Setup(service => service.GetAllStoresByNameAsync())
+            .ReturnsAsync(ApiResponse<List<StoreDto>>.OK(new List<StoreDto>()));
+        var controller = CreateStoresController(allowedPermission, storeService);
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<OkObjectResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task StoresController_AllStoresByName_ForbidsWithoutBusinessPermission()
+    {
+        var storeService = new Mock<IStoreService>(MockBehavior.Strict);
+        var controller = CreateStoresController(allowedPermission: null, storeService);
+
+        var result = await controller.GetAllStoresByName();
+
+        Assert.IsType<ForbidResult>(result);
+        storeService.Verify(service => service.GetAllStoresByNameAsync(), Times.Never);
+    }
+
     [Fact]
     public void ServiceApiTokensController_ManagementEndpointsRequireJwtBearerOnly()
     {
@@ -786,6 +821,43 @@ public class ControllerAuthorizationMetadataTests
 
     private static object[] Policy<TController>(string methodName, string expectedPolicy) =>
         new object[] { typeof(TController), methodName, expectedPolicy };
+
+    private static StoresController CreateStoresController(
+        string? allowedPermission,
+        Mock<IStoreService> storeService
+    )
+    {
+        var authorizationService = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorizationService
+            .Setup(service => service.AuthorizeAsync(
+                It.IsAny<ClaimsPrincipal>(),
+                It.IsAny<object?>(),
+                It.IsAny<string>()))
+            .ReturnsAsync(
+                (ClaimsPrincipal _, object? _, string policyName) =>
+                    policyName == allowedPermission
+                        ? AuthorizationResult.Success()
+                        : AuthorizationResult.Failed()
+            );
+
+        return new StoresController(
+            storeService.Object,
+            syncService: null!,
+            authorizationService.Object,
+            NullLogger<StoresController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(
+                        new ClaimsIdentity(Array.Empty<Claim>(), authenticationType: "test")
+                    )
+                },
+            },
+        };
+    }
 
     private static MethodInfo GetDeclaredMethod(Type controllerType, string methodName) =>
         controllerType.GetMethods(

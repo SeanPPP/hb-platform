@@ -134,12 +134,17 @@ namespace BlazorApp.Api.Services.React
             return barcode?.Trim().Length ?? 0;
         }
 
-        private static string GetCartMutationLockKey(string? storeCode)
+        private static string GetCartMutationLockKey(string? storeCode, string? cartOwnerUserGuid)
         {
             var normalized = storeCode?.Trim();
-            return string.IsNullOrWhiteSpace(normalized)
+            var storeKey = string.IsNullOrWhiteSpace(normalized)
                 ? "unknown"
                 : normalized.ToUpperInvariant();
+            var ownerKey = string.IsNullOrWhiteSpace(cartOwnerUserGuid)
+                ? "store"
+                : cartOwnerUserGuid.Trim().ToUpperInvariant();
+
+            return $"{storeKey}:{ownerKey}";
         }
 
         private static bool ShouldRollbackCartMutationResult<T>(T result)
@@ -159,7 +164,8 @@ namespace BlazorApp.Api.Services.React
             Func<Task<T>> action
         )
         {
-            var lockKey = GetCartMutationLockKey(storeCode);
+            var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
+            var lockKey = GetCartMutationLockKey(storeCode, cartOwnerUserGuid);
             var heldLocks = CartMutationLockScope.Value;
             if (heldLocks?.Contains(lockKey) == true)
             {
@@ -183,8 +189,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     await _db.Ado.BeginTranAsync();
                     transactionStarted = true;
-                    // ponytail: 同店购物车写入统一进数据库应用锁；跨实例也按门店串行。
-                    await AcquireCartMutationDatabaseLockAsync(_db, storeCode);
+                    // ponytail: 同店同 owner 购物车写入统一进数据库应用锁；跨实例也按购物车归属串行。
+                    await AcquireCartMutationDatabaseLockAsync(_db, storeCode, cartOwnerUserGuid);
                     var result = await action();
                     if (ShouldRollbackCartMutationResult(result))
                     {
@@ -216,7 +222,8 @@ namespace BlazorApp.Api.Services.React
 
         private static async Task AcquireCartMutationDatabaseLockAsync(
             ISqlSugarClient db,
-            string? storeCode
+            string? storeCode,
+            string? cartOwnerUserGuid
         )
         {
             if (db.CurrentConnectionConfig.DbType != DbType.SqlServer)
@@ -234,7 +241,10 @@ namespace BlazorApp.Api.Services.React
                     @LockTimeout = 2000;
                 SELECT @Result;
                 """,
-                new SugarParameter("@Resource", $"StoreOrderCart:{GetCartMutationLockKey(storeCode)}")
+                new SugarParameter(
+                    "@Resource",
+                    $"StoreOrderCart:{GetCartMutationLockKey(storeCode, cartOwnerUserGuid)}"
+                )
             );
 
             if (lockResult < 0)
@@ -280,6 +290,60 @@ namespace BlazorApp.Api.Services.React
                 claim.Type == ClaimTypes.Role
                 && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
             );
+        }
+
+        private bool HasAnyRole(params string[] roles)
+        {
+            return roles.Any(HasRole);
+        }
+
+        private bool IsWarehouseStaffOnly()
+        {
+            return HasAnyRole("WarehouseStaff", "仓库员工")
+                && !HasAnyRole("Admin", "管理员")
+                && !HasAnyRole("WarehouseManager", "仓库经理");
+        }
+
+        private string ResolveCurrentUserGuid()
+        {
+            var user = _httpContextAccessor.HttpContext?.User;
+            return user?.FindFirst("userId")?.Value
+                ?? user?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? user?.FindFirst("userGuid")?.Value
+                ?? user?.FindFirst("userGUID")?.Value
+                ?? user?.FindFirst("UserGuid")?.Value
+                ?? user?.FindFirst("sub")?.Value
+                ?? string.Empty;
+        }
+
+        private string? ResolveActiveCartOwnerUserGuid()
+        {
+            if (!IsWarehouseStaffOnly())
+            {
+                return null;
+            }
+
+            var userGuid = ResolveCurrentUserGuid().Trim();
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                throw new InvalidOperationException("无法识别当前仓库员工");
+            }
+
+            return userGuid;
+        }
+
+        private static ISugarQueryable<WareHouseOrder> ApplyActiveCartScope(
+            ISugarQueryable<WareHouseOrder> query,
+            string? cartOwnerUserGuid
+        )
+        {
+            if (string.IsNullOrWhiteSpace(cartOwnerUserGuid))
+            {
+                // 关键逻辑：NULL/空 owner 是原分店共享购物车，避免仓库员工专用车混入门店购物车。
+                return query.Where(o => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid));
+            }
+
+            return query.Where(o => o.CartOwnerUserGuid == cartOwnerUserGuid);
         }
 
         private bool HasElevatedOrderAccess()
@@ -2487,12 +2551,13 @@ namespace BlazorApp.Api.Services.React
         {
             var totalSw = Stopwatch.StartNew();
             var traceId = GetScanTraceId();
+            var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
 
             // FlowStatus = 0 代表购物车
             var orderSw = Stopwatch.StartNew();
-            var order = await _db.Queryable<WareHouseOrder>()
-                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
-                .FirstAsync();
+            var orderQuery = _db.Queryable<WareHouseOrder>()
+                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted);
+            var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
             orderSw.Stop();
 
             if (order == null)
@@ -2607,9 +2672,10 @@ namespace BlazorApp.Api.Services.React
 
         public async Task<ApiResponse<StoreOrderCartDto?>> GetActiveCartSummaryAsync(string storeCode)
         {
-            var order = await _db.Queryable<WareHouseOrder>()
-                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
-                .FirstAsync();
+            var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
+            var orderQuery = _db.Queryable<WareHouseOrder>()
+                .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted);
+            var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
             if (order == null)
             {
@@ -2678,6 +2744,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                 var now = DateTime.Now;
@@ -2686,11 +2753,11 @@ namespace BlazorApp.Api.Services.React
 
                 // 1. 获取或创建订单 (FlowStatus = 0)
                 var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (order == null)
                 {
@@ -2698,6 +2765,7 @@ namespace BlazorApp.Api.Services.React
                     {
                         OrderGUID = UuidHelper.GenerateUuid7(),
                         StoreCode = request.StoreCode,
+                        CartOwnerUserGuid = cartOwnerUserGuid,
                         OrderDate = now,
                         FlowStatus = 0, // 购物车状态
                         IsDeleted = false,
@@ -2858,6 +2926,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                         var now = DateTime.Now;
@@ -2865,11 +2934,11 @@ namespace BlazorApp.Api.Services.React
                             _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                         var orderSw = Stopwatch.StartNew();
-                        var order = await _db.Queryable<WareHouseOrder>()
+                        var orderQuery = _db.Queryable<WareHouseOrder>()
                             .Where(o =>
                                 o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                            )
-                            .FirstAsync();
+                            );
+                        var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                         if (order == null)
                         {
@@ -2877,6 +2946,7 @@ namespace BlazorApp.Api.Services.React
                             {
                                 OrderGUID = UuidHelper.GenerateUuid7(),
                                 StoreCode = request.StoreCode,
+                                CartOwnerUserGuid = cartOwnerUserGuid,
                                 OrderDate = now,
                                 FlowStatus = 0,
                                 IsDeleted = false,
@@ -3070,6 +3140,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                 var now = DateTime.Now;
@@ -3078,11 +3149,11 @@ namespace BlazorApp.Api.Services.React
 
                 // 1. 获取购物车
                 var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (order == null)
                 {
@@ -3234,6 +3305,7 @@ namespace BlazorApp.Api.Services.React
             var traceId = GetScanTraceId();
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
                 var now = DateTime.Now;
@@ -3241,11 +3313,11 @@ namespace BlazorApp.Api.Services.React
                     _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
 
                 var orderSw = Stopwatch.StartNew();
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
                 orderSw.Stop();
 
                 if (order == null)
@@ -3567,8 +3639,26 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 var detail = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d => d.DetailGUID == request.DetailGUID && !d.IsDeleted)
+                    .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                    .Where((d, o) =>
+                        d.DetailGUID == request.DetailGUID
+                        && o.StoreCode == request.StoreCode
+                        && d.StoreCode == request.StoreCode
+                        && !d.IsDeleted
+                        && o.FlowStatus == 0
+                        && !o.IsDeleted
+                    )
+                    .WhereIF(
+                        string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid)
+                    )
+                    .WhereIF(
+                        !string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => o.CartOwnerUserGuid == cartOwnerUserGuid
+                    )
+                    .Select((d, o) => d)
                     .FirstAsync();
 
                 if (detail == null)
@@ -3583,7 +3673,24 @@ namespace BlazorApp.Api.Services.React
                 return await RunCartMutationLockedAsync(detail.StoreCode, async () =>
                 {
                 var lockedDetail = await _db.Queryable<WareHouseOrderDetails>()
-                    .Where(d => d.DetailGUID == request.DetailGUID && !d.IsDeleted)
+                    .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
+                    .Where((d, o) =>
+                        d.DetailGUID == request.DetailGUID
+                        && o.StoreCode == request.StoreCode
+                        && d.StoreCode == request.StoreCode
+                        && !d.IsDeleted
+                        && o.FlowStatus == 0
+                        && !o.IsDeleted
+                    )
+                    .WhereIF(
+                        string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid)
+                    )
+                    .WhereIF(
+                        !string.IsNullOrWhiteSpace(cartOwnerUserGuid),
+                        (d, o) => o.CartOwnerUserGuid == cartOwnerUserGuid
+                    )
+                    .Select((d, o) => d)
                     .FirstAsync();
 
                 if (lockedDetail == null)
@@ -3622,11 +3729,12 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(storeCode, async () =>
                 {
-                var cart = await _db.Queryable<WareHouseOrder>()
-                    .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted)
-                    .FirstAsync();
+                var cartQuery = _db.Queryable<WareHouseOrder>()
+                    .Where(o => o.StoreCode == storeCode && o.FlowStatus == 0 && !o.IsDeleted);
+                var cart = await ApplyActiveCartScope(cartQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (cart == null)
                 {
@@ -3671,13 +3779,14 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 return await RunCartMutationLockedAsync(request.StoreCode, async () =>
                 {
-                var order = await _db.Queryable<WareHouseOrder>()
+                var orderQuery = _db.Queryable<WareHouseOrder>()
                     .Where(o =>
                         o.StoreCode == request.StoreCode && o.FlowStatus == 0 && !o.IsDeleted
-                    )
-                    .FirstAsync();
+                    );
+                var order = await ApplyActiveCartScope(orderQuery, cartOwnerUserGuid).FirstAsync();
 
                 if (order == null)
                 {
@@ -3809,8 +3918,9 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var cartSw = Stopwatch.StartNew();
+                var cartOwnerUserGuid = ResolveActiveCartOwnerUserGuid();
                 // 1. 获取购物车数量 (FlowStatus = 0)，在数据库侧聚合，避免把整车明细拉回内存。
-                var cartItems = await _db.Queryable<WareHouseOrderDetails>()
+                var cartQuery = _db.Queryable<WareHouseOrderDetails>()
                     .InnerJoin<WareHouseOrder>((d, o) => d.OrderGUID == o.OrderGUID)
                     .Where(
                         (d, o) =>
@@ -3822,7 +3932,11 @@ namespace BlazorApp.Api.Services.React
                     .Where(
                         (d, o) =>
                             d.ProductCode != null && productCodes.Contains(d.ProductCode)
-                    )
+                    );
+                cartQuery = string.IsNullOrWhiteSpace(cartOwnerUserGuid)
+                    ? cartQuery.Where((d, o) => SqlFunc.IsNullOrEmpty(o.CartOwnerUserGuid))
+                    : cartQuery.Where((d, o) => o.CartOwnerUserGuid == cartOwnerUserGuid);
+                var cartItems = await cartQuery
                     .GroupBy((d, o) => d.ProductCode)
                     .Select(
                         (d, o) =>

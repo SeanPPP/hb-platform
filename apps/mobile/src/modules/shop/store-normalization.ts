@@ -96,6 +96,12 @@ export function normalizeShopStores(payload: unknown): NormalizedShopStore[] {
     .filter((item): item is NormalizedShopStore => Boolean(item));
 }
 
+export function normalizeShopStoresApiResponse(payload: unknown): NormalizedShopStore[] {
+  const data = asRecord(payload);
+  // 后端有的接口返回 { data }，有的旧接口返回 { Data }；归一化前先统一解包。
+  return normalizeShopStores(data?.data ?? data?.Data ?? payload);
+}
+
 export function sortShopStores<T extends { storeCode: string; storeName?: string }>(stores: T[]) {
   return stores
     .slice()

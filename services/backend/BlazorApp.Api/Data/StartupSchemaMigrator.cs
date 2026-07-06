@@ -19,6 +19,59 @@ namespace BlazorApp.Api.Data
             await EnsureAttendanceLocationSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
+            await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
+        }
+
+        private static async Task EnsureWarehouseOrderCartOwnerSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string ensureColumnSql =
+                @"
+	IF OBJECT_ID('WareHouseOrder', 'U') IS NOT NULL
+	BEGIN
+	    IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NULL
+	    BEGIN
+	        ALTER TABLE [WareHouseOrder]
+	        ADD [CartOwnerUserGuid] nvarchar(50) NULL;
+	    END;
+
+	    IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NULL
+	    BEGIN
+	        THROW 51000, 'WareHouseOrder.CartOwnerUserGuid migration failed', 1;
+	    END;
+	END;";
+
+            // 关键逻辑：CartOwnerUserGuid 是运行时必需列，补列失败必须阻断启动，不能让接口带着缺列运行。
+            await db.Ado.ExecuteCommandAsync(ensureColumnSql);
+
+            const string ensureIndexSql =
+                @"
+	IF OBJECT_ID('WareHouseOrder', 'U') IS NOT NULL
+	BEGIN
+	    IF COL_LENGTH('WareHouseOrder', 'CartOwnerUserGuid') IS NOT NULL
+	       AND NOT EXISTS (
+	           SELECT *
+	           FROM sys.indexes
+	           WHERE name = 'IX_WareHouseOrder_CartScope'
+	             AND object_id = OBJECT_ID('WareHouseOrder')
+	       )
+	    BEGIN
+	        -- 关键逻辑：活动购物车按分店 + owner 隔离；NULL owner 保留原分店购物车语义。
+	        CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope]
+	        ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid]);
+	    END;
+	END;";
+
+            try
+            {
+                await db.Ado.ExecuteCommandAsync(ensureIndexSql);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "仓库订货购物车归属索引迁移失败");
+            }
         }
 
         private static async Task EnsureCashRegisterUsersSchemaAsync(

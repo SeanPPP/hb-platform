@@ -124,12 +124,15 @@ function createEmptyAccess(): AccessControl {
     isManager: false,
     isUser: false,
     isWarehouseStaff: false,
+    isWarehouseStaffOnly: false,
     isWarehouseManager: false,
     isStoreStaff: false,
     isStoreManager: false,
     isStoreLevelManager: false,
     onlyOrder: false,
     canReadOrder: false,
+    canCreateOrder: false,
+    canEditOrder: false,
     canWriteOrder: false,
     canDeleteOrder: false,
     canReadProduct: false,
@@ -215,6 +218,9 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const isUser = hasRole("User") || hasRole("用户");
   const isWarehouseStaff =
     isAdmin || hasRole("WarehouseStaff") || hasRole("仓库员工") || hasRole("WarehouseManager");
+  // 纯仓库员工用于专用购物车分流：管理员/仓库经理仍按管理角色能力处理。
+  const isWarehouseStaffOnly =
+    (hasRole("WarehouseStaff") || hasRole("仓库员工")) && !isAdmin && !isWarehouseManager;
   const isStoreStaff = hasRole("StoreStaff") || hasRole("店铺员工");
   const isStoreLevelManager = isStoreManager && !isAdmin && !isWarehouseManager;
   const onlyOrder = onlyRole("Order") || hasRole("订货员");
@@ -256,7 +262,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canManageStore = hasPermission("Stores.Edit") || hasPermission("Warehouse.Manage");
 
   const canReadOrder = hasPermission("Orders.View");
-  const canWriteOrder = hasPermission("Orders.Create") || hasPermission("Orders.Edit");
+  // 普通订单建单和明细维护需要显式订单权限，旧 Warehouse.Manage 不再隐式放大。
+  const canCreateOrder = hasPermission("Orders.Create");
+  const canEditOrder = hasPermission("Orders.Edit");
+  const canWriteOrder = canCreateOrder || canEditOrder;
   const canDeleteOrder = hasPermission("Orders.Delete");
   const canReadProduct = hasPermission("Products.View");
   const canWriteProduct = hasPermission("Products.Create") || hasPermission("Products.Edit");
@@ -312,12 +321,15 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     isManager,
     isUser,
     isWarehouseStaff,
+    isWarehouseStaffOnly,
     isWarehouseManager,
     isStoreStaff,
     isStoreManager,
     isStoreLevelManager,
     onlyOrder,
     canReadOrder,
+    canCreateOrder,
+    canEditOrder,
     canWriteOrder,
     canDeleteOrder,
     canReadProduct,

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
@@ -1758,6 +1759,180 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task WarehouseStaffDedicatedCart_同店按当前仓库员工隔离()
+    {
+        await SeedProductAsync("P-SCOPE", "ITEM-SCOPE");
+        await SeedWarehouseProductAsync("P-SCOPE", oemPrice: 3m, importPrice: 2m);
+
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SCOPE",
+            Quantity = 3,
+        });
+        await CreateService("warehouse-a", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SCOPE",
+            Quantity = 1,
+        });
+        await CreateService("warehouse-b", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SCOPE",
+            Quantity = 2,
+        });
+
+        var activeCarts = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.StoreCode == "S001" && item.FlowStatus == 0 && !item.IsDeleted)
+            .ToListAsync();
+        Assert.Equal(3, activeCarts.Count);
+        Assert.Contains(activeCarts, item => string.IsNullOrWhiteSpace(item.CartOwnerUserGuid));
+        Assert.Contains(activeCarts, item => item.CartOwnerUserGuid == "warehouse-a");
+        Assert.Contains(activeCarts, item => item.CartOwnerUserGuid == "warehouse-b");
+        var cartQuantities = await _db.Queryable<WareHouseOrderDetails>()
+            .InnerJoin<WareHouseOrder>((detail, order) => detail.OrderGUID == order.OrderGUID)
+            .Where((detail, order) => order.StoreCode == "S001" && order.FlowStatus == 0 && !detail.IsDeleted)
+            .Select((detail, order) => new
+            {
+                order.CartOwnerUserGuid,
+                Quantity = detail.Quantity ?? 0,
+            })
+            .ToListAsync();
+        Assert.Contains(cartQuantities, item => string.IsNullOrWhiteSpace(item.CartOwnerUserGuid) && item.Quantity == 3m);
+        Assert.Contains(cartQuantities, item => item.CartOwnerUserGuid == "warehouse-a" && item.Quantity == 1m);
+        Assert.Contains(cartQuantities, item => item.CartOwnerUserGuid == "warehouse-b" && item.Quantity == 2m);
+
+        var storeCart = await CreateService("store-user").GetActiveCartAsync("S001");
+        var staffACart = await CreateService("warehouse-a", "WarehouseStaff").GetActiveCartAsync("S001");
+        var staffBCart = await CreateService("warehouse-b", "WarehouseStaff").GetActiveCartAsync("S001");
+
+        Assert.Equal(3, storeCart.Data?.TotalQuantity);
+        Assert.Equal(1, staffACart.Data?.TotalQuantity);
+        Assert.Equal(2, staffBCart.Data?.TotalQuantity);
+    }
+
+    [Fact]
+    public async Task SubmitOrderAsync_仓库员工只提交自己的专用购物车()
+    {
+        await SeedProductAsync("P-SUBMIT", "ITEM-SUBMIT");
+        await SeedWarehouseProductAsync("P-SUBMIT", oemPrice: 3m, importPrice: 2m);
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SUBMIT",
+            Quantity = 3,
+        });
+        await CreateService("warehouse-a", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SUBMIT",
+            Quantity = 1,
+        });
+        await CreateService("warehouse-b", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SUBMIT",
+            Quantity = 2,
+        });
+
+        var submitResult = await CreateService("warehouse-a", "WarehouseStaff")
+            .SubmitOrderAsync(new SubmitStoreOrderRequestDto
+            {
+                StoreCode = "S001",
+                Remarks = "warehouse-a submit",
+            });
+
+        Assert.True(submitResult.Success, submitResult.Message);
+        var orders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.StoreCode == "S001" && !item.IsDeleted)
+            .ToListAsync();
+        var storeCart = Assert.Single(orders, item => string.IsNullOrWhiteSpace(item.CartOwnerUserGuid));
+        var staffAOrder = Assert.Single(orders, item => item.CartOwnerUserGuid == "warehouse-a");
+        var staffBCart = Assert.Single(orders, item => item.CartOwnerUserGuid == "warehouse-b");
+
+        Assert.Equal(0, storeCart.FlowStatus);
+        Assert.Equal(1, staffAOrder.FlowStatus);
+        Assert.Equal("warehouse-a submit", staffAOrder.Remarks);
+        Assert.Equal("ORD-warehouse-a", staffAOrder.OrderNo);
+        Assert.Equal(0, staffBCart.FlowStatus);
+    }
+
+    [Fact]
+    public async Task RemoveFromCartAsync_不会用请求门店删除其他分店购物车明细()
+    {
+        await SeedProductAsync("P-REMOVE", "ITEM-REMOVE");
+        await SeedWarehouseProductAsync("P-REMOVE", oemPrice: 3m, importPrice: 2m);
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-REMOVE",
+            Quantity = 1,
+        });
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S002",
+            ProductCode = "P-REMOVE",
+            Quantity = 2,
+        });
+        var otherStoreDetail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.StoreCode == "S002" && item.ProductCode == "P-REMOVE" && !item.IsDeleted)
+            .FirstAsync();
+
+        var result = await CreateService("store-user").RemoveFromCartAsync(new RemoveFromCartRequestDto
+        {
+            StoreCode = "S001",
+            DetailGUID = otherStoreDetail.DetailGUID,
+        });
+
+        Assert.False(result.Success);
+        var stillActiveDetail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == otherStoreDetail.DetailGUID)
+            .FirstAsync();
+        Assert.False(stillActiveDetail.IsDeleted);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_仓库员工只返回自己的购物车数量()
+    {
+        await SeedProductAsync("P-DYNAMIC", "ITEM-DYNAMIC");
+        await SeedWarehouseProductAsync("P-DYNAMIC", oemPrice: 3m, importPrice: 2m);
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-DYNAMIC",
+            Quantity = 3,
+        });
+        await CreateService("warehouse-a", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-DYNAMIC",
+            Quantity = 1,
+        });
+        await CreateService("warehouse-b", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-DYNAMIC",
+            Quantity = 2,
+        });
+        var request = new StoreOrderDynamicDataRequestDto
+        {
+            StoreCode = "S001",
+            ProductCodes = new List<string> { "P-DYNAMIC" },
+        };
+
+        var storeResult = await CreateService("store-user").GetProductsDynamicDataAsync(request);
+        var staffAResult = await CreateService("warehouse-a", "WarehouseStaff")
+            .GetProductsDynamicDataAsync(request);
+        var staffBResult = await CreateService("warehouse-b", "WarehouseStaff")
+            .GetProductsDynamicDataAsync(request);
+
+        Assert.Equal(3m, Assert.Single(storeResult.Data!).CartQuantity);
+        Assert.Equal(1m, Assert.Single(staffAResult.Data!).CartQuantity);
+        Assert.Equal(2m, Assert.Single(staffBResult.Data!).CartQuantity);
+    }
+
+    [Fact]
     public async Task GetActiveCartSummaryAsync_ReturnsTotalsWithoutItems()
     {
         await SeedStoreOrderAsync("ORDER-CART-SUMMARY", flowStatus: 0);
@@ -3416,7 +3591,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         string? remarks = null,
         DateTime? createdAt = null,
         string? updatedBy = null,
-        DateTime? updatedAt = null
+        DateTime? updatedAt = null,
+        string? cartOwnerUserGuid = null
     )
     {
         if (insertStore)
@@ -3436,6 +3612,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             CreatedAt = createdAt ?? new DateTime(2026, 6, 1),
             UpdatedBy = updatedBy,
             UpdatedAt = updatedAt,
+            CartOwnerUserGuid = cartOwnerUserGuid,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -3750,7 +3927,10 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private StoreOrderReactService CreateService()
+    private StoreOrderReactService CreateService(
+        string userGuid = "user-1",
+        params string[] roleNames
+    )
     {
         var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
         var dbField = typeof(SqlSugarContext).GetField(
@@ -3759,11 +3939,37 @@ public sealed class StoreOrderProductListTests : IDisposable
         );
         dbField!.SetValue(context, _db);
 
+        var httpContextAccessor = new HttpContextAccessor();
+        if (roleNames.Length > 0)
+        {
+            var claims = new List<Claim>
+            {
+                new("userId", userGuid),
+                new("userGuid", userGuid),
+                new(ClaimTypes.NameIdentifier, userGuid),
+                new(ClaimTypes.Name, userGuid),
+            };
+            claims.AddRange(roleNames.Select(roleName => new Claim(ClaimTypes.Role, roleName)));
+            httpContextAccessor.HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth")),
+            };
+        }
+        else
+        {
+            httpContextAccessor.HttpContext = null;
+        }
+
+        var orderNumberGenerator = new Mock<IOrderNumberGenerator>();
+        orderNumberGenerator
+            .Setup(item => item.GetNextOrderNoAsync())
+            .ReturnsAsync($"ORD-{userGuid}");
+
         var service = new StoreOrderReactService(
             context,
             NullLogger<StoreOrderReactService>.Instance,
-            new HttpContextAccessor(),
-            Mock.Of<IOrderNumberGenerator>(),
+            httpContextAccessor,
+            orderNumberGenerator.Object,
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
             Mock.Of<IInvoiceEmailService>()

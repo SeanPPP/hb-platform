@@ -57,12 +57,15 @@ export interface AccessControl {
   isManager: boolean;
   isUser: boolean;
   isWarehouseStaff: boolean;
+  isWarehouseStaffOnly: boolean;
   isWarehouseManager: boolean;
   isStoreStaff: boolean;
   isStoreManager: boolean;
   isStoreLevelManager: boolean;
   onlyOrder: boolean;
   canReadOrder: boolean;
+  canCreateOrder: boolean;
+  canEditOrder: boolean;
   canWriteOrder: boolean;
   canDeleteOrder: boolean;
   canReadProduct: boolean;
