@@ -16,6 +16,8 @@ export interface ScheduledTaskRuntimeControlStatus {
   activeInstanceId?: string | null
   updatedAtUtc?: string
   updatedBy?: string
+  runningLeaseCount: number
+  recentDuplicateSkipCount: number
   knownInstances: ScheduledTaskInstanceState[]
 }
 

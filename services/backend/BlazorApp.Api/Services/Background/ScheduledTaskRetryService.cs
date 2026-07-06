@@ -197,6 +197,33 @@ namespace BlazorApp.Api.Services.Background
                         await _statisticsJobService.FullRefreshPreviousDay();
                         break;
 
+                    case TaskType.FullRefreshPreviousMonth:
+                        {
+                            var previousMonth = DateTime.Now.AddMonths(-1).ToString("yyyy-MM");
+                            await _statisticsJobService.BatchFullRefreshByMonths(
+                                parameters.StartYearMonth ?? previousMonth,
+                                parameters.EndYearMonth ?? previousMonth,
+                                parameters.MaxMonths ?? 1
+                            );
+                        }
+                        break;
+
+                    case TaskType.FullRefreshCurrentMonth:
+                    case TaskType.FullRefreshCurrentQuarter:
+                    case TaskType.BatchFullRefreshByMonths:
+                        if (
+                            !string.IsNullOrEmpty(parameters.StartYearMonth)
+                            && !string.IsNullOrEmpty(parameters.EndYearMonth)
+                        )
+                        {
+                            await _statisticsJobService.BatchFullRefreshByMonths(
+                                parameters.StartYearMonth,
+                                parameters.EndYearMonth,
+                                parameters.MaxMonths ?? 12
+                            );
+                        }
+                        break;
+
                     case TaskType.UpdateStoreSupplierStatistics:
                         if (!string.IsNullOrEmpty(parameters.Date))
                         {

@@ -329,6 +329,8 @@ namespace BlazorApp.Api.Data
         // 定时任务日志实体
         public SimpleClient<ScheduledTaskLog> ScheduledTaskLogDb =>
             new SimpleClient<ScheduledTaskLog>(_db);
+        public SimpleClient<ScheduledTaskLease> ScheduledTaskLeaseDb =>
+            new SimpleClient<ScheduledTaskLease>(_db);
 
         // 发票邮件 SMTP 配置实体
         public SimpleClient<InvoiceEmailConfiguration> InvoiceEmailConfigurationDb =>
@@ -476,6 +478,7 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskLog),
                 typeof(ScheduledTaskRuntimeControl),
                 typeof(ScheduledTaskInstanceState),
+                typeof(ScheduledTaskLease),
                 typeof(InvoiceEmailConfiguration),
                 typeof(StoreOrderInvoiceEmailSendRecord),
                 typeof(ApplicationLog),

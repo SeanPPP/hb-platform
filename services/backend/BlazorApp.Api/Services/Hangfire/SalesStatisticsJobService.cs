@@ -1,6 +1,8 @@
 using System.Runtime.ExceptionServices;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services.Background;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
@@ -33,6 +35,11 @@ namespace BlazorApp.Api.Services
         public List<string> FailedDates { get; set; } = new();
 
         /// <summary>
+        /// 因已有运行租约而跳过的日期列表
+        /// </summary>
+        public List<string> SkippedDates { get; set; } = new();
+
+        /// <summary>
         /// 结果消息
         /// </summary>
         public string Message { get; set; } = string.Empty;
@@ -56,6 +63,13 @@ namespace BlazorApp.Api.Services
         /// 任务ID
         /// </summary>
         public Guid TaskId { get; set; }
+    }
+
+    internal sealed class FullRefreshRangeExecutionResult
+    {
+        public int ProcessedDays { get; set; }
+        public List<string> SkippedDates { get; set; } = new();
+        public List<string> FailedDates { get; set; } = new();
     }
 
     public class ProductStoreDailyRecalculationSubmitResult
@@ -804,25 +818,8 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始全量刷新前一天数据: {Date}", previousDay);
 
-                // 更新每日统计
-                await UpdateDailyStatistics(previousDay.ToString("yyyy-MM-dd"));
-
-                // 更新全天24小时的分时统计
-                for (int hour = 0; hour < 24; hour++)
-                {
-                    await UpdateHourlyStatistics(previousDay, hour);
-                }
-
-                // 更新分店统计
-                await UpdateStoreStatistics(previousDay);
-                // 更新商品分店每日统计，热销页优先读取该统计表。
-                await UpdateProductStoreDailyStatistics(previousDay);
-                // await UpdateSupplierStatistics(previousDay);
-                // await UpdateStoreSupplierStatistics(previousDay);
-                // 更新澳洲供应商门店统计
-                await UpdateAustralianSupplierStoreStatistics(previousDay);
-                // 更新中国供应商门店统计
-                await UpdateChinaSupplierStoreStatistics(previousDay);
+                // 全量刷新统一走带数据库租约的入口，保证 8 张日级统计表口径一致且跨实例不重复跑。
+                await RunLeasedFullRefreshForSingleDateAsync(previousDay, "前一天");
 
                 _logger.LogInformation("前一天数据全量刷新完成: {Date}", previousDay);
             }
@@ -845,33 +842,124 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始全量刷新当天数据: {Date}", currentDay);
 
-                // 更新每日统计
-                await UpdateDailyStatistics(currentDay.ToString("yyyy-MM-dd"));
+                // 当天主刷新也复用带数据库租约的完整路径，避免和手动补算抢同一天。
+                var refreshed = await RunLeasedFullRefreshForSingleDateAsync(currentDay, "当天");
+                if (!refreshed)
+                {
+                    return;
+                }
 
-                // 更新全天24小时的分时统计
-                await UpdateHourlyStatistics(currentDay, null);
-
-                // 更新分店统计
-                await UpdateStoreStatistics(currentDay);
-                // 更新商品分店每日统计，热销页优先读取该统计表。
-                await UpdateProductStoreDailyStatistics(currentDay);
                 // POSM 可能延迟上传，商品统计额外滚动补算最近 7 天。
                 for (var offset = 1; offset < 7; offset++)
                 {
-                    await UpdateProductStoreDailyStatistics(currentDay.AddDays(-offset));
+                    await RunLeasedProductStoreDailyRefreshAsync(currentDay.AddDays(-offset));
                 }
-                // await UpdateSupplierStatistics(currentDay);
-                //  await UpdateStoreSupplierStatistics(currentDay);
-                // 更新澳洲供应商门店统计
-                await UpdateAustralianSupplierStoreStatistics(currentDay);
-                // 更新中国供应商门店统计
-                await UpdateChinaSupplierStoreStatistics(currentDay);
 
                 _logger.LogInformation("当天数据全量刷新完成: {Date}", currentDay);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "全量刷新当天数据失败");
+                throw;
+            }
+        }
+
+        private async Task<bool> RunLeasedFullRefreshForSingleDateAsync(
+            DateTime date,
+            string label
+        )
+        {
+            var result = await BatchFullRefreshConcurrent(date, date, 1);
+            if (!result.Success)
+            {
+                throw new InvalidOperationException(result.Message);
+            }
+
+            if (result.SkippedDates.Any())
+            {
+                _logger.LogInformation(
+                    "{Label}数据全量刷新跳过，日期 {Date} 已有运行中统计租约",
+                    label,
+                    date.ToString("yyyy-MM-dd")
+                );
+                return false;
+            }
+
+            return true;
+        }
+
+        private async Task<bool> RunLeasedProductStoreDailyRefreshAsync(DateTime date)
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<SqlSugarContext>();
+            var posmContext = scope.ServiceProvider.GetRequiredService<POSMSqlSugarContext>();
+            var logger = scope.ServiceProvider.GetRequiredService<ILogger<SalesStatisticsJobService>>();
+            var leaseService = scope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
+            var dateStr = date.Date.ToString("yyyy-MM-dd");
+            var leaseTaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType;
+            var leaseDuration = TimeSpan.FromHours(2);
+            string? leaseToken = null;
+            DateTime? sourceWatermark = null;
+
+            try
+            {
+                var lease = await leaseService.TryAcquireAsync(leaseTaskType, dateStr, leaseDuration);
+                if (!lease.Acquired)
+                {
+                    _logger.LogInformation("日期 {Date} 已有统计租约运行中，商品滚动补算跳过", dateStr);
+                    return false;
+                }
+
+                leaseToken = lease.Lease?.LeaseToken;
+                if (string.IsNullOrWhiteSpace(leaseToken))
+                {
+                    throw new InvalidOperationException($"统计租约缺少 fencing token: {dateStr}");
+                }
+
+                sourceWatermark = await QueryDailySourceWatermarkAsync(posmContext, date);
+                await leaseService.EnsureActiveAsync(
+                    leaseTaskType,
+                    dateStr,
+                    leaseToken,
+                    leaseDuration,
+                    "商品分店每日滚动补算"
+                );
+                await UpsertStatisticStateAsync(
+                    context,
+                    SalesStatisticType.ProductStoreDaily,
+                    date,
+                    SalesStatisticRefreshStatus.Running,
+                    sourceWatermark,
+                    null
+                );
+                await UpdateProductStoreDailyStatisticsWithContext(context, posmContext, logger, date);
+                await leaseService.EnsureActiveAsync(
+                    leaseTaskType,
+                    dateStr,
+                    leaseToken,
+                    leaseDuration,
+                    "商品分店每日滚动补算完成确认"
+                );
+                if (!await leaseService.CompleteAsync(leaseTaskType, dateStr, leaseToken, true))
+                {
+                    throw new InvalidOperationException($"统计租约完成失败，token 已失效: {dateStr}");
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                await UpsertStatisticStateAsync(
+                    context,
+                    SalesStatisticType.ProductStoreDaily,
+                    date,
+                    SalesStatisticRefreshStatus.Failed,
+                    sourceWatermark,
+                    ex.Message
+                );
+                if (!string.IsNullOrWhiteSpace(leaseToken))
+                {
+                    await leaseService.CompleteAsync(leaseTaskType, dateStr, leaseToken, false, ex.Message);
+                }
                 throw;
             }
         }
@@ -2100,6 +2188,107 @@ namespace BlazorApp.Api.Services
             await context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
+        private static async Task UpsertStatisticStateAsync(
+            SqlSugarContext context,
+            string statisticType,
+            DateTime targetDate,
+            string status,
+            DateTime? lastSourceUploadTime,
+            string? errorMessage
+        )
+        {
+            var now = DateTime.UtcNow;
+            var existing = await context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(s => s.StatisticType == statisticType && s.Date == targetDate.Date)
+                .FirstAsync();
+            var isNew = existing == null;
+
+            if (isNew)
+            {
+                existing = new SalesStatisticRefreshState
+                {
+                    StatisticType = statisticType,
+                    Date = targetDate.Date,
+                    SourceTimeZone = "POSM_LOCAL",
+                };
+            }
+            var state = existing!;
+
+            state.Status = status;
+            state.LastSourceUploadTime = lastSourceUploadTime ?? state.LastSourceUploadTime;
+            state.LastCheckedAtUtc = now;
+            state.ErrorMessage = errorMessage;
+            if (status == SalesStatisticRefreshStatus.Running)
+            {
+                state.StartedAtUtc = now;
+                state.CompletedAtUtc = null;
+            }
+            else
+            {
+                state.LastAggregatedAtUtc = now;
+                state.CompletedAtUtc = now;
+            }
+
+            if (isNew)
+            {
+                await context.Db.Insertable(state).ExecuteCommandAsync();
+            }
+            else
+            {
+                await context.Db.Updateable(state).ExecuteCommandAsync();
+            }
+        }
+
+        private static async Task<DateTime?> QueryDailySourceWatermarkAsync(
+            POSMSqlSugarContext posmContext,
+            DateTime date
+        )
+        {
+            var targetDate = date.Date;
+            var nextDate = targetDate.AddDays(1);
+            var watermarks = new List<DateTime?>();
+
+            watermarks.Add(await posmContext.Db.Queryable<SalesOrder>()
+                .Where(order =>
+                    order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate
+                )
+                .MaxAsync(order => order.LastUploadTime));
+
+            watermarks.Add(await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+                    (payment, order) => payment.OrderGuid == order.OrderGuid
+                )
+                .Where((payment, order) =>
+                    order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate
+                )
+                .MaxAsync((payment, order) => payment.LastUploadTime));
+
+            watermarks.Add(await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
+                    (detail, order) => detail.OrderGuid == order.OrderGuid
+                )
+                .Where((detail, order) =>
+                    order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate
+                )
+                .MaxAsync((detail, order) => detail.LastUploadTime));
+
+            var values = watermarks
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .ToList();
+            return values.Count == 0 ? null : values.Max();
+        }
+
         private static string BuildProductStoreDailySubmitMessage(int submittedCount, int skippedCount)
         {
             if (submittedCount == 0 && skippedCount > 0)
@@ -2323,6 +2512,7 @@ namespace BlazorApp.Api.Services
             var processedDays = 0;
             var failedDates = new List<string>();
             var failedRanges = new List<string>();
+            var skippedDates = new List<string>();
             var syncLock = new object();
 
             var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = concurrency };
@@ -3374,70 +3564,36 @@ namespace BlazorApp.Api.Services
                 result.TotalDays
             );
 
-            // 用于统计每个月的失败情况
-            var monthStats = new Dictionary<string, (int success, int failed)>();
-
-            // 逐日更新统计数据
-            for (var date = startDate; date <= endMonthLastDay; date = date.AddDays(1))
+            for (var rangeStart = startDate; rangeStart <= endMonthLastDay;)
             {
-                try
+                var rangeEnd = rangeStart.AddDays(_maxDaysForConcurrentUpdate - 1);
+                if (rangeEnd > endMonthLastDay)
                 {
-                    var monthKey = date.ToString("yyyy-MM");
-                    if (!monthStats.ContainsKey(monthKey))
-                    {
-                        monthStats[monthKey] = (0, 0);
-                    }
-
-                    // 更新每日统计
-                    await UpdateDailyStatistics(date.ToString("yyyy-MM-dd"));
-                    // 更新分时统计
-                    await UpdateHourlyStatistics(date, null);
-                    // 更新分店统计
-                    await UpdateStoreStatistics(date);
-                    //  await UpdateSupplierStatistics(date);
-                    //  await UpdateStoreSupplierStatistics(date);
-                    // 更新澳洲供应商门店统计
-                    await UpdateAustralianSupplierStoreStatistics(date);
-                    // 更新中国供应商门店统计
-                    await UpdateChinaSupplierStoreStatistics(date);
-
-                    result.ProcessedDays++;
-                    monthStats[monthKey] = (
-                        monthStats[monthKey].success + 1,
-                        monthStats[monthKey].failed
-                    );
+                    rangeEnd = endMonthLastDay;
                 }
-                catch (Exception ex)
-                {
-                    result.FailedDates.Add(date.ToString("yyyy-MM-dd"));
-                    _logger.LogError(ex, "批量按月份刷新失败: {Date}", date);
 
-                    var monthKey = date.ToString("yyyy-MM");
-                    if (!monthStats.ContainsKey(monthKey))
-                    {
-                        monthStats[monthKey] = (0, 0);
-                    }
-                    monthStats[monthKey] = (
-                        monthStats[monthKey].success,
-                        monthStats[monthKey].failed + 1
-                    );
-                }
+                // 月/季度复查复用同一条带数据库租约的日级全量刷新路径，避免旧批量入口漏表或重复跑。
+                var rangeResult = await BatchFullRefreshConcurrent(rangeStart, rangeEnd);
+                result.ProcessedDays += rangeResult.ProcessedDays;
+                result.FailedDates.AddRange(rangeResult.FailedDates);
+                result.SkippedDates.AddRange(rangeResult.SkippedDates);
+                rangeStart = rangeEnd.AddDays(1);
             }
 
-            // 统计每个月的处理情况
-            foreach (var (month, stats) in monthStats)
+            for (var month = startDate; month <= endMonthLastDay; month = month.AddMonths(1))
             {
-                if (stats.failed > 0)
-                {
-                    result.FailedMonths.Add(month);
-                }
+                var monthKey = month.ToString("yyyy-MM");
                 result.ProcessedMonths++;
+                if (result.FailedDates.Any(date => date.StartsWith(monthKey, StringComparison.Ordinal)))
+                {
+                    result.FailedMonths.Add(monthKey);
+                }
             }
 
             result.Success = result.FailedDates.Count == 0;
             result.Message = result.Success
-                ? $"批量按月份刷新完成: {result.ProcessedDays}/{result.TotalDays} 天, {result.ProcessedMonths}/{result.TotalMonths} 个月"
-                : $"批量按月份刷新部分完成: {result.ProcessedDays}/{result.TotalDays} 天, {result.ProcessedMonths}/{result.TotalMonths} 个月, 失败 {result.FailedDates.Count} 天, 失败月份: {string.Join(", ", result.FailedMonths)}";
+                ? $"批量按月份刷新完成: {result.ProcessedDays}/{result.TotalDays} 天, 跳过: {result.SkippedDates.Count} 天, {result.ProcessedMonths}/{result.TotalMonths} 个月"
+                : $"批量按月份刷新部分完成: {result.ProcessedDays}/{result.TotalDays} 天, 跳过: {result.SkippedDates.Count} 天, 失败 {result.FailedDates.Count} 天, 失败月份: {string.Join(", ", result.FailedMonths)}";
 
             _logger.LogInformation(result.Message);
             return result;
@@ -3499,6 +3655,7 @@ namespace BlazorApp.Api.Services
             var processedDays = 0;
             var failedDates = new List<string>();
             var failedRanges = new List<string>();
+            var skippedDates = new List<string>();
             var syncLock = new object();
 
             var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = concurrency };
@@ -3532,12 +3689,15 @@ namespace BlazorApp.Api.Services
                             var logger = scope.ServiceProvider.GetRequiredService<
                                 ILogger<SalesStatisticsJobService>
                             >();
+                            var leaseService =
+                                scope.ServiceProvider.GetRequiredService<ScheduledTaskLeaseService>();
 
                             // 调用带上下文的全量刷新方法
-                            await FullRefreshDateRangeWithContext(
+                            var rangeResult = await FullRefreshDateRangeWithContext(
                                 context,
                                 posmContext,
                                 logger,
+                                leaseService,
                                 dateRange.StartDate,
                                 dateRange.EndDate
                             );
@@ -3545,32 +3705,39 @@ namespace BlazorApp.Api.Services
                             // 使用锁更新进度
                             lock (syncLock)
                             {
-                                processedDays += dateRange.DayCount;
+                                processedDays += rangeResult.ProcessedDays;
+                                skippedDates.AddRange(rangeResult.SkippedDates);
+                                failedDates.AddRange(rangeResult.FailedDates);
                             }
 
                             logger.LogInformation(
-                                "并发块处理完成 {StartDate} 至 {EndDate} ({Days} 天), 累计进度: {Progress}/{Total}",
+                                "并发块处理完成 {StartDate} 至 {EndDate} ({Days} 天), 累计进度: {Progress}/{Total}, 跳过: {Skipped}, 失败: {Failed}",
                                 dateRange.StartDate.ToString("yyyy-MM-dd"),
                                 dateRange.EndDate.ToString("yyyy-MM-dd"),
                                 dateRange.DayCount,
                                 processedDays,
-                                totalDays
+                                totalDays,
+                                rangeResult.SkippedDates.Count,
+                                rangeResult.FailedDates.Count
                             );
                         }
                         catch (Exception ex)
                         {
                             var rangeKey =
                                 $"{dateRange.StartDate:yyyy-MM-dd} 至 {dateRange.EndDate:yyyy-MM-dd}";
-                            failedRanges.Add(rangeKey);
-
-                            // 记录失败的日期
-                            for (
-                                var d = dateRange.StartDate;
-                                d <= dateRange.EndDate;
-                                d = d.AddDays(1)
-                            )
+                            lock (syncLock)
                             {
-                                failedDates.Add(d.ToString("yyyy-MM-dd"));
+                                failedRanges.Add(rangeKey);
+
+                                // 记录失败的日期
+                                for (
+                                    var d = dateRange.StartDate;
+                                    d <= dateRange.EndDate;
+                                    d = d.AddDays(1)
+                                )
+                                {
+                                    failedDates.Add(d.ToString("yyyy-MM-dd"));
+                                }
                             }
 
                             _logger.LogError(
@@ -3588,12 +3755,13 @@ namespace BlazorApp.Api.Services
                 result.TotalDays = totalDays;
                 result.ProcessedDays = processedDays;
                 result.FailedDates = failedDates;
+                result.SkippedDates = skippedDates;
                 result.Success = failedDates.Count == 0;
 
                 var avgTimePerDay = stopwatch.Elapsed.TotalSeconds / totalDays;
                 result.Message = result.Success
-                    ? $"并发完整刷新完成: {processedDays}/{totalDays} 天, 总耗时: {stopwatch.Elapsed:mm\\:ss}, 平均每天: {avgTimePerDay:F2}秒"
-                    : $"并发完整刷新部分完成: {processedDays}/{totalDays} 天, 失败: {failedDates.Count} 天, 总耗时: {stopwatch.Elapsed:mm\\:ss}";
+                    ? $"并发完整刷新完成: {processedDays}/{totalDays} 天, 跳过: {skippedDates.Count} 天, 总耗时: {stopwatch.Elapsed:mm\\:ss}, 平均每天: {avgTimePerDay:F2}秒"
+                    : $"并发完整刷新部分完成: {processedDays}/{totalDays} 天, 跳过: {skippedDates.Count} 天, 失败: {failedDates.Count} 天, 总耗时: {stopwatch.Elapsed:mm\\:ss}";
 
                 _logger.LogInformation(
                     "{ResultMessage}, 失败的日期块: {FailedRanges}",
@@ -3624,16 +3792,19 @@ namespace BlazorApp.Api.Services
         /// <param name="context">数据库上下文</param>
         /// <param name="posmContext">POSM数据库上下文</param>
         /// <param name="logger">日志记录器</param>
+        /// <param name="leaseService">统计任务数据库租约服务</param>
         /// <param name="startDate">开始日期</param>
         /// <param name="endDate">结束日期</param>
-        private async Task FullRefreshDateRangeWithContext(
+        private async Task<FullRefreshRangeExecutionResult> FullRefreshDateRangeWithContext(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
             ILogger logger,
+            ScheduledTaskLeaseService leaseService,
             DateTime startDate,
             DateTime endDate
         )
         {
+            var result = new FullRefreshRangeExecutionResult();
             try
             {
                 logger.LogInformation(
@@ -3646,97 +3817,161 @@ namespace BlazorApp.Api.Services
                 // 逐日刷新所有统计数据
                 for (var date = startDate; date <= endDate; date = date.AddDays(1))
                 {
+                    var dateStr = date.ToString("yyyy-MM-dd");
+                    var leaseTaskType = SalesStatisticsAlignmentService.DailyFullRefreshLeaseTaskType;
+                    var leaseDuration = TimeSpan.FromHours(2);
+                    string? leaseToken = null;
                     try
                     {
-                        var dateStr = date.ToString("yyyy-MM-dd");
-
-                        // 更新每日统计
-                        await UpdateDailyStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            dateStr
+                        var lease = await leaseService.TryAcquireAsync(
+                            leaseTaskType,
+                            dateStr,
+                            leaseDuration
                         );
+                        if (!lease.Acquired)
+                        {
+                            result.SkippedDates.Add(dateStr);
+                            logger.LogInformation("日期 {Date} 已有统计租约运行中，本次完整刷新跳过", dateStr);
+                            continue;
+                        }
 
-                        // 更新分时统计
-                        await UpdateHourlyStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date,
-                            null
+                        leaseToken = lease.Lease?.LeaseToken;
+                        if (string.IsNullOrWhiteSpace(leaseToken))
+                        {
+                            throw new InvalidOperationException($"统计租约缺少 fencing token: {dateStr}");
+                        }
+
+                        var sourceWatermark = await QueryDailySourceWatermarkAsync(posmContext, date);
+
+                        async Task RunStep(
+                            string statisticType,
+                            string stepName,
+                            Func<Task> action,
+                            bool markFreshOnSuccess = true
+                        )
+                        {
+                            await leaseService.EnsureActiveAsync(
+                                leaseTaskType,
+                                dateStr,
+                                leaseToken,
+                                leaseDuration,
+                                stepName
+                            );
+                            await UpsertStatisticStateAsync(
+                                context,
+                                statisticType,
+                                date,
+                                SalesStatisticRefreshStatus.Running,
+                                sourceWatermark,
+                                null
+                            );
+
+                            try
+                            {
+                                await action();
+                                await leaseService.EnsureActiveAsync(
+                                    leaseTaskType,
+                                    dateStr,
+                                    leaseToken,
+                                    leaseDuration,
+                                    $"{stepName}完成确认"
+                                );
+                                if (markFreshOnSuccess)
+                                {
+                                    await UpsertStatisticStateAsync(
+                                        context,
+                                        statisticType,
+                                        date,
+                                        SalesStatisticRefreshStatus.Fresh,
+                                        sourceWatermark,
+                                        null
+                                    );
+                                }
+                            }
+                            catch (Exception stepEx)
+                            {
+                                await UpsertStatisticStateAsync(
+                                    context,
+                                    statisticType,
+                                    date,
+                                    SalesStatisticRefreshStatus.Failed,
+                                    sourceWatermark,
+                                    stepEx.Message
+                                );
+                                throw;
+                            }
+                        }
+
+                        await RunStep(
+                            SalesStatisticType.DailySales,
+                            "每日统计",
+                            () => UpdateDailyStatisticsWithContext(context, posmContext, logger, dateStr)
                         );
-
-                        // 更新分店统计
-                        await UpdateStoreStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date,
-                            null
+                        await RunStep(
+                            SalesStatisticType.HourlySales,
+                            "分时统计",
+                            () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
                         );
-
-                        // 更新供应商统计
-                        await UpdateSupplierStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date,
-                            date,
-                            null
+                        await RunStep(
+                            SalesStatisticType.StoreSales,
+                            "分店统计",
+                            () => UpdateStoreStatisticsWithContext(context, posmContext, logger, date, null)
                         );
-
-                        // 更新门店供应商统计
-                        await UpdateStoreSupplierStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date,
-                            null,
-                            null
+                        await RunStep(
+                            SalesStatisticType.SupplierSales,
+                            "供应商统计",
+                            () => UpdateSupplierStatisticsWithContext(context, posmContext, logger, date, date, null)
                         );
-
-                        // 更新商品分店每日统计，供热销商品和毛利率查询使用。
-                        await UpdateProductStoreDailyStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date
+                        await RunStep(
+                            SalesStatisticType.StoreSupplierSales,
+                            "门店供应商统计",
+                            () => UpdateStoreSupplierStatisticsWithContext(context, posmContext, logger, date, null, null)
                         );
-
-                        // 更新澳洲供应商门店统计
-                        await UpdateAustralianSupplierStoreStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date,
-                            null,
-                            null
+                        await RunStep(
+                            SalesStatisticType.ProductStoreDaily,
+                            "商品分店每日统计",
+                            () => UpdateProductStoreDailyStatisticsWithContext(context, posmContext, logger, date),
+                            false
                         );
-
-                        // 更新中国供应商门店统计
-                        await UpdateChinaSupplierStoreStatisticsWithContext(
-                            context,
-                            posmContext,
-                            logger,
-                            date,
-                            null,
-                            null
+                        await RunStep(
+                            SalesStatisticType.AustralianSupplierStoreSales,
+                            "澳洲供应商门店统计",
+                            () => UpdateAustralianSupplierStoreStatisticsWithContext(context, posmContext, logger, date, null, null)
+                        );
+                        await RunStep(
+                            SalesStatisticType.ChinaSupplierStoreSales,
+                            "中国供应商门店统计",
+                            () => UpdateChinaSupplierStoreStatisticsWithContext(context, posmContext, logger, date, null, null)
                         );
 
                         logger.LogInformation(
                             "日期 {Date} 完整刷新完成",
                             date.ToString("yyyy-MM-dd")
                         );
+                        if (!await leaseService.CompleteAsync(leaseTaskType, dateStr, leaseToken, true))
+                        {
+                            throw new InvalidOperationException($"统计租约完成失败，token 已失效: {dateStr}");
+                        }
+                        result.ProcessedDays += 1;
                     }
                     catch (Exception ex)
                     {
+                        if (!string.IsNullOrWhiteSpace(leaseToken))
+                        {
+                            await leaseService.CompleteAsync(
+                                leaseTaskType,
+                                dateStr,
+                                leaseToken,
+                                false,
+                                ex.Message
+                            );
+                        }
                         logger.LogError(
                             ex,
                             "日期 {Date} 完整刷新失败",
                             date.ToString("yyyy-MM-dd")
                         );
-                        throw;
+                        result.FailedDates.Add(dateStr);
                     }
                 }
 
@@ -3745,6 +3980,7 @@ namespace BlazorApp.Api.Services
                     startDate.ToString("yyyy-MM-dd"),
                     endDate.ToString("yyyy-MM-dd")
                 );
+                return result;
             }
             catch (Exception ex)
             {

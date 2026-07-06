@@ -181,6 +181,8 @@ builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
 builder.Services.AddScoped<ScheduledTaskRetryService>();
 builder.Services.AddScoped<ScheduledTaskRuntimeControlService>();
+builder.Services.AddScoped<ScheduledTaskLeaseService>();
+builder.Services.AddScoped<SalesStatisticsAlignmentService>();
 builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")
 );

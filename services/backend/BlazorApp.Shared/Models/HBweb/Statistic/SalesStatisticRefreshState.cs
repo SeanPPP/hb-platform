@@ -50,7 +50,26 @@ namespace BlazorApp.Shared.Models
 
     public static class SalesStatisticType
     {
+        public const string DailySales = "DailySales";
+        public const string HourlySales = "HourlySales";
+        public const string StoreSales = "StoreSales";
+        public const string SupplierSales = "SupplierSales";
+        public const string StoreSupplierSales = "StoreSupplierSales";
         public const string ProductStoreDaily = "ProductStoreDaily";
+        public const string AustralianSupplierStoreSales = "AustralianSupplierStoreSales";
+        public const string ChinaSupplierStoreSales = "ChinaSupplierStoreSales";
+
+        public static readonly string[] DailyAlignmentTypes =
+        {
+            DailySales,
+            HourlySales,
+            StoreSales,
+            SupplierSales,
+            StoreSupplierSales,
+            ProductStoreDaily,
+            AustralianSupplierStoreSales,
+            ChinaSupplierStoreSales,
+        };
     }
 
     public static class SalesStatisticRefreshStatus

@@ -30,7 +30,7 @@ public sealed class ScheduledTaskRuntimeControlServiceTests : IDisposable
                 InitKeyType = InitKeyType.Attribute,
             }
         );
-        _db.CodeFirst.InitTables<ScheduledTaskRuntimeControl, ScheduledTaskInstanceState>();
+        _db.CodeFirst.InitTables<ScheduledTaskRuntimeControl, ScheduledTaskInstanceState, ScheduledTaskLease>();
     }
 
     [Fact]
@@ -166,6 +166,110 @@ public sealed class ScheduledTaskRuntimeControlServiceTests : IDisposable
         Assert.Contains(status.KnownInstances, instance => instance.InstanceId == "api-a");
     }
 
+    [Fact]
+    public async Task TryAcquireAsync_同一任务范围未过期时_只允许一个租约运行()
+    {
+        var service = CreateLeaseService("api-a");
+
+        var first = await service.TryAcquireAsync("DailyRefresh", "2026-07-05", TimeSpan.FromMinutes(30));
+        var second = await service.TryAcquireAsync("DailyRefresh", "2026-07-05", TimeSpan.FromMinutes(30));
+        var lease = await _db.Queryable<ScheduledTaskLease>()
+            .Where(x => x.TaskType == "DailyRefresh" && x.ScopeKey == "2026-07-05")
+            .FirstAsync();
+
+        Assert.True(first.Acquired);
+        Assert.False(string.IsNullOrWhiteSpace(first.Lease?.LeaseToken));
+        Assert.False(second.Acquired);
+        Assert.Equal(ScheduledTaskLeaseStatus.Running, lease.Status);
+        Assert.Equal(1, lease.DuplicateSkipCount);
+    }
+
+    [Fact]
+    public async Task TryAcquireAsync_运行租约过期后_允许新实例接管()
+    {
+        await _db.Insertable(new ScheduledTaskLease
+        {
+            TaskType = "DailyRefresh",
+            ScopeKey = "2026-07-05",
+            Status = ScheduledTaskLeaseStatus.Running,
+            OwnerInstanceId = "api-a",
+            LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1),
+            StartedAtUtc = DateTime.UtcNow.AddHours(-1),
+            UpdatedAtUtc = DateTime.UtcNow.AddHours(-1),
+        }).ExecuteCommandAsync();
+        var service = CreateLeaseService("api-b");
+
+        var result = await service.TryAcquireAsync("DailyRefresh", "2026-07-05", TimeSpan.FromMinutes(30));
+        var lease = await _db.Queryable<ScheduledTaskLease>()
+            .Where(x => x.TaskType == "DailyRefresh" && x.ScopeKey == "2026-07-05")
+            .FirstAsync();
+
+        Assert.True(result.Acquired);
+        Assert.Equal("api-b", lease.OwnerInstanceId);
+        Assert.True(lease.LeaseUntilUtc > DateTime.UtcNow);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_旧Token完成时_不应覆盖新租约()
+    {
+        var service = CreateLeaseService("api-a");
+        var first = await service.TryAcquireAsync("DailyRefresh", "2026-07-05", TimeSpan.FromMilliseconds(1));
+        Assert.True(first.Acquired);
+        var oldToken = first.Lease!.LeaseToken!;
+        await Task.Delay(10);
+        var second = await service.TryAcquireAsync("DailyRefresh", "2026-07-05", TimeSpan.FromMinutes(30));
+        Assert.True(second.Acquired);
+
+        var completed = await service.CompleteAsync("DailyRefresh", "2026-07-05", oldToken, true);
+        var lease = await _db.Queryable<ScheduledTaskLease>()
+            .Where(x => x.TaskType == "DailyRefresh" && x.ScopeKey == "2026-07-05")
+            .FirstAsync();
+
+        Assert.False(completed);
+        Assert.Equal(ScheduledTaskLeaseStatus.Running, lease.Status);
+        Assert.Equal(second.Lease!.LeaseToken, lease.LeaseToken);
+        Assert.NotNull(lease.LeaseUntilUtc);
+    }
+
+    [Fact]
+    public async Task RenewAsync_旧租约过期并被接管后_旧Token不能续租()
+    {
+        await _db.Insertable(new ScheduledTaskLease
+        {
+            TaskType = "DailyRefresh",
+            ScopeKey = "2026-07-05",
+            Status = ScheduledTaskLeaseStatus.Running,
+            OwnerInstanceId = "api-a",
+            LeaseToken = "old-token",
+            LeaseUntilUtc = DateTime.UtcNow.AddMinutes(-1),
+            StartedAtUtc = DateTime.UtcNow.AddHours(-1),
+            UpdatedAtUtc = DateTime.UtcNow.AddHours(-1),
+        }).ExecuteCommandAsync();
+        var newOwnerService = CreateLeaseService("api-b");
+        var oldOwnerService = CreateLeaseService("api-a");
+
+        var newLease = await newOwnerService.TryAcquireAsync(
+            "DailyRefresh",
+            "2026-07-05",
+            TimeSpan.FromMinutes(30)
+        );
+        var oldRenewed = await oldOwnerService.RenewAsync(
+            "DailyRefresh",
+            "2026-07-05",
+            "old-token",
+            TimeSpan.FromMinutes(30)
+        );
+        var lease = await _db.Queryable<ScheduledTaskLease>()
+            .Where(x => x.TaskType == "DailyRefresh" && x.ScopeKey == "2026-07-05")
+            .FirstAsync();
+
+        Assert.True(newLease.Acquired);
+        Assert.False(oldRenewed);
+        Assert.Equal("api-b", lease.OwnerInstanceId);
+        Assert.Equal(newLease.Lease!.LeaseToken, lease.LeaseToken);
+        Assert.Equal(ScheduledTaskLeaseStatus.Running, lease.Status);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -187,6 +291,15 @@ public sealed class ScheduledTaskRuntimeControlServiceTests : IDisposable
             CreateSqlSugarContext(_db),
             options,
             NullLogger<ScheduledTaskRuntimeControlService>.Instance
+        );
+    }
+
+    private ScheduledTaskLeaseService CreateLeaseService(string instanceId)
+    {
+        return new ScheduledTaskLeaseService(
+            CreateSqlSugarContext(_db),
+            Options.Create(new ScheduledTaskOptions { InstanceId = instanceId }),
+            NullLogger<ScheduledTaskLeaseService>.Instance
         );
     }
 
