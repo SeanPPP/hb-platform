@@ -47,6 +47,12 @@
     "needPermissionDescription": "开启权限后，就能在商品页里直接用摄像头扫码查询商品。",
     "grantPermission": "开启相机权限"
   },
+  "quantityEditor": {
+    "title": "编辑订货数量",
+    "product": "商品: {{name}}",
+    "inputLabel": "订货数量",
+    "invalidQuantity": "请输入 0 或正整数"
+  },
   "messages": {
     "storesLoadFailed": "门店加载失败，请稍后重试",
     "productsLoadFailed": "商品加载失败，请重试",

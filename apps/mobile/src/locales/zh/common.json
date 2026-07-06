@@ -65,6 +65,7 @@
     "recentOrder": "最近订货",
     "minOrder": "起订",
     "addToCart": "加入购物车",
+    "editCartQuantity": "编辑订货数量 {{quantity}}",
     "autoAddShort": "自动加购",
     "scanResults": "扫码结果",
     "currentStore": "当前门店",

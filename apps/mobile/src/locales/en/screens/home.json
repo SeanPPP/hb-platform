@@ -47,6 +47,12 @@
     "needPermissionDescription": "Enable camera access to scan products directly from the product page.",
     "grantPermission": "Enable camera permission"
   },
+  "quantityEditor": {
+    "title": "Edit order quantity",
+    "product": "Product: {{name}}",
+    "inputLabel": "Order quantity",
+    "invalidQuantity": "Enter 0 or a whole number"
+  },
   "messages": {
     "storesLoadFailed": "Failed to load stores. Please try again later.",
     "productsLoadFailed": "Failed to load products. Please retry.",

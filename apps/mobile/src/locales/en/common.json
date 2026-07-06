@@ -65,6 +65,7 @@
     "recentOrder": "Last order",
     "minOrder": "Min",
     "addToCart": "Add to cart",
+    "editCartQuantity": "Edit order quantity {{quantity}}",
     "autoAddShort": "Auto add",
     "scanResults": "Scan results",
     "currentStore": "Current store",

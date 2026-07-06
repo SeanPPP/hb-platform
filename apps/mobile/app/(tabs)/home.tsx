@@ -14,6 +14,7 @@ import {
   Portal,
   Searchbar,
   Text,
+  TextInput as PaperTextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AnimatedEmptyStateGraphic } from "@/components/ui/AnimatedEmptyStateGraphic";
@@ -22,6 +23,11 @@ import { LoadingOverlay } from "@/components/ui/LoadingOverlay";
 import { ProductCard } from "@/components/ui/ProductCard";
 import { CameraScanModeSelector } from "@/components/ui/CameraScanModeSelector";
 import { getCategoryTree } from "@/modules/shop/api";
+import {
+  canSubmitCartQuantityEdit,
+  parseCartQuantityInput,
+  shouldSubmitCartQuantityUpdate,
+} from "@/modules/shop/cart-quantity-input";
 import { shouldClearActiveCartMutation } from "@/modules/shop/cart-mutation-state";
 import { resolveMinimumOrderQuantity, useAddToCart } from "@/modules/shop/use-add-to-cart";
 import { useCartSummary } from "@/modules/shop/use-cart-summary";
@@ -89,6 +95,10 @@ export default function Home() {
   const [pageNumber, setPageNumber] = useState(1);
   const [noticeMessage, setNoticeMessage] = useState("");
   const [activeCartMutationProductCode, setActiveCartMutationProductCode] = useState<string | null>(null);
+  const [quantityEditorProduct, setQuantityEditorProduct] = useState<StoreOrderProductItem | null>(null);
+  const [quantityEditorStoreCode, setQuantityEditorStoreCode] = useState<string | null>(null);
+  const [quantityDraft, setQuantityDraft] = useState("");
+  const [quantityEditorError, setQuantityEditorError] = useState("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -98,6 +108,7 @@ export default function Home() {
   ), [language, t]);
   const addToCart = useAddToCart(selectedStoreCode);
   const updateCartQuantity = useUpdateCartQuantity(selectedStoreCode);
+  const quantityEditorBusy = Boolean(quantityEditorProduct && updateCartQuantity.isPending);
   const selectedStoreCodeRef = useRef<string | null>(normalizeStoreCode(selectedStoreCode));
   const resumeHiddenScannerFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -191,16 +202,16 @@ export default function Home() {
       await scanResult.handleBarcode(barcode, "hid");
     },
   });
-  const handleSearchFocus = useCallback(() => {
+  const pauseHiddenScannerFocus = useCallback(() => {
     if (resumeHiddenScannerFocusTimerRef.current) {
       clearTimeout(resumeHiddenScannerFocusTimerRef.current);
       resumeHiddenScannerFocusTimerRef.current = null;
     }
 
-    // 手动输入搜索时暂停隐藏扫码输入，避免它定时抢走搜索框焦点。
+    // 手动输入搜索或数量时暂停隐藏扫码输入，避免它定时抢走当前输入框焦点。
     hidScanner.pauseHiddenInputFocus();
   }, [hidScanner.pauseHiddenInputFocus]);
-  const handleSearchBlur = useCallback(() => {
+  const resumeHiddenScannerFocusSoon = useCallback(() => {
     if (resumeHiddenScannerFocusTimerRef.current) {
       clearTimeout(resumeHiddenScannerFocusTimerRef.current);
     }
@@ -211,6 +222,8 @@ export default function Home() {
       hidScanner.resumeHiddenInputFocus();
     }, 250);
   }, [hidScanner.resumeHiddenInputFocus]);
+  const handleSearchFocus = pauseHiddenScannerFocus;
+  const handleSearchBlur = resumeHiddenScannerFocusSoon;
 
   useFocusEffect(
     useCallback(() => {
@@ -280,6 +293,20 @@ export default function Home() {
     setScannedProducts(null);
     setScannedProductTraceIds({});
   }, [selectedStoreCode]);
+
+  useEffect(() => {
+    const currentStoreCode = normalizeStoreCode(selectedStoreCode);
+    if (!quantityEditorStoreCode || quantityEditorStoreCode === currentStoreCode) {
+      return;
+    }
+
+    // 门店切换后关闭旧门店数量编辑器，防止旧商品数量写入新门店订货车。
+    setQuantityEditorProduct(null);
+    setQuantityEditorStoreCode(null);
+    setQuantityDraft("");
+    setQuantityEditorError("");
+    resumeHiddenScannerFocusSoon();
+  }, [quantityEditorStoreCode, resumeHiddenScannerFocusSoon, selectedStoreCode]);
 
   useEffect(() => {
     if (
@@ -456,6 +483,86 @@ export default function Home() {
 
   function getCurrentCartQuantity(productCode: string) {
     return displayDynamicDataMap[productCode]?.cartQuantity ?? 0;
+  }
+
+  function handleEditCartQuantity(product: StoreOrderProductItem, currentQuantity: number) {
+    pauseHiddenScannerFocus();
+    setQuantityEditorProduct(product);
+    setQuantityEditorStoreCode(selectedStoreCodeRef.current);
+    setQuantityDraft(String(currentQuantity));
+    setQuantityEditorError("");
+  }
+
+  function resetQuantityEditor() {
+    setQuantityEditorProduct(null);
+    setQuantityEditorStoreCode(null);
+    setQuantityDraft("");
+    setQuantityEditorError("");
+    resumeHiddenScannerFocusSoon();
+  }
+
+  function handleDismissQuantityEditor() {
+    if (quantityEditorBusy) {
+      return;
+    }
+
+    resetQuantityEditor();
+  }
+
+  async function handleConfirmQuantityEdit() {
+    if (!quantityEditorProduct || quantityEditorBusy) {
+      return;
+    }
+
+    if (
+      !canSubmitCartQuantityEdit({
+        currentStoreCode: selectedStoreCodeRef.current,
+        editorStoreCode: quantityEditorStoreCode,
+        isPending: updateCartQuantity.isPending,
+      })
+    ) {
+      // 分店已切换或已有提交在路上时不继续写后端，避免编辑弹窗串门店或重复提交。
+      if (!updateCartQuantity.isPending) {
+        resetQuantityEditor();
+      }
+      return;
+    }
+
+    const nextQuantity = parseCartQuantityInput(quantityDraft);
+    if (nextQuantity === null) {
+      setQuantityEditorError(t("quantityEditor.invalidQuantity"));
+      return;
+    }
+
+    const product = quantityEditorProduct;
+    const currentQuantity = getCurrentCartQuantity(product.productCode);
+    if (!shouldSubmitCartQuantityUpdate(currentQuantity, nextQuantity)) {
+      // 数量没有变化时不触发后端写入，避免 0 -> 0 这类无意义更新落成零数量明细。
+      resetQuantityEditor();
+      return;
+    }
+
+    const mutationStoreCode = quantityEditorStoreCode;
+    setQuantityEditorError("");
+    setActiveCartMutationProductCode(product.productCode);
+
+    try {
+      // 复用 useUpdateCartQuantity 的乐观快照：onMutate 立即改数量，失败由 onError 回滚。
+      await updateCartQuantity.mutateAsync({
+        nextQuantity,
+        product,
+        scanTraceId: scannedProductTraceIds[product.productCode],
+      });
+      resetQuantityEditor();
+    } catch (error) {
+      const message = getErrorMessage(error, "messages.updateQtyFailed");
+      setQuantityEditorError(message);
+      setNoticeMessage(message);
+    } finally {
+      if (shouldClearActiveCartMutation(selectedStoreCodeRef.current, mutationStoreCode)) {
+        setActiveCartMutationProductCode(null);
+      }
+    }
   }
 
   async function handleIncreaseCartQuantity(product: StoreOrderProductItem) {
@@ -732,12 +839,68 @@ export default function Home() {
             isUpdatingCart={activeCartMutationProductCode === item.productCode}
             onAddToCart={handleAddToCart}
             onDecreaseCartQuantity={handleDecreaseCartQuantity}
+            onEditCartQuantity={handleEditCartQuantity}
             onIncreaseCartQuantity={handleIncreaseCartQuantity}
           />
         )}
       />
 
       {productsQuery.isFetching || storesLoading ? <LoadingOverlay /> : null}
+
+      <Portal>
+        <Modal
+          visible={Boolean(quantityEditorProduct)}
+          onDismiss={handleDismissQuantityEditor}
+          contentContainerStyle={styles.quantityEditorModal}
+        >
+          <Text variant="titleMedium">{t("quantityEditor.title")}</Text>
+          <Text variant="bodySmall" numberOfLines={2} style={styles.secondaryText}>
+            {quantityEditorProduct
+              ? t("quantityEditor.product", {
+                  name: quantityEditorProduct.productName || quantityEditorProduct.productCode,
+                })
+              : ""}
+          </Text>
+          {/* 编辑弹窗只收集覆盖数量；确认时统一走后端订货数量 mutation。 */}
+          <PaperTextInput
+            mode="outlined"
+            label={t("quantityEditor.inputLabel")}
+            value={quantityDraft}
+            onChangeText={(value) => {
+              setQuantityDraft(value);
+              setQuantityEditorError("");
+            }}
+            keyboardType="number-pad"
+            autoFocus
+            disabled={quantityEditorBusy}
+            error={Boolean(quantityEditorError)}
+            onFocus={pauseHiddenScannerFocus}
+            onBlur={() => {
+              if (!quantityEditorProduct) {
+                resumeHiddenScannerFocusSoon();
+              }
+            }}
+          />
+          {quantityEditorError ? (
+            <Text variant="bodySmall" style={styles.quantityEditorError}>
+              {quantityEditorError}
+            </Text>
+          ) : null}
+          <View style={styles.quantityEditorActions}>
+            <Button onPress={handleDismissQuantityEditor} disabled={quantityEditorBusy}>
+              {t("common:actions.cancel")}
+            </Button>
+            <Button
+              mode="contained"
+              onPress={() => void handleConfirmQuantityEdit()}
+              loading={quantityEditorBusy}
+              disabled={quantityEditorBusy}
+            >
+              {t("common:actions.confirm")}
+            </Button>
+          </View>
+        </Modal>
+      </Portal>
 
       <Portal>
         <Modal
@@ -1303,6 +1466,22 @@ const styles = StyleSheet.create({
   },
   filtersModalContent: {
     gap: 16,
+  },
+  quantityEditorModal: {
+    margin: 16,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    padding: 16,
+    gap: 12,
+  },
+  quantityEditorError: {
+    color: "#BA1A1A",
+  },
+  quantityEditorActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
   },
   filtersModalHeader: {
     flexDirection: "row",
