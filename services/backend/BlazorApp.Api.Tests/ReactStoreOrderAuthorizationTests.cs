@@ -1005,22 +1005,25 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task SubmitOrder_ForbidsWarehouseStaffEvenWithOrderCreatePermission()
+    public async Task SubmitOrder_AllowsWarehouseStaffWithOrderCreatePermission()
     {
+        var request = new SubmitStoreOrderRequestDto { StoreCode = "1024" };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        service.Setup(item => item.SubmitOrderAsync(request)).ReturnsAsync(ApiResponse<bool>.OK(true));
+        var scopeService = CreateScopeService();
+        scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(false);
         var controller = CreateController(
             service,
             CreateAuthorizationService(Permissions.Warehouse.Manage, Permissions.Orders.Create),
-            CreateScopeService(),
+            scopeService,
             new[] { "WarehouseStaff" }
         );
 
-        var result = await controller.SubmitOrder(
-            new SubmitStoreOrderRequestDto { StoreCode = "1024" }
-        );
+        var result = await controller.SubmitOrder(request);
 
-        Assert.IsType<ForbidResult>(result);
-        service.VerifyNoOtherCalls();
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(item => item.SubmitOrderAsync(request), Times.Once);
+        scopeService.Verify(item => item.CanAccessStoreCodeAsync("1024"), Times.Never);
     }
 
     [Fact]

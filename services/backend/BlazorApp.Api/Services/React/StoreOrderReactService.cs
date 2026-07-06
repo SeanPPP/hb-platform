@@ -6221,7 +6221,11 @@ FinalRows AS (
                         (d, p, wp, dp) => d.ImportPrice ?? wp.ImportPrice,
                         orderType
                     ),
-                    "importamount" => detailQuery.OrderBy((d, p, wp, dp) => d.ImportAmount, orderType),
+                    "importamount" => detailQuery.OrderBy(
+                        // 排序口径必须和返回的 ImportAmount 一致，避免历史订货金额影响页内顺序。
+                        (d, p, wp, dp) => (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0),
+                        orderType
+                    ),
                     "isactive" => detailQuery.OrderBy((d, p, wp, dp) => wp.IsActive, orderType),
                     _ => detailQuery.OrderBy((d, p, wp, dp) => p.ItemNumber, orderType),
                 };
@@ -6248,12 +6252,9 @@ FinalRows AS (
                             AllocQuantity = d.AllocQuantity,
                             Amount = d.OEMAmount ?? 0,
                             ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
-                            ImportAmount =
-                                d.ImportAmount
-                                ?? (
-                                    (d.ImportPrice ?? (wp.ImportPrice ?? 0))
-                                    * (d.AllocQuantity ?? d.Quantity ?? 0)
-                                ),
+                            // 发票/详情金额必须跟发货数量一致，不能沿用历史订货金额 ImportAmount。
+                            ImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                * (d.AllocQuantity ?? 0),
                             Volume =
                                 (dp.PackingQuantity > 0)
                                     ? (dp.UnitVolume / dp.PackingQuantity)
@@ -6330,12 +6331,9 @@ FinalRows AS (
                                 AllocQuantity = d.AllocQuantity,
                                 Amount = d.OEMAmount ?? 0,
                                 ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
-                                ImportAmount =
-                                    d.ImportAmount
-                                    ?? (
-                                        (d.ImportPrice ?? (wp.ImportPrice ?? 0))
-                                        * (d.AllocQuantity ?? d.Quantity ?? 0)
-                                    ),
+                                // 发票/详情金额必须跟发货数量一致，不能沿用历史订货金额 ImportAmount。
+                                ImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                    * (d.AllocQuantity ?? 0),
                                 Volume =
                                     (dp.PackingQuantity > 0)
                                         ? (dp.UnitVolume / dp.PackingQuantity)
@@ -6386,11 +6384,8 @@ FinalRows AS (
                             TotalAllocQuantity = SqlFunc.AggregateSum(d.AllocQuantity ?? 0),
                             TotalSKU = SqlFunc.AggregateDistinctCount(d.ProductCode),
                             TotalImportAmount = SqlFunc.AggregateSum(
-                                d.ImportAmount
-                                    ?? (
-                                        (d.ImportPrice ?? (wp.ImportPrice ?? 0))
-                                        * (d.AllocQuantity ?? d.Quantity ?? 0)
-                                    )
+                                // 整单进口金额按发货数量重算，保证发票 Sub-Total 等于明细小计合计。
+                                (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0)
                             ),
                             TotalOrderVolume = SqlFunc.AggregateSum(
                                 (

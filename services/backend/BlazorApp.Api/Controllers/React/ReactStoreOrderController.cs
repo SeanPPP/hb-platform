@@ -1374,9 +1374,11 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(CartWritePermissions)
-                    ?? await RequireAssignedStoreScopeAsync(request.StoreCode);
+                // 提交购物车属于移动端购物车闭环，WarehouseStaff 只需要显式 Orders.Create。
+                var forbidden = await RequireCartWritePermissionAsync(
+                    request.StoreCode,
+                    CartFlowCheckType
+                );
                 if (forbidden != null)
                 {
                     return forbidden;

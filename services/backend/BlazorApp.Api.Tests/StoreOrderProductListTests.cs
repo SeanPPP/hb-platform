@@ -2044,6 +2044,38 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task GetOrderDetailAsync_TotalImportAmountUsesAllocQuantityWhenStoredImportAmountIsStale()
+    {
+        await SeedStoreOrderAsync("ORDER-INVOICE-SUBTOTAL");
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", importPrice: 0.46m);
+        await SeedDomesticProductAsync("P001", unitVolume: 1m, packingQuantity: 1);
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = "ORDER-INVOICE-SUBTOTAL-P001",
+            OrderGUID = "ORDER-INVOICE-SUBTOTAL",
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 12m,
+            AllocQuantity = 0m,
+            ImportPrice = 0.46m,
+            ImportAmount = 5.52m,
+            OEMPrice = 1m,
+            OEMAmount = 12m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetOrderDetailAsync("ORDER-INVOICE-SUBTOTAL");
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(0m, result.Data!.TotalImportAmount);
+        var item = Assert.Single(result.Data.Items);
+        Assert.Equal(0m, item.AllocQuantity);
+        Assert.Equal(0m, item.ImportAmount);
+    }
+
+    [Fact]
     public async Task GetOrderDetailAsync_DeduplicatesLocationCodesForCurrentPage()
     {
         await SeedStoreOrderAsync("ORDER-002");
@@ -2457,6 +2489,66 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(result.Data);
         Assert.Equal(3, result.Data.ItemsTotal);
         Assert.Equal(expectedFirstProductCode, Assert.Single(result.Data.Items).ProductCode);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_ImportAmountSortUsesAllocQuantityAmountWhenStoredImportAmountIsStale()
+    {
+        await SeedStoreOrderAsync("ORDER-DETAIL-SORT-IMPORT-AMOUNT");
+        await SeedProductAsync("P-COMPUTED-LOW", "A-ITEM");
+        await SeedWarehouseProductAsync("P-COMPUTED-LOW", importPrice: 10m);
+        await SeedDomesticProductAsync("P-COMPUTED-LOW", unitVolume: 1m, packingQuantity: 1);
+        await SeedProductAsync("P-COMPUTED-HIGH", "B-ITEM");
+        await SeedWarehouseProductAsync("P-COMPUTED-HIGH", importPrice: 1m);
+        await SeedDomesticProductAsync("P-COMPUTED-HIGH", unitVolume: 1m, packingQuantity: 1);
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT-LOW",
+                OrderGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+                StoreCode = "S001",
+                ProductCode = "P-COMPUTED-LOW",
+                Quantity = 12m,
+                AllocQuantity = 0m,
+                ImportPrice = 10m,
+                ImportAmount = 99m,
+                OEMPrice = 1m,
+                OEMAmount = 12m,
+                IsDeleted = false,
+            },
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT-HIGH",
+                OrderGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+                StoreCode = "S001",
+                ProductCode = "P-COMPUTED-HIGH",
+                Quantity = 2m,
+                AllocQuantity = 2m,
+                ImportPrice = 1m,
+                ImportAmount = 1m,
+                OEMPrice = 1m,
+                OEMAmount = 2m,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetOrderDetailAsync(
+            "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = "importAmount",
+                SortDescending = false,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        var item = Assert.Single(result.Data!.Items);
+        Assert.Equal("P-COMPUTED-LOW", item.ProductCode);
+        Assert.Equal(0m, item.ImportAmount);
     }
 
     [Fact]
