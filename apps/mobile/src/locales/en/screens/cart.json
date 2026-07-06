@@ -35,8 +35,8 @@
     "submitMessage": "Submit the cart for the current store?"
   },
   "remarks": {
-    "label": "Order remarks (required)",
-    "placeholder": "Enter remarks for warehouse",
+    "label": "Order remarks (optional)",
+    "placeholder": "Optional remarks for warehouse",
     "counter": "{{count}} / {{max}}"
   },
   "pagination": {
@@ -51,7 +51,6 @@
     "clearFailed": "Failed to clear the cart.",
     "needStore": "Please select a store first.",
     "emptyCart": "The cart is empty and cannot be submitted.",
-    "remarkRequired": "Please enter order remarks.",
     "submitSuccess": "Cart submitted.",
     "submitFailed": "Failed to submit the cart."
   },

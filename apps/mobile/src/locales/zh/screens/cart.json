@@ -35,8 +35,8 @@
     "submitMessage": "确定要提交当前门店购物车吗？"
   },
   "remarks": {
-    "label": "订单备注（必填）",
-    "placeholder": "请填写给仓库的备注",
+    "label": "订单备注（选填）",
+    "placeholder": "可填写给仓库的备注",
     "counter": "{{count}} / {{max}}"
   },
   "pagination": {
@@ -51,7 +51,6 @@
     "clearFailed": "清空购物车失败",
     "needStore": "请先选择门店",
     "emptyCart": "购物车为空，无法提交",
-    "remarkRequired": "请填写订单备注",
     "submitSuccess": "购物车已提交",
     "submitFailed": "提交购物车失败"
   },

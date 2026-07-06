@@ -297,7 +297,6 @@ export default function Cart() {
   const [filtersVisible, setFiltersVisible] = useState(false);
   const [submitDialogVisible, setSubmitDialogVisible] = useState(false);
   const [orderRemarks, setOrderRemarks] = useState("");
-  const [orderRemarksTouched, setOrderRemarksTouched] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
@@ -400,7 +399,6 @@ export default function Cart() {
     setOpenSwipeDetailGUID(null);
     setSubmitDialogVisible(false);
     setOrderRemarks("");
-    setOrderRemarksTouched(false);
   }, [selectedStoreCode]);
 
   useEffect(() => {
@@ -499,23 +497,17 @@ export default function Cart() {
       return;
     }
 
-    // 备注是仓库处理订单的必填信息，提交前必须再次按 trim 后的值校验。
+    // 备注是选填项；空白备注不传给后端，避免保存无意义空字符串。
     const trimmedRemarks = orderRemarks.trim();
-    if (!trimmedRemarks) {
-      setOrderRemarksTouched(true);
-      setSnackbarMessage(t("messages.remarkRequired"));
-      return;
-    }
 
     setSubmitPending(true);
     try {
-      await submitStoreOrder(selectedStoreCode, trimmedRemarks);
+      await submitStoreOrder(selectedStoreCode, trimmedRemarks || undefined);
       await queryClient.invalidateQueries({ queryKey: ["cartSummary", selectedStoreCode] });
       setPriorityProductCode(null);
       setOpenSwipeDetailGUID(null);
       setSubmitDialogVisible(false);
       setOrderRemarks("");
-      setOrderRemarksTouched(false);
       setPage(1);
       setSnackbarMessage(t("messages.submitSuccess"));
       router.push("/(tabs)/orders");
@@ -543,7 +535,6 @@ export default function Cart() {
     }
 
     setOrderRemarks("");
-    setOrderRemarksTouched(false);
     setSubmitDialogVisible(true);
   }
 
@@ -821,29 +812,18 @@ export default function Cart() {
             label={t("remarks.label")}
             placeholder={t("remarks.placeholder")}
             value={orderRemarks}
-            onChangeText={(value) => {
-              setOrderRemarks(value.slice(0, ORDER_REMARKS_MAX_LENGTH));
-              setOrderRemarksTouched(true);
-            }}
+            onChangeText={(value) => setOrderRemarks(value.slice(0, ORDER_REMARKS_MAX_LENGTH))}
             multiline
             numberOfLines={3}
             maxLength={ORDER_REMARKS_MAX_LENGTH}
             disabled={submitPending}
-            error={orderRemarksTouched && !orderRemarks.trim()}
             style={styles.submitRemarksInput}
           />
-          <Text
-            variant="labelSmall"
-            style={[
-              styles.submitRemarksCounter,
-              orderRemarksTouched && !orderRemarks.trim() ? styles.submitRemarksError : null,
-            ]}
-          >
+          <Text variant="labelSmall" style={styles.submitRemarksCounter}>
             {t("remarks.counter", {
               count: orderRemarks.length,
               max: ORDER_REMARKS_MAX_LENGTH,
             })}
-            {orderRemarksTouched && !orderRemarks.trim() ? `  ${t("messages.remarkRequired")}` : ""}
           </Text>
           <View style={styles.submitModalActions}>
             <Button
@@ -860,11 +840,9 @@ export default function Cart() {
               disabled={
                 !selectedStoreCode ||
                 !cartQuery.total ||
-                cartMutationPending ||
-                !orderRemarks.trim()
+                cartMutationPending
               }
               onPress={() => {
-                setOrderRemarksTouched(true);
                 void handleSubmitCart();
               }}
               style={[styles.submitModalButton, styles.submitModalSubmitButton]}
@@ -1021,9 +999,6 @@ const styles = StyleSheet.create({
   submitRemarksCounter: {
     alignSelf: "flex-end",
     color: "#6B7280",
-  },
-  submitRemarksError: {
-    color: "#B42318",
   },
   submitModalActions: {
     flexDirection: "row",
