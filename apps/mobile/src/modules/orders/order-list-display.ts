@@ -1,4 +1,4 @@
-import type { StoreOrderDetailLine } from "./types";
+import type { StoreOrderDetail, StoreOrderDetailLine } from "./types";
 
 export const DEFAULT_ORDER_LIST_PAGE_SIZE = 10;
 
@@ -53,4 +53,19 @@ export function filterOrderDetailLinesByItemNumber(
     const searchableValue = itemNumber || item.barcode?.trim() || "";
     return searchableValue.toLocaleLowerCase().includes(normalizedKeyword);
   });
+}
+
+export function getOrderDetailLineAllocatedImportAmount(item: StoreOrderDetailLine) {
+  return item.allocatedImportAmount ?? Number(item.allocQuantity ?? 0) * Number(item.importPrice ?? 0);
+}
+
+export function getOrderDetailTotalAllocatedImportAmount(detail: StoreOrderDetail | null | undefined) {
+  if (!detail) {
+    return undefined;
+  }
+
+  return (
+    detail.totalAllocatedImportAmount ??
+    detail.items.reduce((sum, item) => sum + getOrderDetailLineAllocatedImportAmount(item), 0)
+  );
 }

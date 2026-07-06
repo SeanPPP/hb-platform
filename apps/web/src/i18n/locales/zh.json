@@ -4498,7 +4498,7 @@
     "orderVolumeLabel": "订货体积",
     "shipVolumeLabel": "发货体积",
     "orderAmountLabel": "预计销售额",
-    "importAmountLabel": "订单金额 ex GST",
+    "importAmountLabel": "发货金额 ex GST",
     "gstAmountLabel": "GST 10%",
     "freightLabel": "运费",
     "addressLabel": "地址",

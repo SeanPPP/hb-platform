@@ -141,7 +141,7 @@ namespace BlazorApp.Api.Services.React
             {
                 var orderQuantity = item.Quantity;
                 var allocQuantity = item.AllocQuantity ?? 0m;
-                var subtotal = decimal.Round(allocQuantity * item.ImportPrice, 2);
+                var subtotal = decimal.Round(item.AllocatedImportAmount, 2);
 
                 worksheet.Cell(rowIndex, 1).Value = itemIndex;
                 worksheet.Cell(rowIndex, 2).Value = item.ItemNumber ?? string.Empty;
@@ -155,7 +155,7 @@ namespace BlazorApp.Api.Services.React
                 itemIndex += 1;
             }
 
-            var subTotal = order.TotalImportAmount;
+            var subTotal = order.TotalAllocatedImportAmount;
             var gst = decimal.Round(subTotal * 0.1m, 2);
             var freight = order.ShippingFee ?? 0m;
             var total = decimal.Round(subTotal + gst + freight, 2);
@@ -256,7 +256,7 @@ namespace BlazorApp.Api.Services.React
             foreach (var item in SortItems(order.Items))
             {
                 var allocQuantity = item.AllocQuantity ?? 0m;
-                var subtotal = decimal.Round(allocQuantity * item.ImportPrice, 2);
+                var subtotal = decimal.Round(item.AllocatedImportAmount, 2);
                 AddValueCell(detailTable, itemIndex.ToString(), bodyFont);
                 AddValueCell(detailTable, item.ItemNumber ?? string.Empty, bodyFont);
                 AddValueCell(detailTable, item.Barcode ?? item.ProductCode, bodyFont);
@@ -269,7 +269,7 @@ namespace BlazorApp.Api.Services.React
             }
             document.Add(detailTable);
 
-            var subTotal = order.TotalImportAmount;
+            var subTotal = order.TotalAllocatedImportAmount;
             var gst = decimal.Round(subTotal * 0.1m, 2);
             var freight = order.ShippingFee ?? 0m;
             var total = decimal.Round(subTotal + gst + freight, 2);

@@ -183,6 +183,8 @@ const STORE_ORDER_DETAIL_SORT_FIELDS: StoreOrderDetailSortField[] = [
   'quantity',
   'allocQuantity',
   'importPrice',
+  'importAmount',
+  'allocatedImportAmount',
   'isActive',
 ]
 
@@ -1601,8 +1603,12 @@ export default function StoreOrderDetailPage() {
 
   const draftTotalImportAmount = useMemo(() => {
     const savedTotal =
-      detail?.totalImportAmount ??
-      detail?.items.reduce((sum, line) => sum + (line.importAmount ?? Number(line.allocQuantity ?? 0) * Number(line.importPrice ?? 0)), 0) ??
+      detail?.totalAllocatedImportAmount ??
+      detail?.items.reduce(
+        (sum, line) =>
+          sum + (line.allocatedImportAmount ?? Number(line.allocQuantity ?? 0) * Number(line.importPrice ?? 0)),
+        0,
+      ) ??
       0
     const draftDelta =
       detail?.items.reduce((sum, line) => {
@@ -1610,13 +1616,13 @@ export default function StoreOrderDetailPage() {
         if (!edited || (edited.allocQuantity === undefined && edited.importPrice === undefined)) {
           return sum
         }
-        const savedAmount = line.importAmount ?? Number(line.allocQuantity ?? 0) * Number(line.importPrice ?? 0)
+        const savedAmount = line.allocatedImportAmount ?? Number(line.allocQuantity ?? 0) * Number(line.importPrice ?? 0)
         const allocQuantity = edited.allocQuantity ?? line.allocQuantity ?? 0
         const importPrice = edited.importPrice ?? line.importPrice ?? 0
         return sum + Number(allocQuantity) * Number(importPrice) - Number(savedAmount)
       }, 0) ?? 0
     return savedTotal + draftDelta
-  }, [detail?.items, detail?.totalImportAmount, editingRows])
+  }, [detail?.items, detail?.totalAllocatedImportAmount, editingRows])
 
   const gstAmount = useMemo(
     () => Number((Number(draftTotalImportAmount) * 0.1).toFixed(2)),
@@ -2878,8 +2884,10 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.importAmount'),
-      dataIndex: 'importAmount',
+      dataIndex: 'allocatedImportAmount',
       width: 76,
+      sorter: true,
+      sortOrder: detailColumnSortOrder('allocatedImportAmount'),
       render: (value: number | undefined, record) => {
         const edited = editingRows[record.detailGUID]
         const nextValue =

@@ -2535,6 +2535,9 @@ namespace BlazorApp.Api.Services.React
                             ImportAmount =
                                 d.ImportAmount
                                 ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            // 发货/发票金额单独返回，避免复用订货金额字段造成页面误读。
+                            AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                * (d.AllocQuantity ?? 0),
                             // 计算单件体积: 如果装箱数 > 0，则用箱体积 / 装箱数，否则直接用 UnitVolume
                             Volume =
                                 (dp.PackingQuantity > 0)
@@ -2571,6 +2574,7 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .Count(),
                 TotalImportAmount = details.Sum(x => x.ImportAmount),
+                TotalAllocatedImportAmount = details.Sum(x => x.AllocatedImportAmount),
                 TotalVolume = details.Sum(x => x.TotalVolume ?? 0),
                 TotalOrderVolume = details.Sum(x => x.OrderVolume ?? 0),
                 TotalAllocVolume = details.Sum(x => x.AllocVolume ?? 0),
@@ -2624,6 +2628,7 @@ namespace BlazorApp.Api.Services.React
                             Quantity = d.Quantity ?? 0,
                             AllocQuantity = d.AllocQuantity ?? 0,
                             ImportAmount = d.ImportAmount ?? ((d.ImportPrice ?? 0) * (d.Quantity ?? 0)),
+                            AllocatedImportAmount = (d.ImportPrice ?? 0) * (d.AllocQuantity ?? 0),
                             UnitVolume = (dp.PackingQuantity > 0)
                                 ? (dp.UnitVolume / dp.PackingQuantity)
                                 : dp.UnitVolume,
@@ -2645,6 +2650,7 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = order.OEMTotalAmount ?? 0,
                     TotalQuantity = (int)detailRows.Sum(row => row.Quantity),
                     TotalImportAmount = detailRows.Sum(row => row.ImportAmount),
+                    TotalAllocatedImportAmount = detailRows.Sum(row => row.AllocatedImportAmount),
                     TotalVolume = totalVolume,
                     TotalOrderVolume = totalVolume,
                     TotalAllocVolume = totalAllocVolume,
@@ -3535,6 +3541,9 @@ namespace BlazorApp.Api.Services.React
                             ImportAmount =
                                 d.ImportAmount
                                 ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            // 发货/发票金额单独返回，避免复用订货金额字段造成页面误读。
+                            AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                * (d.AllocQuantity ?? 0),
                             Volume =
                                 (dp.PackingQuantity > 0)
                                     ? (dp.UnitVolume / dp.PackingQuantity)
@@ -3731,6 +3740,11 @@ namespace BlazorApp.Api.Services.React
         private static long ToCartRevision(DateTime revisionAt)
         {
             return new DateTimeOffset(revisionAt).ToUnixTimeMilliseconds();
+        }
+
+        private static decimal CalculateOrderImportAmount(decimal? quantity, decimal? importPrice)
+        {
+            return (quantity ?? 0) * (importPrice ?? 0);
         }
 
         private async Task<StoreOrderCartMutationSummaryRow?> UpdateOrderTotalAsync(
@@ -5861,6 +5875,7 @@ FinalRows AS (
                         TotalAmount = result.Data.TotalAmount,
                         TotalQuantity = result.Data.TotalQuantity,
                         TotalImportAmount = result.Data.TotalImportAmount,
+                        TotalAllocatedImportAmount = result.Data.TotalAllocatedImportAmount,
                         TotalVolume = result.Data.TotalVolume,
                         TotalOrderVolume = result.Data.TotalOrderVolume,
                         TotalAllocVolume = result.Data.TotalAllocVolume,
@@ -6222,7 +6237,14 @@ FinalRows AS (
                         orderType
                     ),
                     "importamount" => detailQuery.OrderBy(
-                        // 排序口径必须和返回的 ImportAmount 一致，避免历史订货金额影响页内顺序。
+                        // 订货金额排序跟 ImportAmount 返回字段一致，历史持久金额优先。
+                        (d, p, wp, dp) =>
+                            d.ImportAmount
+                            ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                        orderType
+                    ),
+                    "allocatedimportamount" => detailQuery.OrderBy(
+                        // 发货/发票金额排序用独立字段，避免和订货金额混用。
                         (d, p, wp, dp) => (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0),
                         orderType
                     ),
@@ -6252,8 +6274,11 @@ FinalRows AS (
                             AllocQuantity = d.AllocQuantity,
                             Amount = d.OEMAmount ?? 0,
                             ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
-                            // 发票/详情金额必须跟发货数量一致，不能沿用历史订货金额 ImportAmount。
-                            ImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                            // ImportAmount 保持订货金额，发票金额走 AllocatedImportAmount。
+                            ImportAmount =
+                                d.ImportAmount
+                                ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                            AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
                                 * (d.AllocQuantity ?? 0),
                             Volume =
                                 (dp.PackingQuantity > 0)
@@ -6331,8 +6356,11 @@ FinalRows AS (
                                 AllocQuantity = d.AllocQuantity,
                                 Amount = d.OEMAmount ?? 0,
                                 ImportPrice = d.ImportPrice ?? (wp.ImportPrice ?? 0),
-                                // 发票/详情金额必须跟发货数量一致，不能沿用历史订货金额 ImportAmount。
-                                ImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
+                                // ImportAmount 保持订货金额，发票金额走 AllocatedImportAmount。
+                                ImportAmount =
+                                    d.ImportAmount
+                                    ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                                AllocatedImportAmount = (d.ImportPrice ?? (wp.ImportPrice ?? 0))
                                     * (d.AllocQuantity ?? 0),
                                 Volume =
                                     (dp.PackingQuantity > 0)
@@ -6384,7 +6412,12 @@ FinalRows AS (
                             TotalAllocQuantity = SqlFunc.AggregateSum(d.AllocQuantity ?? 0),
                             TotalSKU = SqlFunc.AggregateDistinctCount(d.ProductCode),
                             TotalImportAmount = SqlFunc.AggregateSum(
-                                // 整单进口金额按发货数量重算，保证发票 Sub-Total 等于明细小计合计。
+                                // 订货金额保留历史持久金额，缺失时按订货数量兜底。
+                                d.ImportAmount
+                                    ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0))
+                            ),
+                            TotalAllocatedImportAmount = SqlFunc.AggregateSum(
+                                // 发货/发票金额按发货数量重算，保证发票 Sub-Total 等于明细小计合计。
                                 (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0)
                             ),
                             TotalOrderVolume = SqlFunc.AggregateSum(
@@ -6441,6 +6474,7 @@ FinalRows AS (
                 TotalAllocQuantity = (int)(summary?.TotalAllocQuantity ?? 0),
                 TotalSKU = summary?.TotalSKU ?? 0,
                 TotalImportAmount = summary?.TotalImportAmount ?? 0,
+                TotalAllocatedImportAmount = summary?.TotalAllocatedImportAmount ?? 0,
                 TotalVolume = summary?.TotalOrderVolume ?? 0,
                 TotalOrderVolume = summary?.TotalOrderVolume ?? 0,
                 TotalAllocVolume = summary?.TotalAllocVolume ?? 0,
@@ -7335,7 +7369,8 @@ FinalRows AS (
                 var allocQuantity = item.Quantity!.Value;
                 detail.AllocQuantity = allocQuantity;
                 detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
-                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                // ImportAmount 是订货金额；发货/发票金额只在 DTO 中按 AllocQuantity 派生。
+                detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
                 detail.UpdatedAt = now;
                 detail.UpdatedBy = currentUser;
 
@@ -7451,7 +7486,7 @@ FinalRows AS (
                         continue;
                     }
 
-                    var expectedImportAmount = (detail.AllocQuantity ?? 0) * warehouseImportPrice;
+                    var expectedImportAmount = CalculateOrderImportAmount(detail.Quantity, warehouseImportPrice);
                     var importPriceMatches = detail.ImportPrice.HasValue && detail.ImportPrice.Value == warehouseImportPrice;
                     var importAmountMatches = detail.ImportAmount.HasValue && detail.ImportAmount.Value == expectedImportAmount;
                     if (importPriceMatches && importAmountMatches)
@@ -7460,7 +7495,7 @@ FinalRows AS (
                         continue;
                     }
 
-                    // 受控地从仓库商品表回填订单明细进口价；即使价格相同，也要校正历史不准的进口金额。
+                    // 受控地从仓库商品表回填订单明细进口价；即使价格相同，也要校正历史不准的订货金额。
                     detail.ImportPrice = warehouseImportPrice;
                     detail.ImportAmount = expectedImportAmount;
                     detail.UpdatedAt = now;
@@ -7806,7 +7841,10 @@ FinalRows AS (
                     };
 
                     newDetail.OEMAmount = newDetail.AllocQuantity * newDetail.OEMPrice;
-                    newDetail.ImportAmount = newDetail.AllocQuantity * newDetail.ImportPrice;
+                    newDetail.ImportAmount = CalculateOrderImportAmount(
+                        newDetail.Quantity,
+                        newDetail.ImportPrice
+                    );
 
                     newDetails.Add(newDetail);
                 }
@@ -7990,7 +8028,8 @@ FinalRows AS (
 
             var allocQuantity = detail.AllocQuantity ?? 0;
             detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
-            detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+            // ImportAmount 是订货金额；发货/发票金额只在 DTO 中按 AllocQuantity 派生。
+            detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
             detail.UpdatedAt = now;
             detail.UpdatedBy = currentUser;
 
@@ -8197,7 +8236,8 @@ FinalRows AS (
 
                 var allocQuantity = detail.AllocQuantity ?? 0;
                 detail.OEMAmount = allocQuantity * (detail.OEMPrice ?? 0);
-                detail.ImportAmount = allocQuantity * (detail.ImportPrice ?? 0);
+                // ImportAmount 是订货金额；发货/发票金额只在 DTO 中按 AllocQuantity 派生。
+                detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
                 detail.UpdatedAt = now;
                 detail.UpdatedBy = currentUser;
 
@@ -8539,7 +8579,7 @@ FinalRows AS (
                     OEMAmount = price * minQty,
                     AllocQuantity = minQty,
                     ImportPrice = finalImportPrice,
-                    ImportAmount = finalImportPrice * minQty,
+                    ImportAmount = 0,
                     IsDeleted = false,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -8577,8 +8617,8 @@ FinalRows AS (
                 else
                 {
                     detail.OEMAmount = detail.AllocQuantity * detail.OEMPrice;
-                    // 使用最新的 ImportPrice 计算
-                    detail.ImportAmount = detail.AllocQuantity * detail.ImportPrice;
+                    // 使用最新的 ImportPrice 计算订货金额；发货金额走 DTO 派生。
+                    detail.ImportAmount = CalculateOrderImportAmount(detail.Quantity, detail.ImportPrice);
                     detail.UpdatedAt = now;
                     detail.UpdatedBy = currentUser;
                     await _db.Updateable(detail).ExecuteCommandAsync();

@@ -141,6 +141,18 @@ async function main() {
   })
   if (emailDefaultFailure) failures.push(emailDefaultFailure)
 
+  const invoiceAmountFailure = await runTest('发票金额应读取发货金额字段而不是订货金额字段', () => {
+    assert(
+      invoiceSource.includes('order.totalAllocatedImportAmount ?? order.totalImportAmount'),
+      '发票整单小计应优先读取 totalAllocatedImportAmount，并只用 totalImportAmount 兼容旧响应',
+    )
+    assert(
+      invoiceSource.includes('item.allocatedImportAmount ?? allocQuantity * Number(item.importPrice || 0)'),
+      '发票明细小计应优先读取 allocatedImportAmount，并按发货数量兜底',
+    )
+  })
+  if (invoiceAmountFailure) failures.push(invoiceAmountFailure)
+
   const invoiceCssFailure = await runTest('发票 print.css 应只调整发票规则且避免横向溢出', () => {
     const paperRule = readCssRule(printCssSource, '.store-order-invoice-paper')
     const tableRule = readCssRule(printCssSource, '.store-order-invoice-table')

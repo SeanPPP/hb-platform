@@ -290,6 +290,30 @@ namespace BlazorApp.Api.Controllers.React
             return RequireCartWritePermissionAsync(request.StoreCode, ScanOrderFlowCheckType);
         }
 
+        private async Task<IActionResult?> RequireCreateOrderPermissionAsync(string? storeCode)
+        {
+            if (IsWarehouseStaffOnly())
+            {
+                // 仓库员工代建订单走正式建单路径，只认显式 Orders.Create，不继承旧 Warehouse.Manage。
+                return await RequireAnyPermissionAsync(Permissions.Orders.Create);
+            }
+
+            return await RequireOrderManagementActionPermissionAsync(OrderCreatePermissions)
+                ?? await RequireStoreScopeAsync(storeCode);
+        }
+
+        private async Task<IActionResult?> RequireOrderLineMutationPermissionAsync(string orderGuid)
+        {
+            if (IsWarehouseStaffOnly())
+            {
+                // 仓库员工维护代建正式订单明细，只认显式 Orders.Edit，不混用分店购物车或单店 scope。
+                return await RequireAnyPermissionAsync(Permissions.Orders.Edit);
+            }
+
+            return await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
+                ?? await RequireOrderScopeAsync(orderGuid);
+        }
+
         private async Task<bool> AuthorizePolicyWithCacheAsync(
             string? userId,
             string normalizedStoreCode,
@@ -1374,7 +1398,12 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                // 提交购物车属于移动端购物车闭环，WarehouseStaff 只需要显式 Orders.Create。
+                if (IsWarehouseStaffOnly())
+                {
+                    // 仓库员工不提交分店 FlowStatus=0 购物车；代建订单必须走 CreateOrder 生成正式单。
+                    return Forbid();
+                }
+
                 var forbidden = await RequireCartWritePermissionAsync(
                     request.StoreCode,
                     CartFlowCheckType
@@ -1909,9 +1938,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderCreatePermissions)
-                    ?? await RequireStoreScopeAsync(request.StoreCode);
+                var forbidden = await RequireCreateOrderPermissionAsync(request.StoreCode);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1939,9 +1966,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -1969,9 +1994,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2001,9 +2024,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2033,9 +2054,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2071,9 +2090,7 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "任务不存在" });
                 }
 
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(job.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(job.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2096,9 +2113,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2126,9 +2141,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;
@@ -2158,9 +2171,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var forbidden =
-                    await RequireOrderManagementActionPermissionAsync(OrderEditPermissions)
-                    ?? await RequireOrderScopeAsync(request.OrderGUID);
+                var forbidden = await RequireOrderLineMutationPermissionAsync(request.OrderGUID);
                 if (forbidden != null)
                 {
                     return forbidden;

@@ -1249,7 +1249,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(11m, rows.Single(row => row.ProductCode == "P-APPEND").AllocQuantity);
         Assert.Equal(7m, rows.Single(row => row.ProductCode == "P-SKIP").AllocQuantity);
         Assert.Equal(0m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").AllocQuantity);
-        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").ImportAmount);
+        Assert.Equal(8m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").ImportAmount);
         Assert.DoesNotContain(rows, row => row.ProductCode == "P-ZERO-DELETE");
         Assert.DoesNotContain(rows, row => row.ProductCode == "P-NEW-ZERO");
         Assert.Equal(8m, rows.Single(row => row.ProductCode == "P-NEW-VALID").AllocQuantity);
@@ -1310,12 +1310,12 @@ public sealed class StoreOrderProductListTests : IDisposable
             .FirstAsync();
         Assert.False(row.IsDeleted);
         Assert.Equal(3m, row.AllocQuantity);
-        Assert.Equal(6m, row.ImportAmount);
+        Assert.Equal(8m, row.ImportAmount);
 
         var order = await _db.Queryable<WareHouseOrder>()
             .Where(item => item.OrderGUID == "ORDER-PASTE-RESTORE")
             .FirstAsync();
-        Assert.Equal(6m, order.ImportTotalAmount);
+        Assert.Equal(8m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -1374,7 +1374,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(0m, rows.Single(row => row.ProductCode == "P004").AllocQuantity);
         Assert.Equal(2m, rows.Single(row => row.ProductCode == "P005").AllocQuantity);
         Assert.Equal(9.5m, rows.Single(row => row.ProductCode == "P005").ImportPrice);
-        Assert.Equal(19m, rows.Single(row => row.ProductCode == "P005").ImportAmount);
+        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P005").ImportAmount);
 
         Assert.True(
             _sqlLogs.Count <= 30,
@@ -1404,13 +1404,13 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(detail);
         Assert.Equal(1m, detail.AllocQuantity);
         Assert.Equal(4m, detail.OEMAmount);
-        Assert.Equal(2.5m, detail.ImportAmount);
+        Assert.Equal(0m, detail.ImportAmount);
 
         var order = await _db.Queryable<WareHouseOrder>()
             .Where(item => item.OrderGUID == "ORDER-PICKING-ADD")
             .FirstAsync();
         Assert.Equal(4m, order.OEMTotalAmount);
-        Assert.Equal(2.5m, order.ImportTotalAmount);
+        Assert.Equal(0m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -1438,7 +1438,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(detail);
         Assert.Equal(7m, detail.AllocQuantity);
         Assert.Equal(35m, detail.OEMAmount);
-        Assert.Equal(21m, detail.ImportAmount);
+        Assert.Equal(0m, detail.ImportAmount);
     }
 
     [Fact]
@@ -2044,7 +2044,7 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
-    public async Task GetOrderDetailAsync_TotalImportAmountUsesAllocQuantityWhenStoredImportAmountIsStale()
+    public async Task GetOrderDetailAsync_SeparatesOrderAndAllocatedImportAmountsWhenStoredImportAmountIsStale()
     {
         await SeedStoreOrderAsync("ORDER-INVOICE-SUBTOTAL");
         await SeedProductAsync("P001", "ITEM-001");
@@ -2069,10 +2069,12 @@ public sealed class StoreOrderProductListTests : IDisposable
 
         Assert.True(result.Success, result.Message);
         Assert.NotNull(result.Data);
-        Assert.Equal(0m, result.Data!.TotalImportAmount);
+        Assert.Equal(5.52m, result.Data!.TotalImportAmount);
+        Assert.Equal(0m, result.Data.TotalAllocatedImportAmount);
         var item = Assert.Single(result.Data.Items);
         Assert.Equal(0m, item.AllocQuantity);
-        Assert.Equal(0m, item.ImportAmount);
+        Assert.Equal(5.52m, item.ImportAmount);
+        Assert.Equal(0m, item.AllocatedImportAmount);
     }
 
     [Fact]
@@ -2492,7 +2494,7 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
-    public async Task GetOrderDetailAsync_ImportAmountSortUsesAllocQuantityAmountWhenStoredImportAmountIsStale()
+    public async Task GetOrderDetailAsync_SortsOrderAndAllocatedImportAmountsSeparately()
     {
         await SeedStoreOrderAsync("ORDER-DETAIL-SORT-IMPORT-AMOUNT");
         await SeedProductAsync("P-COMPUTED-LOW", "A-ITEM");
@@ -2533,7 +2535,25 @@ public sealed class StoreOrderProductListTests : IDisposable
             },
         }).ExecuteCommandAsync();
 
-        var result = await CreateService().GetOrderDetailAsync(
+        var allocatedSortResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = "allocatedImportAmount",
+                SortDescending = false,
+            }
+        );
+
+        Assert.True(allocatedSortResult.Success, allocatedSortResult.Message);
+        Assert.NotNull(allocatedSortResult.Data);
+        var allocatedSortItem = Assert.Single(allocatedSortResult.Data!.Items);
+        Assert.Equal("P-COMPUTED-LOW", allocatedSortItem.ProductCode);
+        Assert.Equal(99m, allocatedSortItem.ImportAmount);
+        Assert.Equal(0m, allocatedSortItem.AllocatedImportAmount);
+
+        var orderSortResult = await CreateService().GetOrderDetailAsync(
             "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
             new StoreOrderDetailQueryDto
             {
@@ -2544,11 +2564,72 @@ public sealed class StoreOrderProductListTests : IDisposable
             }
         );
 
-        Assert.True(result.Success, result.Message);
-        Assert.NotNull(result.Data);
-        var item = Assert.Single(result.Data!.Items);
-        Assert.Equal("P-COMPUTED-LOW", item.ProductCode);
-        Assert.Equal(0m, item.ImportAmount);
+        Assert.True(orderSortResult.Success, orderSortResult.Message);
+        Assert.NotNull(orderSortResult.Data);
+        var orderSortItem = Assert.Single(orderSortResult.Data!.Items);
+        Assert.Equal("P-COMPUTED-HIGH", orderSortItem.ProductCode);
+        Assert.Equal(1m, orderSortItem.ImportAmount);
+        Assert.Equal(2m, orderSortItem.AllocatedImportAmount);
+    }
+
+    [Fact]
+    public void GetOrderDetailAsync_ImportAmountSqlServerExpressionsCanBeTranslated()
+    {
+        using var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=127.0.0.1;Database=HB;User Id=test;Password=test;TrustServerCertificate=True;",
+            DbType = DbType.SqlServer,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
+
+        var detailQuery = sqlServerDb.Queryable<WareHouseOrderDetails>()
+            .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
+            .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
+            .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
+            .Where(d => d.OrderGUID == "ORDER-SQLSERVER" && !d.IsDeleted);
+
+        var orderImportSortSql = detailQuery
+            .OrderBy(
+                (d, p, wp, dp) =>
+                    d.ImportAmount
+                    ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                OrderByType.Asc
+            )
+            .ToSql()
+            .Key;
+        var allocatedImportSortSql = detailQuery
+            .OrderBy(
+                (d, p, wp, dp) => (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0),
+                OrderByType.Asc
+            )
+            .ToSql()
+            .Key;
+        var summarySql = detailQuery
+            .Select(
+                (d, p, wp, dp) =>
+                    new
+                    {
+                        TotalImportAmount = SqlFunc.AggregateSum(
+                            d.ImportAmount
+                                ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0))
+                        ),
+                        TotalAllocatedImportAmount = SqlFunc.AggregateSum(
+                            (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0)
+                        ),
+                    }
+            )
+            .ToSql()
+            .Key;
+
+        Assert.Contains("ORDER BY", orderImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ImportAmount", orderImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Quantity", orderImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AllocQuantity", allocatedImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SUM", summarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ImportAmount", summarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Quantity", summarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AllocQuantity", summarySql, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -3180,11 +3261,11 @@ public sealed class StoreOrderProductListTests : IDisposable
             .FirstAsync();
 
         Assert.Equal(5m, refreshed.ImportPrice);
-        Assert.Equal(20m, refreshed.ImportAmount);
+        Assert.Equal(15m, refreshed.ImportAmount);
         Assert.Equal(2m, correctedAmount.ImportPrice);
-        Assert.Equal(12m, correctedAmount.ImportAmount);
+        Assert.Equal(10m, correctedAmount.ImportAmount);
         Assert.Equal(2m, skipped.ImportPrice);
-        Assert.Equal(48m, order.ImportTotalAmount);
+        Assert.Equal(39m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -3218,7 +3299,7 @@ public sealed class StoreOrderProductListTests : IDisposable
 
         Assert.Equal(2m, untouched.ImportPrice);
         Assert.Equal(5m, refreshed.ImportPrice);
-        Assert.Equal(20m, refreshed.ImportAmount);
+        Assert.Equal(15m, refreshed.ImportAmount);
     }
 
     public void Dispose()
@@ -3448,7 +3529,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             Quantity = quantity,
             AllocQuantity = allocQuantity,
             ImportPrice = importPrice,
-            ImportAmount = allocQuantity * importPrice,
+            ImportAmount = quantity * importPrice,
             OEMPrice = 3m,
             OEMAmount = quantity * 3m,
             IsDeleted = isDeleted,

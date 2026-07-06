@@ -271,12 +271,27 @@ function normalizeStoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateRe
   }
 }
 
+type StoreOrderAmountLine = {
+  allocatedImportAmount?: number
+  allocQuantity?: number
+  importPrice?: number
+}
+
+function normalizeAllocatedImportAmount<T extends StoreOrderAmountLine>(item: T): T & { allocatedImportAmount: number } {
+  // 兼容旧接口：旧响应没有 allocatedImportAmount 时，用发货数量和进口价计算发票金额。
+  return {
+    ...item,
+    allocatedImportAmount: item.allocatedImportAmount ?? Number(item.allocQuantity ?? 0) * Number(item.importPrice ?? 0),
+  }
+}
+
 function normalizeCart(payload: unknown, options?: { isSummaryOnly?: boolean }): StoreOrderCart | null {
   const result = normalizeResult<Partial<StoreOrderCart> | null>(payload)
   if (!result) {
     return null
   }
   const invoiceEmailSentInfo = normalizeStoreOrderInvoiceEmailSentInfo(result.invoiceEmailSentInfo)
+  const items = Array.isArray(result.items) ? result.items : []
 
   return {
     orderGUID: result.orderGUID ?? '',
@@ -287,6 +302,7 @@ function normalizeCart(payload: unknown, options?: { isSummaryOnly?: boolean }):
     totalQuantity: result.totalQuantity ?? 0,
     totalSKU: result.totalSKU ?? 0,
     totalImportAmount: result.totalImportAmount ?? 0,
+    totalAllocatedImportAmount: result.totalAllocatedImportAmount,
     totalVolume: result.totalVolume ?? 0,
     remarks: result.remarks,
     shippingFee: result.shippingFee,
@@ -297,7 +313,7 @@ function normalizeCart(payload: unknown, options?: { isSummaryOnly?: boolean }):
     flowStatus: result.flowStatus,
     invoiceEmailSentInfo,
     isSummaryOnly: Boolean(options?.isSummaryOnly),
-    items: Array.isArray(result.items) ? result.items : [],
+    items,
   }
 }
 
@@ -307,7 +323,7 @@ function normalizeStoreOrderDetail(payload: unknown): StoreOrderDetail | null {
     return null
   }
 
-  const items = Array.isArray(result.items) ? result.items : []
+  const items = Array.isArray(result.items) ? result.items.map(normalizeAllocatedImportAmount) : []
   const invoiceEmailSentInfo = normalizeStoreOrderInvoiceEmailSentInfo(result.invoiceEmailSentInfo)
 
   return {
@@ -316,6 +332,8 @@ function normalizeStoreOrderDetail(payload: unknown): StoreOrderDetail | null {
     totalAmount: result.totalAmount ?? 0,
     totalQuantity: result.totalQuantity ?? 0,
     totalImportAmount: result.totalImportAmount ?? 0,
+    totalAllocatedImportAmount:
+      result.totalAllocatedImportAmount ?? items.reduce((sum, item) => sum + item.allocatedImportAmount, 0),
     totalVolume: result.totalVolume ?? 0,
     itemsTotal: result.itemsTotal ?? items.length,
     invoiceEmailSentInfo,

@@ -131,6 +131,7 @@ async function downloadInvoiceExcel(
   items.forEach((item, index) => {
     const orderQuantity = Number(item.quantity || 0)
     const allocQuantity = Number(item.allocQuantity ?? 0)
+    const allocatedImportAmount = Number(item.allocatedImportAmount ?? allocQuantity * Number(item.importPrice || 0))
     worksheet.addRow({
       index: index + 1,
       itemNumber: item.itemNumber || '',
@@ -139,11 +140,11 @@ async function downloadInvoiceExcel(
       importPrice: Number(item.importPrice || 0),
       orderQuantity,
       allocQuantity,
-      subtotal: Number((allocQuantity * Number(item.importPrice || 0)).toFixed(2)),
+      subtotal: Number(allocatedImportAmount.toFixed(2)),
     })
   })
 
-  const subTotal = Number(order.totalImportAmount || 0)
+  const subTotal = Number(order.totalAllocatedImportAmount ?? order.totalImportAmount ?? 0)
   const gst = Number((subTotal * 0.1).toFixed(2))
   const freight = Number(order.shippingFee || 0)
   const total = Number((subTotal + gst + freight).toFixed(2))
@@ -292,7 +293,7 @@ export default function StoreOrderInvoicePage() {
   }, [])
 
   const totals = useMemo(() => {
-    const subTotal = Number(order?.totalImportAmount || 0)
+    const subTotal = Number(order?.totalAllocatedImportAmount ?? order?.totalImportAmount ?? 0)
     const gst = Number((subTotal * 0.1).toFixed(2))
     const freight = Number(order?.shippingFee || 0)
     return {
@@ -301,7 +302,7 @@ export default function StoreOrderInvoicePage() {
       freight,
       total: Number((subTotal + gst + freight).toFixed(2)),
     }
-  }, [order?.shippingFee, order?.totalImportAmount])
+  }, [order?.shippingFee, order?.totalAllocatedImportAmount, order?.totalImportAmount])
 
   const sortedItems = useMemo(() => sortInvoiceItems(order?.items || []), [order?.items])
   const defaultRecipientEmail = order ? order.storeContactEmail || store?.contactEmail || '' : ''
@@ -671,7 +672,9 @@ export default function StoreOrderInvoicePage() {
                   <td className="col-cost">{formatCurrency(item.importPrice)}</td>
                   <td className="col-qty">{orderQuantity}</td>
                   <td className="col-qty">{allocQuantity}</td>
-                  <td className="col-subtotal">{formatCurrency(allocQuantity * Number(item.importPrice || 0))}</td>
+                  <td className="col-subtotal">
+                    {formatCurrency(item.allocatedImportAmount ?? allocQuantity * Number(item.importPrice || 0))}
+                  </td>
                 </tr>
               )
             })}

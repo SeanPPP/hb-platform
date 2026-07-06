@@ -5,6 +5,7 @@ import {
   getUnmatchedStoreOrderGroups,
   getStoreOrderDetail,
   getStoreOrderDetailFull,
+  getActiveStoreOrderCart,
   getStoreOrderDetailProductCodes,
   getStoreOrderProducts,
   getStoreOrderInvoiceEmailJob,
@@ -288,6 +289,49 @@ try {
 }
 
 try {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          orderGUID: 'cart-legacy',
+          totalAmount: 0,
+          totalQuantity: 10,
+          totalImportAmount: 55,
+          totalVolume: 0,
+          items: [
+            {
+              detailGUID: 'cart-detail-legacy',
+              productCode: 'product-legacy',
+              quantity: 10,
+              allocQuantity: 2,
+              price: 0,
+              amount: 0,
+              importPrice: 7,
+              importAmount: 55,
+              minOrderQuantity: 1,
+              isActive: true,
+            },
+          ],
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )) as typeof fetch
+
+  const result = await getActiveStoreOrderCart('S001')
+
+  assertEqual(result?.totalImportAmount, 55, '购物车 totalImportAmount 应继续表示订货金额')
+  assertEqual(result?.totalAllocatedImportAmount, undefined, '购物车旧响应不应合成发货金额总额')
+  assertEqual(result?.items[0]?.importAmount, 55, '购物车 importAmount 应继续表示订货金额')
+  assertEqual(result?.items[0]?.allocatedImportAmount, undefined, '购物车旧响应不应合成明细发货金额')
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
   const controller = new AbortController()
   let capturedUrl = ''
   let capturedMethod = ''
@@ -308,6 +352,7 @@ try {
           totalAmount: 100,
           totalQuantity: 8,
           totalImportAmount: 88,
+          totalAllocatedImportAmount: 40,
           totalVolume: 12,
           itemsTotal: 35,
           invoiceEmailSentInfo: {
@@ -325,6 +370,8 @@ try {
               amount: 30,
               importPrice: 8,
               importAmount: 24,
+              allocQuantity: 5,
+              allocatedImportAmount: 40,
               minOrderQuantity: 1,
               isActive: true,
             },
@@ -382,6 +429,7 @@ try {
       totalAmount: 100,
       totalQuantity: 8,
       totalImportAmount: 88,
+      totalAllocatedImportAmount: 40,
       totalVolume: 12,
       itemsTotal: 35,
       invoiceEmailSentInfo: {
@@ -399,6 +447,8 @@ try {
           amount: 30,
           importPrice: 8,
           importAmount: 24,
+          allocQuantity: 5,
+          allocatedImportAmount: 40,
           minOrderQuantity: 1,
           isActive: true,
         },
@@ -406,6 +456,49 @@ try {
     },
     '订货明细接口应保留服务端返回的当前页 items、itemsTotal 和发票邮件发送信息',
   )
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+try {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          orderGUID: 'order-legacy',
+          totalAmount: 0,
+          totalQuantity: 0,
+          totalImportAmount: 55,
+          totalVolume: 0,
+          items: [
+            {
+              detailGUID: 'detail-legacy',
+              productCode: 'product-legacy',
+              quantity: 10,
+              allocQuantity: 2,
+              price: 0,
+              amount: 0,
+              importPrice: 7,
+              importAmount: 55,
+              minOrderQuantity: 1,
+              isActive: true,
+            },
+          ],
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )) as typeof fetch
+
+  const result = await getStoreOrderDetail('order-legacy')
+
+  assertEqual(result?.totalImportAmount, 55, '旧 totalImportAmount 应继续表示订货金额')
+  assertEqual(result?.totalAllocatedImportAmount, 14, '旧响应缺少发货金额时应按发货数量和进口价兜底')
+  assertEqual(result?.items[0]?.importAmount, 55, '旧 importAmount 应继续表示订货金额')
+  assertEqual(result?.items[0]?.allocatedImportAmount, 14, '旧响应缺少明细发货金额时应按发货数量和进口价兜底')
 } finally {
   globalThis.fetch = originalFetch
 }

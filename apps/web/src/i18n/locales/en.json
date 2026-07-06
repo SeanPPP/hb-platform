@@ -4498,7 +4498,7 @@
     "orderVolumeLabel": "Order Volume",
     "shipVolumeLabel": "Ship Volume",
     "orderAmountLabel": "Estimated Sales",
-    "importAmountLabel": "Order Amount ex GST",
+    "importAmountLabel": "Allocated Amount ex GST",
     "gstAmountLabel": "GST 10%",
     "freightLabel": "Freight",
     "addressLabel": "Address",

@@ -528,17 +528,19 @@ async function main() {
   })
   if (keyboardNavigationFailure) failures.push(keyboardNavigationFailure)
 
-  const amountLabelsFailure = await runTest('详情页顶部金额应显示预计销售额、订单金额 ex GST 和 GST 10%', () => {
+  const amountLabelsFailure = await runTest('详情页顶部金额应显示预计销售额、发货金额 ex GST 和 GST 10%', () => {
     assert(detailSource.includes('estimatedSalesAmount'), '详情页缺少预计销售额计算')
     assert(detailSource.includes('gstAmount'), '详情页缺少 GST 10% 计算')
     assert(detailSource.includes('const totalAllocQuantity = useMemo') && detailSource.includes('draftDelta'), '顶部发货数量应按后端总数叠加页面草稿差值')
     assert(detailSource.includes('const totalAllocVolume = useMemo') && detailSource.includes('Number(item.volume) * (Number(editedAllocQuantity)'), '顶部发货体积应按页面草稿差值更新')
-    assert(detailSource.includes('draftTotalImportAmount') && detailSource.includes('Number(allocQuantity) * Number(importPrice) - Number(savedAmount)'), '订单金额 ex GST 应按页面草稿金额差值更新')
+    assert(detailSource.includes('draftTotalImportAmount') && detailSource.includes('Number(allocQuantity) * Number(importPrice) - Number(savedAmount)'), '发货金额 ex GST 应按页面草稿金额差值更新')
+    assert(detailSource.includes('detail?.totalAllocatedImportAmount') && detailSource.includes('line.allocatedImportAmount'), '发货金额 ex GST 应优先使用发货/发票金额字段')
     assert(detailSource.includes('line.price') && detailSource.includes('line.allocQuantity'), '预计销售额应按贴牌价和当前发货数计算')
     assert(detailSource.includes("label={t('storeOrders.orderAmountLabel')}") && detailSource.includes('formatAmount(estimatedSalesAmount)'), '订单金额位置应改为显示预计销售额')
-    assert(detailSource.includes("label={t('storeOrders.importAmountLabel')}") && detailSource.includes('formatAmount(draftTotalImportAmount)'), '订单金额 ex GST 应显示草稿总金额')
+    assert(detailSource.includes("label={t('storeOrders.importAmountLabel')}") && detailSource.includes('formatAmount(draftTotalImportAmount)'), '发货金额 ex GST 应显示草稿总金额')
     assert(detailSource.includes("label={t('storeOrders.gstAmountLabel')}") && detailSource.includes('formatAmount(gstAmount)'), '详情页应新增 GST 10% 显示')
     assert(detailMainTableSource.includes('Number(edited.allocQuantity ?? record.allocQuantity ?? 0) * Number(edited.importPrice ?? record.importPrice ?? 0)'), '明细进口金额应按当前草稿发货数和进口价显示')
+    assert(detailMainTableSource.includes("sortOrder: detailColumnSortOrder('allocatedImportAmount')"), '明细发货金额列应按 allocatedImportAmount 发起服务端排序')
     assert(detailMainTableSource.includes('editedAllocQuantity !== undefined') && detailMainTableSource.includes('Number(record.volume) * Number(editedAllocQuantity)'), '明细发货体积应按当前草稿发货数显示')
   })
   if (amountLabelsFailure) failures.push(amountLabelsFailure)
