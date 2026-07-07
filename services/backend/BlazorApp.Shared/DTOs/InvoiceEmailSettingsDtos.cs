@@ -7,6 +7,16 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class InvoiceEmailSettingsDto
     {
+        public List<InvoiceEmailAccountDto> Accounts { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 发票邮件 SMTP 发件账号展示 DTO。
+    /// </summary>
+    public class InvoiceEmailAccountDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
         public string? Host { get; set; }
         public int Port { get; set; }
         public bool UseSsl { get; set; } = true;
@@ -16,6 +26,7 @@ namespace BlazorApp.Shared.DTOs
         public string? FromEmail { get; set; }
         public string? FromName { get; set; }
         public long MaxAttachmentBytes { get; set; }
+        public bool IsDefault { get; set; }
         public DateTime? UpdatedAtUtc { get; set; }
         public string? UpdatedBy { get; set; }
     }
@@ -25,6 +36,23 @@ namespace BlazorApp.Shared.DTOs
     /// </summary>
     public class UpdateInvoiceEmailSettingsDto
     {
+        [Required(ErrorMessage = "发件邮箱账号不能为空")]
+        [MinLength(1, ErrorMessage = "至少需要配置一个发件邮箱账号")]
+        public List<UpdateInvoiceEmailAccountDto> Accounts { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 发票邮件 SMTP 发件账号保存请求。
+    /// </summary>
+    public class UpdateInvoiceEmailAccountDto
+    {
+        [StringLength(50, ErrorMessage = "发件邮箱账号 ID 长度不能超过50个字符")]
+        public string? Id { get; set; }
+
+        [Required(ErrorMessage = "发件账号名称不能为空")]
+        [StringLength(100, ErrorMessage = "发件账号名称长度不能超过100个字符")]
+        public string Name { get; set; } = string.Empty;
+
         [Required(ErrorMessage = "SMTP 主机不能为空")]
         [StringLength(200, ErrorMessage = "SMTP 主机长度不能超过200个字符")]
         public string Host { get; set; } = string.Empty;
@@ -54,12 +82,14 @@ namespace BlazorApp.Shared.DTOs
 
         [Range(1, long.MaxValue, ErrorMessage = "附件大小上限必须大于0")]
         public long MaxAttachmentBytes { get; set; } = 5 * 1024 * 1024;
+
+        public bool IsDefault { get; set; }
     }
 
     /// <summary>
     /// 发票邮件 SMTP 测试请求。
     /// </summary>
-    public class TestInvoiceEmailSettingsDto : UpdateInvoiceEmailSettingsDto
+    public class TestInvoiceEmailSettingsDto : UpdateInvoiceEmailAccountDto
     {
         [Required(ErrorMessage = "测试收件邮箱不能为空")]
         [EmailAddress(ErrorMessage = "测试收件邮箱格式不正确")]

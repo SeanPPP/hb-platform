@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Net.Sockets;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -988,6 +989,45 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoiceEmailService_WhenSmtpConnectionRefused_ReturnsClearFailure()
+    {
+        var service = new ConnectionRefusedInvoiceEmailService(
+            CreateSettingsService(new InvoiceEmailOptions
+            {
+                Host = "mail.hotbargain.com.au",
+                Port = 25,
+                UseSsl = true,
+                FromEmail = "sean@hotbargain.com.au",
+            })
+        );
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVOICE_EMAIL_SMTP_CONNECTION_REFUSED", result.ErrorCode);
+        Assert.Equal(
+            "SMTP 连接被拒绝，请检查 SMTP 主机、端口和 SSL 设置：mail.hotbargain.com.au:25",
+            result.Message
+        );
+    }
+
+    [Fact]
     public async Task InvoiceEmailService_WhenPasswordDecryptFails_ReturnsClearFailure()
     {
         var settingsService = CreateSettingsService();
@@ -995,6 +1035,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             new InvoiceEmailConfiguration
             {
                 Id = InvoiceEmailConfiguration.DefaultId,
+                Name = "Default Sender",
+                IsDefault = true,
                 Host = "mail.hotbargain.com.au",
                 Port = 465,
                 UseSsl = true,
@@ -1033,21 +1075,91 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoiceEmailService_WhenDefaultAccountInvalid_ReturnsClearFailure()
+    {
+        var settingsService = CreateSettingsService();
+        await _db.Insertable(
+            new[]
+            {
+                new InvoiceEmailConfiguration
+                {
+                    Id = "sender-a",
+                    Name = "Sender A",
+                    IsDefault = false,
+                    Host = "a.smtp.example.com",
+                    Port = 465,
+                    UseSsl = true,
+                    Username = "sender-a",
+                    FromEmail = "sender-a@example.com",
+                    MaxAttachmentBytes = 5_242_880,
+                },
+                new InvoiceEmailConfiguration
+                {
+                    Id = "sender-b",
+                    Name = "Sender B",
+                    IsDefault = false,
+                    Host = "b.smtp.example.com",
+                    Port = 465,
+                    UseSsl = true,
+                    Username = "sender-b",
+                    FromEmail = "sender-b@example.com",
+                    MaxAttachmentBytes = 5_242_880,
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = new InvoiceEmailService(
+            NullLogger<InvoiceEmailService>.Instance,
+            settingsService
+        );
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVOICE_EMAIL_DEFAULT_ACCOUNT_INVALID", result.ErrorCode);
+        Assert.Equal("发票邮件默认发件账号配置异常，请在发票邮箱配置中重新设置默认账号", result.Message);
+    }
+
+    [Fact]
     public async Task InvoiceEmailService_UsesDatabaseSettingsForSmtpAndSender()
     {
         var settingsService = CreateSettingsService();
         await settingsService.UpdateSettingsAsync(
             new UpdateInvoiceEmailSettingsDto
             {
-                Host = "db.smtp.example.com",
-                Port = 587,
-                UseSsl = false,
-                CheckCertificateRevocation = false,
-                Username = "db-user",
-                Password = "db-secret",
-                FromEmail = "configured@example.com",
-                FromName = "Configured Sender",
-                MaxAttachmentBytes = 5_242_880,
+                Accounts = new List<UpdateInvoiceEmailAccountDto>
+                {
+                    new()
+                    {
+                        Id = InvoiceEmailConfiguration.DefaultId,
+                        Name = "Configured Sender",
+                        Host = "db.smtp.example.com",
+                        Port = 587,
+                        UseSsl = false,
+                        CheckCertificateRevocation = false,
+                        Username = "db-user",
+                        Password = "db-secret",
+                        FromEmail = "configured@example.com",
+                        FromName = "Configured Sender",
+                        MaxAttachmentBytes = 5_242_880,
+                        IsDefault = true,
+                    },
+                },
             },
             "admin"
         );
@@ -1290,6 +1402,23 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         )
         {
             throw new SslHandshakeException("handshake failed");
+        }
+    }
+
+    private sealed class ConnectionRefusedInvoiceEmailService : InvoiceEmailService
+    {
+        public ConnectionRefusedInvoiceEmailService(IInvoiceEmailSettingsService settingsService)
+            : base(NullLogger<InvoiceEmailService>.Instance, settingsService)
+        {
+        }
+
+        protected override Task ConnectSmtpClientAsync(
+            SmtpClient smtpClient,
+            InvoiceEmailOptions options,
+            SecureSocketOptions secureSocketOptions
+        )
+        {
+            throw new SocketException((int)SocketError.ConnectionRefused);
         }
     }
 

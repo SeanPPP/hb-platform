@@ -377,6 +377,7 @@ namespace BlazorApp.Api.Data
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
+                EnsureInvoiceEmailConfigurationMultiAccountSchema();
                 EnsureContainerDetailSchemaColumns();
                 CreateNormalIndexes();
                 EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
@@ -766,6 +767,108 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "RequestedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "StartedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
+        }
+
+        private void EnsureInvoiceEmailConfigurationMultiAccountSchema()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(InvoiceEmailConfiguration));
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            // 发票邮箱配置从单账号升级为多账号，老库启动时只补列和回填默认账号，不重建表。
+            EnsureColumn(tableName, "Name", "nvarchar(100)", "varchar(100)", "varchar(100)");
+            EnsureColumn(tableName, "IsDefault", "bit", "boolean", "integer");
+            BackfillInvoiceEmailConfigurationNames(tableName);
+            BackfillInvoiceEmailConfigurationDefaultFlags(tableName);
+            EnsureInvoiceEmailConfigurationDefaultAccount();
+        }
+
+        private void BackfillInvoiceEmailConfigurationNames(string tableName)
+        {
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [Name] = CASE WHEN COALESCE([FromEmail], '') <> '' THEN [FromEmail] ELSE N'默认发件账号' END WHERE [Name] IS NULL OR LTRIM(RTRIM([Name])) = ''"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE \"{tableName}\" SET \"Name\" = COALESCE(NULLIF(TRIM(\"FromEmail\"), ''), '默认发件账号') WHERE \"Name\" IS NULL OR TRIM(\"Name\") = ''"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [Name] = COALESCE(NULLIF(TRIM([FromEmail]), ''), '默认发件账号') WHERE [Name] IS NULL OR TRIM([Name]) = ''"
+                );
+            }
+        }
+
+        private void BackfillInvoiceEmailConfigurationDefaultFlags(string tableName)
+        {
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [IsDefault] = 0 WHERE [IsDefault] IS NULL"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE \"{tableName}\" SET \"IsDefault\" = false WHERE \"IsDefault\" IS NULL"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [IsDefault] = 0 WHERE [IsDefault] IS NULL"
+                );
+            }
+        }
+
+        private void EnsureInvoiceEmailConfigurationDefaultAccount()
+        {
+            var rows = _db.Queryable<InvoiceEmailConfiguration>().ToList();
+            if (rows.Count == 0 || rows.Count(row => row.IsDefault) == 1)
+            {
+                return;
+            }
+
+            // 默认账号异常时优先沿用历史 default 行，否则取最早账号，保证发送链路始终有唯一默认账号。
+            var selectedId = rows.FirstOrDefault(
+                    row => string.Equals(
+                        row.Id,
+                        InvoiceEmailConfiguration.DefaultId,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )?.Id
+                ?? rows
+                    .OrderBy(row => row.CreatedAt)
+                    .ThenBy(row => row.Id)
+                    .First()
+                    .Id;
+            var rowIds = rows.Select(row => row.Id).ToList();
+
+            _db.Updateable<InvoiceEmailConfiguration>()
+                .SetColumns(row => row.IsDefault == false)
+                .Where(row => rowIds.Contains(row.Id))
+                .ExecuteCommand();
+            _db.Updateable<InvoiceEmailConfiguration>()
+                .SetColumns(row => row.IsDefault == true)
+                .Where(row => row.Id == selectedId)
+                .ExecuteCommand();
+            Console.WriteLine($"✓ {nameof(InvoiceEmailConfiguration)} 默认发件账号已回填");
         }
 
         private void EnsureContainerDetailSchemaColumns()

@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using MailKit.Net.Smtp;
@@ -36,6 +37,14 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<bool>.Error(
                     "发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置",
                     "INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED"
+                );
+            }
+            catch (InvoiceEmailDefaultAccountException ex)
+            {
+                _logger.LogError(ex, "发票邮件默认发件账号配置异常，收件人：{ToEmail}", message.ToEmail);
+                return ApiResponse<bool>.Error(
+                    "发票邮件默认发件账号配置异常，请在发票邮箱配置中重新设置默认账号",
+                    "INVOICE_EMAIL_DEFAULT_ACCOUNT_INVALID"
                 );
             }
 
@@ -100,6 +109,20 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<bool>.Error(
                     "发票邮件 TLS 握手失败，请检查 SMTP 证书或 InvoiceEmail.CheckCertificateRevocation 配置",
                     "INVOICE_EMAIL_TLS_HANDSHAKE_FAILED"
+                );
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused)
+            {
+                _logger.LogError(
+                    ex,
+                    "发票邮件 SMTP 连接被拒绝，收件人：{ToEmail}，服务器：{Host}:{Port}",
+                    message.ToEmail,
+                    options.Host,
+                    options.Port
+                );
+                return ApiResponse<bool>.Error(
+                    $"SMTP 连接被拒绝，请检查 SMTP 主机、端口和 SSL 设置：{options.Host}:{options.Port}",
+                    "INVOICE_EMAIL_SMTP_CONNECTION_REFUSED"
                 );
             }
             catch (Exception ex)

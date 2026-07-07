@@ -53,71 +53,103 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
         });
 
         var result = await service.GetSettingsAsync();
+        var account = Assert.Single(result.Data!.Accounts);
 
         Assert.True(result.Success);
-        Assert.Equal("smtp.example.com", result.Data!.Host);
-        Assert.Equal(465, result.Data.Port);
-        Assert.False(result.Data.CheckCertificateRevocation);
-        Assert.Equal("smtp-user", result.Data.Username);
-        Assert.True(result.Data.HasPassword);
-        Assert.Equal("warehouse@example.com", result.Data.FromEmail);
-        Assert.Equal("HOT BARGAIN", result.Data.FromName);
-        Assert.Equal(12345, result.Data.MaxAttachmentBytes);
-        Assert.Null(result.Data.UpdatedBy);
+        Assert.Equal(InvoiceEmailConfiguration.DefaultId, account.Id);
+        Assert.True(account.IsDefault);
+        Assert.Equal("smtp.example.com", account.Host);
+        Assert.Equal(465, account.Port);
+        Assert.False(account.CheckCertificateRevocation);
+        Assert.Equal("smtp-user", account.Username);
+        Assert.True(account.HasPassword);
+        Assert.Equal("warehouse@example.com", account.FromEmail);
+        Assert.Equal("HOT BARGAIN", account.FromName);
+        Assert.Equal(12345, account.MaxAttachmentBytes);
+        Assert.Null(account.UpdatedBy);
     }
 
     [Fact]
-    public async Task UpdateSettingsAsync_SavesEncryptedPasswordAndDoesNotReturnPlainText()
+    public async Task UpdateSettingsAsync_WhenDatabaseEmptyAndFallbackPasswordExists_PreservesFallbackPassword()
     {
-        var service = CreateService();
+        var service = CreateService(new InvoiceEmailOptions
+        {
+            Password = "fallback-secret",
+        });
 
         var result = await service.UpdateSettingsAsync(
-            new UpdateInvoiceEmailSettingsDto
-            {
-                Host = "mail.hotbargain.com.au",
-                Port = 465,
-                UseSsl = true,
-                CheckCertificateRevocation = false,
-                Username = "sender@hotbargain.com.au",
-                Password = "smtp-secret",
-                FromEmail = "sender@hotbargain.com.au",
-                FromName = "HOT BARGAIN INTERNATIONAL",
-                MaxAttachmentBytes = 5_242_880,
-            },
+            CreateRequest(CreateAccount(host: "smtp-updated.example.com", password: "")),
             "admin"
         );
-
-        var row = await _db.Queryable<InvoiceEmailConfiguration>().FirstAsync();
+        var row = await _db.Queryable<InvoiceEmailConfiguration>().SingleAsync();
         var runtime = await service.GetEffectiveOptionsAsync();
 
         Assert.True(result.Success);
-        Assert.True(result.Data!.HasPassword);
-        Assert.Equal("admin", result.Data.UpdatedBy);
-        Assert.NotEqual("smtp-secret", row!.EncryptedPassword);
+        Assert.True(result.Data!.Accounts.Single().HasPassword);
         Assert.False(string.IsNullOrWhiteSpace(row.EncryptedPassword));
-        Assert.Equal("smtp-secret", runtime.Password);
-        Assert.Equal("sender@hotbargain.com.au", runtime.FromEmail);
-        Assert.False(runtime.CheckCertificateRevocation);
+        Assert.NotEqual("fallback-secret", row.EncryptedPassword);
+        Assert.Equal("smtp-updated.example.com", runtime.Host);
+        Assert.Equal("fallback-secret", runtime.Password);
     }
 
     [Fact]
-    public async Task UpdateSettingsAsync_WhenPasswordEmpty_PreservesExistingPassword()
+    public async Task UpdateSettingsAsync_SavesMultipleEncryptedPasswordsAndUsesDefaultAccount()
     {
         var service = CreateService();
-        await service.UpdateSettingsAsync(CreateRequest(password: "initial-secret"), "admin");
 
         var result = await service.UpdateSettingsAsync(
             CreateRequest(
-                host: "smtp-updated.example.com",
-                password: "",
-                clearPassword: false
+                CreateAccount(
+                    id: "primary",
+                    name: "Primary",
+                    host: "primary.smtp.example.com",
+                    password: "primary-secret",
+                    fromEmail: "primary@example.com",
+                    isDefault: false
+                ),
+                CreateAccount(
+                    id: "default-sender",
+                    name: "Default Sender",
+                    host: "default.smtp.example.com",
+                    password: "default-secret",
+                    fromEmail: "default@example.com",
+                    isDefault: true
+                )
             ),
+            "admin"
+        );
+
+        var rows = await _db.Queryable<InvoiceEmailConfiguration>().ToListAsync();
+        var runtime = await service.GetEffectiveOptionsAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Data!.Accounts.Count);
+        Assert.All(result.Data.Accounts, account => Assert.True(account.HasPassword));
+        Assert.Equal("admin", result.Data.Accounts.Single(account => account.Id == "default-sender").UpdatedBy);
+        Assert.All(rows, row => Assert.NotEqual("default-secret", row.EncryptedPassword));
+        Assert.All(rows, row => Assert.False(string.IsNullOrWhiteSpace(row.EncryptedPassword)));
+        Assert.Equal("default.smtp.example.com", runtime.Host);
+        Assert.Equal("default-secret", runtime.Password);
+        Assert.Equal("default@example.com", runtime.FromEmail);
+    }
+
+    [Fact]
+    public async Task UpdateSettingsAsync_WhenPasswordEmpty_PreservesSameAccountPassword()
+    {
+        var service = CreateService();
+        await service.UpdateSettingsAsync(
+            CreateRequest(CreateAccount(password: "initial-secret")),
+            "admin"
+        );
+
+        var result = await service.UpdateSettingsAsync(
+            CreateRequest(CreateAccount(host: "smtp-updated.example.com", password: "")),
             "admin"
         );
         var runtime = await service.GetEffectiveOptionsAsync();
 
         Assert.True(result.Success);
-        Assert.True(result.Data!.HasPassword);
+        Assert.True(result.Data!.Accounts.Single().HasPassword);
         Assert.Equal("smtp-updated.example.com", runtime.Host);
         Assert.Equal("initial-secret", runtime.Password);
     }
@@ -129,11 +161,7 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
         await SeedInvalidEncryptedPasswordAsync();
 
         var result = await service.UpdateSettingsAsync(
-            CreateRequest(
-                host: "smtp-updated.example.com",
-                password: "",
-                clearPassword: false
-            ),
+            CreateRequest(CreateAccount(host: "smtp-updated.example.com", password: "")),
             "admin"
         );
         var row = await _db.Queryable<InvoiceEmailConfiguration>().FirstAsync();
@@ -152,17 +180,13 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
         await SeedInvalidEncryptedPasswordAsync();
 
         var result = await service.UpdateSettingsAsync(
-            CreateRequest(
-                host: "smtp-updated.example.com",
-                password: "new-secret",
-                clearPassword: false
-            ),
+            CreateRequest(CreateAccount(host: "smtp-updated.example.com", password: "new-secret")),
             "admin"
         );
         var runtime = await service.GetEffectiveOptionsAsync();
 
         Assert.True(result.Success);
-        Assert.True(result.Data!.HasPassword);
+        Assert.True(result.Data!.Accounts.Single().HasPassword);
         Assert.Equal("smtp-updated.example.com", runtime.Host);
         Assert.Equal("new-secret", runtime.Password);
     }
@@ -171,24 +195,73 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     public async Task UpdateSettingsAsync_WhenClearPassword_RemovesStoredPassword()
     {
         var service = CreateService();
-        await service.UpdateSettingsAsync(CreateRequest(password: "initial-secret"), "admin");
+        await service.UpdateSettingsAsync(
+            CreateRequest(CreateAccount(password: "initial-secret")),
+            "admin"
+        );
 
         var result = await service.UpdateSettingsAsync(
-            CreateRequest(password: "", clearPassword: true),
+            CreateRequest(CreateAccount(password: "", clearPassword: true)),
             "admin"
         );
         var runtime = await service.GetEffectiveOptionsAsync();
 
         Assert.True(result.Success);
-        Assert.False(result.Data!.HasPassword);
+        Assert.False(result.Data!.Accounts.Single().HasPassword);
         Assert.True(string.IsNullOrWhiteSpace(runtime.Password));
+    }
+
+    [Fact]
+    public async Task UpdateSettingsAsync_RejectsMissingOrDuplicatedDefaultAccount()
+    {
+        var service = CreateService();
+
+        var noDefault = await service.UpdateSettingsAsync(
+            CreateRequest(CreateAccount(id: "a", isDefault: false)),
+            "admin"
+        );
+        var twoDefaults = await service.UpdateSettingsAsync(
+            CreateRequest(
+                CreateAccount(id: "a", isDefault: true),
+                CreateAccount(id: "b", isDefault: true)
+            ),
+            "admin"
+        );
+
+        Assert.False(noDefault.Success);
+        Assert.Equal("INVOICE_EMAIL_DEFAULT_ACCOUNT_REQUIRED", noDefault.ErrorCode);
+        Assert.False(twoDefaults.Success);
+        Assert.Equal("INVOICE_EMAIL_DEFAULT_ACCOUNT_REQUIRED", twoDefaults.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateSettingsAsync_RemovesAccountsMissingFromSubmittedList()
+    {
+        var service = CreateService();
+        await service.UpdateSettingsAsync(
+            CreateRequest(
+                CreateAccount(id: "keep", isDefault: true),
+                CreateAccount(id: "remove", fromEmail: "remove@example.com", isDefault: false)
+            ),
+            "admin"
+        );
+
+        var result = await service.UpdateSettingsAsync(
+            CreateRequest(CreateAccount(id: "keep", password: "", isDefault: true)),
+            "admin"
+        );
+        var rows = await _db.Queryable<InvoiceEmailConfiguration>().ToListAsync();
+
+        Assert.True(result.Success);
+        Assert.Single(rows);
+        Assert.Equal("keep", rows.Single().Id);
     }
 
     [Fact]
     public async Task BuildTransientOptions_UsesRequestPasswordWithoutSaving()
     {
         var service = CreateService();
-        var request = CreateRequest(
+        var request = CreateTestRequest(
             host: "smtp-test.example.com",
             password: "temporary-secret"
         );
@@ -202,13 +275,17 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task BuildTransientOptions_WhenPasswordEmpty_ReusesSavedPassword()
+    public async Task BuildTransientOptions_WhenPasswordEmpty_ReusesSavedAccountPassword()
     {
         var service = CreateService();
-        await service.UpdateSettingsAsync(CreateRequest(password: "saved-secret"), "admin");
+        await service.UpdateSettingsAsync(
+            CreateRequest(CreateAccount(id: "saved", password: "saved-secret")),
+            "admin"
+        );
 
         var options = await service.BuildTransientOptionsAsync(
-            CreateRequest(
+            CreateTestRequest(
+                id: "saved",
                 host: "smtp-test.example.com",
                 password: "",
                 clearPassword: false
@@ -220,13 +297,32 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BuildTransientOptions_WhenDatabaseEmptyAndFallbackPasswordExists_ReusesFallbackPassword()
+    {
+        var service = CreateService(new InvoiceEmailOptions
+        {
+            Password = "fallback-secret",
+        });
+
+        var options = await service.BuildTransientOptionsAsync(
+            CreateTestRequest(password: "", clearPassword: false)
+        );
+        var rowCount = await _db.Queryable<InvoiceEmailConfiguration>().CountAsync();
+
+        Assert.Equal("smtp.example.com", options.Host);
+        Assert.Equal("fallback-secret", options.Password);
+        Assert.Equal(0, rowCount);
+    }
+
+    [Fact]
     public async Task BuildTransientOptions_WhenRequestPasswordProvided_DoesNotDecryptStoredPassword()
     {
         var service = CreateService();
         await SeedInvalidEncryptedPasswordAsync();
 
         var options = await service.BuildTransientOptionsAsync(
-            CreateRequest(
+            CreateTestRequest(
+                id: InvoiceEmailConfiguration.DefaultId,
                 host: "smtp-test.example.com",
                 password: "temporary-secret",
                 clearPassword: false
@@ -244,7 +340,8 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
         await SeedInvalidEncryptedPasswordAsync();
 
         var options = await service.BuildTransientOptionsAsync(
-            CreateRequest(
+            CreateTestRequest(
+                id: InvoiceEmailConfiguration.DefaultId,
                 host: "smtp-test.example.com",
                 password: "",
                 clearPassword: true
@@ -266,6 +363,95 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
         );
     }
 
+    [Fact]
+    public async Task GetEffectiveOptionsAsync_WhenDefaultAccountMissing_ThrowsDefaultAccountException()
+    {
+        var service = CreateService();
+        await SeedConfigurationAsync("sender-a", isDefault: false);
+        await SeedConfigurationAsync("sender-b", isDefault: false);
+
+        await Assert.ThrowsAsync<InvoiceEmailDefaultAccountException>(
+            () => service.GetEffectiveOptionsAsync()
+        );
+    }
+
+    [Fact]
+    public async Task GetEffectiveOptionsAsync_WhenDefaultAccountDuplicated_ThrowsDefaultAccountException()
+    {
+        var service = CreateService();
+        await SeedConfigurationAsync("sender-a", isDefault: true);
+        await SeedConfigurationAsync("sender-b", isDefault: true);
+
+        await Assert.ThrowsAsync<InvoiceEmailDefaultAccountException>(
+            () => service.GetEffectiveOptionsAsync()
+        );
+    }
+
+    [Fact]
+    public void EnsureInvoiceEmailConfigurationMultiAccountSchema_AddsColumnsAndBackfillsDefault()
+    {
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db")}");
+        connection.Open();
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = connection.ConnectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = false,
+            InitKeyType = InitKeyType.Attribute,
+        });
+
+        db.Ado.ExecuteCommand(
+            """
+            CREATE TABLE InvoiceEmailConfiguration (
+                Id varchar(50) PRIMARY KEY,
+                Host varchar(200) NOT NULL,
+                Port integer NOT NULL,
+                UseSsl integer NOT NULL,
+                CheckCertificateRevocation integer NOT NULL,
+                Username varchar(200) NULL,
+                EncryptedPassword varchar(2000) NULL,
+                FromEmail varchar(200) NOT NULL,
+                FromName varchar(200) NULL,
+                MaxAttachmentBytes integer NOT NULL,
+                UpdatedAtUtc datetime NOT NULL,
+                CreatedAt datetime NOT NULL,
+                CreatedBy varchar(200) NULL,
+                UpdatedAt datetime NULL,
+                UpdatedBy varchar(200) NULL,
+                IsDeleted integer NOT NULL
+            )
+            """
+        );
+        db.Ado.ExecuteCommand(
+            """
+            INSERT INTO InvoiceEmailConfiguration (
+                Id, Host, Port, UseSsl, CheckCertificateRevocation, FromEmail,
+                MaxAttachmentBytes, UpdatedAtUtc, CreatedAt, IsDeleted
+            )
+            VALUES (
+                'default', 'smtp.example.com', 465, 1, 1, 'sender@example.com',
+                5242880, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0
+            )
+            """
+        );
+
+        var context = CreateSqlSugarContext(db);
+        typeof(SqlSugarContext)
+            .GetMethod(
+                "EnsureInvoiceEmailConfigurationMultiAccountSchema",
+                BindingFlags.Instance | BindingFlags.NonPublic
+            )!
+            .Invoke(context, null);
+
+        var columns = db.DbMaintenance.GetColumnInfosByTableName("InvoiceEmailConfiguration", false);
+        var row = db.Queryable<InvoiceEmailConfiguration>().Single();
+
+        Assert.Contains(columns, column => column.DbColumnName == "Name");
+        Assert.Contains(columns, column => column.DbColumnName == "IsDefault");
+        Assert.Equal("sender@example.com", row.Name);
+        Assert.True(row.IsDefault);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -284,12 +470,26 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     }
 
     private static UpdateInvoiceEmailSettingsDto CreateRequest(
-        string host = "smtp.example.com",
-        string password = "secret",
-        bool clearPassword = false
+        params UpdateInvoiceEmailAccountDto[] accounts
     ) =>
         new()
         {
+            Accounts = accounts.ToList(),
+        };
+
+    private static UpdateInvoiceEmailAccountDto CreateAccount(
+        string id = InvoiceEmailConfiguration.DefaultId,
+        string name = "Default Sender",
+        string host = "smtp.example.com",
+        string password = "secret",
+        bool clearPassword = false,
+        string fromEmail = "warehouse@example.com",
+        bool isDefault = true
+    ) =>
+        new()
+        {
+            Id = id,
+            Name = name,
             Host = host,
             Port = 465,
             UseSsl = true,
@@ -297,9 +497,37 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
             Username = "smtp-user",
             Password = password,
             ClearPassword = clearPassword,
-            FromEmail = "warehouse@example.com",
+            FromEmail = fromEmail,
             FromName = "HOT BARGAIN",
             MaxAttachmentBytes = 5_242_880,
+            IsDefault = isDefault,
+        };
+
+    private static TestInvoiceEmailSettingsDto CreateTestRequest(
+        string id = InvoiceEmailConfiguration.DefaultId,
+        string name = "Default Sender",
+        string host = "smtp.example.com",
+        string password = "secret",
+        bool clearPassword = false,
+        string fromEmail = "warehouse@example.com",
+        bool isDefault = true
+    ) =>
+        new()
+        {
+            Id = id,
+            Name = name,
+            Host = host,
+            Port = 465,
+            UseSsl = true,
+            CheckCertificateRevocation = true,
+            Username = "smtp-user",
+            Password = password,
+            ClearPassword = clearPassword,
+            FromEmail = fromEmail,
+            FromName = "HOT BARGAIN",
+            MaxAttachmentBytes = 5_242_880,
+            IsDefault = isDefault,
+            TestToEmail = "qa@example.com",
         };
 
     private async Task SeedInvalidEncryptedPasswordAsync()
@@ -308,6 +536,8 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
             new InvoiceEmailConfiguration
             {
                 Id = InvoiceEmailConfiguration.DefaultId,
+                Name = "Default Sender",
+                IsDefault = true,
                 Host = "smtp.example.com",
                 Port = 465,
                 UseSsl = true,
@@ -315,6 +545,25 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
                 Username = "smtp-user",
                 EncryptedPassword = "invalid-protected-payload",
                 FromEmail = "warehouse@example.com",
+                MaxAttachmentBytes = 5_242_880,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedConfigurationAsync(string id, bool isDefault)
+    {
+        await _db.Insertable(
+            new InvoiceEmailConfiguration
+            {
+                Id = id,
+                Name = id,
+                IsDefault = isDefault,
+                Host = $"{id}.smtp.example.com",
+                Port = 465,
+                UseSsl = true,
+                CheckCertificateRevocation = true,
+                Username = "smtp-user",
+                FromEmail = $"{id}@example.com",
                 MaxAttachmentBytes = 5_242_880,
             }
         ).ExecuteCommandAsync();

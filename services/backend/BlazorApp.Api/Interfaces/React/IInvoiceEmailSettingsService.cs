@@ -23,7 +23,7 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         Task<InvoiceEmailOptions> BuildTransientOptionsAsync(
-            UpdateInvoiceEmailSettingsDto request,
+            TestInvoiceEmailSettingsDto request,
             CancellationToken cancellationToken = default
         );
     }
