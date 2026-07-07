@@ -22,6 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useAuthStore } from "@/store/auth-store";
 import {
+  alignDomesticProductCode,
   applyFloatRate,
   applyPrices,
   backfill,
@@ -52,7 +53,16 @@ import {
   getDetailGuid,
   getDetailImageUrl,
   getDetailItemNumber,
+  getDetailDomesticProductCode,
+  getDetailLocalProductCode,
+  getDetailLocalSupplierCode,
+  getDetailMatchType,
   getDetailProductName,
+  getDetailReadonlyOemPrice,
+  getDetailRealtimeImportPrice,
+  getDetailRealtimeRetailPrice,
+  getDetailVisibleOemPrice,
+  hasDetailProductCodeConflict,
   toPushProductsToHqItems,
   toggleCurrentPageSelection,
   toggleSelectedTag,
@@ -60,6 +70,7 @@ import {
 } from "./query";
 import type {
   ContainerDetail,
+  ContainerDetailQuery,
   ContainerDetailQueryTag,
   ContainerExportFormat,
   UpdateContainerDetailRequest,
@@ -89,6 +100,30 @@ interface EditForm {
   isActive: boolean;
 }
 
+interface DetailRangeFilterForm {
+  containerQuantityMin: string;
+  containerQuantityMax: string;
+  middlePackQuantityMin: string;
+  middlePackQuantityMax: string;
+  warehouseImportPriceMin: string;
+  warehouseImportPriceMax: string;
+  oemPriceMin: string;
+  oemPriceMax: string;
+}
+
+const EMPTY_DETAIL_RANGE_FILTERS: DetailRangeFilterForm = {
+  containerQuantityMin: "",
+  containerQuantityMax: "",
+  middlePackQuantityMin: "",
+  middlePackQuantityMax: "",
+  warehouseImportPriceMin: "",
+  warehouseImportPriceMax: "",
+  oemPriceMin: "",
+  oemPriceMax: "",
+};
+
+const DETAIL_RANGE_FILTER_KEYS = Object.keys(EMPTY_DETAIL_RANGE_FILTERS) as Array<keyof DetailRangeFilterForm>;
+
 function formatDate(value?: string) {
   return value ? value.slice(0, 10) : "--";
 }
@@ -108,13 +143,40 @@ function parseOptionalNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
+function getMatchTypeLabel(value: ReturnType<typeof getDetailMatchType>) {
+  if (value === "productCode") return "商品编码";
+  if (value === "supplierItem") return "供应商货号";
+  return "未匹配";
+}
+
+function hasRangeFilters(filters: DetailRangeFilterForm) {
+  return DETAIL_RANGE_FILTER_KEYS.some((key) => Boolean(filters[key].trim()));
+}
+
+function hasInvalidRangeFilters(filters: DetailRangeFilterForm) {
+  return DETAIL_RANGE_FILTER_KEYS.some((key) => Number.isNaN(parseOptionalNumber(filters[key])));
+}
+
+function buildRangeQuery(filters: DetailRangeFilterForm): Partial<ContainerDetailQuery> {
+  return {
+    containerQuantityMin: parseOptionalNumber(filters.containerQuantityMin),
+    containerQuantityMax: parseOptionalNumber(filters.containerQuantityMax),
+    middlePackQuantityMin: parseOptionalNumber(filters.middlePackQuantityMin),
+    middlePackQuantityMax: parseOptionalNumber(filters.middlePackQuantityMax),
+    warehouseImportPriceMin: parseOptionalNumber(filters.warehouseImportPriceMin),
+    warehouseImportPriceMax: parseOptionalNumber(filters.warehouseImportPriceMax),
+    oemPriceMin: parseOptionalNumber(filters.oemPriceMin),
+    oemPriceMax: parseOptionalNumber(filters.oemPriceMax),
+  };
+}
+
 function buildEditForm(detail: ContainerDetail): EditForm {
   return {
     productName: getDetailProductName(detail),
     englishName: getDetailEnglishName(detail),
     domesticPrice: numberInput(detail.国内价格),
     importPrice: numberInput(detail.进口价格),
-    oemPrice: numberInput(detail.贴牌价格),
+    oemPrice: numberInput(getDetailVisibleOemPrice(detail)),
     floatRate: numberInput(detail.调整浮率),
     containerQuantity: numberInput(detail.装柜数量),
     middlePackQuantity: numberInput(detail.中包数),
@@ -156,18 +218,34 @@ function DetailCard({
   detail,
   selected,
   canEditContainer,
+  canAlignDomesticProductCode,
+  showReadonlyOemPrice,
+  aligning,
+  alignDisabled,
   onEdit,
+  onAlign,
   onToggle,
 }: {
   detail: ContainerDetail;
   selected: boolean;
   canEditContainer: boolean;
+  canAlignDomesticProductCode: boolean;
+  showReadonlyOemPrice: boolean;
+  aligning: boolean;
+  alignDisabled: boolean;
   onEdit: () => void;
+  onAlign: () => void;
   onToggle: () => void;
 }) {
   const imageUrl = getDetailImageUrl(detail);
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = Boolean(imageUrl && !imageFailed);
+  const localProductCode = getDetailLocalProductCode(detail);
+  const domesticProductCode = getDetailDomesticProductCode(detail);
+  const hasConflict = hasDetailProductCodeConflict(detail);
+  const matchType = getDetailMatchType(detail);
+  const isSetChild = detail.商品类型 === "套装子商品" || detail.商品信息?.商品类型 === "套装子商品";
+  const canAlign = canAlignDomesticProductCode && hasConflict && Boolean(localProductCode && domesticProductCode) && !isSetChild;
 
   return (
     <Card style={styles.card} mode="outlined">
@@ -203,21 +281,34 @@ function DetailCard({
         <View style={styles.chipRow}>
           <Chip compact>{detail.是否新商品 ? "新商品" : "已有商品"}</Chip>
           <Chip compact>{detail.warehouseIsActive === false ? "停用" : "启用"}</Chip>
-          {detail.matchType || detail.MatchType ? <Chip compact>{detail.matchType ?? detail.MatchType}</Chip> : null}
+          {detail.matchType || detail.MatchType || hasConflict ? <Chip compact>{getMatchTypeLabel(matchType)}</Chip> : null}
         </View>
         <View style={styles.metricGrid}>
           <DetailMetric label="条码" value={getDetailBarcode(detail) || "--"} />
           <DetailMetric label="数量" value={formatNumber(detail.装柜数量, 0)} />
           <DetailMetric label="中包" value={formatNumber(detail.中包数, 0)} />
           <DetailMetric label="国内价" value={formatNumber(detail.国内价格)} />
+          <DetailMetric label="实时进货价" value={formatNumber(getDetailRealtimeImportPrice(detail))} />
           <DetailMetric label="进口价" value={formatNumber(detail.进口价格)} />
-          <DetailMetric label="零售价" value={formatNumber(detail.贴牌价格)} />
+          <DetailMetric label="零售价" value={formatNumber(getDetailVisibleOemPrice(detail))} />
+          <DetailMetric label="实时零售价" value={formatNumber(getDetailRealtimeRetailPrice(detail))} />
+          {showReadonlyOemPrice ? <DetailMetric label="只读零售价" value={formatNumber(getDetailReadonlyOemPrice(detail))} /> : null}
         </View>
+        {hasConflict ? (
+          <Text style={styles.warningText}>
+            编码冲突：国内 {domesticProductCode || "--"} / 本地 {localProductCode || "--"}
+          </Text>
+        ) : null}
         {detail.备注 ? <Text style={styles.remark}>{detail.备注}</Text> : null}
       </Card.Content>
-      {canEditContainer ? (
+      {canEditContainer || canAlign ? (
         <Card.Actions>
-          <Button icon="pencil" onPress={onEdit}>编辑明细</Button>
+          {canEditContainer ? <Button icon="pencil" onPress={onEdit}>编辑明细</Button> : null}
+          {canAlign ? (
+            <Button icon="link-variant" loading={aligning} disabled={alignDisabled} onPress={onAlign}>
+              对齐编码
+            </Button>
+          ) : null}
         </Card.Actions>
       ) : null}
     </Card>
@@ -240,6 +331,11 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const [bulkOemPrice, setBulkOemPrice] = useState("");
   const [editingDetail, setEditingDetail] = useState<ContainerDetail | null>(null);
   const [editForm, setEditForm] = useState<EditForm | null>(null);
+  const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false);
+  const [showRangeFilters, setShowRangeFilters] = useState(false);
+  const [rangeFilters, setRangeFilters] = useState<DetailRangeFilterForm>(EMPTY_DETAIL_RANGE_FILTERS);
+  const [appliedRangeFilters, setAppliedRangeFilters] = useState<DetailRangeFilterForm>(EMPTY_DETAIL_RANGE_FILTERS);
+  const [aligningDetailHguid, setAligningDetailHguid] = useState("");
   const [snackbar, setSnackbar] = useState("");
 
   const headerQuery = useQuery({
@@ -253,8 +349,9 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
       keyword: appliedKeyword,
       selectedTags,
       pageNumber: page,
+      ...buildRangeQuery(appliedRangeFilters),
     }),
-    [appliedKeyword, containerGuid, page, selectedTags],
+    [appliedKeyword, appliedRangeFilters, containerGuid, page, selectedTags],
   );
 
   const productsQuery = useQuery({
@@ -278,6 +375,8 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const canEditContainer = access.canEditContainer;
   const canDeleteContainer = access.canDeleteContainer;
   const canRunProductJobs = access.canEditContainer && access.hasPermission("PosProducts.Manage");
+  const canAlignDomesticProductCode = canEditContainer && (access.isAdmin || access.hasPermission("Products.Edit"));
+  const rangeFilterActive = hasRangeFilters(appliedRangeFilters);
 
   const invalidateDetail = () => {
     void queryClient.invalidateQueries({ queryKey: ["containers", "detail"] });
@@ -386,6 +485,29 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     onError: (error) => setSnackbar(error instanceof Error ? error.message : "推送 HQ 失败"),
   });
 
+  const alignDomesticProductCodeMutation = useMutation({
+    mutationFn: (detail: ContainerDetail) => {
+      const detailHguid = getDetailGuid(detail).trim();
+      const localProductCode = getDetailLocalProductCode(detail);
+      const domesticProductCode = getDetailDomesticProductCode(detail);
+      if (!detailHguid || !localProductCode || !domesticProductCode) {
+        throw new Error("缺少可对齐的商品编码");
+      }
+      return alignDomesticProductCode({
+        detailHguid,
+        expectedDomesticProductCode: domesticProductCode,
+        targetProductCode: localProductCode,
+        supplierCode: getDetailLocalSupplierCode(detail),
+      });
+    },
+    onSuccess: (result) => {
+      invalidateDetail();
+      setSnackbar(`已对齐国内商品编码 ${result.oldProductCode || ""} -> ${result.newProductCode || ""}`);
+    },
+    onError: (error) => setSnackbar(error instanceof Error ? error.message : "对齐国内商品编码失败"),
+    onSettled: () => setAligningDetailHguid(""),
+  });
+
   const exportMutation = useMutation({
     mutationFn: (format: ContainerExportFormat) =>
       exportContainerDetails(containerGuid, {
@@ -400,6 +522,34 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     onSuccess: (result) => setSnackbar(`已导出 ${result.fileName}`),
     onError: (error) => setSnackbar(error instanceof Error ? error.message : "导出失败"),
   });
+
+  const handleAlignDomesticProductCode = (detail: ContainerDetail) => {
+    const detailHguid = getDetailGuid(detail).trim();
+    const localProductCode = getDetailLocalProductCode(detail);
+    const domesticProductCode = getDetailDomesticProductCode(detail);
+    if (alignDomesticProductCodeMutation.isPending) {
+      return;
+    }
+    if (!detailHguid || !localProductCode || !domesticProductCode) {
+      setSnackbar("缺少可对齐的商品编码");
+      return;
+    }
+
+    Alert.alert(
+      "对齐国内商品编码",
+      `确认将国内商品编码 ${domesticProductCode} 对齐为 ${localProductCode}？`,
+      [
+        { text: "取消", style: "cancel" },
+        {
+          text: "对齐编码",
+          onPress: () => {
+            setAligningDetailHguid(detailHguid);
+            alignDomesticProductCodeMutation.mutate(detail);
+          },
+        },
+      ],
+    );
+  };
 
   const confirmWholeFilterMutation = (
     action: "float" | "prices" | "recalculate" | "backfill",
@@ -438,9 +588,25 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     setSelectedHguids((current) => toggleCurrentPageSelection(current, details));
   };
 
+  const updateRangeFilter = (field: keyof DetailRangeFilterForm, value: string) => {
+    setRangeFilters((current) => ({ ...current, [field]: value }));
+  };
+
   const applySearch = () => {
+    if (hasInvalidRangeFilters(rangeFilters)) {
+      setSnackbar("筛选范围存在无效数字");
+      return;
+    }
     setPage(1);
     setAppliedKeyword(keyword.trim());
+    setAppliedRangeFilters({ ...rangeFilters });
+    setSelectedHguids([]);
+  };
+
+  const clearRangeFilters = () => {
+    setRangeFilters(EMPTY_DETAIL_RANGE_FILTERS);
+    setAppliedRangeFilters(EMPTY_DETAIL_RANGE_FILTERS);
+    setPage(1);
     setSelectedHguids([]);
   };
 
@@ -516,6 +682,101 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
               );
             })}
           </View>
+          <View style={styles.switchRowCompact}>
+            <Text style={styles.muted}>只读零售价</Text>
+            <Switch value={showReadonlyOemPrice} onValueChange={setShowReadonlyOemPrice} />
+          </View>
+          <View style={styles.filterToggleRow}>
+            <Button
+              compact
+              icon="filter-variant"
+              mode={rangeFilterActive ? "contained-tonal" : "text"}
+              onPress={() => setShowRangeFilters((value) => !value)}
+            >
+              {rangeFilterActive ? "范围筛选已启用" : "范围筛选"}
+            </Button>
+            {rangeFilterActive ? <Button compact mode="text" onPress={clearRangeFilters}>清空范围</Button> : null}
+          </View>
+          {showRangeFilters ? (
+            <View style={styles.rangeFilterPanel}>
+              <View style={styles.inputRow}>
+                <TextInput
+                  mode="outlined"
+                  label="数量下限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.containerQuantityMin}
+                  onChangeText={(value) => updateRangeFilter("containerQuantityMin", value)}
+                  style={styles.inputHalf}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="数量上限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.containerQuantityMax}
+                  onChangeText={(value) => updateRangeFilter("containerQuantityMax", value)}
+                  style={styles.inputHalf}
+                />
+              </View>
+              <View style={styles.inputRow}>
+                <TextInput
+                  mode="outlined"
+                  label="中包下限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.middlePackQuantityMin}
+                  onChangeText={(value) => updateRangeFilter("middlePackQuantityMin", value)}
+                  style={styles.inputHalf}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="中包上限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.middlePackQuantityMax}
+                  onChangeText={(value) => updateRangeFilter("middlePackQuantityMax", value)}
+                  style={styles.inputHalf}
+                />
+              </View>
+              <View style={styles.inputRow}>
+                <TextInput
+                  mode="outlined"
+                  label="实时进货价下限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.warehouseImportPriceMin}
+                  onChangeText={(value) => updateRangeFilter("warehouseImportPriceMin", value)}
+                  style={styles.inputHalf}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="实时进货价上限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.warehouseImportPriceMax}
+                  onChangeText={(value) => updateRangeFilter("warehouseImportPriceMax", value)}
+                  style={styles.inputHalf}
+                />
+              </View>
+              <View style={styles.inputRow}>
+                <TextInput
+                  mode="outlined"
+                  label="零售价下限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.oemPriceMin}
+                  onChangeText={(value) => updateRangeFilter("oemPriceMin", value)}
+                  style={styles.inputHalf}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="零售价上限"
+                  keyboardType="decimal-pad"
+                  value={rangeFilters.oemPriceMax}
+                  onChangeText={(value) => updateRangeFilter("oemPriceMax", value)}
+                  style={styles.inputHalf}
+                />
+              </View>
+              <View style={styles.actionRow}>
+                <Button mode="contained" icon="filter-check" onPress={applySearch}>应用筛选</Button>
+                <Button mode="text" icon="filter-remove" onPress={clearRangeFilters}>清空范围</Button>
+              </View>
+            </View>
+          ) : null}
           <View style={styles.actionRow}>
             <Menu
               visible={bulkMenuVisible}
@@ -602,7 +863,12 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
                 detail={detail}
                 selected={selectedSet.has(hguid)}
                 canEditContainer={canEditContainer}
+                canAlignDomesticProductCode={canAlignDomesticProductCode}
+                showReadonlyOemPrice={showReadonlyOemPrice}
+                aligning={aligningDetailHguid === hguid && alignDomesticProductCodeMutation.isPending}
+                alignDisabled={alignDomesticProductCodeMutation.isPending}
                 onToggle={() => toggleSelection(hguid)}
+                onAlign={() => handleAlignDomesticProductCode(detail)}
                 onEdit={() => {
                   setEditingDetail(detail);
                   setEditForm(buildEditForm(detail));
@@ -731,6 +997,16 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
   },
+  filterToggleRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  rangeFilterPanel: {
+    gap: 8,
+  },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -752,6 +1028,10 @@ const styles = StyleSheet.create({
   remark: {
     marginTop: 10,
     color: "#475569",
+  },
+  warningText: {
+    marginTop: 10,
+    color: "#B45309",
   },
   detailImageFrame: {
     width: 72,
@@ -805,5 +1085,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  switchRowCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 8,
   },
 });

@@ -1,6 +1,8 @@
 import type { AxiosResponse } from "axios";
 import { apiClient } from "@/shared/api/client";
 import type {
+  AlignDomesticProductCodeRequest,
+  AlignDomesticProductCodeResult,
   ContainerDetailBatchActionResult,
   ContainerDetailBatchScope,
   ContainerDetailQuery,
@@ -19,8 +21,10 @@ import type {
   UpdateContainerRequest,
 } from "./types";
 import {
+  buildAlignDomesticProductCodePayload,
   buildContainerListPayload,
   normalizeCreateContainerResponse,
+  normalizeAlignDomesticProductCodeResult,
   normalizeContainerDetailResponse,
   normalizeContainerDetailQueryResult,
   normalizeContainerJob,
@@ -323,6 +327,17 @@ export async function waitPushProductsToHqJob(
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
   throw new Error("推送 HQ 任务轮询超时");
+}
+
+export async function alignDomesticProductCode(
+  payload: AlignDomesticProductCodeRequest,
+): Promise<AlignDomesticProductCodeResult> {
+  const response = await apiClient.post(
+    `${CONTAINERS_PATH}/details/align-domestic-product-code`,
+    buildAlignDomesticProductCodePayload(payload),
+  );
+  ensureSuccess(response.data, "对齐国内商品编码失败");
+  return normalizeAlignDomesticProductCodeResult(response.data);
 }
 
 export async function exportContainerDetails(

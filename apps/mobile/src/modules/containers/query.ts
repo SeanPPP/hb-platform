@@ -1,6 +1,9 @@
 import type {
+  AlignDomesticProductCodeRequest,
+  AlignDomesticProductCodeResult,
   ContainerDetail,
   ContainerDetailQuery,
+  ContainerDetailQueryMatchType,
   ContainerDetailQueryResult,
   ContainerDetailQueryTag,
   ContainerDetailTagStats,
@@ -81,11 +84,48 @@ function asNumber(value: unknown, fallback: number) {
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function asString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
 export function unwrapData(value: unknown): unknown {
   if (!isRecord(value)) {
     return value;
   }
   return "data" in value ? value.data : value;
+}
+
+export function buildAlignDomesticProductCodePayload(payload: AlignDomesticProductCodeRequest) {
+  return {
+    DetailHguid: payload.detailHguid,
+    ExpectedDomesticProductCode: payload.expectedDomesticProductCode,
+    TargetProductCode: payload.targetProductCode,
+    SupplierCode: payload.supplierCode,
+  };
+}
+
+export function normalizeAlignDomesticProductCodeResult(raw: unknown): AlignDomesticProductCodeResult {
+  const data = unwrapData(raw);
+  const record = isRecord(data) ? data : {};
+  const oldProductCode = pick<string>(record, "oldProductCode", "OldProductCode");
+  const newProductCode = pick<string>(record, "newProductCode", "NewProductCode");
+
+  return {
+    oldProductCode: asString(oldProductCode),
+    OldProductCode: pick<string>(record, "OldProductCode"),
+    newProductCode: asString(newProductCode),
+    NewProductCode: pick<string>(record, "NewProductCode"),
+    updatedDomesticProducts: asNumber(pick(record, "updatedDomesticProducts", "UpdatedDomesticProducts"), 0),
+    UpdatedDomesticProducts: pick<number>(record, "UpdatedDomesticProducts"),
+    updatedContainerDetails: asNumber(pick(record, "updatedContainerDetails", "UpdatedContainerDetails"), 0),
+    UpdatedContainerDetails: pick<number>(record, "UpdatedContainerDetails"),
+    updatedDomesticSetProducts: asNumber(pick(record, "updatedDomesticSetProducts", "UpdatedDomesticSetProducts"), 0),
+    UpdatedDomesticSetProducts: pick<number>(record, "UpdatedDomesticSetProducts"),
+    updatedProductGrades: asNumber(pick(record, "updatedProductGrades", "UpdatedProductGrades"), 0),
+    UpdatedProductGrades: pick<number>(record, "UpdatedProductGrades"),
+    updatedDomesticProductCreationLogs: asNumber(pick(record, "updatedDomesticProductCreationLogs", "UpdatedDomesticProductCreationLogs"), 0),
+    UpdatedDomesticProductCreationLogs: pick<number>(record, "UpdatedDomesticProductCreationLogs"),
+  };
 }
 
 export function getContainerGuid(container?: ContainerMain | null) {
@@ -94,6 +134,18 @@ export function getContainerGuid(container?: ContainerMain | null) {
 
 export function getDetailGuid(detail?: ContainerDetail | null) {
   return detail?.hguid ?? detail?.HGUID ?? "";
+}
+
+function firstTrimmedValue(...values: Array<string | undefined>) {
+  return values.map((value) => value?.trim()).find((value): value is string => Boolean(value));
+}
+
+function normalizeMatchKey(value?: string) {
+  return value?.trim().toUpperCase();
+}
+
+export function getDetailProductCode(detail: ContainerDetail) {
+  return firstTrimmedValue(detail.商品编码, detail.商品信息?.商品编码);
 }
 
 export function getDetailItemNumber(detail: ContainerDetail) {
@@ -115,6 +167,75 @@ export function getDetailBarcode(detail: ContainerDetail) {
 export function getDetailImageUrl(detail?: ContainerDetail | null) {
   // 图片字段可能来自明细行或商品信息，展示和 HQ 推送保持同一优先级。
   return trimToUndefined(detail?.商品图片) ?? trimToUndefined(detail?.商品信息?.商品图片);
+}
+
+export function getDetailLocalProductCode(detail: ContainerDetail) {
+  return firstTrimmedValue(detail.localProductCode, detail.LocalProductCode);
+}
+
+export function getDetailLocalSupplierCode(detail: ContainerDetail) {
+  // 对齐编码接口要求供应商编码；历史 HB 数据缺字段时和 Web 端一致回退 200。
+  return firstTrimmedValue(detail.localSupplierCode, detail.商品信息?.localSupplierCode) ?? "200";
+}
+
+export function getDetailDomesticProductCode(detail: ContainerDetail) {
+  return firstTrimmedValue(
+    detail.domesticProductCode,
+    detail.DomesticProductCode,
+    getDetailProductCode(detail),
+  );
+}
+
+export function hasDetailProductCodeConflict(detail: ContainerDetail) {
+  const explicit = detail.hasProductCodeConflict ?? detail.HasProductCodeConflict;
+  if (explicit != null) return Boolean(explicit);
+
+  const localProductCode = normalizeMatchKey(getDetailLocalProductCode(detail));
+  const domesticProductCode = normalizeMatchKey(getDetailDomesticProductCode(detail));
+  return Boolean(localProductCode && domesticProductCode && localProductCode !== domesticProductCode);
+}
+
+export function getDetailMatchType(detail: ContainerDetail): ContainerDetailQueryMatchType {
+  if (hasDetailProductCodeConflict(detail)) {
+    return "supplierItem";
+  }
+
+  const normalized = (detail.matchType ?? detail.MatchType ?? "").trim().toLowerCase();
+  if (normalized === "productcode" || normalized === "product_code" || normalized === "商品编码") {
+    return "productCode";
+  }
+  if (
+    normalized === "supplieritem" ||
+    normalized === "supplier_item" ||
+    normalized === "item_number" ||
+    normalized === "itemnumber" ||
+    normalized === "供应商编码+货号" ||
+    normalized === "供应商货号" ||
+    normalized === "货号匹配"
+  ) {
+    return "supplierItem";
+  }
+  return "unmatched";
+}
+
+export function getDetailReadonlyOemPrice(detail: ContainerDetail) {
+  // 只读零售价只展示后端分流结果；缺字段时不回退货柜明细业务价。
+  return detail.readonlyOemPrice ?? detail.ReadonlyOemPrice;
+}
+
+export function getDetailRealtimeImportPrice(detail: ContainerDetail) {
+  // 实时进货价来自仓库商品表；缺字段时不回退 LastImportPrice 历史快照。
+  return detail.warehouseImportPrice ?? detail.WarehouseImportPrice;
+}
+
+export function getDetailRealtimeRetailPrice(detail: ContainerDetail) {
+  // 实时零售价来自仓库商品表；缺字段时不回退 LastOEMPrice 或明细零售价。
+  return detail.warehouseOEMPrice ?? detail.WarehouseOEMPrice;
+}
+
+export function getDetailVisibleOemPrice(detail: ContainerDetail) {
+  // 新商品继续使用明细业务价；已有商品按 Web 端展示仓库实时零售价。
+  return detail.是否新商品 ? detail.贴牌价格 : getDetailRealtimeRetailPrice(detail);
 }
 
 export function getCurrentPageDetailGuids(details: ContainerDetail[]) {
@@ -189,6 +310,32 @@ export function buildContainerDetailQuery(
     newProductStates: query.newProductStates,
     matchTypes: query.matchTypes,
     warehouseStatus: query.warehouseStatus,
+    containerPiecesMin: query.containerPiecesMin,
+    containerPiecesMax: query.containerPiecesMax,
+    middlePackQuantityMin: query.middlePackQuantityMin,
+    middlePackQuantityMax: query.middlePackQuantityMax,
+    containerQuantityMin: query.containerQuantityMin,
+    containerQuantityMax: query.containerQuantityMax,
+    packingQuantityMin: query.packingQuantityMin,
+    packingQuantityMax: query.packingQuantityMax,
+    unitVolumeMin: query.unitVolumeMin,
+    unitVolumeMax: query.unitVolumeMax,
+    domesticPriceMin: query.domesticPriceMin,
+    domesticPriceMax: query.domesticPriceMax,
+    floatRateMin: query.floatRateMin,
+    floatRateMax: query.floatRateMax,
+    transportCostMin: query.transportCostMin,
+    transportCostMax: query.transportCostMax,
+    unitTransportCostMin: query.unitTransportCostMin,
+    unitTransportCostMax: query.unitTransportCostMax,
+    warehouseImportPriceMin: query.warehouseImportPriceMin,
+    warehouseImportPriceMax: query.warehouseImportPriceMax,
+    lastOEMPriceMin: query.lastOEMPriceMin,
+    lastOEMPriceMax: query.lastOEMPriceMax,
+    importPriceMin: query.importPriceMin,
+    importPriceMax: query.importPriceMax,
+    oemPriceMin: query.oemPriceMin,
+    oemPriceMax: query.oemPriceMax,
     selectedTags: query.selectedTags?.filter((item) => item !== "all"),
     // 默认按货号升序，和 web 货柜明细当前业务核对顺序保持一致。
     sortBy: query.sortBy || "itemNumber",
@@ -386,7 +533,7 @@ export function toPushProductsToHqItems(details: ContainerDetail[]): PushProduct
     imageUrl: getDetailImageUrl(detail),
     domesticPrice: detail.国内价格,
     importPrice: detail.进口价格,
-    oemPrice: detail.贴牌价格,
+    oemPrice: getDetailVisibleOemPrice(detail),
     isNewProduct: Boolean(detail.是否新商品 ?? detail.warehouseIsActive === false),
     warehouseIsActive: detail.warehouseIsActive,
   }));

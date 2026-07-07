@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  buildAlignDomesticProductCodePayload,
   buildContainerDetailQuery,
   buildContainerListPayload,
   buildCreateProductsOperationId,
@@ -7,6 +8,14 @@ import {
   buildBatchScope,
   getCurrentPageDetailGuids,
   getDetailImageUrl,
+  getDetailLocalSupplierCode,
+  getDetailMatchType,
+  getDetailReadonlyOemPrice,
+  getDetailRealtimeImportPrice,
+  getDetailRealtimeRetailPrice,
+  getDetailVisibleOemPrice,
+  hasDetailProductCodeConflict,
+  normalizeAlignDomesticProductCodeResult,
   normalizeCreateContainerResponse,
   normalizeContainerDetailResponse,
   normalizeContainerDetailQueryResult,
@@ -38,6 +47,10 @@ assert.equal(listPayload.TotalAmountMax, 999.5);
 const detailQuery = buildContainerDetailQuery("container-1", {
   keyword: " hb-1 ",
   selectedTags: ["all", "new"],
+  warehouseImportPriceMin: 5,
+  warehouseImportPriceMax: 9,
+  oemPriceMin: 10,
+  oemPriceMax: 12,
 });
 
 assert.equal(detailQuery.itemNumber, "hb-1");
@@ -46,6 +59,10 @@ assert.equal(detailQuery.sortOrder, "ascend");
 assert.deepEqual(detailQuery.selectedTags, ["new"]);
 assert.equal(detailQuery.includeTotal, true);
 assert.equal(detailQuery.includeStats, true);
+assert.equal(detailQuery.warehouseImportPriceMin, 5);
+assert.equal(detailQuery.warehouseImportPriceMax, 9);
+assert.equal(detailQuery.oemPriceMin, 10);
+assert.equal(detailQuery.oemPriceMax, 12);
 
 assert.deepEqual(
   buildBatchScope(detailQuery, [" D2 ", "", "D1"]),
@@ -69,6 +86,45 @@ assert.equal(
 assert.equal(
   buildPushProductsToHqOperationId("container-1", ["P2", "P1"], 2, ["retailPrice", "barcode"]),
   "container-push-hq:container-1:P1,P2:2:barcode,retailPrice",
+);
+
+assert.deepEqual(
+  buildAlignDomesticProductCodePayload({
+    detailHguid: "D-ALIGN",
+    expectedDomesticProductCode: "DOM-OLD",
+    targetProductCode: "LOCAL-NEW",
+    supplierCode: "200",
+  }),
+  {
+    DetailHguid: "D-ALIGN",
+    ExpectedDomesticProductCode: "DOM-OLD",
+    TargetProductCode: "LOCAL-NEW",
+    SupplierCode: "200",
+  },
+);
+
+const normalizedAlignResult = normalizeAlignDomesticProductCodeResult({
+  data: {
+    OldProductCode: "DOM-OLD",
+    NewProductCode: "LOCAL-NEW",
+    UpdatedDomesticProducts: "1",
+    UpdatedContainerDetails: 2,
+  },
+});
+
+assert.deepEqual(
+  {
+    oldProductCode: normalizedAlignResult.oldProductCode,
+    newProductCode: normalizedAlignResult.newProductCode,
+    updatedDomesticProducts: normalizedAlignResult.updatedDomesticProducts,
+    updatedContainerDetails: normalizedAlignResult.updatedContainerDetails,
+  },
+  {
+    oldProductCode: "DOM-OLD",
+    newProductCode: "LOCAL-NEW",
+    updatedDomesticProducts: 1,
+    updatedContainerDetails: 2,
+  },
 );
 
 const normalizedList = normalizeContainerListResponse({
@@ -131,6 +187,97 @@ assert.equal(
     商品信息: { 商品图片: "https://cdn.example.com/product.png" },
   }])[0]?.imageUrl,
   "https://cdn.example.com/detail.png",
+);
+
+assert.equal(
+  getDetailVisibleOemPrice({ 是否新商品: true, 贴牌价格: 2.2, warehouseOEMPrice: 6.6 }),
+  2.2,
+  "new product visible oem price uses detail oem price",
+);
+assert.equal(
+  getDetailVisibleOemPrice({ 是否新商品: false, 贴牌价格: 2.2, warehouseOEMPrice: 6.6 }),
+  6.6,
+  "existing product visible oem price uses realtime warehouse retail price",
+);
+assert.equal(
+  getDetailRealtimeImportPrice({ warehouseImportPrice: 5.5, LastImportPrice: 8.8 }),
+  5.5,
+  "realtime import price uses camelCase warehouse field",
+);
+assert.equal(
+  getDetailRealtimeImportPrice({ LastImportPrice: 8.8 }),
+  undefined,
+  "realtime import price does not fall back to historical snapshot",
+);
+assert.equal(
+  getDetailRealtimeRetailPrice({ WarehouseOEMPrice: 7.7, LastOEMPrice: 8.8, 贴牌价格: 2.2 }),
+  7.7,
+  "realtime retail price uses PascalCase warehouse field",
+);
+assert.equal(
+  getDetailRealtimeRetailPrice({ LastOEMPrice: 8.8, 贴牌价格: 2.2 }),
+  undefined,
+  "realtime retail price does not fall back to historical snapshot or detail price",
+);
+assert.equal(
+  getDetailReadonlyOemPrice({ readonlyOemPrice: 9.9, 贴牌价格: 2.2 }),
+  9.9,
+  "readonly oem price uses backend split price",
+);
+assert.equal(
+  getDetailReadonlyOemPrice({ 贴牌价格: 2.2 }),
+  undefined,
+  "readonly oem price does not fall back to detail price",
+);
+assert.equal(
+  hasDetailProductCodeConflict({ localProductCode: "LOCAL-1", domesticProductCode: "DOM-1" }),
+  true,
+  "different local and domestic product codes are a conflict",
+);
+assert.equal(
+  getDetailMatchType({ localProductCode: "LOCAL-1", domesticProductCode: "DOM-1", matchType: "productCode" }),
+  "supplierItem",
+  "product code conflict is treated as supplier item match",
+);
+assert.equal(
+  getDetailLocalSupplierCode({ localSupplierCode: " ", 商品信息: { localSupplierCode: " 201 " } }),
+  "201",
+  "align supplier code trims and falls back to product info",
+);
+assert.equal(
+  getDetailLocalSupplierCode({}),
+  "200",
+  "missing align supplier code falls back to legacy HB supplier",
+);
+assert.equal(
+  getDetailMatchType({ MatchType: "item_number" }),
+  "supplierItem",
+  "backend item_number match type is supplier item",
+);
+assert.equal(
+  getDetailMatchType({ MatchType: "货号匹配" }),
+  "supplierItem",
+  "legacy Chinese item match type is supplier item",
+);
+assert.equal(
+  toPushProductsToHqItems([{
+    商品编码: "P1",
+    是否新商品: false,
+    贴牌价格: 2.2,
+    warehouseOEMPrice: 6.6,
+  }])[0]?.oemPrice,
+  6.6,
+  "HQ push uses visible oem price for existing products",
+);
+assert.equal(
+  toPushProductsToHqItems([{
+    商品编码: "P2",
+    是否新商品: true,
+    贴牌价格: 3.3,
+    warehouseOEMPrice: 6.6,
+  }])[0]?.oemPrice,
+  3.3,
+  "HQ push uses detail oem price for new products",
 );
 
 const currentPageDetails = [

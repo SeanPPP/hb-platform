@@ -74,8 +74,18 @@ export interface ContainerDetail {
   WarehouseImportPrice?: number;
   warehouseOEMPrice?: number;
   WarehouseOEMPrice?: number;
+  readonlyOemPrice?: number;
+  ReadonlyOemPrice?: number;
   matchType?: "productCode" | "supplierItem" | "unmatched";
   MatchType?: string;
+  localProductCode?: string;
+  LocalProductCode?: string;
+  domesticProductCode?: string;
+  DomesticProductCode?: string;
+  hasProductCodeConflict?: boolean;
+  HasProductCodeConflict?: boolean;
+  conflictReason?: string;
+  ConflictReason?: string;
 }
 
 export type ContainerDetailQueryTag =
@@ -140,6 +150,32 @@ export interface ContainerDetailQuery {
   newProductStates?: ContainerDetailQueryNewProductState[];
   matchTypes?: ContainerDetailQueryMatchType[];
   warehouseStatus?: ContainerDetailQueryWarehouseStatus[];
+  containerPiecesMin?: number;
+  containerPiecesMax?: number;
+  middlePackQuantityMin?: number;
+  middlePackQuantityMax?: number;
+  containerQuantityMin?: number;
+  containerQuantityMax?: number;
+  packingQuantityMin?: number;
+  packingQuantityMax?: number;
+  unitVolumeMin?: number;
+  unitVolumeMax?: number;
+  domesticPriceMin?: number;
+  domesticPriceMax?: number;
+  floatRateMin?: number;
+  floatRateMax?: number;
+  transportCostMin?: number;
+  transportCostMax?: number;
+  unitTransportCostMin?: number;
+  unitTransportCostMax?: number;
+  warehouseImportPriceMin?: number;
+  warehouseImportPriceMax?: number;
+  lastOEMPriceMin?: number;
+  lastOEMPriceMax?: number;
+  importPriceMin?: number;
+  importPriceMax?: number;
+  oemPriceMin?: number;
+  oemPriceMax?: number;
   selectedTags?: ContainerDetailQueryTag[];
   sortBy?: string;
   sortOrder?: ContainerDetailQuerySortOrder;
@@ -320,6 +356,30 @@ export interface PushProductsToHqJob {
   result?: PushProductsToHqResult;
   message?: string;
   errors?: string[];
+}
+
+export interface AlignDomesticProductCodeRequest {
+  detailHguid: string;
+  expectedDomesticProductCode: string;
+  targetProductCode: string;
+  supplierCode?: string;
+}
+
+export interface AlignDomesticProductCodeResult {
+  oldProductCode: string;
+  OldProductCode?: string;
+  newProductCode: string;
+  NewProductCode?: string;
+  updatedDomesticProducts: number;
+  UpdatedDomesticProducts?: number;
+  updatedContainerDetails: number;
+  UpdatedContainerDetails?: number;
+  updatedDomesticSetProducts: number;
+  UpdatedDomesticSetProducts?: number;
+  updatedProductGrades: number;
+  UpdatedProductGrades?: number;
+  updatedDomesticProductCreationLogs: number;
+  UpdatedDomesticProductCreationLogs?: number;
 }
 
 export interface ContainerExportRequest {
