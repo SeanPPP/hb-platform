@@ -111,7 +111,7 @@ namespace BlazorApp.Api.Services
             };
         }
 
-        public async Task<DailyStatisticsAlignmentRecalculateResponseDto> RecalculateAsync(
+        public virtual async Task<DailyStatisticsAlignmentRecalculateResponseDto> RecalculateAsync(
             IEnumerable<DateTime> dates,
             int maxConcurrency
         )

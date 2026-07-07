@@ -1625,7 +1625,12 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             context,
             NullLogger<StatisticsJobTriggerController>.Instance,
             cacheWarmer ?? Mock.Of<ISalesDashboardCacheWarmer>(),
-            CreateAlignmentService(context)
+            CreateAlignmentService(context),
+            new SalesStatisticsAlignmentBackgroundRecalculateService(
+                new ScheduledTaskLogService(context, NullLogger<ScheduledTaskLogService>.Instance),
+                Mock.Of<IServiceScopeFactory>(),
+                NullLogger<SalesStatisticsAlignmentBackgroundRecalculateService>.Instance
+            )
         );
     }
 

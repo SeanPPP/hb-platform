@@ -59,6 +59,7 @@
     <Compile Include="DataSyncIncrementalStoreRetailPriceTests.cs" />
     <Compile Include="ScheduledTaskServiceTests.cs" />
     <Compile Include="ScheduledTaskRuntimeControlServiceTests.cs" />
+    <Compile Include="SalesStatisticsAlignmentBackgroundRecalculateServiceTests.cs" />
     <Compile Include="SalesStatisticsAlignmentServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />

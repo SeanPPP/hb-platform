@@ -109,6 +109,7 @@ const taskTypeOptions = [
   { label: '全量刷新前一天', value: 'FullRefreshPreviousDay' },
   { label: '全量刷新当天', value: 'FullRefreshCurrentDay' },
   { label: '并发全量刷新', value: 'BatchFullRefreshConcurrent' },
+  { label: '数据对齐后台补算', value: 'RecalculateDailyStatisticsAlignment' },
 ]
 
 const taskStatusOptions = [
@@ -280,8 +281,8 @@ function DailyAlignmentPanel({
     }
 
     Modal.confirm({
-      title: `确认补算 ${abnormalDates.length} 天异常统计？`,
-      content: '系统会按日期抢占数据库租约，运行中的日期会自动跳过。',
+      title: `确认提交 ${abnormalDates.length} 天异常统计后台补算？`,
+      content: '提交后会在后台按日期抢占数据库租约，运行中的日期会自动跳过。',
       onOk: async () => {
         setRecalculating(true)
         try {
@@ -289,16 +290,17 @@ function DailyAlignmentPanel({
             dates: abnormalDates,
             maxConcurrency,
           })
-          if (result.failedDates.length) {
-            message.error(`${result.message ?? '补算完成但存在失败日期'}：${result.failedDates.join(', ')}`)
+          if (result.success === false || result.failedDates.length) {
+            const failedDateText = result.failedDates.length ? `：${result.failedDates.join(', ')}` : ''
+            message.error(`${result.message ?? '后台补算提交失败'}${failedDateText}`)
           } else {
-            message.success(result.message ?? '补算任务已完成')
+            message.success(result.message ?? '后台补算任务已提交')
           }
           await loadAlignment()
           onAfterRecalculate?.()
         } catch (error) {
           console.error(error)
-          message.error('补算异常日期失败')
+          message.error('提交后台补算失败')
         } finally {
           setRecalculating(false)
         }
@@ -492,7 +494,7 @@ function DailyAlignmentPanel({
                   loading={recalculating}
                   onClick={handleRecalculateAbnormal}
                 >
-                  一键补算异常日期
+                  后台补算异常日期
                 </Button>
               </Space>
             </Form.Item>

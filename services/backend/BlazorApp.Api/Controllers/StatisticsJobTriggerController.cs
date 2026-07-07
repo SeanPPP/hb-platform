@@ -21,6 +21,7 @@ namespace BlazorApp.Api.Controllers
         private readonly ILogger<StatisticsJobTriggerController> _logger;
         private readonly ISalesDashboardCacheWarmer _cacheWarmer;
         private readonly SalesStatisticsAlignmentService _alignmentService;
+        private readonly SalesStatisticsAlignmentBackgroundRecalculateService _alignmentBackgroundRecalculateService;
         private const int MaxProductStoreDailyBatchDays = 31;
         private const int MaxAlignmentQueryDays = 62;
 
@@ -30,7 +31,8 @@ namespace BlazorApp.Api.Controllers
             SqlSugarContext context,
             ILogger<StatisticsJobTriggerController> logger,
             ISalesDashboardCacheWarmer cacheWarmer,
-            SalesStatisticsAlignmentService alignmentService
+            SalesStatisticsAlignmentService alignmentService,
+            SalesStatisticsAlignmentBackgroundRecalculateService alignmentBackgroundRecalculateService
         )
         {
             _statisticsJobService = statisticsJobService;
@@ -39,6 +41,7 @@ namespace BlazorApp.Api.Controllers
             _logger = logger;
             _cacheWarmer = cacheWarmer;
             _alignmentService = alignmentService;
+            _alignmentBackgroundRecalculateService = alignmentBackgroundRecalculateService;
         }
 
         [HttpPost("trigger-store")]
@@ -707,8 +710,7 @@ namespace BlazorApp.Api.Controllers
             var maxConcurrency = request.MaxConcurrency < 1
                 ? 3
                 : Math.Min(request.MaxConcurrency, 10);
-            var result = await _alignmentService.RecalculateAsync(dates, maxConcurrency);
-            await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
+            var result = await _alignmentBackgroundRecalculateService.QueueAsync(dates, maxConcurrency);
 
             return Ok(new
             {

@@ -655,6 +655,7 @@ builder.Services.AddScoped<
 >();
 
 builder.Services.AddScoped<SalesStatisticsJobService>();
+builder.Services.AddScoped<SalesStatisticsAlignmentBackgroundRecalculateService>();
 
 builder.Services.AddSingleton<
     BlazorApp.Api.Interfaces.React.IOrderNumberGenerator,
