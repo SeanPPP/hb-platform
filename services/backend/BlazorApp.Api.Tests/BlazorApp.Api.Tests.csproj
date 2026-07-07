@@ -88,6 +88,7 @@
     <Compile Include="ProductIntegrityServiceTests.cs" />
     <Compile Include="ProductStoreSyncJobServiceTests.cs" />
     <Compile Include="ReactProductStoreSyncJobContractTests.cs" />
+    <Compile Include="ProductSyncServiceTests.cs" />
     <Compile Include="SyncProductsToStoresRequestTests.cs" />
     <Compile Include="ProductHqSyncSplitTests.cs" />
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />

@@ -120,7 +120,7 @@ namespace BlazorApp.Api.Services
         /// <summary>
         /// 批量更新仓库商品信息
         /// 更新范围：
-        /// 1. WarehouseProduct表：国内价格、进口价格、贴牌价格、单件体积、上架状态
+        /// 1. WarehouseProduct表：国内价格、进口价格、零售价、单件体积、上架状态
         /// 2. Product表：进货价(PurchasePrice)
         /// 3. StoreRetailPrice表：进货价(PurchasePrice)
         /// 使用事务确保数据一致性，批量内存处理后一次性提交
@@ -145,23 +145,41 @@ namespace BlazorApp.Api.Services
                     .Select(x => x.ItemNumber!)
                     .ToList();
 
-                // 🔥 使用导航属性一次性查询 WarehouseProduct 和关联的 Product
-                var allWarehouseProducts = await _db.Queryable<WarehouseProduct>()
-                    .Includes(w => w.Product) // 使用导航属性加载关联的 Product
-                    .Where(w => productCodes.Contains(w.ProductCode) ||
-                               (itemNumbers.Any() && w.Product != null && w.Product.ItemNumber != null && itemNumbers.Contains(w.Product.ItemNumber)))
-                    .ToListAsync();
+                var itemNumberToProductCodeDict = new Dictionary<string, string>();
+                if (itemNumbers.Any())
+                {
+                    // 货号兜底先查本地主档映射，避免在 WarehouseProduct where 中访问导航属性。
+                    var productCodeRows = await _db.Queryable<Product>()
+                        .Where(p =>
+                            p.ItemNumber != null &&
+                            p.ProductCode != null &&
+                            itemNumbers.Contains(p.ItemNumber)
+                        )
+                        .Select(p => new { p.ItemNumber, p.ProductCode })
+                        .ToListAsync();
+
+                    itemNumberToProductCodeDict = productCodeRows
+                        .Where(p => !string.IsNullOrEmpty(p.ItemNumber) && !string.IsNullOrEmpty(p.ProductCode))
+                        .GroupBy(p => p.ItemNumber!)
+                        .ToDictionary(g => g.Key, g => g.First().ProductCode!);
+                }
+
+                var lookupProductCodes = productCodes
+                    .Concat(itemNumberToProductCodeDict.Values)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Distinct()
+                    .ToList();
+
+                var allWarehouseProducts = lookupProductCodes.Any()
+                    ? await _db.Queryable<WarehouseProduct>()
+                        .Where(w => lookupProductCodes.Contains(w.ProductCode))
+                        .ToListAsync()
+                    : new List<WarehouseProduct>();
 
                 _logger.LogInformation("查询到 {Count} 个仓库商品", allWarehouseProducts.Count);
 
                 // 转换为字典，方便快速查找
                 var warehouseDictByCode = allWarehouseProducts.ToDictionary(w => w.ProductCode);
-
-                // 建立货号到商品编码的映射字典（直接从导航属性获取）
-                var itemNumberToProductCodeDict = allWarehouseProducts
-                    .Where(w => w.Product != null && !string.IsNullOrEmpty(w.Product.ItemNumber))
-                    .GroupBy(w => w.Product!.ItemNumber!)
-                    .ToDictionary(g => g.Key, g => g.First().ProductCode);
 
                 // 🔥 第二步：在内存中准备要更新的数据
                 var warehousesToUpdate = new List<WarehouseProduct>();
@@ -203,7 +221,11 @@ namespace BlazorApp.Api.Services
                     warehouse.ImportPrice = item.ImportPrice ?? warehouse.ImportPrice;
                     warehouse.OEMPrice = item.OEMPrice ?? warehouse.OEMPrice;
                     warehouse.Volume = item.Volume ?? warehouse.Volume;
-                    warehouse.IsActive = item.IsActive;
+                    // 价格类保存不应隐式改变上下架；只有请求明确带状态时才覆盖。
+                    if (item.IsActive.HasValue)
+                    {
+                        warehouse.IsActive = item.IsActive.Value;
+                    }
                     warehouse.UpdatedAt = updateTime;
 
                     warehousesToUpdate.Add(warehouse);
@@ -408,11 +430,11 @@ namespace BlazorApp.Api.Services
                         continue;
                     }
 
-                    // 验证：贴牌价格不能为空或小于等于0
+                    // 验证：零售价不能为空或小于等于0
                     if (item.OEMPrice <= 0)
                     {
-                        errors.Add($"{item.ItemNumber}: 贴牌价格必须大于0");
-                        _logger.LogWarning("商品 {ItemNumber} 贴牌价格无效: {OEMPrice}", item.ItemNumber, item.OEMPrice);
+                        errors.Add($"{item.ItemNumber}: 零售价必须大于0");
+                        _logger.LogWarning("商品 {ItemNumber} 零售价无效: {OEMPrice}", item.ItemNumber, item.OEMPrice);
                         continue;
                     }
 
@@ -596,4 +618,3 @@ namespace BlazorApp.Api.Services
         #endregion
     }
 }
-
