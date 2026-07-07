@@ -642,7 +642,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchUpdateDetailsAsync_价格贴牌和上下架变化_应保持关联表同步()
+    public async Task BatchUpdateDetailsAsync_价格贴牌和上下架变化_应同步进货价但不写分店零售价()
     {
         await SeedDetailAndProductAsync("D-SYNC-PRICE", "P-SYNC-PRICE", englishName: "Old English");
         await SeedRelatedPriceRowsAsync("P-SYNC-PRICE");
@@ -681,7 +681,146 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(8.88m, product.PurchasePrice);
         Assert.Equal(9.99m, product.RetailPrice);
         Assert.All(storeRetailPrices, row => Assert.Equal(8.88m, row.PurchasePrice));
-        Assert.All(storeRetailPrices, row => Assert.Equal(9.99m, row.StoreRetailPriceValue));
+        Assert.All(storeRetailPrices, row => Assert.Equal(2.22m, row.StoreRetailPriceValue));
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_明细价格未变化_仍应同步已有商品关联价格()
+    {
+        await SeedDetailAndProductAsync("D-SYNC-SAME-PRICE", "P-SYNC-SAME-PRICE", englishName: "Old English");
+        await SeedRelatedPriceRowsAsync("P-SYNC-SAME-PRICE");
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(x => x.ImportPrice == 8.88m)
+            .SetColumns(x => x.OEMPrice == 9.99m)
+            .SetColumns(x => x.IsActive == false)
+            .Where(x => x.DetailCode == "D-SYNC-SAME-PRICE")
+            .ExecuteCommandAsync();
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SYNC-SAME-PRICE",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                    IsActive = false,
+                },
+            }
+        );
+
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-SYNC-SAME-PRICE");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-SYNC-SAME-PRICE");
+        var storeRetailPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-SYNC-SAME-PRICE")
+            .ToListAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(8.88m, warehouseProduct.ImportPrice);
+        Assert.Equal(9.99m, warehouseProduct.OEMPrice);
+        Assert.False(warehouseProduct.IsActive);
+        Assert.Equal(8.88m, product.PurchasePrice);
+        Assert.Equal(9.99m, product.RetailPrice);
+        Assert.All(storeRetailPrices, row => Assert.Equal(8.88m, row.PurchasePrice));
+        Assert.All(storeRetailPrices, row => Assert.Equal(2.22m, row.StoreRetailPriceValue));
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_本地Product不存在_应只更新货柜明细且不回填仓库价格()
+    {
+        await SeedDetailAndProductAsync("D-NEW-PRICE", "P-NEW-PRICE", englishName: "New English");
+        await _localDb.Insertable(
+            new WarehouseProduct
+            {
+                ProductCode = "P-NEW-PRICE",
+                ImportPrice = 1.11m,
+                OEMPrice = 2.22m,
+                IsActive = true,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-NEW-PRICE",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-NEW-PRICE");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-NEW-PRICE");
+        var localProductCount = await _localDb.Queryable<Product>()
+            .Where(x => x.ProductCode == "P-NEW-PRICE")
+            .CountAsync();
+        var storeRetailPriceCount = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-NEW-PRICE")
+            .CountAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(8.88m, detail.ImportPrice);
+        Assert.Equal(9.99m, detail.OEMPrice);
+        Assert.Equal(1.11m, warehouseProduct.ImportPrice);
+        Assert.Equal(2.22m, warehouseProduct.OEMPrice);
+        Assert.Equal(0, localProductCount);
+        Assert.Equal(0, storeRetailPriceCount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_跳过关联同步_应阻止名称中包数和分类回填()
+    {
+        await SeedDetailAndProductAsync(
+            "D-SKIP-MASTER-DATA",
+            "P-SKIP-MASTER-DATA",
+            englishName: "Old English",
+            middlePackQuantity: 12
+        );
+        await SeedRelatedPriceRowsAsync("P-SKIP-MASTER-DATA", minOrderQuantity: 12);
+        await SeedWarehouseCategoryAsync("CAT-SKIP-MASTER-DATA");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SKIP-MASTER-DATA",
+                    商品名称 = "新商品名",
+                    英文名称 = "New English",
+                    中包数 = 24,
+                    ProductCategoryGUID = "CAT-SKIP-MASTER-DATA",
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-SKIP-MASTER-DATA");
+        var domesticProduct = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(x => x.ProductCode == "P-SKIP-MASTER-DATA");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-SKIP-MASTER-DATA");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-SKIP-MASTER-DATA");
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal("CAT-SKIP-MASTER-DATA", detail.TargetWarehouseCategoryGUID);
+        Assert.Equal("商品 P-SKIP-MASTER-DATA", domesticProduct.ProductName);
+        Assert.Equal("Old English", domesticProduct.EnglishProductName);
+        Assert.Equal(12, domesticProduct.MiddlePackQuantity);
+        Assert.Equal(12, warehouseProduct.MinOrderQuantity);
+        Assert.Null(product.WarehouseCategoryGUID);
+        Assert.Equal("本地商品 P-SKIP-MASTER-DATA", product.ProductName);
+        Assert.Null(product.EnglishName);
     }
 
     [Fact]

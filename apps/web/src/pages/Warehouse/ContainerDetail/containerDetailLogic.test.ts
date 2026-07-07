@@ -3032,7 +3032,8 @@ assertEqual(
     pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
     pageSource.includes('hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats') &&
     pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
-    pageSource.includes('return confirmed ? buildDetailBatchScope(scopedRows) : null') &&
+    pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
+    pageSource.includes('buildDetailBatchScope(batchModalScopeRows)') &&
     pageSource.includes('selectedHguids: getRowsHguids(scopeRows)') &&
     pageSource.includes('...baseDetailQuery,'),
   true,
@@ -3232,16 +3233,15 @@ assertEqual(
 assertEqual(
   pageSource.includes("key: 'batchFloatRate'") &&
     pageSource.includes("key: 'batchPrices'") &&
-    pageSource.includes("key: 'backfillLastPrices'") &&
     pageSource.includes("key: 'matchDomesticData'") &&
     pageSource.includes("t('containers.actions.batchUpdateFloatRate'") &&
-    pageSource.includes("t('containers.actions.batchUpdatePrices'"),
+    pageSource.includes("t('containers.actions.batchUpdatePrices'") &&
+    !pageSource.includes("key: 'backfillLastPrices'"),
   true,
-  '批量操作菜单应包含批量修改浮率、批量修改价格、回填上次价格和匹配国内数据',
+  '批量操作菜单应包含批量修改浮率、批量修改价格和匹配国内数据，并移除回填上次价格入口',
 )
 assertDeepEqual(
   [
-    "const scope = await confirmBatchScope(t('containers.actions.backfillLastPrices'",
     "const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))",
     "const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))",
     "const scopedRows = await confirmBatchRows(t('containers.actions.batchTranslate'))",
@@ -3471,13 +3471,12 @@ assertEqual(
   '批量操作菜单应包含批量分类，并提交当前目标行的去重商品编码',
 )
 assertEqual(
-  pageSource.includes('const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager') &&
-    pageSource.includes('if (!canBackfillLastPrices) return') &&
-    pageSource.includes("key: 'backfillLastPrices'") &&
-    pageSource.includes('const scope = await confirmBatchScope') &&
+  pageSource.includes('const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager') ||
+    pageSource.includes('if (!canBackfillLastPrices) return') ||
+    pageSource.includes("key: 'backfillLastPrices'") ||
     pageSource.includes('backfillContainerLastPricesByScope(containerGuid, scope)'),
-  true,
-  '回填上次价格应在批量操作菜单中保持角色限制，并通过确认后的批量 scope 触发',
+  false,
+  'web 货柜明细批量操作菜单不应再暴露回填上次价格入口',
 )
 const batchCategorySaveSource = pageSource.slice(
   pageSource.indexOf('const handleBatchCategorySave = async () => {'),

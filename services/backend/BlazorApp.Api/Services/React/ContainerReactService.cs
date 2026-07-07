@@ -371,22 +371,30 @@ namespace BlazorApp.Api.Services.React
                 var maxRawValue = Convert.ToDouble(unitTransportCostMax.Value + 0.0050001m);
                 query = query.Where((cd, wp, dp, lp) => SqlFunc.ToDouble(cd.TransportCost) * SqlFunc.ToDouble(cd.PackingQuantity) < maxRawValue);
             }
+            // 实时仓库价列按 WarehouseProduct 过滤，Last* 快照只保留历史比较基准。
             if (warehouseImportPriceMin != null)
-                query = query.Where((cd, wp, dp, lp) => cd.LastImportPrice >= warehouseImportPriceMin);
+                query = query.Where((cd, wp, dp, lp) => wp.ImportPrice >= warehouseImportPriceMin);
             if (warehouseImportPriceMax != null)
-                query = query.Where((cd, wp, dp, lp) => cd.LastImportPrice <= warehouseImportPriceMax);
+                query = query.Where((cd, wp, dp, lp) => wp.ImportPrice <= warehouseImportPriceMax);
             if (lastOEMPriceMin != null)
-                query = query.Where((cd, wp, dp, lp) => cd.LastOEMPrice >= lastOEMPriceMin);
+                query = query.Where((cd, wp, dp, lp) => wp.OEMPrice >= lastOEMPriceMin);
             if (lastOEMPriceMax != null)
-                query = query.Where((cd, wp, dp, lp) => cd.LastOEMPrice <= lastOEMPriceMax);
+                query = query.Where((cd, wp, dp, lp) => wp.OEMPrice <= lastOEMPriceMax);
             if (importPriceMin != null)
                 query = query.Where((cd, wp, dp, lp) => cd.ImportPrice >= importPriceMin);
             if (importPriceMax != null)
                 query = query.Where((cd, wp, dp, lp) => cd.ImportPrice <= importPriceMax);
+            // 零售价列新商品取明细价，已有商品取仓库实时价；筛选拆成 OR，避免 SQLite 下 IIF where 空命中。
             if (oemPriceMin != null)
-                query = query.Where((cd, wp, dp, lp) => cd.OEMPrice >= oemPriceMin);
+                query = query.Where((cd, wp, dp, lp) =>
+                    (lp.ProductCode == null && cd.OEMPrice >= oemPriceMin)
+                    || (lp.ProductCode != null && wp.OEMPrice >= oemPriceMin)
+                );
             if (oemPriceMax != null)
-                query = query.Where((cd, wp, dp, lp) => cd.OEMPrice <= oemPriceMax);
+                query = query.Where((cd, wp, dp, lp) =>
+                    (lp.ProductCode == null && cd.OEMPrice <= oemPriceMax)
+                    || (lp.ProductCode != null && wp.OEMPrice <= oemPriceMax)
+                );
 
             return query;
         }
@@ -415,10 +423,10 @@ namespace BlazorApp.Api.Services.React
                 "floatRate" => query.OrderBy((cd, wp, dp, lp) => cd.AdjustmentRate, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "transportCost" => query.OrderBy((cd, wp, dp, lp) => cd.TransportCost, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "unitTransportCost" => query.OrderBy((cd, wp, dp, lp) => cd.TransportCost * cd.PackingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "warehouseImportPrice" => query.OrderBy((cd, wp, dp, lp) => cd.LastImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "lastOEMPrice" => query.OrderBy((cd, wp, dp, lp) => cd.LastOEMPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "warehouseImportPrice" => query.OrderBy((cd, wp, dp, lp) => wp.ImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "lastOEMPrice" => query.OrderBy((cd, wp, dp, lp) => wp.OEMPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "importPrice" => query.OrderBy((cd, wp, dp, lp) => cd.ImportPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "oemPrice" => query.OrderBy((cd, wp, dp, lp) => cd.OEMPrice, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "oemPrice" => query.OrderBy((cd, wp, dp, lp) => SqlFunc.IIF(SqlFunc.IsNull(lp.ProductCode, "") == "", cd.OEMPrice, wp.OEMPrice), orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "warehouseStatus" => query.OrderBy((cd, wp, dp, lp) => wp.IsActive, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "remark" => query.OrderBy((cd, wp, dp, lp) => cd.Remarks, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 _ => query.OrderBy((cd, wp, dp, lp) => dp.HBProductNo, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
@@ -821,11 +829,12 @@ namespace BlazorApp.Api.Services.React
                                     // SqlSugar 投影内不能调用 C# helper，这里映射需与 MapDomesticProductTypeLabel 保持一致。
                                     商品类型 = dp.ProductType == 1 ? "套装商品" : dp.ProductType == 2 ? "多码商品" : "普通商品",
                                 },
-                                // 上次价格必须来自货柜明细快照，避免仓库商品调价后覆盖历史货柜。
+                                // Last* 保留货柜明细快照；Warehouse* 展示仓库商品实时价。
                                 LastImportPrice = cd.LastImportPrice,
                                 LastOEMPrice = cd.LastOEMPrice,
-                                WarehouseImportPrice = cd.LastImportPrice,
-                                WarehouseOEMPrice = cd.LastOEMPrice,
+                                WarehouseImportPrice = wp.ImportPrice,
+                                WarehouseOEMPrice = wp.OEMPrice,
+                                ReadonlyOemPrice = lp.ProductCode == null ? dp.OEMPrice : wp.OEMPrice,
                                 WarehouseIsActive = wp.IsActive,
                             }
                     )
@@ -915,8 +924,10 @@ namespace BlazorApp.Api.Services.React
                                 是否新商品 = lp.ProductCode == null,
                                 LastImportPrice = cd.LastImportPrice,
                                 LastOEMPrice = cd.LastOEMPrice,
-                                WarehouseImportPrice = cd.LastImportPrice,
-                                WarehouseOEMPrice = cd.LastOEMPrice,
+                                // Last* 保留货柜明细快照；Warehouse* 展示仓库商品实时价。
+                                WarehouseImportPrice = wp.ImportPrice,
+                                WarehouseOEMPrice = wp.OEMPrice,
+                                ReadonlyOemPrice = lp.ProductCode == null ? dp.OEMPrice : wp.OEMPrice,
                                 WarehouseIsActive = wp.IsActive,
                                 商品信息 = new ContainerProductInfoDto
                                 {
@@ -1327,6 +1338,7 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<ContainerDetail>()
                     .Includes(x => x.Product)
                     .Includes(x => x.LocalProduct)
+                    .Includes(x => x.WarehouseProduct)
                     .Where(x => containerCodes.Contains(x.ContainerCode))
                     .Where(x => x.ProductCode != null);
 
@@ -1609,6 +1621,10 @@ namespace BlazorApp.Api.Services.React
                     .Select(x => x.ProductCode!)
                     .Distinct()
                     .ToList();
+                // SkipRelatedProductSync 只允许写货柜明细，关联主数据回填必须统一走这个过滤集合。
+                var relatedSyncDetailUpdates = validDetailUpdates
+                    .Where(x => x.Update.SkipRelatedProductSync != true)
+                    .ToList();
 
                 // 预加载商品数据：既用于名称回写，也用于判断价格同步是否是已有商品。
                 var productMap = new Dictionary<string, DomesticProduct>();
@@ -1649,7 +1665,26 @@ namespace BlazorApp.Api.Services.React
                         .ToHashSet();
                 }
 
-                var productNameUpdates = validDetailUpdates
+                var existingProductUpdates = relatedSyncDetailUpdates
+                    .Where(x =>
+                        !string.IsNullOrEmpty(x.Detail.ProductCode)
+                        && localProductMap.ContainsKey(x.Detail.ProductCode)
+                        && (
+                            x.Update.进口价格.HasValue
+                            || x.Update.贴牌价格.HasValue
+                            || x.Update.IsActive.HasValue
+                        )
+                    )
+                    .Select(x => new { x.Update, x.Detail })
+                    .ToList();
+
+                foreach (var item in existingProductUpdates)
+                {
+                    // 明细价格本身未变化时，也要把本次保存请求计入并同步到关联价格表。
+                    updatedRequestGuids.Add(item.Update.HGUID);
+                }
+
+                var productNameUpdates = relatedSyncDetailUpdates
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.Update.商品名称)
                         || !string.IsNullOrWhiteSpace(x.Update.英文名称)
@@ -1696,7 +1731,7 @@ namespace BlazorApp.Api.Services.React
                 var changedMiddlePackWarehouseProducts = new Dictionary<string, WarehouseProduct>();
                 var changedLocalCategoryProducts = new Dictionary<string, Product>();
 
-                foreach (var item in validDetailUpdates)
+                foreach (var item in relatedSyncDetailUpdates)
                 {
                     if (item.Update.ProductCategoryGUID == null)
                     {
@@ -1720,7 +1755,7 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                foreach (var item in validDetailUpdates)
+                foreach (var item in relatedSyncDetailUpdates)
                 {
                     if (!item.Update.中包数.HasValue)
                     {
@@ -1852,7 +1887,7 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                foreach (var item in validDetailUpdates)
+                foreach (var item in relatedSyncDetailUpdates)
                 {
                     var hasNameUpdate =
                         !string.IsNullOrWhiteSpace(item.Update.商品名称)
@@ -1875,6 +1910,7 @@ namespace BlazorApp.Api.Services.React
                     || changedLocalNameProducts.Count > 0
                     || changedMiddlePackWarehouseProducts.Count > 0
                     || changedLocalCategoryProducts.Count > 0
+                    || existingProductUpdates.Count > 0
                 )
                 {
                     await _context.Db.Ado.BeginTranAsync();
@@ -1958,26 +1994,9 @@ namespace BlazorApp.Api.Services.React
                                 .ExecuteCommandAsync();
                         }
 
-                        // 第五步：同步已有商品的价格和上下架状态到关联表
-                        // 通过 productMap 判断商品是否为已有商品（商品表中已存在）
-                        var existingProductUpdates = updates
-                            .Where(u =>
-                                detailMap.TryGetValue(u.HGUID, out var d)
-                                && u.SkipRelatedProductSync != true
-                                && !string.IsNullOrEmpty(d.ProductCode)
-                                && productMap.ContainsKey(d.ProductCode)
-                                && (
-                                    u.进口价格.HasValue
-                                    || u.贴牌价格.HasValue
-                                    || u.IsActive.HasValue
-                                )
-                            )
-                            .Select(u => new { Update = u, Detail = detailMap[u.HGUID] })
-                            .ToList();
-
                         if (existingProductUpdates.Count > 0)
                         {
-                            // 4.1 批量更新 WarehouseProduct 表（进口价格、贴牌价格、上下架状态）
+                            // 4.1 批量更新 WarehouseProduct 表（进口价格、零售价、上下架状态）
                             // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
                             var warehouseUpdates = existingProductUpdates
                                 .Where(x =>
@@ -2062,7 +2081,7 @@ namespace BlazorApp.Api.Services.React
                                 }
                             }
 
-                            // 4.2 批量更新 Product 表（进口价格 -> 进货价，贴牌价格 -> 零售价）
+                            // 4.2 批量更新 Product 表（进口价格 -> 进货价，零售价 -> 零售价）
                             // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
                             var importPriceUpdates = existingProductUpdates
                                 .Where(x => x.Update.进口价格.HasValue)
@@ -2113,15 +2132,12 @@ namespace BlazorApp.Api.Services.React
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
                             }
 
-                            // 4.3 批量更新 StoreRetailPrice 表（进口价格 -> 进货价，贴牌价格 -> 分店零售价）
-                            // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
-                            if (importPriceUpdates.Count > 0 || oemPriceUpdates.Count > 0)
+                            // 4.3 分店零售价表只同步进货价；零售价不从货柜明细回填分店零售价。
+                            if (importPriceUpdates.Count > 0)
                             {
                                 var purchaseCaseBuilder = new System.Text.StringBuilder();
-                                var retailCaseBuilder = new System.Text.StringBuilder();
                                 var pList = new List<SugarParameter>();
-                                var storePriceProductCodes = existingProductUpdates
-                                    .Where(x => x.Update.进口价格.HasValue || x.Update.贴牌价格.HasValue)
+                                var storePriceProductCodes = importPriceUpdates
                                     .Select(x => x.Detail.ProductCode)
                                     .Where(code => !string.IsNullOrWhiteSpace(code))
                                     .Distinct()
@@ -2136,30 +2152,19 @@ namespace BlazorApp.Api.Services.React
                                     pList.Add(new SugarParameter($"@PurchasePc{i}", importPriceUpdates[i].Detail.ProductCode));
                                     pList.Add(new SugarParameter($"@PurchasePrice{i}", importPriceUpdates[i].Update.进口价格!.Value));
                                 }
-                                for (int i = 0; i < oemPriceUpdates.Count; i++)
-                                {
-                                    retailCaseBuilder.Append($" WHEN ProductCode = @RetailPc{i} THEN @RetailPrice{i}");
-                                    pList.Add(new SugarParameter($"@RetailPc{i}", oemPriceUpdates[i].Detail.ProductCode));
-                                    pList.Add(new SugarParameter($"@RetailPrice{i}", oemPriceUpdates[i].Update.贴牌价格!.Value));
-                                }
                                 var inClause = string.Join(
                                     ", ",
                                     Enumerable
                                         .Range(0, storePriceProductCodes.Count)
                                         .Select(i => $"@Pc{i}")
                                 );
-                                var setClause = new List<string>();
-                                if (importPriceUpdates.Count > 0)
-                                    setClause.Add($"PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END");
-                                if (oemPriceUpdates.Count > 0)
-                                    setClause.Add($"StoreRetailPriceValue = CASE {retailCaseBuilder} ELSE StoreRetailPriceValue END");
                                 var sql =
-                                    $"UPDATE StoreRetailPrice SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause})";
+                                    $"UPDATE StoreRetailPrice SET PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END WHERE ProductCode IN ({inClause})";
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
                             }
 
                             _logger.LogInformation(
-                                "[React] 同步已有商品价格到关联表，数量: {Count}",
+                                "[React] 同步已有商品价格到仓库表、Product 和分店进货价，数量: {Count}",
                                 existingProductUpdates.Count
                             );
                         }

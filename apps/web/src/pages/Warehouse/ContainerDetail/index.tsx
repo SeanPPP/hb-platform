@@ -65,7 +65,6 @@ import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import {
   applyContainerFloatRateByScope,
   applyContainerPricesByScope,
-  backfillContainerLastPricesByScope,
   batchDeleteDetails,
   batchUpdateDetails,
   getContainerDetail,
@@ -681,7 +680,6 @@ export default function ContainerDetailPage() {
   const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
   const [hqTranslating, setHqTranslating] = useState(false)
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
-  const [backfillLastPricesLoading, setBackfillLastPricesLoading] = useState(false)
   const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
@@ -1434,21 +1432,6 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const confirmBatchScope = async (
-    actionName: string,
-    options: BatchActionConfirmOptions = {},
-  ) => {
-    if (!ensureTargetRowsVisible()) return null
-    const scopedRows = await resolveBatchActionTargetRows()
-    if (scopedRows == null) return null
-    if (!scopedRows.length) {
-      message.warning(t('containers.messages.selectBatchProducts', '请先选择要批量操作的商品'))
-      return null
-    }
-    const confirmed = await confirmBatchAction(actionName, scopedRows.length, options)
-    return confirmed ? buildDetailBatchScope(scopedRows) : null
-  }
-
   const confirmBatchRows = async (
     actionName: string,
     options: BatchActionConfirmOptions = {},
@@ -1529,7 +1512,6 @@ export default function ContainerDetailPage() {
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
   const canSubmitContainer = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
-  const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager
   const pendingPricePatchList = useMemo(() => Object.values(pendingPricePatches), [pendingPricePatches])
   const pendingPricePatchCount = pendingPricePatchList.length
 
@@ -1835,21 +1817,6 @@ export default function ContainerDetailPage() {
       message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
     } finally {
       setBatchFloatRateSaving(false)
-    }
-  }
-
-  const handleBackfillLastPrices = async () => {
-    if (!canBackfillLastPrices) return
-    const scope = await confirmBatchScope(t('containers.actions.backfillLastPrices', '回填上次价格'))
-    if (!scope) return
-    setBackfillLastPricesLoading(true)
-    try {
-      const result = await backfillContainerLastPricesByScope(containerGuid, scope)
-      await loadDetailChunk(1, 'reset')
-      setSelectedRowKeys([])
-      message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
-    } finally {
-      setBackfillLastPricesLoading(false)
     }
   }
 
@@ -4100,9 +4067,6 @@ export default function ContainerDetailPage() {
                             items: [
                               { key: 'batchFloatRate', label: t('containers.actions.batchUpdateFloatRate', '批量修改浮率'), disabled: batchFloatRateSaving },
                               { key: 'batchPrices', label: t('containers.actions.batchUpdatePrices', '批量修改价格'), disabled: batchPricesSaving },
-                              ...(canBackfillLastPrices
-                                ? [{ key: 'backfillLastPrices', label: t('containers.actions.backfillLastPrices', '回填上次价格'), disabled: backfillLastPricesLoading }]
-                                : []),
                               { key: 'matchDomesticData', label: t('containers.actions.matchDomesticData'), disabled: matchDomesticDataLoading },
                               { type: 'divider' },
                               { key: 'translate', label: t('containers.actions.batchTranslate') },
@@ -4121,7 +4085,6 @@ export default function ContainerDetailPage() {
                             onClick: ({ key }) => {
                               if (key === 'batchFloatRate') void openBatchFloatRateModal()
                               if (key === 'batchPrices') void openBatchPricesModal()
-                              if (key === 'backfillLastPrices') void handleBackfillLastPrices()
                               if (key === 'matchDomesticData') void handleMatchDomesticData()
                               if (key === 'translate') void translateNames()
                               if (key === 'editEnglishName') void openBatchEditEnglishName()
