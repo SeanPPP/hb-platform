@@ -222,19 +222,24 @@ namespace BlazorApp.Shared.DTOs
         public decimal? LastImportPrice { get; set; }
 
         /// <summary>
-        /// 上次贴牌价格（货柜明细快照）
+        /// 上次零售价（货柜明细快照）
         /// </summary>
         public decimal? LastOEMPrice { get; set; }
 
         /// <summary>
-        /// 上次进货价格（兼容旧前端字段名）
+        /// 实时进货价（仓库商品表 ImportPrice）
         /// </summary>
         public decimal? WarehouseImportPrice { get; set; }
 
         /// <summary>
-        /// 上次贴牌价格（兼容旧前端字段名）
+        /// 实时零售价（仓库商品表 OEMPrice）
         /// </summary>
         public decimal? WarehouseOEMPrice { get; set; }
+
+        /// <summary>
+        /// 只读零售价：新商品取国内商品表，已有商品取仓库商品表；不参与明细业务价保存。
+        /// </summary>
+        public decimal? ReadonlyOemPrice { get; set; }
 
         /// <summary>
         /// 仓库商品是否上架

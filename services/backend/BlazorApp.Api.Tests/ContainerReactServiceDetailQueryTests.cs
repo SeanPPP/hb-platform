@@ -4,6 +4,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Mappings.Profiles;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -314,7 +315,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
     }
 
     [Fact]
-    public async Task QueryContainerDetailsAsync_应返回货柜明细上次价格快照而不是仓库实时价格()
+    public async Task QueryContainerDetailsAsync_实时仓库价列取仓库商品且保留明细快照()
     {
         await SeedContainerAsync("C-LAST-PRICE", "CSLU6099501");
         await SeedDetailAsync(
@@ -332,7 +333,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             .SetColumns(x => x.OEMPrice == 19.99m)
             .Where(x => x.ProductCode == "P-LAST-PRICE")
             .ExecuteCommandAsync();
-        var service = CreateService();
+        var service = CreateService(CreateContainerDetailMapper());
 
         var result = await service.QueryContainerDetailsAsync(
             new ContainerDetailQueryDto
@@ -346,8 +347,219 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         var item = Assert.Single(result.Items);
         Assert.Equal(1.25m, item.LastImportPrice);
         Assert.Equal(2.75m, item.LastOEMPrice);
-        Assert.Equal(1.25m, item.WarehouseImportPrice);
-        Assert.Equal(2.75m, item.WarehouseOEMPrice);
+        Assert.Equal(9.99m, item.WarehouseImportPrice);
+        Assert.Equal(19.99m, item.WarehouseOEMPrice);
+
+        var legacyItem = Assert.Single(await service.GetContainerProductsAsync("C-LAST-PRICE"));
+        Assert.Equal(1.25m, legacyItem.LastImportPrice);
+        Assert.Equal(2.75m, legacyItem.LastOEMPrice);
+        Assert.Equal(9.99m, legacyItem.WarehouseImportPrice);
+        Assert.Equal(19.99m, legacyItem.WarehouseOEMPrice);
+
+        var filteredItem = Assert.Single(await service.GetFilteredContainerProductsAsync(new ContainerQueryRequest
+        {
+            SortBy = "ProductCode",
+        }));
+        Assert.Equal(1.25m, filteredItem.LastImportPrice);
+        Assert.Equal(2.75m, filteredItem.LastOEMPrice);
+        Assert.Equal(9.99m, filteredItem.WarehouseImportPrice);
+        Assert.Equal(19.99m, filteredItem.WarehouseOEMPrice);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_实时仓库价筛选排序使用仓库商品表()
+    {
+        await SeedContainerAsync("C-REALTIME-PRICE", "CMAU0000002");
+        await SeedDetailAsync(
+            "D-REALTIME-A",
+            "C-REALTIME-PRICE",
+            "P-REALTIME-A",
+            "HB-REAL-A",
+            importPrice: 5m,
+            oemPrice: 1m,
+            lastImportPrice: 99m,
+            lastOemPrice: 99m,
+            warehouseImportPrice: 2.22m,
+            warehouseOemPrice: 8.88m
+        );
+        await SeedDetailAsync(
+            "D-REALTIME-B",
+            "C-REALTIME-PRICE",
+            "P-REALTIME-B",
+            "HB-REAL-B",
+            importPrice: 6m,
+            oemPrice: 2m,
+            lastImportPrice: 1m,
+            lastOemPrice: 1m,
+            warehouseImportPrice: 4.44m,
+            warehouseOemPrice: 3.33m
+        );
+        var service = CreateService();
+
+        var importFiltered = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-REALTIME-PRICE",
+                PageNumber = 1,
+                PageSize = 50,
+                WarehouseImportPriceMin = 4m,
+            }
+        );
+        var retailFiltered = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-REALTIME-PRICE",
+                PageNumber = 1,
+                PageSize = 50,
+                LastOEMPriceMax = 5m,
+            }
+        );
+        var importSorted = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-REALTIME-PRICE",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "warehouseImportPrice",
+                SortOrder = "ascend",
+            }
+        );
+        var retailSorted = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-REALTIME-PRICE",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "lastOEMPrice",
+                SortOrder = "descend",
+            }
+        );
+
+        Assert.Equal(new[] { "D-REALTIME-B" }, importFiltered.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal(new[] { "D-REALTIME-B" }, retailFiltered.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal(new[] { "D-REALTIME-A", "D-REALTIME-B" }, importSorted.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal(new[] { "D-REALTIME-A", "D-REALTIME-B" }, retailSorted.Items.Select(x => x.HGUID).ToArray());
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_零售价筛选排序新商品用明细已有商品用仓库()
+    {
+        await SeedContainerAsync("C-OEM-VISIBLE", "CMAU0000003");
+        await SeedDetailAsync(
+            "D-OEM-VISIBLE-NEW",
+            "C-OEM-VISIBLE",
+            "P-OEM-VISIBLE-NEW",
+            "HB-OEM-NEW",
+            oemPrice: 7m,
+            warehouseOemPrice: 1m,
+            localExists: false
+        );
+        await SeedDetailAsync(
+            "D-OEM-VISIBLE-EXISTING-HIGH",
+            "C-OEM-VISIBLE",
+            "P-OEM-VISIBLE-EXISTING-HIGH",
+            "HB-OEM-HIGH",
+            oemPrice: 1m,
+            warehouseOemPrice: 9m,
+            localExists: true
+        );
+        await SeedDetailAsync(
+            "D-OEM-VISIBLE-EXISTING-LOW",
+            "C-OEM-VISIBLE",
+            "P-OEM-VISIBLE-EXISTING-LOW",
+            "HB-OEM-LOW",
+            oemPrice: 9m,
+            warehouseOemPrice: 2m,
+            localExists: true
+        );
+        var service = CreateService();
+
+        var filtered = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OEM-VISIBLE",
+                PageNumber = 1,
+                PageSize = 50,
+                OemPriceMin = 6m,
+            }
+        );
+        var maxFiltered = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OEM-VISIBLE",
+                PageNumber = 1,
+                PageSize = 50,
+                OemPriceMax = 6m,
+            }
+        );
+        var sorted = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-OEM-VISIBLE",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "oemPrice",
+                SortOrder = "ascend",
+            }
+        );
+
+        Assert.Equal(
+            new[] { "D-OEM-VISIBLE-EXISTING-HIGH", "D-OEM-VISIBLE-NEW" },
+            filtered.Items.Select(x => x.HGUID).OrderBy(x => x).ToArray()
+        );
+        Assert.Equal(new[] { "D-OEM-VISIBLE-EXISTING-LOW" }, maxFiltered.Items.Select(x => x.HGUID).ToArray());
+        Assert.Equal(
+            new[] { "D-OEM-VISIBLE-EXISTING-LOW", "D-OEM-VISIBLE-NEW", "D-OEM-VISIBLE-EXISTING-HIGH" },
+            sorted.Items.Select(x => x.HGUID).ToArray()
+        );
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_只读贴牌价新商品取国内已有商品取仓库()
+    {
+        await SeedContainerAsync("C-READONLY-OEM", "CMAU0000001");
+        await SeedDetailAsync(
+            "D-READONLY-NEW",
+            "C-READONLY-OEM",
+            "P-READONLY-NEW",
+            "HB-RO-NEW",
+            oemPrice: 3m,
+            domesticOemPrice: 6.66m,
+            warehouseOemPrice: 9.99m,
+            localExists: false
+        );
+        await SeedDetailAsync(
+            "D-READONLY-EXISTING",
+            "C-READONLY-OEM",
+            "P-READONLY-EXISTING",
+            "HB-RO-EXISTING",
+            oemPrice: 4m,
+            domesticOemPrice: 7.77m,
+            warehouseOemPrice: 8.88m,
+            localExists: true
+        );
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-READONLY-OEM",
+                PageNumber = 1,
+                PageSize = 50,
+                SortBy = "itemNumber",
+                SortOrder = "ascend",
+            }
+        );
+        var legacyList = await service.GetContainerProductsAsync("C-READONLY-OEM");
+
+        var newItem = result.Items.Single(x => x.HGUID == "D-READONLY-NEW");
+        var existingItem = result.Items.Single(x => x.HGUID == "D-READONLY-EXISTING");
+        Assert.Equal(6.66m, newItem.ReadonlyOemPrice);
+        Assert.Equal(8.88m, existingItem.ReadonlyOemPrice);
+        Assert.Equal(3m, newItem.贴牌价格);
+        Assert.Equal(4m, existingItem.贴牌价格);
+        Assert.Equal(6.66m, legacyList.Single(x => x.HGUID == "D-READONLY-NEW").ReadonlyOemPrice);
+        Assert.Equal(8.88m, legacyList.Single(x => x.HGUID == "D-READONLY-EXISTING").ReadonlyOemPrice);
     }
 
     [Fact]
@@ -924,7 +1136,10 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         string? targetWarehouseCategoryGuid = null,
         string? productImage = "__DEFAULT__",
         decimal? lastImportPrice = null,
-        decimal? lastOemPrice = null
+        decimal? lastOemPrice = null,
+        decimal? domesticOemPrice = null,
+        decimal? warehouseImportPrice = null,
+        decimal? warehouseOemPrice = null
     )
     {
         await _localDb.Insertable(
@@ -960,6 +1175,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 ProductImage = productImage == "__DEFAULT__" ? $"https://example.test/{itemNumber}.jpg" : productImage,
                 MiddlePackQuantity = middlePackQuantity,
                 ProductType = domesticProductType,
+                OEMPrice = domesticOemPrice ?? oemPrice,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();
@@ -968,8 +1184,8 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             new WarehouseProduct
             {
                 ProductCode = productCode,
-                ImportPrice = importPrice,
-                OEMPrice = oemPrice,
+                ImportPrice = warehouseImportPrice ?? importPrice,
+                OEMPrice = warehouseOemPrice ?? oemPrice,
                 MinOrderQuantity = minOrderQuantity,
                 IsActive = isActive,
             }
@@ -1053,6 +1269,12 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
             );
         return mapper.Object;
     }
+
+    private static IMapper CreateContainerDetailMapper() =>
+        new MapperConfiguration(
+            cfg => cfg.AddProfile<ContainerMappingProfile>(),
+            NullLoggerFactory.Instance
+        ).CreateMapper();
 
     private ContainerReactService CreateService(IMapper? mapper = null)
     {
