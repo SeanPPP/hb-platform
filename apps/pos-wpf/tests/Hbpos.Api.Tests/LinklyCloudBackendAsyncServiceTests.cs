@@ -1256,6 +1256,7 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("11111111-1111-4111-8111-111111111111", handler.RequestBodies[0].RootElement.GetProperty("posId").GetString());
         Assert.Equal("secret-pos-02", handler.RequestBodies[1].RootElement.GetProperty("secret").GetString());
         Assert.Equal("22222222-2222-4222-8222-222222222222", handler.RequestBodies[1].RootElement.GetProperty("posId").GetString());
+        Assert.Equal(new bool?[] { true, true }, handler.ConnectionCloseHeaders);
     }
 
     [Fact]
@@ -1340,6 +1341,8 @@ namespace Hbpos.Api.Tests;
                     "Bearer callback-secret")),
             CancellationToken.None);
 
+        Assert.NotNull(handler.LastRequest);
+        Assert.True(handler.LastRequest!.Headers.ConnectionClose);
         using var requestLog = FindLinklyLog(logger.Lines, "transaction", "request");
         Assert.Equal("api-backend-transport", requestLog.RootElement.GetProperty("source").GetString());
         Assert.Equal("POST", requestLog.RootElement.GetProperty("details").GetProperty("method").GetString());
@@ -2720,11 +2723,13 @@ namespace Hbpos.Api.Tests;
     private sealed class CapturingTokenHttpMessageHandler : HttpMessageHandler
     {
         public List<JsonDocument> RequestBodies { get; } = [];
+        public List<bool?> ConnectionCloseHeaders { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            ConnectionCloseHeaders.Add(request.Headers.ConnectionClose);
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
             RequestBodies.Add(JsonDocument.Parse(body));
             var posId = RequestBodies[^1].RootElement.GetProperty("posId").GetString() ?? string.Empty;
