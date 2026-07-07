@@ -63,6 +63,7 @@ import BarcodePreview from '../../../components/BarcodePreview'
 import PageContainer from '../../../components/PageContainer'
 import { useStableRouteContext } from '../../../hooks/useStableRouteContext'
 import {
+  alignDomesticProductCode,
   applyContainerFloatRateByScope,
   applyContainerPricesByScope,
   batchDeleteDetails,
@@ -107,6 +108,7 @@ import {
 } from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
 import { useTabsStore } from '../../../store/tabs'
+import { P } from '../../../types/permissions'
 import type { ContainerDetail, ContainerDetailBatchScope, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
@@ -148,8 +150,11 @@ import {
   getContainerDetailEnglishName,
   getContainerDetailImageUrl,
   getContainerDetailItemNumber,
-  getContainerDetailLastImportPrice,
-  getContainerDetailLastOemPrice,
+  getContainerDetailLocalProductCode,
+  getContainerDetailDomesticProductCode,
+  getContainerDetailRealtimeImportPrice,
+  getContainerDetailRealtimeRetailPrice,
+  getContainerDetailVisibleOemPrice,
   getContainerDetailMatchType,
   getContainerDetailProductCode,
   getContainerDetailProductName,
@@ -160,6 +165,7 @@ import {
   getNextUpdateFieldSelection,
   getNextContainerDetailEditableCell,
   getUpdateFieldSelectionState,
+  hasContainerDetailProductCodeConflict,
   isContainerDetailColumnOrderCustomized,
   isContainerDetailSortField,
   mergeContainerDetailColumnOrder,
@@ -168,7 +174,6 @@ import {
   mergeContainerDetailPatch,
   matchesContainerDetailSelectedTags,
   omitContainerDetailTextFilters,
-  resolveContainerDetailOemPrice,
   rollbackContainerDetailWarehouseStatuses,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
@@ -202,14 +207,24 @@ import {
   renderImportPriceCell,
   renderNumericCell,
   renderOemPriceCell,
+  renderReadonlyOemPriceCell,
 } from './ContainerDetailColumns'
 import './index.css'
 
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'packingQuantity' | 'unitVolume' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'unitTransportCost' | 'warehouseImportPrice' | 'lastOEMPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
-type PendingContainerDetailPricePatch = Pick<UpdateContainerDetailRequest, 'hguid'> & Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格'>>
+type PendingContainerDetailPricePatch = Pick<UpdateContainerDetailRequest, 'hguid'> &
+  Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格'>>
 type PendingContainerDetailPricePatchMap = Record<string, PendingContainerDetailPricePatch>
+type PendingContainerDetailPriceSavePlan = {
+  pendingPatches: PendingContainerDetailPricePatch[]
+  detailUpdates: UpdateContainerDetailRequest[]
+  rowKeyByHguid: Map<string, string>
+  saveKeys: string[]
+  importPriceCount: number
+  retailPriceCount: number
+}
 type ContainerDetailExportFormat = 'excel' | 'pdf'
 type ContainerExistingProductUpdateField =
   | 'domesticPrice'
@@ -268,7 +283,7 @@ const containerStatusOptions = [
 const containerExistingProductUpdateFields: readonly UpdateFieldOption<ContainerExistingProductUpdateField>[] = [
   { value: 'domesticPrice', labelKey: 'containers.updateFields.domesticPrice', fallbackLabel: '国内价格（仓库主表）' },
   { value: 'importPrice', labelKey: 'containers.updateFields.importPrice', fallbackLabel: '进口价（商品/仓库主表）' },
-  { value: 'oemPrice', labelKey: 'containers.updateFields.oemPrice', fallbackLabel: '贴牌价（仓库主表）' },
+  { value: 'oemPrice', labelKey: 'containers.updateFields.oemPrice', fallbackLabel: '零售价（仓库主表）' },
   { value: 'volume', labelKey: 'containers.updateFields.volume', fallbackLabel: '单件体积（仓库主表）' },
   { value: 'storePurchasePrice', labelKey: 'containers.updateFields.storePurchasePrice', fallbackLabel: '分店进货价' },
   { value: 'storeRetailPrice', labelKey: 'containers.updateFields.storeRetailPrice', fallbackLabel: '分店零售价' },
@@ -299,7 +314,7 @@ const pushToHqUpdateFields = [
   { value: 'storeRetailPrice', labelKey: 'containers.updateFields.hqStoreRetailPrice', fallbackLabel: 'HQ 分店零售价' },
   { value: 'inventoryDomesticPrice', labelKey: 'containers.updateFields.hqInventoryDomesticPrice', fallbackLabel: 'HQ 库存国内价' },
   { value: 'inventoryImportPrice', labelKey: 'containers.updateFields.hqInventoryImportPrice', fallbackLabel: 'HQ 库存进口价' },
-  { value: 'inventoryOemPrice', labelKey: 'containers.updateFields.hqInventoryOemPrice', fallbackLabel: 'HQ 库存贴牌价' },
+  { value: 'inventoryOemPrice', labelKey: 'containers.updateFields.hqInventoryOemPrice', fallbackLabel: 'HQ 库存零售价' },
   { value: 'productSetCodes', labelKey: 'containers.updateFields.hqProductSetCodes', fallbackLabel: 'HQ 一品多码' },
   { value: 'storeMultiCodes', labelKey: 'containers.updateFields.hqStoreMultiCodes', fallbackLabel: 'HQ 分店一品多码' },
 ] as const satisfies readonly UpdateFieldOption<PushProductsToHqUpdateField>[]
@@ -682,6 +697,7 @@ export default function ContainerDetailPage() {
   const [pushToHqLoading, setPushToHqLoading] = useState(false)
   const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)
   const [matchDomesticDataLoading, setMatchDomesticDataLoading] = useState(false)
+  const [aligningDomesticProductDetailHguid, setAligningDomesticProductDetailHguid] = useState<string | null>(null)
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const [submitContainerLoading, setSubmitContainerLoading] = useState(false)
   const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
@@ -1512,13 +1528,14 @@ export default function ContainerDetailPage() {
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
   const canSubmitContainer = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
+  const canAlignDomesticProductCode = access.canEditContainer && (access.isAdmin || access.hasPermission(P.Products.Edit))
   const pendingPricePatchList = useMemo(() => Object.values(pendingPricePatches), [pendingPricePatches])
   const pendingPricePatchCount = pendingPricePatchList.length
 
   const ensureNoPendingPriceDetails = () => {
     if (!pendingPricePatchCount) return true
     // 价格列改为手动保存后，跨库/后台动作必须先阻止未落库价格继续流转。
-    message.warning(t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/贴牌价格'))
+    message.warning(t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/零售价'))
     return false
   }
 
@@ -1528,7 +1545,16 @@ export default function ContainerDetailPage() {
 
   const markPendingPricePatch = (row: ContainerDetail, patch: Pick<Partial<ContainerDetail>, '进口价格' | '贴牌价格'>) => {
     const key = rowKey(row)
-    patchRow(key, patch)
+    const isExistingProductRetailPatch = !row.是否新商品 && '贴牌价格' in patch
+    const visiblePatch: Partial<ContainerDetail> = isExistingProductRetailPatch
+      ? {
+          ...patch,
+          // 已有商品的零售价列绑定仓库实时价，输入后同步刷新两套字段，避免保存前显示回跳。
+          warehouseOEMPrice: patch.贴牌价格,
+          WarehouseOEMPrice: patch.贴牌价格,
+        }
+      : patch
+    patchRow(key, visiblePatch)
     if (!row.hguid) return
 
     setPendingPricePatches((current) => {
@@ -1602,9 +1628,9 @@ export default function ContainerDetailPage() {
     )
   }
 
-  const savePendingPriceDetails = async () => {
-    if (!access.canEditContainer) return
-    const updates = pendingPricePatchList
+  const buildPendingPriceSavePlan = (): PendingContainerDetailPriceSavePlan | null => {
+    const pendingPatches = pendingPricePatchList
+    const detailUpdates = pendingPatches
       .map((patch) => {
         const update: UpdateContainerDetailRequest = { hguid: patch.hguid }
         if (patch.进口价格 != null) update.进口价格 = patch.进口价格
@@ -1613,31 +1639,82 @@ export default function ContainerDetailPage() {
       })
       .filter((update) => update.进口价格 != null || update.贴牌价格 != null)
 
-    if (!updates.length) {
+    if (!detailUpdates.length) {
       message.warning(t('containers.messages.noPendingPriceDetails', '没有待保存的明细价格'))
-      return
+      return null
     }
 
     const rowKeyByHguid = new Map(rows.map((row) => [row.hguid, rowKey(row)]))
-    const saveKeys = updates.flatMap((update) => buildContainerDetailSaveFailureKeys(rowKeyByHguid.get(update.hguid) ?? update.hguid, update))
+    const saveKeys = detailUpdates.flatMap((update) => buildContainerDetailSaveFailureKeys(rowKeyByHguid.get(update.hguid) ?? update.hguid, update))
+    return {
+      pendingPatches,
+      detailUpdates,
+      rowKeyByHguid,
+      saveKeys,
+      importPriceCount: pendingPatches.filter((patch) => patch.进口价格 != null).length,
+      retailPriceCount: pendingPatches.filter((patch) => patch.贴牌价格 != null).length,
+    }
+  }
 
+  const confirmSavePendingPriceDetails = (plan: PendingContainerDetailPriceSavePlan) => new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: t('containers.modals.savePendingPriceDetailsTitle', '确认保存明细价格'),
+      content: (
+        <Space direction="vertical" size={8}>
+          <Typography.Text strong>{t('containers.modals.savePendingPriceDetailsUpdateTitle', '更新说明')}</Typography.Text>
+          <Typography.Text>
+            {t(
+              'containers.modals.savePendingPriceDetailsSummary',
+              '本次将保存 {{total}} 条明细价格，其中进口价 {{importPriceCount}} 条，零售价 {{retailPriceCount}} 条。',
+              { total: plan.pendingPatches.length, importPriceCount: plan.importPriceCount, retailPriceCount: plan.retailPriceCount },
+            )}
+          </Typography.Text>
+          <Typography.Text type="warning">
+            {t('containers.modals.savePendingPriceDetailsExistingRetailHint', '已有商品零售价会同步更新仓库商品实时零售价，并同步本货柜明细贴牌价格。')}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {t('containers.modals.savePendingPriceDetailsNewRetailHint', '新商品零售价只保存到本货柜明细，后续创建商品时继续使用该价格。')}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {t('containers.modals.savePendingPriceDetailsRetryHint', '如果保存失败，待保存状态会保留，可修正后重试。')}
+          </Typography.Text>
+        </Space>
+      ),
+      okText: t('containers.actions.saveDetails', '保存明细'),
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
+  const executePendingPriceSavePlan = async (plan: PendingContainerDetailPriceSavePlan) => {
     setPriceDetailsSaving(true)
     try {
       // 保存明细只提交逐行改过的价格字段，不复用批量统一改价入口，避免覆盖未编辑行。
-      await trackDetailSavePromise(saveKeys, batchUpdateDetails(updates))
+      await trackDetailSavePromise(plan.saveKeys, batchUpdateDetails(plan.detailUpdates))
       setPendingPricePatches((current) => {
         const next = { ...current }
-        updates.forEach((update) => {
-          delete next[rowKeyByHguid.get(update.hguid) ?? update.hguid]
+        plan.pendingPatches.forEach((patch) => {
+          delete next[plan.rowKeyByHguid.get(patch.hguid) ?? patch.hguid]
         })
         return next
       })
-      message.success(t('containers.messages.detailPricesSaved', { count: updates.length, defaultValue: '已保存 {{count}} 条明细价格' }))
+      message.success(t('containers.messages.detailPricesSaved', { count: plan.pendingPatches.length, defaultValue: '已保存 {{count}} 条明细价格' }))
     } catch (error) {
       handleDetailSaveError(error)
     } finally {
       setPriceDetailsSaving(false)
     }
+  }
+
+  const savePendingPriceDetails = async () => {
+    if (!access.canEditContainer) return
+    // 保存前先锁定本次提交范围，确认弹窗和实际落库共用同一份计划。
+    const savePlan = buildPendingPriceSavePlan()
+    if (!savePlan) return
+    const confirmed = await confirmSavePendingPriceDetails(savePlan)
+    if (!confirmed) return
+    await executePendingPriceSavePlan(savePlan)
   }
 
   const startEditingProductName = (row: ContainerDetail) => {
@@ -1778,6 +1855,8 @@ export default function ContainerDetailPage() {
       pricedRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
       transportCost,
     )
+    // 包装/体积联动出的进货价属于系统重算，只更新货柜明细，不覆盖仓库进货价。
+    update.SkipRelatedProductSync = true
 
     applyDetailUpdatesToRows([update])
     await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails([update]))
@@ -1874,6 +1953,77 @@ export default function ContainerDetailPage() {
     } finally {
       setMatchDomesticDataLoading(false)
     }
+  }
+
+  const handleAlignDomesticProductCode = (row: ContainerDetail) => {
+    if (!canAlignDomesticProductCode) {
+      message.warning(t('posAdmin.products.noManagePermission', '无权限管理商品'))
+      return
+    }
+    if (getContainerDetailProductType(row) === '套装子商品') {
+      message.warning(t('containers.messages.alignSetChildNotSupported', '套装子商品暂不支持单独对齐编码'))
+      return
+    }
+    const detailHguid = row.hguid
+    const localProductCode = getContainerDetailLocalProductCode(row)
+    const domesticProductCode = getContainerDetailDomesticProductCode(row)
+    const supplierCode = row.localSupplierCode?.trim() || row.商品信息?.localSupplierCode?.trim() || '200'
+    if (!detailHguid || !localProductCode || !domesticProductCode) {
+      message.warning(t('containers.messages.missingAlignProductCode', '缺少国内商品编码或本地主档编码，不能对齐'))
+      return
+    }
+
+    Modal.confirm({
+      title: t('containers.modals.alignDomesticProductCodeTitle', '对齐国内商品编码'),
+      content: (
+        <Space direction="vertical" size={6}>
+          <Typography.Text>
+            {t(
+              'containers.modals.alignDomesticProductCodeContent',
+              '确认把国内商品编码 {{oldCode}} 改为本地主档编码 {{newCode}}？',
+              { oldCode: domesticProductCode, newCode: localProductCode },
+            )}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {[
+              getContainerDetailItemNumber(row),
+              getContainerDetailProductName(row),
+            ].filter(Boolean).join(' / ')}
+          </Typography.Text>
+          <Typography.Text type="warning">
+            {t(
+              'containers.modals.alignDomesticProductCodeConflictHint',
+              '如果目标国内编码已存在，后端会拒绝本次对齐，不会自动合并或覆盖。',
+            )}
+          </Typography.Text>
+        </Space>
+      ),
+      okText: t('containers.actions.alignDomesticProductCode', '对齐编码'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setAligningDomesticProductDetailHguid(detailHguid)
+        try {
+          const result = await alignDomesticProductCode({
+            detailHguid,
+            expectedDomesticProductCode: domesticProductCode,
+            targetProductCode: localProductCode,
+            supplierCode,
+          })
+          message.success(
+            t('containers.messages.domesticProductCodeAligned', '已对齐国内商品编码 {{oldCode}} -> {{newCode}}', {
+              oldCode: result.oldProductCode || domesticProductCode,
+              newCode: result.newProductCode || localProductCode,
+            }),
+          )
+          await loadDetailChunk(1, 'reset')
+        } catch (error) {
+          message.error(error instanceof Error ? error.message : t('containers.messages.alignDomesticProductCodeFailed', '对齐国内商品编码失败'))
+          throw error
+        } finally {
+          setAligningDomesticProductDetailHguid(null)
+        }
+      },
+    })
   }
 
   const openBatchPricesModal = async () => {
@@ -2726,10 +2876,10 @@ export default function ContainerDetailPage() {
     }
     const shouldUpdate = (field: ContainerExistingProductUpdateField) => updateFields.includes(field)
     const hasPositiveImportPrice = (row: ContainerDetail) => (row.进口价格 ?? 0) > 0
-    const hasPositiveOemPrice = (row: ContainerDetail) => (resolveContainerDetailOemPrice(row) ?? 0) > 0
+    const hasPositiveOemPrice = (row: ContainerDetail) => (getContainerDetailVisibleOemPrice(row) ?? 0) > 0
     const updates = candidates.filter((row) => {
       const code = row.商品编码 || row.商品信息?.商品编码 || ''
-      // 更新已有商品时贴牌价只使用货柜明细业务价，上次贴牌价格仅作只读快照展示。
+      // 更新已有商品时零售价使用表格可见价，已有商品取仓库实时零售价。
       return Boolean(code) && (
         (shouldUpdate('domesticPrice') && row.国内价格 != null)
         || (shouldUpdate('importPrice') && hasPositiveImportPrice(row))
@@ -2750,7 +2900,7 @@ export default function ContainerDetailPage() {
         const item: WarehouseProductBatchUpdateItem = {
           ProductCode: row.商品编码 || row.商品信息?.商品编码,
         }
-        const oemPrice = resolveContainerDetailOemPrice(row)
+        const oemPrice = getContainerDetailVisibleOemPrice(row)
         if (shouldUpdate('domesticPrice') && row.国内价格 != null) item.DomesticPrice = row.国内价格
         if (shouldUpdate('importPrice') && hasPositiveImportPrice(row)) item.ImportPrice = row.进口价格
         if (shouldUpdate('oemPrice') && hasPositiveOemPrice(row)) item.OEMPrice = oemPrice
@@ -2770,7 +2920,7 @@ export default function ContainerDetailPage() {
           const item: StoreRetailPriceUpsertActiveItem = {
             ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
           }
-          const oemPrice = resolveContainerDetailOemPrice(row)
+          const oemPrice = getContainerDetailVisibleOemPrice(row)
           if (shouldUpdate('storePurchasePrice') && hasPositiveImportPrice(row)) item.PurchasePrice = row.进口价格
           if (shouldUpdate('storeRetailPrice') && hasPositiveOemPrice(row)) item.StoreRetailPriceValue = oemPrice
           return item
@@ -2785,7 +2935,7 @@ export default function ContainerDetailPage() {
           const item: StoreMultiCodePriceUpsertActiveItem = {
             ProductCode: row.商品编码 || row.商品信息?.商品编码 || '',
           }
-          const oemPrice = resolveContainerDetailOemPrice(row)
+          const oemPrice = getContainerDetailVisibleOemPrice(row)
           if (shouldUpdate('storeMultiCodePurchasePrice') && hasPositiveImportPrice(row)) item.PurchasePrice = row.进口价格
           if (shouldUpdate('storeMultiCodeRetailPrice') && hasPositiveOemPrice(row)) item.MultiCodeRetailPrice = oemPrice
           return item
@@ -3127,12 +3277,12 @@ export default function ContainerDetailPage() {
   }
 
   const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number] = {
-    // 只读快览列使用有效贴牌价：仓库商品优先，明细贴牌价兜底。
+    // 只读快览列只展示后端按新/已有商品分流后的来源价。
     key: 'readonlyOemPrice',
     title: renderCompactHeader(t('containers.fields.oemPrice')),
     width: 96,
     align: 'right',
-    render: (_, row) => renderOemPriceCell(row),
+    render: (_, row) => renderReadonlyOemPriceCell(row),
   }
 
   const baseColumns: ColumnsType<ContainerDetail> = [
@@ -3359,13 +3509,13 @@ export default function ContainerDetailPage() {
         ) : renderNumericCell(row.中包数 ?? '--'),
     },
     {
-      title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '上次进货价格')),
+      title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '实时进货价')),
       dataIndex: 'warehouseImportPrice',
       width: 112,
       align: 'right',
       ...makeSortProps('warehouseImportPrice'),
       ...numberFilterProps('warehouseImportPrice'),
-      render: (_value, row) => renderNumericCell(formatCurrency(getContainerDetailLastImportPrice(row), '$')),
+      render: (_value, row) => renderNumericCell(formatCurrency(getContainerDetailRealtimeImportPrice(row), '$')),
     },
     {
       title: renderColumnTitle('importPrice', t('containers.fields.importPrice')),
@@ -3403,7 +3553,7 @@ export default function ContainerDetailPage() {
         access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'oemPrice', cell)}
-            value={row.贴牌价格}
+            value={getContainerDetailVisibleOemPrice(row)}
             keyboard={false}
             min={0}
             prefix="$"
@@ -3416,12 +3566,12 @@ export default function ContainerDetailPage() {
         ) : renderOemPriceCell(row),
     },
     {
-      title: renderColumnTitle('lastOEMPrice', t('containers.fields.lastOEMPrice', '上次贴牌价格')),
+      title: renderColumnTitle('lastOEMPrice', t('containers.fields.lastOEMPrice', '实时零售价')),
       width: 104,
       align: 'right',
       ...makeSortProps('lastOEMPrice'),
       ...numberFilterProps('lastOEMPrice'),
-      render: (_, row) => renderNumericCell(formatCurrency(getContainerDetailLastOemPrice(row), '$')),
+      render: (_, row) => renderNumericCell(formatCurrency(getContainerDetailRealtimeRetailPrice(row), '$')),
     },
     {
       title: renderColumnTitle('newProduct', t('containers.fields.newProduct')),
@@ -3442,7 +3592,7 @@ export default function ContainerDetailPage() {
     },
     {
       title: renderColumnTitle('matchType', t('containers.fields.matchType')),
-      width: 116,
+      width: 148,
       ...makeSortProps('matchType'),
       ...enumFilterProps('matchTypes', (['productCode', 'supplierItem', 'unmatched'] as ContainerDetailMatchTypeFilter[]).map((value) => ({
         value,
@@ -3450,7 +3600,28 @@ export default function ContainerDetailPage() {
       }))),
       render: (_, row) => {
         const matchType = getContainerDetailMatchType(row)
-        return <Tag color={getMatchTypeTagColor(matchType)}>{getMatchTypeLabel(matchType, t)}</Tag>
+        const localProductCode = getContainerDetailLocalProductCode(row)
+        const isCandidate = hasContainerDetailProductCodeConflict(row) && Boolean(localProductCode)
+        const canAlignCandidate =
+          isCandidate
+          && getContainerDetailProductType(row) !== '套装子商品'
+          && canAlignDomesticProductCode
+
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color={getMatchTypeTagColor(matchType)}>{getMatchTypeLabel(matchType, t)}</Tag>
+            {canAlignCandidate ? (
+              <Button
+                type="link"
+                size="small"
+                onClick={() => handleAlignDomesticProductCode(row)}
+                loading={aligningDomesticProductDetailHguid === row.hguid}
+              >
+                {t('containers.actions.alignDomesticProductCode', '对齐编码')}
+              </Button>
+            ) : null}
+          </Space>
+        )
       },
     },
     {
@@ -4035,7 +4206,7 @@ export default function ContainerDetailPage() {
                         </Button>
                       ) : null}
                       {canSubmitContainer ? (
-                        <Tooltip title={pendingDetailSaveCount > 0 || pendingPricePatchCount > 0 ? t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/贴牌价格') : ''}>
+                        <Tooltip title={pendingDetailSaveCount > 0 || pendingPricePatchCount > 0 ? t('containers.messages.savePendingPriceDetailsFirst', '请先点击“保存明细”保存进口价格/零售价') : ''}>
                           <Button
                             size="small"
                             type="primary"
@@ -4120,7 +4291,7 @@ export default function ContainerDetailPage() {
                         </Button>
                       ) : null}
                       <Space size={6} className="container-detail-readonly-toggle">
-                        <Typography.Text type="secondary">{t('containers.actions.showReadonlyOemPrice', '只读贴牌价格')}</Typography.Text>
+                        <Typography.Text type="secondary">{t('containers.actions.showReadonlyOemPrice', '只读零售价')}</Typography.Text>
                         <Switch
                           size="small"
                           checked={showReadonlyOemPrice}

@@ -1,0 +1,62 @@
+/* src/pages/Warehouse/Products/compact.css */
+.warehouse-import-domestic-modal .ant-modal-body {
+  padding-top: 12px;
+}
+.warehouse-import-domestic-compact-table .ant-table-thead > tr > th,
+.warehouse-import-domestic-compact-table .ant-table-tbody > tr > td {
+  padding: 3px 6px !important;
+  line-height: 1.2;
+  vertical-align: middle;
+}
+.warehouse-import-domestic-compact-table .ant-table-cell {
+  white-space: nowrap;
+}
+.warehouse-import-domestic-compact-table .ant-table-column-title {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.15;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.warehouse-import-domestic-compact-table .ant-image,
+.warehouse-import-domestic-compact-table .ant-image-img {
+  display: block;
+}
+.warehouse-import-domestic-compact-table .ant-input-number {
+  width: 100%;
+  height: 24px;
+  max-width: 100%;
+  min-width: 0;
+  line-height: 22px;
+}
+.warehouse-import-domestic-compact-table .ant-input-number-input {
+  height: 22px;
+  padding-inline: 5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.warehouse-import-domestic-compact-table .warehouse-import-domestic-two-line {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.2;
+  white-space: normal;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.warehouse-import-domestic-compact-table .ant-tag {
+  margin-inline-end: 0;
+  padding-inline: 5px;
+  line-height: 18px;
+}
+.warehouse-import-domestic-compact-table .ant-space {
+  gap: 4px !important;
+}
+.warehouse-import-domestic-compact-table .ant-pagination {
+  margin: 6px 0 0;
+}
+.warehouse-import-domestic-compact-table .ant-pagination-options {
+  margin-inline-start: 8px;
+}

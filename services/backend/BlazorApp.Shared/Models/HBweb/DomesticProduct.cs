@@ -129,16 +129,16 @@ namespace BlazorApp.Shared.Models
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格（美元）
-        /// 说明：OEM/ODM贴牌生产的价格，通常以美元计价
+        /// 零售价（美元）
+        /// 说明：商品零售价格，通常以美元计价
         /// 单位：美元（USD）
-        /// 用途：贴牌业务报价、外贸订单、代工服务等
+        /// 用途：零售报价、外贸订单、利润计算等
         /// 精度：支持小数点后2位
         /// 示例：15.99, 199.00等
-        /// 注意：可为空，表示不支持贴牌服务或价格待定
+        /// 注意：可为空，表示价格待定或未设置
         /// </summary>
         [SugarColumn(IsNullable = true)]
-        [Display(Name = "贴牌价格")]
+        [Display(Name = "零售价")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>

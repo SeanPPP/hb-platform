@@ -732,7 +732,7 @@ namespace BlazorApp.Api.Services.React
                     if (product.OEMPrice.HasValue)
                     {
                         if (product.OEMPrice.Value < 0)
-                            errors.Add("oemPrice", new List<string> { "贴牌价格必须为非负数" });
+                            errors.Add("oemPrice", new List<string> { "零售价必须为非负数" });
                     }
                     if (product.PackingQuantity.HasValue)
                     {
@@ -1386,7 +1386,7 @@ namespace BlazorApp.Api.Services.React
                                         changedFields.Add("DomesticPrice");
                                     }
                                 }
-                                // 更新贴牌价格
+                                // 更新零售价
                                 if (
                                     updateDto.OEMPrice.HasValue
                                     && existingProduct.OEMPrice != updateDto.OEMPrice
@@ -1395,7 +1395,7 @@ namespace BlazorApp.Api.Services.React
                                     if (updateDto.OEMPrice.Value < 0)
                                     {
                                         result.Errors.Add(
-                                            $"更新商品失败: 贴牌价格不能为负 (ProductCode: {updateDto.ProductCode})"
+                                            $"更新商品失败: 零售价不能为负 (ProductCode: {updateDto.ProductCode})"
                                         );
                                     }
                                     else
@@ -1727,7 +1727,7 @@ namespace BlazorApp.Api.Services.React
                                 changedFields.Add("DomesticPrice");
                             }
                         }
-                        // 更新贴牌价格
+                        // 更新零售价
                         if (
                             updateDto.OEMPrice.HasValue
                             && existingProduct.OEMPrice != updateDto.OEMPrice
@@ -1736,7 +1736,7 @@ namespace BlazorApp.Api.Services.React
                             if (updateDto.OEMPrice.Value < 0)
                             {
                                 result.Errors.Add(
-                                    $"更新商品失败: 贴牌价格不能为负 (ProductCode: {updateDto.ProductCode})"
+                                    $"更新商品失败: 零售价不能为负 (ProductCode: {updateDto.ProductCode})"
                                 );
                             }
                             else
@@ -2705,7 +2705,7 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
 
-                        // 贴牌价格
+                        // 零售价
                         var oemPrices = productsToUpdate.Where(p => p.OEMPrice.HasValue).ToList();
                         if (oemPrices.Any())
                         {
@@ -3108,7 +3108,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!validProducts.Any())
                     return ApiResponse<SyncResult>.Error(
-                        "选中的商品中没有同时具备进口价格和贴牌价格的商品",
+                        "选中的商品中没有同时具备进口价格和零售价的商品",
                         "NO_VALID_PRODUCTS"
                     );
 

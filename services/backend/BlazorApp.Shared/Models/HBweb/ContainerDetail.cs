@@ -155,13 +155,13 @@ namespace BlazorApp.Shared.Models
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
-        /// 说明：商品的贴牌销售价格（人民币/单位）
+        /// 零售价
+        /// 说明：商品的零售销售价格（人民币/单位）
         /// 精度：2位小数，标准货币精度
-        /// 用途：贴牌业务、价格管理、利润分析
+        /// 用途：零售定价、价格管理、利润分析
         /// </summary>
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
-        [Display(Name = "贴牌价格")]
+        [Display(Name = "零售价")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>

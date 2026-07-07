@@ -59,7 +59,7 @@ public async Task<ApiResponse<object>> BatchValidateProductsAsync(BatchCreateDom
 |------|------|
 | 商品名称 | 必填、最长200字符、不能与现有商品重复 |
 | 国内价格 | 非负数 |
-| 贴牌价格 | 非负数 |
+| 零售价 | 非负数 |
 | 装箱数 | 正整数 |
 | 单件体积 | 非负数 |
 | 中包数 | 正整数 |
@@ -512,4 +512,3 @@ await _auditService.LogAsync(new AuditLog
 **创建日期**: 2025-10-22  
 **维护者**: AI Assistant  
 **状态**: 已完成
-

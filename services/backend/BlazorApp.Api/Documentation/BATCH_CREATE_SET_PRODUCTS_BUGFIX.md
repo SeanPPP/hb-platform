@@ -138,7 +138,7 @@ for (int i = 0; i < dto.SetType; i++)
         // ... 其他字段
         DomesticPrice = setPriceItem.DomesticPrice,  // ✅ 国内价格
         ImportPrice = setPriceItem.ImportPrice,      // ✅ 进口价格
-        OEMPrice = setPriceItem.OEMPrice,            // ✅ 贴牌价格
+        OEMPrice = setPriceItem.OEMPrice,            // ✅ 零售价
     };
 }
 ```
@@ -329,4 +329,3 @@ ORDER BY sp.SetProductNo;
 **修复时间**: 2025-10-24
 **修复人员**: AI Assistant
 **状态**: 条码问题已修复，价格问题待验证
-

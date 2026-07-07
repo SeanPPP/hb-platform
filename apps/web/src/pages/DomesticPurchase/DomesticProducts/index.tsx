@@ -222,7 +222,7 @@ function ProductFormModal({
           <Form.Item name="domesticPrice" label={t('domesticProducts.domesticPrice', '国内价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="oemPrice" label={t('domesticProducts.oemPrice', '贴牌价')} style={{ flex: 1 }}>
+          <Form.Item name="oemPrice" label={t('domesticProducts.oemPrice', '零售价')} style={{ flex: 1 }}>
             <InputNumber min={0} precision={2} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="importPrice" label={t('domesticProducts.importPrice', '进口价')} style={{ flex: 1 }}>
@@ -390,7 +390,7 @@ function SetItemsModal({
       ),
     },
     {
-      title: createPasteTitle(t('domesticProducts.oemPrice', '贴牌价'), 'oemPrice'),
+      title: createPasteTitle(t('domesticProducts.oemPrice', '零售价'), 'oemPrice'),
       dataIndex: 'oemPrice',
       width: 120,
       render: (_, record) => (
@@ -438,7 +438,7 @@ function SetItemsModal({
         </Typography.Text>
         {canEdit ? (
           <Typography.Text type="secondary">
-            {t('domesticProducts.setItemsPasteHint', '点击商品名称、国内价或贴牌价列后，可粘贴 Excel 单列数据。')}
+            {t('domesticProducts.setItemsPasteHint', '点击商品名称、国内价或零售价列后，可粘贴 Excel 单列数据。')}
           </Typography.Text>
         ) : null}
         {canEdit ? (
@@ -460,7 +460,7 @@ function SetItemsModal({
           {t('domesticProducts.setItemsDomesticTotal', '国内价合计')}: {totals.domesticPriceTotal?.toFixed(2) ?? '--'}
         </Typography.Text>
         <Typography.Text strong>
-          {t('domesticProducts.setItemsOemTotal', '贴牌价合计')}: {totals.oemPriceTotal?.toFixed(2) ?? '--'}
+          {t('domesticProducts.setItemsOemTotal', '零售价合计')}: {totals.oemPriceTotal?.toFixed(2) ?? '--'}
         </Typography.Text>
       </Space>
     </Modal>
@@ -658,7 +658,7 @@ export default function DomesticProductsPage() {
 
       const syncLabels = [
         shouldSyncDomesticPrice ? t('domesticProducts.domesticPrice', '国内价') : '',
-        shouldSyncOemPrice ? t('domesticProducts.oemPrice', '贴牌价') : '',
+        shouldSyncOemPrice ? t('domesticProducts.oemPrice', '零售价') : '',
       ].filter(Boolean)
       const syncFields = (() => {
         if (syncLabels.length <= 1) {
@@ -831,7 +831,7 @@ export default function DomesticProductsPage() {
         render: (value: number | undefined) => formatPrice(value),
       },
       {
-        title: t('domesticProducts.oemPrice', '贴牌价'),
+        title: t('domesticProducts.oemPrice', '零售价'),
         dataIndex: 'labelPrice',
         width: 100,
         render: (value: number | undefined) => formatPrice(value),
@@ -1132,7 +1132,7 @@ export default function DomesticProductsPage() {
               : t('domesticProducts.exportFilteredCount', '将导出当前筛选结果共 {{count}} 件商品', { count: total })}
           </Typography.Text>
           <Checkbox checked={includeLabelPrice} onChange={(event) => setIncludeLabelPrice(event.target.checked)}>
-            {t('domesticProducts.includeLabelPrice', '包含零售列（贴牌价）')}
+            {t('domesticProducts.includeLabelPrice', '包含零售列（零售价）')}
           </Checkbox>
           {exporting ? (
             <Typography.Text type="secondary">

@@ -89,7 +89,7 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
-    /// Request: update private label price (batch update)
+    /// Request: update RRP (batch update)
     /// </summary>
     public class UpdatePrivateLabelPriceRequest
     {
@@ -125,7 +125,7 @@ namespace BlazorApp.Shared.DTOs
 
         public string? ProductName { get; set; }
 
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? PrivateLabelPrice { get; set; }
     }
 

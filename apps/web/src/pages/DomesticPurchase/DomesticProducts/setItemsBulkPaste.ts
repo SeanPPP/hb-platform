@@ -142,7 +142,7 @@ export function buildSetProductPriceSyncPayload(
     barcode: product.barcode,
     productSpecification: product.specs,
     productType: product.productType,
-    // 主码价格更新仍复用现有接口；未同步的价格带回当前值，避免国内价-only/贴牌价-only 保存时被覆盖为空。
+    // 主码价格更新仍复用现有接口；未同步的价格带回当前值，避免国内价-only/零售价-only 保存时被覆盖为空。
     domesticPrice: totals.hasDomesticPrice ? totals.domesticPriceTotal : product.domesticPrice,
     oemPrice: totals.hasOemPrice ? totals.oemPriceTotal : product.labelPrice,
     importPrice: product.importPrice,

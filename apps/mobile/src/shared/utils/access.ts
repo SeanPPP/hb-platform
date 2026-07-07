@@ -28,6 +28,12 @@ export const PERMISSIONS = {
     Create: "StoreProducts.Create",
     Edit: "StoreProducts.Edit",
   },
+  Container: {
+    View: "Container.View",
+    Create: "Container.Create",
+    Edit: "Container.Edit",
+    Delete: "Container.Delete",
+  },
   SeasonalCards: {
     Remaining: {
       ViewManagedStore: "SeasonalCards.Remaining.ViewManagedStore",
@@ -148,6 +154,10 @@ function createEmptyAccess(): AccessControl {
     canWriteStore: false,
     canDeleteStore: false,
     canManageWarehouse: false,
+    canViewContainers: false,
+    canCreateContainer: false,
+    canEditContainer: false,
+    canDeleteContainer: false,
     canManageStore: false,
     canViewReports: false,
     canExportData: false,
@@ -259,6 +269,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canWriteStore = hasPermission("Stores.Create") || hasPermission("Stores.Edit");
   const canDeleteStore = hasPermission("Stores.Delete");
   const canManageWarehouse = hasPermission("Warehouse.Manage");
+  const canViewContainers = hasPermission(PERMISSIONS.Container.View);
+  const canCreateContainer = hasPermission(PERMISSIONS.Container.Create);
+  const canEditContainer = hasPermission(PERMISSIONS.Container.Edit);
+  const canDeleteContainer = hasPermission(PERMISSIONS.Container.Delete);
   const canManageStore = hasPermission("Stores.Edit") || hasPermission("Warehouse.Manage");
 
   const canReadOrder = hasPermission("Orders.View");
@@ -345,6 +359,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canWriteStore,
     canDeleteStore,
     canManageWarehouse,
+    canViewContainers,
+    canCreateContainer,
+    canEditContainer,
+    canDeleteContainer,
     canManageStore,
     canViewReports,
     canExportData,

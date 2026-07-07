@@ -3173,7 +3173,7 @@ namespace BlazorApp.Api.Services.React
                 }
                 orderSw.Stop();
 
-                // 2. 获取商品信息 (获取贴牌价)
+                // 2. 获取商品信息 (获取零售价)
                 var productSw = Stopwatch.StartNew();
                 var warehouseProduct = await _db.Queryable<WarehouseProduct>()
                     .Where(wp => wp.ProductCode == request.ProductCode)

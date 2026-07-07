@@ -61,10 +61,10 @@ namespace BlazorApp.Shared.Models
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         [SugarColumn(IsNullable = true)]
-        [Display(Name = "贴牌价格")]
+        [Display(Name = "零售价")]
         public decimal? OEMPrice { get; set; }
 
        

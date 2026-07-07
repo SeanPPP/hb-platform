@@ -85,7 +85,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格（OEMPrice）
+        /// 零售价（OEMPrice）
         /// 说明：可选，保持与后续批量更新接口一致
         /// </summary>
         public decimal? OEMPrice { get; set; }

@@ -61,7 +61,7 @@ namespace BlazorApp.Shared.Models
         public decimal? ImportTotalAmount { get; set; }
 
         /// <summary>
-        /// 贴牌总金额
+        /// 零售价总金额
         /// </summary>
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
         public decimal? OEMTotalAmount { get; set; }

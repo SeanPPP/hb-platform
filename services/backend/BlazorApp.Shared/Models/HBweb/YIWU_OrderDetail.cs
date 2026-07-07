@@ -57,7 +57,7 @@ namespace BlazorApp.Shared.Models.HBweb
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         [SugarColumn(IsNullable = true)]
         public decimal? OEMPrice { get; set; }
@@ -131,4 +131,4 @@ namespace BlazorApp.Shared.Models.HBweb
         public decimal? OrderVolume { get; set; }
         #endregion
     }
-} 
+}

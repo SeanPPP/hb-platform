@@ -535,7 +535,7 @@ async function main() {
     assert(detailSource.includes('const totalAllocVolume = useMemo') && detailSource.includes('Number(item.volume) * (Number(editedAllocQuantity)'), '顶部发货体积应按页面草稿差值更新')
     assert(detailSource.includes('draftTotalImportAmount') && detailSource.includes('Number(allocQuantity) * Number(importPrice) - Number(savedAmount)'), '发货金额 ex GST 应按页面草稿金额差值更新')
     assert(detailSource.includes('detail?.totalAllocatedImportAmount') && detailSource.includes('line.allocatedImportAmount'), '发货金额 ex GST 应优先使用发货/发票金额字段')
-    assert(detailSource.includes('line.price') && detailSource.includes('line.allocQuantity'), '预计销售额应按贴牌价和当前发货数计算')
+    assert(detailSource.includes('line.price') && detailSource.includes('line.allocQuantity'), '预计销售额应按零售价和当前发货数计算')
     assert(detailSource.includes("label={t('storeOrders.orderAmountLabel')}") && detailSource.includes('formatAmount(estimatedSalesAmount)'), '订单金额位置应改为显示预计销售额')
     assert(detailSource.includes("label={t('storeOrders.importAmountLabel')}") && detailSource.includes('formatAmount(draftTotalImportAmount)'), '发货金额 ex GST 应显示草稿总金额')
     assert(detailSource.includes("label={t('storeOrders.gstAmountLabel')}") && detailSource.includes('formatAmount(gstAmount)'), '详情页应新增 GST 10% 显示')

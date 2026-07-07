@@ -76,7 +76,7 @@
 | DomesticPrice | decimal? | 国内价格 | 65.50 |
 | AdjustmentRate | decimal? | 调整浮率 | 1.0500 |
 | ImportPrice | decimal? | 进口价格 | 89.00 |
-| OEMPrice | decimal? | 贴牌价格 | 78.00 |
+| OEMPrice | decimal? | 零售价 | 78.00 |
 | PackingQuantity | decimal? | 单件装箱数 | 24.0 |
 | UnitVolume | decimal? | 单件体积 | 0.025 |
 | TotalAmount | decimal? | 合计装柜金额 | 157200.00 |

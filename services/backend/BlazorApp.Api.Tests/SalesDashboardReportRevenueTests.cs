@@ -375,7 +375,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             topN: 1000
         );
 
-        var row = Assert.Single(result);
+        var row = Assert.Single(result, item => item.SupplierCode == "AUS1");
         Assert.Equal("AUS1", row.SupplierCode);
         Assert.Equal(175m, row.TotalAmount);
         Assert.Equal(6, row.OrderCount);
@@ -384,6 +384,10 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal(90m, row.CompareTotalAmount);
         Assert.Equal(3, row.CompareOrderCount);
         Assert.Equal(30m, row.CompareAverageTransaction);
+        var chinaRow = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal(1776m, chinaRow.TotalAmount);
+        Assert.Equal(16, chinaRow.OrderCount);
+        Assert.DoesNotContain(result, item => item.SupplierCode == "CN-BOUNDARY");
     }
 
     [Fact]
@@ -413,6 +417,346 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal(1, row.StoreCount);
         Assert.Equal(80m, row.CompareTotalAmount);
         Assert.Equal(2, row.CompareOrderCount);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRankAsync_商品统计为空时澳洲200不重复叠加中国拆分表()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedChinaSupplierAsync("CN-FALLBACK", "中国兜底供应商");
+        await SeedAustralianSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "200", "hotbargain", 100m, 10, 4);
+        await SeedChinaSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "CN-FALLBACK", "中国兜底供应商", 100m, 10, 4);
+        await SeedAustralianSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "200", "hotbargain", 50m, 5, 2);
+        await SeedChinaSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "CN-FALLBACK", "中国兜底供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+                CompareStartDate = new DateTime(2025, 7, 5),
+                CompareEndDate = new DateTime(2025, 7, 5),
+            },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var row = Assert.Single(result);
+        Assert.Equal("200", row.SupplierCode);
+        Assert.Equal(100m, row.TotalAmount);
+        Assert.Equal(4, row.OrderCount);
+        Assert.Equal(50m, row.CompareTotalAmount);
+        Assert.Equal(2, row.CompareOrderCount);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRankAsync_澳洲200同期缺失时从中国拆分表补同期()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedLocalSupplierAsync("AUS-COMPARE", "澳洲同期供应商");
+        await SeedChinaSupplierAsync("CN-FALLBACK", "中国兜底供应商");
+        await SeedAustralianSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "200", "hotbargain", 100m, 10, 4);
+        await SeedAustralianSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "AUS-COMPARE", "澳洲同期供应商", 60m, 6, 2);
+        await SeedAustralianSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "AUS-COMPARE", "澳洲同期供应商", 30m, 3, 1);
+        await SeedChinaSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "CN-FALLBACK", "中国兜底供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+                CompareStartDate = new DateTime(2025, 7, 5),
+                CompareEndDate = new DateTime(2025, 7, 5),
+            },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var row = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal("200", row.SupplierCode);
+        Assert.Equal(100m, row.TotalAmount);
+        Assert.Equal(50m, row.CompareTotalAmount);
+        Assert.Equal(2, row.CompareOrderCount);
+        Assert.Contains(result, item => item.SupplierCode == "AUS-COMPARE" && item.CompareTotalAmount == 30m);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRankAsync_同期商品统计缺200时从中国拆分表补200()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedChinaSupplierAsync("CN-COMPARE", "中国同期供应商");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "200", "P-CN-CURRENT", "中国当前商品", 100m, 10, 4);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "AUS1", "P-AUS-CURRENT", "澳洲当前商品", 60m, 6, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 5), "S1", "AUS1", "P-AUS-COMPARE", "澳洲同期商品", 30m, 3, 1);
+        await SeedChinaSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "CN-COMPARE", "中国同期供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+                CompareStartDate = new DateTime(2025, 7, 5),
+                CompareEndDate = new DateTime(2025, 7, 5),
+            },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var row = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal(100m, row.TotalAmount);
+        Assert.Equal(50m, row.CompareTotalAmount);
+        Assert.Equal(2, row.CompareOrderCount);
+        Assert.Contains(result, item => item.SupplierCode == "AUS1" && item.CompareTotalAmount == 30m);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRankAsync_当前商品统计缺200时从中国拆分表补200()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedChinaSupplierAsync("CN-CURRENT", "中国当前供应商");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "AUS1", "P-AUS-CURRENT", "澳洲当前商品", 60m, 6, 2);
+        await SeedChinaSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "CN-CURRENT", "中国当前供应商", 100m, 10, 4);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+            },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var chinaRow = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal(100m, chinaRow.TotalAmount);
+        Assert.Equal(4, chinaRow.OrderCount);
+        Assert.Contains(result, item => item.SupplierCode == "AUS1" && item.TotalAmount == 60m);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRankAsync_澳洲200部分商品统计时只补缺失日期()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedChinaSupplierAsync("CN-PARTIAL", "中国部分统计供应商");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "200", "P-CN-STAT", "中国已统计商品", 100m, 10, 4);
+        await SeedChinaSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "CN-PARTIAL", "中国部分统计供应商", 100m, 10, 4);
+        await SeedChinaSupplierSalesAsync(new DateTime(2026, 7, 5), "S1", "CN-PARTIAL", "中国部分统计供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 5),
+            },
+            branchCodes: new List<string> { "S1" },
+            topN: 1000
+        );
+
+        var chinaRow = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal(150m, chinaRow.TotalAmount);
+        Assert.Equal(6, chinaRow.OrderCount);
+    }
+
+    [Fact]
+    public async Task GetSupplierStoreSalesAsync_商品统计为空时澳洲200分店下钻不重复叠加中国拆分表()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedChinaSupplierAsync("CN-FALLBACK", "中国兜底供应商");
+        await SeedAustralianSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "200", "hotbargain", 100m, 10, 4);
+        await SeedChinaSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "CN-FALLBACK", "中国兜底供应商", 100m, 10, 4);
+        await SeedAustralianSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "200", "hotbargain", 50m, 5, 2);
+        await SeedChinaSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "CN-FALLBACK", "中国兜底供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierStoreSalesAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+                CompareStartDate = new DateTime(2025, 7, 5),
+                CompareEndDate = new DateTime(2025, 7, 5),
+            },
+            new List<string> { "200" },
+            new List<string> { "S1" }
+        );
+
+        var row = Assert.Single(result);
+        Assert.Equal("200", row.SupplierCode);
+        Assert.Equal(100m, row.TotalAmount);
+        Assert.Equal(4, row.OrderCount);
+        Assert.Equal(50m, row.CompareTotalAmount);
+        Assert.Equal(2, row.CompareOrderCount);
+    }
+
+    [Fact]
+    public async Task GetSupplierStoreSalesAsync_澳洲200同期缺失时从中国拆分表补同期()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedLocalSupplierAsync("AUS-COMPARE", "澳洲同期供应商");
+        await SeedChinaSupplierAsync("CN-FALLBACK", "中国兜底供应商");
+        await SeedAustralianSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "200", "hotbargain", 100m, 10, 4);
+        await SeedAustralianSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "AUS-COMPARE", "澳洲同期供应商", 30m, 3, 1);
+        await SeedChinaSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "CN-FALLBACK", "中国兜底供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierStoreSalesAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+                CompareStartDate = new DateTime(2025, 7, 5),
+                CompareEndDate = new DateTime(2025, 7, 5),
+            },
+            new List<string> { "200" },
+            new List<string> { "S1" }
+        );
+
+        var row = Assert.Single(result);
+        Assert.Equal("200", row.SupplierCode);
+        Assert.Equal(100m, row.TotalAmount);
+        Assert.Equal(50m, row.CompareTotalAmount);
+        Assert.Equal(2, row.CompareOrderCount);
+    }
+
+    [Fact]
+    public async Task GetSupplierStoreSalesAsync_多供应商同期商品统计缺200时从中国拆分表补200()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedChinaSupplierAsync("CN-COMPARE", "中国同期供应商");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "200", "P-CN-CURRENT", "中国当前商品", 100m, 10, 4);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "AUS1", "P-AUS-CURRENT", "澳洲当前商品", 60m, 6, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 5), "S1", "AUS1", "P-AUS-COMPARE", "澳洲同期商品", 30m, 3, 1);
+        await SeedChinaSupplierSalesAsync(new DateTime(2025, 7, 5), "S1", "CN-COMPARE", "中国同期供应商", 50m, 5, 2);
+        var service = CreateService();
+
+        var result = await service.GetSupplierStoreSalesAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+                CompareStartDate = new DateTime(2025, 7, 5),
+                CompareEndDate = new DateTime(2025, 7, 5),
+            },
+            new List<string> { "200", "AUS1" },
+            new List<string> { "S1" }
+        );
+
+        var chinaRow = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal(100m, chinaRow.TotalAmount);
+        Assert.Equal(50m, chinaRow.CompareTotalAmount);
+        Assert.Equal(2, chinaRow.CompareOrderCount);
+        Assert.Contains(result, item => item.SupplierCode == "AUS1" && item.CompareTotalAmount == 30m);
+    }
+
+    [Fact]
+    public async Task GetSupplierStoreSalesAsync_多供应商当前商品统计缺200时从中国拆分表补200()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedChinaSupplierAsync("CN-CURRENT", "中国当前供应商");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 4), "S1", "AUS1", "P-AUS-CURRENT", "澳洲当前商品", 60m, 6, 2);
+        await SeedChinaSupplierSalesAsync(new DateTime(2026, 7, 4), "S1", "CN-CURRENT", "中国当前供应商", 100m, 10, 4);
+        var service = CreateService();
+
+        var result = await service.GetSupplierStoreSalesAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 4),
+                EndDate = new DateTime(2026, 7, 4),
+            },
+            new List<string> { "200", "AUS1" },
+            new List<string> { "S1" }
+        );
+
+        var chinaRow = Assert.Single(result, item => item.SupplierCode == "200");
+        Assert.Equal(100m, chinaRow.TotalAmount);
+        Assert.Equal(4, chinaRow.OrderCount);
+        Assert.Contains(result, item => item.SupplierCode == "AUS1" && item.TotalAmount == 60m);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRankAsync_澳洲报表把中国货汇总到200()
+    {
+        await SeedLocalSupplierAsync("AUS1", "澳洲供应商");
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedChinaSupplierAsync("CN1", "中国供应商一");
+        await SeedChinaSupplierAsync("CN2", "中国供应商二");
+        await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN1");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S1", "AUS1", "P-AUS", "澳洲商品", 100m, 10, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S1", "200", "P-CN-LEGACY", "中国旧统计商品", 60m, 6, 3);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品", 40m, 4, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 1), "S1", "200", "P-CN-LEGACY", "中国旧统计商品同期", 30m, 3, 1);
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品同期", 20m, 2, 1);
+        var service = CreateService();
+
+        var result = await service.GetSupplierSalesRankAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+                CompareStartDate = new DateTime(2025, 7, 1),
+                CompareEndDate = new DateTime(2025, 7, 1),
+            },
+            branchCodes: new List<string> { "S1", "S2" },
+            topN: 1000
+        );
+
+        var chinaRow = Assert.Single(result, row => row.SupplierCode == "200");
+        Assert.Equal("hotbargain", chinaRow.SupplierName);
+        Assert.Equal(100m, chinaRow.TotalAmount);
+        Assert.Equal(10, chinaRow.TotalQuantity);
+        Assert.Equal(5, chinaRow.OrderCount);
+        Assert.Equal(2, chinaRow.StoreCount);
+        Assert.Equal(50m, chinaRow.CompareTotalAmount);
+        Assert.Equal(2, chinaRow.CompareOrderCount);
+        Assert.DoesNotContain(result, row => row.SupplierCode == "CN2");
+        Assert.Contains(result, row => row.SupplierCode == "AUS1" && row.TotalAmount == 100m);
+    }
+
+    [Fact]
+    public async Task GetSupplierStoreSalesAsync_澳洲200分店下钻包含中国货()
+    {
+        await SeedLocalSupplierAsync("200", "hotbargain");
+        await SeedChinaSupplierAsync("CN1", "中国供应商一");
+        await SeedChinaSupplierAsync("CN2", "中国供应商二");
+        await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN1");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S1", "200", "P-CN-LEGACY", "中国旧统计商品", 60m, 6, 3);
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品", 40m, 4, 2);
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 1), "S1", "200", "P-CN-LEGACY", "中国旧统计商品同期", 30m, 3, 1);
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品同期", 20m, 2, 1);
+        var service = CreateService();
+
+        var result = await service.GetSupplierStoreSalesAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+                CompareStartDate = new DateTime(2025, 7, 1),
+                CompareEndDate = new DateTime(2025, 7, 1),
+            },
+            new List<string> { "200" },
+            new List<string> { "S1", "S2" }
+        );
+
+        Assert.Equal(2, result.Count);
+        var s1 = Assert.Single(result, row => row.BranchCode == "S1");
+        Assert.Equal("200", s1.SupplierCode);
+        Assert.Equal(60m, s1.TotalAmount);
+        Assert.Equal(3, s1.OrderCount);
+        Assert.Equal(30m, s1.CompareTotalAmount);
+        var s2 = Assert.Single(result, row => row.BranchCode == "S2");
+        Assert.Equal("200", s2.SupplierCode);
+        Assert.Equal(40m, s2.TotalAmount);
+        Assert.Equal(2, s2.OrderCount);
+        Assert.Equal(20m, s2.CompareTotalAmount);
     }
 
     [Fact]
@@ -858,6 +1202,74 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal("P4", Assert.Single(china.Data).ProductCode);
         Assert.Equal(1, australia.Total);
         Assert.Equal(1, china.Total);
+    }
+
+    [Fact]
+    public async Task GetEnhancedSalesProductDetailsAsync_澳洲200筛选包含中国货商品()
+    {
+        await SeedChinaSupplierAsync("CN1", "中国供应商一");
+        await SeedChinaSupplierAsync("CN2", "中国供应商二");
+        await SeedProductAsync("P-CN-LEGACY", "HB-CN-LEGACY", "BAR-CN-LEGACY");
+        await SeedProductAsync("P-CN-DIRECT", "HB-CN-DIRECT", "BAR-CN-DIRECT");
+        await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN1");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S1", "200", "P-CN-LEGACY", "中国旧统计商品", 60m, 6, 3, barcode: "BAR-CN-LEGACY");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品", 40m, 4, 2, barcode: "BAR-CN-DIRECT");
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品同期", 20m, 2, 1, barcode: "BAR-CN-DIRECT");
+        var service = CreateService();
+
+        var result = await service.GetEnhancedSalesProductDetailsAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+                CompareStartDate = new DateTime(2025, 7, 1),
+                CompareEndDate = new DateTime(2025, 7, 1),
+            },
+            branchCodes: new List<string> { "S1", "S2" },
+            localSupplierCodes: new List<string> { "200" },
+            pageSize: 20
+        );
+
+        Assert.Equal(2, result.Total);
+        var legacyRow = Assert.Single(result.Data, row => row.ProductCode == "P-CN-LEGACY");
+        Assert.Equal(60m, legacyRow.SalesAmount);
+        var directRow = Assert.Single(result.Data, row => row.ProductCode == "P-CN-DIRECT");
+        Assert.Equal(40m, directRow.SalesAmount);
+        Assert.Equal(20m, directRow.SalesAmountLY);
+    }
+
+    [Fact]
+    public async Task GetEnhancedSalesProductDetailsAsync_澳洲200筛选搜索中国货商品()
+    {
+        await SeedChinaSupplierAsync("CN1", "中国供应商一");
+        await SeedChinaSupplierAsync("CN2", "中国供应商二");
+        await SeedProductAsync("P-CN-LEGACY", "HB-CN-LEGACY", "BAR-CN-LEGACY");
+        await SeedProductAsync("P-CN-DIRECT", "HB-CN-DIRECT", "BAR-CN-DIRECT");
+        await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN1");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S1", "200", "P-CN-LEGACY", "中国旧统计商品", 60m, 6, 3, barcode: "BAR-CN-LEGACY");
+        await SeedProductStoreDailySalesAsync(new DateTime(2026, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品", 40m, 4, 2, barcode: "BAR-CN-DIRECT");
+        await SeedProductStoreDailySalesAsync(new DateTime(2025, 7, 1), "S2", "CN2", "P-CN-DIRECT", "中国直接统计商品同期", 20m, 2, 1, barcode: "BAR-CN-DIRECT");
+        var service = CreateService();
+
+        var result = await service.GetEnhancedSalesProductDetailsAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+                CompareStartDate = new DateTime(2025, 7, 1),
+                CompareEndDate = new DateTime(2025, 7, 1),
+            },
+            branchCodes: new List<string> { "S1", "S2" },
+            localSupplierCodes: new List<string> { "200" },
+            pageSize: 20,
+            productSearch: "HB-CN-DIRECT"
+        );
+
+        var row = Assert.Single(result.Data);
+        Assert.Equal(1, result.Total);
+        Assert.Equal("P-CN-DIRECT", row.ProductCode);
+        Assert.Equal(40m, row.SalesAmount);
+        Assert.Equal(20m, row.SalesAmountLY);
     }
 
     [Fact]

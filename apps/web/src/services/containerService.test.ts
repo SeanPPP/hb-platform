@@ -1,4 +1,5 @@
 import {
+  alignDomesticProductCode,
   batchUpdateDetails,
   createContainer,
   getComingSoonContainerProducts,
@@ -133,7 +134,13 @@ try {
   }) as typeof fetch
 
   const detailUpdates: UpdateContainerDetailRequest[] = [
-    { hguid: 'D-CLEAR-EN', ClearEnglishName: true, 中包数: 12, ProductCategoryGUID: 'CAT-TARGET' },
+    {
+      hguid: 'D-CLEAR-EN',
+      ClearEnglishName: true,
+      中包数: 12,
+      ProductCategoryGUID: 'CAT-TARGET',
+      SkipRelatedProductSync: true,
+    },
   ]
   await batchUpdateDetails(detailUpdates)
 
@@ -145,8 +152,64 @@ try {
   assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12 }],
-    'batchUpdateDetails should send the explicit English-name clear marker, middle pack quantity, and target category',
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, SkipRelatedProductSync: true }],
+    'batchUpdateDetails should send explicit fields including the related-product sync guard',
+  )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        oldProductCode: 'DOM-OLD',
+        newProductCode: 'LOCAL-NEW',
+        updatedDomesticProducts: 1,
+        updatedContainerDetails: 2,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const alignResult = await alignDomesticProductCode({
+    detailHguid: 'D-ALIGN',
+    expectedDomesticProductCode: 'DOM-OLD',
+    targetProductCode: 'LOCAL-NEW',
+    supplierCode: '200',
+  })
+
+  assertEqual(
+    capturedUrl,
+    '/api/react/v1/containers/details/align-domestic-product-code',
+    'alignDomesticProductCode should call the manual alignment endpoint',
+  )
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    {
+      DetailHguid: 'D-ALIGN',
+      ExpectedDomesticProductCode: 'DOM-OLD',
+      TargetProductCode: 'LOCAL-NEW',
+      SupplierCode: '200',
+    },
+    'alignDomesticProductCode should send the confirmed old and target product codes',
+  )
+  assertDeepEqual(
+    {
+      oldProductCode: alignResult.oldProductCode,
+      newProductCode: alignResult.newProductCode,
+      updatedDomesticProducts: alignResult.updatedDomesticProducts,
+      updatedContainerDetails: alignResult.updatedContainerDetails,
+    },
+    {
+      oldProductCode: 'DOM-OLD',
+      newProductCode: 'LOCAL-NEW',
+      updatedDomesticProducts: 1,
+      updatedContainerDetails: 2,
+    },
+    'alignDomesticProductCode should normalize response counts',
   )
 
   const abortController = new AbortController()

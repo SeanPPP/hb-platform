@@ -204,6 +204,28 @@ assertEqual(
 
 assertEqual(
   resolveTabRouteCorrection({
+    currentRouteName: "containers",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["warehouse", "attendance-personal", "settings"],
+  }),
+  null,
+  "root stack container list is not redirected by tab default correction"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "container-guid-001",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["warehouse", "attendance-personal", "settings"],
+  }),
+  null,
+  "root stack container detail is not redirected by tab default correction"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
     currentRouteName: "home",
     hasAppliedDefaultRoute: true,
     isDeviceMode: false,

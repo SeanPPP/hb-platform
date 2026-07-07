@@ -309,6 +309,30 @@ assertEqual(
   "WarehouseManager is not treated as pure WarehouseStaff"
 );
 
+assertEqual(
+  warehouseManagerAccess.canViewContainers,
+  false,
+  "WarehouseManager role alone does not enable container visibility"
+);
+
+assertEqual(
+  warehouseManagerAccess.canCreateContainer,
+  false,
+  "WarehouseManager role alone does not enable container creation"
+);
+
+assertEqual(
+  warehouseManagerAccess.canEditContainer,
+  false,
+  "WarehouseManager role alone does not enable container editing"
+);
+
+assertEqual(
+  warehouseManagerAccess.canDeleteContainer,
+  false,
+  "WarehouseManager role alone does not enable container deletion"
+);
+
 const adminAccess = buildAccess(
   createUser(["Orders.Create", "Orders.Edit"], ["Admin"])
 );
@@ -317,4 +341,70 @@ assertEqual(
   adminAccess.isWarehouseStaffOnly,
   false,
   "Admin is not treated as pure WarehouseStaff"
+);
+
+assertEqual(
+  adminAccess.canViewContainers,
+  true,
+  "Admin can view container list and detail"
+);
+
+assertEqual(
+  adminAccess.canCreateContainer,
+  true,
+  "Admin can create containers"
+);
+
+assertEqual(
+  adminAccess.canEditContainer,
+  true,
+  "Admin can edit containers"
+);
+
+assertEqual(
+  adminAccess.canDeleteContainer,
+  true,
+  "Admin can delete containers"
+);
+
+const containerViewAccess = buildAccess(
+  createUser([PERMISSIONS.Container.View])
+);
+
+assertEqual(
+  containerViewAccess.canViewContainers,
+  true,
+  "Container.View enables container list and detail visibility"
+);
+
+assertEqual(
+  containerViewAccess.canCreateContainer,
+  false,
+  "Container.View alone does not enable container creation"
+);
+
+const containerMutationAccess = buildAccess(
+  createUser([
+    PERMISSIONS.Container.Create,
+    PERMISSIONS.Container.Edit,
+    PERMISSIONS.Container.Delete,
+  ])
+);
+
+assertEqual(
+  containerMutationAccess.canCreateContainer,
+  true,
+  "Container.Create enables container creation"
+);
+
+assertEqual(
+  containerMutationAccess.canEditContainer,
+  true,
+  "Container.Edit enables container editing"
+);
+
+assertEqual(
+  containerMutationAccess.canDeleteContainer,
+  true,
+  "Container.Delete enables container deletion"
 );

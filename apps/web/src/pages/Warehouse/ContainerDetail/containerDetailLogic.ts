@@ -175,9 +175,9 @@ export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinit
   { key: 'totalVolume', labelKey: 'containers.export.totalVolumeColumn', fallbackLabel: '总体积', width: 12, valueType: 'volume' },
   { key: 'middlePackQuantity', labelKey: 'containers.fields.middlePackQuantity', fallbackLabel: '中包数', width: 12, valueType: 'integer' },
   { key: 'domesticPrice', labelKey: 'containers.fields.domesticPrice', fallbackLabel: '国内价格', width: 12, valueType: 'money' },
-  { key: 'lastImportPrice', labelKey: 'containers.fields.warehouseImportPrice', fallbackLabel: '上次进货价格', width: 14, valueType: 'money' },
-  { key: 'lastOEMPrice', labelKey: 'containers.fields.lastOEMPrice', fallbackLabel: '上次贴牌价格', width: 14, valueType: 'money' },
-  { key: 'oemPrice', labelKey: 'containers.fields.oemPrice', fallbackLabel: '贴牌价格', width: 12, valueType: 'money' },
+  { key: 'lastImportPrice', labelKey: 'containers.fields.warehouseImportPrice', fallbackLabel: '实时进货价', width: 14, valueType: 'money' },
+  { key: 'lastOEMPrice', labelKey: 'containers.fields.lastOEMPrice', fallbackLabel: '实时零售价', width: 14, valueType: 'money' },
+  { key: 'oemPrice', labelKey: 'containers.fields.oemPrice', fallbackLabel: '零售价', width: 12, valueType: 'money' },
 ]
 
 const containerDetailSortFields = new Set<string>([
@@ -430,6 +430,23 @@ function firstTrimmedValue(...values: Array<string | undefined>) {
   return values.map((value) => value?.trim()).find((value): value is string => Boolean(value))
 }
 
+export function getContainerDetailLocalProductCode(row: ContainerDetail) {
+  return firstTrimmedValue(row.localProductCode, row.LocalProductCode)
+}
+
+export function getContainerDetailDomesticProductCode(row: ContainerDetail) {
+  return firstTrimmedValue(row.domesticProductCode, row.DomesticProductCode, getContainerDetailProductCode(row))
+}
+
+export function hasContainerDetailProductCodeConflict(row: ContainerDetail) {
+  const explicit = row.hasProductCodeConflict ?? row.HasProductCodeConflict
+  if (explicit != null) return Boolean(explicit)
+
+  const localProductCode = normalizeMatchKey(getContainerDetailLocalProductCode(row))
+  const domesticProductCode = normalizeMatchKey(getContainerDetailDomesticProductCode(row))
+  return Boolean(localProductCode && domesticProductCode && localProductCode !== domesticProductCode)
+}
+
 export function getContainerDetailCategoryName(row: ContainerDetail) {
   return firstTrimmedValue(
     row.categoryName,
@@ -550,6 +567,10 @@ export function getContainerDetailBatchCategoryProductCodes(rows: ContainerDetai
 }
 
 export function getContainerDetailMatchType(row: ContainerDetail): ContainerDetailMatchTypeFilter {
+  if (hasContainerDetailProductCodeConflict(row)) {
+    return 'supplierItem'
+  }
+
   const raw = row.matchType ?? row.MatchType
   const normalized = raw?.trim().toLowerCase()
   if (normalized === 'productcode' || normalized === 'product_code' || normalized === '商品编码') {
@@ -585,37 +606,57 @@ export function getContainerDetailWarehouseStatusFilterKey(row: ContainerDetail)
 }
 
 export function resolveContainerDetailOemPrice(row: ContainerDetail): number | undefined {
-  // 贴牌价格是货柜明细业务价，导出和发送 HQ 都必须使用它。
+  // 纯货柜明细业务价；新商品创建和缺价判断仍以它为准。
   return row.贴牌价格
+}
+
+export function getContainerDetailReadonlyOemPrice(row: ContainerDetail): number | undefined {
+  // 只读快览价由后端按新商品/已有商品分流；缺字段时不回退明细业务价。
+  return row.readonlyOemPrice ?? row.ReadonlyOemPrice
 }
 
 export function getContainerDetailOemPriceSource(row: ContainerDetail): 'detail' | 'none' {
   return row.贴牌价格 == null ? 'none' : 'detail'
 }
 
+export function getContainerDetailRealtimeImportPrice(row: ContainerDetail): number | undefined {
+  // 实时进货价只读仓库商品表字段；缺失时不回退货柜历史快照。
+  return row.warehouseImportPrice ?? row.WarehouseImportPrice
+}
+
 export function getContainerDetailLastImportPrice(row: ContainerDetail): number | undefined {
-  return row.lastImportPrice ?? row.LastImportPrice ?? row.warehouseImportPrice ?? row.WarehouseImportPrice
+  return getContainerDetailRealtimeImportPrice(row)
 }
 
 export function getContainerDetailImportPriceTrend(row: ContainerDetail): 'up' | 'down' | undefined {
-  const lastImportPrice = getContainerDetailLastImportPrice(row)
+  const realtimeImportPrice = getContainerDetailRealtimeImportPrice(row)
   const currentImportPrice = row.进口价格
   if (
-    typeof lastImportPrice !== 'number' ||
+    typeof realtimeImportPrice !== 'number' ||
     typeof currentImportPrice !== 'number' ||
-    !Number.isFinite(lastImportPrice) ||
+    !Number.isFinite(realtimeImportPrice) ||
     !Number.isFinite(currentImportPrice) ||
-    lastImportPrice === currentImportPrice
+    realtimeImportPrice === currentImportPrice
   ) {
     return undefined
   }
 
-  // 趋势以本次进口价格相对上次进口价格的变化判断，用于表格箭头和颜色。
-  return currentImportPrice > lastImportPrice ? 'up' : 'down'
+  // 趋势以本次进口价格相对实时仓库进货价判断，用于表格箭头和颜色。
+  return currentImportPrice > realtimeImportPrice ? 'up' : 'down'
+}
+
+export function getContainerDetailRealtimeRetailPrice(row: ContainerDetail): number | undefined {
+  // 实时零售价取 WarehouseProduct.OEMPrice；缺失时不回退货柜明细零售价。
+  return row.warehouseOEMPrice ?? row.WarehouseOEMPrice
+}
+
+export function getContainerDetailVisibleOemPrice(row: ContainerDetail): number | undefined {
+  // 表格零售价：新商品沿用明细价，已有商品绑定仓库实时零售价。
+  return row.是否新商品 ? resolveContainerDetailOemPrice(row) : getContainerDetailRealtimeRetailPrice(row)
 }
 
 export function getContainerDetailLastOemPrice(row: ContainerDetail): number | undefined {
-  return row.lastOEMPrice ?? row.LastOEMPrice ?? row.warehouseOEMPrice ?? row.WarehouseOEMPrice
+  return getContainerDetailRealtimeRetailPrice(row)
 }
 
 export function calculateContainerDetailUnitTransportCost(row: ContainerDetail): number | undefined {
@@ -666,9 +707,9 @@ export function buildContainerDetailExportRow(row: ContainerDetail, index = 0): 
     totalVolume: getContainerDetailTotalVolume(row),
     middlePackQuantity: row.中包数 ?? 0,
     domesticPrice: row.国内价格 ?? 0,
-    lastImportPrice: getContainerDetailLastImportPrice(row) ?? 0,
-    lastOEMPrice: getContainerDetailLastOemPrice(row) ?? 0,
-    oemPrice: resolveContainerDetailOemPrice(row) ?? 0,
+    lastImportPrice: getContainerDetailRealtimeImportPrice(row) ?? 0,
+    lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? 0,
+    oemPrice: getContainerDetailVisibleOemPrice(row) ?? 0,
   }
 }
 
@@ -905,13 +946,13 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
     case 'unitTransportCost':
       return calculateContainerDetailUnitTransportCost(row)
     case 'warehouseImportPrice':
-      return getContainerDetailLastImportPrice(row)
+      return getContainerDetailRealtimeImportPrice(row)
     case 'lastOEMPrice':
-      return getContainerDetailLastOemPrice(row)
+      return getContainerDetailRealtimeRetailPrice(row)
     case 'importPrice':
       return row.进口价格
     case 'oemPrice':
-      return resolveContainerDetailOemPrice(row)
+      return getContainerDetailVisibleOemPrice(row)
     case 'warehouseStatus':
       return row.warehouseIsActive === true ? 1 : 0
     case 'remark':
@@ -955,10 +996,10 @@ export function applyContainerDetailColumnState(
     matchesNumberRange(row.调整浮率, filters.floatRate) &&
     matchesNumberRange(row.运输成本, filters.transportCost) &&
     matchesNumberRange(calculateContainerDetailUnitTransportCost(row), filters.unitTransportCost) &&
-    matchesNumberRange(getContainerDetailLastImportPrice(row), filters.warehouseImportPrice) &&
-    matchesNumberRange(getContainerDetailLastOemPrice(row), filters.lastOEMPrice) &&
+    matchesNumberRange(getContainerDetailRealtimeImportPrice(row), filters.warehouseImportPrice) &&
+    matchesNumberRange(getContainerDetailRealtimeRetailPrice(row), filters.lastOEMPrice) &&
     matchesNumberRange(row.进口价格, filters.importPrice) &&
-    matchesNumberRange(resolveContainerDetailOemPrice(row), filters.oemPrice)
+    matchesNumberRange(getContainerDetailVisibleOemPrice(row), filters.oemPrice)
   ))
 
   if (!sortState) return filtered
@@ -1408,6 +1449,8 @@ export function buildContainerDetailFloatRateUpdates(
         调整浮率: nextFloatRate,
         运输成本: transportCost,
         进口价格: importPrice,
+        // 浮率导致的系统重算只更新货柜明细，避免覆盖仓库表里人工维护的进货价。
+        SkipRelatedProductSync: true,
       }
     })
     .filter((update): update is UpdateContainerDetailRequest => update !== null)
@@ -1426,6 +1469,14 @@ interface ContainerDetailDetectedPrice {
   exists?: boolean
   MatchType?: string
   matchType?: string
+  LocalProductCode?: string
+  localProductCode?: string
+  DomesticProductCode?: string
+  domesticProductCode?: string
+  HasProductCodeConflict?: boolean
+  hasProductCodeConflict?: boolean
+  ConflictReason?: string
+  conflictReason?: string
   ProductName?: string
   productName?: string
   name?: string
@@ -1468,6 +1519,27 @@ function normalizeMatchKey(value?: string) {
   return value?.trim().toUpperCase()
 }
 
+function getDetectedLocalProductCode(item: ContainerDetailDetectedPrice) {
+  return item.LocalProductCode ?? item.localProductCode ?? item.ProductCode ?? item.productCode
+}
+
+function getDetectedDomesticProductCode(item: ContainerDetailDetectedPrice) {
+  return item.DomesticProductCode ?? item.domesticProductCode
+}
+
+function getDetectedConflictReason(item: ContainerDetailDetectedPrice) {
+  return item.ConflictReason ?? item.conflictReason
+}
+
+function hasDetectedProductCodeConflict(item: ContainerDetailDetectedPrice) {
+  const explicit = item.HasProductCodeConflict ?? item.hasProductCodeConflict
+  if (explicit != null) return Boolean(explicit)
+
+  const localProductCode = normalizeMatchKey(getDetectedLocalProductCode(item))
+  const domesticProductCode = normalizeMatchKey(getDetectedDomesticProductCode(item))
+  return Boolean(localProductCode && domesticProductCode && localProductCode !== domesticProductCode)
+}
+
 function getContainerDetailDetectionProductCode(row: ContainerDetail) {
   const productCode = getContainerDetailProductCode(row)
   return productCode
@@ -1481,13 +1553,18 @@ function buildSupplierItemMatchKey(supplierCode?: string, itemNumber?: string) {
     : undefined
 }
 
+function getContainerDetailSupplierCode(row: ContainerDetail) {
+  // 供应商+货号只是候选键；优先用行上的真实供应商，历史 HB 数据缺失时才回退 200。
+  return firstTrimmedValue(row.localSupplierCode, row.商品信息?.localSupplierCode) ?? '200'
+}
+
 export function buildContainerDetailDetectionItems(rows: ContainerDetail[]): ContainerDetailDetectionItem[] {
   return rows
     .map((row) => ({
-      // 检测同时携带商品编码和固定供应商 200 + 货号，由匹配结果决定最终展示方式。
+      // 检测同时携带商品编码和供应商+货号，由匹配结果决定最终展示方式。
       ProductCode: getContainerDetailDetectionProductCode(row),
       ItemNumber: getContainerDetailItemNumber(row),
-      SupplierCode: '200',
+      SupplierCode: getContainerDetailSupplierCode(row),
     }))
     .filter((item) => item.ProductCode || item.ItemNumber)
 }
@@ -1534,9 +1611,10 @@ function buildDetectedPriceMaps(items: ContainerDetailDetectedPrice[]) {
   items.forEach((item) => {
     if ((item.Exists ?? item.exists) === false) return
     const productCode = normalizeMatchKey(item.productCode ?? item.ProductCode)
-    // 后端旧版本可能不回传 SupplierCode；本入口请求固定为 200，因此按 200 兼容旧响应。
+    const hasConflict = hasDetectedProductCodeConflict(item)
+    // 后端旧版本可能不回传 SupplierCode；缺失时只兼容历史默认 200，不扩大成跨供应商匹配。
     const supplierItemKey = buildSupplierItemMatchKey(item.supplierCode ?? item.SupplierCode ?? '200', item.itemNumber ?? item.ItemNumber)
-    if (productCode) productCodeMap.set(productCode, item)
+    if (productCode && !hasConflict) productCodeMap.set(productCode, item)
     if (supplierItemKey) supplierItemMap.set(supplierItemKey, item)
   })
 
@@ -1548,21 +1626,12 @@ interface ContainerDetailDetectedMatch {
   matchType: ContainerDetailMatchTypeFilter
 }
 
-function getDetectedMatchType(item: ContainerDetailDetectedPrice) {
-  return item.matchType ?? item.MatchType
-}
-
-function isDetectedItemNumberMatch(item: ContainerDetailDetectedPrice) {
-  const normalized = getDetectedMatchType(item)?.trim().toLowerCase()
-  return normalized === 'item_number' || normalized === 'itemnumber' || normalized === 'supplieritem' || normalized === 'supplier_item'
-}
-
 function resolveContainerDetailDetectedMatch(
   row: ContainerDetail,
   detectedMaps: ReturnType<typeof buildDetectedPriceMaps>,
 ): ContainerDetailDetectedMatch | undefined {
   const itemNumber = normalizeMatchKey(getContainerDetailItemNumber(row))
-  const supplierItemKey = buildSupplierItemMatchKey('200', itemNumber)
+  const supplierItemKey = buildSupplierItemMatchKey(getContainerDetailSupplierCode(row), itemNumber)
   const detectionProductCode = normalizeMatchKey(getContainerDetailDetectionProductCode(row))
 
   // 商品编码能匹配时优先展示商品编码匹配；只有没有商品编码命中时才落到供应商+货号。
@@ -1570,7 +1639,7 @@ function resolveContainerDetailDetectedMatch(
   if (productCodeMatch) {
     return {
       item: productCodeMatch,
-      matchType: isDetectedItemNumberMatch(productCodeMatch) ? 'supplierItem' : 'productCode',
+      matchType: 'productCode',
     }
   }
 
@@ -1597,11 +1666,26 @@ export function buildContainerDetailMatchStatusUpdates(
       if (!row.hguid) return null
       const match = resolveContainerDetailDetectedMatch(row, detectedMaps)
       if (!match) return null
+      const localProductCode = getDetectedLocalProductCode(match.item)
+      const domesticProductCode = getDetectedDomesticProductCode(match.item) ?? getContainerDetailProductCode(row)
+      const hasProductCodeConflict = Boolean(
+        localProductCode
+        && domesticProductCode
+        && normalizeMatchKey(localProductCode) !== normalizeMatchKey(domesticProductCode),
+      ) || hasDetectedProductCodeConflict(match.item)
+      const isCandidate = match.matchType === 'supplierItem' || hasProductCodeConflict
 
       return {
         hguid: row.hguid,
-        matchType: match.matchType,
-        是否新商品: false,
+        matchType: isCandidate ? 'supplierItem' : match.matchType,
+        ...(isCandidate
+          ? {
+              hasProductCodeConflict,
+              localProductCode,
+              domesticProductCode,
+              conflictReason: getDetectedConflictReason(match.item),
+            }
+          : { 是否新商品: false }),
       }
     })
     .filter((update): update is UpdateContainerDetailRequest => update !== null)
@@ -1628,6 +1712,8 @@ export function buildContainerDetailMatchedDomesticDataUpdates(
 
       const detectedMatch = resolveContainerDetailDetectedMatch(row, detectedMaps)
       if (!detectedMatch) return null
+      // 货号命中只说明“可能是同一个商品”，不能用来批量写价格/名称；先人工对齐商品编码。
+      if (detectedMatch.matchType !== 'productCode' || hasDetectedProductCodeConflict(detectedMatch.item)) return null
 
       const update: UpdateContainerDetailRequest = { hguid: row.hguid }
       const match = detectedMatch.item
@@ -1709,7 +1795,7 @@ export function buildContainerDetailHqPushSelection(rows: ContainerDetail[]): Co
     const englishName = getContainerDetailEnglishName(row)?.trim()
     const barcode = row.商品信息?.条形码?.trim()
     const imageUrl = row.商品图片?.trim() || row.商品信息?.商品图片?.trim()
-    const oemPrice = resolveContainerDetailOemPrice(row)
+    const oemPrice = getContainerDetailVisibleOemPrice(row)
     if (!productCode && !(localSupplierCode && itemNumber)) {
       missingProductCodeCount += 1
       return

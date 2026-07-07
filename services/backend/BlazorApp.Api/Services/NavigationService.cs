@@ -179,6 +179,11 @@ namespace BlazorApp.Api.Services
                 TitleKey = "tabs.warehouse",
                 Icon = "warehouse",
                 Permission = Permissions.Warehouse.ManageProducts,
+                AnyPermissions = new[]
+                {
+                    Permissions.Warehouse.ManageProducts,
+                    Permissions.Container.View,
+                },
                 Order = 40,
             },
             new()
@@ -483,6 +488,7 @@ namespace BlazorApp.Api.Services
             return HasAnyPermission(
                 context,
                 Permissions.Dashboard.View,
+                Permissions.Container.View,
                 Permissions.Reports.ProductMovementView,
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,

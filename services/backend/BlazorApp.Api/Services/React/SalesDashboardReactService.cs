@@ -82,6 +82,7 @@ namespace BlazorApp.Api.Services.React
 
     internal class SupplierBranchAggregateRow
     {
+        public DateTime? Date { get; set; }
         public string SupplierCode { get; set; } = string.Empty;
         public string? BranchCode { get; set; }
         public decimal TotalAmount { get; set; }
@@ -123,6 +124,8 @@ namespace BlazorApp.Api.Services.React
         private static readonly TimeSpan REPORT_STATISTICS_REFRESH_WAIT = TimeSpan.FromMilliseconds(2200);
         private const int REPORT_STATISTICS_REFRESH_MAX_DAYS = 35;
         private const int LEGACY_CHINA_SUPPLIER_PRODUCT_FILTER_LIMIT = 2000;
+        private const string CHINA_LOCAL_SUPPLIER_CODE = "200";
+        private const string CHINA_LOCAL_SUPPLIER_FALLBACK_NAME = "hotbargain";
         private static readonly ConcurrentDictionary<string, byte> REPORT_STATISTICS_REFRESHING_KEYS = new();
 
         private enum StatisticsRefreshState
@@ -709,32 +712,21 @@ namespace BlazorApp.Api.Services.React
                 var supplierCodes = string.IsNullOrWhiteSpace(supplierCode)
                     ? null
                     : new List<string> { supplierCode.Trim() };
-                var excludedChinaSupplierCodes = new HashSet<string>(
-                    StringComparer.OrdinalIgnoreCase
-                );
+                var chinaSupplierCodeSet = await GetChinaSupplierCodeSetAsync();
+                var shouldIncludeChinaLocalSupplier = supplierCodes == null
+                    || supplierCodes.Any(IsChinaLocalSupplierCode);
+                var currentRows = new List<SupplierBranchAggregateRow>();
                 var query = await BuildProductReportStatisticQueryAsync(
                     startDate,
                     endDate,
-                    branchCodes,
-                    supplierCodes
+                    branchCodes
                 );
-                if (supplierCodes == null)
-                {
-                    // 中国供应商统一归在独立页签，澳洲供应商排行不重复展示 200 占位供应商。
-                    query = query.Where(s => s.SupplierCode != "200");
-                    var chinaSupplierCodeSet = await GetChinaSupplierCodeSetAsync();
-                    if (chinaSupplierCodeSet.Any())
-                    {
-                        // 日商品分店统计重算后，中国供应商会直接写入 SupplierCode，澳洲页也要排除。
-                        query = query.Where(s => !chinaSupplierCodeSet.Contains(s.SupplierCode));
-                        excludedChinaSupplierCodes = chinaSupplierCodeSet;
-                    }
-                }
-
-                var currentRows = await query
-                    .GroupBy(s => new { s.SupplierCode, s.BranchCode })
+                query = ApplyAustralianSupplierStatisticFilter(query, supplierCodes, chinaSupplierCodeSet);
+                var rawCurrentRows = await query
+                    .GroupBy(s => new { s.Date, s.SupplierCode, s.BranchCode })
                     .Select(s => new SupplierBranchAggregateRow
                     {
+                        Date = s.Date,
                         SupplierCode = s.SupplierCode,
                         BranchCode = s.BranchCode,
                         TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
@@ -742,7 +734,11 @@ namespace BlazorApp.Api.Services.React
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
                     })
                     .ToListAsync();
-
+                currentRows = ResolveAustralianSupplierBranchRows(
+                    rawCurrentRows,
+                    chinaSupplierCodeSet,
+                    preserveDate: true
+                );
                 if (!currentRows.Any())
                 {
                     // 商品统计异步生成期间，供应商表先用已存在的供应商分店统计兜底，避免页面空白。
@@ -752,17 +748,15 @@ namespace BlazorApp.Api.Services.React
                         branchCodes,
                         supplierCodes
                     );
-
-                    if (supplierCodes == null)
-                    {
-                        currentRows = currentRows
-                            .Where(row =>
-                                !string.Equals(row.SupplierCode, "200", StringComparison.OrdinalIgnoreCase)
-                                && !excludedChinaSupplierCodes.Contains(row.SupplierCode)
-                            )
-                            .ToList();
-                    }
                 }
+                currentRows = await AddChinaLocalSupplierFallbackRowsIfMissingAsync(
+                    currentRows,
+                    startDate,
+                    endDate,
+                    branchCodes,
+                    shouldIncludeChinaLocalSupplier,
+                    chinaSupplierCodeSet
+                );
 
                 var currentData = BuildSupplierRankAggregates(currentRows)
                     .OrderByDescending(row => row.TotalAmount)
@@ -770,7 +764,7 @@ namespace BlazorApp.Api.Services.React
                     .ToList();
 
                 var currentSupplierCodes = currentData.Select(s => s.SupplierCode).ToList();
-                var supplierNameMap = await GetLocalSupplierNameMapAsync(currentSupplierCodes);
+                var supplierNameMap = await GetAustralianSupplierNameMapAsync(currentSupplierCodes);
                 var compareDict = new Dictionary<string, (decimal TotalAmount, int OrderCount)>(
                     StringComparer.OrdinalIgnoreCase
                 );
@@ -784,18 +778,29 @@ namespace BlazorApp.Api.Services.React
                     var compareQuery = await BuildProductReportStatisticQueryAsync(
                         dateRange.CompareStartDate.Value.Date,
                         dateRange.CompareEndDate.Value.Date,
-                        branchCodes,
-                        currentSupplierCodes
+                        branchCodes
                     );
-                    var compareRows = await compareQuery
-                            .GroupBy(s => s.SupplierCode)
+                    compareQuery = ApplyAustralianSupplierStatisticFilter(
+                        compareQuery,
+                        currentSupplierCodes,
+                        chinaSupplierCodeSet
+                    );
+                    var rawCompareRows = await compareQuery
+                            .GroupBy(s => new { s.Date, s.SupplierCode, s.BranchCode })
                             .Select(s => new SupplierBranchAggregateRow
                             {
+                                Date = s.Date,
                                 SupplierCode = s.SupplierCode,
+                                BranchCode = s.BranchCode,
                                 TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                                 OrderCount = SqlFunc.AggregateSum(s.OrderCount),
                             })
                             .ToListAsync();
+                    var compareRows = ResolveAustralianSupplierBranchRows(
+                        rawCompareRows,
+                        chinaSupplierCodeSet,
+                        preserveDate: true
+                    );
 
                     if (!compareRows.Any())
                     {
@@ -806,6 +811,14 @@ namespace BlazorApp.Api.Services.React
                             currentSupplierCodes
                         );
                     }
+                    compareRows = await AddChinaLocalSupplierFallbackRowsIfMissingAsync(
+                        compareRows,
+                        dateRange.CompareStartDate.Value.Date,
+                        dateRange.CompareEndDate.Value.Date,
+                        branchCodes,
+                        currentSupplierCodes.Any(IsChinaLocalSupplierCode),
+                        chinaSupplierCodeSet
+                    );
 
                     compareDict = BuildSupplierCompareDict(compareRows, currentSupplierCodes);
                 }
@@ -1125,18 +1138,26 @@ namespace BlazorApp.Api.Services.React
 
                 var startDate = dateRange.StartDate.Date;
                 var endDate = dateRange.EndDate.Date;
+                var chinaSupplierCodeSet = targetSupplierCodes.Any(IsChinaLocalSupplierCode)
+                    ? await GetChinaSupplierCodeSetAsync()
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // 商品报告统一从日商品分店统计表汇总，避免供应商分店弹窗和商品明细口径不一致。
                 var currentQuery = await BuildProductReportStatisticQueryAsync(
                     startDate,
                     endDate,
-                    branchCodes,
-                    localSupplierCodes: targetSupplierCodes
+                    branchCodes
                 );
-                var currentData = await currentQuery
-                    .GroupBy(s => new { s.BranchCode, s.SupplierCode })
+                currentQuery = ApplyAustralianSupplierStatisticFilter(
+                    currentQuery,
+                    targetSupplierCodes,
+                    chinaSupplierCodeSet
+                );
+                var rawCurrentData = await currentQuery
+                    .GroupBy(s => new { s.Date, s.BranchCode, s.SupplierCode })
                     .Select(s => new SupplierBranchAggregateRow
                     {
+                        Date = s.Date,
                         BranchCode = s.BranchCode,
                         SupplierCode = s.SupplierCode,
                         TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
@@ -1144,6 +1165,11 @@ namespace BlazorApp.Api.Services.React
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
                     })
                     .ToListAsync();
+                var currentData = ResolveAustralianSupplierBranchRows(
+                    rawCurrentData,
+                    chinaSupplierCodeSet,
+                    preserveDate: true
+                );
 
                 if (!currentData.Any())
                 {
@@ -1155,6 +1181,14 @@ namespace BlazorApp.Api.Services.React
                         targetSupplierCodes
                     );
                 }
+                currentData = await AddChinaLocalSupplierFallbackRowsIfMissingAsync(
+                    currentData,
+                    startDate,
+                    endDate,
+                    branchCodes,
+                    targetSupplierCodes.Any(IsChinaLocalSupplierCode),
+                    chinaSupplierCodeSet
+                );
 
                 var currentBranchCodes = currentData
                     .Select(d => d.BranchCode?.Trim())
@@ -1162,7 +1196,7 @@ namespace BlazorApp.Api.Services.React
                     .Select(code => code!)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var storeDict = await GetStoreNameMapAsync(currentBranchCodes);
-                var supplierNameMap = await GetLocalSupplierNameMapAsync(
+                var supplierNameMap = await GetAustralianSupplierNameMapAsync(
                     currentData.Select(d => d.SupplierCode)
                 );
 
@@ -1181,19 +1215,29 @@ namespace BlazorApp.Api.Services.React
                     var compareQuery = await BuildProductReportStatisticQueryAsync(
                         dateRange.CompareStartDate.Value.Date,
                         dateRange.CompareEndDate.Value.Date,
-                        currentBranchCodes.ToList(),
-                        localSupplierCodes: targetSupplierCodes
+                        currentBranchCodes.ToList()
                     );
-                    var compareDataList = await compareQuery
-                        .GroupBy(s => new { s.BranchCode, s.SupplierCode })
+                    compareQuery = ApplyAustralianSupplierStatisticFilter(
+                        compareQuery,
+                        targetSupplierCodes,
+                        chinaSupplierCodeSet
+                    );
+                    var rawCompareDataList = await compareQuery
+                        .GroupBy(s => new { s.Date, s.BranchCode, s.SupplierCode })
                         .Select(s => new SupplierBranchAggregateRow
                         {
+                            Date = s.Date,
                             BranchCode = s.BranchCode,
                             SupplierCode = s.SupplierCode,
                             TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCount = SqlFunc.AggregateSum(s.OrderCount),
                         })
                         .ToListAsync();
+                    var compareDataList = ResolveAustralianSupplierBranchRows(
+                        rawCompareDataList,
+                        chinaSupplierCodeSet,
+                        preserveDate: true
+                    );
 
                     if (!compareDataList.Any())
                     {
@@ -1204,6 +1248,14 @@ namespace BlazorApp.Api.Services.React
                             targetSupplierCodes
                         );
                     }
+                    compareDataList = await AddChinaLocalSupplierFallbackRowsIfMissingAsync(
+                        compareDataList,
+                        dateRange.CompareStartDate.Value.Date,
+                        dateRange.CompareEndDate.Value.Date,
+                        currentBranchCodes.ToList(),
+                        targetSupplierCodes.Any(IsChinaLocalSupplierCode),
+                        chinaSupplierCodeSet
+                    );
 
                     compareDict = BuildSupplierBranchCompareDict(compareDataList);
                 }
@@ -4140,6 +4192,166 @@ namespace BlazorApp.Api.Services.React
             return chinaSupplierCodes.Contains(supplierCode) ? supplierCode : null;
         }
 
+        private static bool IsChinaLocalSupplierCode(string? supplierCode)
+        {
+            return string.Equals(
+                supplierCode?.Trim(),
+                CHINA_LOCAL_SUPPLIER_CODE,
+                StringComparison.OrdinalIgnoreCase
+            );
+        }
+
+        private static string ResolveAustralianSupplierCode(
+            string? statisticSupplierCode,
+            HashSet<string> chinaSupplierCodes
+        )
+        {
+            var supplierCode = statisticSupplierCode?.Trim() ?? string.Empty;
+            if (
+                IsChinaLocalSupplierCode(supplierCode)
+                || chinaSupplierCodes.Contains(supplierCode)
+            )
+            {
+                return CHINA_LOCAL_SUPPLIER_CODE;
+            }
+
+            return supplierCode;
+        }
+
+        private static List<SupplierBranchAggregateRow> ResolveAustralianSupplierBranchRows(
+            IEnumerable<SupplierBranchAggregateRow> rows,
+            HashSet<string> chinaSupplierCodes,
+            bool preserveDate = false
+        )
+        {
+            var resolvedRows = rows.Select(row => new SupplierBranchAggregateRow
+            {
+                Date = row.Date?.Date,
+                SupplierCode = ResolveAustralianSupplierCode(row.SupplierCode, chinaSupplierCodes),
+                BranchCode = row.BranchCode,
+                TotalAmount = row.TotalAmount,
+                TotalQuantity = row.TotalQuantity,
+                OrderCount = row.OrderCount,
+            });
+
+            return preserveDate
+                ? AggregateSupplierDateBranchRows(resolvedRows)
+                : AggregateSupplierBranchRows(resolvedRows);
+        }
+
+        private static ISugarQueryable<ProductStoreDailySalesStatistic> ApplyAustralianSupplierStatisticFilter(
+            ISugarQueryable<ProductStoreDailySalesStatistic> query,
+            IEnumerable<string>? supplierCodes,
+            HashSet<string>? chinaSupplierCodes = null
+        )
+        {
+            var codes = NormalizeCodes(supplierCodes);
+            if (!codes.Any())
+                return query;
+
+            if (!codes.Any(IsChinaLocalSupplierCode))
+                return query.Where(s => codes.Contains(s.SupplierCode));
+
+            var localSupplierCodes = codes
+                .Where(code => !IsChinaLocalSupplierCode(code))
+                .ToList();
+            var supplierFilterCodes = localSupplierCodes
+                .Concat(new[] { CHINA_LOCAL_SUPPLIER_CODE })
+                .Concat(chinaSupplierCodes ?? Enumerable.Empty<string>())
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // 200 汇总行兼容新旧日统计：旧统计写 200，新统计直写中国供应商编码。
+            return query.Where(s => supplierFilterCodes.Contains(s.SupplierCode));
+        }
+
+        private static IEnumerable<SupplierBranchAggregateRow> MapChinaSupplierRowsToLocal200(
+            IEnumerable<SupplierBranchAggregateRow> rows
+        )
+        {
+            return rows.Select(row => new SupplierBranchAggregateRow
+            {
+                Date = row.Date?.Date,
+                SupplierCode = CHINA_LOCAL_SUPPLIER_CODE,
+                BranchCode = row.BranchCode,
+                TotalAmount = row.TotalAmount,
+                TotalQuantity = row.TotalQuantity,
+                OrderCount = row.OrderCount,
+            });
+        }
+
+        private static string NormalizeCoverageBranchKey(string? branchCode)
+        {
+            return branchCode?.Trim() ?? string.Empty;
+        }
+
+        private static string BuildDateBranchCoverageKey(DateTime date, string? branchCode)
+        {
+            return $"{date:yyyyMMdd}|{NormalizeCoverageBranchKey(branchCode)}";
+        }
+
+        private static List<SupplierBranchAggregateRow> FilterUncoveredChinaLocalFallbackRows(
+            IEnumerable<SupplierBranchAggregateRow> rows,
+            IEnumerable<SupplierBranchAggregateRow> chinaFallbackRows
+        )
+        {
+            var chinaLocalRows = rows
+                .Where(row => IsChinaLocalSupplierCode(row.SupplierCode))
+                .ToList();
+            if (!chinaLocalRows.Any())
+                return chinaFallbackRows.ToList();
+
+            var coversAllFallback = chinaLocalRows.Any(row =>
+                !row.Date.HasValue && string.IsNullOrWhiteSpace(row.BranchCode)
+            );
+            if (coversAllFallback)
+                return new List<SupplierBranchAggregateRow>();
+
+            var coveredBranches = chinaLocalRows
+                .Where(row => !row.Date.HasValue && !string.IsNullOrWhiteSpace(row.BranchCode))
+                .Select(row => NormalizeCoverageBranchKey(row.BranchCode))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var coveredDateBranches = chinaLocalRows
+                .Where(row => row.Date.HasValue)
+                .Select(row => BuildDateBranchCoverageKey(row.Date!.Value.Date, row.BranchCode))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            return chinaFallbackRows
+                .Where(row =>
+                    !coveredBranches.Contains(NormalizeCoverageBranchKey(row.BranchCode))
+                    && row.Date.HasValue
+                    && !coveredDateBranches.Contains(
+                        BuildDateBranchCoverageKey(row.Date.Value.Date, row.BranchCode)
+                    )
+                )
+                .ToList();
+        }
+
+        private async Task<List<SupplierBranchAggregateRow>> AddChinaLocalSupplierFallbackRowsIfMissingAsync(
+            List<SupplierBranchAggregateRow> rows,
+            DateTime startDate,
+            DateTime endDate,
+            List<string>? branchCodes,
+            bool includeChinaLocalSupplier,
+            HashSet<string> chinaSupplierCodes
+        )
+        {
+            if (includeChinaLocalSupplier)
+            {
+                // 中国拆分表和澳洲 200 可能覆盖同一批销售；按日期+分店只补缺片段，避免部分统计时漏数或重复。
+                var chinaFallbackRows = await QueryChinaSupplierStoreDateBranchAggregateRowsAsync(
+                    startDate,
+                    endDate,
+                    branchCodes
+                );
+                var fallbackRows = FilterUncoveredChinaLocalFallbackRows(rows, chinaFallbackRows);
+                rows.AddRange(MapChinaSupplierRowsToLocal200(fallbackRows));
+            }
+
+            return ResolveAustralianSupplierBranchRows(rows, chinaSupplierCodes);
+        }
+
         private static ISugarQueryable<ProductStoreDailySalesStatistic> ApplyChinaSupplierStatisticFilter(
             ISugarQueryable<ProductStoreDailySalesStatistic> query,
             HashSet<string> targetChinaSupplierCodes,
@@ -4212,6 +4424,28 @@ namespace BlazorApp.Api.Services.React
             var searchProductCodes = normalizedProductSearch == null
                 ? new List<string>()
                 : await GetProductCodesForSearchAsync(normalizedProductSearch);
+            var normalizedLocalSupplierCodes = NormalizeCodes(localSupplierCodes);
+            if (
+                !normalizedChinaSupplierCodes.Any()
+                && normalizedLocalSupplierCodes.Any(IsChinaLocalSupplierCode)
+            )
+            {
+                var query = await BuildProductReportStatisticQueryAsync(
+                    startDate,
+                    endDate,
+                    branchCodes,
+                    localSupplierCodes: null,
+                    chinaProductCodes: null,
+                    normalizedProductSearch,
+                    chinaSupplierCodes: null
+                );
+                query = ApplyAustralianSupplierStatisticFilter(
+                    query,
+                    normalizedLocalSupplierCodes,
+                    await GetChinaSupplierCodeSetAsync()
+                );
+                return await QueryProductReportProductAggregatesAsync(query);
+            }
             var targetChinaSupplierCodes = normalizedChinaSupplierCodes.ToHashSet(
                 StringComparer.OrdinalIgnoreCase
             );
@@ -4527,6 +4761,43 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
         }
 
+        private async Task<List<SupplierBranchAggregateRow>> QueryChinaSupplierStoreDateBranchAggregateRowsAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string>? branchCodes = null,
+            IEnumerable<string>? supplierCodes = null
+        )
+        {
+            var normalizedBranchCodes = NormalizeCodes(branchCodes);
+            var normalizedSupplierCodes = NormalizeCodes(supplierCodes);
+
+            var query = _context.Db.Queryable<ChinaSupplierStoreSalesDetail>()
+                .Where(s => s.Date >= startDate && s.Date <= endDate);
+
+            if (normalizedBranchCodes.Any())
+            {
+                query = query.Where(s => normalizedBranchCodes.Contains(s.BranchCode));
+            }
+
+            if (normalizedSupplierCodes.Any())
+            {
+                query = query.Where(s => normalizedSupplierCodes.Contains(s.SupplierCode));
+            }
+
+            return await query
+                .GroupBy(s => new { s.Date, s.SupplierCode, s.BranchCode })
+                .Select(s => new SupplierBranchAggregateRow
+                {
+                    Date = s.Date,
+                    SupplierCode = s.SupplierCode,
+                    BranchCode = s.BranchCode,
+                    TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                    TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                    OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                })
+                .ToListAsync();
+        }
+
         private static List<SupplierBranchAggregateRow> AggregateSupplierBranchRows(
             IEnumerable<SupplierBranchAggregateRow> rows
         )
@@ -4540,6 +4811,30 @@ namespace BlazorApp.Api.Services.React
                 })
                 .Select(group => new SupplierBranchAggregateRow
                 {
+                    SupplierCode = group.Key.SupplierCode,
+                    BranchCode = group.Key.BranchCode,
+                    TotalAmount = group.Sum(row => row.TotalAmount),
+                    TotalQuantity = group.Sum(row => row.TotalQuantity),
+                    OrderCount = group.Sum(row => row.OrderCount ?? 0),
+                })
+                .ToList();
+        }
+
+        private static List<SupplierBranchAggregateRow> AggregateSupplierDateBranchRows(
+            IEnumerable<SupplierBranchAggregateRow> rows
+        )
+        {
+            return rows
+                .Where(row => !string.IsNullOrWhiteSpace(row.SupplierCode))
+                .GroupBy(row => new
+                {
+                    Date = row.Date?.Date,
+                    SupplierCode = row.SupplierCode.Trim(),
+                    BranchCode = row.BranchCode?.Trim() ?? string.Empty,
+                })
+                .Select(group => new SupplierBranchAggregateRow
+                {
+                    Date = group.Key.Date,
                     SupplierCode = group.Key.SupplierCode,
                     BranchCode = group.Key.BranchCode,
                     TotalAmount = group.Sum(row => row.TotalAmount),
@@ -4718,6 +5013,27 @@ namespace BlazorApp.Api.Services.React
                     group => group.First().Name,
                     StringComparer.OrdinalIgnoreCase
                 );
+        }
+
+        private async Task<Dictionary<string, string>> GetAustralianSupplierNameMapAsync(
+            IEnumerable<string> supplierCodes
+        )
+        {
+            var codes = NormalizeCodes(supplierCodes);
+            var nameMap = await GetLocalSupplierNameMapAsync(codes);
+            if (
+                codes.Any(IsChinaLocalSupplierCode)
+                && (
+                    !nameMap.TryGetValue(CHINA_LOCAL_SUPPLIER_CODE, out var supplierName)
+                    || string.IsNullOrWhiteSpace(supplierName)
+                )
+            )
+            {
+                // 200 是中国货在澳洲供应商报表中的固定汇总行，资料缺失时仍显示业务名称。
+                nameMap[CHINA_LOCAL_SUPPLIER_CODE] = CHINA_LOCAL_SUPPLIER_FALLBACK_NAME;
+            }
+
+            return nameMap;
         }
 
         private async Task<Dictionary<string, string>> GetChinaSupplierNameMapAsync(

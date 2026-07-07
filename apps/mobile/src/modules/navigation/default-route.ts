@@ -171,7 +171,16 @@ export function resolveTabRouteCorrection({
   const defaultRoute = resolveDefaultTabRoute({ isDeviceMode, routeNames: orderedRouteNames });
   const currentRoute = TAB_PATHS[currentRouteName];
 
-  if (!currentRoute || !visibleRouteNames.has(currentRouteName)) {
+  if (currentRouteName === LEGACY_ATTENDANCE_ROUTE_NAME) {
+    return defaultRoute;
+  }
+
+  if (!currentRoute) {
+    // 非 Tab 栈页面（例如货柜列表/明细）由根 Stack 接管，不能被 Tab 默认页纠偏抢走。
+    return null;
+  }
+
+  if (!visibleRouteNames.has(currentRouteName)) {
     return defaultRoute;
   }
 

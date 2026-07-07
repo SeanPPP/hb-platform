@@ -1,9 +1,11 @@
 using System.Reflection;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using ClosedXML.Excel;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
@@ -168,6 +170,139 @@ public class ReactContainerControllerSyncContractTests
         AssertPayload(ok.Value, true, "获取货柜商品明细成功", expectedResult);
     }
 
+    [Theory]
+    [InlineData(nameof(ReactContainerController.GetContainers))]
+    [InlineData(nameof(ReactContainerController.GetContainerDetail))]
+    [InlineData(nameof(ReactContainerController.GetContainerProducts))]
+    [InlineData(nameof(ReactContainerController.QueryContainerProducts))]
+    [InlineData(nameof(ReactContainerController.ExportContainerProducts))]
+    [InlineData(nameof(ReactContainerController.GetFilteredContainerProducts))]
+    [InlineData(nameof(ReactContainerController.GetDateFilterOptions))]
+    [InlineData(nameof(ReactContainerController.GetDomesticSetCodes))]
+    [InlineData(nameof(ReactContainerController.CheckConflicts))]
+    public void ContainerReadEndpoints_使用货柜查看权限策略(string methodName)
+    {
+        AssertMethodHasPolicy(methodName, Permissions.Container.View);
+    }
+
+    [Theory]
+    [InlineData(nameof(ReactContainerController.CreateContainer), Permissions.Container.Create)]
+    [InlineData(nameof(ReactContainerController.UpdateContainer), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.UpdateDomesticSetCodePrices), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.BatchUpdateDetails), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.ApplyFloatRateByScope), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.ApplyPricesByScope), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.RecalculateCostsByScope), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.BackfillLastPricesByScope), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.PushContainersToHbSales), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.AssignProducts), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.BatchDeleteDetails), Permissions.Container.Delete)]
+    public void ContainerMutationEndpoints_使用货柜写权限策略(string methodName, string policy)
+    {
+        AssertMethodHasPolicy(methodName, policy);
+    }
+
+    [Fact]
+    public async Task ExportContainerProducts_SelectedHguids_应返回Excel文件()
+    {
+        var requests = new List<(string ContainerGuid, int PageNumber, int PageSize)>();
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.GetContainerDetailAsync("ROUTE-GUID"))
+            .ReturnsAsync(CreateContainer());
+        containerService
+            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
+            .Callback<ContainerDetailQueryDto>(request =>
+                requests.Add((request.ContainerGuid, request.PageNumber, request.PageSize))
+            )
+            .ReturnsAsync(
+                new ContainerDetailQueryResultDto
+                {
+                    Items = new List<ContainerDetailDto>
+                    {
+                        CreateDetail("DETAIL-1", "HB-001"),
+                        CreateDetail("DETAIL-2", "HB-002"),
+                    },
+                    HasMore = false,
+                }
+            );
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.ExportContainerProducts(
+            "ROUTE-GUID",
+            new ReactContainerDetailsExportRequest
+            {
+                Format = "excel",
+                SelectedHguids = new List<string> { "DETAIL-1" },
+                Columns = new List<string> { "Index", "ItemNumber", "OEMPrice" },
+                Query = new ContainerDetailQueryDto { ItemNumber = "HB" },
+            }
+        );
+
+        var file = Assert.IsType<FileContentResult>(response);
+        Assert.Equal(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            file.ContentType
+        );
+        Assert.EndsWith(".xlsx", file.FileDownloadName);
+        Assert.NotEmpty(file.FileContents);
+        Assert.Equal(("ROUTE-GUID", 1, 500), Assert.Single(requests));
+        using var workbook = new XLWorkbook(new MemoryStream(file.FileContents));
+        var worksheet = workbook.Worksheets.First();
+        Assert.Equal("序号", worksheet.Cell(6, 1).GetString());
+        Assert.Equal("货号", worksheet.Cell(6, 2).GetString());
+        Assert.Equal("零售价", worksheet.Cell(6, 3).GetString());
+        Assert.Equal("1", worksheet.Cell(7, 1).GetString());
+        Assert.Equal("HB-001", worksheet.Cell(7, 2).GetString());
+        Assert.Equal("2.34", worksheet.Cell(7, 3).GetString());
+        Assert.True(worksheet.Cell(6, 4).IsEmpty());
+    }
+
+    [Fact]
+    public async Task ExportContainerProducts_Query_应返回Pdf文件()
+    {
+        var requestedIncludeFlags = new List<(bool IncludeTotal, bool IncludeStats)>();
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.GetContainerDetailAsync("ROUTE-GUID"))
+            .ReturnsAsync(CreateContainer());
+        containerService
+            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
+            .Callback<ContainerDetailQueryDto>(request =>
+                requestedIncludeFlags.Add((request.IncludeTotal, request.IncludeStats))
+            )
+            .ReturnsAsync(
+                new ContainerDetailQueryResultDto
+                {
+                    Items = new List<ContainerDetailDto> { CreateDetail("DETAIL-1", "HB-001") },
+                    HasMore = false,
+                }
+            );
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.ExportContainerProducts(
+            "ROUTE-GUID",
+            new ReactContainerDetailsExportRequest
+            {
+                Format = "pdf",
+                SelectedHguids = null!,
+                ExportColumns = new List<string> { "itemNumber", "barcode" },
+                Query = new ContainerDetailQueryDto
+                {
+                    ProductName = "Toy",
+                    IncludeTotal = true,
+                    IncludeStats = true,
+                },
+            }
+        );
+
+        var file = Assert.IsType<FileContentResult>(response);
+        Assert.Equal("application/pdf", file.ContentType);
+        Assert.EndsWith(".pdf", file.FileDownloadName);
+        Assert.NotEmpty(file.FileContents);
+        Assert.Equal((false, false), Assert.Single(requestedIncludeFlags));
+    }
+
     [Fact]
     public void SyncContainersFromHq_使用货柜编辑权限策略()
     {
@@ -300,15 +435,74 @@ public class ReactContainerControllerSyncContractTests
     private static ReactContainerController CreateController(
         IContainerHqSyncService? syncService = null,
         IContainerReactService? containerService = null,
+        ContainerExportService? exportService = null,
         IMemoryCache? cache = null
     )
     {
         return new ReactContainerController(
             containerService ?? Mock.Of<IContainerReactService>(),
             syncService ?? Mock.Of<IContainerHqSyncService>(),
+            exportService ?? CreateExportService(),
             cache ?? new MemoryCache(new MemoryCacheOptions()),
             Mock.Of<ILogger<ReactContainerController>>()
         );
+    }
+
+    private static void AssertMethodHasPolicy(string methodName, string policy)
+    {
+        var method = typeof(ReactContainerController).GetMethod(methodName);
+        var authorizeAttributes = method!
+            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: false)
+            .Cast<AuthorizeAttribute>()
+            .ToList();
+
+        Assert.Contains(authorizeAttributes, attribute => attribute.Policy == policy);
+        Assert.DoesNotContain(
+            authorizeAttributes,
+            attribute => attribute.Roles?.Contains("User", StringComparison.OrdinalIgnoreCase) == true
+        );
+    }
+
+    private static ContainerExportService CreateExportService()
+    {
+        return new ContainerExportService(
+            Mock.Of<ILogger<ContainerExportService>>(),
+            new HttpClient()
+        );
+    }
+
+    private static ContainerMainDto CreateContainer()
+    {
+        return new ContainerMainDto
+        {
+            HGUID = "ROUTE-GUID",
+            货柜编号 = "CN-001",
+            装柜日期 = new DateTime(2026, 7, 1),
+            合计件数 = 1,
+            合计数量 = 12,
+            总体积 = 0.5m,
+        };
+    }
+
+    private static ContainerDetailDto CreateDetail(string hguid, string itemNumber)
+    {
+        return new ContainerDetailDto
+        {
+            HGUID = hguid,
+            主表GUID = "ROUTE-GUID",
+            商品编码 = $"P-{itemNumber}",
+            装柜数量 = 12,
+            进口价格 = 1.23m,
+            贴牌价格 = 2.34m,
+            商品信息 = new ContainerProductInfoDto
+            {
+                商品编码 = $"P-{itemNumber}",
+                货号 = itemNumber,
+                条形码 = $"BC-{itemNumber}",
+                商品名称 = $"商品 {itemNumber}",
+                英文名称 = $"Product {itemNumber}",
+            },
+        };
     }
 
     private static void AssertPayload(

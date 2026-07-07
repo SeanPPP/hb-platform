@@ -27,7 +27,7 @@
     "selectPrefix": "Select prefix",
     "noPrefix": "No prefix",
     "count": "Quantity",
-    "privateLabelPrice": "Uniform OEM price",
+    "privateLabelPrice": "Uniform RRP",
     "privateLabelPriceHelp": "Optional. Leave blank when prices differ, then edit each item in the detail dialog."
   },
   "fields": {
@@ -35,8 +35,8 @@
     "normalCount": "Normal {{value}}",
     "setCount": "Set {{value}}",
     "barcode": "Barcode {{value}}",
-    "privateLabelPriceLabel": "OEM price",
-    "privateLabelPrice": "OEM {{value}}",
+    "privateLabelPriceLabel": "RRP",
+    "privateLabelPrice": "RRP {{value}}",
     "parent": "Parent {{value}}",
     "emptyName": "--"
   },
@@ -52,7 +52,7 @@
     "loadPrefixesFailed": "Failed to load prefixes",
     "selectSupplier": "Select a supplier first",
     "invalidCount": "Quantity must be between 1 and 100",
-    "invalidPrice": "Invalid private label price",
+    "invalidPrice": "Invalid RRP",
     "createSuccess": "Created",
     "createFailed": "Create failed",
     "saveSuccess": "Saved",
@@ -64,7 +64,7 @@
     "exportFailed": "Export failed"
   },
   "copy": {
-    "batchHeader": "Item Barcode OEM Price"
+    "batchHeader": "Item Barcode RRP"
   },
   "productList": {
     "title": "Domestic Product List",
@@ -83,7 +83,7 @@
       "productSpecification": "Specification",
       "productType": "Product type",
       "domesticPrice": "Domestic price",
-      "oemPrice": "OEM price",
+      "oemPrice": "RRP",
       "importPrice": "Import price",
       "packingQuantity": "Packing quantity",
       "unitVolume": "Unit volume",

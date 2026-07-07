@@ -490,7 +490,7 @@ export default function ProductImportPage() {
         <div>
           <p>{t('productImport.sendConfirmText', '确定要将选中的 {{count}} 个商品发送到HQ数据库吗？', { count: productCodes.length })}</p>
           <p style={{ fontSize: 12, color: '#888' }}>{t('productImport.sendHint', '将先同步到 HBSales（含商品图片），再写入 HQ 的 DIC_商品信息字典表、DIC_商品零售价表 和 CBP_DIC_商品库存表')}</p>
-          <p style={{ fontSize: 12, color: '#f97316' }}>{t('productImport.sendPriceWarning', '⚠️ 要求商品必须有进口价格和贴牌价格')}</p>
+          <p style={{ fontSize: 12, color: '#f97316' }}>{t('productImport.sendPriceWarning', '⚠️ 要求商品必须有进口价格和零售价')}</p>
         </div>
       ),
       okText: t('productImport.confirmSend', '确定发送'),
@@ -800,7 +800,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('domesticPrice', 'number', record, { precision: 2 }),
       },
       {
-        title: t('productImport.oemPriceCol', '贴牌价格'),
+        title: t('productImport.oemPriceCol', '零售价'),
         dataIndex: ['newProduct', 'oemPrice'],
         key: 'oemPrice',
         width: 90,
@@ -837,7 +837,7 @@ export default function ProductImportPage() {
       },
     ]
     if (showStatistics) {
-      const fieldNameMap: Record<string, string> = { productName: t('domesticProducts.productName', '商品名称'), englishProductName: t('domesticProducts.englishName', '英文名称'), barcode: t('domesticProducts.barcode', '条码'), domesticPrice: '国内价格', oemPrice: '贴牌价格', packingQuantity: '单件装箱数', unitVolume: '单件体积', middlePackQuantity: '中包数' }
+      const fieldNameMap: Record<string, string> = { productName: t('domesticProducts.productName', '商品名称'), englishProductName: t('domesticProducts.englishName', '英文名称'), barcode: t('domesticProducts.barcode', '条码'), domesticPrice: '国内价格', oemPrice: '零售价', packingQuantity: '单件装箱数', unitVolume: '单件体积', middlePackQuantity: '中包数' }
       base.push(
         { title: t('productImport.matchStatus', '匹配状态'), key: 'matchStatus', width: 100, fixed: 'right', render: (_, record) => {
           const map: Record<string, { color: string; text: string }> = { new: { color: 'green', text: t('productImport.statusNew', '✨ 新商品') }, updated: { color: 'orange', text: '📝 需更新' }, unchanged: { color: 'blue', text: '✅ 无变化' }, duplicate: { color: 'default', text: '⚠️ 重复' }, dbDuplicate: { color: 'purple', text: '⚠️ DB重复' }, error: { color: 'red', text: '❌ 错误' } }
@@ -858,7 +858,7 @@ export default function ProductImportPage() {
           if (!old) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old.toFixed(2)}{hasDiff && record.newProduct.domesticPrice ? ` → ${record.newProduct.domesticPrice.toFixed(2)}` : ''}</span>
         }},
-        { title: t('productImport.oldOemPrice', '旧贴牌价格'), key: 'matchedOemPrice', width: 100, render: (_, record) => {
+        { title: t('productImport.oldOemPrice', '旧零售价'), key: 'matchedOemPrice', width: 100, render: (_, record) => {
           const old = record.matchedProduct?.oemPrice
           const hasDiff = record.diffFields?.includes('oemPrice')
           if (!old) return <span style={{ color: '#ccc' }}>-</span>

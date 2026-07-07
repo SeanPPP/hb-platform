@@ -40,6 +40,9 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             typeof(Container),
             typeof(ContainerDetail),
             typeof(DomesticProduct),
+            typeof(DomesticSetProduct),
+            typeof(ProductGrade),
+            typeof(DomesticProductCreationLog),
             typeof(WarehouseProduct),
             typeof(Product),
             typeof(StoreRetailPrice),
@@ -173,6 +176,342 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.True(success);
         Assert.Equal(2, container.Status);
         Assert.Equal("只改状态备注", container.Remarks);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_确认后应反向更新国内编码并级联引用()
+    {
+        await SeedDetailAsync("D-ALIGN-1", "DOM-OLD");
+        await SeedDetailAsync("D-ALIGN-2", "DOM-OLD");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-OLD",
+            HBProductNo = "ITEM-ALIGN",
+            SupplierCode = "200",
+            ProductName = "国内旧编码商品",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-NEW", "本地主档商品", null, "ITEM-ALIGN", "200");
+        await _localDb.Insertable(new DomesticSetProduct
+        {
+            ProductCode = "DOM-OLD",
+            ProductNo = "ITEM-ALIGN",
+            SetProductNo = "SET-ALIGN",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductGrade
+        {
+            Id = "GRADE-ALIGN",
+            ProductCode = "DOM-OLD",
+            Grade = "A",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new DomesticProductCreationLog
+        {
+            LogId = "LOG-ALIGN",
+            ProductCode = "DOM-OLD",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.AlignDomesticProductCodeAsync(
+            new AlignDomesticProductCodeRequestDto
+            {
+                DetailHguid = "D-ALIGN-1",
+                ExpectedDomesticProductCode = "DOM-OLD",
+                TargetProductCode = "LOCAL-NEW",
+                SupplierCode = "200",
+            }
+        );
+
+        Assert.Equal("DOM-OLD", result.OldProductCode);
+        Assert.Equal("LOCAL-NEW", result.NewProductCode);
+        Assert.Equal(1, result.UpdatedDomesticProducts);
+        Assert.Equal(2, result.UpdatedContainerDetails);
+        Assert.Equal(1, result.UpdatedDomesticSetProducts);
+        Assert.Equal(1, result.UpdatedProductGrades);
+        Assert.Equal(1, result.UpdatedDomesticProductCreationLogs);
+        Assert.False(await _localDb.Queryable<DomesticProduct>().AnyAsync(x => x.ProductCode == "DOM-OLD"));
+        Assert.True(await _localDb.Queryable<DomesticProduct>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
+        Assert.Equal(2, await _localDb.Queryable<ContainerDetail>().CountAsync(x => x.ProductCode == "LOCAL-NEW"));
+        Assert.True(await _localDb.Queryable<DomesticSetProduct>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
+        Assert.True(await _localDb.Queryable<ProductGrade>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
+        Assert.True(await _localDb.Queryable<DomesticProductCreationLog>().AnyAsync(x => x.ProductCode == "LOCAL-NEW"));
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_缺少供应商代码_应拒绝()
+    {
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-NO-SUPPLIER",
+                    ExpectedDomesticProductCode = "DOM-NO-SUPPLIER",
+                    TargetProductCode = "LOCAL-NO-SUPPLIER",
+                }
+            )
+        );
+
+        Assert.Equal("供应商代码不能为空", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_目标国内编码已存在_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-DUP", "DOM-DUP-OLD");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-DUP-OLD",
+            HBProductNo = "ITEM-DUP",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "LOCAL-DUP",
+            HBProductNo = "ITEM-DUP",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-DUP", "本地主档商品", null, "ITEM-DUP", "200");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-DUP",
+                    ExpectedDomesticProductCode = "DOM-DUP-OLD",
+                    TargetProductCode = "LOCAL-DUP",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("目标国内商品编码已存在，不能自动合并", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_货号不一致_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-ITEM", "DOM-ITEM-OLD");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-ITEM-OLD",
+            HBProductNo = "ITEM-OLD",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-ITEM-NEW", "本地主档商品", null, "ITEM-NEW", "200");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-ITEM",
+                    ExpectedDomesticProductCode = "DOM-ITEM-OLD",
+                    TargetProductCode = "LOCAL-ITEM-NEW",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("国内商品货号与本地主档货号不一致，不能对齐编码", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_国内商品供应商不一致_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-DOM-SUPPLIER", "DOM-DOM-SUPPLIER-OLD");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-DOM-SUPPLIER-OLD",
+            HBProductNo = "ITEM-DOM-SUPPLIER",
+            SupplierCode = "999",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-DOM-SUPPLIER-NEW", "本地主档商品", null, "ITEM-DOM-SUPPLIER", "200");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-DOM-SUPPLIER",
+                    ExpectedDomesticProductCode = "DOM-DOM-SUPPLIER-OLD",
+                    TargetProductCode = "LOCAL-DOM-SUPPLIER-NEW",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("国内商品供应商代码与候选供应商不一致，不能对齐编码", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_本地主档供应商不一致_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-SUPPLIER", "DOM-SUPPLIER-OLD");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-SUPPLIER-OLD",
+            HBProductNo = "ITEM-SUPPLIER",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-SUPPLIER-NEW", "本地主档商品", null, "ITEM-SUPPLIER", "999");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-SUPPLIER",
+                    ExpectedDomesticProductCode = "DOM-SUPPLIER-OLD",
+                    TargetProductCode = "LOCAL-SUPPLIER-NEW",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("供应商代码与本地主档不一致，不能对齐编码", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_套装子商品_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-SET-CHILD", "DOM-SET-CHILD-OLD", "套装子商品");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-SET-CHILD",
+                    ExpectedDomesticProductCode = "DOM-SET-CHILD-OLD",
+                    TargetProductCode = "LOCAL-SET-CHILD-NEW",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("套装子商品关联套装结构，暂不支持单独对齐编码", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_明细旧编码已变化_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-STALE", "DOM-CHANGED");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-STALE",
+                    ExpectedDomesticProductCode = "DOM-STALE",
+                    TargetProductCode = "LOCAL-STALE",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("明细商品编码已变化，请刷新后重试", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_原国内编码已存在本地主档_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-OLD-LOCAL", "DOM-OLD-LOCAL");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-OLD-LOCAL",
+            HBProductNo = "ITEM-OLD-LOCAL",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-OLD-LOCAL", "目标本地主档商品", null, "ITEM-OLD-LOCAL", "200");
+        await SeedLocalProductAsync("DOM-OLD-LOCAL", "旧码本地主档商品", null, "ITEM-OLD-LOCAL", "200");
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-OLD-LOCAL",
+                    ExpectedDomesticProductCode = "DOM-OLD-LOCAL",
+                    TargetProductCode = "LOCAL-OLD-LOCAL",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("原国内商品编码已存在本地主档或仓库商品，不能自动改码", ex.Message);
+    }
+
+    [Fact]
+    public async Task AlignDomesticProductCodeAsync_原国内编码已存在仓库商品_应拒绝()
+    {
+        await SeedDetailAsync("D-ALIGN-OLD-WAREHOUSE", "DOM-OLD-WAREHOUSE");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-OLD-WAREHOUSE",
+            HBProductNo = "ITEM-OLD-WAREHOUSE",
+            SupplierCode = "200",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-OLD-WAREHOUSE", "目标本地主档商品", null, "ITEM-OLD-WAREHOUSE", "200");
+        await _localDb.Insertable(new WarehouseProduct
+        {
+            ProductCode = "DOM-OLD-WAREHOUSE",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AlignDomesticProductCodeAsync(
+                new AlignDomesticProductCodeRequestDto
+                {
+                    DetailHguid = "D-ALIGN-OLD-WAREHOUSE",
+                    ExpectedDomesticProductCode = "DOM-OLD-WAREHOUSE",
+                    TargetProductCode = "LOCAL-OLD-WAREHOUSE",
+                    SupplierCode = "200",
+                }
+            )
+        );
+
+        Assert.Equal("原国内商品编码已存在本地主档或仓库商品，不能自动改码", ex.Message);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_普通保存不应反向更新国内商品编码()
+    {
+        await SeedDetailAsync("D-NO-ALIGN", "DOM-NO-ALIGN");
+        await _localDb.Insertable(new DomesticProduct
+        {
+            ProductCode = "DOM-NO-ALIGN",
+            HBProductNo = "ITEM-NO-ALIGN",
+            DomesticPrice = 1m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedLocalProductAsync("LOCAL-NO-ALIGN", "本地主档商品", null, "ITEM-NO-ALIGN");
+        var service = CreateService();
+
+        var totalUpdated = await service.BatchUpdateDetailsAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-NO-ALIGN", 国内价格 = 2m },
+            }
+        );
+
+        Assert.Equal(1, totalUpdated);
+        Assert.True(await _localDb.Queryable<DomesticProduct>().AnyAsync(x => x.ProductCode == "DOM-NO-ALIGN"));
+        Assert.False(await _localDb.Queryable<DomesticProduct>().AnyAsync(x => x.ProductCode == "LOCAL-NO-ALIGN"));
     }
 
     [Fact]
@@ -868,6 +1207,155 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplyPricesByScopeAsync_仅修改进货价_不应同步旧零售价()
+    {
+        await SeedDetailAndProductAsync(
+            "D-APPLY-IMPORT-ONLY",
+            "P-APPLY-IMPORT-ONLY",
+            englishName: "Old English"
+        );
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(x => x.OEMPrice == 7.77m)
+            .Where(x => x.DetailCode == "D-APPLY-IMPORT-ONLY")
+            .ExecuteCommandAsync();
+        await SeedRelatedPriceRowsAsync("P-APPLY-IMPORT-ONLY");
+        var service = CreateService();
+
+        var totalUpdated = await service.ApplyPricesByScopeAsync(
+            "C-TEST",
+            new ContainerDetailApplyPricesRequestDto
+            {
+                ImportPrice = 8.88m,
+                SelectedHguids = new List<string> { "D-APPLY-IMPORT-ONLY" },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-APPLY-IMPORT-ONLY");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-APPLY-IMPORT-ONLY");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-APPLY-IMPORT-ONLY");
+        var storeRetailPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-APPLY-IMPORT-ONLY")
+            .ToListAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(8.88m, detail.ImportPrice);
+        Assert.Equal(7.77m, detail.OEMPrice);
+        Assert.Equal(8.88m, warehouseProduct.ImportPrice);
+        Assert.Equal(2.22m, warehouseProduct.OEMPrice);
+        Assert.Equal(8.88m, product.PurchasePrice);
+        Assert.Equal(2.22m, product.RetailPrice);
+        Assert.All(storeRetailPrices, row => Assert.Equal(8.88m, row.PurchasePrice));
+        Assert.All(storeRetailPrices, row => Assert.Equal(2.22m, row.StoreRetailPriceValue));
+    }
+
+    [Fact]
+    public async Task ApplyPricesByScopeAsync_仅修改零售价_不应同步旧进货价()
+    {
+        await SeedDetailAndProductAsync(
+            "D-APPLY-OEM-ONLY",
+            "P-APPLY-OEM-ONLY",
+            englishName: "Old English"
+        );
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(x => x.ImportPrice == 4.44m)
+            .Where(x => x.DetailCode == "D-APPLY-OEM-ONLY")
+            .ExecuteCommandAsync();
+        await SeedRelatedPriceRowsAsync("P-APPLY-OEM-ONLY");
+        var service = CreateService();
+
+        var totalUpdated = await service.ApplyPricesByScopeAsync(
+            "C-TEST",
+            new ContainerDetailApplyPricesRequestDto
+            {
+                OemPrice = 9.99m,
+                SelectedHguids = new List<string> { "D-APPLY-OEM-ONLY" },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-APPLY-OEM-ONLY");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-APPLY-OEM-ONLY");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-APPLY-OEM-ONLY");
+        var storeRetailPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-APPLY-OEM-ONLY")
+            .ToListAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(4.44m, detail.ImportPrice);
+        Assert.Equal(9.99m, detail.OEMPrice);
+        Assert.Equal(1.11m, warehouseProduct.ImportPrice);
+        Assert.Equal(9.99m, warehouseProduct.OEMPrice);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.Equal(9.99m, product.RetailPrice);
+        Assert.All(storeRetailPrices, row => Assert.Equal(1.11m, row.PurchasePrice));
+        Assert.All(storeRetailPrices, row => Assert.Equal(2.22m, row.StoreRetailPriceValue));
+    }
+
+    [Fact]
+    public async Task ApplyFloatRateByScopeAsync_系统重算进货价_应只更新货柜明细()
+    {
+        await _localDb.Insertable(
+            new Container
+            {
+                ContainerCode = "C-FLOAT-SKIP",
+                ContainerNumber = "C-FLOAT-SKIP",
+                ExchangeRate = 5m,
+                ShippingFee = 100m,
+                TotalVolume = 10m,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ContainerDetail
+            {
+                DetailCode = "D-FLOAT-SKIP",
+                ContainerCode = "C-FLOAT-SKIP",
+                ProductCode = "P-FLOAT-SKIP",
+                DomesticPrice = 10m,
+                TotalVolume = 2m,
+                LoadingQuantity = 5m,
+                AdjustmentRate = 1.10m,
+                TransportCost = 0m,
+                ImportPrice = 0m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await SeedRelatedPriceRowsAsync("P-FLOAT-SKIP");
+        var service = CreateService();
+
+        var totalUpdated = await service.ApplyFloatRateByScopeAsync(
+            "C-FLOAT-SKIP",
+            new ContainerDetailApplyFloatRateRequestDto
+            {
+                FloatRate = 1.50m,
+                SelectedHguids = new List<string> { "D-FLOAT-SKIP" },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(x => x.DetailCode == "D-FLOAT-SKIP");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-FLOAT-SKIP");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-FLOAT-SKIP");
+        var storeRetailPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-FLOAT-SKIP")
+            .ToListAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(1.50m, detail.AdjustmentRate);
+        Assert.Equal(4m, detail.TransportCost);
+        Assert.Equal(8.18m, detail.ImportPrice);
+        Assert.Equal(1.11m, warehouseProduct.ImportPrice);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.All(storeRetailPrices, row => Assert.Equal(1.11m, row.PurchasePrice));
+    }
+
+    [Fact]
     public async Task RecalculateCostsByScopeAsync_空或低浮率_应托底到1点30并写回()
     {
         await _localDb.Insertable(
@@ -924,6 +1412,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 },
             }
         ).ExecuteCommandAsync();
+        await SeedRelatedPriceRowsAsync("P-RECALC-VALID");
         var service = CreateService();
 
         var totalUpdated = await service.RecalculateCostsByScopeAsync(
@@ -946,6 +1435,13 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var nullRateDetail = details.Single(x => x.DetailCode == "D-RECALC-NULL");
         var lowRateDetail = details.Single(x => x.DetailCode == "D-RECALC-LOW");
         var validRateDetail = details.Single(x => x.DetailCode == "D-RECALC-VALID");
+        var warehouseProduct = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(x => x.ProductCode == "P-RECALC-VALID");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(x => x.ProductCode == "P-RECALC-VALID");
+        var storeRetailPrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.ProductCode == "P-RECALC-VALID")
+            .ToListAsync();
         Assert.Equal(3, totalUpdated);
         Assert.Equal(1.30m, nullRateDetail.AdjustmentRate);
         Assert.Equal(1.30m, lowRateDetail.AdjustmentRate);
@@ -954,6 +1450,9 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(7.09m, nullRateDetail.ImportPrice);
         Assert.Equal(7.09m, lowRateDetail.ImportPrice);
         Assert.Equal(8.18m, validRateDetail.ImportPrice);
+        Assert.Equal(1.11m, warehouseProduct.ImportPrice);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.All(storeRetailPrices, row => Assert.Equal(1.11m, row.PurchasePrice));
     }
 
     [Fact]
@@ -1081,7 +1580,9 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     private async Task SeedLocalProductAsync(
         string productCode,
         string productName,
-        string? englishName
+        string? englishName,
+        string? itemNumber = null,
+        string? localSupplierCode = null
     )
     {
         await _localDb.Insertable(
@@ -1090,6 +1591,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 ProductCode = productCode,
                 ProductName = productName,
                 EnglishName = englishName,
+                ItemNumber = itemNumber,
+                LocalSupplierCode = localSupplierCode,
                 IsActive = true,
                 IsDeleted = false,
             }
@@ -1148,7 +1651,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         ).ExecuteCommandAsync();
     }
 
-    private async Task SeedDetailAsync(string detailCode, string? productCode)
+    private async Task SeedDetailAsync(string detailCode, string? productCode, string? productType = null)
     {
         await _localDb.Insertable(
             new ContainerDetail
@@ -1156,6 +1659,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 DetailCode = detailCode,
                 ContainerCode = "C-TEST",
                 ProductCode = productCode,
+                ProductType = productType,
                 ImportPrice = 1.23m,
                 IsDeleted = false,
             }

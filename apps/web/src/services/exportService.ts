@@ -967,7 +967,7 @@ function getContainerDetailWorksheetColumns(options: ContainerExportOptions) {
         { header: '总体积', key: 'totalVolume', width: 12, valueType: 'volume' as const },
         { header: '中包数', key: 'middlePackQuantity', width: 12, valueType: 'integer' as const },
         { header: '国内价格', key: 'domesticPrice', width: 12, valueType: 'money' as const, currencySymbol: '¥' as const },
-        { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' as const },
+        { header: '零售价', key: 'oemPrice', width: 12, valueType: 'money' as const },
       ]
 }
 

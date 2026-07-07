@@ -82,6 +82,8 @@ export interface ContainerDetail {
   WarehouseImportPrice?: number
   warehouseOEMPrice?: number
   WarehouseOEMPrice?: number
+  readonlyOemPrice?: number
+  ReadonlyOemPrice?: number
   warehouseIsActive?: boolean
   categoryName?: string
   CategoryName?: string
@@ -97,6 +99,14 @@ export interface ContainerDetail {
   ProductCategoryGUID?: string
   matchType?: 'productCode' | 'supplierItem' | 'unmatched'
   MatchType?: string
+  localProductCode?: string
+  LocalProductCode?: string
+  domesticProductCode?: string
+  DomesticProductCode?: string
+  hasProductCodeConflict?: boolean
+  HasProductCodeConflict?: boolean
+  conflictReason?: string
+  ConflictReason?: string
 }
 
 export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
@@ -278,6 +288,38 @@ export interface UpdateContainerDetailRequest {
   SkipRelatedProductSync?: boolean
   matchType?: ContainerDetail['matchType']
   是否新商品?: boolean
+  localProductCode?: string
+  LocalProductCode?: string
+  domesticProductCode?: string
+  DomesticProductCode?: string
+  hasProductCodeConflict?: boolean
+  HasProductCodeConflict?: boolean
+  conflictReason?: string
+  ConflictReason?: string
+}
+
+export interface AlignDomesticProductCodeRequest {
+  detailHguid: string
+  expectedDomesticProductCode: string
+  targetProductCode: string
+  supplierCode?: string
+}
+
+export interface AlignDomesticProductCodeResult {
+  oldProductCode: string
+  OldProductCode?: string
+  newProductCode: string
+  NewProductCode?: string
+  updatedDomesticProducts: number
+  UpdatedDomesticProducts?: number
+  updatedContainerDetails: number
+  UpdatedContainerDetails?: number
+  updatedDomesticSetProducts: number
+  UpdatedDomesticSetProducts?: number
+  updatedProductGrades: number
+  UpdatedProductGrades?: number
+  updatedDomesticProductCreationLogs: number
+  UpdatedDomesticProductCreationLogs?: number
 }
 
 export interface CreateContainerRequest {

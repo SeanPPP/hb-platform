@@ -177,6 +177,17 @@ namespace BlazorApp.Api.Services.React
             return values != null && values.Count > 0;
         }
 
+        private static string NormalizeRequiredCode(string? value, string fieldName)
+        {
+            var normalized = value?.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                throw new InvalidOperationException($"{fieldName}不能为空");
+            }
+
+            return normalized;
+        }
+
         private static string MapDomesticProductTypeLabel(int? productType)
         {
             // 货柜明细商品类型展示以国内商品表为准，明细表 ProductType 只保留为历史快照字段。
@@ -1475,6 +1486,261 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        public async Task<AlignDomesticProductCodeResultDto> AlignDomesticProductCodeAsync(
+            AlignDomesticProductCodeRequestDto request
+        )
+        {
+            if (request == null)
+            {
+                throw new InvalidOperationException("请求参数不能为空");
+            }
+
+            var detailHguid = NormalizeRequiredCode(request.DetailHguid, "明细GUID");
+            var oldProductCode = NormalizeRequiredCode(
+                request.ExpectedDomesticProductCode,
+                "原国内商品编码"
+            );
+            var targetProductCode = NormalizeRequiredCode(request.TargetProductCode, "本地主档商品编码");
+            var supplierCode = NormalizeRequiredCode(request.SupplierCode, "供应商代码");
+
+            if (string.Equals(oldProductCode, targetProductCode, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("国内商品编码已与本地主档一致");
+            }
+
+            var detail = await _context
+                .Db.Queryable<ContainerDetail>()
+                .FirstAsync(d => d.DetailCode == detailHguid && !d.IsDeleted);
+            if (detail == null)
+            {
+                throw new InvalidOperationException("货柜明细不存在或已删除");
+            }
+            if (!string.Equals(detail.ProductCode?.Trim(), oldProductCode, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("明细商品编码已变化，请刷新后重试");
+            }
+            if (string.Equals(detail.ProductType?.Trim(), "套装子商品", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("套装子商品关联套装结构，暂不支持单独对齐编码");
+            }
+
+            var domesticProduct = await _context
+                .Db.Queryable<DomesticProduct>()
+                .FirstAsync(p => p.ProductCode == oldProductCode && !p.IsDeleted);
+            if (domesticProduct == null)
+            {
+                throw new InvalidOperationException("原国内商品不存在或已删除");
+            }
+            if (
+                !string.Equals(
+                    domesticProduct.SupplierCode?.Trim(),
+                    supplierCode,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                throw new InvalidOperationException("国内商品供应商代码与候选供应商不一致，不能对齐编码");
+            }
+
+            var localProduct = await _context
+                .Db.Queryable<Product>()
+                .FirstAsync(p => p.ProductCode == targetProductCode && !p.IsDeleted);
+            if (localProduct == null)
+            {
+                throw new InvalidOperationException("本地主档商品不存在或已删除");
+            }
+            if (
+                !string.Equals(
+                    localProduct.LocalSupplierCode?.Trim(),
+                    supplierCode,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                throw new InvalidOperationException("供应商代码与本地主档不一致，不能对齐编码");
+            }
+
+            var domesticItemNumber = domesticProduct.HBProductNo?.Trim();
+            var localItemNumber = localProduct.ItemNumber?.Trim();
+            if (
+                string.IsNullOrWhiteSpace(domesticItemNumber)
+                || string.IsNullOrWhiteSpace(localItemNumber)
+                || !string.Equals(domesticItemNumber, localItemNumber, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                throw new InvalidOperationException("国内商品货号与本地主档货号不一致，不能对齐编码");
+            }
+
+            var targetDomesticExists = await _context
+                .Db.Queryable<DomesticProduct>()
+                .AnyAsync(p => p.ProductCode == targetProductCode && !p.IsDeleted);
+            if (targetDomesticExists)
+            {
+                throw new InvalidOperationException("目标国内商品编码已存在，不能自动合并");
+            }
+
+            var oldLocalCodeExists = await _context
+                .Db.Queryable<Product>()
+                .AnyAsync(p => p.ProductCode == oldProductCode && !p.IsDeleted);
+            var oldWarehouseCodeExists = await _context
+                .Db.Queryable<WarehouseProduct>()
+                .AnyAsync(p => p.ProductCode == oldProductCode && !p.IsDeleted);
+            if (oldLocalCodeExists || oldWarehouseCodeExists)
+            {
+                throw new InvalidOperationException("原国内商品编码已存在本地主档或仓库商品，不能自动改码");
+            }
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                // 事务内复查核心前置条件，避免确认弹窗打开后数据被并发改动仍继续级联改码。
+                var transactionalDetail = await _context
+                    .Db.Queryable<ContainerDetail>()
+                    .FirstAsync(d => d.DetailCode == detailHguid && !d.IsDeleted);
+                if (transactionalDetail == null)
+                {
+                    throw new InvalidOperationException("货柜明细不存在或已删除");
+                }
+                if (
+                    !string.Equals(
+                        transactionalDetail.ProductCode?.Trim(),
+                        oldProductCode,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    throw new InvalidOperationException("明细商品编码已变化，请刷新后重试");
+                }
+                if (string.Equals(transactionalDetail.ProductType?.Trim(), "套装子商品", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("套装子商品关联套装结构，暂不支持单独对齐编码");
+                }
+
+                var transactionalDomesticProduct = await _context
+                    .Db.Queryable<DomesticProduct>()
+                    .FirstAsync(p => p.ProductCode == oldProductCode && !p.IsDeleted);
+                if (transactionalDomesticProduct == null)
+                {
+                    throw new InvalidOperationException("原国内商品不存在或已删除");
+                }
+                if (
+                    !string.Equals(
+                        transactionalDomesticProduct.SupplierCode?.Trim(),
+                        supplierCode,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    throw new InvalidOperationException("国内商品供应商代码与候选供应商不一致，不能对齐编码");
+                }
+
+                var transactionalLocalProduct = await _context
+                    .Db.Queryable<Product>()
+                    .FirstAsync(p => p.ProductCode == targetProductCode && !p.IsDeleted);
+                if (transactionalLocalProduct == null)
+                {
+                    throw new InvalidOperationException("本地主档商品不存在或已删除");
+                }
+                if (
+                    !string.Equals(
+                        transactionalLocalProduct.LocalSupplierCode?.Trim(),
+                        supplierCode,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    throw new InvalidOperationException("供应商代码与本地主档不一致，不能对齐编码");
+                }
+
+                var transactionalDomesticItemNumber = transactionalDomesticProduct.HBProductNo?.Trim();
+                var transactionalLocalItemNumber = transactionalLocalProduct.ItemNumber?.Trim();
+                if (
+                    string.IsNullOrWhiteSpace(transactionalDomesticItemNumber)
+                    || string.IsNullOrWhiteSpace(transactionalLocalItemNumber)
+                    || !string.Equals(
+                        transactionalDomesticItemNumber,
+                        transactionalLocalItemNumber,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    throw new InvalidOperationException("国内商品货号与本地主档货号不一致，不能对齐编码");
+                }
+
+                var targetDomesticExistsInTransaction = await _context
+                    .Db.Queryable<DomesticProduct>()
+                    .AnyAsync(p => p.ProductCode == targetProductCode && !p.IsDeleted);
+                if (targetDomesticExistsInTransaction)
+                {
+                    throw new InvalidOperationException("目标国内商品编码已存在，不能自动合并");
+                }
+                var oldLocalCodeExistsInTransaction = await _context
+                    .Db.Queryable<Product>()
+                    .AnyAsync(p => p.ProductCode == oldProductCode && !p.IsDeleted);
+                var oldWarehouseCodeExistsInTransaction = await _context
+                    .Db.Queryable<WarehouseProduct>()
+                    .AnyAsync(p => p.ProductCode == oldProductCode && !p.IsDeleted);
+                if (oldLocalCodeExistsInTransaction || oldWarehouseCodeExistsInTransaction)
+                {
+                    throw new InvalidOperationException("原国内商品编码已存在本地主档或仓库商品，不能自动改码");
+                }
+
+                // Product.ProductCode 是权威主键；确认后只把国内侧引用从旧编码迁到本地主档编码。
+                var updatedDomesticProducts = await _context.Db.Ado.ExecuteCommandAsync(
+                    "UPDATE DomesticProduct SET ProductCode = @TargetProductCode WHERE ProductCode = @OldProductCode AND SupplierCode = @SupplierCode AND IsDeleted = 0",
+                    new List<SugarParameter>
+                    {
+                        new("@TargetProductCode", targetProductCode),
+                        new("@OldProductCode", oldProductCode),
+                        new("@SupplierCode", supplierCode),
+                    }
+                );
+                if (updatedDomesticProducts != 1)
+                {
+                    throw new InvalidOperationException("原国内商品编码已变化，请刷新后重试");
+                }
+
+                var updatedContainerDetails = await _context
+                    .Db.Updateable<ContainerDetail>()
+                    .SetColumns(d => d.ProductCode == targetProductCode)
+                    .Where(d => d.ProductCode == oldProductCode && !d.IsDeleted)
+                    .ExecuteCommandAsync();
+                var updatedDomesticSetProducts = await _context
+                    .Db.Updateable<DomesticSetProduct>()
+                    .SetColumns(p => p.ProductCode == targetProductCode)
+                    .Where(p => p.ProductCode == oldProductCode && !p.IsDeleted)
+                    .ExecuteCommandAsync();
+                var updatedProductGrades = await _context
+                    .Db.Updateable<ProductGrade>()
+                    .SetColumns(p => p.ProductCode == targetProductCode)
+                    .Where(p => p.ProductCode == oldProductCode && !p.IsDeleted)
+                    .ExecuteCommandAsync();
+                var updatedDomesticProductCreationLogs = await _context
+                    .Db.Updateable<DomesticProductCreationLog>()
+                    .SetColumns(p => p.ProductCode == targetProductCode)
+                    .Where(p => p.ProductCode == oldProductCode && !p.IsDeleted)
+                    .ExecuteCommandAsync();
+
+                await _context.Db.Ado.CommitTranAsync();
+
+                return new AlignDomesticProductCodeResultDto
+                {
+                    OldProductCode = oldProductCode,
+                    NewProductCode = targetProductCode,
+                    UpdatedDomesticProducts = updatedDomesticProducts,
+                    UpdatedContainerDetails = updatedContainerDetails,
+                    UpdatedDomesticSetProducts = updatedDomesticSetProducts,
+                    UpdatedProductGrades = updatedProductGrades,
+                    UpdatedDomesticProductCreationLogs = updatedDomesticProductCreationLogs,
+                };
+            }
+            catch
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
         /// <summary>
         /// 批量更新货柜明细
         /// 功能：
@@ -2343,6 +2609,8 @@ namespace BlazorApp.Api.Services.React
                             request.FloatRate.Value,
                             transportCost
                         ),
+                        // 系统按浮率重算的进货价只落货柜明细，不覆盖人工确认后的仓库进货价。
+                        SkipRelatedProductSync = true,
                     };
                 })
                 .ToList();
@@ -2362,11 +2630,19 @@ namespace BlazorApp.Api.Services.React
 
             var details = await GetScopedDetailsAsync(containerGuid, request);
             var updates = details
-                .Select(detail => new UpdateContainerDetailDto
+                .Select(detail =>
                 {
-                    HGUID = detail.DetailCode,
-                    进口价格 = request.ImportPrice ?? detail.ImportPrice,
-                    贴牌价格 = request.OemPrice ?? detail.OEMPrice,
+                    var update = new UpdateContainerDetailDto { HGUID = detail.DetailCode };
+                    // 批量改价只同步用户实际提交的字段，避免旧零售价被当成本次改价写回主档。
+                    if (request.ImportPrice.HasValue)
+                    {
+                        update.进口价格 = request.ImportPrice.Value;
+                    }
+                    if (request.OemPrice.HasValue)
+                    {
+                        update.贴牌价格 = request.OemPrice.Value;
+                    }
+                    return update;
                 })
                 .ToList();
 
@@ -2410,6 +2686,8 @@ namespace BlazorApp.Api.Services.React
                             floatRate,
                             transportCost
                         ),
+                        // 运费/汇率触发的成本重算只更新货柜明细，仓库价格等到人工保存明细再同步。
+                        SkipRelatedProductSync = true,
                     };
                 })
                 .ToList();
@@ -2806,7 +3084,7 @@ namespace BlazorApp.Api.Services.React
                             {
                                 detail.DomesticPrice = item.DomesticPrice.Value;
                             }
-                            // 更新贴牌价格（如提供）
+                            // 更新零售价（如提供）
                             if (item.OEMPrice.HasValue)
                             {
                                 detail.OEMPrice = item.OEMPrice.Value;

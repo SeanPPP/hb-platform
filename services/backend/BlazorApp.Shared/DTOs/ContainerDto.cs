@@ -175,7 +175,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? 进口价格 { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? 贴牌价格 { get; set; }
 
@@ -538,7 +538,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductCategoryGUID { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? 贴牌价格 { get; set; }
 
@@ -581,6 +581,28 @@ namespace BlazorApp.Shared.DTOs
         /// 跳过商品主数据和关联价格表同步，仅更新货柜明细
         /// </summary>
         public bool? SkipRelatedProductSync { get; set; }
+    }
+
+    /// <summary>
+    /// 人工确认后，把国内商品编码对齐到本地主档商品编码。
+    /// </summary>
+    public class AlignDomesticProductCodeRequestDto
+    {
+        public string DetailHguid { get; set; } = string.Empty;
+        public string ExpectedDomesticProductCode { get; set; } = string.Empty;
+        public string TargetProductCode { get; set; } = string.Empty;
+        public string SupplierCode { get; set; } = string.Empty;
+    }
+
+    public class AlignDomesticProductCodeResultDto
+    {
+        public string OldProductCode { get; set; } = string.Empty;
+        public string NewProductCode { get; set; } = string.Empty;
+        public int UpdatedDomesticProducts { get; set; }
+        public int UpdatedContainerDetails { get; set; }
+        public int UpdatedDomesticSetProducts { get; set; }
+        public int UpdatedProductGrades { get; set; }
+        public int UpdatedDomesticProductCreationLogs { get; set; }
     }
 
     /// <summary>

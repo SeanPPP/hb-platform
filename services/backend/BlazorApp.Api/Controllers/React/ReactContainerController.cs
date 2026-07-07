@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -20,19 +21,25 @@ namespace BlazorApp.Api.Controllers.React
     {
         private readonly IContainerReactService _containerReactService;
         private readonly IContainerHqSyncService _containerHqSyncService;
+        private readonly ContainerExportService _containerExportService;
         private readonly IMemoryCache _cache;
         private readonly ILogger<ReactContainerController> _logger;
+        private const string ExcelContentType =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        private const string PdfContentType = "application/pdf";
         public static readonly TimeSpan ComingSoonCacheDuration = TimeSpan.FromMinutes(30);
 
         public ReactContainerController(
             IContainerReactService containerReactService,
             IContainerHqSyncService containerHqSyncService,
+            ContainerExportService containerExportService,
             IMemoryCache cache,
             ILogger<ReactContainerController> logger
         )
         {
             _containerReactService = containerReactService;
             _containerHqSyncService = containerHqSyncService;
+            _containerExportService = containerExportService;
             _cache = cache;
             _logger = logger;
         }
@@ -103,7 +110,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">查询请求</param>
         /// <returns>货柜列表</returns>
         [HttpPost("list")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> GetContainers([FromBody] ContainerQueryRequest request)
         {
             try
@@ -150,7 +157,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="containerGuid">货柜GUID</param>
         /// <returns>货柜详情</returns>
         [HttpGet("{containerGuid}")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> GetContainerDetail(string containerGuid)
         {
             try
@@ -199,7 +206,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">更新DTO</param>
         /// <returns>更新结果</returns>
         [HttpPut("{containerGuid}")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> UpdateContainer(
             string containerGuid,
             [FromBody] UpdateContainerDto dto
@@ -264,7 +271,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="containerGuid">货柜GUID</param>
         /// <returns>商品列表</returns>
         [HttpGet("{containerGuid}/products")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> GetContainerProducts(string containerGuid)
         {
             try
@@ -305,7 +312,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 服务端筛选、排序并按块返回货柜商品明细（React专用）
         /// </summary>
         [HttpPost("{containerGuid}/products/query")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> QueryContainerProducts(
             string containerGuid,
             [FromBody] ContainerDetailQueryDto? request
@@ -344,10 +351,227 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 导出货柜商品明细（React专用）
+        /// </summary>
+        [HttpPost("{containerGuid}/products/export")]
+        [Authorize(Policy = Permissions.Container.View)]
+        public async Task<IActionResult> ExportContainerProducts(
+            string containerGuid,
+            [FromBody] ReactContainerDetailsExportRequest? request
+        )
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(containerGuid))
+                {
+                    return BadRequest(new { success = false, message = "货柜GUID不能为空" });
+                }
+
+                request ??= new ReactContainerDetailsExportRequest();
+                if (!TryResolveExportFormat(request.Format, out var format))
+                {
+                    return BadRequest(new { success = false, message = "导出格式只支持 excel 或 pdf" });
+                }
+
+                var container = await _containerReactService.GetContainerDetailAsync(containerGuid);
+                if (container == null)
+                {
+                    return NotFound(new { success = false, message = "货柜不存在" });
+                }
+
+                var details = await LoadReactContainerExportDetailsAsync(containerGuid, request);
+                if (details.Count == 0)
+                {
+                    return BadRequest(new { success = false, message = "没有找到要导出的明细数据" });
+                }
+
+                // React 明细复用现有义乌导出引擎，只在入口处做 DTO 形状适配。
+                var exportContainer = MapReactContainerForExport(container, containerGuid);
+                var exportDetails = details
+                    .Select(detail => MapReactContainerDetailForExport(detail, containerGuid))
+                    .ToList();
+                var exportColumns = ResolveReactExportColumns(request);
+                var fileBytes = format == "pdf"
+                    ? await _containerExportService.GeneratePdfFileAsync(
+                        exportContainer,
+                        exportDetails,
+                        exportColumns
+                    )
+                    : await _containerExportService.GenerateExcelFileAsync(
+                        exportContainer,
+                        exportDetails,
+                        exportColumns
+                    );
+                var extension = format == "pdf" ? "pdf" : "xlsx";
+                var contentType = format == "pdf" ? PdfContentType : ExcelContentType;
+                var fileName = BuildReactContainerExportFileName(
+                    exportContainer.ContainerNumber,
+                    containerGuid,
+                    extension
+                );
+
+                return File(fileBytes, contentType, fileName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "导出货柜商品明细失败, ContainerGuid: {ContainerGuid}",
+                    containerGuid
+                );
+                return StatusCode(500, new { success = false, message = "导出失败，请稍后重试" });
+            }
+        }
+
+        private async Task<List<ContainerDetailDto>> LoadReactContainerExportDetailsAsync(
+            string containerGuid,
+            ReactContainerDetailsExportRequest request
+        )
+        {
+            var query = request.Query ?? new ContainerDetailQueryDto();
+            var selectedHguids = (request.SelectedHguids ?? new List<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var details = new List<ContainerDetailDto>();
+
+            query.ContainerGuid = containerGuid;
+            query.PageNumber = 1;
+            query.PageSize = 500;
+            query.IncludeTotal = false;
+            query.IncludeStats = false;
+
+            while (true)
+            {
+                var result = await _containerReactService.QueryContainerDetailsAsync(query);
+                var items = selectedHguids.Count == 0
+                    ? result.Items
+                    : result.Items
+                        .Where(item => item.HGUID != null && selectedHguids.Contains(item.HGUID))
+                        .ToList();
+                details.AddRange(items);
+
+                // 导出按服务端查询分页拉全量；选中项找齐后提前结束，避免额外查询。
+                if (
+                    !result.HasMore
+                    || result.Items.Count == 0
+                    || (selectedHguids.Count > 0 && details.Count >= selectedHguids.Count)
+                )
+                {
+                    break;
+                }
+
+                query.PageNumber++;
+            }
+
+            return details;
+        }
+
+        private static List<string>? ResolveReactExportColumns(ReactContainerDetailsExportRequest request)
+        {
+            if (request.ExportColumns?.Count > 0)
+            {
+                return request.ExportColumns;
+            }
+
+            return request.Columns;
+        }
+
+        private static bool TryResolveExportFormat(string? format, out string normalizedFormat)
+        {
+            normalizedFormat = string.IsNullOrWhiteSpace(format)
+                ? "excel"
+                : format.Trim().ToLowerInvariant();
+
+            return normalizedFormat is "excel" or "pdf";
+        }
+
+        private static YiwuContainerDto MapReactContainerForExport(
+            ContainerMainDto container,
+            string containerGuid
+        )
+        {
+            return new YiwuContainerDto
+            {
+                ContainerCode = container.HGUID ?? containerGuid,
+                ContainerNumber = container.货柜编号 ?? containerGuid,
+                LoadingDate = container.装柜日期,
+                EstimatedArrivalDate = container.预计到岸日期,
+                ActualArrivalDate = container.实际到货日期,
+                TotalPieces = container.合计件数,
+                TotalQuantity = container.合计数量,
+                TotalAmount = container.合计金额,
+                TotalVolume = container.总体积,
+                CostFloatRate = container.成本浮率,
+                ExchangeRate = container.汇率,
+                ShippingFee = container.运费,
+                Status = container.状态,
+                Remarks = container.备注,
+            };
+        }
+
+        private static YiwuContainerDetailDto MapReactContainerDetailForExport(
+            ContainerDetailDto detail,
+            string containerGuid
+        )
+        {
+            var product = detail.商品信息;
+            return new YiwuContainerDetailDto
+            {
+                DetailCode = detail.HGUID ?? string.Empty,
+                ContainerCode = detail.主表GUID ?? containerGuid,
+                ProductCode = detail.商品编码,
+                LoadingType = detail.装柜类型,
+                ProductType = detail.商品类型,
+                SetQuantity = detail.套装数量,
+                LoadingPieces = detail.装柜件数,
+                LoadingQuantity = detail.装柜数量,
+                DomesticPrice = detail.国内价格,
+                AdjustmentRate = detail.调整浮率,
+                ImportPrice = detail.进口价格,
+                OEMPrice = detail.贴牌价格,
+                PackingQuantity = detail.单件装箱数,
+                UnitVolume = detail.单件体积,
+                TotalAmount = detail.合计装柜金额,
+                TotalVolume = detail.合计装柜体积,
+                TransportCost = detail.运输成本,
+                Remarks = detail.备注,
+                Product = new ProductInfoDto
+                {
+                    ProductCode = product?.商品编码 ?? detail.商品编码,
+                    ItemNumber = product?.货号 ?? detail.商品编码,
+                    Barcode = product?.条形码,
+                    ChineseName = product?.商品名称,
+                    EnglishName = product?.英文名称,
+                    ImageUrl = product?.商品图片,
+                    Specification = product?.商品规格,
+                    OEMPrice = detail.贴牌价格,
+                    ImportPrice = detail.进口价格,
+                },
+            };
+        }
+
+        private static string BuildReactContainerExportFileName(
+            string? containerNumber,
+            string containerGuid,
+            string extension
+        )
+        {
+            var name = string.IsNullOrWhiteSpace(containerNumber) ? containerGuid : containerNumber;
+            foreach (var invalidChar in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(invalidChar, '_');
+            }
+
+            return $"货柜明细_{name}_{DateTime.Now:yyyyMMdd_HHmmss}.{extension}";
+        }
+
+        /// <summary>
         /// 获取国内套装多码价格明细（货柜明细弹窗专用）
         /// </summary>
         [HttpGet("products/{productCode}/domestic-set-codes")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> GetDomesticSetCodes(string productCode)
         {
             try
@@ -371,7 +595,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 回写国内套装多码价格（仅价格字段）
         /// </summary>
         [HttpPatch("products/{productCode}/domestic-set-codes/prices")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> UpdateDomesticSetCodePrices(
             string productCode,
             [FromBody] UpdateContainerDomesticSetCodePricesRequestDto? request
@@ -414,7 +638,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">查询请求</param>
         /// <returns>商品明细列表</returns>
         [HttpPost("filtered-products")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> GetFilteredContainerProducts(
             [FromBody] ContainerQueryRequest request
         )
@@ -537,7 +761,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="updates">明细更新列表</param>
         /// <returns>更新结果</returns>
         [HttpPost("batch-update-details")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> BatchUpdateDetails(
             [FromBody] List<UpdateContainerDetailDto> updates
         )
@@ -568,10 +792,43 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 人工确认后，将国内商品编码对齐到本地主档商品编码。
+        /// </summary>
+        [HttpPost("details/align-domestic-product-code")]
+        [Authorize(Policy = Permissions.Container.Edit)]
+        [Authorize(Policy = Permissions.Products.Edit)]
+        public async Task<IActionResult> AlignDomesticProductCode(
+            [FromBody] AlignDomesticProductCodeRequestDto request
+        )
+        {
+            try
+            {
+                var result = await _containerReactService.AlignDomesticProductCodeAsync(request);
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = "国内商品编码已对齐",
+                        data = result,
+                    }
+                );
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "对齐国内商品编码失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 按当前筛选范围批量调浮率（React专用）
         /// </summary>
         [HttpPost("{containerGuid}/actions/apply-float-rate")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> ApplyFloatRateByScope(
             string containerGuid,
             [FromBody] ContainerDetailApplyFloatRateRequestDto request
@@ -612,7 +869,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 按当前筛选范围批量改价（React专用）
         /// </summary>
         [HttpPost("{containerGuid}/actions/apply-prices")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> ApplyPricesByScope(
             string containerGuid,
             [FromBody] ContainerDetailApplyPricesRequestDto request
@@ -622,7 +879,7 @@ namespace BlazorApp.Api.Controllers.React
             {
                 if (request == null || (!request.ImportPrice.HasValue && !request.OemPrice.HasValue))
                 {
-                    return BadRequest(new { success = false, message = "进口价格或贴牌价格不能为空" });
+                    return BadRequest(new { success = false, message = "进口价格或零售价不能为空" });
                 }
 
                 var totalUpdated = await _containerReactService.ApplyPricesByScopeAsync(
@@ -649,7 +906,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 按当前筛选范围重算成本（React专用）
         /// </summary>
         [HttpPost("{containerGuid}/actions/recalculate-costs")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> RecalculateCostsByScope(
             string containerGuid,
             [FromBody] ContainerDetailBatchScopeDto request
@@ -686,7 +943,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 按当前筛选范围回填上次价格快照（React专用）
         /// </summary>
         [HttpPost("{containerGuid}/actions/backfill-last-prices")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> BackfillLastPricesByScope(
             string containerGuid,
             [FromBody] ContainerDetailBatchScopeDto request
@@ -721,7 +978,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="request">包含待删除的 HGUID 列表</param>
         /// <returns>删除结果</returns>
         [HttpPost("batch-delete-details")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Delete)]
         public async Task<IActionResult> BatchDeleteDetails(
             [FromBody] BatchDeleteDetailsRequestDto request
         )
@@ -758,7 +1015,7 @@ namespace BlazorApp.Api.Controllers.React
         /// </summary>
         /// <returns>日期选项列表</returns>
         [HttpGet("date-filter-options")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> GetDateFilterOptions()
         {
             try
@@ -789,7 +1046,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="dto">创建货柜DTO</param>
         /// <returns>创建结果</returns>
         [HttpPost]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Create)]
         public async Task<IActionResult> CreateContainer([FromBody] CreateContainerDto dto)
         {
             try
@@ -831,7 +1088,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 检查货柜明细冲突（按 ProductCode）
         /// </summary>
         [HttpPost("check-conflicts")]
-        [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> CheckConflicts([FromBody] CheckConflictsRequestDto request)
         {
             try
@@ -882,7 +1139,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 批量分配商品到货柜（支持覆盖/增加数量）
         /// </summary>
         [HttpPost("assign-products")]
-       // [Authorize(Roles = "Admin,WarehouseManager,User")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> AssignProducts([FromBody] AssignProductsRequestDto request)
         {
             try
@@ -1048,7 +1305,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         [HttpPost("push-to-hbsales")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> PushContainersToHbSales(
             [FromBody] PushToHbSalesRequestDto request
         )

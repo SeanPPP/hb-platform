@@ -174,9 +174,9 @@ var CONTAINER_DETAIL_EXPORT_COLUMNS = [
   { key: "totalVolume", labelKey: "containers.export.totalVolumeColumn", fallbackLabel: "\u603B\u4F53\u79EF", width: 12, valueType: "volume" },
   { key: "middlePackQuantity", labelKey: "containers.fields.middlePackQuantity", fallbackLabel: "\u4E2D\u5305\u6570", width: 12, valueType: "integer" },
   { key: "domesticPrice", labelKey: "containers.fields.domesticPrice", fallbackLabel: "\u56FD\u5185\u4EF7\u683C", width: 12, valueType: "money" },
-  { key: "lastImportPrice", labelKey: "containers.fields.warehouseImportPrice", fallbackLabel: "\u4E0A\u6B21\u8FDB\u8D27\u4EF7\u683C", width: 14, valueType: "money" },
-  { key: "lastOEMPrice", labelKey: "containers.fields.lastOEMPrice", fallbackLabel: "\u4E0A\u6B21\u8D34\u724C\u4EF7\u683C", width: 14, valueType: "money" },
-  { key: "oemPrice", labelKey: "containers.fields.oemPrice", fallbackLabel: "\u8D34\u724C\u4EF7\u683C", width: 12, valueType: "money" }
+  { key: "lastImportPrice", labelKey: "containers.fields.warehouseImportPrice", fallbackLabel: "\u5B9E\u65F6\u8FDB\u8D27\u4EF7", width: 14, valueType: "money" },
+  { key: "lastOEMPrice", labelKey: "containers.fields.lastOEMPrice", fallbackLabel: "\u5B9E\u65F6\u96F6\u552E\u4EF7", width: 14, valueType: "money" },
+  { key: "oemPrice", labelKey: "containers.fields.oemPrice", fallbackLabel: "\u96F6\u552E\u4EF7", width: 12, valueType: "money" }
 ];
 var containerDetailSortFields = /* @__PURE__ */ new Set([
   "itemNumber",
@@ -328,6 +328,19 @@ function getContainerDetailProductCode(row) {
 function firstTrimmedValue(...values) {
   return values.map((value) => value?.trim()).find((value) => Boolean(value));
 }
+function getContainerDetailLocalProductCode(row) {
+  return firstTrimmedValue(row.localProductCode, row.LocalProductCode);
+}
+function getContainerDetailDomesticProductCode(row) {
+  return firstTrimmedValue(row.domesticProductCode, row.DomesticProductCode, getContainerDetailProductCode(row));
+}
+function hasContainerDetailProductCodeConflict(row) {
+  const explicit = row.hasProductCodeConflict ?? row.HasProductCodeConflict;
+  if (explicit != null) return Boolean(explicit);
+  const localProductCode = normalizeMatchKey(getContainerDetailLocalProductCode(row));
+  const domesticProductCode = normalizeMatchKey(getContainerDetailDomesticProductCode(row));
+  return Boolean(localProductCode && domesticProductCode && localProductCode !== domesticProductCode);
+}
 function getContainerDetailCategoryName(row) {
   return firstTrimmedValue(
     row.categoryName,
@@ -419,6 +432,9 @@ function getContainerDetailBatchCategoryProductCodes(rows2) {
   return { productCodes, skippedMissingCodeCount };
 }
 function getContainerDetailMatchType(row) {
+  if (hasContainerDetailProductCodeConflict(row)) {
+    return "supplierItem";
+  }
   const raw = row.matchType ?? row.MatchType;
   const normalized = raw?.trim().toLowerCase();
   if (normalized === "productcode" || normalized === "product_code" || normalized === "\u5546\u54C1\u7F16\u7801") {
@@ -444,22 +460,28 @@ function getContainerDetailWarehouseStatusFilterKey(row) {
 function resolveContainerDetailOemPrice(row) {
   return row.\u8D34\u724C\u4EF7\u683C;
 }
+function getContainerDetailReadonlyOemPrice(row) {
+  return row.readonlyOemPrice ?? row.ReadonlyOemPrice;
+}
 function getContainerDetailOemPriceSource(row) {
   return row.\u8D34\u724C\u4EF7\u683C == null ? "none" : "detail";
 }
-function getContainerDetailLastImportPrice(row) {
-  return row.lastImportPrice ?? row.LastImportPrice ?? row.warehouseImportPrice ?? row.WarehouseImportPrice;
+function getContainerDetailRealtimeImportPrice(row) {
+  return row.warehouseImportPrice ?? row.WarehouseImportPrice;
 }
 function getContainerDetailImportPriceTrend(row) {
-  const lastImportPrice = getContainerDetailLastImportPrice(row);
+  const realtimeImportPrice = getContainerDetailRealtimeImportPrice(row);
   const currentImportPrice = row.\u8FDB\u53E3\u4EF7\u683C;
-  if (typeof lastImportPrice !== "number" || typeof currentImportPrice !== "number" || !Number.isFinite(lastImportPrice) || !Number.isFinite(currentImportPrice) || lastImportPrice === currentImportPrice) {
+  if (typeof realtimeImportPrice !== "number" || typeof currentImportPrice !== "number" || !Number.isFinite(realtimeImportPrice) || !Number.isFinite(currentImportPrice) || realtimeImportPrice === currentImportPrice) {
     return void 0;
   }
-  return currentImportPrice > lastImportPrice ? "up" : "down";
+  return currentImportPrice > realtimeImportPrice ? "up" : "down";
 }
-function getContainerDetailLastOemPrice(row) {
-  return row.lastOEMPrice ?? row.LastOEMPrice ?? row.warehouseOEMPrice ?? row.WarehouseOEMPrice;
+function getContainerDetailRealtimeRetailPrice(row) {
+  return row.warehouseOEMPrice ?? row.WarehouseOEMPrice;
+}
+function getContainerDetailVisibleOemPrice(row) {
+  return row.\u662F\u5426\u65B0\u5546\u54C1 ? resolveContainerDetailOemPrice(row) : getContainerDetailRealtimeRetailPrice(row);
 }
 function calculateContainerDetailUnitTransportCost(row) {
   if (row.\u8FD0\u8F93\u6210\u672C == null || row.\u5355\u4EF6\u88C5\u7BB1\u6570 == null) return void 0;
@@ -500,9 +522,9 @@ function buildContainerDetailExportRow(row, index = 0) {
     totalVolume: getContainerDetailTotalVolume(row),
     middlePackQuantity: row.\u4E2D\u5305\u6570 ?? 0,
     domesticPrice: row.\u56FD\u5185\u4EF7\u683C ?? 0,
-    lastImportPrice: getContainerDetailLastImportPrice(row) ?? 0,
-    lastOEMPrice: getContainerDetailLastOemPrice(row) ?? 0,
-    oemPrice: resolveContainerDetailOemPrice(row) ?? 0
+    lastImportPrice: getContainerDetailRealtimeImportPrice(row) ?? 0,
+    lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? 0,
+    oemPrice: getContainerDetailVisibleOemPrice(row) ?? 0
   };
 }
 function buildContainerDetailExportRows(rows2) {
@@ -675,13 +697,13 @@ function getColumnSortValue(row, field) {
     case "unitTransportCost":
       return calculateContainerDetailUnitTransportCost(row);
     case "warehouseImportPrice":
-      return getContainerDetailLastImportPrice(row);
+      return getContainerDetailRealtimeImportPrice(row);
     case "lastOEMPrice":
-      return getContainerDetailLastOemPrice(row);
+      return getContainerDetailRealtimeRetailPrice(row);
     case "importPrice":
       return row.\u8FDB\u53E3\u4EF7\u683C;
     case "oemPrice":
-      return resolveContainerDetailOemPrice(row);
+      return getContainerDetailVisibleOemPrice(row);
     case "warehouseStatus":
       return row.warehouseIsActive === true ? 1 : 0;
     case "remark":
@@ -700,7 +722,7 @@ function compareColumnValues(a, b) {
   return String(a).localeCompare(String(b), "zh-CN", { numeric: true, sensitivity: "base" });
 }
 function applyContainerDetailColumnState(rows2, filters, sortState) {
-  const filtered = rows2.filter((row) => matchesTextFilter(getContainerDetailItemNumber(row), filters.itemNumber) && matchesTextFilter(getContainerDetailBarcode(row), filters.barcode) && matchesTextFilter(getContainerDetailProductName(row), filters.productName) && matchesTextFilter(getContainerDetailEnglishName(row), filters.englishName) && matchesTextFilter(row.\u5907\u6CE8, filters.remark) && matchesOneOf(getContainerDetailProductTypeFilterKey(row), filters.productTypes) && matchesOneOf(row.\u662F\u5426\u65B0\u5546\u54C1 ? "new" : "existing", filters.newProductStates) && matchesOneOf(getContainerDetailMatchType(row), filters.matchTypes) && matchesOneOf(getContainerDetailWarehouseStatusFilterKey(row), filters.warehouseStatus) && matchesNumberRange(row.\u88C5\u67DC\u4EF6\u6570, filters.containerPieces) && matchesNumberRange(row.\u4E2D\u5305\u6570, filters.middlePackQuantity) && matchesNumberRange(row.\u88C5\u67DC\u6570\u91CF, filters.containerQuantity) && matchesNumberRange(row.\u5355\u4EF6\u88C5\u7BB1\u6570, filters.packingQuantity) && matchesNumberRange(row.\u5355\u4EF6\u4F53\u79EF, filters.unitVolume) && matchesNumberRange(row.\u56FD\u5185\u4EF7\u683C, filters.domesticPrice) && matchesNumberRange(row.\u8C03\u6574\u6D6E\u7387, filters.floatRate) && matchesNumberRange(row.\u8FD0\u8F93\u6210\u672C, filters.transportCost) && matchesNumberRange(calculateContainerDetailUnitTransportCost(row), filters.unitTransportCost) && matchesNumberRange(getContainerDetailLastImportPrice(row), filters.warehouseImportPrice) && matchesNumberRange(getContainerDetailLastOemPrice(row), filters.lastOEMPrice) && matchesNumberRange(row.\u8FDB\u53E3\u4EF7\u683C, filters.importPrice) && matchesNumberRange(resolveContainerDetailOemPrice(row), filters.oemPrice));
+  const filtered = rows2.filter((row) => matchesTextFilter(getContainerDetailItemNumber(row), filters.itemNumber) && matchesTextFilter(getContainerDetailBarcode(row), filters.barcode) && matchesTextFilter(getContainerDetailProductName(row), filters.productName) && matchesTextFilter(getContainerDetailEnglishName(row), filters.englishName) && matchesTextFilter(row.\u5907\u6CE8, filters.remark) && matchesOneOf(getContainerDetailProductTypeFilterKey(row), filters.productTypes) && matchesOneOf(row.\u662F\u5426\u65B0\u5546\u54C1 ? "new" : "existing", filters.newProductStates) && matchesOneOf(getContainerDetailMatchType(row), filters.matchTypes) && matchesOneOf(getContainerDetailWarehouseStatusFilterKey(row), filters.warehouseStatus) && matchesNumberRange(row.\u88C5\u67DC\u4EF6\u6570, filters.containerPieces) && matchesNumberRange(row.\u4E2D\u5305\u6570, filters.middlePackQuantity) && matchesNumberRange(row.\u88C5\u67DC\u6570\u91CF, filters.containerQuantity) && matchesNumberRange(row.\u5355\u4EF6\u88C5\u7BB1\u6570, filters.packingQuantity) && matchesNumberRange(row.\u5355\u4EF6\u4F53\u79EF, filters.unitVolume) && matchesNumberRange(row.\u56FD\u5185\u4EF7\u683C, filters.domesticPrice) && matchesNumberRange(row.\u8C03\u6574\u6D6E\u7387, filters.floatRate) && matchesNumberRange(row.\u8FD0\u8F93\u6210\u672C, filters.transportCost) && matchesNumberRange(calculateContainerDetailUnitTransportCost(row), filters.unitTransportCost) && matchesNumberRange(getContainerDetailRealtimeImportPrice(row), filters.warehouseImportPrice) && matchesNumberRange(getContainerDetailRealtimeRetailPrice(row), filters.lastOEMPrice) && matchesNumberRange(row.\u8FDB\u53E3\u4EF7\u683C, filters.importPrice) && matchesNumberRange(getContainerDetailVisibleOemPrice(row), filters.oemPrice));
   if (!sortState) return filtered;
   return filtered.map((row, index) => ({ row, index })).sort((left, right) => {
     const result = compareColumnValues(
@@ -934,7 +956,9 @@ function buildContainerDetailFloatRateUpdates(rows2, container, floatRate) {
       hguid: row.hguid,
       \u8C03\u6574\u6D6E\u7387: nextFloatRate,
       \u8FD0\u8F93\u6210\u672C: transportCost,
-      \u8FDB\u53E3\u4EF7\u683C: importPrice
+      \u8FDB\u53E3\u4EF7\u683C: importPrice,
+      // 浮率导致的系统重算只更新货柜明细，避免覆盖仓库表里人工维护的进货价。
+      SkipRelatedProductSync: true
     };
   }).filter((update) => update !== null);
 }
@@ -943,6 +967,22 @@ function isMissingPrice(value) {
 }
 function normalizeMatchKey(value) {
   return value?.trim().toUpperCase();
+}
+function getDetectedLocalProductCode(item) {
+  return item.LocalProductCode ?? item.localProductCode ?? item.ProductCode ?? item.productCode;
+}
+function getDetectedDomesticProductCode(item) {
+  return item.DomesticProductCode ?? item.domesticProductCode;
+}
+function getDetectedConflictReason(item) {
+  return item.ConflictReason ?? item.conflictReason;
+}
+function hasDetectedProductCodeConflict(item) {
+  const explicit = item.HasProductCodeConflict ?? item.hasProductCodeConflict;
+  if (explicit != null) return Boolean(explicit);
+  const localProductCode = normalizeMatchKey(getDetectedLocalProductCode(item));
+  const domesticProductCode = normalizeMatchKey(getDetectedDomesticProductCode(item));
+  return Boolean(localProductCode && domesticProductCode && localProductCode !== domesticProductCode);
 }
 function getContainerDetailDetectionProductCode(row) {
   const productCode = getContainerDetailProductCode(row);
@@ -953,12 +993,15 @@ function buildSupplierItemMatchKey(supplierCode, itemNumber) {
   const normalizedItemNumber = normalizeMatchKey(itemNumber);
   return normalizedSupplierCode && normalizedItemNumber ? `${normalizedSupplierCode}:${normalizedItemNumber}` : void 0;
 }
+function getContainerDetailSupplierCode(row) {
+  return firstTrimmedValue(row.localSupplierCode, row.\u5546\u54C1\u4FE1\u606F?.localSupplierCode) ?? "200";
+}
 function buildContainerDetailDetectionItems(rows2) {
   return rows2.map((row) => ({
-    // 检测同时携带商品编码和固定供应商 200 + 货号，由匹配结果决定最终展示方式。
+    // 检测同时携带商品编码和供应商+货号，由匹配结果决定最终展示方式。
     ProductCode: getContainerDetailDetectionProductCode(row),
     ItemNumber: getContainerDetailItemNumber(row),
-    SupplierCode: "200"
+    SupplierCode: getContainerDetailSupplierCode(row)
   })).filter((item) => item.ProductCode || item.ItemNumber);
 }
 function getDetectedDomesticPrice(item) {
@@ -994,28 +1037,22 @@ function buildDetectedPriceMaps(items) {
   items.forEach((item) => {
     if ((item.Exists ?? item.exists) === false) return;
     const productCode = normalizeMatchKey(item.productCode ?? item.ProductCode);
+    const hasConflict = hasDetectedProductCodeConflict(item);
     const supplierItemKey = buildSupplierItemMatchKey(item.supplierCode ?? item.SupplierCode ?? "200", item.itemNumber ?? item.ItemNumber);
-    if (productCode) productCodeMap.set(productCode, item);
+    if (productCode && !hasConflict) productCodeMap.set(productCode, item);
     if (supplierItemKey) supplierItemMap.set(supplierItemKey, item);
   });
   return { productCodeMap, supplierItemMap };
 }
-function getDetectedMatchType(item) {
-  return item.matchType ?? item.MatchType;
-}
-function isDetectedItemNumberMatch(item) {
-  const normalized = getDetectedMatchType(item)?.trim().toLowerCase();
-  return normalized === "item_number" || normalized === "itemnumber" || normalized === "supplieritem" || normalized === "supplier_item";
-}
 function resolveContainerDetailDetectedMatch(row, detectedMaps) {
   const itemNumber = normalizeMatchKey(getContainerDetailItemNumber(row));
-  const supplierItemKey = buildSupplierItemMatchKey("200", itemNumber);
+  const supplierItemKey = buildSupplierItemMatchKey(getContainerDetailSupplierCode(row), itemNumber);
   const detectionProductCode = normalizeMatchKey(getContainerDetailDetectionProductCode(row));
   const productCodeMatch = detectionProductCode ? detectedMaps.productCodeMap.get(detectionProductCode) : void 0;
   if (productCodeMatch) {
     return {
       item: productCodeMatch,
-      matchType: isDetectedItemNumberMatch(productCodeMatch) ? "supplierItem" : "productCode"
+      matchType: "productCode"
     };
   }
   const supplierItemMatch = supplierItemKey ? detectedMaps.supplierItemMap.get(supplierItemKey) : void 0;
@@ -1033,10 +1070,21 @@ function buildContainerDetailMatchStatusUpdates(rows2, detectedItems) {
     if (!row.hguid) return null;
     const match = resolveContainerDetailDetectedMatch(row, detectedMaps);
     if (!match) return null;
+    const localProductCode = getDetectedLocalProductCode(match.item);
+    const domesticProductCode = getDetectedDomesticProductCode(match.item) ?? getContainerDetailProductCode(row);
+    const hasProductCodeConflict = Boolean(
+      localProductCode && domesticProductCode && normalizeMatchKey(localProductCode) !== normalizeMatchKey(domesticProductCode)
+    ) || hasDetectedProductCodeConflict(match.item);
+    const isCandidate = match.matchType === "supplierItem" || hasProductCodeConflict;
     return {
       hguid: row.hguid,
-      matchType: match.matchType,
-      \u662F\u5426\u65B0\u5546\u54C1: false
+      matchType: isCandidate ? "supplierItem" : match.matchType,
+      ...isCandidate ? {
+        hasProductCodeConflict,
+        localProductCode,
+        domesticProductCode,
+        conflictReason: getDetectedConflictReason(match.item)
+      } : { \u662F\u5426\u65B0\u5546\u54C1: false }
     };
   }).filter((update) => update !== null);
 }
@@ -1046,6 +1094,7 @@ function buildContainerDetailMatchedDomesticDataUpdates(rows2, detectedItems, co
     if (!row.hguid) return null;
     const detectedMatch = resolveContainerDetailDetectedMatch(row, detectedMaps);
     if (!detectedMatch) return null;
+    if (detectedMatch.matchType !== "productCode" || hasDetectedProductCodeConflict(detectedMatch.item)) return null;
     const update = { hguid: row.hguid };
     const match = detectedMatch.item;
     update.matchType = detectedMatch.matchType;
@@ -1111,7 +1160,7 @@ function buildContainerDetailHqPushSelection(rows2) {
     const englishName = getContainerDetailEnglishName(row)?.trim();
     const barcode = row.\u5546\u54C1\u4FE1\u606F?.\u6761\u5F62\u7801?.trim();
     const imageUrl = row.\u5546\u54C1\u56FE\u7247?.trim() || row.\u5546\u54C1\u4FE1\u606F?.\u5546\u54C1\u56FE\u7247?.trim();
-    const oemPrice = resolveContainerDetailOemPrice(row);
+    const oemPrice = getContainerDetailVisibleOemPrice(row);
     if (!productCode && !(localSupplierCode && itemNumber)) {
       missingProductCodeCount += 1;
       return;
@@ -1230,7 +1279,7 @@ assertDeepEqual(
 assertDeepEqual(
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   ["index", "productImage", "itemNumber", "barcodeImage", "englishName", "oemPrice"],
-  "\u8D27\u67DC\u660E\u7EC6 PDF \u9ED8\u8BA4\u5BFC\u51FA\u5217\u5E94\u4E3A\u5E8F\u53F7\u3001\u5546\u54C1\u56FE\u7247\u3001\u8D27\u53F7\u3001\u6761\u7801\u56FE\u7247\u3001\u82F1\u6587\u548C\u8D34\u724C\u4EF7\u683C"
+  "\u8D27\u67DC\u660E\u7EC6 PDF \u9ED8\u8BA4\u5BFC\u51FA\u5217\u5E94\u4E3A\u5E8F\u53F7\u3001\u5546\u54C1\u56FE\u7247\u3001\u8D27\u53F7\u3001\u6761\u7801\u56FE\u7247\u3001\u82F1\u6587\u548C\u96F6\u552E\u4EF7"
 );
 var customExportColumnKeys = ["oemPrice", "itemNumber", "containerQuantity"];
 assertDeepEqual(
@@ -1241,7 +1290,7 @@ assertDeepEqual(
 assertDeepEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.filter((column) => column.key === "lastImportPrice" || column.key === "lastOEMPrice").map((column) => column.key),
   ["lastImportPrice", "lastOEMPrice"],
-  "\u8D27\u67DC\u660E\u7EC6\u53EF\u9009\u5BFC\u51FA\u5217\u5E94\u5305\u542B\u4E0A\u6B21\u8FDB\u8D27\u4EF7\u683C\u548C\u4E0A\u6B21\u8D34\u724C\u4EF7\u683C"
+  "\u8D27\u67DC\u660E\u7EC6\u53EF\u9009\u5BFC\u51FA\u5217\u5E94\u5305\u542B\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u548C\u5B9E\u65F6\u96F6\u552E\u4EF7"
 );
 assertDeepEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.filter((column) => column.key === "barcode" || column.key === "barcodeImage" || column.key === "productImage").map((column) => column.key),
@@ -1251,30 +1300,30 @@ assertDeepEqual(
 assertEqual(
   CONTAINER_DETAIL_EXPORT_COLUMNS.find((column) => column.key === "lastImportPrice")?.labelKey,
   "containers.fields.warehouseImportPrice",
-  "\u4E0A\u6B21\u8FDB\u8D27\u4EF7\u683C\u5BFC\u51FA\u5217\u5E94\u590D\u7528\u8868\u683C\u91CC\u7684 Last Purchase Price \u7FFB\u8BD1 key"
+  "\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u5BFC\u51FA\u5217\u5E94\u590D\u7528\u8868\u683C\u91CC\u7684\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u7FFB\u8BD1 key"
 );
 assertEqual(
-  getContainerDetailImportPriceTrend({ id: 120, hguid: "import-trend-up", lastImportPrice: 0.29, \u8FDB\u53E3\u4EF7\u683C: 0.38 }),
+  getContainerDetailImportPriceTrend({ id: 120, hguid: "import-trend-up", warehouseImportPrice: 0.29, \u8FDB\u53E3\u4EF7\u683C: 0.38 }),
   "up",
-  "\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u9AD8\u4E8E\u4E0A\u6B21\u8FDB\u53E3\u4EF7\u683C\u65F6\u5E94\u663E\u793A\u7EFF\u8272\u4E0A\u6DA8"
+  "\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u9AD8\u4E8E\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u65F6\u5E94\u663E\u793A\u7EFF\u8272\u4E0A\u6DA8"
 );
 assertEqual(
-  getContainerDetailImportPriceTrend({ id: 121, hguid: "import-trend-down", lastImportPrice: 0.38, \u8FDB\u53E3\u4EF7\u683C: 0.29 }),
+  getContainerDetailImportPriceTrend({ id: 121, hguid: "import-trend-down", warehouseImportPrice: 0.38, \u8FDB\u53E3\u4EF7\u683C: 0.29 }),
   "down",
-  "\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u4F4E\u4E8E\u4E0A\u6B21\u8FDB\u53E3\u4EF7\u683C\u65F6\u5E94\u663E\u793A\u7EA2\u8272\u4E0B\u964D"
+  "\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u4F4E\u4E8E\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u65F6\u5E94\u663E\u793A\u7EA2\u8272\u4E0B\u964D"
 );
 assertEqual(
-  getContainerDetailImportPriceTrend({ id: 122, hguid: "import-trend-same", lastImportPrice: 0.29, \u8FDB\u53E3\u4EF7\u683C: 0.29 }),
+  getContainerDetailImportPriceTrend({ id: 122, hguid: "import-trend-same", warehouseImportPrice: 0.29, \u8FDB\u53E3\u4EF7\u683C: 0.29 }),
   void 0,
-  "\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u7B49\u4E8E\u4E0A\u6B21\u8FDB\u53E3\u4EF7\u683C\u65F6\u4E0D\u5E94\u663E\u793A\u8D8B\u52BF\u7BAD\u5934"
+  "\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u7B49\u4E8E\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u65F6\u4E0D\u5E94\u663E\u793A\u8D8B\u52BF\u7BAD\u5934"
 );
 assertEqual(
-  getContainerDetailImportPriceTrend({ id: 123, hguid: "import-trend-missing-last", \u8FDB\u53E3\u4EF7\u683C: 0.38 }),
+  getContainerDetailImportPriceTrend({ id: 123, hguid: "import-trend-missing-realtime", \u8FDB\u53E3\u4EF7\u683C: 0.38 }),
   void 0,
-  "\u7F3A\u5C11\u4E0A\u6B21\u8FDB\u53E3\u4EF7\u683C\u65F6\u4E0D\u5E94\u663E\u793A\u8D8B\u52BF\u7BAD\u5934"
+  "\u7F3A\u5C11\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u65F6\u4E0D\u5E94\u663E\u793A\u8D8B\u52BF\u7BAD\u5934"
 );
 assertEqual(
-  getContainerDetailImportPriceTrend({ id: 124, hguid: "import-trend-missing-current", lastImportPrice: 0.38 }),
+  getContainerDetailImportPriceTrend({ id: 124, hguid: "import-trend-missing-current", warehouseImportPrice: 0.38 }),
   void 0,
   "\u7F3A\u5C11\u672C\u6B21\u8FDB\u53E3\u4EF7\u683C\u65F6\u4E0D\u5E94\u663E\u793A\u8D8B\u52BF\u7BAD\u5934"
 );
@@ -1379,8 +1428,8 @@ var exportRow = buildContainerDetailExportRow({
   \u8FDB\u53E3\u4EF7\u683C: 0.67,
   \u8D34\u724C\u4EF7\u683C: 3.5,
   warehouseOEMPrice: 4.8,
-  lastImportPrice: 0.52,
-  lastOEMPrice: 4.8,
+  lastImportPrice: 8.88,
+  lastOEMPrice: 9.99,
   \u5355\u4EF6\u4F53\u79EF: 0.1188,
   \u5408\u8BA1\u88C5\u67DC\u4F53\u79EF: 0.3564,
   warehouseIsActive: true,
@@ -1426,37 +1475,87 @@ assertDeepEqual(
     lastOEMPrice: 4.8,
     oemPrice: 3.5
   },
-  "\u8D27\u67DC\u660E\u7EC6\u5BFC\u51FA\u884C\u5E94\u6309 Excel \u6A21\u677F\u8BFB\u53D6\u9875\u9762\u5C55\u793A\u5B57\u6BB5\u3001\u4F53\u79EF\u5B57\u6BB5\u548C\u4E0A\u6B21\u4EF7\u683C\u5FEB\u7167\uFF0C\u4E14\u8D34\u724C\u4EF7\u683C\u5E94\u4F7F\u7528\u660E\u7EC6\u4E1A\u52A1\u4EF7"
+  "\u8D27\u67DC\u660E\u7EC6\u5BFC\u51FA\u884C\u5E94\u6309 Excel \u6A21\u677F\u8BFB\u53D6\u9875\u9762\u5C55\u793A\u5B57\u6BB5\u3001\u4F53\u79EF\u5B57\u6BB5\u548C\u5B9E\u65F6\u4ED3\u5E93\u4EF7\uFF0C\u4E14\u65B0\u5546\u54C1\u96F6\u552E\u4EF7\u5E94\u4F7F\u7528\u660E\u7EC6\u4E1A\u52A1\u4EF7"
 );
 assertEqual(
   resolveContainerDetailOemPrice({ id: 103, hguid: "oem-warehouse", \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6 }),
   2.2,
-  "\u6709\u6548\u8D34\u724C\u4EF7\u5E94\u4F7F\u7528\u660E\u7EC6\u8D34\u724C\u4EF7\u683C\uFF0C\u4E0D\u518D\u4F18\u5148\u4F7F\u7528\u4ED3\u5E93\u5FEB\u7167\u4EF7"
+  "\u7EAF\u660E\u7EC6\u96F6\u552E\u4EF7 helper \u5E94\u53EA\u8BFB\u53D6\u8D27\u67DC\u660E\u7EC6\u4E1A\u52A1\u4EF7"
 );
 assertEqual(
-  getContainerDetailLastOemPrice({ id: 104, hguid: "oem-warehouse-big", \u8D34\u724C\u4EF7\u683C: 2.2, LastOEMPrice: 7.7 }),
+  getContainerDetailVisibleOemPrice({ id: 104, hguid: "visible-oem-existing", \u662F\u5426\u65B0\u5546\u54C1: false, \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6 }),
+  6.6,
+  "\u5DF2\u6709\u5546\u54C1\u8868\u683C\u96F6\u552E\u4EF7\u5E94\u8BFB\u53D6\u4ED3\u5E93\u5B9E\u65F6\u96F6\u552E\u4EF7"
+);
+assertEqual(
+  getContainerDetailVisibleOemPrice({ id: 105, hguid: "visible-oem-new", \u662F\u5426\u65B0\u5546\u54C1: true, \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6 }),
+  2.2,
+  "\u65B0\u5546\u54C1\u8868\u683C\u96F6\u552E\u4EF7\u5E94\u8BFB\u53D6\u8D27\u67DC\u660E\u7EC6\u96F6\u552E\u4EF7"
+);
+assertEqual(
+  buildContainerDetailExportRow({ id: 106, hguid: "export-existing-oem", \u662F\u5426\u65B0\u5546\u54C1: false, \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6 }).oemPrice,
+  6.6,
+  "\u5DF2\u6709\u5546\u54C1\u5BFC\u51FA\u96F6\u552E\u4EF7\u5E94\u4F7F\u7528\u4ED3\u5E93\u5B9E\u65F6\u96F6\u552E\u4EF7"
+);
+assertEqual(
+  getContainerDetailRealtimeRetailPrice({ id: 107, hguid: "retail-warehouse-camel", \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6, LastOEMPrice: 7.7 }),
+  6.6,
+  "\u5B9E\u65F6\u96F6\u552E\u4EF7\u5E94\u8BFB\u53D6\u4ED3\u5E93\u5546\u54C1 camelCase \u5B57\u6BB5"
+);
+assertEqual(
+  getContainerDetailRealtimeRetailPrice({ id: 108, hguid: "retail-warehouse-pascal", \u8D34\u724C\u4EF7\u683C: 2.2, WarehouseOEMPrice: 7.7, LastOEMPrice: 8.8 }),
   7.7,
-  "\u4E0A\u6B21\u8D34\u724C\u4EF7\u5E94\u517C\u5BB9\u540E\u7AEF\u5927\u5199 LastOEMPrice"
+  "\u5B9E\u65F6\u96F6\u552E\u4EF7\u5E94\u517C\u5BB9\u540E\u7AEF PascalCase \u5B57\u6BB5"
 );
 assertEqual(
-  getContainerDetailLastImportPrice({ id: 105, hguid: "import-fallback", warehouseImportPrice: 5.5 }),
+  getContainerDetailRealtimeRetailPrice({ id: 109, hguid: "retail-warehouse-none", \u8D34\u724C\u4EF7\u683C: 2.2, LastOEMPrice: 8.8 }),
+  void 0,
+  "\u5B9E\u65F6\u96F6\u552E\u4EF7\u7F3A\u5B57\u6BB5\u65F6\u4E0D\u5E94\u56DE\u9000\u5386\u53F2\u5FEB\u7167\u6216\u660E\u7EC6\u4EF7"
+);
+assertEqual(
+  getContainerDetailRealtimeImportPrice({ id: 110, hguid: "import-warehouse-camel", warehouseImportPrice: 5.5, LastImportPrice: 8.8 }),
   5.5,
-  "\u4E0A\u6B21\u8FDB\u8D27\u4EF7\u5E94\u517C\u5BB9\u65E7\u5B57\u6BB5\u540D warehouseImportPrice"
+  "\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u5E94\u8BFB\u53D6\u4ED3\u5E93\u5546\u54C1 camelCase \u5B57\u6BB5"
+);
+assertEqual(
+  getContainerDetailRealtimeImportPrice({ id: 111, hguid: "import-warehouse-pascal", WarehouseImportPrice: 6.6, LastImportPrice: 8.8 }),
+  6.6,
+  "\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u5E94\u517C\u5BB9\u540E\u7AEF PascalCase \u5B57\u6BB5"
+);
+assertEqual(
+  getContainerDetailRealtimeImportPrice({ id: 112, hguid: "import-warehouse-none", LastImportPrice: 8.8 }),
+  void 0,
+  "\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u7F3A\u5B57\u6BB5\u65F6\u4E0D\u5E94\u56DE\u9000\u5386\u53F2\u5FEB\u7167"
 );
 assertEqual(
   getContainerDetailOemPriceSource({ id: 106, hguid: "oem-source-warehouse", \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6 }),
   "detail",
-  "\u8D34\u724C\u4EF7\u6765\u6E90\u5E94\u8BC6\u522B\u660E\u7EC6\u8D34\u724C\u4EF7"
+  "\u96F6\u552E\u4EF7\u6765\u6E90\u5E94\u8BC6\u522B\u660E\u7EC6\u96F6\u552E\u4EF7"
 );
 assertEqual(
   getContainerDetailOemPriceSource({ id: 107, hguid: "oem-source-detail", \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 0 }),
   "detail",
-  "\u8D34\u724C\u4EF7\u6765\u6E90\u5E94\u8BC6\u522B\u660E\u7EC6\u4E1A\u52A1\u4EF7"
+  "\u96F6\u552E\u4EF7\u6765\u6E90\u5E94\u8BC6\u522B\u660E\u7EC6\u4E1A\u52A1\u4EF7"
 );
 assertEqual(
   getContainerDetailOemPriceSource({ id: 108, hguid: "oem-source-none" }),
   "none",
-  "\u8D34\u724C\u4EF7\u6765\u6E90\u5E94\u8BC6\u522B\u65E0\u4EF7\u683C\u72B6\u6001"
+  "\u96F6\u552E\u4EF7\u6765\u6E90\u5E94\u8BC6\u522B\u65E0\u4EF7\u683C\u72B6\u6001"
+);
+assertEqual(
+  getContainerDetailReadonlyOemPrice({ id: 109, hguid: "readonly-oem-camel", readonlyOemPrice: 6.6, \u8D34\u724C\u4EF7\u683C: 2.2 }),
+  6.6,
+  "\u53EA\u8BFB\u96F6\u552E\u4EF7\u5E94\u8BFB\u53D6\u540E\u7AEF camelCase \u5B57\u6BB5"
+);
+assertEqual(
+  getContainerDetailReadonlyOemPrice({ id: 110, hguid: "readonly-oem-pascal", ReadonlyOemPrice: 7.7, \u8D34\u724C\u4EF7\u683C: 2.2 }),
+  7.7,
+  "\u53EA\u8BFB\u96F6\u552E\u4EF7\u5E94\u517C\u5BB9\u540E\u7AEF PascalCase \u5B57\u6BB5"
+);
+assertEqual(
+  getContainerDetailReadonlyOemPrice({ id: 111, hguid: "readonly-oem-none", \u8D34\u724C\u4EF7\u683C: 2.2 }),
+  void 0,
+  "\u53EA\u8BFB\u96F6\u552E\u4EF7\u7F3A\u5B57\u6BB5\u65F6\u4E0D\u5E94\u56DE\u9000\u8D27\u67DC\u660E\u7EC6\u4E1A\u52A1\u4EF7"
 );
 assertDeepEqual(
   buildContainerDetailExportRows([
@@ -1919,13 +2018,13 @@ assertDeepEqual(
     multi: 1,
     setChild: 1
   },
-  "\u7EDF\u8BA1\u680F\u5E94\u6309\u5F53\u524D\u57FA\u7840\u7ED3\u679C\u7EDF\u8BA1\u5168\u90E8\u3001\u65B0\u5546\u54C1\u3001\u5DF2\u6709\u5546\u54C1\u3001\u7F3A\u8D34\u724C\u4EF7\u3001\u8FDB\u53E3\u4EF7\u5F02\u5E38\u3001\u4E0A\u4E0B\u67B6\u548C\u5546\u54C1\u7C7B\u578B\u6570\u91CF"
+  "\u7EDF\u8BA1\u680F\u5E94\u6309\u5F53\u524D\u57FA\u7840\u7ED3\u679C\u7EDF\u8BA1\u5168\u90E8\u3001\u65B0\u5546\u54C1\u3001\u5DF2\u6709\u5546\u54C1\u3001\u7F3A\u96F6\u552E\u4EF7\u3001\u8FDB\u53E3\u4EF7\u5F02\u5E38\u3001\u4E0A\u4E0B\u67B6\u548C\u5546\u54C1\u7C7B\u578B\u6570\u91CF"
 );
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], "new"), true, "\u65B0\u5546\u54C1 tag \u5E94\u5339\u914D\u662F\u5426\u65B0\u5546\u54C1\u884C");
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], "new"), false, "\u65B0\u5546\u54C1 tag \u4E0D\u5E94\u5339\u914D\u5DF2\u6709\u5546\u54C1\u884C");
-assertEqual(matchesContainerDetailTagFilter(tagRows[0], "noOemPrice"), true, "\u7F3A\u8D34\u724C\u4EF7\u53EA\u7EDF\u8BA1\u65B0\u5546\u54C1\u4E14\u6709\u6548\u8D34\u724C\u4EF7\u4E3A\u7A7A\u6216\u4E0D\u5927\u4E8E 0 \u7684\u884C");
-assertEqual(matchesContainerDetailTagFilter(tagRows[1], "noOemPrice"), true, "\u660E\u7EC6\u8D34\u724C\u4EF7\u4E3A\u7A7A\u65F6\u5E94\u8FDB\u5165\u7F3A\u8D34\u724C\u4EF7 tag\uFF0C\u4ED3\u5E93\u5FEB\u7167\u4E0D\u518D\u515C\u5E95");
-assertEqual(matchesContainerDetailTagFilter(tagRows[3], "noOemPrice"), false, "\u5DF2\u6709\u5546\u54C1\u7F3A\u8D34\u724C\u4EF7\u4E0D\u8FDB\u5165\u7F3A\u8D34\u724C\u4EF7 tag");
+assertEqual(matchesContainerDetailTagFilter(tagRows[0], "noOemPrice"), true, "\u7F3A\u96F6\u552E\u4EF7\u53EA\u7EDF\u8BA1\u65B0\u5546\u54C1\u4E14\u6709\u6548\u96F6\u552E\u4EF7\u4E3A\u7A7A\u6216\u4E0D\u5927\u4E8E 0 \u7684\u884C");
+assertEqual(matchesContainerDetailTagFilter(tagRows[1], "noOemPrice"), true, "\u660E\u7EC6\u96F6\u552E\u4EF7\u4E3A\u7A7A\u65F6\u5E94\u8FDB\u5165\u7F3A\u96F6\u552E\u4EF7 tag\uFF0C\u4ED3\u5E93\u5FEB\u7167\u4E0D\u518D\u515C\u5E95");
+assertEqual(matchesContainerDetailTagFilter(tagRows[3], "noOemPrice"), false, "\u5DF2\u6709\u5546\u54C1\u7F3A\u96F6\u552E\u4EF7\u4E0D\u8FDB\u5165\u7F3A\u96F6\u552E\u4EF7 tag");
 assertEqual(matchesContainerDetailTagFilter(tagRows[1], "abnormalImport"), true, "\u8FDB\u53E3\u4EF7\u4E3A 0 \u5E94\u8FDB\u5165\u8FDB\u53E3\u4EF7\u5F02\u5E38 tag");
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], "all"), true, "\u5168\u90E8 tag \u5E94\u5339\u914D\u6240\u6709\u884C");
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], "active"), true, "\u4E0A\u67B6 tag \u5E94\u5339\u914D warehouseIsActive \u4E3A true \u7684\u884C");
@@ -1997,6 +2096,7 @@ var columnStateRows = [
     \u8FD0\u8F93\u6210\u672C: 0.12,
     \u8FDB\u53E3\u4EF7\u683C: 1.45,
     \u8D34\u724C\u4EF7\u683C: 2.01,
+    warehouseOEMPrice: 2.01,
     warehouseIsActive: void 0,
     \u5546\u54C1\u4FE1\u606F: { \u8D27\u53F7: "8104032", \u6761\u5F62\u7801: "8052533140328", \u5546\u54C1\u540D\u79F0: "\u4E09\u89D2\u652F\u67B6", \u82F1\u6587\u540D\u79F0: "Triangle Bracket" }
   }
@@ -2019,7 +2119,7 @@ assertDeepEqual(columnState({ middlePackQuantity: { min: 1, max: 20 } }), ["colu
 assertDeepEqual(columnState({ containerQuantity: { min: 500, max: 2e3 } }), ["column-201"], "\u88C5\u67DC\u6570\u91CF\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u540C\u65F6\u652F\u6301\u6700\u5C0F\u503C\u548C\u6700\u5927\u503C");
 assertDeepEqual(columnState({ domesticPrice: { min: 0, max: 0 } }), ["column-202"], "\u6570\u5B57\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u6B63\u786E\u5339\u914D 0 \u503C");
 assertDeepEqual(columnState({ transportCost: { min: 0 } }), ["column-201", "column-203"], "\u6570\u5B57\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u6392\u9664\u7A7A\u503C");
-assertDeepEqual(columnState({ oemPrice: { min: 3, max: 4 } }), ["column-201"], "\u8D34\u724C\u4EF7\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u8BFB\u53D6\u660E\u7EC6\u8D34\u724C\u4EF7");
+assertDeepEqual(columnState({ oemPrice: { min: 4, max: 5 } }), ["column-201"], "\u96F6\u552E\u4EF7\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u8BFB\u53D6\u8868\u683C\u53EF\u89C1\u96F6\u552E\u4EF7");
 assertDeepEqual(columnState({ oemPrice: { min: 2 } }, { field: "containerPieces", order: "ascend" }), ["column-203", "column-201"], "\u5217\u5934\u8FC7\u6EE4\u540E\u6392\u5E8F\u5E94\u53EA\u4F5C\u7528\u4E8E\u8FC7\u6EE4\u540E\u7684\u53EF\u89C1\u884C");
 assertDeepEqual(columnState({}, { field: "itemNumber", order: "ascend" }), ["column-201", "column-203", "column-202"], "\u8D27\u53F7\u6392\u5E8F\u5E94\u6309\u6587\u672C\u5347\u5E8F\u4E14\u4FDD\u6301\u7A33\u5B9A\u8F93\u51FA");
 assertDeepEqual(
@@ -2332,7 +2432,7 @@ assertDeepEqual(
     { hguid: "price-321", label: "HB137-482", retailPrice: void 0 },
     { hguid: "price-322", label: "HB137-483", retailPrice: 0 }
   ],
-  "\u521B\u5EFA\u65B0\u5546\u54C1\u524D\u5E94\u53EA\u62E6\u622A\u65B0\u5546\u54C1\u4E2D\u660E\u7EC6\u8D34\u724C\u4EF7\u683C\u4E0D\u5927\u4E8E 0 \u7684\u660E\u7EC6\uFF0C\u4E0A\u6B21\u8D34\u724C\u4EF7\u683C\u4E0D\u518D\u515C\u5E95"
+  "\u521B\u5EFA\u65B0\u5546\u54C1\u524D\u5E94\u53EA\u62E6\u622A\u65B0\u5546\u54C1\u4E2D\u660E\u7EC6\u96F6\u552E\u4EF7\u4E0D\u5927\u4E8E 0 \u7684\u660E\u7EC6\uFF0C\u4E0A\u6B21\u96F6\u552E\u4EF7\u4E0D\u518D\u515C\u5E95"
 );
 assertEqual(getContainerDetailMatchType({ id: 306, hguid: "match-306", matchType: "productCode" }), "productCode", "\u5339\u914D\u65B9\u5F0F\u5E94\u4F18\u5148\u8BFB\u53D6\u524D\u7AEF\u5F52\u4E00\u5316\u5B57\u6BB5");
 assertEqual(getContainerDetailMatchType({ id: 307, hguid: "match-307", MatchType: "SupplierItem" }), "supplierItem", "\u5339\u914D\u65B9\u5F0F\u5E94\u517C\u5BB9\u540E\u7AEF PascalCase \u5B57\u6BB5");
@@ -2443,6 +2543,7 @@ var requiredContainerI18nKeys = [
   "containers.actions.pushToHq",
   "containers.actions.saveDetails",
   "containers.actions.matchDomesticData",
+  "containers.actions.alignDomesticProductCode",
   "containers.actions.previewImage",
   "containers.text.loadedRows",
   "containers.text.warehouseInventoriesCreated",
@@ -2454,6 +2555,12 @@ var requiredContainerI18nKeys = [
   "containers.text.createProductsJobSummary",
   "containers.text.skippedRows",
   "containers.text.failedRows",
+  "containers.modals.savePendingPriceDetailsTitle",
+  "containers.modals.savePendingPriceDetailsUpdateTitle",
+  "containers.modals.savePendingPriceDetailsSummary",
+  "containers.modals.savePendingPriceDetailsExistingRetailHint",
+  "containers.modals.savePendingPriceDetailsNewRetailHint",
+  "containers.modals.savePendingPriceDetailsRetryHint",
   "containers.messages.selectedRowsHidden",
   "containers.messages.savePendingPriceDetailsFirst",
   "containers.messages.detailSaveFailed",
@@ -2466,6 +2573,10 @@ var requiredContainerI18nKeys = [
   "containers.messages.domesticDataMatched",
   "containers.messages.columnOrderReset",
   "containers.messages.matchDomesticDataFailed",
+  "containers.messages.missingAlignProductCode",
+  "containers.messages.domesticProductCodeAligned",
+  "containers.messages.alignDomesticProductCodeFailed",
+  "containers.messages.alignSetChildNotSupported",
   "containers.messages.rowCategoryUpdated",
   "containers.messages.noExistingLocalProductsToPushHq",
   "containers.messages.createProductsJobSubmitted",
@@ -2480,6 +2591,9 @@ var requiredContainerI18nKeys = [
   "containers.modals.batchUpdatePricesTitle",
   "containers.modals.batchActionContent",
   "containers.modals.batchActionAllHint",
+  "containers.modals.alignDomesticProductCodeTitle",
+  "containers.modals.alignDomesticProductCodeContent",
+  "containers.modals.alignDomesticProductCodeConflictHint",
   "containers.modals.rowCategoryTitle",
   "containers.export.summaryTitle",
   ...containerDetailExportLabelKeys,
@@ -2546,9 +2660,9 @@ assertDeepEqual(
     "Total Volume",
     "INNER",
     "RMB Cost",
-    "Last Cost",
-    "Last OEM Price",
-    "OEM Price"
+    "Current Purchase Price",
+    "Current Retail Price",
+    "RRP"
   ],
   "\u82F1\u6587\u6A21\u5F0F\u5BFC\u51FA\u5217\u9009\u62E9\u5F39\u7A97\u548C Excel \u8868\u5934\u5E94\u5168\u90E8\u4F7F\u7528\u82F1\u6587 locale\uFF0C\u4E0D\u80FD\u56DE\u9000\u5230\u4E2D\u6587 fallback"
 );
@@ -2570,12 +2684,12 @@ assertEqual(
 assertEqual(
   pageSource.includes("const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false)"),
   true,
-  "\u53EA\u8BFB\u8D34\u724C\u4EF7\u683C\u5FEB\u89C8\u5217\u5E94\u9ED8\u8BA4\u5173\u95ED"
+  "\u53EA\u8BFB\u96F6\u552E\u4EF7\u5FEB\u89C8\u5217\u5E94\u9ED8\u8BA4\u5173\u95ED"
 );
 assertEqual(
   pageSource.includes("showReadonlyOemPrice ? [readonlyOemPriceColumn] : []"),
   true,
-  "\u53EA\u8BFB\u8D34\u724C\u4EF7\u683C\u5FEB\u89C8\u5217\u5E94\u53EA\u5728\u5F00\u5173\u6253\u5F00\u65F6\u63D2\u5165\u8868\u683C\u5217"
+  "\u53EA\u8BFB\u96F6\u552E\u4EF7\u5FEB\u89C8\u5217\u5E94\u53EA\u5728\u5F00\u5173\u6253\u5F00\u65F6\u63D2\u5165\u8868\u683C\u5217"
 );
 var matchedPriceContainer = { \u6C47\u7387: 4.5, \u8FD0\u8D39: 100, \u603B\u4F53\u79EF: 10 };
 var matchedPriceRows = [
@@ -2680,16 +2794,16 @@ var matchedPriceUpdates = buildContainerDetailMatchedDomesticDataUpdates(
 assertDeepEqual(
   buildContainerDetailDetectionItems([
     { id: 901, hguid: "detect-901", \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7F16\u7801: "59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B", \u8D27\u53F7: "HB013-108", \u6761\u5F62\u7801: "9528501322108" } },
-    { id: 902, hguid: "detect-902", \u5546\u54C1\u7F16\u7801: "P-CODE", localSupplierCode: "200", \u5546\u54C1\u4FE1\u606F: { \u8D27\u53F7: "ITEM-902" } },
+    { id: 902, hguid: "detect-902", \u5546\u54C1\u7F16\u7801: "P-CODE", localSupplierCode: "SUP01", \u5546\u54C1\u4FE1\u606F: { \u8D27\u53F7: "ITEM-902" } },
     { id: 903, hguid: "detect-903", \u5546\u54C1\u4FE1\u606F: { \u6761\u5F62\u7801: "BARCODE-ONLY" } },
     { id: 904, hguid: "detect-904", \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7F16\u7801: "HB013-108", \u8D27\u53F7: "HB013-108", \u6761\u5F62\u7801: "9528501322108" } }
   ]),
   [
     { ProductCode: "59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B", ItemNumber: "HB013-108", SupplierCode: "200" },
-    { ProductCode: "P-CODE", ItemNumber: "ITEM-902", SupplierCode: "200" },
+    { ProductCode: "P-CODE", ItemNumber: "ITEM-902", SupplierCode: "SUP01" },
     { ProductCode: "HB013-108", ItemNumber: "HB013-108", SupplierCode: "200" }
   ],
-  "\u5339\u914D\u68C0\u6D4B\u9879\u5E94\u540C\u65F6\u63D0\u4EA4\u5546\u54C1\u7F16\u7801\u548C\u4F9B\u5E94\u5546 200 + \u8D27\u53F7\uFF0C\u4E14\u4E0D\u63D0\u4EA4\u6761\u7801\u515C\u5E95"
+  "\u5339\u914D\u68C0\u6D4B\u9879\u5E94\u540C\u65F6\u63D0\u4EA4\u5546\u54C1\u7F16\u7801\u548C\u884C\u4F9B\u5E94\u5546+\u8D27\u53F7\uFF0C\u4E14\u4E0D\u63D0\u4EA4\u6761\u7801\u515C\u5E95"
 );
 assertDeepEqual(
   buildContainerDetailMatchedDomesticDataUpdates(
@@ -2708,15 +2822,8 @@ assertDeepEqual(
     ],
     matchedPriceContainer
   ),
-  [
-    {
-      hguid: "match-price-904",
-      matchType: "supplierItem",
-      \u662F\u5426\u65B0\u5546\u54C1: false,
-      \u5546\u54C1\u540D\u79F0: "FOLDABLE BROOM SET"
-    }
-  ],
-  "\u5546\u54C1\u7F16\u7801\u4E0D\u4E00\u81F4\u4F46\u4F9B\u5E94\u5546 200 + HB \u8D27\u53F7\u547D\u4E2D\u65F6\uFF0C\u5E94\u6309\u4F9B\u5E94\u5546\u8D27\u53F7\u5339\u914D\u800C\u4E0D\u662F\u5546\u54C1\u7F16\u7801\u5339\u914D"
+  [],
+  "\u5546\u54C1\u7F16\u7801\u4E0D\u4E00\u81F4\u4F46\u4F9B\u5E94\u5546 200 + HB \u8D27\u53F7\u547D\u4E2D\u65F6\uFF0C\u53EA\u80FD\u4F5C\u4E3A\u5019\u9009\uFF0C\u4E0D\u80FD\u81EA\u52A8\u5199\u5165\u660E\u7EC6\u6570\u636E"
 );
 assertDeepEqual(
   buildContainerDetailMatchStatusUpdates(
@@ -2799,11 +2906,11 @@ assertDeepEqual(
   [
     {
       hguid: "match-status-9052",
-      matchType: "supplierItem",
+      matchType: "productCode",
       \u662F\u5426\u65B0\u5546\u54C1: false
     }
   ],
-  "\u540E\u7AEF\u8FD4\u56DE item_number \u65F6\uFF0C\u5373\u4F7F\u7ED3\u679C\u5305\u542B productCode\uFF0C\u4E5F\u5E94\u5C55\u793A\u8D27\u53F7\u5339\u914D"
+  "\u5546\u54C1\u7F16\u7801\u771F\u5B9E\u4E00\u81F4\u65F6\uFF0C\u5373\u4F7F\u540E\u7AEF\u8FD4\u56DE item_number\uFF0C\u4E5F\u5E94\u6309\u5546\u54C1\u7F16\u7801\u5339\u914D\u5C55\u793A"
 );
 assertDeepEqual(
   buildContainerDetailMatchStatusUpdates(
@@ -2831,10 +2938,68 @@ assertDeepEqual(
     {
       hguid: "match-status-906",
       matchType: "supplierItem",
-      \u662F\u5426\u65B0\u5546\u54C1: false
+      hasProductCodeConflict: true,
+      localProductCode: "G091539",
+      domesticProductCode: "59FBE37D-A8B1-49E5-84A8-DB1C39AFE56B"
     }
   ],
-  "\u5373\u4F7F\u540E\u7AEF\u56DE\u4F20 ProductCode \u63D0\u793A\uFF0C\u53EA\u8981\u771F\u5B9E\u5546\u54C1\u7F16\u7801\u4E0D\u540C\u4E14 200 + \u8D27\u53F7\u547D\u4E2D\uFF0C\u5C55\u793A\u5339\u914D\u65B9\u5F0F\u4E5F\u5E94\u4EE5\u4F9B\u5E94\u5546\u8D27\u53F7\u4E3A\u51C6"
+  "\u5546\u54C1\u7F16\u7801\u4E0D\u540C\u4F46 200 + \u8D27\u53F7\u547D\u4E2D\u65F6\uFF0C\u5E94\u53EA\u6807\u8BB0\u5019\u9009\u5E76\u5E26\u51FA\u672C\u5730\u4E3B\u6863\u7F16\u7801"
+);
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 9061,
+        hguid: "match-status-9061",
+        \u5546\u54C1\u7F16\u7801: "DOM-SUP01",
+        localSupplierCode: "SUP01",
+        \u5546\u54C1\u4FE1\u606F: { \u8D27\u53F7: "ITEM-SUP01" },
+        \u662F\u5426\u65B0\u5546\u54C1: true
+      }
+    ],
+    [
+      {
+        ProductCode: "LOCAL-SUP01",
+        ItemNumber: "ITEM-SUP01",
+        SupplierCode: "SUP01",
+        ProductName: "Supplier scoped candidate"
+      }
+    ]
+  ),
+  [
+    {
+      hguid: "match-status-9061",
+      matchType: "supplierItem",
+      hasProductCodeConflict: true,
+      localProductCode: "LOCAL-SUP01",
+      domesticProductCode: "DOM-SUP01"
+    }
+  ],
+  "\u5546\u54C1\u7F16\u7801\u4E0D\u540C\u4F46\u884C\u4F9B\u5E94\u5546+\u8D27\u53F7\u547D\u4E2D\u65F6\uFF0C\u5E94\u6309\u771F\u5B9E\u4F9B\u5E94\u5546\u6807\u8BB0\u5019\u9009"
+);
+assertDeepEqual(
+  buildContainerDetailMatchStatusUpdates(
+    [
+      {
+        id: 9062,
+        hguid: "match-status-9062",
+        \u5546\u54C1\u7F16\u7801: "DOM-SUP02",
+        localSupplierCode: "SUP02",
+        \u5546\u54C1\u4FE1\u606F: { \u8D27\u53F7: "ITEM-SUP02" },
+        \u662F\u5426\u65B0\u5546\u54C1: true
+      }
+    ],
+    [
+      {
+        ProductCode: "LOCAL-WRONG-SUPPLIER",
+        ItemNumber: "ITEM-SUP02",
+        SupplierCode: "SUP01",
+        ProductName: "Wrong supplier candidate"
+      }
+    ]
+  ),
+  [],
+  "\u8D27\u53F7\u76F8\u540C\u4F46\u4F9B\u5E94\u5546\u4E0D\u540C\uFF0C\u4E0D\u5E94\u5C55\u793A\u5019\u9009"
 );
 assertDeepEqual(
   buildContainerDetailMatchStatusUpdates(
@@ -2900,22 +3065,6 @@ assertDeepEqual(
       \u8FDB\u53E3\u4EF7\u683C: 2.1
     },
     {
-      hguid: "match-price-703",
-      matchType: "supplierItem",
-      \u662F\u5426\u65B0\u5546\u54C1: false,
-      \u56FD\u5185\u4EF7\u683C: 5.5,
-      \u8D34\u724C\u4EF7\u683C: 2.2,
-      \u5546\u54C1\u540D\u79F0: "\u8D27\u53F7\u5339\u914D\u5546\u54C1",
-      \u82F1\u6587\u540D\u79F0: "Item Matched",
-      \u5355\u4EF6\u88C5\u7BB1\u6570: 10,
-      \u88C5\u67DC\u6570\u91CF: 30,
-      \u5355\u4EF6\u4F53\u79EF: 0.25,
-      \u5408\u8BA1\u88C5\u67DC\u4F53\u79EF: 0.75,
-      \u5408\u8BA1\u88C5\u67DC\u91D1\u989D: 214.5,
-      \u8FD0\u8F93\u6210\u672C: 0.25,
-      \u8FDB\u53E3\u4EF7\u683C: 1.74
-    },
-    {
       hguid: "match-price-705",
       matchType: "productCode",
       \u662F\u5426\u65B0\u5546\u54C1: false,
@@ -2923,15 +3072,6 @@ assertDeepEqual(
       \u5546\u54C1\u540D\u79F0: "\u5546\u54C1\u7F16\u7801\u4F18\u5148\u5546\u54C1",
       \u5355\u4EF6\u88C5\u7BB1\u6570: 8,
       \u88C5\u67DC\u6570\u91CF: 32
-    },
-    {
-      hguid: "match-price-706",
-      matchType: "supplierItem",
-      \u662F\u5426\u65B0\u5546\u54C1: false,
-      \u8D34\u724C\u4EF7\u683C: 15.5,
-      \u5546\u54C1\u540D\u79F0: "\u91D1/\u9ED1\u6846\u6DF730X40",
-      \u5355\u4EF6\u88C5\u7BB1\u6570: 24,
-      \u88C5\u67DC\u6570\u91CF: 288
     },
     {
       hguid: "match-price-707",
@@ -2943,13 +3083,23 @@ assertDeepEqual(
       \u8FDB\u53E3\u4EF7\u683C: 2.49
     }
   ],
-  "\u5339\u914D\u56FD\u5185\u6570\u636E\u5E94\u53EA\u8865\u7F3A\u5931\u4EF7\u683C\u3001\u8986\u76D6\u540D\u79F0\u89C4\u683C\uFF0C\u5E76\u540C\u6B65\u91CD\u7B97\u88C5\u67DC\u6570\u91CF\u3001\u4F53\u79EF\u3001\u8FD0\u8F93\u6210\u672C\u548C\u8FDB\u53E3\u4EF7\u683C"
+  "\u5339\u914D\u56FD\u5185\u6570\u636E\u53EA\u5141\u8BB8\u5546\u54C1\u7F16\u7801\u7CBE\u786E\u547D\u4E2D\u5199\u5165\uFF1B\u8D27\u53F7\u547D\u4E2D\u4EC5\u4F5C\u4E3A\u5019\u9009\uFF0C\u4E0D\u81EA\u52A8\u8865\u4EF7\u683C\u6216\u540D\u79F0"
 );
 assertEqual(pageSource.includes("t('containers.actions.matchDomesticData')"), true, "\u9875\u9762\u6309\u94AE\u6587\u6848\u5E94\u4F7F\u7528\u5339\u914D\u56FD\u5185\u6570\u636E i18n key");
 assertEqual(
+  pageSource.includes("alignDomesticProductCode({") && pageSource.includes("expectedDomesticProductCode: domesticProductCode") && pageSource.includes("targetProductCode: localProductCode") && pageSource.includes("supplierCode,"),
+  true,
+  "\u5019\u9009\u5546\u54C1\u7F16\u7801\u5BF9\u9F50\u5FC5\u987B\u8D70\u4EBA\u5DE5\u786E\u8BA4\u63A5\u53E3\uFF0C\u4E0D\u80FD\u901A\u8FC7\u5339\u914D\u56FD\u5185\u6570\u636E\u6216\u4FDD\u5B58\u660E\u7EC6\u81EA\u52A8\u6539\u7801"
+);
+assertEqual(
+  pageSource.includes("const canAlignDomesticProductCode = access.canEditContainer && (access.isAdmin || access.hasPermission(P.Products.Edit))") && pageSource.includes("getContainerDetailProductType(row) !== '\u5957\u88C5\u5B50\u5546\u54C1'") && pageSource.includes("const canAlignCandidate ="),
+  true,
+  "\u5BF9\u9F50\u56FD\u5185\u7F16\u7801\u5165\u53E3\u5E94\u8981\u6C42\u5546\u54C1\u7F16\u8F91\u6743\u9650\uFF0C\u4E14\u5957\u88C5\u5B50\u5546\u54C1\u4E0D\u80FD\u663E\u793A\u5355\u72EC\u5BF9\u9F50\u6309\u94AE"
+);
+assertEqual(
   pageSource.includes("renderColumnTitle('warehouseImportPrice'") && pageSource.includes("t('containers.fields.warehouseImportPrice'"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u5E94\u72EC\u7ACB\u663E\u793A\u4E0A\u6B21\u8FDB\u8D27\u4EF7\u683C\u5217"
+  "\u8D27\u67DC\u660E\u7EC6\u5E94\u72EC\u7ACB\u663E\u793A\u5B9E\u65F6\u8FDB\u8D27\u4EF7\u5217"
 );
 assertEqual(
   pageSource.includes("buildContainerDetailMatchedDomesticDataUpdates(scopedRows, detected, container)") && pageSource.includes("const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))") && pageSource.includes("return await fetchAllRowsForCurrentQuery()"),
@@ -2977,9 +3127,9 @@ assertEqual(
   "\u9875\u9762\u5339\u914D\u56FD\u5185\u6570\u636E\u68C0\u6D4B\u8BF7\u6C42\u5E94\u590D\u7528\u7EDF\u4E00\u68C0\u6D4B\u9879 helper"
 );
 assertEqual(
-  containerDetailLogicSource.includes("SupplierCode: '200'") && !containerDetailLogicSource.includes("Barcode: getContainerDetailBarcode(row)"),
+  containerDetailLogicSource.includes("SupplierCode: getContainerDetailSupplierCode(row)") && !containerDetailLogicSource.includes("Barcode: getContainerDetailBarcode(row)"),
   true,
-  "\u5339\u914D\u56FD\u5185\u6570\u636E\u68C0\u6D4B\u8BF7\u6C42\u5E94\u56FA\u5B9A\u4F9B\u5E94\u5546\u7F16\u7801 200 \u4E14\u4E0D\u518D\u63D0\u4EA4\u6761\u7801\u515C\u5E95"
+  "\u5339\u914D\u56FD\u5185\u6570\u636E\u68C0\u6D4B\u8BF7\u6C42\u5E94\u4F7F\u7528\u884C\u4F9B\u5E94\u5546\u7F16\u7801\u4E14\u4E0D\u518D\u63D0\u4EA4\u6761\u7801\u515C\u5E95"
 );
 assertEqual(
   pageSource.includes("void reconcileLoadedMatchStatus(result.items, currentRequestId)") && pageSource.includes("products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))") && pageSource.includes("buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)") && pageSource.includes("\u52A0\u8F7D\u6001\u53EA\u6821\u6B63\u8868\u683C\u5C55\u793A\u72B6\u6001\uFF0C\u4E0D\u5199\u5E93"),
@@ -3181,7 +3331,7 @@ assertDeepEqual(
         imageUrl: "local-product-image.jpg",
         domesticPrice: 5.1,
         importPrice: 1.88,
-        oemPrice: 2.01,
+        oemPrice: 3.21,
         isNewProduct: false
       },
       {
@@ -3245,7 +3395,7 @@ assertDeepEqual(
         imageUrl: void 0,
         domesticPrice: 6.2,
         importPrice: 2.11,
-        oemPrice: 2.34,
+        oemPrice: 4.56,
         isNewProduct: false
       }
     ],
@@ -3291,7 +3441,7 @@ assertDeepEqual(
       imageUrl: "container-hb022.jpg",
       domesticPrice: 3.2,
       importPrice: 1.08,
-      oemPrice: 1.2,
+      oemPrice: 2.4,
       isNewProduct: false
     },
     {
@@ -3304,7 +3454,7 @@ assertDeepEqual(
       imageUrl: "product-hb023.jpg",
       domesticPrice: 3.5,
       importPrice: 1.18,
-      oemPrice: 1.3,
+      oemPrice: void 0,
       isNewProduct: false
     }
   ],
@@ -3387,7 +3537,7 @@ var pushToHqHandlerSource = pageSource.slice(
 assertEqual(
   pushToHqHandlerSource.includes("if (!ensureNoPendingPriceDetails()) return") && pushToHqHandlerSource.indexOf("if (!ensureNoPendingPriceDetails()) return") < pushToHqHandlerSource.indexOf("const selection = buildContainerDetailHqPushSelection(selectedRows)"),
   true,
-  "\u53D1\u9001\u5230 HQ \u524D\u5E94\u963B\u6B62\u672A\u4FDD\u5B58\u7684\u8FDB\u53E3\u4EF7\u683C\u548C\u8D34\u724C\u4EF7\u683C\u7EE7\u7EED\u6D41\u8F6C"
+  "\u53D1\u9001\u5230 HQ \u524D\u5E94\u963B\u6B62\u672A\u4FDD\u5B58\u7684\u8FDB\u53E3\u4EF7\u683C\u548C\u96F6\u552E\u4EF7\u7EE7\u7EED\u6D41\u8F6C"
 );
 assertEqual(
   pageSource.includes("createContainerProductCreationJob({"),
@@ -3452,12 +3602,12 @@ assertEqual(
 assertEqual(
   pageSource.includes("item.OEMPrice = oemPrice") && pageSource.includes("item.StoreRetailPriceValue = oemPrice") && pageSource.includes("item.MultiCodeRetailPrice = oemPrice"),
   true,
-  "\u66F4\u65B0\u5DF2\u6709\u5546\u54C1\u4EF7\u683C\u5E94\u540C\u65F6\u63D0\u4EA4\u6709\u6548\u8D34\u724C\u4EF7\u683C\uFF0C\u8865\u9F50\u5546\u54C1\u4E3B\u8868\u548C\u5206\u5E97\u96F6\u552E\u4EF7"
+  "\u66F4\u65B0\u5DF2\u6709\u5546\u54C1\u4EF7\u683C\u5E94\u540C\u65F6\u63D0\u4EA4\u6709\u6548\u96F6\u552E\u4EF7\uFF0C\u8865\u9F50\u5546\u54C1\u4E3B\u8868\u548C\u5206\u5E97\u96F6\u552E\u4EF7"
 );
 assertEqual(
-  pageSource.includes("const oemPrice = resolveContainerDetailOemPrice(row)") && pageSource.includes("const hasPositiveOemPrice = (row: ContainerDetail) => (resolveContainerDetailOemPrice(row) ?? 0) > 0") && pageSource.includes("shouldUpdate('oemPrice') && hasPositiveOemPrice(row)") && !pageSource.includes("hasImportDiff || hasOemDiff"),
+  pageSource.includes("const oemPrice = getContainerDetailVisibleOemPrice(row)") && pageSource.includes("const hasPositiveOemPrice = (row: ContainerDetail) => (getContainerDetailVisibleOemPrice(row) ?? 0) > 0") && pageSource.includes("shouldUpdate('oemPrice') && hasPositiveOemPrice(row)") && !pageSource.includes("hasImportDiff || hasOemDiff"),
   true,
-  "\u66F4\u65B0\u5DF2\u6709\u5546\u54C1\u4EF7\u683C\u5E94\u4EE5\u6709\u6548\u8D34\u724C\u4EF7\u4E3A\u51C6\u63D0\u4EA4\u4EF7\u683C\uFF0C\u4E0D\u5E94\u56E0\u68C0\u6D4B\u5230\u7684\u4ED3\u5E93\u4EF7\u683C\u76F8\u540C\u800C\u8DF3\u8FC7"
+  "\u66F4\u65B0\u5DF2\u6709\u5546\u54C1\u4EF7\u683C\u5E94\u4EE5\u8868\u683C\u53EF\u89C1\u96F6\u552E\u4EF7\u4E3A\u51C6\u63D0\u4EA4\u4EF7\u683C\uFF0C\u4E0D\u5E94\u56E0\u68C0\u6D4B\u5230\u7684\u4ED3\u5E93\u4EF7\u683C\u76F8\u540C\u800C\u8DF3\u8FC7"
 );
 assertEqual(
   pageSource.includes("message.error(error instanceof Error ? error.message : t('containers.messages.purchasePricesUpdateFailed', '\u66F4\u65B0\u5DF2\u6709\u5546\u54C1\u4EF7\u683C\u5931\u8D25'))"),
@@ -3640,22 +3790,22 @@ assertEqual(
 assertDeepEqual(
   buildContainerDetailFloatRateUpdates(priceRows, priceContainer, 1.2),
   [
-    { hguid: "price-101", \u8C03\u6574\u6D6E\u7387: 1.2, \u8FD0\u8F93\u6210\u672C: 1, \u8FDB\u53E3\u4EF7\u683C: 2.04 },
-    { hguid: "price-102", \u8C03\u6574\u6D6E\u7387: 1.2, \u8FD0\u8F93\u6210\u672C: 1, \u8FDB\u53E3\u4EF7\u683C: 2.35 }
+    { hguid: "price-101", \u8C03\u6574\u6D6E\u7387: 1.2, \u8FD0\u8F93\u6210\u672C: 1, \u8FDB\u53E3\u4EF7\u683C: 2.04, SkipRelatedProductSync: true },
+    { hguid: "price-102", \u8C03\u6574\u6D6E\u7387: 1.2, \u8FD0\u8F93\u6210\u672C: 1, \u8FDB\u53E3\u4EF7\u683C: 2.35, SkipRelatedProductSync: true }
   ],
   "\u6279\u91CF\u5E94\u7528\u6D6E\u7387\u5E94\u540C\u65F6\u751F\u6210\u8C03\u6574\u6D6E\u7387\u3001\u8FD0\u8F93\u6210\u672C\u548C\u8FDB\u53E3\u4EF7\u683C\u66F4\u65B0"
 );
 assertDeepEqual(
   buildContainerDetailFloatRateUpdates(priceRows, { ...priceContainer, \u6C47\u7387: 5, \u8FD0\u8D39: 9e3 }, void 0),
   [
-    { hguid: "price-101", \u8C03\u6574\u6D6E\u7387: 1, \u8FD0\u8F93\u6210\u672C: 0.75, \u8FDB\u53E3\u4EF7\u683C: 1.39 },
-    { hguid: "price-102", \u8C03\u6574\u6D6E\u7387: 1.1, \u8FD0\u8F93\u6210\u672C: 0.75, \u8FDB\u53E3\u4EF7\u683C: 1.79 }
+    { hguid: "price-101", \u8C03\u6574\u6D6E\u7387: 1, \u8FD0\u8F93\u6210\u672C: 0.75, \u8FDB\u53E3\u4EF7\u683C: 1.39, SkipRelatedProductSync: true },
+    { hguid: "price-102", \u8C03\u6574\u6D6E\u7387: 1.1, \u8FD0\u8F93\u6210\u672C: 0.75, \u8FDB\u53E3\u4EF7\u683C: 1.79, SkipRelatedProductSync: true }
   ],
   "\u6C47\u7387\u6216\u8FD0\u8D39\u53D8\u5316\u540E\u5E94\u6309\u6BCF\u884C\u73B0\u6709\u8C03\u6574\u6D6E\u7387\u91CD\u7B97\u4EF7\u683C"
 );
 assertDeepEqual(
   buildContainerDetailFloatRateUpdates([{ ...priceRows[0], \u8C03\u6574\u6D6E\u7387: void 0 }], priceContainer, void 0),
-  [{ hguid: "price-101", \u8C03\u6574\u6D6E\u7387: 1.3, \u8FD0\u8F93\u6210\u672C: 1, \u8FDB\u53E3\u4EF7\u683C: 2.21 }],
+  [{ hguid: "price-101", \u8C03\u6574\u6D6E\u7387: 1.3, \u8FD0\u8F93\u6210\u672C: 1, \u8FDB\u53E3\u4EF7\u683C: 2.21, SkipRelatedProductSync: true }],
   "\u884C\u5185\u6D6E\u7387\u4E3A\u7A7A\u65F6\u5E94\u6309\u9ED8\u8BA4 1.30 \u91CD\u7B97\u8FD0\u8F93\u6210\u672C\u548C\u8FDB\u53E3\u4EF7\u683C\u5E76\u5199\u56DE\u6D6E\u7387"
 );
 assertDeepEqual(
@@ -3676,7 +3826,7 @@ assertDeepEqual(
     { ...priceContainer, \u6C47\u7387: 0 },
     1.2
   ),
-  [{ hguid: "price-106", \u8C03\u6574\u6D6E\u7387: 1.2, \u8FD0\u8F93\u6210\u672C: void 0, \u8FDB\u53E3\u4EF7\u683C: 8 }],
+  [{ hguid: "price-106", \u8C03\u6574\u6D6E\u7387: 1.2, \u8FD0\u8F93\u6210\u672C: void 0, \u8FDB\u53E3\u4EF7\u683C: 8, SkipRelatedProductSync: true }],
   "\u5355\u884C\u4FEE\u6539\u6D6E\u7387\u65F6\u5373\u4F7F\u4EF7\u683C\u65E0\u6CD5\u91CD\u7B97\uFF0C\u4E5F\u5E94\u751F\u6210\u6D6E\u7387\u5199\u5E93\u66F4\u65B0"
 );
 assertEqual(
@@ -3740,7 +3890,7 @@ assertDeepEqual(
     "value={row.\u8C03\u6574\u6D6E\u7387}\n            keyboard={false}\n            precision={2}\n            controls={false}",
     "value={row.\u4E2D\u5305\u6570}\n            keyboard={false}\n            min={0}\n            precision={0}\n            controls={false}",
     'value={row.\u8FDB\u53E3\u4EF7\u683C}\n              keyboard={false}\n              min={0}\n              prefix="$"\n              precision={2}\n              controls={false}',
-    'value={row.\u8D34\u724C\u4EF7\u683C}\n            keyboard={false}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
+    'value={getContainerDetailVisibleOemPrice(row)}\n            keyboard={false}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
     "value={batchFloatRate}\n            placeholder={t('containers.fields.floatRate')}\n            precision={2}\n            controls={false}",
     `value={batchImportPrice}
             placeholder={t('containers.fields.importPrice')}
@@ -3914,7 +4064,7 @@ assertEqual(
   "\u9876\u90E8\u8D27\u53F7\u548C\u5217\u5934\u6587\u5B57\u7B5B\u9009\u4E0D\u5E94\u5408\u5E76\u8FDB\u8FDC\u7A0B\u67E5\u8BE2\u6761\u4EF6"
 );
 assertEqual(
-  pageSource.includes("baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))") && pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") && pageSource.includes("hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats") && pageSource.includes("return await fetchAllRowsForCurrentQuery()") && pageSource.includes("return confirmed ? buildDetailBatchScope(scopedRows) : null") && pageSource.includes("selectedHguids: getRowsHguids(scopeRows)") && pageSource.includes("...baseDetailQuery,"),
+  pageSource.includes("baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))") && pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") && pageSource.includes("hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats") && pageSource.includes("return await fetchAllRowsForCurrentQuery()") && pageSource.includes("setBatchModalScopeRows(scopedRows)") && pageSource.includes("buildDetailBatchScope(batchModalScopeRows)") && pageSource.includes("selectedHguids: getRowsHguids(scopeRows)") && pageSource.includes("...baseDetailQuery,"),
   true,
   "\u6807\u7B7E\u5E94\u59CB\u7EC8\u8FDB\u5165\u524D\u7AEF\u8FC7\u6EE4\u94FE\u8DEF\uFF0C\u6279\u91CF\u4F5C\u7528\u57DF\u548C\u5168\u91CF\u62C9\u53D6\u5E94\u4F7F\u7528 base \u67E5\u8BE2\u540E\u5728\u524D\u7AEF\u6536\u655B HGUID"
 );
@@ -3954,19 +4104,24 @@ assertEqual(
   "\u5355\u4EF6\u4F53\u79EF\u884C\u5185\u8F93\u5165\u548C\u53EA\u8BFB\u663E\u793A\u5E94\u4FDD\u7559 3 \u4F4D\u5C0F\u6570"
 );
 assertEqual(
-  pageSource.includes("patchRow(rowKey(row), { \u5355\u4EF6\u88C5\u7BB1\u6570: row.\u5355\u4EF6\u88C5\u7BB1\u6570 })") && pageSource.includes("patchRow(rowKey(row), { \u5355\u4EF6\u4F53\u79EF: row.\u5355\u4EF6\u4F53\u79EF })") && pageSource.includes("const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {") && pageSource.includes("showCostRecalculateWarning(getContainerDetailCostMissingFields(container))") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u88C5\u7BB1\u6570: Number(event.target.value) })") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u4F53\u79EF: Number(event.target.value) })"),
+  pageSource.includes("patchRow(rowKey(row), { \u5355\u4EF6\u88C5\u7BB1\u6570: row.\u5355\u4EF6\u88C5\u7BB1\u6570 })") && pageSource.includes("patchRow(rowKey(row), { \u5355\u4EF6\u4F53\u79EF: row.\u5355\u4EF6\u4F53\u79EF })") && pageSource.includes("const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {") && pageSource.includes("showCostRecalculateWarning(getContainerDetailCostMissingFields(container))") && pageSource.includes("update.SkipRelatedProductSync = true") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u88C5\u7BB1\u6570: Number(event.target.value) })") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u4F53\u79EF: Number(event.target.value) })"),
   true,
-  "\u5355\u4EF6\u88C5\u7BB1\u6570\u548C\u5355\u4EF6\u4F53\u79EF\u6E05\u7A7A\u65F6\u5E94\u56DE\u6EDA\u5F53\u524D\u503C\uFF0C\u907F\u514D\u53D1\u9001 undefined \u9020\u6210\u5047\u4FDD\u5B58"
+  "\u5355\u4EF6\u88C5\u7BB1\u6570\u548C\u5355\u4EF6\u4F53\u79EF\u6E05\u7A7A\u65F6\u5E94\u56DE\u6EDA\u5F53\u524D\u503C\uFF0C\u7CFB\u7EDF\u91CD\u7B97\u8FDB\u8D27\u4EF7\u4E0D\u80FD\u540C\u6B65\u4ED3\u5E93\u8868"
 );
 assertEqual(
-  pageSource.includes("type PendingContainerDetailPricePatch =") && pageSource.includes("const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})") && pageSource.includes("const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)") && pageSource.includes("const markPendingPricePatch = (row: ContainerDetail") && pageSource.includes("const savePendingPriceDetails = async () => {"),
+  pageSource.includes("type PendingContainerDetailPricePatch =") && pageSource.includes("const [pendingPricePatches, setPendingPricePatches] = useState<PendingContainerDetailPricePatchMap>({})") && pageSource.includes("const [priceDetailsSaving, setPriceDetailsSaving] = useState(false)") && pageSource.includes("const markPendingPricePatch = (row: ContainerDetail") && pageSource.includes("const buildPendingPriceSavePlan = (): PendingContainerDetailPriceSavePlan | null => {") && pageSource.includes("const confirmSavePendingPriceDetails = (plan: PendingContainerDetailPriceSavePlan) => new Promise<boolean>") && pageSource.includes("const executePendingPriceSavePlan = async (plan: PendingContainerDetailPriceSavePlan) => {") && pageSource.includes("const savePendingPriceDetails = async () => {"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u7EF4\u62A4\u8FDB\u53E3\u4EF7\u683C\u548C\u8D34\u724C\u4EF7\u683C\u7684\u624B\u52A8\u5F85\u4FDD\u5B58\u72B6\u6001"
+  "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u7EF4\u62A4\u8FDB\u53E3\u4EF7\u683C\u548C\u96F6\u552E\u4EF7\u7684\u624B\u52A8\u5F85\u4FDD\u5B58\u72B6\u6001"
 );
 assertEqual(
-  pageSource.includes("const update: UpdateContainerDetailRequest = { hguid: patch.hguid }") && pageSource.includes("if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C") && pageSource.includes("if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C") && pageSource.includes("await trackDetailSavePromise(saveKeys, batchUpdateDetails(updates))") && pageSource.includes("setPendingPricePatches((current) => {") && pageSource.includes("t('containers.messages.detailPricesSaved'"),
+  pageSource.includes("const update: UpdateContainerDetailRequest = { hguid: patch.hguid }") && pageSource.includes("if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C") && pageSource.includes("if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C") && pageSource.includes("await trackDetailSavePromise(plan.saveKeys, batchUpdateDetails(plan.detailUpdates))") && !pageSource.includes("await batchUpdateWarehouseProducts(plan.warehouseUpdates)") && !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") && pageSource.includes("const confirmed = await confirmSavePendingPriceDetails(savePlan)") && pageSource.includes("await executePendingPriceSavePlan(savePlan)") && pageSource.includes("setPendingPricePatches((current) => {") && pageSource.includes("t('containers.messages.detailPricesSaved'"),
   true,
-  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u53EA\u63D0\u4EA4\u5DF2\u4FEE\u6539\u884C\u7684\u8FDB\u53E3\u4EF7\u683C\u548C\u8D34\u724C\u4EF7\u683C\uFF0C\u5E76\u5728\u6210\u529F\u540E\u6E05\u7A7A\u5F85\u4FDD\u5B58\u72B6\u6001"
+  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u53EA\u53D1\u660E\u7EC6\u4E8B\u52A1\u63A5\u53E3\uFF0C\u7531\u540E\u7AEF\u7EDF\u4E00\u540C\u6B65\u5DF2\u6709\u5546\u54C1\u5173\u8054\u4EF7\u683C"
+);
+assertEqual(
+  pageSource.includes("Modal.confirm({") && pageSource.includes("t('containers.modals.savePendingPriceDetailsTitle', '\u786E\u8BA4\u4FDD\u5B58\u660E\u7EC6\u4EF7\u683C')") && pageSource.includes("t('containers.modals.savePendingPriceDetailsUpdateTitle', '\u66F4\u65B0\u8BF4\u660E')") && pageSource.includes("'containers.modals.savePendingPriceDetailsSummary'") && pageSource.includes("t('containers.modals.savePendingPriceDetailsExistingRetailHint'") && pageSource.includes("t('containers.modals.savePendingPriceDetailsNewRetailHint'") && pageSource.includes("t('containers.modals.savePendingPriceDetailsRetryHint'"),
+  true,
+  "\u4FDD\u5B58\u660E\u7EC6\u5E94\u5728\u843D\u5E93\u524D\u5F39\u51FA\u4E8C\u6B21\u786E\u8BA4\uFF0C\u5E76\u5C55\u793A\u66F4\u65B0\u8BF4\u660E"
 );
 assertEqual(
   pageSource.includes("icon={<SaveOutlined />}") && pageSource.includes("loading={priceDetailsSaving}") && pageSource.includes("disabled={!pendingPricePatchCount || priceDetailsSaving}") && pageSource.includes("onClick={() => void savePendingPriceDetails()}") && pageSource.includes("t('containers.actions.saveDetails', '\u4FDD\u5B58\u660E\u7EC6')"),
@@ -3978,24 +4133,24 @@ var pendingPriceGuardSource = pageSource.slice(
   pageSource.indexOf("const patchRow = (key: string, patch: Partial<ContainerDetail>) => {")
 );
 assertEqual(
-  pendingPriceGuardSource.includes("if (!pendingPricePatchCount) return true") && pendingPriceGuardSource.includes("t('containers.messages.savePendingPriceDetailsFirst', '\u8BF7\u5148\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u4FDD\u5B58\u8FDB\u53E3\u4EF7\u683C/\u8D34\u724C\u4EF7\u683C')") && pendingPriceGuardSource.includes("return false"),
+  pendingPriceGuardSource.includes("if (!pendingPricePatchCount) return true") && pendingPriceGuardSource.includes("t('containers.messages.savePendingPriceDetailsFirst', '\u8BF7\u5148\u70B9\u51FB\u201C\u4FDD\u5B58\u660E\u7EC6\u201D\u4FDD\u5B58\u8FDB\u53E3\u4EF7\u683C/\u96F6\u552E\u4EF7')") && pendingPriceGuardSource.includes("return false"),
   true,
   "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u63D0\u4F9B\u672A\u4FDD\u5B58\u4EF7\u683C\u62E6\u622A\u63D0\u793A\uFF0C\u8981\u6C42\u7528\u6237\u5148\u70B9\u4FDD\u5B58\u660E\u7EC6"
 );
 assertEqual(
-  columnsSource.includes("function renderOemPriceCell(row: ContainerDetail)") && columnsSource.includes("formatCurrency(resolveContainerDetailOemPrice(row), '$')") && columnsSource.includes("function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)") && pageSource.includes("renderImportPriceCell(row, (") && pageSource.includes(": renderImportPriceCell(row)") && pageSource.includes("formatCurrency(v, '\xA5')") && pageSource.includes('prefix="$"'),
+  columnsSource.includes("function renderOemPriceCell(row: ContainerDetail)") && columnsSource.includes("formatCurrency(getContainerDetailVisibleOemPrice(row), '$')") && columnsSource.includes("function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)") && pageSource.includes("renderImportPriceCell(row, (") && pageSource.includes(": renderImportPriceCell(row)") && pageSource.includes("formatCurrency(v, '\xA5')") && pageSource.includes('prefix="$"'),
   true,
   "\u4EF7\u683C\u5217\u5E94\u6309\u56FD\u5185\u4EF7\u683C\u4EBA\u6C11\u5E01\u3001\u5176\u5B83\u4EF7\u683C\u7F8E\u5143\u663E\u793A\u8D27\u5E01\u7B26\u53F7"
 );
 assertEqual(
-  containerDetailLogicSource.includes("return currentImportPrice > lastImportPrice ? 'up' : 'down'") && columnsSource.includes("getContainerDetailImportPriceTrend(row)") && columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") && columnsSource.includes("return <Icon className={className} />") && pageSource.includes("onChange={(value) => markPendingPricePatch(row, { \u8FDB\u53E3\u4EF7\u683C: value == null ? undefined : Number(value) })") && pageSource.includes("onChange={(value) => markPendingPricePatch(row, { \u8D34\u724C\u4EF7\u683C: value == null ? undefined : Number(value) })") && !pageSource.includes("saveRowPatch(row, { \u8FDB\u53E3\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && !pageSource.includes("saveRowPatch(row, { \u8D34\u724C\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && pageStyleSource.includes(".container-detail-import-price-trend-up") && pageStyleSource.includes("color: #52c41a") && pageStyleSource.includes(".container-detail-import-price-trend-down") && pageStyleSource.includes("color: #ff4d4f"),
+  containerDetailLogicSource.includes("return currentImportPrice > realtimeImportPrice ? 'up' : 'down'") && columnsSource.includes("getContainerDetailImportPriceTrend(row)") && columnsSource.includes("const Icon = trend === 'up' ? ArrowUpOutlined : ArrowDownOutlined") && columnsSource.includes("return <Icon className={className} />") && pageSource.includes("onChange={(value) => markPendingPricePatch(row, { \u8FDB\u53E3\u4EF7\u683C: value == null ? undefined : Number(value) })") && pageSource.includes("onChange={(value) => markPendingPricePatch(row, { \u8D34\u724C\u4EF7\u683C: value == null ? undefined : Number(value) })") && !pageSource.includes("saveRowPatch(row, { \u8FDB\u53E3\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && !pageSource.includes("saveRowPatch(row, { \u8D34\u724C\u4EF7\u683C: event.target.value ? Number(event.target.value) : undefined })") && pageStyleSource.includes(".container-detail-import-price-trend-up") && pageStyleSource.includes("color: #52c41a") && pageStyleSource.includes(".container-detail-import-price-trend-down") && pageStyleSource.includes("color: #ff4d4f"),
   true,
-  "\u8FDB\u53E3\u4EF7\u683C\u548C\u8D34\u724C\u4EF7\u683C\u5E94\u6539\u4E3A\u624B\u52A8\u4FDD\u5B58\u660E\u7EC6\uFF0C\u4E0D\u80FD\u518D\u5931\u7126\u81EA\u52A8\u843D\u5E93"
+  "\u8FDB\u53E3\u4EF7\u683C\u548C\u96F6\u552E\u4EF7\u5E94\u6539\u4E3A\u624B\u52A8\u4FDD\u5B58\u660E\u7EC6\uFF0C\u4E0D\u80FD\u518D\u5931\u7126\u81EA\u52A8\u843D\u5E93"
 );
 assertEqual(
-  columnsSource.includes("\u8D34\u724C\u4EF7\u683C\u53EA\u8BFB\u5355\u5143\u683C\uFF1A\u663E\u793A\u8D27\u67DC\u660E\u7EC6\u81EA\u8EAB\u4E1A\u52A1\u4EF7") && !columnsSource.includes("source === 'warehouse'") && !pageSource.includes("className={getOemPriceSourceClassName(row)}") && !pageStyleSource.includes(".container-detail-oem-price-cell-warehouse") && !pageStyleSource.includes(".container-detail-oem-price-cell-fallback"),
+  columnsSource.includes("\u96F6\u552E\u4EF7\u53EA\u8BFB\u5355\u5143\u683C\uFF1A\u65B0\u5546\u54C1\u663E\u793A\u660E\u7EC6\u4EF7\uFF0C\u5DF2\u6709\u5546\u54C1\u663E\u793A\u4ED3\u5E93\u5B9E\u65F6\u4EF7") && pageSource.includes("value={getContainerDetailVisibleOemPrice(row)}") && pageSource.includes("warehouseOEMPrice: patch.\u8D34\u724C\u4EF7\u683C") && !columnsSource.includes("source === 'warehouse'") && !pageSource.includes("className={getOemPriceSourceClassName(row)}") && !pageStyleSource.includes(".container-detail-oem-price-cell-warehouse") && !pageStyleSource.includes(".container-detail-oem-price-cell-fallback"),
   true,
-  "\u8D34\u724C\u4EF7\u683C\u5E94\u4EC5\u663E\u793A\u548C\u7F16\u8F91\u660E\u7EC6\u4E1A\u52A1\u4EF7\uFF0C\u4E0D\u518D\u6CBF\u7528\u4ED3\u5E93\u5FEB\u7167\u6765\u6E90\u5E95\u8272"
+  "\u96F6\u552E\u4EF7\u5E94\u6309\u65B0\u5546\u54C1/\u5DF2\u6709\u5546\u54C1\u5206\u6D41\u663E\u793A\u548C\u7F16\u8F91\uFF0C\u4E0D\u518D\u6CBF\u7528\u4ED3\u5E93\u5FEB\u7167\u6765\u6E90\u5E95\u8272"
 );
 assertEqual(
   pageSource.includes("handleWarehouseStatusChange"),
@@ -4043,13 +4198,12 @@ assertEqual(
   "\u5DE5\u5177\u680F\u4E0D\u5E94\u518D\u4FDD\u7559\u6279\u91CF\u6D6E\u7387\u3001\u6279\u91CF\u4EF7\u683C\u8F93\u5165\u6846\u6216\u72EC\u7ACB\u91CD\u7B97/\u5E94\u7528\u6309\u94AE"
 );
 assertEqual(
-  pageSource.includes("key: 'batchFloatRate'") && pageSource.includes("key: 'batchPrices'") && pageSource.includes("key: 'backfillLastPrices'") && pageSource.includes("key: 'matchDomesticData'") && pageSource.includes("t('containers.actions.batchUpdateFloatRate'") && pageSource.includes("t('containers.actions.batchUpdatePrices'"),
+  pageSource.includes("key: 'batchFloatRate'") && pageSource.includes("key: 'batchPrices'") && pageSource.includes("key: 'matchDomesticData'") && pageSource.includes("t('containers.actions.batchUpdateFloatRate'") && pageSource.includes("t('containers.actions.batchUpdatePrices'") && !pageSource.includes("key: 'backfillLastPrices'"),
   true,
-  "\u6279\u91CF\u64CD\u4F5C\u83DC\u5355\u5E94\u5305\u542B\u6279\u91CF\u4FEE\u6539\u6D6E\u7387\u3001\u6279\u91CF\u4FEE\u6539\u4EF7\u683C\u3001\u56DE\u586B\u4E0A\u6B21\u4EF7\u683C\u548C\u5339\u914D\u56FD\u5185\u6570\u636E"
+  "\u6279\u91CF\u64CD\u4F5C\u83DC\u5355\u5E94\u5305\u542B\u6279\u91CF\u4FEE\u6539\u6D6E\u7387\u3001\u6279\u91CF\u4FEE\u6539\u4EF7\u683C\u548C\u5339\u914D\u56FD\u5185\u6570\u636E\uFF0C\u5E76\u79FB\u9664\u56DE\u586B\u4E0A\u6B21\u4EF7\u683C\u5165\u53E3"
 );
 assertDeepEqual(
   [
-    "const scope = await confirmBatchScope(t('containers.actions.backfillLastPrices'",
     "const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))",
     "const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))",
     "const scopedRows = await confirmBatchRows(t('containers.actions.batchTranslate'))",
@@ -4154,9 +4308,9 @@ assertEqual(
   "\u6761\u7801\u5217\u5E94\u6309\u622A\u56FE\u79FB\u52A8\u5230\u540E\u6BB5\uFF0C\u4E0D\u518D\u56FA\u5B9A\u5728\u5DE6\u4FA7"
 );
 assertEqual(
-  barcodeColumnSource.includes("showReadonlyOemPrice ? [readonlyOemPriceColumn] : []") && pageSource.includes("const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number]") && pageSource.includes("render: (_, row) => renderOemPriceCell(row)") && !pageSource.slice(pageSource.indexOf("const readonlyOemPriceColumn"), pageSource.indexOf("const baseColumns")).includes("fixed: 'left'") && !pageSource.slice(pageSource.indexOf("const readonlyOemPriceColumn"), pageSource.indexOf("const baseColumns")).includes("<InputNumber"),
+  barcodeColumnSource.includes("showReadonlyOemPrice ? [readonlyOemPriceColumn] : []") && pageSource.includes("const readonlyOemPriceColumn: ColumnsType<ContainerDetail>[number]") && pageSource.includes("render: (_, row) => renderReadonlyOemPriceCell(row)") && columnsSource.includes("function renderReadonlyOemPriceCell(row: ContainerDetail)") && !pageSource.slice(pageSource.indexOf("const readonlyOemPriceColumn"), pageSource.indexOf("const baseColumns")).includes("fixed: 'left'") && !pageSource.slice(pageSource.indexOf("const readonlyOemPriceColumn"), pageSource.indexOf("const baseColumns")).includes("<InputNumber"),
   true,
-  "\u6761\u7801\u5217\u540E\u5E94\u6309\u5F00\u5173\u63D2\u5165\u53EA\u8BFB\u8D34\u724C\u4EF7\u683C\u5217\uFF0C\u4FBF\u4E8E\u6A2A\u5411\u6EDA\u52A8\u524D\u5FEB\u901F\u6838\u4EF7"
+  "\u6761\u7801\u5217\u540E\u5E94\u6309\u5F00\u5173\u63D2\u5165\u53EA\u8BFB\u96F6\u552E\u4EF7\u5217\uFF0C\u4FBF\u4E8E\u6A2A\u5411\u6EDA\u52A8\u524D\u5FEB\u901F\u6838\u4EF7"
 );
 assertEqual(
   pageSource.includes("rowSelection={{") && pageSource.includes("selectedRowKeys,") && pageSource.includes("onChange: setSelectedRowKeys,") && pageSource.includes("fixed: !viewport.isSmallPortrait,") && pageSource.includes("orderedBaseColumns.map((column) => ({ ...column, fixed: undefined }))"),
@@ -4224,9 +4378,9 @@ assertEqual(
   "\u6279\u91CF\u64CD\u4F5C\u83DC\u5355\u5E94\u5305\u542B\u6279\u91CF\u5206\u7C7B\uFF0C\u5E76\u63D0\u4EA4\u5F53\u524D\u76EE\u6807\u884C\u7684\u53BB\u91CD\u5546\u54C1\u7F16\u7801"
 );
 assertEqual(
-  pageSource.includes("const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager") && pageSource.includes("if (!canBackfillLastPrices) return") && pageSource.includes("key: 'backfillLastPrices'") && pageSource.includes("const scope = await confirmBatchScope") && pageSource.includes("backfillContainerLastPricesByScope(containerGuid, scope)"),
-  true,
-  "\u56DE\u586B\u4E0A\u6B21\u4EF7\u683C\u5E94\u5728\u6279\u91CF\u64CD\u4F5C\u83DC\u5355\u4E2D\u4FDD\u6301\u89D2\u8272\u9650\u5236\uFF0C\u5E76\u901A\u8FC7\u786E\u8BA4\u540E\u7684\u6279\u91CF scope \u89E6\u53D1"
+  pageSource.includes("const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager") || pageSource.includes("if (!canBackfillLastPrices) return") || pageSource.includes("key: 'backfillLastPrices'") || pageSource.includes("backfillContainerLastPricesByScope(containerGuid, scope)"),
+  false,
+  "web \u8D27\u67DC\u660E\u7EC6\u6279\u91CF\u64CD\u4F5C\u83DC\u5355\u4E0D\u5E94\u518D\u66B4\u9732\u56DE\u586B\u4E0A\u6B21\u4EF7\u683C\u5165\u53E3"
 );
 var batchCategorySaveSource = pageSource.slice(
   pageSource.indexOf("const handleBatchCategorySave = async () => {"),

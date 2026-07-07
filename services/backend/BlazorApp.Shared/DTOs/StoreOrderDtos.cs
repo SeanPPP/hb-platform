@@ -21,7 +21,7 @@ namespace BlazorApp.Shared.DTOs
     public string? DomesticSupplierName { get; set; }
 
     /// <summary>
-    /// 贴牌价格 (订货价格)
+    /// 零售价 (订货价格)
     /// </summary>
     public decimal? OEMPrice { get; set; }
 

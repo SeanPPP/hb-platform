@@ -86,7 +86,7 @@ export async function exportProductCreationBatchToExcel(
     { header: t('productImport.hbProductNoCol', '货号'), key: 'itemNumber', width: 20 },
     { header: t('domesticProducts.barcode', '条码'), key: 'barcode', width: 18 },
     { header: t('domesticProducts.productName', '商品名称'), key: 'productName', width: 30 },
-    { header: t('productCreation.privateLabelPrice', '贴牌价格'), key: 'privateLabelPrice', width: 12 },
+    { header: t('productCreation.privateLabelPrice', '零售价'), key: 'privateLabelPrice', width: 12 },
     { header: t('productCreation.setQuantity', '套装数量'), key: 'setQuantity', width: 10 },
     { header: t('productCreation.setPrice', '套装价格'), key: 'setPrice', width: 12 },
     { header: t('productCreation.barcodeImage', '条码图片'), key: 'barcodeImage', width: 25 },

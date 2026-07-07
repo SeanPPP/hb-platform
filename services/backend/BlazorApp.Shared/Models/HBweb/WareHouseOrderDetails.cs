@@ -73,13 +73,13 @@ namespace BlazorApp.Shared.Models
         public decimal? ImportAmount { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
-        /// 合计贴牌金额
+        /// 合计零售价金额
         /// </summary>
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
         public decimal? OEMAmount { get; set; }

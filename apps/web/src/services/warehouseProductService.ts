@@ -242,8 +242,16 @@ export interface DetectionResult {
   Barcode?: string
   Exists?: boolean
   MatchType?: string
+  LocalProductCode?: string
+  DomesticProductCode?: string
+  HasProductCodeConflict?: boolean
+  ConflictReason?: string
   exists?: boolean
   matchType?: string
+  localProductCode?: string
+  domesticProductCode?: string
+  hasProductCodeConflict?: boolean
+  conflictReason?: string
   ProductName?: string
   EnglishName?: string
   WarehouseDomesticPrice?: number

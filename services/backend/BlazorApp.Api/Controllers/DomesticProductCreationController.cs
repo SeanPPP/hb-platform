@@ -218,7 +218,7 @@ namespace BlazorApp.Api.Controllers
         }
 
         /// <summary>
-        /// 更新批次明细商品名称和贴牌价格
+        /// 更新批次明细商品名称和零售价
         /// </summary>
         /// <param name="batchNumber">批次号</param>
         /// <param name="request">更新请求</param>

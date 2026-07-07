@@ -12,6 +12,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductCode { get; set; }
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
+        public string? SupplierCode { get; set; }
     }
 
     /// <summary>
@@ -21,11 +22,16 @@ namespace BlazorApp.Shared.DTOs
     {
         public string? ProductCode { get; set; }
         public string? ItemNumber { get; set; }
+        public string? SupplierCode { get; set; }
         public bool Exists { get; set; }
         /// <summary>
-        /// 匹配来源：product_code | item_number | both | none
+        /// 匹配来源：product_code | item_number | barcode | both | none
         /// </summary>
         public string MatchType { get; set; } = "none";
+        public string? LocalProductCode { get; set; }
+        public string? DomesticProductCode { get; set; }
+        public bool HasProductCodeConflict { get; set; }
+        public string? ConflictReason { get; set; }
 
         public string? ProductName { get; set; }
         public string? EnglishName { get; set; }

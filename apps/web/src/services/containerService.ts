@@ -1,5 +1,7 @@
 import type { ApiResponse } from '../types/api'
 import type {
+  AlignDomesticProductCodeRequest,
+  AlignDomesticProductCodeResult,
   ComingSoonHomeContainer,
   ComingSoonHomeContainerSummary,
   ComingSoonHomeProduct,
@@ -376,6 +378,47 @@ export async function batchUpdateDetails(
     totalUpdated: response.data?.totalUpdated ?? updates.length,
     totalRequested: response.data?.totalRequested ?? updates.length,
   }
+}
+
+function normalizeAlignDomesticProductCodeResult(
+  result?: Partial<AlignDomesticProductCodeResult>,
+): AlignDomesticProductCodeResult {
+  return {
+    oldProductCode: result?.oldProductCode ?? result?.OldProductCode ?? '',
+    OldProductCode: result?.OldProductCode,
+    newProductCode: result?.newProductCode ?? result?.NewProductCode ?? '',
+    NewProductCode: result?.NewProductCode,
+    updatedDomesticProducts: result?.updatedDomesticProducts ?? result?.UpdatedDomesticProducts ?? 0,
+    UpdatedDomesticProducts: result?.UpdatedDomesticProducts,
+    updatedContainerDetails: result?.updatedContainerDetails ?? result?.UpdatedContainerDetails ?? 0,
+    UpdatedContainerDetails: result?.UpdatedContainerDetails,
+    updatedDomesticSetProducts: result?.updatedDomesticSetProducts ?? result?.UpdatedDomesticSetProducts ?? 0,
+    UpdatedDomesticSetProducts: result?.UpdatedDomesticSetProducts,
+    updatedProductGrades: result?.updatedProductGrades ?? result?.UpdatedProductGrades ?? 0,
+    UpdatedProductGrades: result?.UpdatedProductGrades,
+    updatedDomesticProductCreationLogs: result?.updatedDomesticProductCreationLogs ?? result?.UpdatedDomesticProductCreationLogs ?? 0,
+    UpdatedDomesticProductCreationLogs: result?.UpdatedDomesticProductCreationLogs,
+  }
+}
+
+export async function alignDomesticProductCode(
+  payload: AlignDomesticProductCodeRequest,
+): Promise<AlignDomesticProductCodeResult> {
+  const response = await request<ApiResponse<AlignDomesticProductCodeResult> | { success?: boolean; isSuccess?: boolean; message?: string; data?: AlignDomesticProductCodeResult }>(
+    `${API_BASE}/details/align-domestic-product-code`,
+    {
+      method: 'POST',
+      data: {
+        DetailHguid: payload.detailHguid,
+        ExpectedDomesticProductCode: payload.expectedDomesticProductCode,
+        TargetProductCode: payload.targetProductCode,
+        SupplierCode: payload.supplierCode,
+      },
+    },
+  )
+
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '对齐国内商品编码失败')
+  return normalizeAlignDomesticProductCodeResult(response.data)
 }
 
 export async function batchDeleteDetails(hguids: string[]): Promise<{ totalDeleted: number; totalRequested: number }> {

@@ -91,7 +91,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -226,9 +226,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
@@ -309,9 +309,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
@@ -504,7 +504,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -597,7 +597,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -727,7 +727,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -896,9 +896,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? OEMPrice { get; set; }
     }
 

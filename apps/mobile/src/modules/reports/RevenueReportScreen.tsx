@@ -28,6 +28,7 @@ import {
   getLastMonthRevenuePeriod,
   getLastWeekRevenuePeriod,
   getNextRevenuePeriod,
+  parseDateKey,
   getPreviousRevenuePeriod,
   getYesterdayRevenuePeriod,
 } from "@/modules/reports/periods";
@@ -73,6 +74,15 @@ function isDailyRow(row: DetailRow): row is DailyRevenueRow {
   return "date" in row;
 }
 
+function getDetailDateParts(value: string) {
+  try {
+    const date = parseDateKey(value);
+    return { dateLabel: value, weekday: date.getDay() };
+  } catch {
+    return { dateLabel: value, weekday: null };
+  }
+}
+
 function formatCount(value: number) {
   return Math.round(value).toLocaleString("en-AU");
 }
@@ -100,6 +110,31 @@ function TableText({
       style={[styles.tableCellText, numeric ? styles.numericText : null, style]}
     >
       {children}
+    </Text>
+  );
+}
+
+function DetailPeriodText({
+  item,
+  getWeekdayLabel,
+}: {
+  item: DetailRow;
+  getWeekdayLabel: (weekday: number) => string;
+}) {
+  if (!isDailyRow(item)) {
+    return <TableText style={styles.strongText}>{item.label}</TableText>;
+  }
+
+  const label = getDetailDateParts(item.date);
+  return (
+    <Text
+      variant="bodySmall"
+      numberOfLines={1}
+      selectable
+      style={[styles.tableCellText, styles.strongText]}
+    >
+      {label.dateLabel}
+      {label.weekday !== null ? <Text style={styles.weekdayText}> {getWeekdayLabel(label.weekday)}</Text> : null}
     </Text>
   );
 }
@@ -169,6 +204,7 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
   const rows = summaryQuery.data ?? [];
   const detailRows = (detailQuery.data ?? []) as DetailRow[];
   const growthNewLabel = t("reports.metrics.newGrowth");
+  const getWeekdayLabel = (weekday: number) => t(`reports.weekdaysShort.${weekday}`);
 
   const renderGrowthCell = (current: number, compare: number, columnStyle?: StyleProp<ViewStyle>) => {
     const tone = getGrowthTone(current, compare);
@@ -223,7 +259,7 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
       ]}
     >
       <View style={styles.detailPeriodColumn}>
-        <TableText style={styles.strongText}>{isDailyRow(item) ? item.date : item.label}</TableText>
+        <DetailPeriodText item={item} getWeekdayLabel={getWeekdayLabel} />
       </View>
       <View style={styles.detailAmountColumn}>
         <TableText numeric style={styles.strongText}>{formatWholeMoney(item.revenue)}</TableText>
@@ -344,7 +380,9 @@ export function RevenueReportScreen({ embedded = false }: RevenueReportScreenPro
                 <View style={[styles.table, styles.detailTable]}>
                   <View style={[styles.tableRow, styles.tableHeaderRow, styles.detailTableRow]}>
                     <View style={styles.detailPeriodColumn}>
-                      <TableText style={styles.headerText}>{mode === "day" ? t("reports.periods.day") : t("reports.periods.week")}</TableText>
+                      <TableText style={styles.headerText}>
+                        {mode === "day" ? t("reports.periods.day") : t("reports.periods.date")}
+                      </TableText>
                     </View>
                     <View style={styles.detailAmountColumn}>
                       <TableText numeric style={styles.headerText}>{t("reports.metrics.revenue")}</TableText>
@@ -477,7 +515,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   detailTable: {
-    minWidth: 312,
+    minWidth: 384,
     width: "100%",
   },
   detailTableRow: {
@@ -487,7 +525,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   detailPeriodColumn: {
-    width: 48,
+    // 周/月弹窗保留完整日期和星期缩写，避免日期被压成省略号。
+    width: 120,
     minWidth: 0,
   },
   detailAmountColumn: {
@@ -515,6 +554,10 @@ const styles = StyleSheet.create({
   },
   headerText: {
     color: "#374151",
+    fontWeight: "700",
+  },
+  weekdayText: {
+    color: "#2563EB",
     fontWeight: "700",
   },
   listContent: {

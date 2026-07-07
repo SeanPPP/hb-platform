@@ -149,15 +149,15 @@ namespace BlazorApp.Api.Controllers
                     return BadRequest(new { success = false, message = "请求数据不能为空" });
                 }
 
-                // 验证所有商品的贴牌价格
+                // 验证所有商品的零售价
                 var invalidItems = request.Items.Where(x => x.OEMPrice <= 0).Select(x => x.ItemNumber).ToList();
                 if (invalidItems.Any())
                 {
-                    _logger.LogWarning("发现贴牌价格无效的商品: {Items}", string.Join(", ", invalidItems));
+                    _logger.LogWarning("发现零售价无效的商品: {Items}", string.Join(", ", invalidItems));
                     return BadRequest(new
                     {
                         success = false,
-                        message = $"以下商品的贴牌价格无效（必须大于0）：{string.Join(", ", invalidItems)}"
+                        message = $"以下商品的零售价无效（必须大于0）：{string.Join(", ", invalidItems)}"
                     });
                 }
 

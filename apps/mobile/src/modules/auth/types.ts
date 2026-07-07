@@ -81,6 +81,10 @@ export interface AccessControl {
   canWriteStore: boolean;
   canDeleteStore: boolean;
   canManageWarehouse: boolean;
+  canViewContainers: boolean;
+  canCreateContainer: boolean;
+  canEditContainer: boolean;
+  canDeleteContainer: boolean;
   canManageStore: boolean;
   canViewReports: boolean;
   canExportData: boolean;

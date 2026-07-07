@@ -4,6 +4,11 @@
     "product": "仓库商品",
     "location": "货位信息"
   },
+  "containers": {
+    "entryTitle": "货柜管理",
+    "entryDescription": "查看货柜列表和货柜明细。",
+    "entryAction": "进入"
+  },
   "messages": {
     "noAccessTitle": "暂无仓库访问权限",
     "noAccessDescription": "当前账号或设备没有可用的仓库访问权限。",
@@ -51,7 +56,7 @@
     "onShelf": "上架",
     "offShelf": "下架",
     "retailSyncConfirmTitle": "是否同步分店零售价",
-    "retailSyncConfirmDescription": "零售价会更新商品主表和仓库 OEM 价。是否同时更新所有启用分店的价格表？",
+    "retailSyncConfirmDescription": "零售价会更新商品主表和仓库零售价。是否同时更新所有启用分店的价格表？",
     "retailSyncProductOnly": "只更新商品主表",
     "retailSyncStores": "同步分店价格表",
     "stockStates": {
@@ -67,9 +72,9 @@
       "purchasePrice": "采购价",
       "purchaseImportPrice": "进货/进口价",
       "retailPrice": "零售价",
-      "retailOemPrice": "零售/OEM价",
+      "retailOemPrice": "零售价",
       "domesticPrice": "国内价",
-      "oemPrice": "OEM价",
+      "oemPrice": "零售价",
       "importPrice": "进口价",
       "stockQuantity": "库存",
       "warehouseStatus": "上下架",
