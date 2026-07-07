@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   buildAlignDomesticProductCodePayload,
+  buildContainerDetailHqPushSelection,
   buildContainerDetailQuery,
+  buildDetailDetectionItems,
   buildContainerListPayload,
   buildCreateProductsOperationId,
   buildPushProductsToHqOperationId,
@@ -15,6 +17,7 @@ import {
   getDetailRealtimeRetailPrice,
   getDetailVisibleOemPrice,
   hasDetailProductCodeConflict,
+  mergeDetailDetectionResults,
   normalizeAlignDomesticProductCodeResult,
   normalizeCreateContainerResponse,
   normalizeContainerDetailResponse,
@@ -259,6 +262,39 @@ assert.equal(
   "supplierItem",
   "legacy Chinese item match type is supplier item",
 );
+assert.deepEqual(
+  buildDetailDetectionItems([{
+    商品编码: " DOM-1 ",
+    localSupplierCode: "200",
+    商品信息: { 货号: " SKU-1 ", 条形码: " BAR-1 " },
+  }]),
+  [{
+    ProductCode: "DOM-1",
+    SupplierCode: "200",
+    ItemNumber: "SKU-1",
+    Barcode: "BAR-1",
+  }],
+  "detection items preserve product code and supplier item candidate",
+);
+const mergedConflictDetails = mergeDetailDetectionResults(
+  [{
+    HGUID: "D-CONFLICT",
+    商品编码: "DOM-1",
+    localSupplierCode: "200",
+    商品信息: { 货号: "SKU-1" },
+  }],
+  [{
+    ProductCode: "DOM-1",
+    MatchType: "item_number",
+    LocalProductCode: "LOCAL-1",
+    DomesticProductCode: "DOM-1",
+    HasProductCodeConflict: true,
+    ConflictReason: "国内商品编码与本地主档商品编码不一致",
+  }],
+);
+assert.equal(hasDetailProductCodeConflict(mergedConflictDetails[0]!), true);
+assert.equal(getDetailMatchType(mergedConflictDetails[0]!), "supplierItem");
+assert.equal(mergedConflictDetails[0]?.localProductCode, "LOCAL-1");
 assert.equal(
   toPushProductsToHqItems([{
     商品编码: "P1",
@@ -278,6 +314,35 @@ assert.equal(
   }])[0]?.oemPrice,
   3.3,
   "HQ push uses detail oem price for new products",
+);
+assert.deepEqual(
+  buildContainerDetailHqPushSelection([{
+    商品编码: "DOM-1",
+    localSupplierCode: "200",
+    商品信息: { 货号: "SKU-1" },
+    localProductCode: "LOCAL-1",
+    domesticProductCode: "DOM-1",
+    是否新商品: true,
+    贴牌价格: 2.2,
+  }]),
+  {
+    productCodes: [],
+    items: [{
+      productCode: undefined,
+      localSupplierCode: "200",
+      itemNumber: "SKU-1",
+      productName: "",
+      englishName: "",
+      barcode: "",
+      imageUrl: undefined,
+      domesticPrice: undefined,
+      importPrice: undefined,
+      oemPrice: 2.2,
+      isNewProduct: true,
+      warehouseIsActive: undefined,
+    }],
+  },
+  "conflicted HQ push item must use supplier item candidate instead of old domestic code",
 );
 
 const currentPageDetails = [

@@ -43,6 +43,7 @@ import {
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMNS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMNS,
   buildBatchScope,
+  buildContainerDetailHqPushSelection,
   buildContainerDetailQuery,
   buildCreateProductsOperationId,
   buildPushProductsToHqOperationId,
@@ -63,7 +64,6 @@ import {
   getDetailRealtimeRetailPrice,
   getDetailVisibleOemPrice,
   hasDetailProductCodeConflict,
-  toPushProductsToHqItems,
   toggleCurrentPageSelection,
   toggleSelectedTag,
   trimToUndefined,
@@ -144,8 +144,8 @@ function parseOptionalNumber(value: string) {
 }
 
 function getMatchTypeLabel(value: ReturnType<typeof getDetailMatchType>) {
-  if (value === "productCode") return "商品编码";
-  if (value === "supplierItem") return "供应商货号";
+  if (value === "productCode") return "商品编码匹配";
+  if (value === "supplierItem") return "候选需确认";
   return "未匹配";
 }
 
@@ -296,7 +296,7 @@ function DetailCard({
         </View>
         {hasConflict ? (
           <Text style={styles.warningText}>
-            编码冲突：国内 {domesticProductCode || "--"} / 本地 {localProductCode || "--"}
+            候选：本地主档编码 {localProductCode || "--"}，国内编码 {domesticProductCode || "--"}
           </Text>
         ) : null}
         {detail.备注 ? <Text style={styles.remark}>{detail.备注}</Text> : null}
@@ -472,12 +472,12 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const pushHqMutation = useMutation({
     mutationFn: async () => {
       if (!selectedDetails.length) throw new Error("请先选择要推送 HQ 的明细");
-      const items = toPushProductsToHqItems(selectedDetails);
-      const productCodes = items.map((item) => item.productCode ?? "").filter(Boolean);
+      const selection = buildContainerDetailHqPushSelection(selectedDetails);
+      if (!selection.items.length) throw new Error("已选明细缺少商品编码或供应商货号候选");
       const job = await createPushProductsToHqJob({
-        productCodes,
-        items,
-        operationId: buildPushProductsToHqOperationId(containerGuid, productCodes, items.length),
+        productCodes: selection.productCodes,
+        items: selection.items,
+        operationId: buildPushProductsToHqOperationId(containerGuid, selection.productCodes, selection.items.length),
       });
       return waitPushProductsToHqJob(job.jobId);
     },
@@ -535,9 +535,16 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
       return;
     }
 
+    const itemNumber = getDetailItemNumber(detail) || "--";
+    const productName = getDetailProductName(detail) || "--";
     Alert.alert(
       "对齐国内商品编码",
-      `确认将国内商品编码 ${domesticProductCode} 对齐为 ${localProductCode}？`,
+      [
+        `确认将国内商品编码 ${domesticProductCode} 对齐为 ${localProductCode}？`,
+        `货号：${itemNumber}`,
+        `商品：${productName}`,
+        "如果目标国内编码已存在，后端会拒绝本次对齐，不会自动合并或覆盖。",
+      ].join("\n"),
       [
         { text: "取消", style: "cancel" },
         {

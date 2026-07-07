@@ -88,6 +88,32 @@ export interface ContainerDetail {
   ConflictReason?: string;
 }
 
+export interface DetectionItem {
+  productCode?: string;
+  ProductCode?: string;
+  itemNumber?: string;
+  ItemNumber?: string;
+  barcode?: string;
+  Barcode?: string;
+  supplierCode?: string;
+  SupplierCode?: string;
+}
+
+export interface DetectionResult extends DetectionItem {
+  exists?: boolean;
+  Exists?: boolean;
+  matchType?: string;
+  MatchType?: string;
+  localProductCode?: string;
+  LocalProductCode?: string;
+  domesticProductCode?: string;
+  DomesticProductCode?: string;
+  hasProductCodeConflict?: boolean;
+  HasProductCodeConflict?: boolean;
+  conflictReason?: string;
+  ConflictReason?: string;
+}
+
 export type ContainerDetailQueryTag =
   | "all"
   | "new"
@@ -331,6 +357,11 @@ export interface PushProductsToHqItem {
   oemPrice?: number;
   isNewProduct: boolean;
   warehouseIsActive?: boolean;
+}
+
+export interface ContainerDetailHqPushSelection {
+  productCodes: string[];
+  items: PushProductsToHqItem[];
 }
 
 export interface PushProductsToHqJobRequest {

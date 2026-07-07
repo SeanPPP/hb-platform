@@ -14,6 +14,8 @@ import type {
   ContainerMain,
   ContainerQueryRequest,
   CreateContainerRequest,
+  DetectionItem,
+  DetectionResult,
   PushProductsToHqJob,
   PushProductsToHqJobRequest,
   SyncResult,
@@ -22,6 +24,7 @@ import type {
 } from "./types";
 import {
   buildAlignDomesticProductCodePayload,
+  buildDetailDetectionItems,
   buildContainerListPayload,
   normalizeCreateContainerResponse,
   normalizeAlignDomesticProductCodeResult,
@@ -29,6 +32,8 @@ import {
   normalizeContainerDetailQueryResult,
   normalizeContainerJob,
   normalizeContainerListResponse,
+  mergeDetailDetectionResults,
+  normalizeDetectionResults,
   normalizePushProductsToHqJob,
   normalizeSyncResult,
   unwrapData,
@@ -36,6 +41,7 @@ import {
 
 const CONTAINERS_PATH = "/react/v1/containers";
 const CONTAINER_PRODUCTS_PATH = "/react/v1/container-products";
+const PRODUCT_WAREHOUSE_PATH = "/react/v1/product-warehouse";
 const PRODUCTS_PATH = "/react/v1/products";
 
 type ExportData = ArrayBuffer | ArrayBufferView | Blob | string;
@@ -185,7 +191,25 @@ export async function queryContainerProducts(
     },
   );
   ensureSuccess(response.data, "查询货柜明细失败");
-  return normalizeContainerDetailQueryResult(response.data, query);
+  const result = normalizeContainerDetailQueryResult(response.data, query);
+  if (!result.items.length) return result;
+
+  try {
+    const detectionResults = await detectProducts(buildDetailDetectionItems(result.items));
+    return {
+      ...result,
+      items: mergeDetailDetectionResults(result.items, detectionResults),
+    };
+  } catch {
+    // 检测只用于候选提示，不能因为辅助接口失败阻断明细列表加载。
+    return result;
+  }
+}
+
+export async function detectProducts(items: DetectionItem[]): Promise<DetectionResult[]> {
+  const response = await apiClient.post(`${PRODUCT_WAREHOUSE_PATH}/detect`, { Items: items });
+  ensureSuccess(response.data, "检测商品匹配失败");
+  return normalizeDetectionResults(response.data);
 }
 
 export async function createContainer(data: CreateContainerRequest): Promise<string> {

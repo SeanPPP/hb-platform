@@ -2,11 +2,14 @@ import type {
   AlignDomesticProductCodeRequest,
   AlignDomesticProductCodeResult,
   ContainerDetail,
+  ContainerDetailHqPushSelection,
   ContainerDetailQuery,
   ContainerDetailQueryMatchType,
   ContainerDetailQueryResult,
   ContainerDetailQueryTag,
   ContainerDetailTagStats,
+  DetectionItem,
+  DetectionResult,
   ContainerJob,
   ContainerJobResult,
   ContainerJobStatus,
@@ -128,6 +131,11 @@ export function normalizeAlignDomesticProductCodeResult(raw: unknown): AlignDome
   };
 }
 
+export function normalizeDetectionResults(raw: unknown): DetectionResult[] {
+  const data = unwrapData(raw);
+  return Array.isArray(data) ? (data as DetectionResult[]) : [];
+}
+
 export function getContainerGuid(container?: ContainerMain | null) {
   return container?.hguid ?? container?.HGUID ?? "";
 }
@@ -142,6 +150,26 @@ function firstTrimmedValue(...values: Array<string | undefined>) {
 
 function normalizeMatchKey(value?: string) {
   return value?.trim().toUpperCase();
+}
+
+function normalizeDetailMatchType(value?: string): ContainerDetailQueryMatchType | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "productcode" || normalized === "product_code" || normalized === "商品编码" || normalized === "both") {
+    return "productCode";
+  }
+  if (
+    normalized === "supplieritem" ||
+    normalized === "supplier_item" ||
+    normalized === "item_number" ||
+    normalized === "itemnumber" ||
+    normalized === "供应商编码+货号" ||
+    normalized === "供应商货号" ||
+    normalized === "货号匹配"
+  ) {
+    return "supplierItem";
+  }
+  return "unmatched";
 }
 
 export function getDetailProductCode(detail: ContainerDetail) {
@@ -200,22 +228,7 @@ export function getDetailMatchType(detail: ContainerDetail): ContainerDetailQuer
     return "supplierItem";
   }
 
-  const normalized = (detail.matchType ?? detail.MatchType ?? "").trim().toLowerCase();
-  if (normalized === "productcode" || normalized === "product_code" || normalized === "商品编码") {
-    return "productCode";
-  }
-  if (
-    normalized === "supplieritem" ||
-    normalized === "supplier_item" ||
-    normalized === "item_number" ||
-    normalized === "itemnumber" ||
-    normalized === "供应商编码+货号" ||
-    normalized === "供应商货号" ||
-    normalized === "货号匹配"
-  ) {
-    return "supplierItem";
-  }
-  return "unmatched";
+  return normalizeDetailMatchType(detail.matchType ?? detail.MatchType) ?? "unmatched";
 }
 
 export function getDetailReadonlyOemPrice(detail: ContainerDetail) {
@@ -236,6 +249,47 @@ export function getDetailRealtimeRetailPrice(detail: ContainerDetail) {
 export function getDetailVisibleOemPrice(detail: ContainerDetail) {
   // 新商品继续使用明细业务价；已有商品按 Web 端展示仓库实时零售价。
   return detail.是否新商品 ? detail.贴牌价格 : getDetailRealtimeRetailPrice(detail);
+}
+
+export function buildDetailDetectionItems(details: ContainerDetail[]): DetectionItem[] {
+  return details.map((detail) => ({
+    ProductCode: getDetailProductCode(detail),
+    ItemNumber: trimToUndefined(getDetailItemNumber(detail)),
+    Barcode: trimToUndefined(getDetailBarcode(detail)),
+    // 检测接口用供应商+货号找候选；历史 HB 缺供应商时按旧规则回退 200。
+    SupplierCode: getDetailLocalSupplierCode(detail),
+  }));
+}
+
+export function mergeDetailDetectionResults(
+  details: ContainerDetail[],
+  results: DetectionResult[],
+): ContainerDetail[] {
+  return details.map((detail, index) => {
+    const result = results[index];
+    if (!result) return detail;
+
+    const localProductCode = firstTrimmedValue(result.localProductCode, result.LocalProductCode);
+    const domesticProductCode = firstTrimmedValue(result.domesticProductCode, result.DomesticProductCode);
+    const matchType = firstTrimmedValue(result.matchType, result.MatchType);
+    const normalizedMatchType = normalizeDetailMatchType(matchType);
+    const conflictReason = firstTrimmedValue(result.conflictReason, result.ConflictReason);
+    const hasProductCodeConflict = result.hasProductCodeConflict ?? result.HasProductCodeConflict;
+
+    return {
+      ...detail,
+      matchType: normalizedMatchType ?? detail.matchType,
+      MatchType: matchType ?? detail.MatchType,
+      localProductCode: localProductCode ?? detail.localProductCode,
+      LocalProductCode: localProductCode ?? detail.LocalProductCode,
+      domesticProductCode: domesticProductCode ?? detail.domesticProductCode,
+      DomesticProductCode: domesticProductCode ?? detail.DomesticProductCode,
+      hasProductCodeConflict: hasProductCodeConflict ?? detail.hasProductCodeConflict,
+      HasProductCodeConflict: hasProductCodeConflict ?? detail.HasProductCodeConflict,
+      conflictReason: conflictReason ?? detail.conflictReason,
+      ConflictReason: conflictReason ?? detail.ConflictReason,
+    };
+  });
 }
 
 export function getCurrentPageDetailGuids(details: ContainerDetail[]) {
@@ -522,9 +576,52 @@ export function buildPushProductsToHqOperationId(
   return `container-push-hq:${containerGuid || "unknown"}:${codes || "items"}:${itemCount}:${fields || "all"}`;
 }
 
+export function buildContainerDetailHqPushSelection(details: ContainerDetail[]): ContainerDetailHqPushSelection {
+  const productCodes: string[] = [];
+  const items: PushProductsToHqItem[] = [];
+  const seen = new Set<string>();
+
+  details.forEach((detail) => {
+    const hasConflict = hasDetailProductCodeConflict(detail);
+    const productCode = hasConflict ? undefined : getDetailProductCode(detail);
+    const rowSupplierCode = trimToUndefined(detail.localSupplierCode) ?? trimToUndefined(detail.商品信息?.localSupplierCode);
+    const localSupplierCode = productCode ? rowSupplierCode : getDetailLocalSupplierCode(detail);
+    const itemNumber = trimToUndefined(getDetailItemNumber(detail));
+    if (!productCode && !(localSupplierCode && itemNumber)) {
+      return;
+    }
+
+    const key = productCode
+      ? `code:${productCode.toUpperCase()}`
+      : `supplier-item:${localSupplierCode!.toUpperCase()}:${itemNumber!.toUpperCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    if (productCode) productCodes.push(productCode);
+
+    // 编码冲突未人工对齐前，只把供应商+货号作为候选交给后端实时解析。
+    items.push({
+      productCode,
+      localSupplierCode,
+      itemNumber,
+      productName: getDetailProductName(detail),
+      englishName: getDetailEnglishName(detail),
+      barcode: getDetailBarcode(detail),
+      imageUrl: getDetailImageUrl(detail),
+      domesticPrice: detail.国内价格,
+      importPrice: detail.进口价格,
+      oemPrice: getDetailVisibleOemPrice(detail),
+      isNewProduct: Boolean(detail.是否新商品 ?? detail.warehouseIsActive === false),
+      warehouseIsActive: detail.warehouseIsActive,
+    });
+  });
+
+  return { productCodes, items };
+}
+
 export function toPushProductsToHqItems(details: ContainerDetail[]): PushProductsToHqItem[] {
   return details.map((detail) => ({
-    productCode: detail.商品编码 ?? detail.商品信息?.商品编码,
+    productCode: getDetailProductCode(detail),
     localSupplierCode: detail.localSupplierCode ?? detail.商品信息?.localSupplierCode,
     itemNumber: getDetailItemNumber(detail),
     productName: getDetailProductName(detail),
