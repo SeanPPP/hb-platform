@@ -36,6 +36,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const tokenRes = await loginApi({
         ...payload,
+        // 登录密码输入框容易混入首尾空格，提交前统一按用户实际输入意图归一化。
+        password: payload.password.trim(),
         passwordFormat: "raw",
       });
       await SecureStorage.setToken(tokenRes.accessToken);
