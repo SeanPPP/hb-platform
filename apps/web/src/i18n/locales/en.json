@@ -1524,6 +1524,7 @@
         "name": "Name",
         "barcode": "Barcode",
         "cost": "Cost",
+        "rrp": "RRP",
         "orderQty": "Order Qty",
         "shipQty": "Ship Qty",
         "subtotal": "Subtotal"

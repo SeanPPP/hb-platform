@@ -756,6 +756,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Contains("WAREHOUSE EMAIL", pdfText);
                 Assert.Contains("INVOICE NO. SO001", pdfText);
                 Assert.Contains("INVOICE DATE: 2026/6/5", pdfText);
+                Assert.Contains("RRP", pdfText);
                 Assert.Contains("PAYMENT DETAIL: DIRECT DEBIT", pdfText);
                 Assert.Contains("NAME:", pdfText);
                 Assert.Contains("HOT BARGAIN INTERNATIONAL", pdfText);
@@ -785,10 +786,12 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal("ADDRESS:", sheet.Cell(5, 1).GetString());
                 Assert.Equal("1 Test Street", sheet.Cell(5, 2).GetString());
                 Assert.Equal("Item No", sheet.Cell(7, 2).GetString());
+                Assert.Equal("RRP", sheet.Cell(7, 6).GetString());
                 Assert.Equal("HB001", sheet.Cell(8, 2).GetString());
-                Assert.Equal(2m, sheet.Cell(8, 6).GetValue<decimal>());
-                Assert.Equal(1m, sheet.Cell(8, 7).GetValue<decimal>());
-                Assert.Equal(8.5m, sheet.Cell(8, 8).GetValue<decimal>());
+                Assert.Equal(12.99m, sheet.Cell(8, 6).GetValue<decimal>());
+                Assert.Equal(2m, sheet.Cell(8, 7).GetValue<decimal>());
+                Assert.Equal(1m, sheet.Cell(8, 8).GetValue<decimal>());
+                Assert.Equal(8.5m, sheet.Cell(8, 9).GetValue<decimal>());
             }
         );
     }
@@ -1278,6 +1281,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                     Quantity = 2m,
                     AllocQuantity = 1m,
                     ImportPrice = 8.5m,
+                    RRP = 12.99m,
                     AllocatedImportAmount = 8.5m,
                 },
             },

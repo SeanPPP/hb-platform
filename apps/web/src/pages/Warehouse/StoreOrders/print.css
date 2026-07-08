@@ -378,39 +378,44 @@
 }
 
 .store-order-invoice-table .col-index {
-  width: 28px;
+  width: 24px;
   text-align: center;
 }
 
 .store-order-invoice-table .col-image {
-  width: 44px;
+  width: 38px;
   text-align: center;
 }
 
 .store-order-invoice-table .col-item {
-  width: 72px;
+  width: 62px;
 }
 
 .store-order-invoice-table .col-barcode {
-  width: 100px;
+  width: 86px;
   text-align: center;
   overflow: hidden;
   word-break: break-all;
 }
 
 .store-order-invoice-table .col-name {
-  width: 160px;
+  width: 134px;
   word-break: break-word;
 }
 
 .store-order-invoice-table .col-cost,
 .store-order-invoice-table .col-subtotal {
-  width: 68px;
+  width: 58px;
+  text-align: right;
+}
+
+.store-order-invoice-table .col-rrp {
+  width: 58px;
   text-align: right;
 }
 
 .store-order-invoice-table .col-qty {
-  width: 42px;
+  width: 34px;
   text-align: center;
 }
 

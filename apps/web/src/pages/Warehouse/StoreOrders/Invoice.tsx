@@ -77,6 +77,11 @@ function sortInvoiceItems(items: StoreOrderDetailLine[]) {
   })
 }
 
+function formatOptionalCurrency(value?: number | null) {
+  // RRP 为空代表主数据缺失，不能误显示成真实的 $0.00。
+  return value === undefined || value === null ? '--' : formatCurrency(value)
+}
+
 async function downloadInvoiceExcel(
   order: StoreOrderDetail,
   items: StoreOrderDetailLine[],
@@ -92,6 +97,7 @@ async function downloadInvoiceExcel(
     { key: 'productName', width: 28 },
     { key: 'barcode', width: 20 },
     { key: 'importPrice', width: 14 },
+    { key: 'rrp', width: 12 },
     { key: 'orderQuantity', width: 12 },
     { key: 'allocQuantity', width: 12 },
     { key: 'subtotal', width: 16 },
@@ -99,7 +105,7 @@ async function downloadInvoiceExcel(
 
   const titleRow = worksheet.addRow(['INVOICE'])
   titleRow.font = { bold: true, size: 14 }
-  worksheet.mergeCells(titleRow.number, 1, titleRow.number, 8)
+  worksheet.mergeCells(titleRow.number, 1, titleRow.number, 9)
 
   worksheet.addRow([
     t('warehouse.invoice.invoiceNo', { orderNo: order.orderNo || order.orderGUID }),
@@ -109,7 +115,7 @@ async function downloadInvoiceExcel(
     t('warehouse.invoice.invoiceDate', { date: headerInfo.invoiceDateText }),
   ])
   worksheet.mergeCells(2, 1, 2, 4)
-  worksheet.mergeCells(2, 5, 2, 8)
+  worksheet.mergeCells(2, 5, 2, 9)
   worksheet.addRow([t('warehouse.invoice.customer'), headerInfo.storeName])
   worksheet.addRow([t('warehouse.invoice.customerContact'), headerInfo.storeContact])
   worksheet.addRow([t('warehouse.invoice.address'), headerInfo.storeAddress])
@@ -122,6 +128,7 @@ async function downloadInvoiceExcel(
     t('warehouse.invoice.excel.name'),
     t('warehouse.invoice.excel.barcode'),
     t('warehouse.invoice.excel.cost'),
+    t('warehouse.invoice.excel.rrp'),
     t('warehouse.invoice.excel.orderQty'),
     t('warehouse.invoice.excel.shipQty'),
     t('warehouse.invoice.excel.subtotal'),
@@ -138,6 +145,7 @@ async function downloadInvoiceExcel(
       productName: item.productName || '',
       barcode: item.barcode || item.productCode,
       importPrice: Number(item.importPrice || 0),
+      rrp: item.rrp ?? null,
       orderQuantity,
       allocQuantity,
       subtotal: Number(allocatedImportAmount.toFixed(2)),
@@ -158,6 +166,7 @@ async function downloadInvoiceExcel(
   worksheet.addRow({ productName: t('warehouse.invoice.remarks'), barcode: t('warehouse.invoice.imageRefNote') })
 
   worksheet.getColumn('importPrice').numFmt = '$#,##0.00'
+  worksheet.getColumn('rrp').numFmt = '$#,##0.00'
   worksheet.getColumn('subtotal').numFmt = '$#,##0.00'
 
   const buffer = await workbook.xlsx.writeBuffer()
@@ -628,6 +637,7 @@ export default function StoreOrderInvoicePage() {
               <th className="col-barcode">{t('column.barcode')}</th>
               <th className="col-name">{t('column.name')}</th>
               <th className="col-cost">{t('column.cost')}</th>
+              <th className="col-rrp">{t('column.rrp')}</th>
               <th className="col-qty">{t('column.orderQuantity')}</th>
               <th className="col-qty">{t('column.shipQuantity')}</th>
               <th className="col-subtotal">{t('column.subtotal')}</th>
@@ -661,7 +671,7 @@ export default function StoreOrderInvoicePage() {
                       <BarcodePreview
                         value={item.barcode}
                         showCopy={false}
-                        textMaxWidth={92}
+                        textMaxWidth={78}
                         options={{ width: 0.9, height: 20, margin: 0 }}
                       />
                     ) : (
@@ -670,6 +680,7 @@ export default function StoreOrderInvoicePage() {
                   </td>
                   <td className="col-name">{item.productName || '--'}</td>
                   <td className="col-cost">{formatCurrency(item.importPrice)}</td>
+                  <td className="col-rrp">{formatOptionalCurrency(item.rrp)}</td>
                   <td className="col-qty">{orderQuantity}</td>
                   <td className="col-qty">{allocQuantity}</td>
                   <td className="col-subtotal">
