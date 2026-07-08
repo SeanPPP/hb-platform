@@ -91,7 +91,11 @@ import { batchTranslate } from '../../../services/translationService'
 import { useAuthStore } from '../../../store/auth'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { RequestError } from '../../../utils/request'
-import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductColumnFilters, PosProductDateFilterOperator, PosProductDto, PosProductFilterParams, PosProductNumberFilterOperator, PosProductTextFilterOperator, ProductStoreRecordDto, PushProductsToHqResult, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
+import {
+  defaultPushProductsToHqUpdateFields,
+  pushProductsToHqUpdateFieldOptions,
+} from '../../../types/posProduct'
+import type { BatchUpdatePosProductDto, BatchUpdateProductStoreRecordsChanges, BatchUpdateSupplierImagesJobResult, BatchUpdateSupplierImagesResult, HqProductSyncJobResult, HqProductSyncJobStatus, HqProductSyncResult, PosProductColumnFilters, PosProductDateFilterOperator, PosProductDto, PosProductFilterParams, PosProductNumberFilterOperator, PosProductTextFilterOperator, ProductStoreRecordDto, PushProductsToHqResult, PushProductsToHqUpdateField, SyncProductsToStoresField, SyncProductsToStoresJobResult, SyncProductsToStoresRequest, SyncProductsToStoresResult } from '../../../types/posProduct'
 import type { ProductCategoryDto } from '../../../types/productCategory'
 import type { ProductIntegrityCheckResultDto, ProductIntegrityFixResultDto } from '../../../types/productIntegrity'
 import type { MulticodeSetItem } from '../../../types/multiCodeSet'
@@ -1551,6 +1555,54 @@ export default function ProductManagementPage() {
     })
   }, [t])
 
+  const confirmPushToHqUpdateFields = (count: number): Promise<PushProductsToHqUpdateField[] | null> => {
+    let selectedFields = [...defaultPushProductsToHqUpdateFields]
+    return new Promise((resolve) => {
+      Modal.confirm({
+        title: t('posAdmin.products.pushToHq', '发送到HQ'),
+        width: 640,
+        okText: t('common.confirm', '确定'),
+        cancelText: t('common.cancel', '取消'),
+        content: (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <div>
+              {t('posAdmin.products.pushToHqUpdateFieldsHint', '已选择 {{count}} 个商品，请勾选要更新到 HQ 的字段。', { count })}
+            </div>
+            <Checkbox.Group
+              defaultValue={selectedFields}
+              onChange={(values) => {
+                selectedFields = values.map(String) as PushProductsToHqUpdateField[]
+              }}
+            >
+              <Row gutter={[8, 6]}>
+                {pushProductsToHqUpdateFieldOptions.map((field) => (
+                  <Col span={12} key={field.value}>
+                    <Checkbox value={field.value}>{t(field.labelKey, field.fallbackLabel)}</Checkbox>
+                  </Col>
+                ))}
+              </Row>
+            </Checkbox.Group>
+            <div style={{ color: '#8c8c8c', fontSize: 12 }}>
+              {t(
+                'containers.updateFields.hqCreateHint',
+                '字段选择主要限制已有 HQ 记录更新；如果目标表需要新增记录，系统仍会写入创建该记录所需的完整字段。',
+              )}
+            </div>
+          </Space>
+        ),
+        onOk: () => {
+          if (!selectedFields.length) {
+            message.warning(t('containers.updateFields.selectAtLeastOne', '请至少选择一个更新字段'))
+            return Promise.reject()
+          }
+          resolve(selectedFields)
+          return undefined
+        },
+        onCancel: () => resolve(null),
+      })
+    })
+  }
+
   const showSelectedFromHqResult = useCallback((result: HqProductSyncResult) => {
     const content = (
       <Space direction="vertical" size={6}>
@@ -2237,12 +2289,16 @@ export default function ProductManagementPage() {
     }
     // 使用 ref 作为即时锁，避免 React 状态尚未刷新时连续点击重复提交。
     if (pushToHqLoadingRef.current) return
+    const productCodes = selectedRowKeys.map(String)
+    pushToHqLoadingRef.current = true
+    setPushToHqLoading(true)
 
     try {
-      pushToHqLoadingRef.current = true
-      setPushToHqLoading(true)
+      const updateFields = await confirmPushToHqUpdateFields(productCodes.length)
+      if (!updateFields) return
       const result = await pushProductsToHq({
-        productCodes: selectedRowKeys.map(String),
+        productCodes,
+        updateFields,
       })
       showPushToHqResult(result)
       setSelectedRowKeys([])

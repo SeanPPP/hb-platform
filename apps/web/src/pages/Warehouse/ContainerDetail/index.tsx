@@ -195,6 +195,10 @@ import {
 } from './containerDetailLogic'
 import { buildWarehouseCategoryLookup, formatWarehouseCategoryNodeName, getWarehouseProductCategoryTooltip } from '../Products/categoryPath'
 import CategoryTreePicker from '../Products/CategoryTreePicker'
+import {
+  defaultPushProductsToHqUpdateFields,
+  pushProductsToHqUpdateFieldOptions,
+} from '../../../types/posProduct'
 import type { PushProductsToHqResult, PushProductsToHqUpdateField } from '../../../types/posProduct'
 import ContainerTagFilters from './ContainerTagFilters'
 import useContainerSetCode from './useContainerSetCode'
@@ -299,32 +303,6 @@ const defaultContainerExistingProductUpdateFields: ContainerExistingProductUpdat
   'storeMultiCodePurchasePrice',
   'storeMultiCodeRetailPrice',
 ]
-
-const pushToHqUpdateFields = [
-  { value: 'itemNumber', labelKey: 'containers.updateFields.hqItemNumber', fallbackLabel: '货号' },
-  { value: 'barcode', labelKey: 'containers.updateFields.hqBarcode', fallbackLabel: '条码' },
-  { value: 'productName', labelKey: 'containers.updateFields.hqProductName', fallbackLabel: '商品名称' },
-  { value: 'englishName', labelKey: 'containers.updateFields.hqEnglishName', fallbackLabel: '英文名称' },
-  { value: 'image', labelKey: 'containers.updateFields.hqImage', fallbackLabel: '商品图片' },
-  { value: 'purchasePrice', labelKey: 'containers.updateFields.hqPurchasePrice', fallbackLabel: '商品字典进货价' },
-  { value: 'retailPrice', labelKey: 'containers.updateFields.hqRetailPrice', fallbackLabel: '商品字典零售价' },
-  { value: 'middlePackQuantity', labelKey: 'containers.updateFields.hqMiddlePackQuantity', fallbackLabel: '中包数量' },
-  { value: 'supplierCode', labelKey: 'containers.updateFields.hqSupplierCode', fallbackLabel: '供应商编码' },
-  { value: 'storePurchasePrice', labelKey: 'containers.updateFields.hqStorePurchasePrice', fallbackLabel: 'HQ 分店进货价' },
-  { value: 'storeRetailPrice', labelKey: 'containers.updateFields.hqStoreRetailPrice', fallbackLabel: 'HQ 分店零售价' },
-  { value: 'inventoryDomesticPrice', labelKey: 'containers.updateFields.hqInventoryDomesticPrice', fallbackLabel: 'HQ 库存国内价' },
-  { value: 'inventoryImportPrice', labelKey: 'containers.updateFields.hqInventoryImportPrice', fallbackLabel: 'HQ 库存进口价' },
-  { value: 'inventoryOemPrice', labelKey: 'containers.updateFields.hqInventoryOemPrice', fallbackLabel: 'HQ 库存零售价' },
-  { value: 'productSetCodes', labelKey: 'containers.updateFields.hqProductSetCodes', fallbackLabel: 'HQ 一品多码' },
-  { value: 'storeMultiCodes', labelKey: 'containers.updateFields.hqStoreMultiCodes', fallbackLabel: 'HQ 分店一品多码' },
-] as const satisfies readonly UpdateFieldOption<PushProductsToHqUpdateField>[]
-
-type PushToHqUpdateFieldOptionValue = (typeof pushToHqUpdateFields)[number]['value']
-type MissingPushToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushToHqUpdateFieldOptionValue>
-const assertAllPushToHqUpdateFieldsCovered: Record<MissingPushToHqUpdateFieldOption, never> = {}
-void assertAllPushToHqUpdateFieldsCovered
-
-const defaultPushToHqUpdateFields: PushProductsToHqUpdateField[] = pushToHqUpdateFields.map((field) => field.value)
 
 function UpdateFieldSelector<T extends string>({
   t,
@@ -1505,11 +1483,11 @@ export default function ContainerDetailPage() {
     count: number,
   ): Promise<PushProductsToHqUpdateField[] | null> => {
     const actionName = t('containers.actions.pushToHq', '发送到 HQ')
-    let selectedFields = [...defaultPushToHqUpdateFields]
+    let selectedFields = [...defaultPushProductsToHqUpdateFields]
     const confirmed = await confirmBatchAction(actionName, count, {
       extra: renderUpdateFieldSelector(
-        pushToHqUpdateFields,
-        defaultPushToHqUpdateFields,
+        pushProductsToHqUpdateFieldOptions,
+        defaultPushProductsToHqUpdateFields,
         (values) => {
           selectedFields = values
         },

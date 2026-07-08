@@ -1454,6 +1454,7 @@ const pageStyleSource = readFileSync('src/pages/Warehouse/ContainerDetail/index.
 const mobileLayoutSource = readFileSync('src/layout/MobileLayout.tsx', 'utf8')
 const containerDetailLogicSource = readFileSync('src/pages/Warehouse/ContainerDetail/containerDetailLogic.ts', 'utf8')
 const warehouseProductServiceSource = readFileSync('src/services/warehouseProductService.ts', 'utf8')
+const posProductTypeSource = readFileSync('src/types/posProduct.ts', 'utf8')
 const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
 const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
 assertEqual(
@@ -2590,10 +2591,12 @@ assertEqual(
   '字段选择弹窗应提供全选复选框，并用受控勾选状态同步字段列表',
 )
 assertEqual(
-  pageSource.includes('type MissingPushToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushToHqUpdateFieldOptionValue>') &&
-    pageSource.includes('const assertAllPushToHqUpdateFieldsCovered: Record<MissingPushToHqUpdateFieldOption, never> = {}'),
+  posProductTypeSource.includes('type MissingPushProductsToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushProductsToHqUpdateFieldOptionValue>') &&
+    posProductTypeSource.includes('const assertAllPushProductsToHqUpdateFieldsCovered: Record<MissingPushProductsToHqUpdateFieldOption, never> = {}') &&
+    pageSource.includes('pushProductsToHqUpdateFieldOptions') &&
+    pageSource.includes('defaultPushProductsToHqUpdateFields'),
   true,
-  '发送 HQ 字段清单应有编译期覆盖检查，避免类型新增字段但弹窗漏列',
+  '发送 HQ 字段清单应复用共享定义并有编译期覆盖检查，避免类型新增字段但弹窗漏列',
 )
 assertEqual(
   pageSource.includes('updateProduct(code, { purchasePrice: row.进口价格 ?? 0 })'),
