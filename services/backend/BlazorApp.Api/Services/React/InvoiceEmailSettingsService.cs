@@ -13,6 +13,7 @@ namespace BlazorApp.Api.Services.React
     public class InvoiceEmailSettingsService : IInvoiceEmailSettingsService
     {
         private const string DataProtectionPurpose = "Hbweb.InvoiceEmail.SmtpPassword.v1";
+        private const string DataProtectionPayloadPrefix = "CfDJ8";
 
         private readonly SqlSugarContext _context;
         private readonly InvoiceEmailOptions _fallbackOptions;
@@ -95,8 +96,8 @@ namespace BlazorApp.Api.Services.React
                     model.UseSsl = account.UseSsl;
                     model.CheckCertificateRevocation = account.CheckCertificateRevocation;
                     model.Username = NormalizeOptional(account.Username);
-                    // 密码留空只保留同一个账号的旧密文；首次从 appsettings fallback 落库时才迁移默认账号密码。
-                    model.EncryptedPassword = ResolveEncryptedPassword(
+                    // 密码留空只保留同一个账号的旧存储密码；首次从 appsettings fallback 落库时才迁移默认账号密码。
+                    model.EncryptedPassword = ResolveStoredPassword(
                         existing,
                         account,
                         existingModels.Count == 0 && IsDefaultAccountId(accountId)
@@ -183,7 +184,7 @@ namespace BlazorApp.Api.Services.React
                 UseSsl = model.UseSsl,
                 CheckCertificateRevocation = model.CheckCertificateRevocation,
                 Username = model.Username,
-                Password = UnprotectPassword(model.EncryptedPassword),
+                Password = ReadStoredPassword(model.EncryptedPassword),
                 FromEmail = model.FromEmail,
                 FromName = model.FromName,
                 MaxAttachmentBytes = model.MaxAttachmentBytes,
@@ -208,8 +209,8 @@ namespace BlazorApp.Api.Services.React
 
                 if (existing != null)
                 {
-                    // 测试已有账号且密码留空时复用该账号密文，不回退到其他默认账号密码。
-                    password = UnprotectPassword(existing.EncryptedPassword);
+                    // 测试已有账号且密码留空时复用该账号存储密码，不回退到其他默认账号密码。
+                    password = ReadStoredPassword(existing.EncryptedPassword);
                 }
                 else if (IsDefaultAccountId(accountId) && !await HasSavedAccountsAsync())
                 {
@@ -251,7 +252,7 @@ namespace BlazorApp.Api.Services.React
                 .FirstAsync();
         }
 
-        private string? ResolveEncryptedPassword(
+        private string? ResolveStoredPassword(
             InvoiceEmailConfiguration? existing,
             UpdateInvoiceEmailAccountDto request,
             bool allowFallbackPassword = false
@@ -266,20 +267,19 @@ namespace BlazorApp.Api.Services.React
             {
                 if (!string.IsNullOrWhiteSpace(existing?.EncryptedPassword))
                 {
-                    // 密码留空表示沿用旧密码；先校验旧密文可解，避免继续保存已经失效的 key ring 密文。
-                    _ = UnprotectPassword(existing.EncryptedPassword);
+                    // 密码留空表示沿用同库里已有的密码；明文保存时不再绑定本机 DataProtection key。
                     return existing.EncryptedPassword;
                 }
 
                 if (allowFallbackPassword && !string.IsNullOrWhiteSpace(_fallbackOptions.Password))
                 {
-                    return _protector.Protect(_fallbackOptions.Password);
+                    return _fallbackOptions.Password;
                 }
 
                 return null;
             }
 
-            return _protector.Protect(request.Password);
+            return request.Password;
         }
 
         private async Task<bool> HasSavedAccountsAsync()
@@ -287,21 +287,27 @@ namespace BlazorApp.Api.Services.React
             return await _context.Db.Queryable<InvoiceEmailConfiguration>().CountAsync() > 0;
         }
 
-        private string? UnprotectPassword(string? encryptedPassword)
+        private string? ReadStoredPassword(string? storedPassword)
         {
-            if (string.IsNullOrWhiteSpace(encryptedPassword))
+            if (string.IsNullOrWhiteSpace(storedPassword))
             {
                 return null;
             }
 
+            // 兼容旧版 DataProtection 密文；新版按用户要求直接明文读取数据库密码。
+            if (!storedPassword.StartsWith(DataProtectionPayloadPrefix, StringComparison.Ordinal))
+            {
+                return storedPassword;
+            }
+
             try
             {
-                return _protector.Unprotect(encryptedPassword);
+                return _protector.Unprotect(storedPassword);
             }
-            catch (Exception ex)
+            catch
             {
-                _logger.LogError(ex, "解密发票邮件 SMTP 密码失败");
-                throw new InvoiceEmailPasswordDecryptException("发票邮件 SMTP 密码解密失败", ex);
+                // 旧密文解不开时按明文处理，避免 CfDJ8 前缀的真实明文密码被误判。
+                return storedPassword;
             }
         }
 

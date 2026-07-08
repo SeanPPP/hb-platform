@@ -1028,7 +1028,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
-    public async Task InvoiceEmailService_WhenPasswordDecryptFails_ReturnsClearFailure()
+    public async Task InvoiceEmailService_UsesStoredPlainTextPassword()
     {
         var settingsService = CreateSettingsService();
         await _db.Insertable(
@@ -1041,15 +1041,12 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Port = 465,
                 UseSsl = true,
                 Username = "sender@hotbargain.com.au",
-                EncryptedPassword = "invalid-protected-payload",
+                EncryptedPassword = "plain-secret",
                 FromEmail = "sender@hotbargain.com.au",
                 MaxAttachmentBytes = 5_242_880,
             }
         ).ExecuteCommandAsync();
-        var service = new InvoiceEmailService(
-            NullLogger<InvoiceEmailService>.Instance,
-            settingsService
-        );
+        var service = new SendingCaptureInvoiceEmailService(settingsService);
 
         var result = await service.SendInvoiceAsync(
             new StoreOrderInvoiceEmailMessage
@@ -1069,9 +1066,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             }
         );
 
-        Assert.False(result.Success);
-        Assert.Equal("INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED", result.ErrorCode);
-        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置", result.Message);
+        Assert.True(result.Success);
+        Assert.Equal("sender@hotbargain.com.au", service.AuthenticatedUsername);
+        Assert.Equal("plain-secret", service.AuthenticatedPassword);
     }
 
     [Fact]

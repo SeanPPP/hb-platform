@@ -34,6 +34,9 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(Length = 200, IsNullable = true)]
         public string? Username { get; set; }
 
+        /// <summary>
+        /// SMTP 密码存储字段。历史字段名保留，当前按明文保存。
+        /// </summary>
         [SugarColumn(Length = 2000, IsNullable = true)]
         public string? EncryptedPassword { get; set; }
 

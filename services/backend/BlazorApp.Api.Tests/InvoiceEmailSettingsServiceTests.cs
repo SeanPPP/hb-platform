@@ -86,14 +86,13 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.True(result.Data!.Accounts.Single().HasPassword);
-        Assert.False(string.IsNullOrWhiteSpace(row.EncryptedPassword));
-        Assert.NotEqual("fallback-secret", row.EncryptedPassword);
+        Assert.Equal("fallback-secret", row.EncryptedPassword);
         Assert.Equal("smtp-updated.example.com", runtime.Host);
         Assert.Equal("fallback-secret", runtime.Password);
     }
 
     [Fact]
-    public async Task UpdateSettingsAsync_SavesMultipleEncryptedPasswordsAndUsesDefaultAccount()
+    public async Task UpdateSettingsAsync_SavesMultiplePlainTextPasswordsAndUsesDefaultAccount()
     {
         var service = CreateService();
 
@@ -126,8 +125,8 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
         Assert.Equal(2, result.Data!.Accounts.Count);
         Assert.All(result.Data.Accounts, account => Assert.True(account.HasPassword));
         Assert.Equal("admin", result.Data.Accounts.Single(account => account.Id == "default-sender").UpdatedBy);
-        Assert.All(rows, row => Assert.NotEqual("default-secret", row.EncryptedPassword));
-        Assert.All(rows, row => Assert.False(string.IsNullOrWhiteSpace(row.EncryptedPassword)));
+        Assert.Equal("primary-secret", rows.Single(row => row.Id == "primary").EncryptedPassword);
+        Assert.Equal("default-secret", rows.Single(row => row.Id == "default-sender").EncryptedPassword);
         Assert.Equal("default.smtp.example.com", runtime.Host);
         Assert.Equal("default-secret", runtime.Password);
         Assert.Equal("default@example.com", runtime.FromEmail);
@@ -155,22 +154,22 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateSettingsAsync_WhenPasswordEmptyAndStoredPasswordInvalid_ReturnsClearFailure()
+    public async Task UpdateSettingsAsync_WhenPasswordEmpty_PreservesStoredPlainTextPassword()
     {
         var service = CreateService();
-        await SeedInvalidEncryptedPasswordAsync();
+        await SeedPlainTextPasswordAsync("stored-secret");
 
         var result = await service.UpdateSettingsAsync(
             CreateRequest(CreateAccount(host: "smtp-updated.example.com", password: "")),
             "admin"
         );
         var row = await _db.Queryable<InvoiceEmailConfiguration>().FirstAsync();
+        var runtime = await service.GetEffectiveOptionsAsync();
 
-        Assert.False(result.Success);
-        Assert.Equal("INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED", result.ErrorCode);
-        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置", result.Message);
-        Assert.Equal("smtp.example.com", row!.Host);
-        Assert.Equal("invalid-protected-payload", row.EncryptedPassword);
+        Assert.True(result.Success);
+        Assert.Equal("smtp-updated.example.com", row!.Host);
+        Assert.Equal("stored-secret", row.EncryptedPassword);
+        Assert.Equal("stored-secret", runtime.Password);
     }
 
     [Fact]
@@ -353,14 +352,40 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task GetEffectiveOptionsAsync_WhenEncryptedPasswordInvalid_ThrowsDecryptException()
+    public async Task GetEffectiveOptionsAsync_WhenStoredPasswordPlainText_ReturnsPlainTextPassword()
     {
         var service = CreateService();
-        await SeedInvalidEncryptedPasswordAsync();
+        await SeedPlainTextPasswordAsync("stored-secret");
 
-        await Assert.ThrowsAsync<InvoiceEmailPasswordDecryptException>(
-            () => service.GetEffectiveOptionsAsync()
-        );
+        var options = await service.GetEffectiveOptionsAsync();
+
+        Assert.Equal("stored-secret", options.Password);
+    }
+
+    [Fact]
+    public async Task GetEffectiveOptionsAsync_WhenPlainTextPasswordStartsLikeLegacyPayload_ReturnsPlainTextPassword()
+    {
+        var service = CreateService();
+        await SeedPlainTextPasswordAsync("CfDJ8-plain-secret");
+
+        var options = await service.GetEffectiveOptionsAsync();
+
+        Assert.Equal("CfDJ8-plain-secret", options.Password);
+    }
+
+    [Fact]
+    public async Task GetEffectiveOptionsAsync_WhenStoredPasswordIsLegacyProtectedPayload_UnprotectsIt()
+    {
+        var protectedPassword = DataProtectionProvider
+            .Create("InvoiceEmailSettingsServiceTests")
+            .CreateProtector("Hbweb.InvoiceEmail.SmtpPassword.v1")
+            .Protect("legacy-secret");
+        var service = CreateService();
+        await SeedPlainTextPasswordAsync(protectedPassword);
+
+        var options = await service.GetEffectiveOptionsAsync();
+
+        Assert.Equal("legacy-secret", options.Password);
     }
 
     [Fact]
@@ -544,6 +569,26 @@ public sealed class InvoiceEmailSettingsServiceTests : IDisposable
                 CheckCertificateRevocation = true,
                 Username = "smtp-user",
                 EncryptedPassword = "invalid-protected-payload",
+                FromEmail = "warehouse@example.com",
+                MaxAttachmentBytes = 5_242_880,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedPlainTextPasswordAsync(string password)
+    {
+        await _db.Insertable(
+            new InvoiceEmailConfiguration
+            {
+                Id = InvoiceEmailConfiguration.DefaultId,
+                Name = "Default Sender",
+                IsDefault = true,
+                Host = "smtp.example.com",
+                Port = 465,
+                UseSsl = true,
+                CheckCertificateRevocation = true,
+                Username = "smtp-user",
+                EncryptedPassword = password,
                 FromEmail = "warehouse@example.com",
                 MaxAttachmentBytes = 5_242_880,
             }
