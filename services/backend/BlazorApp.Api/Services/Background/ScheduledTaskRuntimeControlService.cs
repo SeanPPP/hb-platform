@@ -36,6 +36,7 @@ namespace BlazorApp.Api.Services.Background
             var control = await GetOrCreateControlAsync();
             var instances = await QueryInstancesAsync();
             var leaseSnapshot = await QueryLeaseSnapshotAsync();
+            await PromoteCurrentInstanceWhenActiveIsStaleAsync(control, instances);
             var status = BuildStatus(control, instances, leaseSnapshot);
             return status.EffectiveSchedulerEnabled;
         }
@@ -182,6 +183,46 @@ namespace BlazorApp.Api.Services.Background
             existing.SchedulerEnabledByConfig = _options.Enabled;
             existing.LastSeenAtUtc = now;
             await _context.Db.Updateable(existing).ExecuteCommandAsync();
+        }
+
+        private async Task PromoteCurrentInstanceWhenActiveIsStaleAsync(
+            ScheduledTaskRuntimeControl control,
+            List<ScheduledTaskInstanceState> instances
+        )
+        {
+            if (!control.SchedulerEnabled || string.IsNullOrWhiteSpace(control.ActiveInstanceId))
+            {
+                return;
+            }
+
+            var currentInstanceId = ResolveInstanceId();
+            if (string.Equals(control.ActiveInstanceId, currentInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var staleThreshold = TimeSpan.FromMinutes(Math.Max(30, _options.HourlyTaskIntervalMinutes * 3));
+            var activeInstance = instances.FirstOrDefault(instance =>
+                string.Equals(instance.InstanceId, control.ActiveInstanceId, StringComparison.OrdinalIgnoreCase)
+            );
+            if (activeInstance == null || activeInstance.LastSeenAtUtc >= now.Subtract(staleThreshold))
+            {
+                return;
+            }
+
+            // 旧容器被替换后 activeInstanceId 可能长期停在死实例；当前实例接管，避免统计任务永久跳过。
+            var previousActiveInstanceId = control.ActiveInstanceId;
+            control.ActiveInstanceId = currentInstanceId;
+            control.UpdatedAtUtc = now;
+            control.UpdatedByUser = "auto-stale-failover";
+            await _context.Db.Updateable(control).ExecuteCommandAsync();
+            _logger.LogWarning(
+                "定时任务调度实例已自动接管: PreviousActive={PreviousActive}, Current={Current}, ThresholdMinutes={ThresholdMinutes}",
+                previousActiveInstanceId,
+                currentInstanceId,
+                staleThreshold.TotalMinutes
+            );
         }
 
         private async Task<ScheduledTaskLeaseSnapshot> QueryLeaseSnapshotAsync()

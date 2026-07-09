@@ -148,6 +148,36 @@ public sealed class ScheduledTaskRuntimeControlServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IsCurrentInstanceSchedulerEnabledAsync_选中实例心跳过期时_当前实例应自动接管()
+    {
+        await _db.Insertable(new ScheduledTaskRuntimeControl
+        {
+            Id = ScheduledTaskRuntimeControl.DefaultId,
+            SchedulerEnabled = true,
+            ActiveInstanceId = "api-old",
+            UpdatedAtUtc = DateTime.UtcNow.AddHours(-2),
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new ScheduledTaskInstanceState
+        {
+            InstanceId = "api-old",
+            HostName = "old-host",
+            ProcessId = 1,
+            SchedulerEnabledByConfig = true,
+            LastSeenAtUtc = DateTime.UtcNow.AddHours(-2),
+        }).ExecuteCommandAsync();
+        var service = CreateService("api-new");
+
+        var enabled = await service.IsCurrentInstanceSchedulerEnabledAsync();
+        var control = await _db.Queryable<ScheduledTaskRuntimeControl>()
+            .Where(x => x.Id == ScheduledTaskRuntimeControl.DefaultId)
+            .FirstAsync();
+
+        Assert.True(enabled);
+        Assert.Equal("api-new", control.ActiveInstanceId);
+        Assert.Equal("auto-stale-failover", control.UpdatedByUser);
+    }
+
+    [Fact]
     public async Task UpdateControlAsync_切换到当前实例后_状态返回当前实例可执行调度()
     {
         var service = CreateService("api-a");

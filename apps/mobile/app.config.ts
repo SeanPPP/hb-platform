@@ -1,6 +1,9 @@
 import appJson from "./app.json";
 
 const baseExpoConfig = appJson.expo;
+const baseUpdatesConfig = baseExpoConfig.updates as typeof baseExpoConfig.updates & {
+  checkAutomatically?: string;
+};
 const nativeRuntimeVersion =
   process.env.EXPO_PUBLIC_RUNTIME_VERSION?.trim() || baseExpoConfig.runtimeVersion || baseExpoConfig.version;
 const nativeAppBuildProfile =
@@ -12,6 +15,11 @@ export default {
   expo: {
     ...baseExpoConfig,
     runtimeVersion: nativeRuntimeVersion,
+    updates: {
+      ...baseUpdatesConfig,
+      // 原生层只负责承载更新，自动检查统一交给 JS，方便测试包按 profile 禁用。
+      checkAutomatically: "NEVER",
+    },
     extra: {
       ...baseExpoConfig.extra,
       // 固化当前安装包的 EAS profile，自更新时按同一轨道检查 APK。

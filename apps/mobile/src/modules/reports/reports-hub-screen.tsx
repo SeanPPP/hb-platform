@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { SegmentedButtons, Text } from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { ProductReportScreen } from "@/modules/product-report/product-report-screen";
 import { RevenueReportScreen } from "@/modules/reports/RevenueReportScreen";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
@@ -12,7 +13,7 @@ export function ReportsHubScreen() {
   const [tab, setTab] = useState<ReportTab>("revenue");
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
       <View style={styles.header}>
         <Text variant="headlineSmall" style={styles.title}>
           {t("reports.title")}
@@ -28,7 +29,7 @@ export function ReportsHubScreen() {
       </View>
 
       {tab === "revenue" ? <RevenueReportScreen embedded /> : <ProductReportScreen embedded />}
-    </View>
+    </SafeAreaView>
   );
 }
 

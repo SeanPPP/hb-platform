@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Stack } from "expo-router";
+import Constants from "expo-constants";
 import * as SplashScreen from "expo-splash-screen";
 import { Image, StyleSheet, Text, View } from "react-native";
 import { PaperProvider, MD3LightTheme } from "react-native-paper";
@@ -9,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connect";
 import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
+import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-build-profile";
 import { useAutomaticAppUpdate } from "@/modules/updates/use-automatic-app-update";
 import { useAutomaticNativeAppUpdate } from "@/modules/updates/use-automatic-native-app-update";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
@@ -49,10 +51,14 @@ const theme = {
 export default function RootLayout() {
   const [appReady, setAppReady] = useState(false);
   const [startupError, setStartupError] = useState<unknown>(null);
+  const automaticUpdatesEnabled =
+    appReady
+    && !startupError
+    && shouldRunAutomaticAppUpdatesForProfile(Constants.expoConfig?.extra?.nativeAppBuildProfile);
 
   usePrinterAutoConnect();
-  useAutomaticAppUpdate({ enabled: appReady && !startupError });
-  useAutomaticNativeAppUpdate({ enabled: appReady && !startupError });
+  useAutomaticAppUpdate({ enabled: automaticUpdatesEnabled });
+  useAutomaticNativeAppUpdate({ enabled: automaticUpdatesEnabled });
 
   useEffect(() => {
     return installGlobalErrorLogging();
@@ -116,6 +122,7 @@ export default function RootLayout() {
   if (startupError) {
     return (
       <View style={styles.splashFallback}>
+        <StatusBar style="dark" />
         <Image
           source={require("../assets/splash-logo.png")}
           style={styles.splashLogo}
@@ -129,6 +136,7 @@ export default function RootLayout() {
   if (!appReady) {
     return (
       <View style={styles.splashFallback}>
+        <StatusBar style="dark" />
         <Image
           source={require("../assets/splash-logo.png")}
           style={styles.splashLogo}
@@ -143,7 +151,8 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <I18nextProvider i18n={i18n}>
           <PaperProvider theme={theme}>
-            <StatusBar style="auto" />
+            {/* 浅色业务页面统一使用深色系统图标，避免白底白字看不清。 */}
+            <StatusBar style="dark" />
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="(auth)" />

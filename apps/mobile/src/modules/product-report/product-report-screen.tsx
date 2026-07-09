@@ -1074,7 +1074,7 @@ const styles = StyleSheet.create({
     minWidth: 588,
   },
   productTable: {
-    minWidth: 430,
+    minWidth: 494,
   },
   drilldownTable: {
     minWidth: 520,
@@ -1144,7 +1144,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   productInfoColumn: {
-    flex: 1,
+    // 商品明细横向滚动时固定名称列，避免宽屏下把数量列推得太远。
+    width: 128,
     minWidth: 0,
   },
   productCountColumn: {

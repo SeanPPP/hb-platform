@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 import {
   View,
   StyleSheet,
@@ -39,6 +40,7 @@ import {
 } from "@/modules/attendance/required-location";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
+import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-build-profile";
 import { checkLoginUpdateRestartPrompt } from "@/modules/updates/login-update-restart-prompt";
 import { checkAndDownloadAppUpdate, reloadAppToApplyUpdate } from "@/modules/updates/app-update-runtime";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
@@ -175,6 +177,10 @@ export default function Login() {
   }, []);
 
   useEffect(() => {
+    if (!shouldRunAutomaticAppUpdatesForProfile(Constants.expoConfig?.extra?.nativeAppBuildProfile)) {
+      return;
+    }
+
     let mounted = true;
 
     async function checkLoginUpdate() {
