@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using Hbpos.Contracts.AppUpdates;
@@ -49,6 +50,8 @@ public sealed class AppUpdateDownloadService(
     IAppUpdateDownloadDirectoryProvider directoryProvider) : IAppUpdateDownloadService
 {
     public const long MaximumInstallerBytes = 512L * 1024 * 1024;
+
+    private const int CachedInstallerRetentionCount = 5;
 
     private const int CopyBufferSize = 81920;
 
@@ -146,6 +149,7 @@ public sealed class AppUpdateDownloadService(
             }
 
             File.Move(tempFilePath, filePath, overwrite: true);
+            PruneCachedInstallers(directory, filePath);
             ReportProgress(progress, expectedSize, expectedSize);
             return AppUpdateDownloadResult.Succeeded(filePath);
         }
@@ -293,6 +297,40 @@ public sealed class AppUpdateDownloadService(
 
         var percent = (int)Math.Clamp(copiedBytes * 100 / expectedSize, 0, 100);
         progress.Report(new AppUpdateDownloadProgress(copiedBytes, expectedSize, percent));
+    }
+
+    private static void PruneCachedInstallers(string directory, string protectedFilePath)
+    {
+        try
+        {
+            var protectedFullPath = Path.GetFullPath(protectedFilePath);
+            var installers = Directory.EnumerateFiles(directory)
+                .Where(IsInstallerCacheFile)
+                .Select(path => new FileInfo(path))
+                // 中文注释：当前刚下载完成的安装包必须保留，即使文件时间异常也不能被清掉。
+                .OrderByDescending(file => string.Equals(
+                    Path.GetFullPath(file.FullName),
+                    protectedFullPath,
+                    StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(file => file.LastWriteTimeUtc)
+                .ToList();
+
+            foreach (var installer in installers.Skip(CachedInstallerRetentionCount))
+            {
+                DeleteIfExists(installer.FullName);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 中文注释：缓存清理失败不能影响本次已校验安装包的可用性。
+        }
+    }
+
+    private static bool IsInstallerCacheFile(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".msi", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ResolveFileName(AppUpdateCheckResponse update, string? declaredInstallerType)
