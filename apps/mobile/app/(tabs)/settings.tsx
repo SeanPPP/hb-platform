@@ -28,7 +28,7 @@ import { useStores } from "@/modules/shop/use-stores";
 import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
 import { resolveDeviceStoreDisplayName } from "@/modules/device/store-display";
 import { isRequiredLocationError } from "@/modules/attendance/required-location";
-import { buildAppUpdateInfoRows } from "@/modules/updates/app-update-info";
+import { buildAppUpdateInfoRows, formatAppPackageVersion } from "@/modules/updates/app-update-info";
 import {
   checkAndDownloadAppUpdate,
   getCurrentAppUpdateInfo,
@@ -250,6 +250,10 @@ export default function Settings() {
     fallback: t("device.selectStore"),
   });
   const updateInfoRows = useMemo(() => buildAppUpdateInfoRows(updateInfo), [updateInfo]);
+  const appPackageVersion = useMemo(
+    () => formatAppPackageVersion(updateInfo, t("updates.unknown")),
+    [t, updateInfo]
+  );
 
   const visiblePrinters = useMemo(() => {
     if (!filterXPOnly) {
@@ -736,7 +740,7 @@ export default function Settings() {
           <View style={styles.sectionDivider} />
           <CompactRow
             label={t("updates.title")}
-            value={updateInfo.appVersion ?? t("updates.unknown")}
+            value={appPackageVersion}
             meta={`${t("updates.channel")}: ${updateInfo.channel ?? t("updates.noChannel")}`}
             action={
               <Button

@@ -271,6 +271,34 @@ async function main() {
   })
   if (pagePayloadFailure) failures.push(pagePayloadFailure)
 
+  const listPaginationLayoutFailure = await runTest('列表页表格滚动区域不应覆盖外置分页', () => {
+    assert(pageSource.includes('const tableRegionRef = useRef<HTMLDivElement>(null)'), '列表页应声明表格区域 ref')
+    assert(pageSource.includes("region.querySelector('.ant-table-thead')"), '表体高度计算必须扣除 AntD 表头')
+    assert(pageSource.includes('horizontalScrollbarHeight'), '表体高度计算必须扣除横向滚动条高度')
+    assert(
+      pageSource.includes('region.clientHeight - tableHeaderHeight - horizontalScrollbarHeight - 8'),
+      '表体高度必须按表格区域扣除表头和横向滚动条计算',
+    )
+    assert(
+      pageSource.includes('window.requestAnimationFrame') && pageSource.includes('ResizeObserver'),
+      '表格高度应在布局变化后重新测量',
+    )
+    assert(
+      pageSource.includes('ref={tableRegionRef}') &&
+        pageSource.includes('flex: 1') &&
+        pageSource.includes('minHeight: 0') &&
+        pageSource.includes("overflow: 'hidden'"),
+      '表格区域必须裁剪溢出，避免固定列画到分页栏',
+    )
+    assert(
+      pageSource.includes("position: 'relative'") &&
+        pageSource.includes('zIndex: 3') &&
+        pageSource.includes('flexShrink: 0'),
+      '分页栏应保持独立层级和固定底部空间',
+    )
+  })
+  if (listPaginationLayoutFailure) failures.push(listPaginationLayoutFailure)
+
   const editPageButtonFailure = await runTest('编辑页应使用专用权限显示更新HQ商品按钮', () => {
     assert(editPageSource.includes('canWriteLocalPurchaseToHq'), '编辑页应使用可编辑本地进货 + PushToHq 的组合权限控制写 HQ 入口')
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsBtn', '更新HQ商品')"), '编辑页应显示更新HQ商品按钮文案')

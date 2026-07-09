@@ -184,10 +184,17 @@ namespace BlazorApp.Api.Services
             public int CustomerCount { get; set; }
         }
 
+        private sealed class OrderAmountRow
+        {
+            public string? OrderGuid { get; set; }
+            public decimal Amount { get; set; }
+        }
+
         private sealed class StoreSupplierSourceRow
         {
             public DateTime Date { get; set; }
             public string? BranchCode { get; set; }
+            public string? DeviceCode { get; set; }
             public string? OrderGuid { get; set; }
             public string? DetailSupplierCode { get; set; }
             public string? LocalSupplierCode { get; set; }
@@ -411,55 +418,10 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("开始更新每日统计数据: {Date}", date);
 
-                // 从POSM数据库查询并聚合当日销售数据，按支付明细统计营业额
-                var summary = await _posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime.Value.Date == date
-                    )
-                    .GroupBy((pd, so) => new { Date = so.OrderTime!.Value.Date })
-                    .Select(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                // 按支付明细统计总金额
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                                // 计算总数量
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
-                                // 计算订单数
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                // 计算SKU数（这里暂时用订单数代替）
-                                SkuCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                // 计算客户数（这里暂时用订单数代替）
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .FirstAsync();
+                var statistic = await BuildDailySalesStatisticAsync(_posmContext, date, DateTime.Now);
 
-                if (summary != null)
+                if (statistic != null)
                 {
-                    // 构建统计数据对象
-                    var statistic = new DailySalesStatistic
-                    {
-                        Date = summary.Date,
-                        TotalAmount = summary.TotalAmount,
-                        TotalQuantity = summary.TotalQuantity,
-                        OrderCount = summary.OrderCount,
-                        SkuCount = summary.SkuCount,
-                        CustomerCount = summary.CustomerCount,
-                        // 计算平均订单价值
-                        AverageOrderValue =
-                            summary.OrderCount > 0 ? summary.TotalAmount / summary.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-
                     // 查询是否已存在该日期的统计数据
                     var existing = await _context
                         .Db.Queryable<DailySalesStatistic>()
@@ -485,6 +447,90 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "更新每日统计数据失败: {Date}", dateStr);
                 throw;
             }
+        }
+
+        private static async Task<DailySalesStatistic?> BuildDailySalesStatisticAsync(
+            POSMSqlSugarContext posmContext,
+            DateTime date,
+            DateTime updateTime
+        )
+        {
+            var targetDate = date.Date;
+            var nextDate = targetDate.AddDays(1);
+
+            var paymentSummary = await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+                    (pd, so) => pd.OrderGuid == so.OrderGuid
+                )
+                .Where((pd, so) =>
+                    so.Status != null
+                    && (so.Status == 1 || so.Status == 4)
+                    && so.OrderTime != null
+                    && so.OrderTime >= targetDate
+                    && so.OrderTime < nextDate
+                )
+                .GroupBy((pd, so) => so.OrderTime!.Value.Date)
+                .Select((pd, so) => new
+                {
+                    TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
+                })
+                .FirstAsync();
+
+            var quantitySummary = await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
+                    (d, so) => d.OrderGuid == so.OrderGuid
+                )
+                .Where((d, so) =>
+                    so.Status != null
+                    && (so.Status == 1 || so.Status == 4)
+                    && so.OrderTime != null
+                    && so.OrderTime >= targetDate
+                    && so.OrderTime < nextDate
+                )
+                .GroupBy((d, so) => so.OrderTime!.Value.Date)
+                .Select((d, so) => new
+                {
+                    TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0),
+                })
+                .FirstAsync();
+
+            var orderRows = await posmContext.Db.Queryable<SalesOrder>()
+                .Where(so =>
+                    so.Status != null
+                    && (so.Status == 1 || so.Status == 4)
+                    && so.OrderTime != null
+                    && so.OrderTime >= targetDate
+                    && so.OrderTime < nextDate
+                )
+                .GroupBy(so => so.OrderGuid)
+                .Select(so => new StoreStatisticOrderRow
+                {
+                    OrderGuid = so.OrderGuid,
+                })
+                .ToListAsync();
+
+            var totalAmount = paymentSummary?.TotalAmount ?? 0m;
+            var totalQuantity = quantitySummary?.TotalQuantity ?? 0;
+            // 日统计金额、数量、订单数拆开在 SQL 端聚合，避免拆分支付或明细行把非金额指标放大。
+            var orderCount = orderRows
+                .Select(row => row.OrderGuid)
+                .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                .Count();
+
+            if (totalAmount == 0m && totalQuantity == 0 && orderCount == 0)
+            {
+                return null;
+            }
+
+            return new DailySalesStatistic
+            {
+                Date = targetDate,
+                TotalAmount = totalAmount,
+                TotalQuantity = totalQuantity,
+                OrderCount = orderCount,
+                SkuCount = orderCount,
+                CustomerCount = orderCount,
+                AverageOrderValue = orderCount > 0 ? totalAmount / orderCount : 0m,
+                UpdateTime = updateTime,
+            };
         }
 
         /// <summary>
@@ -1083,13 +1129,14 @@ namespace BlazorApp.Api.Services
             {
                 var targetStartDate = startDate ?? DateTime.Now.Date;
                 var targetEndDate = endDate ?? targetStartDate;
+                var targetEndExclusive = targetEndDate.AddDays(1);
 
                 if (targetStartDate > targetEndDate)
                 {
                     throw new ArgumentException("开始日期不能大于结束日期");
                 }
 
-                var isSingleDate = targetStartDate == targetEndDate;
+                var targetSupplierCodes = NormalizeSupplierCodes(supplierCodes);
 
                 _logger.LogInformation(
                     "开始更新指定供应商统计数据: {StartDate} 至 {EndDate}, Suppliers: {Suppliers}",
@@ -1109,28 +1156,29 @@ namespace BlazorApp.Api.Services
                         o.Status != null && (o.Status == 1 || o.Status == 4) && o.OrderTime != null
                     );
 
-                // 设置日期过滤条件
-                if (isSingleDate)
-                {
-                    query = query.Where(o => o.OrderTime!.Value.Date == targetStartDate);
-                }
-                else
-                {
-                    query = query.Where(o =>
-                        o.OrderTime!.Value.Date >= targetStartDate
-                        && o.OrderTime!.Value.Date <= targetEndDate
-                    );
-                }
+                // 使用半开区间过滤，避免不同数据库对 DateTime.Date 的翻译差异。
+                query = query.Where(o =>
+                    o.OrderTime >= targetStartDate
+                    && o.OrderTime < targetEndExclusive
+                );
 
                 // 设置供应商代码过滤条件
-                if (supplierCodes != null && supplierCodes.Any())
+                if (targetSupplierCodes.Any())
                 {
+                    var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
                     query = query.Where(
                         (o, d, m) =>
                             (m.LocalSupplierCode != null
-                                && supplierCodes.Contains(m.LocalSupplierCode))
+                                && targetSupplierCodes.Contains(m.LocalSupplierCode.Trim()))
                             || (m.ChinaSupplierCode != null
-                                && supplierCodes.Contains(m.ChinaSupplierCode))
+                                && targetSupplierCodes.Contains(m.ChinaSupplierCode.Trim()))
+                            || (d.SupplierCode != null
+                                && targetSupplierCodes.Contains(d.SupplierCode.Trim()))
+                            || (
+                                includesUnknownSupplier
+                                && (m.LocalSupplierCode == null || m.LocalSupplierCode.Trim() == "")
+                                && (d.SupplierCode == null || d.SupplierCode.Trim() == "")
+                            )
                     );
                 }
 
@@ -1142,6 +1190,7 @@ namespace BlazorApp.Api.Services
                             {
                                 Date = o.OrderTime!.Value.Date,
                                 BranchCode = o.BranchCode,
+                                DetailSupplierCode = d.SupplierCode,
                                 LocalSupplierCode = m.LocalSupplierCode,
                                 ChinaSupplierCode = m.ChinaSupplierCode,
                                 TotalAmount = d.ActualAmount,
@@ -1150,23 +1199,71 @@ namespace BlazorApp.Api.Services
                             }
                     )
                     .ToListAsync();
+                var orderAmountMaps = await LoadOrderAmountMapsAsync(
+                    _posmContext,
+                    targetStartDate,
+                    targetEndExclusive,
+                    rawData,
+                    row => row.OrderGuid,
+                    row => row.TotalAmount ?? 0m
+                );
 
-                // 1. 本地供应商聚合
-                // 所有的销售记录都按 LocalSupplierCode 进行一次聚合
-                // 即使 LocalSupplierCode 是 "200"（总代），也会作为一个普通的本地供应商参与统计
-                // 这样可以得到每个本地供应商（包括总代）的总销量和总金额
-                var localStats = rawData
-                    .Where(x => !string.IsNullOrEmpty(x.LocalSupplierCode))
+                var resolvedRows = rawData
+                    .Select(x => new
+                    {
+                        x.Date,
+                        BranchCode = NormalizeCode(x.BranchCode),
+                        LocalSupplierCode = ResolveStatisticSupplierCode(
+                            x.LocalSupplierCode,
+                            x.DetailSupplierCode
+                        ),
+                        ChinaSupplierCode = NormalizeCode(x.ChinaSupplierCode),
+                        TotalAmount = ResolveStatisticAmount(
+                            x.OrderGuid,
+                            x.TotalAmount ?? 0m,
+                            orderAmountMaps.PaymentAmounts,
+                            orderAmountMaps.DetailAmounts
+                        ),
+                        x.Quantity,
+                        x.OrderGuid,
+                    })
+                    .ToList();
+
+                var shouldRefreshAllSuppliers = !targetSupplierCodes.Any();
+                var refreshesLocalMasterSupplier = targetSupplierCodes.Contains("200");
+                var localRowsForStats = shouldRefreshAllSuppliers
+                    ? resolvedRows
+                    : resolvedRows.Where(x => targetSupplierCodes.Contains(x.LocalSupplierCode)).ToList();
+                var chinaRowsForStats = resolvedRows
+                    .Where(x =>
+                        x.LocalSupplierCode == "200"
+                        && !string.IsNullOrEmpty(x.ChinaSupplierCode)
+                        && (
+                            shouldRefreshAllSuppliers
+                            || refreshesLocalMasterSupplier
+                            || targetSupplierCodes.Contains(x.ChinaSupplierCode)
+                        )
+                    )
+                    .ToList();
+
+                // 1. 本地供应商聚合：局部刷新国内子供应商时不重写本地 200 总计。
+                var localStats = localRowsForStats
                     .GroupBy(x => new { x.Date, x.LocalSupplierCode })
                     .Select(g => new SupplierSalesStatistic
                     {
                         Date = g.Key.Date,
                         SupplierCode = g.Key.LocalSupplierCode,
                         IsDomestic = false,
-                        TotalAmount = g.Sum(x => x.TotalAmount) ?? 0m,
+                        TotalAmount = g.Sum(x => x.TotalAmount),
                         TotalQuantity = (int)g.Sum(x => x.Quantity),
-                        StoreCount = g.Select(x => x.BranchCode).Distinct().Count(),
-                        OrderCount = g.Select(x => x.OrderGuid).Distinct().Count(),
+                        StoreCount = g.Select(x => x.BranchCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct()
+                            .Count(),
+                        OrderCount = g.Select(x => x.OrderGuid)
+                            .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                            .Distinct()
+                            .Count(),
                         UpdateTime = DateTime.Now,
                     })
                     .ToList();
@@ -1176,20 +1273,23 @@ namespace BlazorApp.Api.Services
                 // 这些记录如果包含 ChinaSupplierCode，则按 ChinaSupplierCode 再统计一次
                 // 这样可以得到每个具体的国内供应商的销量数据
                 // 这些数据的 IsDomestic 标记为 true
-                var chinaStats = rawData
-                    .Where(x =>
-                        x.LocalSupplierCode == "200" && !string.IsNullOrEmpty(x.ChinaSupplierCode)
-                    )
+                var chinaStats = chinaRowsForStats
                     .GroupBy(x => new { x.Date, x.ChinaSupplierCode })
                     .Select(g => new SupplierSalesStatistic
                     {
                         Date = g.Key.Date,
                         SupplierCode = g.Key.ChinaSupplierCode ?? string.Empty,
                         IsDomestic = true,
-                        TotalAmount = g.Sum(x => x.TotalAmount) ?? 0m,
+                        TotalAmount = g.Sum(x => x.TotalAmount),
                         TotalQuantity = (int)g.Sum(x => x.Quantity),
-                        StoreCount = g.Select(x => x.BranchCode).Distinct().Count(),
-                        OrderCount = g.Select(x => x.OrderGuid).Distinct().Count(),
+                        StoreCount = g.Select(x => x.BranchCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct()
+                            .Count(),
+                        OrderCount = g.Select(x => x.OrderGuid)
+                            .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                            .Distinct()
+                            .Count(),
                         UpdateTime = DateTime.Now,
                     })
                     .ToList();
@@ -1240,7 +1340,11 @@ namespace BlazorApp.Api.Services
                 // 为统计记录填充供应商名称
                 foreach (var stat in allStats)
                 {
-                    if (supplierNameDict.TryGetValue(stat.SupplierCode, out var name))
+                    if (stat.SupplierCode == UnknownSupplierCode)
+                    {
+                        stat.SupplierName = UnknownSupplierName;
+                    }
+                    else if (supplierNameDict.TryGetValue(stat.SupplierCode, out var name))
                     {
                         stat.SupplierName = name;
                     }
@@ -1250,18 +1354,60 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
-                var allSupplierCodes = allStats.Select(s => s.SupplierCode).Distinct().ToList();
-
                 await ExecuteTransactionSafelyAsync(
                     beginAsync: () => _context.Db.Ado.BeginTranAsync(),
                     workAsync: async () =>
                     {
-                        // 删除日期范围内的旧记录
-                        var deletedCount = await _context
-                            .Db.Deleteable<SupplierSalesStatistic>()
-                            .Where(s => s.Date >= targetStartDate && s.Date <= targetEndDate)
-                            .ExecuteCommandAsync();
+                        // 供应商统计按目标范围重建，避免旧空供应商或已无销售供应商残留。
+                        var deleteable = _context.Db.Deleteable<SupplierSalesStatistic>()
+                            .Where(s => s.Date >= targetStartDate && s.Date <= targetEndDate);
+                        if (targetSupplierCodes.Any())
+                        {
+                            var deleteSupplierCodes = new List<string>();
+                            if (refreshesLocalMasterSupplier)
+                            {
+                                var existingDomesticSupplierCodes = await _context
+                                    .Db.Queryable<SupplierSalesStatistic>()
+                                    .Where(s =>
+                                        s.Date >= targetStartDate
+                                        && s.Date <= targetEndDate
+                                        && s.IsDomestic == true
+                                    )
+                                    .Select(s => s.SupplierCode)
+                                    .Distinct()
+                                    .ToListAsync();
+                                deleteSupplierCodes.AddRange(existingDomesticSupplierCodes);
+                            }
+
+                            deleteSupplierCodes = deleteSupplierCodes
+                                .Concat(targetSupplierCodes)
+                                .Concat(allStats.Select(s => s.SupplierCode))
+                                .Where(code => !string.IsNullOrWhiteSpace(code))
+                                .Select(code => code.Trim())
+                                .Distinct()
+                                .ToList();
+                            var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
+                            deleteable = deleteable.Where(s =>
+                                deleteSupplierCodes.Contains(s.SupplierCode.Trim())
+                                || (
+                                    includesUnknownSupplier
+                                    && (s.SupplierCode == null || s.SupplierCode.Trim() == "")
+                                )
+                            );
+                        }
+
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
                         _logger.LogInformation("删除 {Count} 条供应商统计旧记录", deletedCount);
+
+                        if (!allStats.Any())
+                        {
+                            _logger.LogInformation(
+                                "没有找到供应商统计数据: {StartDate} 至 {EndDate}",
+                                targetStartDate.ToString("yyyy-MM-dd"),
+                                targetEndDate.ToString("yyyy-MM-dd")
+                            );
+                            return;
+                        }
 
                         // 批量插入新记录
                         _context
@@ -1590,6 +1736,14 @@ namespace BlazorApp.Api.Services
                         DetailLastUploadTime = d.LastUploadTime,
                     })
                     .ToListAsync();
+                var orderAmountMaps = await LoadOrderAmountMapsAsync(
+                    posmContext,
+                    targetDate,
+                    nextDate,
+                    rawRows,
+                    row => row.OrderGuid,
+                    row => row.ActualAmount
+                );
 
                 var deviceCodes = rawRows
                     .Where(x => string.IsNullOrWhiteSpace(x.BranchCode) && !string.IsNullOrWhiteSpace(x.DeviceCode))
@@ -1689,12 +1843,18 @@ namespace BlazorApp.Api.Services
                         x => x.Select(row => (decimal?)row.ImportPrice).FirstOrDefault(price => price.HasValue && price.Value > 0)
                     );
 
-                // 先统一解析分店，再把空供应商留在诊断里，避免污染商品统计主表。
+                // 先统一解析分店；空供应商保留诊断，同时主表归入 UNKNOWN，保证商品统计总额不漏数。
                 var resolvedRows = rawRows
                     .Select(x => new
                     {
                         Row = x,
                         ResolvedBranchCode = ResolveBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap),
+                        StatisticAmount = ResolveStatisticAmount(
+                            x.OrderGuid,
+                            x.ActualAmount,
+                            orderAmountMaps.PaymentAmounts,
+                            orderAmountMaps.DetailAmounts
+                        ),
                     })
                     .Where(x =>
                         !string.IsNullOrWhiteSpace(x.ResolvedBranchCode)
@@ -1708,7 +1868,7 @@ namespace BlazorApp.Api.Services
                     .ToList();
                 if (unmatchedSupplierRows.Any())
                 {
-                    diagnostics.UnmatchedSupplierAmount = unmatchedSupplierRows.Sum(x => x.Row.ActualAmount);
+                    diagnostics.UnmatchedSupplierAmount = unmatchedSupplierRows.Sum(x => x.StatisticAmount);
                     diagnostics.UnmatchedSupplierQuantity = unmatchedSupplierRows.Sum(x => x.Row.Quantity);
                     diagnostics.UnmatchedSupplierProductCount = unmatchedSupplierRows
                         .Select(x => x.Row.ProductCode)
@@ -1722,7 +1882,7 @@ namespace BlazorApp.Api.Services
                             group => new ProductStatisticDiagnosticRow
                             {
                                 BranchCode = group.Key,
-                                UnmatchedSupplierAmount = group.Sum(x => x.Row.ActualAmount),
+                                UnmatchedSupplierAmount = group.Sum(x => x.StatisticAmount),
                                 UnmatchedSupplierQuantity = group.Sum(x => x.Row.Quantity),
                                 UnmatchedSupplierProductCount = group
                                     .Select(x => x.Row.ProductCode)
@@ -1734,18 +1894,17 @@ namespace BlazorApp.Api.Services
                 }
 
                 var statisticsList = resolvedRows
-                    .Where(x => !string.IsNullOrWhiteSpace(x.Row.SupplierCode))
                     .GroupBy(x => new
                     {
                         x.Row.Date,
                         BranchCode = x.ResolvedBranchCode,
-                        SupplierCode = x.Row.SupplierCode!,
-                        ProductCode = x.Row.ProductCode!,
+                        SupplierCode = ResolveStatisticSupplierCode(x.Row.SupplierCode, null),
+                        ProductCode = x.Row.ProductCode!.Trim(),
                     })
                     .Select(group =>
                     {
                         var quantity = group.Sum(x => x.Row.Quantity);
-                        var totalAmount = group.Sum(x => x.Row.ActualAmount);
+                        var totalAmount = group.Sum(x => x.StatisticAmount);
                         var unitCost = ResolveUnitCost(
                             group.Key.BranchCode,
                             group.Key.SupplierCode,
@@ -1846,12 +2005,128 @@ namespace BlazorApp.Api.Services
         )
         {
             if (!string.IsNullOrWhiteSpace(branchCode))
-                return branchCode;
+                return branchCode.Trim();
 
-            if (!string.IsNullOrWhiteSpace(deviceCode) && deviceBranchMap.TryGetValue(deviceCode, out var mappedBranch))
-                return mappedBranch ?? string.Empty;
+            var normalizedDeviceCode = NormalizeCode(deviceCode);
+            if (!string.IsNullOrWhiteSpace(normalizedDeviceCode)
+                && deviceBranchMap.TryGetValue(normalizedDeviceCode, out var mappedBranch))
+                return mappedBranch?.Trim() ?? string.Empty;
 
             return string.Empty;
+        }
+
+        private static string NormalizeCode(string? code)
+        {
+            return code?.Trim() ?? string.Empty;
+        }
+
+        private static string ResolveStatisticSupplierCode(string? mappedSupplierCode, string? detailSupplierCode)
+        {
+            // 统计主键不允许空供应商：先用映射供应商，再回退 POSM 明细供应商，最后统一归入 UNKNOWN。
+            var supplierCode = NormalizeCode(mappedSupplierCode);
+            if (!string.IsNullOrWhiteSpace(supplierCode))
+                return supplierCode;
+
+            supplierCode = NormalizeCode(detailSupplierCode);
+            return !string.IsNullOrWhiteSpace(supplierCode) ? supplierCode : UnknownSupplierCode;
+        }
+
+        private static async Task<Dictionary<string, string>> LoadDeviceBranchMapAsync(
+            POSMSqlSugarContext posmContext,
+            IEnumerable<string?> deviceCodes
+        )
+        {
+            var targetDeviceCodes = deviceCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (!targetDeviceCodes.Any())
+                return new Dictionary<string, string>();
+
+            return (await posmContext.Db.Queryable<POSM_设备注册信息表>()
+                    .Where(device => targetDeviceCodes.Contains(device.系统设备编号))
+                    .Select(device => new { device.系统设备编号, device.分店代码 })
+                    .ToListAsync())
+                .Where(device => !string.IsNullOrWhiteSpace(device.系统设备编号))
+                .GroupBy(device => device.系统设备编号.Trim())
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(device => device.分店代码)
+                        .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code))?.Trim() ?? string.Empty
+                );
+        }
+
+        private static async Task<(
+            Dictionary<string, decimal> PaymentAmounts,
+            Dictionary<string, decimal> DetailAmounts
+        )> LoadOrderAmountMapsAsync<T>(
+            POSMSqlSugarContext posmContext,
+            DateTime startDate,
+            DateTime endExclusive,
+            IEnumerable<T> detailRows,
+            Func<T, string?> orderGuidSelector,
+            Func<T, decimal> detailAmountSelector
+        )
+        {
+            var paymentRows = await posmContext.Db.Queryable<PaymentDetail, SalesOrder>(
+                    (payment, order) => payment.OrderGuid == order.OrderGuid
+                )
+                .Where((payment, order) =>
+                    order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= startDate
+                    && order.OrderTime < endExclusive
+                )
+                .GroupBy((payment, order) => payment.OrderGuid)
+                .Select((payment, order) => new OrderAmountRow
+                {
+                    OrderGuid = payment.OrderGuid,
+                    Amount = SqlFunc.AggregateSum(payment.Amount) ?? 0m,
+                })
+                .ToListAsync();
+
+            // 明细合计直接复用当前统计已读取的 POSM 明细，避免对 sales_order_detail 再做一次大范围 group by。
+            var detailAmountRows = detailRows.Select(row => new OrderAmountRow
+            {
+                OrderGuid = orderGuidSelector(row),
+                Amount = detailAmountSelector(row),
+            });
+
+            return (BuildOrderAmountMap(paymentRows), BuildOrderAmountMap(detailAmountRows));
+        }
+
+        private static Dictionary<string, decimal> BuildOrderAmountMap(IEnumerable<OrderAmountRow> rows)
+        {
+            return rows
+                .Where(row => !string.IsNullOrWhiteSpace(row.OrderGuid))
+                .GroupBy(row => row.OrderGuid!.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Sum(row => row.Amount),
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
+
+        private static decimal ResolveStatisticAmount(
+            string? orderGuid,
+            decimal detailAmount,
+            Dictionary<string, decimal> paymentAmounts,
+            Dictionary<string, decimal> detailAmounts
+        )
+        {
+            var key = NormalizeCode(orderGuid);
+            if (string.IsNullOrWhiteSpace(key)
+                || !paymentAmounts.TryGetValue(key, out var paymentAmount)
+                || !detailAmounts.TryGetValue(key, out var detailTotal)
+                || detailTotal == 0m)
+                // 无支付记录时必须按支付口径计 0，不能静默回退明细金额掩盖对账异常。
+                return 0m;
+
+            // 统计金额按订单支付金额分摊，保证供应商/商品类汇总能回到分店支付总账。
+            return paymentAmount * detailAmount / detailTotal;
         }
 
         private async Task<List<StoreSalesStatistic>> BuildStoreStatisticsAsync(
@@ -2048,6 +2323,15 @@ namespace BlazorApp.Api.Services
         private static List<string> NormalizeBranchCodes(List<string>? branchCodes)
         {
             return branchCodes?
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList() ?? new List<string>();
+        }
+
+        private static List<string> NormalizeSupplierCodes(List<string>? supplierCodes)
+        {
+            return supplierCodes?
                 .Where(code => !string.IsNullOrWhiteSpace(code))
                 .Select(code => code.Trim())
                 .Distinct(StringComparer.Ordinal)
@@ -2653,7 +2937,8 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var isSingleDate = startDate == endDate;
+                var endExclusive = endDate.AddDays(1);
+                var targetSupplierCodes = NormalizeSupplierCodes(supplierCodes);
 
                 logger.LogInformation(
                     "更新供应商统计数据: {StartDate} 至 {EndDate}, Suppliers: {Suppliers}",
@@ -2673,27 +2958,29 @@ namespace BlazorApp.Api.Services
                         o.Status != null && (o.Status == 1 || o.Status == 4) && o.OrderTime != null
                     );
 
-                // 设置日期过滤条件
-                if (isSingleDate)
-                {
-                    query = query.Where(o => o.OrderTime!.Value.Date == startDate);
-                }
-                else
-                {
-                    query = query.Where(o =>
-                        o.OrderTime!.Value.Date >= startDate && o.OrderTime!.Value.Date <= endDate
-                    );
-                }
+                // 使用半开区间过滤，避免不同数据库对 DateTime.Date 的翻译差异。
+                query = query.Where(o =>
+                    o.OrderTime >= startDate
+                    && o.OrderTime < endExclusive
+                );
 
                 // 设置供应商代码过滤条件
-                if (supplierCodes != null && supplierCodes.Any())
+                if (targetSupplierCodes.Any())
                 {
+                    var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
                     query = query.Where(
                         (o, d, m) =>
                             (m.LocalSupplierCode != null
-                                && supplierCodes.Contains(m.LocalSupplierCode))
+                                && targetSupplierCodes.Contains(m.LocalSupplierCode.Trim()))
                             || (m.ChinaSupplierCode != null
-                                && supplierCodes.Contains(m.ChinaSupplierCode))
+                                && targetSupplierCodes.Contains(m.ChinaSupplierCode.Trim()))
+                            || (d.SupplierCode != null
+                                && targetSupplierCodes.Contains(d.SupplierCode.Trim()))
+                            || (
+                                includesUnknownSupplier
+                                && (m.LocalSupplierCode == null || m.LocalSupplierCode.Trim() == "")
+                                && (d.SupplierCode == null || d.SupplierCode.Trim() == "")
+                            )
                     );
                 }
 
@@ -2705,6 +2992,7 @@ namespace BlazorApp.Api.Services
                             {
                                 Date = o.OrderTime!.Value.Date,
                                 BranchCode = o.BranchCode,
+                                DetailSupplierCode = d.SupplierCode,
                                 LocalSupplierCode = m.LocalSupplierCode,
                                 ChinaSupplierCode = m.ChinaSupplierCode,
                                 TotalAmount = d.ActualAmount,
@@ -2713,39 +3001,93 @@ namespace BlazorApp.Api.Services
                             }
                     )
                     .ToListAsync();
+                var orderAmountMaps = await LoadOrderAmountMapsAsync(
+                    posmContext,
+                    startDate,
+                    endExclusive,
+                    rawData,
+                    row => row.OrderGuid,
+                    row => row.TotalAmount ?? 0m
+                );
 
-                // 本地供应商聚合
-                var localStats = rawData
-                    .Where(x => !string.IsNullOrEmpty(x.LocalSupplierCode))
+                var resolvedRows = rawData
+                    .Select(x => new
+                    {
+                        x.Date,
+                        BranchCode = NormalizeCode(x.BranchCode),
+                        LocalSupplierCode = ResolveStatisticSupplierCode(
+                            x.LocalSupplierCode,
+                            x.DetailSupplierCode
+                        ),
+                        ChinaSupplierCode = NormalizeCode(x.ChinaSupplierCode),
+                        TotalAmount = ResolveStatisticAmount(
+                            x.OrderGuid,
+                            x.TotalAmount ?? 0m,
+                            orderAmountMaps.PaymentAmounts,
+                            orderAmountMaps.DetailAmounts
+                        ),
+                        x.Quantity,
+                        x.OrderGuid,
+                    })
+                    .ToList();
+
+                var shouldRefreshAllSuppliers = !targetSupplierCodes.Any();
+                var refreshesLocalMasterSupplier = targetSupplierCodes.Contains("200");
+                var localRowsForStats = shouldRefreshAllSuppliers
+                    ? resolvedRows
+                    : resolvedRows.Where(x => targetSupplierCodes.Contains(x.LocalSupplierCode)).ToList();
+                var chinaRowsForStats = resolvedRows
+                    .Where(x =>
+                        x.LocalSupplierCode == "200"
+                        && !string.IsNullOrEmpty(x.ChinaSupplierCode)
+                        && (
+                            shouldRefreshAllSuppliers
+                            || refreshesLocalMasterSupplier
+                            || targetSupplierCodes.Contains(x.ChinaSupplierCode)
+                        )
+                    )
+                    .ToList();
+
+                // 本地供应商聚合：局部刷新国内子供应商时不重写本地 200 总计。
+                var localStats = localRowsForStats
                     .GroupBy(x => new { x.Date, x.LocalSupplierCode })
                     .Select(g => new SupplierSalesStatistic
                     {
                         Date = g.Key.Date,
                         SupplierCode = g.Key.LocalSupplierCode,
                         IsDomestic = false,
-                        TotalAmount = g.Sum(x => x.TotalAmount) ?? 0m,
+                        TotalAmount = g.Sum(x => x.TotalAmount),
                         TotalQuantity = (int)g.Sum(x => x.Quantity),
-                        StoreCount = g.Select(x => x.BranchCode).Distinct().Count(),
-                        OrderCount = g.Select(x => x.OrderGuid).Distinct().Count(),
+                        StoreCount = g.Select(x => x.BranchCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct()
+                            .Count(),
+                        OrderCount = g.Select(x => x.OrderGuid)
+                            .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                            .Distinct()
+                            .Count(),
                         UpdateTime = DateTime.Now,
                     })
                     .ToList();
 
                 // 国内供应商聚合
-                var chinaStats = rawData
-                    .Where(x =>
-                        x.LocalSupplierCode == "200" && !string.IsNullOrEmpty(x.ChinaSupplierCode)
-                    )
+                var chinaStats = chinaRowsForStats
                     .GroupBy(x => new { x.Date, x.ChinaSupplierCode })
                     .Select(g => new SupplierSalesStatistic
                     {
                         Date = g.Key.Date,
                         SupplierCode = g.Key.ChinaSupplierCode!,
                         IsDomestic = true,
-                        TotalAmount = g.Sum(x => x.TotalAmount) ?? 0m,
+                        TotalAmount = g.Sum(x => x.TotalAmount),
                         TotalQuantity = (int)g.Sum(x => x.Quantity),
-                        StoreCount = g.Select(x => x.BranchCode).Distinct().Count(),
-                        OrderCount = g.Select(x => x.OrderGuid).Distinct().Count(),
+                        StoreCount = g.Select(x => x.BranchCode)
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct()
+                            .Count(),
+                        OrderCount = g.Select(x => x.OrderGuid)
+                            .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                            .Distinct()
+                            .Count(),
                         UpdateTime = DateTime.Now,
                     })
                     .ToList();
@@ -2795,7 +3137,11 @@ namespace BlazorApp.Api.Services
                 // 为统计记录填充供应商名称
                 foreach (var stat in allStats)
                 {
-                    if (supplierNameDict.TryGetValue(stat.SupplierCode, out var name))
+                    if (stat.SupplierCode == UnknownSupplierCode)
+                    {
+                        stat.SupplierName = UnknownSupplierName;
+                    }
+                    else if (supplierNameDict.TryGetValue(stat.SupplierCode, out var name))
                     {
                         stat.SupplierName = name;
                     }
@@ -2805,70 +3151,72 @@ namespace BlazorApp.Api.Services
                     }
                 }
 
-                var allSupplierCodes = allStats.Select(s => s.SupplierCode).Distinct().ToList();
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 供应商统计按目标范围重建，避免旧空供应商或已无销售供应商残留。
+                        var deleteable = context.Db.Deleteable<SupplierSalesStatistic>()
+                            .Where(s => s.Date >= startDate && s.Date <= endDate);
+                        if (targetSupplierCodes.Any())
+                        {
+                            var deleteSupplierCodes = new List<string>();
+                            if (refreshesLocalMasterSupplier)
+                            {
+                                var existingDomesticSupplierCodes = await context
+                                    .Db.Queryable<SupplierSalesStatistic>()
+                                    .Where(s =>
+                                        s.Date >= startDate
+                                        && s.Date <= endDate
+                                        && s.IsDomestic == true
+                                    )
+                                    .Select(s => s.SupplierCode)
+                                    .Distinct()
+                                    .ToListAsync();
+                                deleteSupplierCodes.AddRange(existingDomesticSupplierCodes);
+                            }
 
-                // 查询数据库中已存在的记录
-                var existingRecords = await context
-                    .Db.Queryable<SupplierSalesStatistic>()
-                    .Where(s =>
-                        s.Date >= startDate
-                        && s.Date <= endDate
-                        && allSupplierCodes.Contains(s.SupplierCode)
-                    )
-                    .ToListAsync();
+                            deleteSupplierCodes = deleteSupplierCodes
+                                .Concat(targetSupplierCodes)
+                                .Concat(allStats.Select(s => s.SupplierCode))
+                                .Where(code => !string.IsNullOrWhiteSpace(code))
+                                .Select(code => code.Trim())
+                                .Distinct()
+                                .ToList();
+                            var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
+                            deleteable = deleteable.Where(s =>
+                                deleteSupplierCodes.Contains(s.SupplierCode.Trim())
+                                || (
+                                    includesUnknownSupplier
+                                    && (s.SupplierCode == null || s.SupplierCode.Trim() == "")
+                                )
+                            );
+                        }
 
-                // 构建已存在记录的字典，用于快速查找
-                var existingDict = existingRecords.ToDictionary(
-                    s => $"{s.Date}_{s.SupplierCode}",
-                    s => s
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
+                        logger.LogInformation("删除 {Count} 条供应商统计旧记录", deletedCount);
+
+                        if (!allStats.Any())
+                        {
+                            logger.LogInformation(
+                                "没有找到供应商统计数据: {StartDate} 至 {EndDate}",
+                                startDate.ToString("yyyy-MM-dd"),
+                                endDate.ToString("yyyy-MM-dd")
+                            );
+                            return;
+                        }
+
+                        context
+                            .Db.Fastest<SupplierSalesStatistic>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(allStats);
+                        logger.LogInformation("批量插入 {Count} 条供应商统计记录", allStats.Count);
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "供应商统计数据更新"
                 );
-
-                var toInsert = new List<SupplierSalesStatistic>();
-                var toUpdate = new List<SupplierSalesStatistic>();
-
-                // 遍历统计数据，区分插入和更新操作
-                foreach (var stat in allStats)
-                {
-                    var key = $"{stat.Date}_{stat.SupplierCode}";
-
-                    if (existingDict.TryGetValue(key, out var existing))
-                    {
-                        // 记录已存在，更新字段值
-                        existing.SupplierName = stat.SupplierName;
-                        existing.IsDomestic = stat.IsDomestic;
-                        existing.TotalAmount = stat.TotalAmount;
-                        existing.TotalQuantity = stat.TotalQuantity;
-                        existing.StoreCount = stat.StoreCount;
-                        existing.OrderCount = stat.OrderCount;
-                        existing.UpdateTime = stat.UpdateTime;
-                        toUpdate.Add(existing);
-                    }
-                    else
-                    {
-                        // 新记录，加入插入列表
-                        toInsert.Add(stat);
-                    }
-                }
-
-                // 批量插入新记录
-                if (toInsert.Any())
-                {
-                    context
-                        .Db.Fastest<SupplierSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(toInsert);
-                    logger.LogInformation("批量插入 {Count} 条供应商统计记录", toInsert.Count);
-                }
-
-                // 批量更新已存在记录
-                if (toUpdate.Any())
-                {
-                    context
-                        .Db.Fastest<SupplierSalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkUpdate(toUpdate);
-                    logger.LogInformation("批量更新 {Count} 条供应商统计记录", toUpdate.Count);
-                }
 
                 logger.LogInformation(
                     "供应商统计数据更新完成: {StartDate} 至 {EndDate}, 总记录: {Total}",
@@ -3113,7 +3461,78 @@ namespace BlazorApp.Api.Services
                         IsDomestic = group.Any(x => x.IsDomestic == true),
                         TotalAmount = group.Sum(x => x.TotalAmount),
                         TotalQuantity = group.Sum(x => x.TotalQuantity),
-                        OrderCount = orderCount == 0 ? group.Count() : orderCount,
+                        OrderCount = orderCount,
+                        UpdateTime = updateTime,
+                    };
+                })
+                .ToList();
+        }
+
+        private static List<AustralianSupplierStoreSalesDetail> BuildAustralianSupplierStoreSalesDetails(
+            IEnumerable<StoreSupplierSourceRow> storeSupplierData,
+            IReadOnlyDictionary<string, HBLocalSupplier> localSupplierDict,
+            DateTime updateTime
+        )
+        {
+            var resolvedRows = new List<StoreSupplierResolvedRow>();
+
+            foreach (var data in storeSupplierData)
+            {
+                // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
+                if (string.IsNullOrWhiteSpace(data.BranchCode))
+                    continue;
+
+                var branchCode = data.BranchCode.Trim();
+                var mappedLocalSupplierCode = data.LocalSupplierCode?.Trim() ?? string.Empty;
+                var detailSupplierCode = data.DetailSupplierCode?.Trim() ?? string.Empty;
+                var supplierCode = !string.IsNullOrWhiteSpace(mappedLocalSupplierCode)
+                    ? mappedLocalSupplierCode
+                    : detailSupplierCode;
+                var supplierName = supplierCode;
+
+                // 澳洲供应商统计只认本地供应商编码；映射为空时回退明细供应商，仍为空才归入 UNKNOWN。
+                if (string.IsNullOrWhiteSpace(supplierCode))
+                {
+                    supplierCode = UnknownSupplierCode;
+                    supplierName = UnknownSupplierName;
+                }
+                else if (localSupplierDict.TryGetValue(supplierCode, out var localSupplier))
+                {
+                    supplierName = localSupplier.Name ?? supplierCode;
+                }
+
+                resolvedRows.Add(new StoreSupplierResolvedRow
+                {
+                    Date = data.Date.Date,
+                    BranchCode = branchCode,
+                    SupplierCode = supplierCode,
+                    SupplierName = supplierName,
+                    OrderGuid = data.OrderGuid,
+                    TotalAmount = data.ActualAmount,
+                    TotalQuantity = (int)data.Quantity,
+                });
+            }
+
+            // 最终供应商编码可能由映射、明细或 UNKNOWN 得到，写入前必须按真实主键二次聚合。
+            return resolvedRows
+                .GroupBy(stat => new { stat.Date, stat.BranchCode, stat.SupplierCode })
+                .Select(group =>
+                {
+                    var orderCount = group
+                        .Select(x => x.OrderGuid)
+                        .Where(orderGuid => !string.IsNullOrWhiteSpace(orderGuid))
+                        .Distinct()
+                        .Count();
+                    return new AustralianSupplierStoreSalesDetail
+                    {
+                        Date = group.Key.Date,
+                        BranchCode = group.Key.BranchCode,
+                        SupplierCode = group.Key.SupplierCode,
+                        SupplierName = group.Select(x => x.SupplierName)
+                            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? group.Key.SupplierCode,
+                        TotalAmount = group.Sum(x => x.TotalAmount),
+                        TotalQuantity = group.Sum(x => x.TotalQuantity),
+                        OrderCount = orderCount,
                         UpdateTime = updateTime,
                     };
                 })
@@ -3137,6 +3556,8 @@ namespace BlazorApp.Api.Services
             {
                 var targetDate = (date ?? DateTime.Now.Date).Date;
                 var nextDate = targetDate.AddDays(1);
+                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
+                var targetSupplierCodes = NormalizeSupplierCodes(supplierCodes);
 
                 _logger.LogInformation(
                     "开始更新门店供应商统计数据: {Date}, 分店: {Branches}, 供应商: {Suppliers}",
@@ -3161,32 +3582,33 @@ namespace BlazorApp.Api.Services
                     );
 
                 // 设置分店过滤条件
-                if (branchCodes != null && branchCodes.Any())
+                if (targetBranchCodes.Any())
                 {
                     query = query.Where(o =>
-                        o.BranchCode != null && branchCodes.Contains(o.BranchCode)
+                        (o.BranchCode != null && targetBranchCodes.Contains(o.BranchCode.Trim()))
+                        || o.BranchCode == null
+                        || o.BranchCode.Trim() == ""
                     );
                 }
 
                 // 设置供应商过滤条件
-                if (supplierCodes != null && supplierCodes.Any())
+                if (targetSupplierCodes.Any())
                 {
-                    var includesUnknownSupplier = supplierCodes.Contains(UnknownSupplierCode);
+                    var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
                     query = query.Where(
                         (o, d, m) =>
                             (
                                 m.LocalSupplierCode != null
-                                && supplierCodes.Contains(m.LocalSupplierCode)
+                                && targetSupplierCodes.Contains(m.LocalSupplierCode.Trim())
                             )
                             || (
                                 m.ChinaSupplierCode != null
-                                && supplierCodes.Contains(m.ChinaSupplierCode)
+                                && targetSupplierCodes.Contains(m.ChinaSupplierCode.Trim())
                             )
-                            || (d.SupplierCode != null && supplierCodes.Contains(d.SupplierCode))
+                            || (d.SupplierCode != null && targetSupplierCodes.Contains(d.SupplierCode.Trim()))
                             || (
                                 includesUnknownSupplier
                                 && (m.LocalSupplierCode == null || m.LocalSupplierCode.Trim() == "")
-                                && (m.ChinaSupplierCode == null || m.ChinaSupplierCode.Trim() == "")
                                 && (d.SupplierCode == null || d.SupplierCode.Trim() == "")
                             )
                     );
@@ -3199,7 +3621,8 @@ namespace BlazorApp.Api.Services
                             new
                             {
                                 Date = o.OrderTime!.Value.Date,
-                                BranchCode = o.BranchCode!,
+                                BranchCode = o.BranchCode,
+                                DeviceCode = o.DeviceCode,
                                 OrderGuid = o.OrderGuid,
                                 DetailSupplierCode = d.SupplierCode,
                                 LocalSupplierCode = m.LocalSupplierCode,
@@ -3209,18 +3632,42 @@ namespace BlazorApp.Api.Services
                             }
                     )
                     .ToListAsync();
+                var orderAmountMaps = await LoadOrderAmountMapsAsync(
+                    _posmContext,
+                    targetDate,
+                    nextDate,
+                    rawStoreSupplierData,
+                    row => row.OrderGuid,
+                    row => row.ActualAmount
+                );
+                var deviceBranchMap = await LoadDeviceBranchMapAsync(
+                    _posmContext,
+                    rawStoreSupplierData
+                        .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
+                        .Select(row => row.DeviceCode)
+                );
                 var storeSupplierData = rawStoreSupplierData
                     .Select(row => new StoreSupplierSourceRow
                     {
                         Date = row.Date,
-                        BranchCode = row.BranchCode,
+                        BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                        DeviceCode = row.DeviceCode,
                         OrderGuid = row.OrderGuid,
                         DetailSupplierCode = row.DetailSupplierCode,
                         LocalSupplierCode = row.LocalSupplierCode,
                         ChinaSupplierCode = row.ChinaSupplierCode,
-                        ActualAmount = row.ActualAmount,
+                        ActualAmount = ResolveStatisticAmount(
+                            row.OrderGuid,
+                            row.ActualAmount,
+                            orderAmountMaps.PaymentAmounts,
+                            orderAmountMaps.DetailAmounts
+                        ),
                         Quantity = row.Quantity,
                     })
+                    .Where(row =>
+                        !targetBranchCodes.Any()
+                        || targetBranchCodes.Contains(row.BranchCode ?? string.Empty)
+                    )
                     .ToList();
 
                 // 获取所有本地供应商代码
@@ -3294,23 +3741,23 @@ namespace BlazorApp.Api.Services
                         var deleteable = _context
                             .Db.Deleteable<StoreSupplierSalesDetail>()
                             .Where(s => s.Date == targetDate);
-                        if (branchCodes != null && branchCodes.Any())
+                        if (targetBranchCodes.Any())
                         {
-                            deleteable = deleteable.Where(s => branchCodes.Contains(s.BranchCode));
+                            deleteable = deleteable.Where(s => targetBranchCodes.Contains(s.BranchCode));
                         }
-                        if (supplierCodes != null && supplierCodes.Any())
+                        if (targetSupplierCodes.Any())
                         {
                             // 国内供应商和 UNKNOWN 会在构建阶段改写成最终编码，删除时必须覆盖最终编码。
                             var deleteSupplierCodes = new List<string>();
-                            if (supplierCodes.Contains("200"))
+                            if (targetSupplierCodes.Contains("200"))
                             {
                                 var existingDomesticQuery = _context
                                     .Db.Queryable<StoreSupplierSalesDetail>()
                                     .Where(s => s.Date == targetDate && s.IsDomestic == true);
-                                if (branchCodes != null && branchCodes.Any())
+                                if (targetBranchCodes.Any())
                                 {
                                     existingDomesticQuery = existingDomesticQuery.Where(s =>
-                                        branchCodes.Contains(s.BranchCode)
+                                        targetBranchCodes.Contains(s.BranchCode)
                                     );
                                 }
 
@@ -3322,17 +3769,31 @@ namespace BlazorApp.Api.Services
                             }
 
                             deleteSupplierCodes = deleteSupplierCodes
-                                .Concat(supplierCodes)
+                                .Concat(targetSupplierCodes)
                                 .Concat(statisticsList.Select(s => s.SupplierCode))
                                 .Where(code => !string.IsNullOrWhiteSpace(code))
+                                .Select(code => code.Trim())
                                 .Distinct()
                                 .ToList();
-                            deleteable = deleteable.Where(s => deleteSupplierCodes.Contains(s.SupplierCode));
+                            var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
+                            deleteable = deleteable.Where(s =>
+                                deleteSupplierCodes.Contains(s.SupplierCode.Trim())
+                                || (
+                                    includesUnknownSupplier
+                                    && (s.SupplierCode == null || s.SupplierCode.Trim() == "")
+                                )
+                            );
                         }
 
                         var deletedCount = await deleteable
                             .ExecuteCommandAsync();
                         _logger.LogInformation("删除 {Count} 条门店供应商统计旧记录", deletedCount);
+
+                        if (!statisticsList.Any())
+                        {
+                            _logger.LogInformation("没有找到门店供应商统计数据: {Date}", targetDate);
+                            return;
+                        }
 
                         // 批量插入新记录
                         _context
@@ -4016,49 +4477,10 @@ namespace BlazorApp.Api.Services
 
                 logger.LogInformation("开始更新每日统计数据: {Date}", date);
 
-                // 从POSM数据库查询并聚合当日销售数据，按支付明细统计营业额
-                var summary = await posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime.Value.Date == date
-                    )
-                    .GroupBy((pd, so) => new { Date = so.OrderTime!.Value.Date })
-                    .Select(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                                TotalQuantity = SqlFunc.AggregateSum(so.ItemCount) ?? 0,
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                SkuCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .FirstAsync();
+                var statistic = await BuildDailySalesStatisticAsync(posmContext, date, DateTime.Now);
 
-                if (summary != null)
+                if (statistic != null)
                 {
-                    // 构建统计数据对象
-                    var statistic = new DailySalesStatistic
-                    {
-                        Date = summary.Date,
-                        TotalAmount = summary.TotalAmount,
-                        TotalQuantity = summary.TotalQuantity,
-                        OrderCount = summary.OrderCount,
-                        SkuCount = summary.SkuCount,
-                        CustomerCount = summary.CustomerCount,
-                        AverageOrderValue =
-                            summary.OrderCount > 0 ? summary.TotalAmount / summary.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-
                     // 查询是否已存在该日期的统计数据
                     var existing = await context
                         .Db.Queryable<DailySalesStatistic>()
@@ -4512,6 +4934,8 @@ namespace BlazorApp.Api.Services
             {
                 var targetDate = (date ?? DateTime.Now.Date).Date;
                 var nextDate = targetDate.AddDays(1);
+                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
+                var targetSupplierCodes = NormalizeSupplierCodes(supplierCodes);
 
                 logger.LogInformation(
                     "开始更新门店供应商统计数据: {Date}, 分店: {Branches}, 供应商: {Suppliers}",
@@ -4536,32 +4960,33 @@ namespace BlazorApp.Api.Services
                     );
 
                 // 设置分店过滤条件
-                if (branchCodes != null && branchCodes.Any())
+                if (targetBranchCodes.Any())
                 {
                     query = query.Where(o =>
-                        o.BranchCode != null && branchCodes.Contains(o.BranchCode)
+                        (o.BranchCode != null && targetBranchCodes.Contains(o.BranchCode.Trim()))
+                        || o.BranchCode == null
+                        || o.BranchCode.Trim() == ""
                     );
                 }
 
                 // 设置供应商过滤条件
-                if (supplierCodes != null && supplierCodes.Any())
+                if (targetSupplierCodes.Any())
                 {
-                    var includesUnknownSupplier = supplierCodes.Contains(UnknownSupplierCode);
+                    var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
                     query = query.Where(
                         (o, d, m) =>
                             (
                                 m.LocalSupplierCode != null
-                                && supplierCodes.Contains(m.LocalSupplierCode)
+                                && targetSupplierCodes.Contains(m.LocalSupplierCode.Trim())
                             )
                             || (
                                 m.ChinaSupplierCode != null
-                                && supplierCodes.Contains(m.ChinaSupplierCode)
+                                && targetSupplierCodes.Contains(m.ChinaSupplierCode.Trim())
                             )
-                            || (d.SupplierCode != null && supplierCodes.Contains(d.SupplierCode))
+                            || (d.SupplierCode != null && targetSupplierCodes.Contains(d.SupplierCode.Trim()))
                             || (
                                 includesUnknownSupplier
                                 && (m.LocalSupplierCode == null || m.LocalSupplierCode.Trim() == "")
-                                && (m.ChinaSupplierCode == null || m.ChinaSupplierCode.Trim() == "")
                                 && (d.SupplierCode == null || d.SupplierCode.Trim() == "")
                             )
                     );
@@ -4574,7 +4999,8 @@ namespace BlazorApp.Api.Services
                             new
                             {
                                 Date = o.OrderTime!.Value.Date,
-                                BranchCode = o.BranchCode!,
+                                BranchCode = o.BranchCode,
+                                DeviceCode = o.DeviceCode,
                                 OrderGuid = o.OrderGuid,
                                 DetailSupplierCode = d.SupplierCode,
                                 LocalSupplierCode = m.LocalSupplierCode,
@@ -4584,18 +5010,42 @@ namespace BlazorApp.Api.Services
                             }
                     )
                     .ToListAsync();
+                var orderAmountMaps = await LoadOrderAmountMapsAsync(
+                    posmContext,
+                    targetDate,
+                    nextDate,
+                    rawStoreSupplierData,
+                    row => row.OrderGuid,
+                    row => row.ActualAmount
+                );
+                var deviceBranchMap = await LoadDeviceBranchMapAsync(
+                    posmContext,
+                    rawStoreSupplierData
+                        .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
+                        .Select(row => row.DeviceCode)
+                );
                 var storeSupplierData = rawStoreSupplierData
                     .Select(row => new StoreSupplierSourceRow
                     {
                         Date = row.Date,
-                        BranchCode = row.BranchCode,
+                        BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                        DeviceCode = row.DeviceCode,
                         OrderGuid = row.OrderGuid,
                         DetailSupplierCode = row.DetailSupplierCode,
                         LocalSupplierCode = row.LocalSupplierCode,
                         ChinaSupplierCode = row.ChinaSupplierCode,
-                        ActualAmount = row.ActualAmount,
+                        ActualAmount = ResolveStatisticAmount(
+                            row.OrderGuid,
+                            row.ActualAmount,
+                            orderAmountMaps.PaymentAmounts,
+                            orderAmountMaps.DetailAmounts
+                        ),
                         Quantity = row.Quantity,
                     })
+                    .Where(row =>
+                        !targetBranchCodes.Any()
+                        || targetBranchCodes.Contains(row.BranchCode ?? string.Empty)
+                    )
                     .ToList();
 
                 // 获取所有本地供应商代码
@@ -4661,72 +5111,75 @@ namespace BlazorApp.Api.Services
                     DateTime.Now
                 );
 
-                var allBranchCodes = statisticsList.Select(s => s.BranchCode).Distinct().ToList();
-                var allSupplierCodes = statisticsList
-                    .Select(s => s.SupplierCode)
-                    .Distinct()
-                    .ToList();
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 并发路径也按本次影响范围重建，避免旧供应商统计残留。
+                        var deleteable = context.Db.Deleteable<StoreSupplierSalesDetail>()
+                            .Where(s => s.Date == targetDate);
+                        if (targetBranchCodes.Any())
+                        {
+                            deleteable = deleteable.Where(s => targetBranchCodes.Contains(s.BranchCode));
+                        }
+                        if (targetSupplierCodes.Any())
+                        {
+                            var deleteSupplierCodes = new List<string>();
+                            if (targetSupplierCodes.Contains("200"))
+                            {
+                                var existingDomesticQuery = context.Db.Queryable<StoreSupplierSalesDetail>()
+                                    .Where(s => s.Date == targetDate && s.IsDomestic == true);
+                                if (targetBranchCodes.Any())
+                                {
+                                    existingDomesticQuery = existingDomesticQuery.Where(s =>
+                                        targetBranchCodes.Contains(s.BranchCode)
+                                    );
+                                }
 
-                // 查询数据库中已存在的记录
-                var existingRecords = await context
-                    .Db.Queryable<StoreSupplierSalesDetail>()
-                    .Where(s =>
-                        s.Date == targetDate
-                        && allBranchCodes.Contains(s.BranchCode)
-                        && allSupplierCodes.Contains(s.SupplierCode)
-                    )
-                    .ToListAsync();
+                                var existingDomesticSupplierCodes = await existingDomesticQuery
+                                    .Select(s => s.SupplierCode)
+                                    .Distinct()
+                                    .ToListAsync();
+                                deleteSupplierCodes.AddRange(existingDomesticSupplierCodes);
+                            }
 
-                var existingDict = existingRecords.ToDictionary(
-                    s => $"{s.Date}_{s.BranchCode}_{s.SupplierCode}",
-                    s => s
+                            deleteSupplierCodes = deleteSupplierCodes
+                                .Concat(targetSupplierCodes)
+                                .Concat(statisticsList.Select(s => s.SupplierCode))
+                                .Where(code => !string.IsNullOrWhiteSpace(code))
+                                .Select(code => code.Trim())
+                                .Distinct()
+                                .ToList();
+                            var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
+                            deleteable = deleteable.Where(s =>
+                                deleteSupplierCodes.Contains(s.SupplierCode.Trim())
+                                || (
+                                    includesUnknownSupplier
+                                    && (s.SupplierCode == null || s.SupplierCode.Trim() == "")
+                                )
+                            );
+                        }
+
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
+                        logger.LogInformation("删除 {Count} 条门店供应商统计旧记录", deletedCount);
+
+                        if (!statisticsList.Any())
+                        {
+                            logger.LogInformation("没有找到门店供应商统计数据: {Date}", targetDate);
+                            return;
+                        }
+
+                        context
+                            .Db.Fastest<StoreSupplierSalesDetail>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                        logger.LogInformation("批量插入 {Count} 条门店供应商统计记录", statisticsList.Count);
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "门店供应商统计数据更新"
                 );
-
-                var toInsert = new List<StoreSupplierSalesDetail>();
-                var toUpdate = new List<StoreSupplierSalesDetail>();
-
-                // 遍历统计数据，区分插入和更新操作
-                foreach (var stat in statisticsList)
-                {
-                    var key = $"{stat.Date}_{stat.BranchCode}_{stat.SupplierCode}";
-
-                    if (existingDict.TryGetValue(key, out var existing))
-                    {
-                        // 更新已存在记录的字段值
-                        existing.SupplierName = stat.SupplierName;
-                        existing.IsDomestic = stat.IsDomestic;
-                        existing.TotalAmount = stat.TotalAmount;
-                        existing.TotalQuantity = stat.TotalQuantity;
-                        existing.OrderCount = stat.OrderCount;
-                        existing.UpdateTime = stat.UpdateTime;
-                        toUpdate.Add(existing);
-                    }
-                    else
-                    {
-                        // 新记录，加入插入列表
-                        toInsert.Add(stat);
-                    }
-                }
-
-                // 批量插入新记录
-                if (toInsert.Any())
-                {
-                    context
-                        .Db.Fastest<StoreSupplierSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(toInsert);
-                    logger.LogInformation("批量插入 {Count} 条门店供应商统计记录", toInsert.Count);
-                }
-
-                // 批量更新已存在记录
-                if (toUpdate.Any())
-                {
-                    context
-                        .Db.Fastest<StoreSupplierSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkUpdate(toUpdate);
-                    logger.LogInformation("批量更新 {Count} 条门店供应商统计记录", toUpdate.Count);
-                }
 
                 logger.LogInformation(
                     "门店供应商统计数据更新完成: {Date}, 总记录: {Total}",
@@ -4755,7 +5208,10 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var targetDate = date ?? DateTime.Now.Date;
+                var targetDate = (date ?? DateTime.Now.Date).Date;
+                var nextDate = targetDate.AddDays(1);
+                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
+                var targetSupplierCodes = NormalizeSupplierCodes(supplierCodes);
 
                 _logger.LogInformation(
                     "开始更新澳洲供应商门店统计数据: {Date}, 分店: {Branches}, 供应商: {Suppliers}",
@@ -4775,56 +5231,105 @@ namespace BlazorApp.Api.Services
                         o.Status != null
                         && (o.Status == 1 || o.Status == 4)
                         && o.OrderTime != null
-                        && o.OrderTime.Value.Date == targetDate
+                        && o.OrderTime >= targetDate
+                        && o.OrderTime < nextDate
                     );
 
                 // 设置分店过滤条件
-                if (branchCodes != null && branchCodes.Any())
+                if (targetBranchCodes.Any())
                 {
                     query = query.Where(o =>
-                        o.BranchCode != null && branchCodes.Contains(o.BranchCode)
+                        (o.BranchCode != null && targetBranchCodes.Contains(o.BranchCode.Trim()))
+                        || o.BranchCode == null
+                        || o.BranchCode.Trim() == ""
                     );
                 }
 
                 // 设置供应商过滤条件
-                if (supplierCodes != null && supplierCodes.Any())
+                if (targetSupplierCodes.Any())
                 {
+                    var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
                     query = query.Where(
                         (o, d, m) =>
-                            m.LocalSupplierCode != null
-                            && supplierCodes.Contains(m.LocalSupplierCode)
+                            (
+                                m.LocalSupplierCode != null
+                                && targetSupplierCodes.Contains(m.LocalSupplierCode.Trim())
+                            )
+                            || (
+                                d.SupplierCode != null
+                                && targetSupplierCodes.Contains(d.SupplierCode.Trim())
+                            )
+                            || (
+                                includesUnknownSupplier
+                                && (m.LocalSupplierCode == null || m.LocalSupplierCode.Trim() == "")
+                                && (d.SupplierCode == null || d.SupplierCode.Trim() == "")
+                            )
                     );
                 }
 
-                // 查询并聚合澳洲供应商门店销售数据
-                var storeSupplierData = await query
-                    .GroupBy(
-                        (o, d, m) =>
-                            new
-                            {
-                                Date = o.OrderTime!.Value.Date,
-                                BranchCode = o.BranchCode!,
-                                LocalSupplierCode = m.LocalSupplierCode,
-                            }
-                    )
+                // 查询销售明细后按最终供应商编码聚合，避免空映射在写表时形成重复主键。
+                var rawStoreSupplierData = await query
                     .Select(
                         (o, d, m) =>
                             new
                             {
                                 Date = o.OrderTime!.Value.Date,
-                                BranchCode = o.BranchCode!,
+                                BranchCode = o.BranchCode,
+                                DeviceCode = o.DeviceCode,
+                                OrderGuid = o.OrderGuid,
+                                DetailSupplierCode = d.SupplierCode,
                                 LocalSupplierCode = m.LocalSupplierCode,
-                                TotalAmount = SqlFunc.AggregateSum(d.ActualAmount) ?? 0m,
-                                TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0m),
-                                OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
+                                ActualAmount = d.ActualAmount ?? 0m,
+                                Quantity = d.Quantity ?? 0m,
                             }
                     )
                     .ToListAsync();
+                var (paymentAmounts, detailAmounts) = await LoadOrderAmountMapsAsync(
+                    _posmContext,
+                    targetDate,
+                    nextDate,
+                    rawStoreSupplierData,
+                    row => row.OrderGuid,
+                    row => row.ActualAmount
+                );
+                var deviceBranchMap = await LoadDeviceBranchMapAsync(
+                    _posmContext,
+                    rawStoreSupplierData
+                        .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
+                        .Select(row => row.DeviceCode)
+                );
+                var storeSupplierData = rawStoreSupplierData
+                    .Select(row => new StoreSupplierSourceRow
+                    {
+                        Date = row.Date,
+                        BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                        DeviceCode = row.DeviceCode,
+                        OrderGuid = row.OrderGuid,
+                        DetailSupplierCode = row.DetailSupplierCode,
+                        LocalSupplierCode = row.LocalSupplierCode,
+                        ActualAmount = ResolveStatisticAmount(
+                            row.OrderGuid,
+                            row.ActualAmount,
+                            paymentAmounts,
+                            detailAmounts
+                        ),
+                        Quantity = row.Quantity,
+                    })
+                    .Where(row =>
+                        !targetBranchCodes.Any()
+                        || targetBranchCodes.Contains(row.BranchCode ?? string.Empty)
+                    )
+                    .ToList();
 
                 // 获取所有本地供应商代码
                 var allLocalSupplierCodes = storeSupplierData
-                    .Where(d => !string.IsNullOrEmpty(d.LocalSupplierCode))
-                    .Select(d => d.LocalSupplierCode!)
+                    .Select(d =>
+                        !string.IsNullOrWhiteSpace(d.LocalSupplierCode)
+                            ? d.LocalSupplierCode!.Trim()
+                            : d.DetailSupplierCode?.Trim()
+                    )
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
                     .Distinct()
                     .ToList();
 
@@ -4843,68 +5348,61 @@ namespace BlazorApp.Api.Services
                     );
                 }
 
-                var statisticsList = new List<AustralianSupplierStoreSalesDetail>();
-
                 LogSkippedBranchCodeRows(
                     "澳洲供应商分店销售统计",
                     storeSupplierData,
                     data => data.BranchCode,
-                    data => data.TotalAmount,
-                    data => data.TotalQuantity
+                    data => data.ActualAmount,
+                    data => data.Quantity
                 );
 
-                // 构建每个澳洲供应商门店的统计记录
-                foreach (var data in storeSupplierData)
-                {
-                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
-                    if (string.IsNullOrWhiteSpace(data.BranchCode))
-                        continue;
-                    var branchCode = data.BranchCode;
-                    var localSupplierCode = data.LocalSupplierCode ?? string.Empty;
-
-                    var supplierCode = localSupplierCode;
-                    var supplierName = localSupplierCode;
-
-                    // 获取供应商名称
-                    if (localSupplierDict.TryGetValue(localSupplierCode, out var ls))
-                    {
-                        supplierName = ls.Name ?? localSupplierCode;
-                    }
-
-                    var statistic = new AustralianSupplierStoreSalesDetail
-                    {
-                        Date = data.Date,
-                        BranchCode = branchCode,
-                        SupplierCode = supplierCode,
-                        SupplierName = supplierName,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        UpdateTime = DateTime.Now,
-                    };
-
-                    statisticsList.Add(statistic);
-                }
-
-                // 如果没有数据则返回
-                if (!statisticsList.Any())
-                {
-                    _logger.LogInformation("没有找到澳洲供应商门店数据: {Date}", targetDate);
-                    return;
-                }
+                var statisticsList = BuildAustralianSupplierStoreSalesDetails(
+                    storeSupplierData,
+                    localSupplierDict,
+                    DateTime.Now
+                );
 
                 await ExecuteTransactionSafelyAsync(
                     beginAsync: () => _context.Db.Ado.BeginTranAsync(),
                     workAsync: async () =>
                     {
-                        // 按日期删除该日期的所有旧数据
-                        var deletedCount = await _context
+                        // 普通路径也按本次影响范围清理，避免局部供应商刷新误删同日其它供应商。
+                        var deleteable = _context
                             .Db.Deleteable<AustralianSupplierStoreSalesDetail>()
-                            .Where(s => s.Date == targetDate)
-                            .ExecuteCommandAsync();
+                            .Where(s => s.Date == targetDate);
+
+                        if (targetBranchCodes.Any())
+                        {
+                            deleteable = deleteable.Where(s =>
+                                targetBranchCodes.Contains(s.BranchCode.Trim())
+                            );
+                        }
+
+                        if (targetSupplierCodes.Any())
+                        {
+                            var deleteSupplierCodes = targetSupplierCodes
+                                .Concat(statisticsList.Select(s => s.SupplierCode))
+                                .Where(code => !string.IsNullOrWhiteSpace(code))
+                                .Select(code => code.Trim())
+                                .Distinct()
+                                .ToList();
+                            deleteable = deleteable.Where(s =>
+                                // 局部补算也要清理历史空白供应商，避免新回退编码旁边残留旧空主键数据。
+                                s.SupplierCode == null
+                                || s.SupplierCode.Trim() == ""
+                                || deleteSupplierCodes.Contains(s.SupplierCode.Trim())
+                            );
+                        }
+
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
                         _logger.LogInformation("删除 {Count} 条澳洲供应商门店统计旧记录", deletedCount);
 
-                        // 批量插入新记录
+                        if (!statisticsList.Any())
+                        {
+                            _logger.LogInformation("没有找到澳洲供应商门店数据: {Date}", targetDate);
+                            return;
+                        }
+
                         _context
                             .Db.Fastest<AustralianSupplierStoreSalesDetail>()
                             .PageSize(BatchSize)
@@ -5141,7 +5639,10 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var targetDate = date ?? DateTime.Now.Date;
+                var targetDate = (date ?? DateTime.Now.Date).Date;
+                var nextDate = targetDate.AddDays(1);
+                var targetBranchCodes = NormalizeBranchCodes(branchCodes);
+                var targetSupplierCodes = NormalizeSupplierCodes(supplierCodes);
 
                 logger.LogInformation(
                     "开始更新澳洲供应商门店统计数据: {Date}, 分店: {Branches}, 供应商: {Suppliers}",
@@ -5160,52 +5661,102 @@ namespace BlazorApp.Api.Services
                         o.Status != null
                         && (o.Status == 1 || o.Status == 4)
                         && o.OrderTime != null
-                        && o.OrderTime.Value.Date == targetDate
+                        && o.OrderTime >= targetDate
+                        && o.OrderTime < nextDate
                     );
 
-                if (branchCodes != null && branchCodes.Any())
+                if (targetBranchCodes.Any())
                 {
                     query = query.Where(o =>
-                        o.BranchCode != null && branchCodes.Contains(o.BranchCode)
+                        (o.BranchCode != null && targetBranchCodes.Contains(o.BranchCode.Trim()))
+                        || o.BranchCode == null
+                        || o.BranchCode.Trim() == ""
                     );
                 }
 
-                if (supplierCodes != null && supplierCodes.Any())
+                if (targetSupplierCodes.Any())
                 {
+                    var includesUnknownSupplier = targetSupplierCodes.Contains(UnknownSupplierCode);
                     query = query.Where(
                         (o, d, m) =>
-                            m.LocalSupplierCode != null
-                            && supplierCodes.Contains(m.LocalSupplierCode)
+                            (
+                                m.LocalSupplierCode != null
+                                && targetSupplierCodes.Contains(m.LocalSupplierCode.Trim())
+                            )
+                            || (
+                                d.SupplierCode != null
+                                && targetSupplierCodes.Contains(d.SupplierCode.Trim())
+                            )
+                            || (
+                                includesUnknownSupplier
+                                && (m.LocalSupplierCode == null || m.LocalSupplierCode.Trim() == "")
+                                && (d.SupplierCode == null || d.SupplierCode.Trim() == "")
+                            )
                     );
                 }
 
-                var storeSupplierData = await query
-                    .GroupBy(
-                        (o, d, m) =>
-                            new
-                            {
-                                Date = o.OrderTime!.Value.Date,
-                                BranchCode = o.BranchCode!,
-                                LocalSupplierCode = m.LocalSupplierCode,
-                            }
-                    )
+                // 查询销售明细后按最终供应商编码聚合，避免空映射在写表时形成重复主键。
+                var rawStoreSupplierData = await query
                     .Select(
                         (o, d, m) =>
                             new
                             {
                                 Date = o.OrderTime!.Value.Date,
-                                BranchCode = o.BranchCode!,
+                                BranchCode = o.BranchCode,
+                                DeviceCode = o.DeviceCode,
+                                OrderGuid = o.OrderGuid,
+                                DetailSupplierCode = d.SupplierCode,
                                 LocalSupplierCode = m.LocalSupplierCode,
-                                TotalAmount = SqlFunc.AggregateSum(d.ActualAmount) ?? 0m,
-                                TotalQuantity = SqlFunc.AggregateSum(d.Quantity ?? 0m),
-                                OrderCount = SqlFunc.AggregateCount(o.OrderGuid),
+                                ActualAmount = d.ActualAmount ?? 0m,
+                                Quantity = d.Quantity ?? 0m,
                             }
                     )
                     .ToListAsync();
+                var (paymentAmounts, detailAmounts) = await LoadOrderAmountMapsAsync(
+                    posmContext,
+                    targetDate,
+                    nextDate,
+                    rawStoreSupplierData,
+                    row => row.OrderGuid,
+                    row => row.ActualAmount
+                );
+                var deviceBranchMap = await LoadDeviceBranchMapAsync(
+                    posmContext,
+                    rawStoreSupplierData
+                        .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
+                        .Select(row => row.DeviceCode)
+                );
+                var storeSupplierData = rawStoreSupplierData
+                    .Select(row => new StoreSupplierSourceRow
+                    {
+                        Date = row.Date,
+                        BranchCode = ResolveBranchCode(row.BranchCode, row.DeviceCode, deviceBranchMap),
+                        DeviceCode = row.DeviceCode,
+                        OrderGuid = row.OrderGuid,
+                        DetailSupplierCode = row.DetailSupplierCode,
+                        LocalSupplierCode = row.LocalSupplierCode,
+                        ActualAmount = ResolveStatisticAmount(
+                            row.OrderGuid,
+                            row.ActualAmount,
+                            paymentAmounts,
+                            detailAmounts
+                        ),
+                        Quantity = row.Quantity,
+                    })
+                    .Where(row =>
+                        !targetBranchCodes.Any()
+                        || targetBranchCodes.Contains(row.BranchCode ?? string.Empty)
+                    )
+                    .ToList();
 
                 var allLocalSupplierCodes = storeSupplierData
-                    .Where(d => !string.IsNullOrEmpty(d.LocalSupplierCode))
-                    .Select(d => d.LocalSupplierCode!)
+                    .Select(d =>
+                        !string.IsNullOrWhiteSpace(d.LocalSupplierCode)
+                            ? d.LocalSupplierCode!.Trim()
+                            : d.DetailSupplierCode?.Trim()
+                    )
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
                     .Distinct()
                     .ToList();
 
@@ -5223,129 +5774,75 @@ namespace BlazorApp.Api.Services
                     );
                 }
 
-                var statisticsList = new List<AustralianSupplierStoreSalesDetail>();
-
                 LogSkippedBranchCodeRows(
                     "澳洲供应商分店销售统计",
                     storeSupplierData,
                     data => data.BranchCode,
-                    data => data.TotalAmount,
-                    data => data.TotalQuantity
+                    data => data.ActualAmount,
+                    data => data.Quantity
                 );
 
-                // 构建每个澳洲供应商门店的统计记录
-                foreach (var data in storeSupplierData)
-                {
-                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
-                    if (string.IsNullOrWhiteSpace(data.BranchCode))
-                        continue;
-                    var branchCode = data.BranchCode;
-                    var localSupplierCode = data.LocalSupplierCode ?? string.Empty;
-
-                    var supplierCode = localSupplierCode;
-                    var supplierName = localSupplierCode;
-
-                    // 获取供应商名称
-                    if (localSupplierDict.TryGetValue(localSupplierCode, out var ls))
-                    {
-                        supplierName = ls.Name ?? localSupplierCode;
-                    }
-
-                    var statistic = new AustralianSupplierStoreSalesDetail
-                    {
-                        Date = data.Date,
-                        BranchCode = branchCode,
-                        SupplierCode = supplierCode,
-                        SupplierName = supplierName,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        UpdateTime = DateTime.Now,
-                    };
-
-                    statisticsList.Add(statistic);
-                }
-
-                // 如果没有数据则返回
-                if (!statisticsList.Any())
-                {
-                    logger.LogInformation("没有找到澳洲供应商门店数据: {Date}", targetDate);
-                    return;
-                }
-
-                // 获取所有分店和供应商代码
-                var allBranchCodes = statisticsList.Select(s => s.BranchCode).Distinct().ToList();
-                var allSupplierCodes = statisticsList
-                    .Select(s => s.SupplierCode)
-                    .Distinct()
-                    .ToList();
-
-                // 查询数据库中已存在的记录
-                var existingRecords = await context
-                    .Db.Queryable<AustralianSupplierStoreSalesDetail>()
-                    .Where(s =>
-                        s.Date == targetDate
-                        && allBranchCodes.Contains(s.BranchCode)
-                        && allSupplierCodes.Contains(s.SupplierCode)
-                    )
-                    .ToListAsync();
-
-                // 构建已存在记录的字典，用于快速查找
-                var existingDict = existingRecords.ToDictionary(
-                    s => $"{s.Date}_{s.BranchCode}_{s.SupplierCode}",
-                    s => s
+                var statisticsList = BuildAustralianSupplierStoreSalesDetails(
+                    storeSupplierData,
+                    localSupplierDict,
+                    DateTime.Now
                 );
 
-                var toInsert = new List<AustralianSupplierStoreSalesDetail>();
-                var toUpdate = new List<AustralianSupplierStoreSalesDetail>();
-
-                // 遍历统计数据，区分插入和更新操作
-                foreach (var stat in statisticsList)
-                {
-                    var key = $"{stat.Date}_{stat.BranchCode}_{stat.SupplierCode}";
-
-                    if (existingDict.TryGetValue(key, out var existing))
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
                     {
-                        // 记录已存在，更新字段值
-                        existing.SupplierName = stat.SupplierName;
-                        existing.TotalAmount = stat.TotalAmount;
-                        existing.TotalQuantity = stat.TotalQuantity;
-                        existing.OrderCount = stat.OrderCount;
-                        existing.UpdateTime = stat.UpdateTime;
-                        toUpdate.Add(existing);
-                    }
-                    else
-                    {
-                        // 新记录，加入插入列表
-                        toInsert.Add(stat);
-                    }
-                }
+                        // 并发补算路径也先清理本次影响范围，避免旧空供应商主键在新 UNKNOWN 旁边残留。
+                        var deleteable = context
+                            .Db.Deleteable<AustralianSupplierStoreSalesDetail>()
+                            .Where(s => s.Date == targetDate);
 
-                // 批量插入新记录
-                if (toInsert.Any())
-                {
-                    context
-                        .Db.Fastest<AustralianSupplierStoreSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(toInsert);
-                    logger.LogInformation(
-                        "批量插入 {Count} 条澳洲供应商门店统计记录",
-                        toInsert.Count
-                    );
-                }
+                        if (targetBranchCodes.Any())
+                        {
+                            deleteable = deleteable.Where(s =>
+                                targetBranchCodes.Contains(s.BranchCode.Trim())
+                            );
+                        }
 
-                // 批量更新已存在记录
-                if (toUpdate.Any())
-                {
-                    context
-                        .Db.Fastest<AustralianSupplierStoreSalesDetail>()
-                        .PageSize(BatchSize)
-                        .BulkUpdate(toUpdate);
-                    logger.LogInformation(
-                        "批量更新 {Count} 条澳洲供应商门店统计记录",
-                        toUpdate.Count
-                    );
-                }
+                        if (targetSupplierCodes.Any())
+                        {
+                            var deleteSupplierCodes = targetSupplierCodes
+                                .Concat(statisticsList.Select(s => s.SupplierCode))
+                                .Where(code => !string.IsNullOrWhiteSpace(code))
+                                .Select(code => code.Trim())
+                                .Distinct()
+                                .ToList();
+                            deleteable = deleteable.Where(s =>
+                                // 局部补算也要清理历史空白供应商，避免新回退编码旁边残留旧空主键数据。
+                                s.SupplierCode == null
+                                || s.SupplierCode.Trim() == ""
+                                || deleteSupplierCodes.Contains(s.SupplierCode.Trim())
+                            );
+                        }
+
+                        var deletedCount = await deleteable.ExecuteCommandAsync();
+                        logger.LogInformation("删除 {Count} 条澳洲供应商门店统计旧记录", deletedCount);
+
+                        if (!statisticsList.Any())
+                        {
+                            logger.LogInformation("没有找到澳洲供应商门店数据: {Date}", targetDate);
+                            return;
+                        }
+
+                        context
+                            .Db.Fastest<AustralianSupplierStoreSalesDetail>()
+                            .PageSize(BatchSize)
+                            .BulkCopy(statisticsList);
+                        logger.LogInformation(
+                            "批量插入 {Count} 条澳洲供应商门店统计记录",
+                            statisticsList.Count
+                        );
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "澳洲供应商门店统计数据更新"
+                );
 
                 logger.LogInformation(
                     "澳洲供应商门店统计数据更新完成: {Date}, 总记录: {Total}",

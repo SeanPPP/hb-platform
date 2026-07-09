@@ -340,6 +340,8 @@ namespace BlazorApp.Api.Data
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
         public SimpleClient<MobileAppBuild> MobileAppBuildDb =>
             new SimpleClient<MobileAppBuild>(_db);
+        public SimpleClient<MobileAppDeviceStatus> MobileAppDeviceStatusDb =>
+            new SimpleClient<MobileAppDeviceStatus>(_db);
         public SimpleClient<MobileAppOtaUpdate> MobileAppOtaUpdateDb =>
             new SimpleClient<MobileAppOtaUpdate>(_db);
         public SimpleClient<ServiceApiToken> ServiceApiTokenDb =>
@@ -484,6 +486,7 @@ namespace BlazorApp.Api.Data
                 typeof(StoreOrderInvoiceEmailSendRecord),
                 typeof(ApplicationLog),
                 typeof(MobileAppBuild),
+                typeof(MobileAppDeviceStatus),
                 typeof(MobileAppOtaUpdate),
                 typeof(ServiceApiToken),
                 typeof(HolidayProduct),
@@ -1181,6 +1184,7 @@ namespace BlazorApp.Api.Data
             Console.WriteLine("✓ EmployeeProfile表创建成功");
 
             _db.CodeFirst.InitTables(
+                typeof(MobileAppDeviceStatus),
                 typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
@@ -1357,6 +1361,12 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppBuild_EasBuildId\" ON \"MobileAppBuild\" (\"EasBuildId\")",
                 ["IX_MobileAppBuild_Profile_CompletedAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_MobileAppBuild_Profile_CompletedAt\" ON \"MobileAppBuild\" (\"BuildProfile\", \"Platform\", \"Status\", \"CompletedAt\")",
+                ["IX_MobileAppDeviceStatus_HardwareId"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppDeviceStatus_HardwareId\" ON \"MobileAppDeviceStatus\" (\"HardwareId\")",
+                ["IX_MobileAppDeviceStatus_LastSeen"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppDeviceStatus_LastSeen\" ON \"MobileAppDeviceStatus\" (\"LastSeenAtUtc\")",
+                ["IX_MobileAppDeviceStatus_System_LastSeen"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppDeviceStatus_System_LastSeen\" ON \"MobileAppDeviceStatus\" (\"DeviceSystem\", \"LastSeenAtUtc\")",
                 ["IX_MobileAppOtaUpdate_Group_Platform"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Group_Platform\" ON \"MobileAppOtaUpdate\" (\"UpdateGroupId\", \"Platform\")",
                 ["IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt"] =
@@ -1794,6 +1804,10 @@ namespace BlazorApp.Api.Data
                 // MobileAppBuild表的索引，支撑 EAS buildId 幂等和最新 APK 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_EasBuildId' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE UNIQUE INDEX IX_MobileAppBuild_EasBuildId ON [MobileAppBuild](EasBuildId)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE INDEX IX_MobileAppBuild_Profile_CompletedAt ON [MobileAppBuild](BuildProfile, Platform, Status, CompletedAt)",
+                // MobileAppDeviceStatus表的索引，支撑 hardwareId 幂等快照和在线/系统统计。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppDeviceStatus_HardwareId' AND object_id = OBJECT_ID('MobileAppDeviceStatus')) CREATE UNIQUE INDEX IX_MobileAppDeviceStatus_HardwareId ON [MobileAppDeviceStatus](HardwareId)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppDeviceStatus_LastSeen' AND object_id = OBJECT_ID('MobileAppDeviceStatus')) CREATE INDEX IX_MobileAppDeviceStatus_LastSeen ON [MobileAppDeviceStatus](LastSeenAtUtc)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppDeviceStatus_System_LastSeen' AND object_id = OBJECT_ID('MobileAppDeviceStatus')) CREATE INDEX IX_MobileAppDeviceStatus_System_LastSeen ON [MobileAppDeviceStatus](DeviceSystem, LastSeenAtUtc)",
                 // MobileAppOtaUpdate表的索引，支撑 OTA group 幂等登记和渠道/runtime 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE UNIQUE INDEX IX_MobileAppOtaUpdate_Group_Platform ON [MobileAppOtaUpdate](UpdateGroupId, Platform)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE INDEX IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt ON [MobileAppOtaUpdate](Channel, RuntimeVersion, PublishedAt)",

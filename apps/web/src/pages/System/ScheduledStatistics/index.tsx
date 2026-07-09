@@ -1025,7 +1025,7 @@ export default function ScheduledStatisticsPage() {
         ) : null}
 
         <Card
-          title="调度运行控制"
+          title="调度状态"
           extra={
             <Button
               icon={<ReloadOutlined />}
@@ -1048,23 +1048,18 @@ export default function ScheduledStatisticsPage() {
               />
             </Col>
             <Col xs={24} md={6}>
-              <Typography.Text type="secondary">当前实例</Typography.Text>
+              <Typography.Text type="secondary">Active 实例</Typography.Text>
               <Typography.Paragraph copyable style={{ marginBottom: 0 }}>
-                {schedulerStatus?.currentInstanceId ?? '-'}
+                {schedulerStatus?.activeInstanceId ?? '-'}
               </Typography.Paragraph>
             </Col>
-            <Col xs={24} md={7}>
-              <Typography.Text type="secondary">调度实例</Typography.Text>
-              <Select
-                loading={schedulerLoading}
-                disabled={!schedulerStatus || schedulerSaving || !canManageScheduledTasks}
-                value={schedulerStatus?.activeInstanceId}
-                options={schedulerInstanceOptions}
-                style={{ width: '100%', marginTop: 4 }}
-                onChange={(value) => void handleUpdateScheduler({ activeInstanceId: value })}
-              />
+            <Col xs={24} md={6}>
+              <Typography.Text type="secondary">Active 最后心跳</Typography.Text>
+              <Typography.Paragraph style={{ marginBottom: 0 }}>
+                {formatDateTime(activeSchedulerInstance?.lastSeenAtUtc)}
+              </Typography.Paragraph>
             </Col>
-            <Col xs={24} md={5}>
+            <Col xs={24} md={6}>
               <Typography.Text type="secondary">调度开关</Typography.Text>
               <div style={{ marginTop: 8 }}>
                 <Switch
@@ -1081,32 +1076,49 @@ export default function ScheduledStatisticsPage() {
               ) : null}
             </Col>
           </Row>
-          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-            <Col xs={24} md={6}>
-              <Typography.Text type="secondary">Active 实例</Typography.Text>
-              <Typography.Paragraph copyable style={{ marginBottom: 0 }}>
-                {schedulerStatus?.activeInstanceId ?? '-'}
-              </Typography.Paragraph>
-            </Col>
-            <Col xs={24} md={6}>
-              <Typography.Text type="secondary">当前实例心跳</Typography.Text>
-              <Typography.Paragraph style={{ marginBottom: 0 }}>
-                {formatDateTime(currentSchedulerInstance?.lastSeenAtUtc)}
-              </Typography.Paragraph>
-            </Col>
-            <Col xs={24} md={6}>
-              <Typography.Text type="secondary">Active 最后心跳</Typography.Text>
-              <Typography.Paragraph style={{ marginBottom: 0 }}>
-                {formatDateTime(activeSchedulerInstance?.lastSeenAtUtc)}
-              </Typography.Paragraph>
-            </Col>
-            <Col xs={12} md={3}>
-              <Statistic title="运行中租约" value={schedulerStatus?.runningLeaseCount ?? 0} />
-            </Col>
-            <Col xs={12} md={3}>
-              <Statistic title="重复跳过" value={schedulerStatus?.recentDuplicateSkipCount ?? 0} />
-            </Col>
-          </Row>
+          {/* 低频运维控制默认收起，避免挤占数据对齐首屏。 */}
+          <Collapse
+            style={{ marginTop: 16 }}
+            items={[
+              {
+                key: 'advanced',
+                label: '高级运行控制',
+                children: (
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} md={6}>
+                      <Typography.Text type="secondary">当前实例</Typography.Text>
+                      <Typography.Paragraph copyable style={{ marginBottom: 0 }}>
+                        {schedulerStatus?.currentInstanceId ?? '-'}
+                      </Typography.Paragraph>
+                    </Col>
+                    <Col xs={24} md={7}>
+                      <Typography.Text type="secondary">调度实例</Typography.Text>
+                      <Select
+                        loading={schedulerLoading}
+                        disabled={!schedulerStatus || schedulerSaving || !canManageScheduledTasks}
+                        value={schedulerStatus?.activeInstanceId}
+                        options={schedulerInstanceOptions}
+                        style={{ width: '100%', marginTop: 4 }}
+                        onChange={(value) => void handleUpdateScheduler({ activeInstanceId: value })}
+                      />
+                    </Col>
+                    <Col xs={24} md={5}>
+                      <Typography.Text type="secondary">当前实例心跳</Typography.Text>
+                      <Typography.Paragraph style={{ marginBottom: 0 }}>
+                        {formatDateTime(currentSchedulerInstance?.lastSeenAtUtc)}
+                      </Typography.Paragraph>
+                    </Col>
+                    <Col xs={12} md={3}>
+                      <Statistic title="运行中租约" value={schedulerStatus?.runningLeaseCount ?? 0} />
+                    </Col>
+                    <Col xs={12} md={3}>
+                      <Statistic title="重复跳过" value={schedulerStatus?.recentDuplicateSkipCount ?? 0} />
+                    </Col>
+                  </Row>
+                ),
+              },
+            ]}
+          />
         </Card>
 
         <Card>

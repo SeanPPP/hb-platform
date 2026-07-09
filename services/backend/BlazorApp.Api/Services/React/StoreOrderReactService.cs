@@ -6785,16 +6785,29 @@ FinalRows AS (
                 var externalCustomers = new List<BranchDto>();
                 if (guidCodes.Count > 0)
                 {
-                    using var hqDb = _createHqConnection();
-                    externalCustomers = await hqDb.Queryable<CPT_DIC_外购客户信息表>()
-                        .Where(x => SqlFunc.HasValue(x.HGUID) && guidCodes.Contains(x.HGUID!))
-                        .Select(x => new BranchDto
-                        {
-                            Guid = x.HGUID!,
-                            Code = x.HGUID!,
-                            Name = x.客户名称 ?? x.HGUID!,
-                        })
-                        .ToListAsync();
+                    try
+                    {
+                        using var hqDb = _createHqConnection();
+                        externalCustomers = await hqDb.Queryable<CPT_DIC_外购客户信息表>()
+                            .Where(x => SqlFunc.HasValue(x.HGUID) && guidCodes.Contains(x.HGUID!))
+                            .Select(x => new BranchDto
+                            {
+                                Guid = x.HGUID!,
+                                Code = x.HGUID!,
+                                Name = x.客户名称 ?? x.HGUID!,
+                            })
+                            .ToListAsync();
+                    }
+                    catch (Exception ex) when (IsRemoteBranchLookupConnectionFailure(ex))
+                    {
+                        // HQ 外购客户库短暂不可达时，只降级外购客户筛选，保留本地分店筛选可用。
+                        _logger.LogWarning(
+                            ex,
+                            "外购客户分店筛选查询失败，已降级为仅返回本地分店。外购客户标识 {Count} 个，示例: {Codes}",
+                            guidCodes.Count,
+                            string.Join(", ", guidCodes.Take(5))
+                        );
+                    }
                 }
 
                 // 3. 构建结果列表
@@ -6860,6 +6873,15 @@ FinalRows AS (
                 _logger.LogError(ex, "GetUsedBranchesAsync failed");
                 return new ApiResponse<List<BranchDto>> { Success = false, Message = ex.Message };
             }
+        }
+
+        private static bool IsRemoteBranchLookupConnectionFailure(Exception ex)
+        {
+            var message = ex.ToString();
+            return message.Contains("Connection open error", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("连接数据库过程中发生错误", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("network-related or instance-specific error", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("server was not found", StringComparison.OrdinalIgnoreCase);
         }
 
         public async Task<ApiResponse<List<UnmatchedStoreOrderGroupDto>>> GetUnmatchedStoreOrderGroupsAsync()

@@ -16,6 +16,7 @@ namespace BlazorApp.Api.Data
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
             await EnsureCashRegisterUsersSchemaAsync(db, logger);
             await EnsureMobileAppBuildSchemaAsync(db, logger);
+            await EnsureMobileAppDeviceStatusSchemaAsync(db, logger);
             await EnsureAttendanceLocationSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
@@ -412,6 +413,132 @@ END;";
             // 关键位置：移动端自更新依赖构建表、OTA 表和 COS 状态字段，启动时补齐可降低旧库发布风险。
             await db.Ado.ExecuteCommandAsync(sql);
             logger.LogInformation("移动端 APK 构建和 OTA 更新表检查完成");
+        }
+
+        private static async Task EnsureMobileAppDeviceStatusSchemaAsync(
+            ISqlSugarClient db,
+            ILogger logger
+        )
+        {
+            const string sql =
+                @"
+IF OBJECT_ID('MobileAppDeviceStatus', 'U') IS NULL
+BEGIN
+    CREATE TABLE [MobileAppDeviceStatus] (
+        [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_MobileAppDeviceStatus] PRIMARY KEY,
+        [HardwareId] nvarchar(120) NOT NULL,
+        [SystemDeviceNumber] nvarchar(120) NULL,
+        [DeviceSystem] nvarchar(30) NULL,
+        [Platform] nvarchar(30) NULL,
+        [StoreCode] nvarchar(50) NULL,
+        [AppVersion] nvarchar(80) NULL,
+        [AppBuildVersion] nvarchar(80) NULL,
+        [RuntimeVersion] nvarchar(120) NULL,
+        [Channel] nvarchar(120) NULL,
+        [UpdateId] nvarchar(120) NULL,
+        [UpdateSource] nvarchar(40) NULL,
+        [LastSeenAtUtc] datetime2 NOT NULL,
+        [LastAuthMode] nvarchar(30) NOT NULL CONSTRAINT [DF_MobileAppDeviceStatus_LastAuthMode] DEFAULT('unknown'),
+        [LastSeenUserGuid] nvarchar(50) NULL,
+        [LastSeenUsername] nvarchar(100) NULL,
+        [LastSeenUserFullName] nvarchar(160) NULL,
+        [RegisteredDeviceId] int NULL,
+        [CreatedAt] datetime2 NOT NULL,
+        [CreatedBy] nvarchar(max) NULL,
+        [UpdatedAt] datetime2 NULL,
+        [UpdatedBy] nvarchar(max) NULL,
+        [IsDeleted] bit NULL
+    );
+END;
+
+IF OBJECT_ID('MobileAppDeviceStatus', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('MobileAppDeviceStatus', 'HardwareId') IS NULL
+    BEGIN
+        ALTER TABLE [MobileAppDeviceStatus] ADD [HardwareId] nvarchar(120) NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppDeviceStatus', 'HardwareId') IS NOT NULL
+    BEGIN
+        EXEC(N'
+            UPDATE [MobileAppDeviceStatus]
+            SET [HardwareId] = CONCAT(''legacy-'', CONVERT(nvarchar(36), [Id]))
+            WHERE [HardwareId] IS NULL
+               OR LTRIM(RTRIM([HardwareId])) = '''';
+        ');
+        ALTER TABLE [MobileAppDeviceStatus] ALTER COLUMN [HardwareId] nvarchar(120) NOT NULL;
+    END;
+
+    IF COL_LENGTH('MobileAppDeviceStatus', 'SystemDeviceNumber') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [SystemDeviceNumber] nvarchar(120) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'DeviceSystem') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [DeviceSystem] nvarchar(30) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'Platform') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [Platform] nvarchar(30) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'StoreCode') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [StoreCode] nvarchar(50) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'AppVersion') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [AppVersion] nvarchar(80) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'AppBuildVersion') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [AppBuildVersion] nvarchar(80) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'RuntimeVersion') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [RuntimeVersion] nvarchar(120) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'Channel') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [Channel] nvarchar(120) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'UpdateId') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [UpdateId] nvarchar(120) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'UpdateSource') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [UpdateSource] nvarchar(40) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'LastSeenAtUtc') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [LastSeenAtUtc] datetime2 NOT NULL DEFAULT(SYSUTCDATETIME());
+    IF COL_LENGTH('MobileAppDeviceStatus', 'LastAuthMode') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [LastAuthMode] nvarchar(30) NOT NULL CONSTRAINT [DF_MobileAppDeviceStatus_LastAuthMode] DEFAULT('unknown');
+    IF COL_LENGTH('MobileAppDeviceStatus', 'LastSeenUserGuid') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [LastSeenUserGuid] nvarchar(50) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'LastSeenUsername') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [LastSeenUsername] nvarchar(100) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'LastSeenUserFullName') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [LastSeenUserFullName] nvarchar(160) NULL;
+    IF COL_LENGTH('MobileAppDeviceStatus', 'RegisteredDeviceId') IS NULL
+        ALTER TABLE [MobileAppDeviceStatus] ADD [RegisteredDeviceId] int NULL;
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_MobileAppDeviceStatus_HardwareId'
+      AND object_id = OBJECT_ID('MobileAppDeviceStatus')
+)
+BEGIN
+    CREATE UNIQUE INDEX [IX_MobileAppDeviceStatus_HardwareId]
+    ON [MobileAppDeviceStatus]([HardwareId]);
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_MobileAppDeviceStatus_LastSeen'
+      AND object_id = OBJECT_ID('MobileAppDeviceStatus')
+)
+BEGIN
+    CREATE INDEX [IX_MobileAppDeviceStatus_LastSeen]
+    ON [MobileAppDeviceStatus]([LastSeenAtUtc]);
+END;
+
+IF NOT EXISTS (
+    SELECT *
+    FROM sys.indexes
+    WHERE name = 'IX_MobileAppDeviceStatus_System_LastSeen'
+      AND object_id = OBJECT_ID('MobileAppDeviceStatus')
+)
+BEGIN
+    CREATE INDEX [IX_MobileAppDeviceStatus_System_LastSeen]
+    ON [MobileAppDeviceStatus]([DeviceSystem], [LastSeenAtUtc]);
+END;";
+
+            // 关键逻辑：App 设备在线状态只维护当前快照，HardwareId 唯一索引用来保证心跳幂等更新。
+            await db.Ado.ExecuteCommandAsync(sql);
+            logger.LogInformation("Expo App 设备版本与在线快照表检查完成");
         }
 
         private static async Task EnsureAttendanceLocationSchemaAsync(

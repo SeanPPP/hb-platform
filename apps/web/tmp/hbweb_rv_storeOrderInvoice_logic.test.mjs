@@ -29,6 +29,8 @@ var invoiceSource = readSource(invoiceFile);
 var printCssSource = readSource(printCssFile);
 var zhSource = readSource(zhFile);
 var enSource = readSource(enFile);
+var zhMessages = JSON.parse(zhSource);
+var enMessages = JSON.parse(enSource);
 function readCssRule(source, selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = source.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
@@ -92,6 +94,8 @@ async function main() {
   if (excelFileNameFailure) failures.push(excelFileNameFailure);
   const excelHeaderFailure = await runTest("\u53D1\u7968 Excel \u5BFC\u51FA\u5E94\u5728\u660E\u7EC6\u524D\u6DFB\u52A0\u8BA2\u5355\u57FA\u7840\u4FE1\u606F\u9875\u5934", () => {
     assert(invoiceSource.includes("const titleRow = worksheet.addRow(['INVOICE'])"), "Excel \u5E94\u6DFB\u52A0 INVOICE \u6807\u9898\u884C");
+    assert(invoiceSource.includes("worksheet.mergeCells(titleRow.number, 1, titleRow.number, 9)"), "Excel \u6807\u9898\u884C\u5E94\u8986\u76D6\u65B0\u589E RRP \u540E\u7684 9 \u5217");
+    assert(invoiceSource.includes("worksheet.mergeCells(2, 5, 2, 9)"), "Excel \u65E5\u671F\u9875\u5934\u5E94\u8986\u76D6\u65B0\u589E RRP \u540E\u7684\u53F3\u4FA7 5 \u5217");
     assert(invoiceSource.includes("t('warehouse.invoice.invoiceNo'"), "Excel \u9875\u5934\u5E94\u5305\u542B\u53D1\u7968\u53F7");
     assert(invoiceSource.includes("t('warehouse.invoice.invoiceDate'"), "Excel \u9875\u5934\u5E94\u5305\u542B\u53D1\u7968\u65E5\u671F");
     assert(invoiceSource.includes("t('warehouse.invoice.customer')"), "Excel \u9875\u5934\u5E94\u5305\u542B\u5BA2\u6237");
@@ -103,6 +107,17 @@ async function main() {
     );
   });
   if (excelHeaderFailure) failures.push(excelHeaderFailure);
+  const invoiceRrpFailure = await runTest("\u53D1\u7968\u9875\u9762\u548C Excel \u5E94\u5728\u6210\u672C\u540E\u5C55\u793A RRP \u5217", () => {
+    assert(invoiceSource.includes("t('warehouse.invoice.excel.rrp')"), "Excel \u660E\u7EC6\u8868\u5934\u5E94\u5305\u542B RRP \u7FFB\u8BD1\u952E");
+    assert(invoiceSource.includes("t('column.rrp')"), "\u53D1\u7968\u9875\u9762\u8868\u5934\u5E94\u590D\u7528\u901A\u7528 RRP \u7FFB\u8BD1");
+    assert(invoiceSource.includes("{ key: 'rrp', width: 12 }"), "Excel columns \u5E94\u5728\u6210\u672C\u540E\u58F0\u660E RRP \u5217");
+    assert(invoiceSource.includes("rrp: item.rrp ?? null"), "Excel \u660E\u7EC6\u5E94\u8BFB\u53D6 item.rrp\uFF0C\u7F3A\u5931\u65F6\u7559\u7A7A");
+    assert(invoiceSource.includes(`<th className="col-rrp">{t('column.rrp')}</th>`), "\u53D1\u7968\u8868\u683C\u5E94\u65B0\u589E RRP \u8868\u5934");
+    assert(invoiceSource.includes('<td className="col-rrp">{formatOptionalCurrency(item.rrp)}</td>'), "\u53D1\u7968\u8868\u683C RRP \u7F3A\u5931\u65F6\u5E94\u663E\u793A --");
+    assert(invoiceSource.includes("worksheet.getColumn('rrp').numFmt = '$#,##0.00'"), "Excel RRP \u5217\u5E94\u4F7F\u7528\u8D27\u5E01\u683C\u5F0F");
+    assert(invoiceSource.includes("return value === undefined || value === null ? '--' : formatCurrency(value)"), "RRP \u7A7A\u503C\u4E0D\u5E94\u88AB\u683C\u5F0F\u5316\u4E3A $0.00");
+  });
+  if (invoiceRrpFailure) failures.push(invoiceRrpFailure);
   const invoicePdfBreakFailure = await runTest("\u53D1\u7968 PDF \u5BFC\u51FA\u5E94\u6309\u660E\u7EC6\u884C\u548C\u9875\u811A\u8FB9\u754C\u5207\u9875", () => {
     assert(invoiceSource.includes("collectElementBreakOffsets"), "\u53D1\u7968\u9875\u5E94\u5F15\u5165 PDF \u884C\u8FB9\u754C\u6536\u96C6\u5DE5\u5177");
     assert(
@@ -145,12 +160,15 @@ async function main() {
     const thRule = readCssRule(printCssSource, ".store-order-invoice-table th");
     const tdRule = readCssRule(printCssSource, ".store-order-invoice-table td");
     const barcodeRule = readCssRule(printCssSource, ".store-order-invoice-table .col-barcode");
+    const rrpRule = readCssRule(printCssSource, ".store-order-invoice-table .col-rrp");
     assert(/padding:\s*\d+mm\s+\d+mm/.test(paperRule), "\u53D1\u7968\u7EB8\u5F20 padding \u5E94\u6536\u7A84\u5230\u66F4\u7D27\u51D1\u7684\u6BEB\u7C73\u7EA7\u8BBE\u7F6E");
     assert(/table-layout:\s*fixed/.test(tableRule), "\u53D1\u7968\u8868\u683C\u5E94\u4F7F\u7528\u56FA\u5B9A\u5217\u5E03\u5C40\u9632\u6B62\u6491\u5BBD");
     assert(/font-size:\s*1[01]px/.test(tableRule), "\u53D1\u7968\u8868\u683C\u5B57\u4F53\u5E94\u7F29\u5C0F\u5230 10-11px");
     assert(/padding:\s*[45]px/.test(thRule), "\u53D1\u7968\u8868\u5934\u5185\u8FB9\u8DDD\u5E94\u7F29\u5C0F");
     assert(/padding:\s*[45]px/.test(tdRule), "\u53D1\u7968\u5355\u5143\u683C\u5185\u8FB9\u8DDD\u5E94\u7F29\u5C0F");
     assert(/overflow:\s*hidden/.test(barcodeRule) || /word-break:\s*break-all/.test(barcodeRule), "\u6761\u7801\u5217\u5E94\u9650\u5236\u6EA2\u51FA");
+    assert(/width:\s*58px/.test(rrpRule), "RRP \u5217\u5E94\u4F7F\u7528\u7D27\u51D1\u4EF7\u683C\u5217\u5BBD\u5EA6");
+    assert(/text-align:\s*right/.test(rrpRule), "RRP \u5217\u5E94\u53F3\u5BF9\u9F50\u65B9\u4FBF\u4EF7\u683C\u626B\u63CF");
     assert(!printCssSource.includes(".store-order-detail-table"), "print.css \u4E0D\u5E94\u6C61\u67D3\u8BE6\u60C5\u9875\u7D27\u51D1\u6837\u5F0F");
     assert(!printCssSource.includes(".store-order-list-table"), "print.css \u4E0D\u5E94\u6C61\u67D3\u5217\u8868\u9875\u7D27\u51D1\u6837\u5F0F");
   });
@@ -181,6 +199,8 @@ async function main() {
       assert(zhSource.includes(`"${key}"`), `\u4E2D\u6587\u7FFB\u8BD1\u7F3A\u5C11 ${key}`);
       assert(enSource.includes(`"${key}"`), `\u82F1\u6587\u7FFB\u8BD1\u7F3A\u5C11 ${key}`);
     }
+    assert(zhMessages?.warehouse?.invoice?.excel?.rrp === "RRP", "\u4E2D\u6587\u53D1\u7968 Excel \u7FFB\u8BD1\u7F3A\u5C11 warehouse.invoice.excel.rrp");
+    assert(enMessages?.warehouse?.invoice?.excel?.rrp === "RRP", "\u82F1\u6587\u53D1\u7968 Excel \u7FFB\u8BD1\u7F3A\u5C11 warehouse.invoice.excel.rrp");
   });
   if (translationFailure) failures.push(translationFailure);
   if (failures.length > 0) {

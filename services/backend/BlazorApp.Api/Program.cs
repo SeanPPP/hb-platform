@@ -539,6 +539,13 @@ builder.Services.AddScoped<
 >();
 builder.Services.AddSingleton<IWarehouseProductHqSyncJobService, WarehouseProductHqSyncJobService>();
 builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>(); // POSM设备注册管理服务
+builder.Services.AddScoped<MobileAppDeviceStatusService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    var deviceRegistrationService = sp.GetRequiredService<IDeviceRegistrationService>();
+    var logger = sp.GetRequiredService<ILogger<MobileAppDeviceStatusService>>();
+    return new MobileAppDeviceStatusService(context.Db, deviceRegistrationService, logger);
+}); // Expo App 设备版本与在线快照服务
 builder.Services.AddScoped<UserLoginDeviceAuditService>(); // App 登录设备与定位审计
 builder.Services.AddScoped<IProductSyncService, ProductSyncService>(); // 货柜商品同步服务（检测、批量创建、批量更新）
 builder.Services.AddScoped<IProductIntegrityService, ProductIntegrityService>(); // 商品数据一致性校验与修复服务

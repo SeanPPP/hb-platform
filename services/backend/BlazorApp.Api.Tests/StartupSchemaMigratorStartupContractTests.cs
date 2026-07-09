@@ -34,6 +34,10 @@ public sealed class StartupSchemaMigratorStartupContractTests
             "await EnsureMobileAppBuildSchemaAsync(db, logger);",
             StringComparison.Ordinal
         );
+        var mobileDeviceStatusIndex = migrator.IndexOf(
+            "await EnsureMobileAppDeviceStatusSchemaAsync(db, logger);",
+            StringComparison.Ordinal
+        );
         var serviceTokenIndex = migrator.IndexOf(
             "await EnsureServiceApiTokenSchemaAsync(db, logger);",
             StringComparison.Ordinal
@@ -50,7 +54,11 @@ public sealed class StartupSchemaMigratorStartupContractTests
             "移动端 APK/OTA 表结构迁移必须在 LocalSupplier 兜底之后执行。"
         );
         Assert.True(
-            serviceTokenIndex > mobileBuildIndex,
+            mobileDeviceStatusIndex > mobileBuildIndex,
+            "App 设备状态快照表必须在移动端 APK/OTA 表之后独立启动自举。"
+        );
+        Assert.True(
+            serviceTokenIndex > mobileDeviceStatusIndex,
             "Service API Token 表必须随移动端 OTA 管理链路一起启动自举。"
         );
         Assert.True(
@@ -59,6 +67,16 @@ public sealed class StartupSchemaMigratorStartupContractTests
         );
         Assert.Contains("IF OBJECT_ID('MobileAppBuild', 'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID('MobileAppOtaUpdate', 'U') IS NULL", migrator);
+        Assert.Contains("IF OBJECT_ID('MobileAppDeviceStatus', 'U') IS NULL", migrator);
+        Assert.Contains("SET [HardwareId] = CONCAT(''legacy-''", migrator);
+        Assert.Contains(
+            "ALTER TABLE [MobileAppDeviceStatus] ALTER COLUMN [HardwareId] nvarchar(120) NOT NULL",
+            migrator
+        );
+        Assert.DoesNotContain(
+            "ALTER TABLE [MobileAppDeviceStatus] ADD [HardwareId] nvarchar(120) NOT NULL DEFAULT('')",
+            migrator
+        );
         Assert.Contains("IF OBJECT_ID('ServiceApiToken', 'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID('WpfAppRelease', 'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID('WpfUpdatePolicy', 'U') IS NULL", migrator);
@@ -67,6 +85,8 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.Contains("CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppBuild_EasBuildId]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppOtaUpdate_Group_Platform]", migrator);
+        Assert.Contains("CREATE UNIQUE INDEX [IX_MobileAppDeviceStatus_HardwareId]", migrator);
+        Assert.Contains("CREATE INDEX [IX_MobileAppDeviceStatus_System_LastSeen]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_ServiceApiToken_TokenHash]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_WpfAppRelease_Channel_Version]", migrator);
         Assert.Contains("CREATE UNIQUE INDEX [IX_WpfUpdatePolicy_Channel]", migrator);

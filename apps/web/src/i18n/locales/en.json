@@ -2428,7 +2428,11 @@
     },
     "devices": {
       "title": "Device Registration",
+      "appUsageTitle": "App Usage",
       "deviceNote": "New devices must first be registered by the store manager in the App. After enabling in the backend, the device can directly access the App without account login.",
+      "appUsageNote": "Shows current Expo App device snapshots. Online means a heartbeat in the last 15 minutes.",
+      "viewRegistered": "Device Registration",
+      "viewAppUsage": "App Usage",
       "enable": "Enable",
       "disable": "Disable",
       "lock": "Lock",
@@ -2440,7 +2444,10 @@
       "filterByStore": "Filter by Store",
       "filterByDeviceType": "Filter by Type",
       "filterByDeviceSystem": "Filter by System",
+      "filterByOnline": "Filter by Online",
+      "appSearchPlaceholder": "Search hardware, device, or user",
       "loadFailed": "Failed to load devices",
+      "appUsageLoadFailed": "Failed to load App usage",
       "loadStoresFailed": "Failed to load stores",
       "editTitle": "Edit Device Details",
       "loadingDetail": "Loading device details...",
@@ -2452,7 +2459,33 @@
       "deviceTypeRequired": "Please select a device type",
       "deviceSystemRequired": "Please select a device system",
       "remarkPlaceholder": "Enter remarks",
-      "noDetail": "Device details not found"
+      "noDetail": "Device details not found",
+      "appUsageStatus": "Status",
+      "appOnline": "Online",
+      "appOffline": "Offline",
+      "appPackageVersion": "Package / Build",
+      "appRuntime": "Runtime",
+      "appChannel": "Channel",
+      "appUpdateSource": "Source",
+      "appUpdateId": "UpdateId",
+      "appLastUser": "Recent User",
+      "appAuthMode": "Auth Mode",
+      "appLastSeen": "Last Seen",
+      "appNoRecentUser": "No recent user",
+      "appSummaryTotal": "Total",
+      "appSummaryOnline": "Online",
+      "appSummaryAndroid": "Android",
+      "appSummaryIos": "iOS",
+      "appOnlineFilters": {
+        "all": "All",
+        "online": "Online",
+        "offline": "Offline"
+      },
+      "appUpdateSources": {
+        "ota": "OTA",
+        "embedded": "Embedded",
+        "unknown": "Not recorded"
+      }
     },
     "invoices": {
       "title": "Local Invoices",

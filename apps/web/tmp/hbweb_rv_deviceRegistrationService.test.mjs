@@ -416,6 +416,21 @@ async function request(url, options = {}) {
   }
   return payload;
 }
+function unwrapApiData(payload) {
+  if (payload && typeof payload === "object") {
+    const response = payload;
+    const success = response.success ?? response.isSuccess;
+    if (success === false) {
+      const code = response.code ?? response.errorCode;
+      const message = response.message || "\u8BF7\u6C42\u5931\u8D25";
+      throw new RequestError(code ? `${code}: ${message}` : message, 200, payload);
+    }
+    if ("data" in payload) {
+      return response.data;
+    }
+  }
+  return payload;
+}
 request.get = (url, options) => request(url, { ...options, method: "GET" });
 request.post = (url, data, options) => request(url, { ...options, method: "POST", data });
 request.put = (url, data, options) => request(url, { ...options, method: "PUT", data });
@@ -425,6 +440,7 @@ var request_default = request;
 
 // src/services/deviceRegistrationService.ts
 var DEVICE_API_BASE = "/api";
+var APP_DEVICE_API_BASE = "/api/mobile/app-device-status";
 function getString(raw, ...keys) {
   for (const key of keys) {
     const value = raw[key];
@@ -446,6 +462,50 @@ function getNullableString(raw, ...keys) {
   }
   return null;
 }
+function pick(raw, ...keys) {
+  for (const key of keys) {
+    if (raw[key] !== void 0 && raw[key] !== null) {
+      return raw[key];
+    }
+  }
+  return void 0;
+}
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function asString(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || void 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return void 0;
+}
+function asNumber(value, fallback) {
+  const numericValue = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof numericValue === "number" && Number.isFinite(numericValue) ? numericValue : fallback;
+}
+function asOptionalNumber(value) {
+  const numericValue = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof numericValue === "number" && Number.isFinite(numericValue) ? numericValue : void 0;
+}
+function asBoolean(value, fallback = false) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no"].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
+}
 function normalizeItem(raw) {
   return {
     id: Number(raw.id ?? raw.Id ?? 0),
@@ -462,6 +522,78 @@ function normalizeItem(raw) {
     lastModified: typeof raw.lastModified === "string" ? raw.lastModified : typeof raw.LastModified === "string" ? raw.LastModified : null,
     createdBy: typeof raw.createdBy === "string" ? raw.createdBy : typeof raw.CreatedBy === "string" ? raw.CreatedBy : null,
     lastModifiedBy: typeof raw.lastModifiedBy === "string" ? raw.lastModifiedBy : typeof raw.LastModifiedBy === "string" ? raw.LastModifiedBy : null
+  };
+}
+function normalizeAppDeviceStatus(raw) {
+  const record = asRecord(raw);
+  if (!record) {
+    return null;
+  }
+  const hardwareId = asString(pick(record, "hardwareId", "HardwareId"));
+  const id = asString(pick(record, "id", "Id")) ?? hardwareId;
+  if (!id || !hardwareId) {
+    return null;
+  }
+  return {
+    id,
+    hardwareId,
+    systemDeviceNumber: asString(pick(record, "systemDeviceNumber", "SystemDeviceNumber")),
+    deviceSystem: asString(pick(record, "deviceSystem", "DeviceSystem")),
+    platform: asString(pick(record, "platform", "Platform")),
+    storeCode: asString(pick(record, "storeCode", "StoreCode")),
+    appVersion: asString(pick(record, "appVersion", "AppVersion")),
+    appBuildVersion: asString(pick(record, "appBuildVersion", "AppBuildVersion")),
+    runtimeVersion: asString(pick(record, "runtimeVersion", "RuntimeVersion")),
+    channel: asString(pick(record, "channel", "Channel")),
+    updateId: asString(pick(record, "updateId", "UpdateId")),
+    updateSource: asString(pick(record, "updateSource", "UpdateSource")),
+    lastSeenAtUtc: asString(pick(record, "lastSeenAtUtc", "LastSeenAtUtc", "lastSeenAt", "LastSeenAt")),
+    isOnline: asBoolean(pick(record, "isOnline", "IsOnline")),
+    lastAuthMode: asString(pick(record, "lastAuthMode", "LastAuthMode")),
+    lastSeenUserGuid: asString(pick(record, "lastSeenUserGuid", "LastSeenUserGuid")),
+    lastSeenUsername: asString(pick(record, "lastSeenUsername", "LastSeenUsername")),
+    lastSeenUserFullName: asString(pick(record, "lastSeenUserFullName", "LastSeenUserFullName")),
+    registeredDeviceId: asOptionalNumber(pick(record, "registeredDeviceId", "RegisteredDeviceId"))
+  };
+}
+function normalizeAppDeviceStatusListResponse(payload) {
+  const data = unwrapApiData(payload);
+  const record = asRecord(data) ?? {};
+  const itemsPayload = pick(record, "items", "Items", "devices", "Devices", "data", "Data");
+  const total = asNumber(pick(record, "total", "Total", "totalCount", "TotalCount"), 0);
+  const page = asNumber(pick(record, "page", "Page", "pageIndex", "PageIndex"), 1);
+  const pageSize = asNumber(pick(record, "pageSize", "PageSize"), 20);
+  return {
+    devices: Array.isArray(itemsPayload) ? itemsPayload.map(normalizeAppDeviceStatus).filter((item) => Boolean(item)) : [],
+    total,
+    page,
+    pageSize,
+    totalPages: asNumber(
+      pick(record, "totalPages", "TotalPages"),
+      pageSize > 0 ? Math.ceil(total / pageSize) : 0
+    )
+  };
+}
+function normalizeAppDeviceStatusSummary(payload) {
+  const data = unwrapApiData(payload);
+  const record = asRecord(data) ?? {};
+  return {
+    total: asNumber(pick(record, "total", "Total"), 0),
+    online: asNumber(pick(record, "online", "Online"), 0),
+    offline: asNumber(pick(record, "offline", "Offline"), 0),
+    android: asNumber(pick(record, "android", "Android"), 0),
+    ios: asNumber(pick(record, "ios", "Ios", "iOS", "IOS"), 0),
+    unknownSystem: asNumber(pick(record, "unknownSystem", "UnknownSystem"), 0)
+  };
+}
+function buildAppDeviceStatusParams(params) {
+  return {
+    page: params?.page,
+    pageSize: params?.pageSize,
+    storeCode: params?.storeCode,
+    deviceSystem: params?.deviceSystem,
+    onlineState: params?.onlineState && params.onlineState !== "all" ? params.onlineState : void 0,
+    keyword: params?.keyword?.trim() || void 0
   };
 }
 function normalizeDeviceRegistrationDetail(raw) {
@@ -512,6 +644,22 @@ async function getDeviceRegistrations(params) {
     pageSize: Number(pagination.pageSize ?? params?.pageSize ?? 50),
     totalPages: Number(pagination.totalPages ?? 1)
   };
+}
+async function getAppDeviceStatuses(params) {
+  const response = await request_default.get(`${APP_DEVICE_API_BASE}/paged`, {
+    params: buildAppDeviceStatusParams(params)
+  });
+  return normalizeAppDeviceStatusListResponse(response);
+}
+async function getAppDeviceStatusSummary(params) {
+  const response = await request_default.get(`${APP_DEVICE_API_BASE}/summary`, {
+    params: {
+      storeCode: params?.storeCode,
+      deviceSystem: params?.deviceSystem,
+      keyword: params?.keyword?.trim() || void 0
+    }
+  });
+  return normalizeAppDeviceStatusSummary(response);
 }
 async function activateDevice(id) {
   return request_default.post(`${DEVICE_API_BASE}/${id}/activate`, {});
@@ -616,14 +764,104 @@ assertDeepEqual(
   },
   "Update payload should only include editable Chinese DTO fields"
 );
+var normalizedAppDevices = normalizeAppDeviceStatusListResponse({
+  success: true,
+  data: {
+    items: [{
+      Id: "F53AF6E9-A4C6-4C31-9B19-83E93B120D93",
+      HardwareId: "HW-APP-01",
+      SystemDeviceNumber: "DEV202607080001",
+      DeviceSystem: "Android",
+      AppVersion: "1.2.3",
+      AppBuildVersion: "45",
+      RuntimeVersion: "1.2.3",
+      Channel: "production",
+      UpdateId: "12345678-90ab-cdef-1234-567890abcdef",
+      UpdateSource: "ota",
+      LastSeenAtUtc: "2026-07-08T09:00:00Z",
+      IsOnline: "true",
+      LastSeenUsername: "ada"
+    }],
+    Total: 1,
+    Page: 1,
+    PageSize: 20
+  }
+});
+assertEqual(normalizedAppDevices.total, 1, "Should normalize App device total");
+assertEqual(normalizedAppDevices.devices[0]?.hardwareId, "HW-APP-01", "Should normalize App hardware ID");
+assertEqual(normalizedAppDevices.devices[0]?.isOnline, true, "Should normalize App online state");
+assertEqual(normalizedAppDevices.devices[0]?.appVersion, "1.2.3", "Should normalize App package version");
+assertEqual(normalizedAppDevices.devices[0]?.appBuildVersion, "45", "Should normalize App build version");
+assertEqual(normalizedAppDevices.devices[0]?.runtimeVersion, "1.2.3", "Should normalize App runtime version");
+assertEqual(normalizedAppDevices.devices[0]?.channel, "production", "Should normalize App channel");
+assertEqual(
+  normalizedAppDevices.devices[0]?.updateId,
+  "12345678-90ab-cdef-1234-567890abcdef",
+  "Should preserve full App update ID"
+);
+assertEqual(normalizedAppDevices.devices[0]?.updateSource, "ota", "Should normalize App update source");
+assertEqual(normalizedAppDevices.devices[0]?.lastSeenUsername, "ada", "Should normalize App recent user");
+assertDeepEqual(
+  normalizeAppDeviceStatusSummary({
+    success: true,
+    data: {
+      Total: 3,
+      Online: 1,
+      Offline: 2,
+      Android: 2,
+      Ios: 1,
+      UnknownSystem: 0
+    }
+  }),
+  {
+    total: 3,
+    online: 1,
+    offline: 2,
+    android: 2,
+    ios: 1,
+    unknownSystem: 0
+  },
+  "Should normalize App device summary"
+);
 var originalFetch = globalThis.fetch;
 var calls = [];
 globalThis.fetch = async (input, init) => {
+  const url = String(input);
   calls.push({
-    url: String(input),
+    url,
     method: init?.method,
     body: typeof init?.body === "string" ? init.body : void 0
   });
+  if (url.includes("/api/mobile/app-device-status/paged")) {
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        items: [{ id: "app-1", hardwareId: "HW-APP-URL", isOnline: true }],
+        total: 1,
+        page: 1,
+        pageSize: 20
+      }
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  if (url.includes("/api/mobile/app-device-status/summary")) {
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        total: 1,
+        online: 1,
+        offline: 0,
+        android: 1,
+        ios: 0,
+        unknownSystem: 0
+      }
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
   return new Response(JSON.stringify({
     success: true,
     data: {
@@ -651,6 +889,19 @@ try {
   await activateDevice(12);
   await disableDevice(12);
   await lockDevice(12);
+  await getAppDeviceStatuses({
+    page: 1,
+    pageSize: 20,
+    storeCode: "S01",
+    deviceSystem: "Android",
+    onlineState: "online",
+    keyword: "Ada"
+  });
+  await getAppDeviceStatusSummary({
+    storeCode: "S01",
+    deviceSystem: "Android",
+    keyword: "Ada"
+  });
   assertEqual(
     calls[0]?.url,
     "/api/paged?page=2&pageSize=30&storeCode=S01&deviceType=POS&deviceSystem=Windows",
@@ -673,6 +924,18 @@ try {
     "/api/12/lock",
     "Device lock should use legacy device API base path"
   );
+  assertEqual(
+    calls[4]?.url,
+    "/api/mobile/app-device-status/paged?page=1&pageSize=20&storeCode=S01&deviceSystem=Android&onlineState=online&keyword=Ada",
+    "App device list should use mobile app-device-status paged API"
+  );
+  assertEqual(calls[4]?.method, "GET", "App device list should use GET");
+  assertEqual(
+    calls[5]?.url,
+    "/api/mobile/app-device-status/summary?storeCode=S01&deviceSystem=Android&keyword=Ada",
+    "App device summary should use mobile app-device-status summary API"
+  );
+  assertEqual(calls[5]?.method, "GET", "App device summary should use GET");
 } finally {
   globalThis.fetch = originalFetch;
 }

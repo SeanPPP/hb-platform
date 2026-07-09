@@ -1220,6 +1220,28 @@ async function main() {
     assert(pageSource.includes("dto.selectedStoreCodes = values.selectedStoreCodes"), "\u9875\u9762\u5E94\u4F20 selectedStoreCodes");
   });
   if (pagePayloadFailure) failures.push(pagePayloadFailure);
+  const listPaginationLayoutFailure = await runTest("\u5217\u8868\u9875\u8868\u683C\u6EDA\u52A8\u533A\u57DF\u4E0D\u5E94\u8986\u76D6\u5916\u7F6E\u5206\u9875", () => {
+    assert(pageSource.includes("const tableRegionRef = useRef<HTMLDivElement>(null)"), "\u5217\u8868\u9875\u5E94\u58F0\u660E\u8868\u683C\u533A\u57DF ref");
+    assert(pageSource.includes("region.querySelector('.ant-table-thead')"), "\u8868\u4F53\u9AD8\u5EA6\u8BA1\u7B97\u5FC5\u987B\u6263\u9664 AntD \u8868\u5934");
+    assert(pageSource.includes("horizontalScrollbarHeight"), "\u8868\u4F53\u9AD8\u5EA6\u8BA1\u7B97\u5FC5\u987B\u6263\u9664\u6A2A\u5411\u6EDA\u52A8\u6761\u9AD8\u5EA6");
+    assert(
+      pageSource.includes("region.clientHeight - tableHeaderHeight - horizontalScrollbarHeight - 8"),
+      "\u8868\u4F53\u9AD8\u5EA6\u5FC5\u987B\u6309\u8868\u683C\u533A\u57DF\u6263\u9664\u8868\u5934\u548C\u6A2A\u5411\u6EDA\u52A8\u6761\u8BA1\u7B97"
+    );
+    assert(
+      pageSource.includes("window.requestAnimationFrame") && pageSource.includes("ResizeObserver"),
+      "\u8868\u683C\u9AD8\u5EA6\u5E94\u5728\u5E03\u5C40\u53D8\u5316\u540E\u91CD\u65B0\u6D4B\u91CF"
+    );
+    assert(
+      pageSource.includes("ref={tableRegionRef}") && pageSource.includes("flex: 1") && pageSource.includes("minHeight: 0") && pageSource.includes("overflow: 'hidden'"),
+      "\u8868\u683C\u533A\u57DF\u5FC5\u987B\u88C1\u526A\u6EA2\u51FA\uFF0C\u907F\u514D\u56FA\u5B9A\u5217\u753B\u5230\u5206\u9875\u680F"
+    );
+    assert(
+      pageSource.includes("position: 'relative'") && pageSource.includes("zIndex: 3") && pageSource.includes("flexShrink: 0"),
+      "\u5206\u9875\u680F\u5E94\u4FDD\u6301\u72EC\u7ACB\u5C42\u7EA7\u548C\u56FA\u5B9A\u5E95\u90E8\u7A7A\u95F4"
+    );
+  });
+  if (listPaginationLayoutFailure) failures.push(listPaginationLayoutFailure);
   const editPageButtonFailure = await runTest("\u7F16\u8F91\u9875\u5E94\u4F7F\u7528\u4E13\u7528\u6743\u9650\u663E\u793A\u66F4\u65B0HQ\u5546\u54C1\u6309\u94AE", () => {
     assert(editPageSource.includes("canWriteLocalPurchaseToHq"), "\u7F16\u8F91\u9875\u5E94\u4F7F\u7528\u53EF\u7F16\u8F91\u672C\u5730\u8FDB\u8D27 + PushToHq \u7684\u7EC4\u5408\u6743\u9650\u63A7\u5236\u5199 HQ \u5165\u53E3");
     assert(editPageSource.includes("t('posAdmin.invoiceDetail.updateHqProductsBtn', '\u66F4\u65B0HQ\u5546\u54C1')"), "\u7F16\u8F91\u9875\u5E94\u663E\u793A\u66F4\u65B0HQ\u5546\u54C1\u6309\u94AE\u6587\u6848");

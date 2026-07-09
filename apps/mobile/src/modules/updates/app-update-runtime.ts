@@ -1,3 +1,4 @@
+import * as Application from "expo-application";
 import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import {
@@ -8,7 +9,8 @@ import {
 
 export function getCurrentAppUpdateInfo(): AppUpdateInfo {
   return {
-    appVersion: Constants.expoConfig?.version ?? null,
+    appVersion: Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? null,
+    appBuildVersion: Application.nativeBuildVersion ?? null,
     runtimeVersion: Updates.runtimeVersion ?? null,
     channel: Updates.channel ?? null,
     updateId: Updates.updateId ?? null,

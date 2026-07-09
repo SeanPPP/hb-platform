@@ -109,6 +109,7 @@
     <Compile Include="TencentCosMobileAppBuildArtifactMirrorTests.cs" />
     <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />
     <Compile Include="MobileAppBuildServiceTests.cs" />
+    <Compile Include="MobileAppDeviceStatusServiceTests.cs" />
     <Compile Include="WpfAppReleaseServiceTests.cs" />
     <Compile Include="WpfAppReleasesControllerTests.cs" />
     <Compile Include="StartupSchemaMigratorStartupContractTests.cs" />

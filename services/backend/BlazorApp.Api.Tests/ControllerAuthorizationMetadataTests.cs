@@ -176,6 +176,14 @@ public class ControllerAuthorizationMetadataTests
             nameof(MobileAppBuildsController.CreateOtaRollbackCommand),
             Permissions.System.ManageAppDownloads
         );
+        yield return Policy<MobileAppDeviceStatusController>(
+            nameof(MobileAppDeviceStatusController.GetPaged),
+            Permissions.DeviceRegistration.View
+        );
+        yield return Policy<MobileAppDeviceStatusController>(
+            nameof(MobileAppDeviceStatusController.GetSummary),
+            Permissions.DeviceRegistration.View
+        );
         yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetExecutiveBranchPerformance),
             Permissions.Reports.ProductMovementView

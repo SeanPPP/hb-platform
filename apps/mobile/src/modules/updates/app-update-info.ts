@@ -1,12 +1,14 @@
 export type AppUpdateInfoValueKey =
   | "updates.unknown"
+  | "updates.noBuildVersion"
   | "updates.noChannel"
   | "updates.noUpdateId"
   | "updates.sourceEmbedded"
-  | "updates.sourceOta";
+  | "updates.sourceOta"
+  | "updates.sourceUnknown";
 
 export type AppUpdateInfoRow = {
-  key: "version" | "runtime" | "channel" | "source" | "updateId";
+  key: "version" | "build" | "runtime" | "channel" | "source" | "updateId";
   labelKey: string;
   value?: string;
   valueKey?: AppUpdateInfoValueKey;
@@ -14,6 +16,7 @@ export type AppUpdateInfoRow = {
 
 export type AppUpdateInfo = {
   appVersion: string | null;
+  appBuildVersion: string | null;
   runtimeVersion: string | null;
   channel: string | null;
   updateId: string | null;
@@ -59,15 +62,39 @@ function buildValueRow(
   return { key, labelKey, valueKey: fallbackKey };
 }
 
+function resolveAppUpdateSourceKey(info: AppUpdateInfo): AppUpdateInfoValueKey {
+  if (info.updateId) {
+    return "updates.sourceOta";
+  }
+
+  if (info.isEmbeddedLaunch) {
+    return "updates.sourceEmbedded";
+  }
+
+  return "updates.sourceUnknown";
+}
+
+export function formatAppPackageVersion(
+  info: Pick<AppUpdateInfo, "appVersion" | "appBuildVersion">,
+  fallback: string
+) {
+  if (info.appVersion && info.appBuildVersion) {
+    return `${info.appVersion} (${info.appBuildVersion})`;
+  }
+
+  return info.appVersion || info.appBuildVersion || fallback;
+}
+
 export function buildAppUpdateInfoRows(info: AppUpdateInfo): AppUpdateInfoRow[] {
   return [
     buildValueRow("version", "updates.version", info.appVersion, "updates.unknown"),
+    buildValueRow("build", "updates.buildVersion", info.appBuildVersion, "updates.noBuildVersion"),
     buildValueRow("runtime", "updates.runtime", info.runtimeVersion, "updates.unknown"),
     buildValueRow("channel", "updates.channel", info.channel, "updates.noChannel"),
     {
       key: "source",
       labelKey: "updates.source",
-      valueKey: info.isEmbeddedLaunch ? "updates.sourceEmbedded" : "updates.sourceOta",
+      valueKey: resolveAppUpdateSourceKey(info),
     },
     buildValueRow("updateId", "updates.updateId", info.updateId, "updates.noUpdateId"),
   ];

@@ -9,6 +9,33 @@
     "lock": "锁定",
     "refresh": "刷新"
   },
+  "views": {
+    "registered": "设备注册",
+    "appUsage": "App 使用情况"
+  },
+  "appUsage": {
+    "subtitle": "共 {{count}} 台 App 设备",
+    "online": "在线",
+    "offline": "离线",
+    "noRecentUser": "暂无用户",
+    "packageVersion": "包版本：{{value}}",
+    "runtimeValue": "Runtime：{{value}}",
+    "channelValue": "Channel：{{value}}",
+    "updateIdValue": "UpdateId：{{value}}",
+    "lastUserValue": "最近用户：{{value}}",
+    "lastSeenValue": "最后在线：{{value}}",
+    "onlineFilters": {
+      "all": "全部",
+      "online": "在线",
+      "offline": "离线"
+    },
+    "summary": {
+      "total": "总设备",
+      "online": "在线",
+      "android": "Android",
+      "ios": "iOS"
+    }
+  },
   "currentStore": {
     "allStores": "全部分店"
   },
@@ -33,6 +60,7 @@
     "button": "筛选",
     "buttonWithCount": "筛选（{{count}}）",
     "clear": "清空",
+    "currentApp": "{{store}} · {{system}} · {{online}}",
     "current": "{{store}} · {{status}} · {{system}} · {{type}}",
     "disabled": "禁用",
     "keyword": "关键词",

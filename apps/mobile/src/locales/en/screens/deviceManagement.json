@@ -9,6 +9,33 @@
     "lock": "Lock",
     "refresh": "Refresh"
   },
+  "views": {
+    "registered": "Device Registry",
+    "appUsage": "App Usage"
+  },
+  "appUsage": {
+    "subtitle": "{{count}} app devices",
+    "online": "Online",
+    "offline": "Offline",
+    "noRecentUser": "No user yet",
+    "packageVersion": "Package: {{value}}",
+    "runtimeValue": "Runtime: {{value}}",
+    "channelValue": "Channel: {{value}}",
+    "updateIdValue": "UpdateId: {{value}}",
+    "lastUserValue": "Recent user: {{value}}",
+    "lastSeenValue": "Last seen: {{value}}",
+    "onlineFilters": {
+      "all": "All",
+      "online": "Online",
+      "offline": "Offline"
+    },
+    "summary": {
+      "total": "Total",
+      "online": "Online",
+      "android": "Android",
+      "ios": "iOS"
+    }
+  },
   "currentStore": {
     "allStores": "All stores"
   },
@@ -33,6 +60,7 @@
     "button": "Filters",
     "buttonWithCount": "Filters ({{count}})",
     "clear": "Clear",
+    "currentApp": "{{store}} · {{system}} · {{online}}",
     "current": "{{store}} · {{status}} · {{system}} · {{type}}",
     "disabled": "Disabled",
     "keyword": "Keyword",

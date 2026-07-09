@@ -144,6 +144,7 @@ export default function LocalSupplierInvoicesPage() {
   // 动态高度
   const wrapRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
+  const tableRegionRef = useRef<HTMLDivElement>(null)
   const pagerRef = useRef<HTMLDivElement>(null)
   const [tableScrollY, setTableScrollY] = useState<number | undefined>(undefined)
 
@@ -195,17 +196,70 @@ export default function LocalSupplierInvoicesPage() {
   }, [page, pageSize, sortBy, sortOrder, managedStoreCodeKey])
 
   useLayoutEffect(() => {
-    const calc = () => {
-      const containerH = wrapRef.current?.clientHeight || window.innerHeight
-      const tbarH = toolbarRef.current?.getBoundingClientRect().height || 0
-      const pagerH = pagerRef.current?.getBoundingClientRect().height || 0
-      const available = containerH - tbarH - pagerH - 8
-      setTableScrollY(available > 200 ? available : 200)
+    let frameId: number | null = null
+
+    const readOuterHeight = (element: HTMLElement | null) => {
+      if (!element) {
+        return 0
+      }
+
+      const style = window.getComputedStyle(element)
+      const marginTop = Number.parseFloat(style.marginTop) || 0
+      const marginBottom = Number.parseFloat(style.marginBottom) || 0
+      return Math.ceil(element.getBoundingClientRect().height + marginTop + marginBottom)
     }
-    calc()
-    window.addEventListener('resize', calc)
-    return () => window.removeEventListener('resize', calc)
-  }, [pageSize, total])
+
+    const calc = () => {
+      const region = tableRegionRef.current
+      if (!region) {
+        return
+      }
+
+      const tableHeader = region.querySelector('.ant-table-thead') as HTMLElement | null
+      const tableBody = region.querySelector('.ant-table-body') as HTMLElement | null
+      const tableHeaderHeight = readOuterHeight(tableHeader)
+      const horizontalScrollbarHeight = tableBody ? Math.max(0, tableBody.offsetHeight - tableBody.clientHeight) : 0
+      // 分页在表格外层，scroll.y 只给表体，避免固定列继续画到分页区域。
+      const available = Math.floor(region.clientHeight - tableHeaderHeight - horizontalScrollbarHeight - 8)
+      const nextScrollY = available > 200 ? available : 200
+      setTableScrollY((current) => (
+        current === undefined || Math.abs(current - nextScrollY) > 4 ? nextScrollY : current
+      ))
+    }
+
+    const scheduleCalc = () => {
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null
+        calc()
+      })
+    }
+
+    scheduleCalc()
+    window.addEventListener('resize', scheduleCalc)
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        if (frameId != null) window.cancelAnimationFrame(frameId)
+        window.removeEventListener('resize', scheduleCalc)
+      }
+    }
+
+    const observer = new ResizeObserver(scheduleCalc)
+    for (const element of [wrapRef.current, toolbarRef.current, tableRegionRef.current, pagerRef.current]) {
+      if (element) {
+        observer.observe(element)
+      }
+    }
+
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', scheduleCalc)
+      observer.disconnect()
+    }
+  }, [data.length, pageSize, total])
 
   useEffect(() => {
     const loadOptions = async () => {
@@ -718,7 +772,7 @@ export default function LocalSupplierInvoicesPage() {
           </Space>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Table
             rowKey="invoiceGUID"
             loading={loading}
@@ -759,7 +813,9 @@ export default function LocalSupplierInvoicesPage() {
             alignItems: 'center',
             width: '100%',
             background: '#fff',
-            zIndex: 1,
+            position: 'relative',
+            zIndex: 3,
+            flexShrink: 0,
           }}
         >
           <div />
