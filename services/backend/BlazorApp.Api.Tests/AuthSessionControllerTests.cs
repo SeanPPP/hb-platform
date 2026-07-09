@@ -126,6 +126,75 @@ public sealed class AuthSessionControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Login_AllowsMissingLocationForUserPasswordLogin()
+    {
+        await _db.Insertable(
+            new User
+            {
+                UserGUID = "mobile-user-1",
+                Username = "mobileuser",
+                Email = "mobile@example.com",
+                PasswordHash = "hashed",
+                FullName = "Mobile User",
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            }
+        ).ExecuteCommandAsync();
+
+        var authService = new Mock<IAuthService>();
+        authService
+            .Setup(service => service.LoginAsync(It.Is<LoginRequest>(request =>
+                request.Username == "mobileuser" && !request.LocationLatitude.HasValue
+            )))
+            .ReturnsAsync(
+                new LoginResponse
+                {
+                    Success = true,
+                    User = new LoginUserDto
+                    {
+                        UserGUID = "mobile-user-1",
+                        Username = "mobileuser",
+                        Email = "mobile@example.com",
+                    },
+                }
+            );
+        authService
+            .Setup(service =>
+                service.GenerateTokensAsync(
+                    It.Is<User>(user => user.UserGUID == "mobile-user-1"),
+                    It.IsAny<string>(),
+                    It.IsAny<string>()
+                )
+            )
+            .ReturnsAsync(
+                new TokenResponse
+                {
+                    AccessToken = "mobile-access-token",
+                    RefreshToken = "mobile-refresh-token",
+                    AccessTokenExpiry = DateTime.UtcNow.AddMinutes(15),
+                    RefreshTokenExpiry = DateTime.UtcNow.AddDays(7),
+                    Success = true,
+                }
+            );
+
+        var controller = CreateController(authService.Object);
+
+        var result = await InvokeAsync(controller, "Login", new LoginRequest
+        {
+            Username = "mobileuser",
+            Password = "Secret123",
+            PasswordFormat = "raw",
+        });
+
+        Assert.NotNull(result);
+        Assert.True(GetBoolean(result!, "Success"));
+        Assert.True(HasNestedProperty(result!, "Data", "AccessToken"));
+        authService.Verify(service => service.LoginAsync(It.IsAny<LoginRequest>()), Times.Once);
+    }
+
+    [Fact]
     public async Task SessionLogin_RecordsResolvedLoginIpOnUser()
     {
         await _db.Insertable(

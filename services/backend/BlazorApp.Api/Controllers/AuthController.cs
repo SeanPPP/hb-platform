@@ -83,21 +83,7 @@ namespace BlazorApp.Api.Controllers
                 return ApiResponse<TokenResponse>.Error("请求数据格式无效");
             }
 
-            var locationValidation = RequiredLocationValidator.Validate(
-                request.LocationLatitude,
-                request.LocationLongitude,
-                request.LocationPermissionStatus,
-                request.LocationCapturedAtUtc,
-                "登录需要位置信息",
-                TimeSpan.FromMinutes(5)
-            );
-            if (!locationValidation.Success)
-            {
-                return ApiResponse<TokenResponse>.Error(
-                    locationValidation.Message,
-                    locationValidation.ErrorCode
-                );
-            }
+            NormalizeOptionalLoginLocation(request);
 
             var tokenResponse = await AuthenticateAndIssueTokensAsync(request);
             if (tokenResponse == null)
@@ -494,6 +480,48 @@ namespace BlazorApp.Api.Controllers
                 tokenResponse.IsCommonDevice = audit.IsCommonDevice;
             }
             return tokenResponse;
+        }
+
+        private void NormalizeOptionalLoginLocation(LoginRequest request)
+        {
+            if (!HasLoginLocationPayload(request))
+            {
+                return;
+            }
+
+            var locationValidation = RequiredLocationValidator.Validate(
+                request.LocationLatitude,
+                request.LocationLongitude,
+                request.LocationPermissionStatus,
+                request.LocationCapturedAtUtc,
+                "登录需要位置信息",
+                TimeSpan.FromMinutes(5)
+            );
+            if (locationValidation.Success)
+            {
+                return;
+            }
+
+            // 普通账号密码登录不能因为 Android 定位服务不可用失败；无效定位只是不写入登录审计。
+            _logger.LogWarning(
+                "App账号登录定位审计无效，已忽略。ErrorCode={ErrorCode}, Message={Message}, Username={Username}",
+                locationValidation.ErrorCode,
+                locationValidation.Message,
+                request.Username
+            );
+            request.LocationLatitude = null;
+            request.LocationLongitude = null;
+            request.LocationAccuracy = null;
+            request.LocationPermissionStatus = null;
+            request.LocationCapturedAtUtc = null;
+        }
+
+        private static bool HasLoginLocationPayload(LoginRequest request)
+        {
+            return request.LocationLatitude.HasValue
+                || request.LocationLongitude.HasValue
+                || request.LocationCapturedAtUtc.HasValue
+                || !string.IsNullOrWhiteSpace(request.LocationPermissionStatus);
         }
 
         private async Task<List<string>> GetDirectUserPermissionCodesAsync(string userGuid)

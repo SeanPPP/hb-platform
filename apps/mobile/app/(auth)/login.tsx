@@ -34,6 +34,7 @@ import {
 import { prepareDeviceLoginSession } from "@/modules/auth/device-login-session";
 import {
   collectLoginDeviceLocation,
+  collectOptionalLoginDeviceLocation,
   isRequiredLocationError,
 } from "@/modules/attendance/required-location";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
@@ -278,7 +279,7 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      const auditPayload = await collectLoginDeviceLocation(registeredDevice);
+      const auditPayload = await collectOptionalLoginDeviceLocation(registeredDevice);
       await loginFn({ username, password, ...auditPayload });
       router.replace(
         resolveDefaultTabRoute({

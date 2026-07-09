@@ -77,6 +77,21 @@ export function getFriendlyLoginErrorDescriptor(error: unknown): LoginErrorDescr
   const message = getMessage(error);
 
   if (
+    code === "LOCATION_REQUIRED" ||
+    includesAny(message, [
+      "LOCATION_REQUIRED",
+      "登录需要位置信息",
+      "登录需要采集当前位置",
+      "定位采集时间无效",
+      "定位坐标无效",
+      "location required",
+      "location permission",
+    ])
+  ) {
+    return { key: "errors.locationRequired" };
+  }
+
+  if (
     includesAny(message, [
       "停用",
       "禁用",

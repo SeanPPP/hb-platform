@@ -27,6 +27,15 @@ export interface LoginDeviceLocationPayload extends CapturedLocationPayload {
   storeCode?: string;
 }
 
+export interface LoginDeviceContextPayload {
+  hardwareId: string;
+  systemDeviceNumber?: string;
+  deviceSystem: string;
+  storeCode?: string;
+}
+
+export type OptionalLoginDeviceLocationPayload = LoginDeviceContextPayload & Partial<CapturedLocationPayload>;
+
 export interface AttendanceDeviceContext {
   hardwareId: string;
   systemDeviceNumber?: string;
@@ -82,14 +91,23 @@ export async function getAttendanceDeviceContext(): Promise<AttendanceDeviceCont
 export async function collectLoginDeviceLocation(
   profile?: Pick<DeviceProfile, "systemDeviceNumber" | "deviceSystem" | "storeCode"> | null,
 ): Promise<LoginDeviceLocationPayload> {
-  const [location, hardwareId, session] = await Promise.all([
+  const [location, context] = await Promise.all([
     collectRequiredLocation(),
+    collectLoginDeviceContext(profile),
+  ]);
+
+  return { ...context, ...location };
+}
+
+export async function collectLoginDeviceContext(
+  profile?: Pick<DeviceProfile, "systemDeviceNumber" | "deviceSystem" | "storeCode"> | null,
+): Promise<LoginDeviceContextPayload> {
+  const [hardwareId, session] = await Promise.all([
     DeviceStorage.getInstallationId(),
     DeviceStorage.getSession(),
   ]);
 
   return {
-    ...location,
     hardwareId,
     systemDeviceNumber:
       toOptionalString(profile?.systemDeviceNumber) ??
@@ -97,6 +115,25 @@ export async function collectLoginDeviceLocation(
     deviceSystem: toOptionalString(profile?.deviceSystem) ?? getCurrentDeviceSystem(),
     storeCode: toOptionalString(profile?.storeCode) ?? toOptionalString(session?.storeCode),
   };
+}
+
+export async function collectOptionalLoginDeviceLocation(
+  profile?: Pick<DeviceProfile, "systemDeviceNumber" | "deviceSystem" | "storeCode"> | null,
+): Promise<OptionalLoginDeviceLocationPayload> {
+  const [context, locationResult] = await Promise.all([
+    collectLoginDeviceContext(profile),
+    collectRequiredLocation()
+      .then((location) => ({ ok: true as const, location }))
+      .catch((error: unknown) => ({ ok: false as const, error })),
+  ]);
+
+  if (locationResult.ok) {
+    return { ...context, ...locationResult.location };
+  }
+
+  // 普通账号密码登录不能被 Android 定位服务不可用卡死；定位只作为登录审计补充信息。
+  console.warn("[login-location] 账号登录定位采集失败，继续按账号密码登录", locationResult.error);
+  return context;
 }
 
 export async function openLocationInSystemMap(
