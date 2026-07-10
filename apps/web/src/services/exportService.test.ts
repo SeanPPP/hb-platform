@@ -118,7 +118,7 @@ const sixPdfColumns: ContainerDetailExportColumn[] = [
   { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' },
   { header: '条码图片', key: 'barcodeImage', width: 24, valueType: 'text' },
   { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' },
-  { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' },
+  { header: '零售价', key: 'oemPrice', width: 12, valueType: 'money' },
   { header: '备注', key: 'remark', width: 18, valueType: 'text' },
 ]
 const portraitLayout = resolveContainerDetailPdfLayout(sixPdfColumns)
@@ -136,7 +136,7 @@ const defaultPdfLayout = resolveContainerDetailPdfLayout([
   { header: '货号', key: 'itemNumber', width: 18, valueType: 'text' },
   { header: '条码图片', key: 'barcodeImage', width: 24, valueType: 'text' },
   { header: '英文名称', key: 'englishName', width: 36, valueType: 'text' },
-  { header: '贴牌价格', key: 'oemPrice', width: 12, valueType: 'money' },
+  { header: '零售价', key: 'oemPrice', width: 12, valueType: 'money' },
 ])
 assertEqual(defaultPdfLayout.orientation, 'p', '货柜明细 PDF 默认 6 列应导出为竖向 A4')
 

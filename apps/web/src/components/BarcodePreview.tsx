@@ -1,6 +1,6 @@
 import { CopyOutlined } from '@ant-design/icons'
 import { Button, Space, Tooltip, Typography } from 'antd'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type MouseEvent } from 'react'
 import type { BarcodeOptions } from '../utils/barcode'
 import { renderBarcodeToCanvas } from '../utils/barcode'
 import { copyTextToClipboard } from '../utils/clipboard'
@@ -58,6 +58,16 @@ export default function BarcodePreview({
     return <>--</>
   }
 
+  const handleCopyClick = (event: MouseEvent<HTMLElement>) => {
+    // 条码预览常被包在可双击编辑的单元格内，复制操作不能冒泡触发编辑态。
+    event.stopPropagation()
+    void copyTextToClipboard(value)
+  }
+
+  const stopCopyDoubleClick = (event: MouseEvent<HTMLElement>) => {
+    event.stopPropagation()
+  }
+
   return (
     <div
       className={className}
@@ -87,11 +97,12 @@ export default function BarcodePreview({
                   size="small"
                   type="text"
                   icon={<CopyOutlined />}
-                  onClick={() => void copyTextToClipboard(value)}
+                  onClick={handleCopyClick}
+                  onDoubleClick={stopCopyDoubleClick}
                 />
               </Tooltip>
             ) : (
-              <Button size="small" type="link" onClick={() => void copyTextToClipboard(value)}>
+              <Button size="small" type="link" onClick={handleCopyClick} onDoubleClick={stopCopyDoubleClick}>
                 {t('common.copy', '复制')}
               </Button>
             )

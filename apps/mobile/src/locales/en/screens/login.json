@@ -67,6 +67,7 @@
     "network": "Cannot reach the server. Check the server address, network connection, and backend service.\nServer: {{origin}}",
     "server": "The server is temporarily unavailable. Please try again later.",
     "http": "Login failed. Try again later or ask an administrator. Error code: {{status}}",
+    "locationRequired": "Login requires your current precise location. Allow location access and try again.",
     "default": "Login failed. Please try again later."
   }
 }

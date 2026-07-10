@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { Tabs, usePathname, useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -7,7 +7,9 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
+import { useAppDeviceStatusHeartbeat } from "@/modules/device-management/use-app-device-heartbeat";
 import {
+  filterAccountTabRouteNames,
   getVisibleTabRouteNames,
   resolveTabRouteCorrection,
 } from "@/modules/navigation/default-route";
@@ -31,12 +33,20 @@ export default function TabsLayout() {
   const canViewAttendanceManagement = useAuthStore(
     (state) => state.access.canViewAttendanceManagement
   );
+  const canCreateOrder = useAuthStore((state) => state.access.canCreateOrder);
+  const isWarehouseStaffOnly = useAuthStore((state) => state.access.isWarehouseStaffOnly);
   const hasRestored = useRef(false);
   const hasAppliedDefaultRoute = useRef(false);
+  const [heartbeatReady, setHeartbeatReady] = useState(false);
+  const [heartbeatUsesDeviceSession, setHeartbeatUsesDeviceSession] = useState(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
   const hasStoredDeviceSession = Boolean(
     deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode
   );
+  useAppDeviceStatusHeartbeat({
+    enabled: heartbeatReady && (hasUserSession || hasStoredDeviceSession),
+    useDeviceSession: heartbeatUsesDeviceSession,
+  });
 
   useEffect(() => {
     if (hasRestored.current) {
@@ -50,6 +60,32 @@ export default function TabsLayout() {
     if (hasUserSession) {
       console.info("[startup-auth] using existing user session");
       hasRestored.current = true;
+      setHeartbeatReady(false);
+      setHeartbeatUsesDeviceSession(false);
+      if (hasStoredDeviceSession) {
+        let cancelled = false;
+        async function validateStoredDeviceForHeartbeat() {
+          try {
+            const isValidDeviceSession = await validateDevice();
+            if (!cancelled) {
+              setHeartbeatUsesDeviceSession(isValidDeviceSession);
+              setHeartbeatReady(true);
+            }
+          } catch {
+            if (!cancelled) {
+              setHeartbeatUsesDeviceSession(false);
+              setHeartbeatReady(true);
+            }
+          }
+        }
+
+        void validateStoredDeviceForHeartbeat();
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      setHeartbeatReady(true);
       return;
     }
 
@@ -69,6 +105,10 @@ export default function TabsLayout() {
             clearAccountSession: clearLocalAuthSession,
             validateDevice,
           });
+          if (isReady && !cancelled) {
+            setHeartbeatUsesDeviceSession(true);
+            setHeartbeatReady(true);
+          }
           if (!isReady && !cancelled) {
             console.warn("[startup-auth] device session not ready, attempting account session restore", {
               hardwareId: currentDeviceSession.hardwareId,
@@ -76,6 +116,10 @@ export default function TabsLayout() {
               status: currentDeviceSession.status ?? null,
             });
             const restored = await restoreSession();
+            if (restored && !cancelled) {
+              setHeartbeatUsesDeviceSession(false);
+              setHeartbeatReady(true);
+            }
             if (!restored && !cancelled) {
               console.warn("[startup-auth] no account session available after device validation rejection, redirecting to login");
               router.replace("/(auth)/login");
@@ -85,6 +129,10 @@ export default function TabsLayout() {
           if (!cancelled) {
             console.warn("[startup-auth] device validation failed, attempting account session restore");
             const restored = await restoreSession();
+            if (restored && !cancelled) {
+              setHeartbeatUsesDeviceSession(false);
+              setHeartbeatReady(true);
+            }
             if (!restored && !cancelled) {
               console.warn("[startup-auth] device validation failed and no account session restored, redirecting to login");
               router.replace("/(auth)/login");
@@ -106,6 +154,10 @@ export default function TabsLayout() {
       console.info("[startup-auth] restoring account session");
       const restored = await restoreSession();
       hasRestored.current = true;
+      if (!cancelled) {
+        setHeartbeatUsesDeviceSession(false);
+        setHeartbeatReady(restored);
+      }
       if (!restored && !cancelled) {
         console.warn("[startup-auth] no device session and no account session, redirecting to login");
         router.replace("/(auth)/login");
@@ -129,25 +181,33 @@ export default function TabsLayout() {
   ]);
 
   const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
+  const accountRouteNames = useMemo(
+    () =>
+      filterAccountTabRouteNames(
+        navigationItems.map((item) => item.routeName),
+        { canCreateOrder, isWarehouseStaffOnly }
+      ),
+    [canCreateOrder, isWarehouseStaffOnly, navigationItems]
+  );
   const visibleRouteNames = useMemo(
     () =>
       new Set(
         getVisibleTabRouteNames({
-          routeNames: navigationItems.map((item) => item.routeName),
+          routeNames: accountRouteNames,
           isDeviceMode,
           canViewAttendanceManagement,
         })
       ),
-    [canViewAttendanceManagement, isDeviceMode, navigationItems]
+    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
   );
   const orderedVisibleRouteNames = useMemo(
     () =>
       getVisibleTabRouteNames({
-        routeNames: navigationItems.map((item) => item.routeName),
+        routeNames: accountRouteNames,
         isDeviceMode,
         canViewAttendanceManagement,
       }),
-    [canViewAttendanceManagement, isDeviceMode, navigationItems]
+    [accountRouteNames, canViewAttendanceManagement, isDeviceMode]
   );
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
@@ -288,6 +348,16 @@ export default function TabsLayout() {
           title: t("tabs.promotions"),
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="reports"
+        options={{
+          href: isRouteVisible("reports") ? undefined : null,
+          title: t("tabs.reports"),
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="chart-line" color={color} size={size} />
           ),
         }}
       />

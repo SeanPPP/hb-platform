@@ -22,6 +22,12 @@ assertEqual(
 );
 
 assertEqual(
+  getFriendlyLoginErrorDescriptor(new Error("登录需要位置信息")).key,
+  "errors.locationRequired",
+  "backend location requirement stays actionable"
+);
+
+assertEqual(
   getFriendlyLoginErrorDescriptor({ message: "Network Error" }).key,
   "errors.network",
   "network failure gets connection guidance"

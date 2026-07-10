@@ -225,7 +225,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       const isSinglePriceColumn = row.length === 1 && parsePrice(row[0]) !== undefined
       return {
         ...item,
-        // Excel 单列数字按贴牌价粘贴，多列按名称 + 贴牌价粘贴。
+        // Excel 单列数字按零售价粘贴，多列按名称 + 零售价粘贴。
         productName: isSinglePriceColumn ? item.productName : row[0] || item.productName,
         privateLabelPrice: isSinglePriceColumn ? parsePrice(row[0]) : parsePrice(row[1]) ?? item.privateLabelPrice,
       }
@@ -395,11 +395,11 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       ),
     },
     {
-      title: t('productCreation.privateLabelPrice', '贴牌价'),
+      title: t('productCreation.privateLabelPrice', '零售价'),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 130,
-      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} onPaste={(event) => handleProductPaste(event, record.key)} placeholder={t('productCreation.privateLabelPrice', '贴牌价')} style={{ width: '100%' }} min={0} precision={2} />,
+      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateProduct(record.key, 'privateLabelPrice', value)} onPaste={(event) => handleProductPaste(event, record.key)} placeholder={t('productCreation.privateLabelPrice', '零售价')} style={{ width: '100%' }} min={0} precision={2} />,
     },
     {
       title: t('productCreation.createCount', '创建套数'),
@@ -461,11 +461,11 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
       ),
     },
     {
-      title: t('productCreation.privateLabelPrice', '贴牌价'),
+      title: t('productCreation.privateLabelPrice', '零售价'),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 140,
-      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateSubItem(setKey, record.key, 'privateLabelPrice', value)} onPaste={(event) => handleSubItemPaste(event, setKey, record.key)} placeholder={t('productCreation.privateLabelPrice', '贴牌价')} style={{ width: '100%' }} min={0} precision={2} />,
+      render: (text, record) => <InputNumber value={text} onChange={(value) => handleUpdateSubItem(setKey, record.key, 'privateLabelPrice', value)} onPaste={(event) => handleSubItemPaste(event, setKey, record.key)} placeholder={t('productCreation.privateLabelPrice', '零售价')} style={{ width: '100%' }} min={0} precision={2} />,
     },
     {
       title: t('common.action', '操作'),
@@ -495,7 +495,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
         return typeMap[type] || type
       },
     },
-    { title: t('productCreation.privateLabelPrice', '贴牌价'), dataIndex: 'privateLabelPrice', key: 'privateLabelPrice', width: 120, render: (text) => (text != null ? `$${text}` : '-') },
+    { title: t('productCreation.privateLabelPrice', '零售价'), dataIndex: 'privateLabelPrice', key: 'privateLabelPrice', width: 120, render: (text) => (text != null ? `$${text}` : '-') },
     {
       title: t('productCreation.createCount', '创建套数'),
       dataIndex: 'createCount',
@@ -569,7 +569,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                   <Select value={batchAddMode} onChange={(v) => setBatchAddMode(v)} style={{ width: 140 }} options={[{ label: t('productCreation.adjustToCount', '调整到指定数量'), value: 'overwrite' }, { label: t('productCreation.appendCount', '追加指定数量'), value: 'append' }]} />
                 </div>
                 <div>
-                  {t('productCreation.uniformPrice', '统一贴牌价格')}:
+                  {t('productCreation.uniformPrice', '统一零售价')}:
                   <InputNumber min={0} precision={2} placeholder={t('productCreation.optional', '可选')} style={{ marginLeft: 8, width: 160 }} onChange={(v) => setBatchAddPrice(v)} />
                 </div>
               </Space>

@@ -397,18 +397,31 @@ export default function WarehouseScreen() {
   const [photoVisible, setPhotoVisible] = useState(false);
   const navigationItems = useAppNavigationStore((state) => state.items);
 
-  const hasWarehouseAccess =
-    hasStoredDeviceSession ||
-    hasVisibleTabRoute(
-      navigationItems.map((item) => item.routeName),
-      "warehouse"
-    );
+  const hasVisibleWarehouseTab = hasVisibleTabRoute(
+    navigationItems.map((item) => item.routeName),
+    "warehouse"
+  );
   const notAvailableText = t("messages.notAvailable");
   const shouldForcePdaLayout = Platform.OS === "ios" && !Platform.isPad;
   const productLayoutMode = getWarehouseProductPdaLayout(windowWidth, { forcePda: shouldForcePdaLayout });
   const productSectionConfig = getWarehouseProductSections(productLayoutMode);
   const isPdaProductLayout = productLayoutMode === "pda";
   const canMaintainLocations = canMaintainWarehouseLocations(access);
+  const canViewContainers = access.canViewContainers;
+  const canUseWarehouseTools =
+    hasStoredDeviceSession ||
+    (
+      hasVisibleWarehouseTab &&
+      (
+        access.canManageWarehouse ||
+        access.hasPermission("Warehouse.ManageProducts") ||
+        canMaintainLocations
+      )
+    );
+  const hasWarehouseAccess = canUseWarehouseTools || (canViewContainers && hasVisibleWarehouseTab);
+  const openContainers = useCallback(() => {
+    router.push("/containers" as Parameters<typeof router.push>[0]);
+  }, [router]);
   const getErrorMessage = useCallback((error: unknown, fallbackKey: string) => (
     resolveLocalizedErrorMessage(error, {
       language,
@@ -1659,6 +1672,23 @@ export default function WarehouseScreen() {
     </View>
   );
 
+  const renderContainerEntry = () => canViewContainers ? (
+    <Card mode="contained" style={[styles.containerEntryCard, isPdaProductLayout ? styles.containerEntryCardCompact : null]}>
+      <Card.Content style={styles.containerEntryContent}>
+        <View style={styles.containerEntryText}>
+          <Text variant="titleMedium">{t("containers.entryTitle")}</Text>
+          <Text variant="bodySmall" style={styles.secondaryText}>
+            {t("containers.entryDescription")}
+          </Text>
+        </View>
+        {/* 货柜迁移入口只看 Container.View，不放大原仓库 PDA 权限。 */}
+        <Button mode="contained-tonal" compact={isPdaProductLayout} icon="archive-outline" onPress={openContainers}>
+          {t("containers.entryAction")}
+        </Button>
+      </Card.Content>
+    </Card>
+  ) : null;
+
   if (!hasWarehouseAccess) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -1675,11 +1705,24 @@ export default function WarehouseScreen() {
     );
   }
 
+  if (!canUseWarehouseTools) {
+    return (
+      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+        <View style={[styles.header, isPdaProductLayout ? styles.headerCompact : null]}>
+          <Text variant="headlineSmall">{t("title")}</Text>
+        </View>
+        {renderContainerEntry()}
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={[styles.header, isPdaProductLayout ? styles.headerCompact : null]}>
         <Text variant="headlineSmall">{t("title")}</Text>
       </View>
+
+      {renderContainerEntry()}
 
       <SegmentedButtons
         value={segment}
@@ -2660,6 +2703,28 @@ const styles = StyleSheet.create({
   },
   cardCompact: {
     borderRadius: 10,
+  },
+  containerEntryCard: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    backgroundColor: "#fff",
+    borderRadius: 18,
+  },
+  containerEntryCardCompact: {
+    marginHorizontal: 10,
+    marginBottom: 8,
+    borderRadius: 10,
+  },
+  containerEntryContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  containerEntryText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   cardContent: {
     gap: 10,

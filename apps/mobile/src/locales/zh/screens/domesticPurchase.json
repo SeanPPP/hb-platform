@@ -27,7 +27,7 @@
     "selectPrefix": "选择前缀码",
     "noPrefix": "不使用前缀码",
     "count": "创建数量",
-    "privateLabelPrice": "统一贴牌价",
+    "privateLabelPrice": "统一零售价",
     "privateLabelPriceHelp": "可留空；如果多个商品价格不同，创建后在明细中单独修改。"
   },
   "fields": {
@@ -35,8 +35,8 @@
     "normalCount": "普通 {{value}}",
     "setCount": "套装 {{value}}",
     "barcode": "条码 {{value}}",
-    "privateLabelPriceLabel": "贴牌价",
-    "privateLabelPrice": "贴牌 {{value}}",
+    "privateLabelPriceLabel": "零售价",
+    "privateLabelPrice": "零售价 {{value}}",
     "parent": "父货号 {{value}}",
     "emptyName": "--"
   },
@@ -52,7 +52,7 @@
     "loadPrefixesFailed": "加载前缀码失败",
     "selectSupplier": "请先选择供应商",
     "invalidCount": "创建数量需要在 1 到 100 之间",
-    "invalidPrice": "贴牌价格格式不正确",
+    "invalidPrice": "零售价格式不正确",
     "createSuccess": "创建成功",
     "createFailed": "创建失败",
     "saveSuccess": "保存成功",
@@ -64,7 +64,7 @@
     "exportFailed": "导出失败"
   },
   "copy": {
-    "batchHeader": "货号 条码 贴牌价格"
+    "batchHeader": "货号 条码 零售价"
   },
   "productList": {
     "title": "国内商品列表",
@@ -83,7 +83,7 @@
       "productSpecification": "规格",
       "productType": "商品类型",
       "domesticPrice": "国内价格",
-      "oemPrice": "贴牌价格",
+      "oemPrice": "零售价",
       "importPrice": "进口价格",
       "packingQuantity": "装箱数",
       "unitVolume": "单体积",

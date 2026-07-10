@@ -732,7 +732,7 @@ namespace BlazorApp.Api.Services.React
                     if (product.OEMPrice.HasValue)
                     {
                         if (product.OEMPrice.Value < 0)
-                            errors.Add("oemPrice", new List<string> { "贴牌价格必须为非负数" });
+                            errors.Add("oemPrice", new List<string> { "零售价必须为非负数" });
                     }
                     if (product.PackingQuantity.HasValue)
                     {
@@ -1386,7 +1386,7 @@ namespace BlazorApp.Api.Services.React
                                         changedFields.Add("DomesticPrice");
                                     }
                                 }
-                                // 更新贴牌价格
+                                // 更新零售价
                                 if (
                                     updateDto.OEMPrice.HasValue
                                     && existingProduct.OEMPrice != updateDto.OEMPrice
@@ -1395,7 +1395,7 @@ namespace BlazorApp.Api.Services.React
                                     if (updateDto.OEMPrice.Value < 0)
                                     {
                                         result.Errors.Add(
-                                            $"更新商品失败: 贴牌价格不能为负 (ProductCode: {updateDto.ProductCode})"
+                                            $"更新商品失败: 零售价不能为负 (ProductCode: {updateDto.ProductCode})"
                                         );
                                     }
                                     else
@@ -1727,7 +1727,7 @@ namespace BlazorApp.Api.Services.React
                                 changedFields.Add("DomesticPrice");
                             }
                         }
-                        // 更新贴牌价格
+                        // 更新零售价
                         if (
                             updateDto.OEMPrice.HasValue
                             && existingProduct.OEMPrice != updateDto.OEMPrice
@@ -1736,7 +1736,7 @@ namespace BlazorApp.Api.Services.React
                             if (updateDto.OEMPrice.Value < 0)
                             {
                                 result.Errors.Add(
-                                    $"更新商品失败: 贴牌价格不能为负 (ProductCode: {updateDto.ProductCode})"
+                                    $"更新商品失败: 零售价不能为负 (ProductCode: {updateDto.ProductCode})"
                                 );
                             }
                             else
@@ -1895,6 +1895,158 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<BatchProductOperationResultDto>.Error(
                     "批量更新商品失败",
                     "BATCH_UPDATE_PRODUCTS_ERROR"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<BatchUpdateHbwebProductNamesResultDto>> BatchUpdateHbwebProductNamesAsync(
+            BatchUpdateHbwebProductNamesDto dto
+        )
+        {
+            var result = new BatchUpdateHbwebProductNamesResultDto();
+
+            try
+            {
+                var normalizedItems = (dto.Products ?? new List<HbwebProductNameUpdateItemDto>())
+                    .Select(item => new HbwebProductNameUpdateItemDto
+                    {
+                        ItemNumber = item?.ItemNumber?.Trim() ?? string.Empty,
+                        ProductName = item?.ProductName?.Trim() ?? string.Empty,
+                    })
+                    .ToList();
+
+                if (!normalizedItems.Any())
+                {
+                    return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                        "商品列表不能为空",
+                        "NO_HBWEB_PRODUCT_NAMES",
+                        result
+                    );
+                }
+
+                var invalidItemErrors = new List<string>();
+                foreach (var item in normalizedItems)
+                {
+                    // 统一在服务层做写主表前校验，避免 ApiController 提前返回导致前端拿不到明细错误。
+                    if (string.IsNullOrWhiteSpace(item.ItemNumber))
+                    {
+                        invalidItemErrors.Add("货号不能为空");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(item.ProductName))
+                    {
+                        invalidItemErrors.Add($"商品名称不能为空: {item.ItemNumber}");
+                        continue;
+                    }
+
+                    if (item.ItemNumber.Length > 50)
+                    {
+                        invalidItemErrors.Add($"货号不能超过50个字符: {item.ItemNumber}");
+                    }
+
+                    if (item.ProductName.Length > 200)
+                    {
+                        invalidItemErrors.Add($"商品名称不能超过200个字符: {item.ItemNumber}");
+                    }
+                }
+
+                if (invalidItemErrors.Any())
+                {
+                    result.Errors.AddRange(invalidItemErrors);
+                    return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                        "存在无效货号或商品名称，请先修正后再更新",
+                        "INVALID_HBWEB_PRODUCT_NAMES",
+                        result
+                    );
+                }
+
+                var duplicateRequestConflicts = normalizedItems
+                    .GroupBy(item => item.ItemNumber)
+                    .Where(group => group.Select(item => item.ProductName).Distinct(StringComparer.Ordinal).Count() > 1)
+                    .Select(group => group.Key)
+                    .ToList();
+
+                if (duplicateRequestConflicts.Any())
+                {
+                    result.Errors.AddRange(duplicateRequestConflicts.Select(itemNumber => $"同一货号存在多个商品名称: {itemNumber}"));
+                    return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                        "同一货号存在多个商品名称，请先修正后再更新",
+                        "DUPLICATE_ITEM_NUMBER_NAMES",
+                        result
+                    );
+                }
+
+                // 同货号同名称只需要写一次，避免重复行造成重复更新。
+                var updates = normalizedItems
+                    .GroupBy(item => item.ItemNumber)
+                    .Select(group => group.First())
+                    .ToList();
+                var itemNumbers = updates.Select(item => item.ItemNumber).ToList();
+                var db = _context.Db;
+                var products = await db.Queryable<Product>()
+                    .Where(product => product.ItemNumber != null && itemNumbers.Contains(product.ItemNumber) && !product.IsDeleted)
+                    .ToListAsync();
+                var productGroups = products
+                    .GroupBy(product => product.ItemNumber ?? string.Empty)
+                    .ToDictionary(group => group.Key, group => group.ToList());
+                var productsToUpdate = new List<Product>();
+
+                foreach (var update in updates)
+                {
+                    if (!productGroups.TryGetValue(update.ItemNumber, out var matchedProducts))
+                    {
+                        result.MissingItemNumbers.Add(update.ItemNumber);
+                        continue;
+                    }
+
+                    if (matchedProducts.Count > 1)
+                    {
+                        result.Errors.Add($"HBweb 商品主表货号重复，已跳过: {update.ItemNumber}");
+                        continue;
+                    }
+
+                    var product = matchedProducts[0];
+                    if (string.Equals(product.ProductName?.Trim(), update.ProductName, StringComparison.Ordinal))
+                    {
+                        result.UnchangedCount++;
+                        continue;
+                    }
+
+                    // 只写 Product.ProductName，保留英文名、价格、条码、图片和分店价格不变。
+                    product.ProductName = update.ProductName;
+                    product.UpdatedAt = DateTime.Now;
+                    product.UpdatedBy = "System";
+                    productsToUpdate.Add(product);
+                }
+
+                if (productsToUpdate.Any())
+                {
+                    await db.Ado.UseTranAsync(async () =>
+                    {
+                        await db.Updateable(productsToUpdate)
+                            // 只允许写商品名称和审计字段，避免整实体更新覆盖价格、条码、图片等主表字段。
+                            .UpdateColumns(product => new { product.ProductName, product.UpdatedAt, product.UpdatedBy })
+                            .ExecuteCommandAsync();
+                    });
+                }
+
+                result.UpdatedCount = productsToUpdate.Count;
+                var message = $"HBweb 商品主表名称更新完成：更新{result.UpdatedCount}条，无变化{result.UnchangedCount}条，未找到{result.MissingItemNumbers.Count}条";
+                if (result.Errors.Any())
+                {
+                    message += $"，跳过{result.Errors.Count}条";
+                }
+
+                return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.OK(result, message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新 HBweb 商品主表商品名称失败");
+                return ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                    "批量更新 HBweb 商品主表商品名称失败",
+                    "BATCH_UPDATE_HBWEB_PRODUCT_NAMES_ERROR",
+                    result
                 );
             }
         }
@@ -2705,7 +2857,7 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
 
-                        // 贴牌价格
+                        // 零售价
                         var oemPrices = productsToUpdate.Where(p => p.OEMPrice.HasValue).ToList();
                         if (oemPrices.Any())
                         {
@@ -3108,7 +3260,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!validProducts.Any())
                     return ApiResponse<SyncResult>.Error(
-                        "选中的商品中没有同时具备进口价格和贴牌价格的商品",
+                        "选中的商品中没有同时具备进口价格和零售价的商品",
                         "NO_VALID_PRODUCTS"
                     );
 

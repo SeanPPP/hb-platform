@@ -29,6 +29,9 @@
         "NSBluetoothAlwaysUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",
         "NSBluetoothPeripheralUsageDescription": "Used to scan and connect Bluetooth receipt and label printers",
         "NSMicrophoneUsageDescription": "Used for audio feedback",
+        "NSLocationWhenInUseUsageDescription": "Used to capture precise location when signing in and submitting attendance punches",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Used to sample attendance location every 20 minutes while you are clocked in",
+        "NSLocationAlwaysUsageDescription": "Used to sample attendance location every 20 minutes while you are clocked in",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -48,6 +51,8 @@
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.BLUETOOTH_SCAN",
         "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.REQUEST_INSTALL_PACKAGES"
@@ -60,6 +65,16 @@
         "expo-camera",
         {
           "cameraPermission": "Used for scanning barcodes and taking profile photos"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Used to sample attendance location every 20 minutes while you are clocked in",
+          "locationAlwaysPermission": "Used to sample attendance location every 20 minutes while you are clocked in",
+          "locationWhenInUsePermission": "Used to capture precise location when signing in and submitting attendance punches",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
         }
       ],
       "expo-audio",

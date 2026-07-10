@@ -111,6 +111,7 @@ const pageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierIn
 const editPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/index.tsx')
 const editCellsFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit/EditableCells.tsx')
 const detailPageFile = path.resolve(process.cwd(), 'src/pages/PosAdmin/LocalSupplierInvoiceDetailPage/index.tsx')
+const barcodePreviewFile = path.resolve(process.cwd(), 'src/components/BarcodePreview.tsx')
 const serviceFile = path.resolve(process.cwd(), 'src/services/localSupplierInvoiceService.ts')
 const typeFile = path.resolve(process.cwd(), 'src/types/localSupplierInvoice.ts')
 const globalStyleFile = path.resolve(process.cwd(), 'src/styles/global.css')
@@ -118,6 +119,7 @@ const pageSource = readFileSync(pageFile, 'utf8')
 const editPageSource = readFileSync(editPageFile, 'utf8')
 const editCellsSource = readFileSync(editCellsFile, 'utf8')
 const detailPageSource = readFileSync(detailPageFile, 'utf8')
+const barcodePreviewSource = readFileSync(barcodePreviewFile, 'utf8')
 const serviceSource = readFileSync(serviceFile, 'utf8')
 const typeSource = readFileSync(typeFile, 'utf8')
 const globalStyleSource = readFileSync(globalStyleFile, 'utf8')
@@ -270,6 +272,34 @@ async function main() {
     assert(pageSource.includes('dto.selectedStoreCodes = values.selectedStoreCodes'), '页面应传 selectedStoreCodes')
   })
   if (pagePayloadFailure) failures.push(pagePayloadFailure)
+
+  const listPaginationLayoutFailure = await runTest('列表页表格滚动区域不应覆盖外置分页', () => {
+    assert(pageSource.includes('const tableRegionRef = useRef<HTMLDivElement>(null)'), '列表页应声明表格区域 ref')
+    assert(pageSource.includes("region.querySelector('.ant-table-thead')"), '表体高度计算必须扣除 AntD 表头')
+    assert(pageSource.includes('horizontalScrollbarHeight'), '表体高度计算必须扣除横向滚动条高度')
+    assert(
+      pageSource.includes('region.clientHeight - tableHeaderHeight - horizontalScrollbarHeight - 8'),
+      '表体高度必须按表格区域扣除表头和横向滚动条计算',
+    )
+    assert(
+      pageSource.includes('window.requestAnimationFrame') && pageSource.includes('ResizeObserver'),
+      '表格高度应在布局变化后重新测量',
+    )
+    assert(
+      pageSource.includes('ref={tableRegionRef}') &&
+        pageSource.includes('flex: 1') &&
+        pageSource.includes('minHeight: 0') &&
+        pageSource.includes("overflow: 'hidden'"),
+      '表格区域必须裁剪溢出，避免固定列画到分页栏',
+    )
+    assert(
+      pageSource.includes("position: 'relative'") &&
+        pageSource.includes('zIndex: 3') &&
+        pageSource.includes('flexShrink: 0'),
+      '分页栏应保持独立层级和固定底部空间',
+    )
+  })
+  if (listPaginationLayoutFailure) failures.push(listPaginationLayoutFailure)
 
   const editPageButtonFailure = await runTest('编辑页应使用专用权限显示更新HQ商品按钮', () => {
     assert(editPageSource.includes('canWriteLocalPurchaseToHq'), '编辑页应使用可编辑本地进货 + PushToHq 的组合权限控制写 HQ 入口')
@@ -862,7 +892,16 @@ async function main() {
     assert(editPageSource.includes("width: 48,\n      fixed: 'left'"), '图片列应固定在左侧并压缩宽度')
     assert(editPageSource.includes("width: 108,\n      fixed: 'left'"), '货号列应固定在左侧并压缩宽度')
     assert(editPageSource.includes('width={36} height={36}'), '图片缩略图应压缩到 36px')
-    assert(editPageSource.includes('<BarcodePreview value={v} compactCopy />'), '条码文本不应设置 textMaxWidth 省略隐藏')
+    const barcodeColumnSource = editPageSource.slice(
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.barcode'"),
+      editPageSource.indexOf("title: renderCompactHeader(t('posAdmin.invoiceDetail.productName'"),
+    )
+    assert(barcodeColumnSource.includes('field="barcode"'), '条码列应接入行内编辑字段')
+    assert(barcodeColumnSource.includes('onSave={handleInlineDetailSave}'), '条码行内编辑应回到统一保存 handler')
+    assert(barcodeColumnSource.includes('<BarcodePreview value={v} compactCopy />'), '条码文本不应设置 textMaxWidth 省略隐藏')
+    assert(barcodePreviewSource.includes('onClick={handleCopyClick}'), '条码预览复制按钮应保留复制入口')
+    assert(barcodePreviewSource.includes('onDoubleClick={stopCopyDoubleClick}'), '条码预览复制按钮双击不应冒泡触发行内编辑')
+    assert(barcodePreviewSource.includes('event.stopPropagation()'), '条码预览复制事件应阻止冒泡，避免破坏双击编辑边界')
     assert(editPageSource.includes('additionalBarcodeCount'), '条码列应显示副码数量标签')
     assert(editPageSource.includes('record.additionalBarcodes?.join'), '副码数量标签应悬浮显示完整副码列表')
     assert(editPageSource.includes('formatPricingFloatRate'), '定价浮率应使用专用两位小数格式化')

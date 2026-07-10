@@ -35,7 +35,9 @@ namespace BlazorApp.Api.Services.Background
 
             var control = await GetOrCreateControlAsync();
             var instances = await QueryInstancesAsync();
-            var status = BuildStatus(control, instances);
+            var leaseSnapshot = await QueryLeaseSnapshotAsync();
+            await PromoteCurrentInstanceWhenActiveIsStaleAsync(control, instances);
+            var status = BuildStatus(control, instances, leaseSnapshot);
             return status.EffectiveSchedulerEnabled;
         }
 
@@ -43,8 +45,9 @@ namespace BlazorApp.Api.Services.Background
         {
             var control = await QueryControlAsync();
             var instances = await QueryInstancesAsync();
+            var leaseSnapshot = await QueryLeaseSnapshotAsync();
 
-            return BuildStatus(control, instances);
+            return BuildStatus(control, instances, leaseSnapshot);
         }
 
         public async Task<ScheduledTaskRuntimeControlStatusDto> UpdateControlAsync(
@@ -72,7 +75,13 @@ namespace BlazorApp.Api.Services.Background
             );
 
             var instances = await QueryInstancesAsync();
-            return BuildStatus(control, instances);
+            var leaseSnapshot = await QueryLeaseSnapshotAsync();
+            return BuildStatus(control, instances, leaseSnapshot);
+        }
+
+        public string GetCurrentInstanceId()
+        {
+            return ResolveInstanceId();
         }
 
         private async Task<ScheduledTaskRuntimeControl?> QueryControlAsync()
@@ -176,9 +185,89 @@ namespace BlazorApp.Api.Services.Background
             await _context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
+        private async Task PromoteCurrentInstanceWhenActiveIsStaleAsync(
+            ScheduledTaskRuntimeControl control,
+            List<ScheduledTaskInstanceState> instances
+        )
+        {
+            if (!control.SchedulerEnabled || string.IsNullOrWhiteSpace(control.ActiveInstanceId))
+            {
+                return;
+            }
+
+            var currentInstanceId = ResolveInstanceId();
+            if (string.Equals(control.ActiveInstanceId, currentInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var staleThreshold = TimeSpan.FromMinutes(Math.Max(30, _options.HourlyTaskIntervalMinutes * 3));
+            var activeInstance = instances.FirstOrDefault(instance =>
+                string.Equals(instance.InstanceId, control.ActiveInstanceId, StringComparison.OrdinalIgnoreCase)
+            );
+            if (activeInstance == null || activeInstance.LastSeenAtUtc >= now.Subtract(staleThreshold))
+            {
+                return;
+            }
+
+            // 旧容器被替换后 activeInstanceId 可能长期停在死实例；当前实例接管，避免统计任务永久跳过。
+            var previousActiveInstanceId = control.ActiveInstanceId;
+            control.ActiveInstanceId = currentInstanceId;
+            control.UpdatedAtUtc = now;
+            control.UpdatedByUser = "auto-stale-failover";
+            await _context.Db.Updateable(control).ExecuteCommandAsync();
+            _logger.LogWarning(
+                "定时任务调度实例已自动接管: PreviousActive={PreviousActive}, Current={Current}, ThresholdMinutes={ThresholdMinutes}",
+                previousActiveInstanceId,
+                currentInstanceId,
+                staleThreshold.TotalMinutes
+            );
+        }
+
+        private async Task<ScheduledTaskLeaseSnapshot> QueryLeaseSnapshotAsync()
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                var recentSince = now.AddHours(-24);
+                var rows = await _context.Db.Queryable<ScheduledTaskLease>()
+                    .Where(x =>
+                        (x.Status == ScheduledTaskLeaseStatus.Running && x.LeaseUntilUtc != null && x.LeaseUntilUtc > now)
+                        || x.UpdatedAtUtc >= recentSince
+                    )
+                    .Select(x => new
+                    {
+                        x.Status,
+                        x.LeaseUntilUtc,
+                        x.DuplicateSkipCount,
+                        x.UpdatedAtUtc,
+                    })
+                    .ToListAsync();
+
+                return new ScheduledTaskLeaseSnapshot(
+                    rows.Count(x =>
+                        x.Status == ScheduledTaskLeaseStatus.Running
+                        && x.LeaseUntilUtc.HasValue
+                        && x.LeaseUntilUtc.Value > now
+                    ),
+                    rows
+                        .Where(x => x.UpdatedAtUtc >= recentSince)
+                        .Sum(x => x.DuplicateSkipCount)
+                );
+            }
+            catch (Exception ex)
+            {
+                // 租约表是新增控制面数据，读取失败不能影响已有调度开关判断。
+                _logger.LogWarning(ex, "读取统计任务租约状态失败，运行控制状态将显示为 0");
+                return new ScheduledTaskLeaseSnapshot(0, 0);
+            }
+        }
+
         private ScheduledTaskRuntimeControlStatusDto BuildStatus(
             ScheduledTaskRuntimeControl? control,
-            List<ScheduledTaskInstanceState> instances
+            List<ScheduledTaskInstanceState> instances,
+            ScheduledTaskLeaseSnapshot leaseSnapshot
         )
         {
             var currentInstanceId = ResolveInstanceId();
@@ -201,6 +290,8 @@ namespace BlazorApp.Api.Services.Background
                 ActiveInstanceId = activeInstanceId,
                 UpdatedAtUtc = control?.UpdatedAtUtc ?? default,
                 UpdatedBy = control?.UpdatedByUser,
+                RunningLeaseCount = leaseSnapshot.RunningLeaseCount,
+                RecentDuplicateSkipCount = leaseSnapshot.RecentDuplicateSkipCount,
                 KnownInstances = instances
                     .Select(instance => new ScheduledTaskInstanceStateDto
                     {
@@ -233,5 +324,10 @@ namespace BlazorApp.Api.Services.Background
 
             return $"{Environment.MachineName}-{Environment.ProcessId}";
         }
+
+        private sealed record ScheduledTaskLeaseSnapshot(
+            int RunningLeaseCount,
+            int RecentDuplicateSkipCount
+        );
     }
 }

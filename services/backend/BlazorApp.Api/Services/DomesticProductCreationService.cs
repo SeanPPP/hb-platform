@@ -818,7 +818,7 @@ namespace BlazorApp.Api.Services
                     "货号",
                     "条码",
                     "商品名称",
-                    "贴牌价格",
+                    "零售价",
                     "套装数量",
                     "套装价格",
                     "条码图片",
@@ -1031,7 +1031,7 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
-        /// 更新批次明细商品名称和贴牌价格
+        /// 更新批次明细商品名称和零售价
         /// </summary>
         public async Task<ApiResponse<object>> UpdateBatchItemsAsync(
             string batchNumber,
@@ -1063,7 +1063,7 @@ namespace BlazorApp.Api.Services
 
                     if (item.PrivateLabelPrice.HasValue && item.PrivateLabelPrice.Value < 0)
                     {
-                        return ApiResponse<object>.Error("贴牌价格不能为负数", "VALIDATION_ERROR");
+                        return ApiResponse<object>.Error("零售价不能为负数", "VALIDATION_ERROR");
                     }
 
                     if (!logsByProductCode.TryGetValue(item.ProductCode, out var log))
@@ -1101,7 +1101,7 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
-        /// 更新商品对应的套装明细贴牌价格，子项按小货号反查父套装明细
+        /// 更新商品对应的套装明细零售价，子项按小货号反查父套装明细
         /// </summary>
         private async Task UpdateSetProductOemPricesAsync(
             DomesticProduct product,

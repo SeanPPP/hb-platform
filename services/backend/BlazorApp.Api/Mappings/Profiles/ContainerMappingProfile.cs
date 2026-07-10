@@ -117,8 +117,14 @@ namespace BlazorApp.Api.Mappings.Profiles
                 .ForMember(dest => dest.贴牌价格, opt => opt.MapFrom(src => src.OEMPrice))
                 .ForMember(dest => dest.LastImportPrice, opt => opt.MapFrom(src => src.LastImportPrice))
                 .ForMember(dest => dest.LastOEMPrice, opt => opt.MapFrom(src => src.LastOEMPrice))
-                .ForMember(dest => dest.WarehouseImportPrice, opt => opt.MapFrom(src => src.LastImportPrice))
-                .ForMember(dest => dest.WarehouseOEMPrice, opt => opt.MapFrom(src => src.LastOEMPrice))
+                .ForMember(
+                    dest => dest.WarehouseImportPrice,
+                    opt => opt.MapFrom(src => src.WarehouseProduct != null ? src.WarehouseProduct.ImportPrice : null)
+                )
+                .ForMember(
+                    dest => dest.WarehouseOEMPrice,
+                    opt => opt.MapFrom(src => src.WarehouseProduct != null ? src.WarehouseProduct.OEMPrice : null)
+                )
                 .ForMember(dest => dest.单件装箱数, opt => opt.MapFrom(src => src.PackingQuantity))
                 .ForMember(dest => dest.单件体积, opt => opt.MapFrom(src => src.UnitVolume))
                 .ForMember(dest => dest.合计装柜金额, opt => opt.MapFrom(src => src.TotalAmount))

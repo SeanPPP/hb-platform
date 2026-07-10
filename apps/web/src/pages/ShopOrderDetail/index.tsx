@@ -160,7 +160,7 @@ export default function ShopOrderDetailPage() {
       },
       {
         label: t('shopOrderDetail.purchaseAmount'),
-        value: formatMoney(detail?.totalImportAmount),
+        value: formatMoney(detail?.totalAllocatedImportAmount ?? detail?.totalImportAmount),
         accent: true,
       },
       {
@@ -432,7 +432,7 @@ export default function ShopOrderDetailPage() {
                     </div>
                     <div>
                       <span>{t('shopOrderDetail.purchaseAmount')}</span>
-                      <strong>{formatMoney(item.importAmount)}</strong>
+                      <strong>{formatMoney(item.allocatedImportAmount ?? item.importAmount)}</strong>
                     </div>
                     <div>
                       <span>{t('shopOrderDetail.retailAmount')}</span>

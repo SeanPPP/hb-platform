@@ -2,6 +2,7 @@ import type { ApiResponse, PagedResult } from '../types/api'
 import type {
   AttendanceApprovalDto,
   AttendanceAvailabilityDto,
+  AttendanceLocationSampleDto,
   AttendancePagedResult,
   AttendancePunchDto,
   AttendanceQuery,
@@ -86,6 +87,14 @@ export async function getAttendancePunches(params: AttendanceQuery): Promise<Att
     { params: params as Record<string, unknown> },
   )
   return normalizePaged(response)
+}
+
+export async function getAttendanceLocationSamples(params: AttendanceQuery): Promise<AttendanceLocationSampleDto[]> {
+  const response = await request.get<ApiResponse<AttendanceLocationSampleDto[]> | AttendanceLocationSampleDto[]>(
+    `${API_BASE}/location-samples`,
+    { params: params as Record<string, unknown> },
+  )
+  return unwrapApiData(response) ?? []
 }
 
 export async function getAttendanceApprovals(params: AttendanceQuery): Promise<AttendancePagedResult<AttendanceApprovalDto>> {

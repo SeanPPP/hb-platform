@@ -91,7 +91,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -226,9 +226,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
@@ -309,9 +309,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
@@ -504,7 +504,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -597,7 +597,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -727,7 +727,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -896,9 +896,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Range(0, double.MaxValue, ErrorMessage = "贴牌价格不能为负数")]
+        [Range(0, double.MaxValue, ErrorMessage = "零售价不能为负数")]
         public decimal? OEMPrice { get; set; }
     }
 
@@ -954,6 +954,59 @@ namespace BlazorApp.Shared.DTOs
         [Required(ErrorMessage = "商品列表不能为空")]
         [MinLength(1, ErrorMessage = "至少需要一个商品")]
         public List<BatchProductUpdateDto> Products { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 批量更新 HBweb 商品主表商品名称 DTO
+    /// </summary>
+    public class BatchUpdateHbwebProductNamesDto
+    {
+        /// <summary>
+        /// 需要按货号更新的商品列表
+        /// </summary>
+        public List<HbwebProductNameUpdateItemDto> Products { get; set; } = new();
+    }
+
+    /// <summary>
+    /// HBweb 商品主表商品名称更新项
+    /// </summary>
+    public class HbwebProductNameUpdateItemDto
+    {
+        /// <summary>
+        /// HBweb Product.ItemNumber，对应导入页货号
+        /// </summary>
+        public string ItemNumber { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 写入 Product.ProductName 的商品名称
+        /// </summary>
+        public string ProductName { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 批量更新 HBweb 商品主表商品名称结果
+    /// </summary>
+    public class BatchUpdateHbwebProductNamesResultDto
+    {
+        /// <summary>
+        /// 实际更新数量
+        /// </summary>
+        public int UpdatedCount { get; set; }
+
+        /// <summary>
+        /// 名称已一致、未写入数量
+        /// </summary>
+        public int UnchangedCount { get; set; }
+
+        /// <summary>
+        /// HBweb 主表未找到的货号
+        /// </summary>
+        public List<string> MissingItemNumbers { get; set; } = new();
+
+        /// <summary>
+        /// 跳过或失败原因
+        /// </summary>
+        public List<string> Errors { get; set; } = new();
     }
 
     /// <summary>

@@ -175,7 +175,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? 进口价格 { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? 贴牌价格 { get; set; }
 
@@ -222,19 +222,24 @@ namespace BlazorApp.Shared.DTOs
         public decimal? LastImportPrice { get; set; }
 
         /// <summary>
-        /// 上次贴牌价格（货柜明细快照）
+        /// 上次零售价（货柜明细快照）
         /// </summary>
         public decimal? LastOEMPrice { get; set; }
 
         /// <summary>
-        /// 上次进货价格（兼容旧前端字段名）
+        /// 实时进货价（仓库商品表 ImportPrice）
         /// </summary>
         public decimal? WarehouseImportPrice { get; set; }
 
         /// <summary>
-        /// 上次贴牌价格（兼容旧前端字段名）
+        /// 实时零售价（仓库商品表 OEMPrice）
         /// </summary>
         public decimal? WarehouseOEMPrice { get; set; }
+
+        /// <summary>
+        /// 只读零售价：新商品取国内商品表，已有商品取仓库商品表；不参与明细业务价保存。
+        /// </summary>
+        public decimal? ReadonlyOemPrice { get; set; }
 
         /// <summary>
         /// 仓库商品是否上架
@@ -533,7 +538,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductCategoryGUID { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? 贴牌价格 { get; set; }
 
@@ -576,6 +581,28 @@ namespace BlazorApp.Shared.DTOs
         /// 跳过商品主数据和关联价格表同步，仅更新货柜明细
         /// </summary>
         public bool? SkipRelatedProductSync { get; set; }
+    }
+
+    /// <summary>
+    /// 人工确认后，把国内商品编码对齐到本地主档商品编码。
+    /// </summary>
+    public class AlignDomesticProductCodeRequestDto
+    {
+        public string DetailHguid { get; set; } = string.Empty;
+        public string ExpectedDomesticProductCode { get; set; } = string.Empty;
+        public string TargetProductCode { get; set; } = string.Empty;
+        public string SupplierCode { get; set; } = string.Empty;
+    }
+
+    public class AlignDomesticProductCodeResultDto
+    {
+        public string OldProductCode { get; set; } = string.Empty;
+        public string NewProductCode { get; set; } = string.Empty;
+        public int UpdatedDomesticProducts { get; set; }
+        public int UpdatedContainerDetails { get; set; }
+        public int UpdatedDomesticSetProducts { get; set; }
+        public int UpdatedProductGrades { get; set; }
+        public int UpdatedDomesticProductCreationLogs { get; set; }
     }
 
     /// <summary>

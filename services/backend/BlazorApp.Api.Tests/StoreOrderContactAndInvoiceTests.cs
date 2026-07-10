@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
+using System.Net.Sockets;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -223,7 +224,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal(4.44m, detail.ImportPrice);
-        Assert.Equal(17.76m, detail.ImportAmount);
+        // ImportAmount 按订货数量计算，发票金额走 AllocatedImportAmount。
+        Assert.Equal(22.2m, detail.ImportAmount);
         Assert.Equal(3m, product.PurchasePrice);
         Assert.Equal(3m, warehouseProduct.ImportPrice);
         Assert.Equal(3m, storePrice.PurchasePrice);
@@ -259,7 +261,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal(5.55m, detail.ImportPrice);
-        Assert.Equal(22.20m, detail.ImportAmount);
+        Assert.Equal(27.75m, detail.ImportAmount);
         Assert.Equal(5.55m, product.PurchasePrice);
         Assert.Equal(5.55m, warehouseProduct.ImportPrice);
         Assert.Collection(
@@ -313,7 +315,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.True(result.Success);
         Assert.Equal(4m, detail.AllocQuantity);
         Assert.Equal(6.66m, detail.ImportPrice);
-        Assert.Equal(26.64m, detail.ImportAmount);
+        Assert.Equal(33.3m, detail.ImportAmount);
         Assert.Equal(3m, product.PurchasePrice);
         Assert.Equal(3m, warehouseProduct.ImportPrice);
     }
@@ -377,7 +379,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal(5m, detail.Quantity);
                 Assert.Equal(6m, detail.AllocQuantity);
                 Assert.Equal(30m, detail.OEMAmount);
-                Assert.Equal(18m, detail.ImportAmount);
+                Assert.Equal(15m, detail.ImportAmount);
                 Assert.Equal("tester", detail.UpdatedBy);
             },
             detail =>
@@ -386,12 +388,12 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal(9m, detail.Quantity);
                 Assert.Equal(3m, detail.AllocQuantity);
                 Assert.Equal(21m, detail.OEMAmount);
-                Assert.Equal(12m, detail.ImportAmount);
+                Assert.Equal(36m, detail.ImportAmount);
                 Assert.Equal("tester", detail.UpdatedBy);
             }
         );
         Assert.Equal(51m, order.OEMTotalAmount);
-        Assert.Equal(30m, order.ImportTotalAmount);
+        Assert.Equal(51m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -754,6 +756,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Contains("WAREHOUSE EMAIL", pdfText);
                 Assert.Contains("INVOICE NO. SO001", pdfText);
                 Assert.Contains("INVOICE DATE: 2026/6/5", pdfText);
+                Assert.Contains("RRP", pdfText);
                 Assert.Contains("PAYMENT DETAIL: DIRECT DEBIT", pdfText);
                 Assert.Contains("NAME:", pdfText);
                 Assert.Contains("HOT BARGAIN INTERNATIONAL", pdfText);
@@ -783,10 +786,12 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal("ADDRESS:", sheet.Cell(5, 1).GetString());
                 Assert.Equal("1 Test Street", sheet.Cell(5, 2).GetString());
                 Assert.Equal("Item No", sheet.Cell(7, 2).GetString());
+                Assert.Equal("RRP", sheet.Cell(7, 6).GetString());
                 Assert.Equal("HB001", sheet.Cell(8, 2).GetString());
-                Assert.Equal(2m, sheet.Cell(8, 6).GetValue<decimal>());
-                Assert.Equal(1m, sheet.Cell(8, 7).GetValue<decimal>());
-                Assert.Equal(8.5m, sheet.Cell(8, 8).GetValue<decimal>());
+                Assert.Equal(12.99m, sheet.Cell(8, 6).GetValue<decimal>());
+                Assert.Equal(2m, sheet.Cell(8, 7).GetValue<decimal>());
+                Assert.Equal(1m, sheet.Cell(8, 8).GetValue<decimal>());
+                Assert.Equal(8.5m, sheet.Cell(8, 9).GetValue<decimal>());
             }
         );
     }
@@ -987,20 +992,119 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     }
 
     [Fact]
-    public async Task InvoiceEmailService_WhenPasswordDecryptFails_ReturnsClearFailure()
+    public async Task InvoiceEmailService_WhenSmtpConnectionRefused_ReturnsClearFailure()
+    {
+        var service = new ConnectionRefusedInvoiceEmailService(
+            CreateSettingsService(new InvoiceEmailOptions
+            {
+                Host = "mail.hotbargain.com.au",
+                Port = 25,
+                UseSsl = true,
+                FromEmail = "sean@hotbargain.com.au",
+            })
+        );
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
+            }
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("INVOICE_EMAIL_SMTP_CONNECTION_REFUSED", result.ErrorCode);
+        Assert.Equal(
+            "SMTP 连接被拒绝，请检查 SMTP 主机、端口和 SSL 设置：mail.hotbargain.com.au:25",
+            result.Message
+        );
+    }
+
+    [Fact]
+    public async Task InvoiceEmailService_UsesStoredPlainTextPassword()
     {
         var settingsService = CreateSettingsService();
         await _db.Insertable(
             new InvoiceEmailConfiguration
             {
                 Id = InvoiceEmailConfiguration.DefaultId,
+                Name = "Default Sender",
+                IsDefault = true,
                 Host = "mail.hotbargain.com.au",
                 Port = 465,
                 UseSsl = true,
                 Username = "sender@hotbargain.com.au",
-                EncryptedPassword = "invalid-protected-payload",
+                EncryptedPassword = "plain-secret",
                 FromEmail = "sender@hotbargain.com.au",
                 MaxAttachmentBytes = 5_242_880,
+            }
+        ).ExecuteCommandAsync();
+        var service = new SendingCaptureInvoiceEmailService(settingsService);
+
+        var result = await service.SendInvoiceAsync(
+            new StoreOrderInvoiceEmailMessage
+            {
+                ToEmail = "customer@example.com",
+                Subject = "invoice",
+                Body = "body",
+                Attachments = new List<StoreOrderInvoiceEmailAttachment>
+                {
+                    new()
+                    {
+                        FileName = "invoice.pdf",
+                        ContentType = "application/pdf",
+                        Bytes = new byte[] { 1, 2, 3, 4 },
+                    },
+                },
+            }
+        );
+
+        Assert.True(result.Success);
+        Assert.Equal("sender@hotbargain.com.au", service.AuthenticatedUsername);
+        Assert.Equal("plain-secret", service.AuthenticatedPassword);
+    }
+
+    [Fact]
+    public async Task InvoiceEmailService_WhenDefaultAccountInvalid_ReturnsClearFailure()
+    {
+        var settingsService = CreateSettingsService();
+        await _db.Insertable(
+            new[]
+            {
+                new InvoiceEmailConfiguration
+                {
+                    Id = "sender-a",
+                    Name = "Sender A",
+                    IsDefault = false,
+                    Host = "a.smtp.example.com",
+                    Port = 465,
+                    UseSsl = true,
+                    Username = "sender-a",
+                    FromEmail = "sender-a@example.com",
+                    MaxAttachmentBytes = 5_242_880,
+                },
+                new InvoiceEmailConfiguration
+                {
+                    Id = "sender-b",
+                    Name = "Sender B",
+                    IsDefault = false,
+                    Host = "b.smtp.example.com",
+                    Port = 465,
+                    UseSsl = true,
+                    Username = "sender-b",
+                    FromEmail = "sender-b@example.com",
+                    MaxAttachmentBytes = 5_242_880,
+                },
             }
         ).ExecuteCommandAsync();
         var service = new InvoiceEmailService(
@@ -1027,8 +1131,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         );
 
         Assert.False(result.Success);
-        Assert.Equal("INVOICE_EMAIL_PASSWORD_DECRYPT_FAILED", result.ErrorCode);
-        Assert.Equal("发票邮件 SMTP 密码解密失败，请重新输入 SMTP 密码后保存发票邮箱配置", result.Message);
+        Assert.Equal("INVOICE_EMAIL_DEFAULT_ACCOUNT_INVALID", result.ErrorCode);
+        Assert.Equal("发票邮件默认发件账号配置异常，请在发票邮箱配置中重新设置默认账号", result.Message);
     }
 
     [Fact]
@@ -1038,15 +1142,24 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         await settingsService.UpdateSettingsAsync(
             new UpdateInvoiceEmailSettingsDto
             {
-                Host = "db.smtp.example.com",
-                Port = 587,
-                UseSsl = false,
-                CheckCertificateRevocation = false,
-                Username = "db-user",
-                Password = "db-secret",
-                FromEmail = "configured@example.com",
-                FromName = "Configured Sender",
-                MaxAttachmentBytes = 5_242_880,
+                Accounts = new List<UpdateInvoiceEmailAccountDto>
+                {
+                    new()
+                    {
+                        Id = InvoiceEmailConfiguration.DefaultId,
+                        Name = "Configured Sender",
+                        Host = "db.smtp.example.com",
+                        Port = 587,
+                        UseSsl = false,
+                        CheckCertificateRevocation = false,
+                        Username = "db-user",
+                        Password = "db-secret",
+                        FromEmail = "configured@example.com",
+                        FromName = "Configured Sender",
+                        MaxAttachmentBytes = 5_242_880,
+                        IsDefault = true,
+                    },
+                },
             },
             "admin"
         );
@@ -1154,6 +1267,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             OrderDate = new DateTime(2026, 6, 4),
             OutboundDate = includeOutboundDate ? new DateTime(2026, 6, 5) : null,
             TotalImportAmount = 8.5m,
+            TotalAllocatedImportAmount = 8.5m,
             ShippingFee = 1.5m,
             Items = new List<StoreOrderCartItemDto>
             {
@@ -1167,6 +1281,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                     Quantity = 2m,
                     AllocQuantity = 1m,
                     ImportPrice = 8.5m,
+                    RRP = 12.99m,
+                    AllocatedImportAmount = 8.5m,
                 },
             },
         };
@@ -1287,6 +1403,23 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         )
         {
             throw new SslHandshakeException("handshake failed");
+        }
+    }
+
+    private sealed class ConnectionRefusedInvoiceEmailService : InvoiceEmailService
+    {
+        public ConnectionRefusedInvoiceEmailService(IInvoiceEmailSettingsService settingsService)
+            : base(NullLogger<InvoiceEmailService>.Instance, settingsService)
+        {
+        }
+
+        protected override Task ConnectSmtpClientAsync(
+            SmtpClient smtpClient,
+            InvoiceEmailOptions options,
+            SecureSocketOptions secureSocketOptions
+        )
+        {
+            throw new SocketException((int)SocketError.ConnectionRefused);
         }
     }
 

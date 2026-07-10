@@ -121,6 +121,7 @@ namespace BlazorApp.Api.Services
             {
                 var products = await _localContext.Db.Queryable<ContainerDetail>()
                     .Includes(x => x.Product)
+                    .Includes(x => x.WarehouseProduct)
                     .Where(x => x.ContainerCode == containerGuid)
                     .Where(x => x.ProductCode != null)
                     .OrderBy(x => x.ProductCode)
@@ -166,6 +167,7 @@ namespace BlazorApp.Api.Services
                 // 获取这些货柜的所有商品明细
                 var productsQuery = _localContext.Db.Queryable<ContainerDetail>()
                     .Includes(x => x.Product)
+                    .Includes(x => x.WarehouseProduct)
                     .Where(x => containerCodes.Contains(x.ContainerCode))
                     .Where(x => x.ProductCode != null);
 

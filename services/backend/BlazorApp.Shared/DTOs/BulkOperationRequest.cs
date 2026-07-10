@@ -32,7 +32,7 @@ namespace BlazorApp.Shared.DTOs
     public class BulkSetPriceRequest : BulkOperationRequestBase
     {
         /// <summary>
-        /// 价格类型（Domestic-国内价，OEM-贴牌价，Import-进口价）
+        /// 价格类型（Domestic-国内价，OEM-零售价，Import-进口价）
         /// </summary>
         [Required(ErrorMessage = "价格类型不能为空")]
         public string PriceType { get; set; } = string.Empty;
@@ -114,4 +114,3 @@ namespace BlazorApp.Shared.DTOs
         public List<string>? FailedProductCodes { get; set; }
     }
 }
-

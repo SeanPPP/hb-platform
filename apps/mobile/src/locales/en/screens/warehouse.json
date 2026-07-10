@@ -4,6 +4,11 @@
     "product": "Products",
     "location": "Location"
   },
+  "containers": {
+    "entryTitle": "Container management",
+    "entryDescription": "View container lists and container details.",
+    "entryAction": "Open"
+  },
   "messages": {
     "noAccessTitle": "No warehouse access",
     "noAccessDescription": "The current account or device does not have warehouse access.",
@@ -51,7 +56,7 @@
     "onShelf": "On shelf",
     "offShelf": "Off shelf",
     "retailSyncConfirmTitle": "Sync branch retail prices?",
-    "retailSyncConfirmDescription": "Retail price will update the product master and warehouse OEM price. Also update the price table for all active branches?",
+    "retailSyncConfirmDescription": "RRP will update the product master and warehouse RRP. Also update the price table for all active branches?",
     "retailSyncProductOnly": "Product master only",
     "retailSyncStores": "Sync branch prices",
     "stockStates": {
@@ -67,9 +72,9 @@
       "purchasePrice": "Purchase",
       "purchaseImportPrice": "Purchase / import",
       "retailPrice": "Retail",
-      "retailOemPrice": "Retail / OEM",
+      "retailOemPrice": "RRP",
       "domesticPrice": "Domestic",
-      "oemPrice": "OEM",
+      "oemPrice": "RRP",
       "importPrice": "Import",
       "stockQuantity": "Stock",
       "warehouseStatus": "Shelf status",

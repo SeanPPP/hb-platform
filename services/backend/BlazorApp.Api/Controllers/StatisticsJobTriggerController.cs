@@ -20,14 +20,19 @@ namespace BlazorApp.Api.Controllers
         private readonly SqlSugarContext _context;
         private readonly ILogger<StatisticsJobTriggerController> _logger;
         private readonly ISalesDashboardCacheWarmer _cacheWarmer;
+        private readonly SalesStatisticsAlignmentService _alignmentService;
+        private readonly SalesStatisticsAlignmentBackgroundRecalculateService _alignmentBackgroundRecalculateService;
         private const int MaxProductStoreDailyBatchDays = 31;
+        private const int MaxAlignmentQueryDays = 62;
 
         public StatisticsJobTriggerController(
             SalesStatisticsJobService statisticsJobService,
             ScheduledTaskLogService taskLogService,
             SqlSugarContext context,
             ILogger<StatisticsJobTriggerController> logger,
-            ISalesDashboardCacheWarmer cacheWarmer
+            ISalesDashboardCacheWarmer cacheWarmer,
+            SalesStatisticsAlignmentService alignmentService,
+            SalesStatisticsAlignmentBackgroundRecalculateService alignmentBackgroundRecalculateService
         )
         {
             _statisticsJobService = statisticsJobService;
@@ -35,6 +40,8 @@ namespace BlazorApp.Api.Controllers
             _context = context;
             _logger = logger;
             _cacheWarmer = cacheWarmer;
+            _alignmentService = alignmentService;
+            _alignmentBackgroundRecalculateService = alignmentBackgroundRecalculateService;
         }
 
         [HttpPost("trigger-store")]
@@ -653,6 +660,90 @@ namespace BlazorApp.Api.Controllers
             }
         }
 
+        [HttpGet("alignment/daily")]
+        public async Task<IActionResult> GetDailyStatisticsAlignment(
+            [FromQuery] DateTime? startDate,
+            [FromQuery] DateTime? endDate
+        )
+        {
+            var end = (endDate ?? DateTime.Now.Date).Date;
+            var start = (startDate ?? end.AddDays(-13)).Date;
+            if (start > end)
+            {
+                return BadRequest(new { success = false, message = "开始日期不能大于结束日期" });
+            }
+
+            var days = (int)(end - start).TotalDays + 1;
+            if (days > MaxAlignmentQueryDays)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = $"数据对齐一次最多查询 {MaxAlignmentQueryDays} 天，请缩小日期范围",
+                });
+            }
+
+            var result = await _alignmentService.GetDailyAlignmentAsync(start, end);
+            return Ok(new { success = true, data = result });
+        }
+
+        [HttpPost("alignment/recalculate")]
+        public async Task<IActionResult> RecalculateDailyStatisticsAlignment(
+            [FromBody] DailyStatisticsAlignmentRecalculateRequest request
+        )
+        {
+            var dates = NormalizeAlignmentRecalculateDates(request);
+            if (!dates.Any())
+            {
+                return BadRequest(new { success = false, message = "请选择需要补算的日期" });
+            }
+
+            if (dates.Count > MaxAlignmentQueryDays)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = $"一次最多补算 {MaxAlignmentQueryDays} 天，请分段执行",
+                });
+            }
+
+            var maxConcurrency = request.MaxConcurrency < 1
+                ? 3
+                : Math.Min(request.MaxConcurrency, 10);
+            var result = await _alignmentBackgroundRecalculateService.QueueAsync(dates, maxConcurrency);
+
+            return Ok(new
+            {
+                success = result.Success,
+                message = result.Message,
+                jobId = result.JobId,
+                processedDates = result.ProcessedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
+                skippedDates = result.SkippedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
+                failedDates = result.FailedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
+            });
+        }
+
+        private static List<DateTime> NormalizeAlignmentRecalculateDates(
+            DailyStatisticsAlignmentRecalculateRequest request
+        )
+        {
+            if (request.Dates?.Any() == true)
+            {
+                return request.Dates
+                    .Select(date => date.Date)
+                    .Distinct()
+                    .OrderBy(date => date)
+                    .ToList();
+            }
+
+            if (!request.StartDate.HasValue || !request.EndDate.HasValue)
+            {
+                return new List<DateTime>();
+            }
+
+            return EnumerateDates(request.StartDate.Value, request.EndDate.Value);
+        }
+
         private static List<DateTime> EnumerateDates(DateTime startDate, DateTime endDate)
         {
             var dates = new List<DateTime>();
@@ -734,6 +825,7 @@ namespace BlazorApp.Api.Controllers
                         totalDays = result.TotalDays,
                         processedDays = result.ProcessedDays,
                         failedDates = result.FailedDates,
+                        skippedDates = result.SkippedDates,
                         jobId = taskId,
                     }
                 );
@@ -803,6 +895,7 @@ namespace BlazorApp.Api.Controllers
                         totalDays = result.TotalDays,
                         processedDays = result.ProcessedDays,
                         failedDates = result.FailedDates,
+                        skippedDates = result.SkippedDates,
                         jobId = taskId,
                     }
                 );
@@ -868,6 +961,7 @@ namespace BlazorApp.Api.Controllers
                         totalDays = result.TotalDays,
                         processedDays = result.ProcessedDays,
                         failedDates = result.FailedDates,
+                        skippedDates = result.SkippedDates,
                         jobId = taskId,
                     }
                 );
@@ -938,6 +1032,7 @@ namespace BlazorApp.Api.Controllers
                         totalDays = result.TotalDays,
                         processedDays = result.ProcessedDays,
                         failedDates = result.FailedDates,
+                        skippedDates = result.SkippedDates,
                         jobId = taskId,
                     }
                 );
@@ -1144,6 +1239,7 @@ namespace BlazorApp.Api.Controllers
                         totalDays = result.TotalDays,
                         processedDays = result.ProcessedDays,
                         failedDates = result.FailedDates,
+                        skippedDates = result.SkippedDates,
                         totalMonths = result.TotalMonths,
                         processedMonths = result.ProcessedMonths,
                         failedMonths = result.FailedMonths,
@@ -1215,6 +1311,7 @@ namespace BlazorApp.Api.Controllers
                         totalDays = result.TotalDays,
                         processedDays = result.ProcessedDays,
                         failedDates = result.FailedDates,
+                        skippedDates = result.SkippedDates,
                         jobId = taskId,
                     }
                 );
@@ -1269,6 +1366,14 @@ namespace BlazorApp.Api.Controllers
     {
         public DateTime StartDate { get; set; }
         public DateTime EndDate { get; set; }
+        public int MaxConcurrency { get; set; } = 3;
+    }
+
+    public class DailyStatisticsAlignmentRecalculateRequest
+    {
+        public List<DateTime>? Dates { get; set; }
+        public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
         public int MaxConcurrency { get; set; } = 3;
     }
 

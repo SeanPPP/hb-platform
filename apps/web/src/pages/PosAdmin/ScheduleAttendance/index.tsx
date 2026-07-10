@@ -5,6 +5,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  EnvironmentOutlined,
   PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -44,6 +45,7 @@ import {
   deleteAttendanceSchedule,
   getAttendanceAvailability,
   getAttendanceHolidays,
+  getAttendanceLocationSamples,
   getAttendancePunches,
   getAttendanceScheduleWeek,
   getAttendanceSettings,
@@ -63,6 +65,7 @@ import type {
   AttendanceApprovalDto,
   AttendanceAvailabilityDto,
   AttendanceHolidayBusinessStatus,
+  AttendanceLocationSampleDto,
   AttendancePunchDto,
   AttendancePunchStatus,
   AttendanceReviewStatus,
@@ -86,6 +89,14 @@ dayjs.extend(isoWeek)
 
 type TabKey = 'schedules' | 'availability' | 'punches' | 'approvals' | 'holidays' | 'settings'
 type ReviewAction = 'approve' | 'reject'
+
+interface AttendanceMapPreview {
+  title: string
+  latitude: number
+  longitude: number
+  accuracy?: number
+  capturedAt?: string
+}
 
 interface ScheduleRow {
   rowKey: string
@@ -203,6 +214,11 @@ export default function ScheduleAttendancePage() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false)
   const [reviewTarget, setReviewTarget] = useState<AttendanceApprovalDto | null>(null)
   const [reviewAction, setReviewAction] = useState<ReviewAction>('approve')
+  const [mapPreview, setMapPreview] = useState<AttendanceMapPreview | null>(null)
+  const [sampleDrawerOpen, setSampleDrawerOpen] = useState(false)
+  const [sampleLoading, setSampleLoading] = useState(false)
+  const [sampleRows, setSampleRows] = useState<AttendanceLocationSampleDto[]>([])
+  const [sampleTitle, setSampleTitle] = useState('')
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [syncingHolidays, setSyncingHolidays] = useState(false)
@@ -213,6 +229,12 @@ export default function ScheduleAttendancePage() {
   const [settingsForm] = Form.useForm<SaveAttendanceSettingsPayload>()
 
   const storeNameMap = useMemo(() => new Map(storeOptions.map((item) => [item.value, item.label])), [storeOptions])
+  const externalMapUrl = useMemo(() => {
+    if (!mapPreview) {
+      return ''
+    }
+    return `https://maps.google.com/?q=${mapPreview.latitude},${mapPreview.longitude}`
+  }, [mapPreview])
   const editableStoreOptions = useMemo(
     () => filterStoreOptionsByManagedCodes(storeOptions, managedStoreCodes),
     [managedStoreCodeKey, storeOptions],
@@ -1015,6 +1037,72 @@ export default function ScheduleAttendancePage() {
     { title: t('column.remarks'), dataIndex: 'remark', ellipsis: true },
   ]
 
+  const openPunchMap = (record: AttendancePunchDto) => {
+    if (typeof record.locationLatitude !== 'number' || typeof record.locationLongitude !== 'number') {
+      message.info(t('posAdmin.scheduleAttendance.messages.locationNotRecorded'))
+      return
+    }
+
+    setMapPreview({
+      title: `${record.userName || record.userGuid} / ${t(`posAdmin.scheduleAttendance.status.punchType.${record.punchType}`, record.punchType)}`,
+      latitude: record.locationLatitude,
+      longitude: record.locationLongitude,
+      accuracy: record.locationAccuracy,
+      capturedAt: record.locationCapturedAtUtc || record.punchTimeUtc || record.punchTimeLocal,
+    })
+  }
+
+  const openLocationSamples = async (record: AttendancePunchDto) => {
+    setSampleTitle(`${record.userName || record.userGuid} / ${formatDate(record.workDate)}`)
+    setSampleRows([])
+    setSampleDrawerOpen(true)
+    setSampleLoading(true)
+    try {
+      const rows = await getAttendanceLocationSamples({
+        storeCode: record.storeCode,
+        userGuid: record.userGuid,
+        fromDate: dayjs(record.workDate).format('YYYY-MM-DD'),
+        toDate: dayjs(record.workDate).format('YYYY-MM-DD'),
+        storeTimeZone: record.storeTimeZone,
+      })
+      setSampleRows(rows)
+    } catch (error) {
+      console.error(error)
+      message.error(t('posAdmin.scheduleAttendance.messages.loadLocationSamplesFailed'))
+      setSampleRows([])
+    } finally {
+      setSampleLoading(false)
+    }
+  }
+
+  const locationSampleColumns: ColumnsType<AttendanceLocationSampleDto> = [
+    { title: t('posAdmin.scheduleAttendance.fields.locationCapturedAt'), dataIndex: 'locationCapturedAtUtc', width: 180, render: formatDateTime },
+    { title: t('posAdmin.scheduleAttendance.fields.location'), key: 'location', width: 190, render: (_, record) => `${record.locationLatitude.toFixed(6)}, ${record.locationLongitude.toFixed(6)}` },
+    { title: t('posAdmin.scheduleAttendance.fields.locationAccuracy'), dataIndex: 'locationAccuracy', width: 120, render: (value?: number) => typeof value === 'number' ? `${Math.round(value)}m` : '--' },
+    { title: t('posAdmin.scheduleAttendance.fields.deviceSystem'), dataIndex: 'deviceSystem', width: 120 },
+    {
+      title: t('column.action'),
+      key: 'action',
+      width: 120,
+      render: (_, record) => (
+        <Button
+          type="link"
+          size="small"
+          icon={<EnvironmentOutlined />}
+          onClick={() => setMapPreview({
+            title: `${sampleTitle} / ${formatDateTime(record.locationCapturedAtUtc)}`,
+            latitude: record.locationLatitude,
+            longitude: record.locationLongitude,
+            accuracy: record.locationAccuracy,
+            capturedAt: record.locationCapturedAtUtc,
+          })}
+        >
+          {t('posAdmin.scheduleAttendance.actions.viewMap')}
+        </Button>
+      ),
+    },
+  ]
+
   const punchColumns: ColumnsType<AttendancePunchDto> = [
     { title: t('posAdmin.scheduleAttendance.fields.store'), dataIndex: 'storeCode', width: 150, render: (value: string, record) => record.storeName || storeNameMap.get(value) || value },
     { title: t('posAdmin.scheduleAttendance.fields.employee'), key: 'user', width: 220, render: (_, record) => userCell(record) },
@@ -1023,6 +1111,30 @@ export default function ScheduleAttendancePage() {
     { title: t('posAdmin.scheduleAttendance.fields.punchTimeLocal'), dataIndex: 'punchTimeLocal', width: 170, render: formatDateTime },
     { title: t('posAdmin.scheduleAttendance.fields.timeZone'), dataIndex: 'storeTimeZone', width: 180 },
     { title: t('common.status'), dataIndex: 'status', width: 150, render: punchStatusTag },
+    {
+      title: t('posAdmin.scheduleAttendance.fields.location'),
+      key: 'location',
+      width: 140,
+      render: (_, record) => (
+        typeof record.locationLatitude === 'number' && typeof record.locationLongitude === 'number' ? (
+          <Button type="link" size="small" icon={<EnvironmentOutlined />} onClick={() => openPunchMap(record)}>
+            {t('posAdmin.scheduleAttendance.actions.viewMap')}
+          </Button>
+        ) : (
+          <Typography.Text type="secondary">{t('posAdmin.scheduleAttendance.messages.locationNotRecorded')}</Typography.Text>
+        )
+      ),
+    },
+    {
+      title: t('posAdmin.scheduleAttendance.fields.locationSamples'),
+      key: 'locationSamples',
+      width: 130,
+      render: (_, record) => (
+        <Button type="link" size="small" onClick={() => void openLocationSamples(record)}>
+          {t('posAdmin.scheduleAttendance.actions.viewSamples')}
+        </Button>
+      ),
+    },
     { title: t('column.remarks'), dataIndex: 'remark', ellipsis: true },
   ]
 
@@ -1156,7 +1268,7 @@ export default function ScheduleAttendancePage() {
           columns={punchColumns}
           dataSource={punches.items}
           pagination={pagination(punches, loadPunches)}
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1350 }}
         />
       ),
     },
@@ -1419,6 +1531,62 @@ export default function ScheduleAttendancePage() {
           </Form.Item>
         </Form>
       </Drawer>
+
+      <Drawer
+        title={sampleTitle ? `${t('posAdmin.scheduleAttendance.drawer.locationSamples')} - ${sampleTitle}` : t('posAdmin.scheduleAttendance.drawer.locationSamples')}
+        width={720}
+        open={sampleDrawerOpen}
+        onClose={() => setSampleDrawerOpen(false)}
+      >
+        <Table
+          rowKey="sampleGuid"
+          size="small"
+          loading={sampleLoading}
+          columns={locationSampleColumns}
+          dataSource={sampleRows}
+          pagination={false}
+          locale={{ emptyText: t('posAdmin.scheduleAttendance.messages.locationSamplesEmpty') }}
+          scroll={{ x: 700 }}
+        />
+      </Drawer>
+
+      <Modal
+        title={mapPreview?.title || t('posAdmin.scheduleAttendance.drawer.locationMap')}
+        open={Boolean(mapPreview)}
+        footer={null}
+        width={760}
+        onCancel={() => setMapPreview(null)}
+      >
+        {mapPreview ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space size={[12, 4]} wrap>
+              <Typography.Text>
+                {t('posAdmin.scheduleAttendance.fields.location')}: {mapPreview.latitude.toFixed(6)}, {mapPreview.longitude.toFixed(6)}
+              </Typography.Text>
+              {typeof mapPreview.accuracy === 'number' ? (
+                <Typography.Text type="secondary">
+                  {t('posAdmin.scheduleAttendance.fields.locationAccuracy')}: {Math.round(mapPreview.accuracy)}m
+                </Typography.Text>
+              ) : null}
+              {mapPreview.capturedAt ? (
+                <Typography.Text type="secondary">
+                  {t('posAdmin.scheduleAttendance.fields.locationCapturedAt')}: {formatDateTime(mapPreview.capturedAt)}
+                </Typography.Text>
+              ) : null}
+            </Space>
+            <Typography.Text type="secondary">
+              {t('posAdmin.scheduleAttendance.messages.externalMapNotice')}
+            </Typography.Text>
+            <Button
+              type="primary"
+              icon={<EnvironmentOutlined />}
+              onClick={() => window.open(externalMapUrl, '_blank', 'noopener,noreferrer')}
+            >
+              {t('posAdmin.scheduleAttendance.actions.openExternalMap')}
+            </Button>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         title={reviewAction === 'approve' ? t('posAdmin.scheduleAttendance.drawer.approve') : t('posAdmin.scheduleAttendance.drawer.reject')}

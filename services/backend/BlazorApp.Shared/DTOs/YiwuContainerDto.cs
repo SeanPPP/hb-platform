@@ -261,9 +261,9 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
-        [Display(Name = "贴牌价格")]
+        [Display(Name = "零售价")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
@@ -490,7 +490,7 @@ namespace BlazorApp.Shared.DTOs
         public string? Unit { get; set; }
 
         /// <summary>
-        /// 贴牌价格/零售价（美元）
+        /// 零售价（美元）
         /// </summary>
         public decimal? OEMPrice { get; set; }
 

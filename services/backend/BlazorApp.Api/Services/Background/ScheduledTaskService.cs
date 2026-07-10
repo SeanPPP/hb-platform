@@ -54,19 +54,19 @@ namespace BlazorApp.Api.Services.Background
         public int WeeklyTaskMinute { get; set; } = 59;
 
         /// <summary>
-        /// 每月任务执行日（默认 1 日）
+        /// 每月任务执行日（默认 31 日；不足 31 天的月份自动取月末）
         /// </summary>
-        public int MonthlyTaskDay { get; set; } = 1;
+        public int MonthlyTaskDay { get; set; } = 31;
 
         /// <summary>
-        /// 每月任务执行小时（默认 3 点）
+        /// 每月任务执行小时（默认 23 点）
         /// </summary>
-        public int MonthlyTaskHour { get; set; } = 3;
+        public int MonthlyTaskHour { get; set; } = 23;
 
         /// <summary>
-        /// 每月任务执行分钟（默认 0 分）
+        /// 每月任务执行分钟（默认 59 分）
         /// </summary>
-        public int MonthlyTaskMinute { get; set; } = 0;
+        public int MonthlyTaskMinute { get; set; } = 59;
 
         /// <summary>
         /// 是否启用随机冗余（默认 true）
@@ -163,10 +163,10 @@ namespace BlazorApp.Api.Services.Background
             // 计算到下一个每月任务执行时间的时间间隔
             var nextMonthly = CalculateNextMonthlyRun(now);
             _monthlyTimer = new Timer(
-                async _ => await ExecuteMonthlyTask(),
+                async _ => await ExecuteMonthlyTask(false),
                 null,
                 nextMonthly,
-                TimeSpan.FromDays(30) // 近似值，实际会由 CalculateNextMonthlyRun 精确计算
+                TimeSpan.FromDays(1)
             );
 
             _logger.LogInformation(
@@ -242,19 +242,7 @@ namespace BlazorApp.Api.Services.Background
                 next = next.AddDays(7);
             }
 
-            if (_options.EnableJitter)
-            {
-                var jitter = Random.Shared.Next(
-                    -_options.JitterMaxMinutes,
-                    _options.JitterMaxMinutes + 1
-                );
-                next = next.AddMinutes(jitter);
-
-                if (next <= now)
-                {
-                    next = now.AddMinutes(1);
-                }
-            }
+            // 周复查默认卡在周日 23:59，不能加正向 jitter 跨到周一后误判为下一周。
 
             return next - now;
         }
@@ -268,35 +256,33 @@ namespace BlazorApp.Api.Services.Background
         {
             var year = now.Year;
             var month = now.Month;
-            var next = new DateTime(
+            var next = BuildMonthlyRunTime(year, month);
+
+            if (next <= now)
+            {
+                var followingMonth = new DateTime(year, month, 1).AddMonths(1);
+                next = BuildMonthlyRunTime(followingMonth.Year, followingMonth.Month);
+            }
+
+            // 月末/季度末复查不能被 jitter 推到次月，否则会跳过本月复查。
+
+            return next - now;
+        }
+
+        private DateTime BuildMonthlyRunTime(int year, int month)
+        {
+            var day = Math.Min(
+                Math.Max(_options.MonthlyTaskDay, 1),
+                DateTime.DaysInMonth(year, month)
+            );
+            return new DateTime(
                 year,
                 month,
-                _options.MonthlyTaskDay,
+                day,
                 _options.MonthlyTaskHour,
                 _options.MonthlyTaskMinute,
                 0
             );
-
-            if (next <= now)
-            {
-                next = next.AddMonths(1);
-            }
-
-            if (_options.EnableJitter)
-            {
-                var jitter = Random.Shared.Next(
-                    -_options.JitterMaxMinutes,
-                    _options.JitterMaxMinutes + 1
-                );
-                next = next.AddMinutes(jitter);
-
-                if (next <= now)
-                {
-                    next = now.AddMinutes(1);
-                }
-            }
-
-            return next - now;
         }
 
         /// <summary>
@@ -512,6 +498,7 @@ namespace BlazorApp.Api.Services.Background
 
                     var statisticsJobService =
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
+                    await statisticsJobService.FullRefreshPreviousDay();
                     await statisticsJobService.FullRefreshCurrentDay();
 
                     if (taskLog != null)
@@ -591,7 +578,7 @@ namespace BlazorApp.Api.Services.Background
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
 
                     var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
-                    var monday = now.Date.AddDays(-(int)now.DayOfWeek + (int)DayOfWeek.Monday);
+                    var monday = GetCurrentWeekMonday(now);
                     var sunday = monday.AddDays(6);
 
                     _logger.LogInformation(
@@ -600,7 +587,11 @@ namespace BlazorApp.Api.Services.Background
                         sunday.ToString("yyyy-MM-dd")
                     );
 
-                    await statisticsJobService.BatchFullRefreshConcurrent(monday, sunday);
+                    var result = await statisticsJobService.BatchFullRefreshConcurrent(monday, sunday);
+                    if (!result.Success)
+                    {
+                        throw new Exception($"每周统计任务失败: {result.Message}");
+                    }
 
                     if (taskLog != null)
                         await taskLogService.LogTaskSuccessAsync(taskLog.Id);
@@ -623,16 +614,35 @@ namespace BlazorApp.Api.Services.Background
             }
         }
 
+        private static DateTime GetCurrentWeekMonday(DateTime now)
+        {
+            var daysSinceMonday =
+                ((int)now.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+            return now.Date.AddDays(-daysSinceMonday);
+        }
+
         /// <summary>
         /// 执行每月全量刷新任务
         /// 全量刷新前一个月的统计数据
         /// </summary>
-        private async Task ExecuteMonthlyTask()
+        private async Task ExecuteMonthlyTask(bool force)
         {
             if (!await IsCurrentInstanceSchedulerEnabledAsync("每月全量刷新任务"))
             {
                 return;
             }
+
+            var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
+            if (!force && now.Date != BuildMonthlyRunTime(now.Year, now.Month).Date)
+            {
+                return;
+            }
+
+            var isQuarterEnd = now.Month % 3 == 0;
+            var currentMonth = new DateTime(now.Year, now.Month, 1);
+            var startMonth = isQuarterEnd ? currentMonth.AddMonths(-2) : currentMonth;
+            var startYearMonth = startMonth.ToString("yyyy-MM");
+            var endYearMonth = currentMonth.ToString("yyyy-MM");
 
             using (var scope = _scopeFactory.CreateScope())
             {
@@ -643,8 +653,15 @@ namespace BlazorApp.Api.Services.Background
                 try
                 {
                     taskLog = await taskLogService.LogTaskStartAsync(
-                        TaskType.FullRefreshPreviousMonth,
-                        new TaskParameters()
+                        isQuarterEnd
+                            ? TaskType.FullRefreshCurrentQuarter
+                            : TaskType.FullRefreshCurrentMonth,
+                        new TaskParameters
+                        {
+                            StartYearMonth = startYearMonth,
+                            EndYearMonth = endYearMonth,
+                            MaxMonths = isQuarterEnd ? 3 : 1,
+                        }
                     );
                 }
                 catch (Exception ex)
@@ -659,18 +676,17 @@ namespace BlazorApp.Api.Services.Background
                     var statisticsJobService =
                         scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
 
-                    var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _sydneyTimeZone);
-                    var previousMonth = now.AddMonths(-1);
-                    var startYearMonth = previousMonth.ToString("yyyy-MM");
-
                     _logger.LogInformation(
-                        "每月统计任务将刷新 {YearMonth} 整月的数据",
-                        startYearMonth
+                        "{TaskName}将刷新 {StartYearMonth} 至 {EndYearMonth} 的数据",
+                        isQuarterEnd ? "季度末统计任务" : "每月统计任务",
+                        startYearMonth,
+                        endYearMonth
                     );
 
                     var result = await statisticsJobService.BatchFullRefreshByMonths(
                         startYearMonth,
-                        startYearMonth
+                        endYearMonth,
+                        isQuarterEnd ? 3 : 1
                     );
 
                     if (!result.Success)
@@ -732,7 +748,7 @@ namespace BlazorApp.Api.Services.Background
         public async Task TriggerMonthlyTaskManually()
         {
             _logger.LogInformation("手动触发每月全量刷新任务");
-            await ExecuteMonthlyTask();
+            await ExecuteMonthlyTask(true);
         }
 
         /// <summary>

@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   getProductStoreDailyStatisticStates,
   getProductStoreDailyStatisticSummary,
+  recalculateDailyStatisticsAlignment,
   recalculateProductStoreDailyRange,
   recalculateRecentProductStoreDaily,
 } from './salesStatisticsManagementService'
@@ -121,6 +124,20 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     )
   }
 
+  if (url.includes('/alignment/recalculate')) {
+    return new Response(JSON.stringify({
+      success: true,
+      message: '已提交 2 天异常统计后台补算，可在任务日志查看执行结果',
+      jobId: 'alignment-job-1',
+      processedDates: [],
+      skippedDates: [],
+      failedDates: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
   return new Response(JSON.stringify({
     success: true,
     message: '已提交 1 天商品统计重算，跳过 1 天执行中的任务',
@@ -205,6 +222,33 @@ try {
   assertEqual(rangeBody.startDate, '2026-06-01', '日期范围重算应传递开始日期')
   assertEqual(rangeBody.endDate, '2026-06-08', '日期范围重算应传递结束日期')
   assertEqual(rangeBody.maxConcurrency, 3, '日期范围重算应传递最大并发')
+
+  const alignmentResult = await recalculateDailyStatisticsAlignment({
+    dates: ['2026-06-01', '2026-06-02'],
+    maxConcurrency: 3,
+  })
+  const alignmentCall = calls[calls.length - 1]
+  assert(alignmentCall, '应记录数据对齐后台补算请求')
+  assertEqual(new URL(alignmentCall.url, 'http://localhost').pathname, '/api/StatisticsJobTrigger/alignment/recalculate', '数据对齐后台补算接口路径应正确')
+  assertEqual(alignmentCall.init?.method, 'POST', '数据对齐后台补算应使用 POST')
+  const alignmentBody = JSON.parse(String(alignmentCall.init?.body)) as { dates: string[]; maxConcurrency: number }
+  assertEqual(alignmentBody.dates[0], '2026-06-01', '数据对齐后台补算应传递第一个日期')
+  assertEqual(alignmentBody.dates[1], '2026-06-02', '数据对齐后台补算应传递第二个日期')
+  assertEqual(alignmentBody.maxConcurrency, 3, '数据对齐后台补算应传递最大并发')
+  assertEqual(alignmentResult.success, true, '数据对齐后台补算应解包提交成功状态')
+  assertEqual(alignmentResult.jobId, 'alignment-job-1', '数据对齐后台补算应解包后台任务 ID')
+  assertEqual(alignmentResult.message, '已提交 2 天异常统计后台补算，可在任务日志查看执行结果', '数据对齐后台补算应解包后台提交提示')
+  assertEqual(alignmentResult.processedDates.length, 0, '后台提交响应不应伪造已完成日期')
+  assertEqual(alignmentResult.failedDates.length, 0, '后台提交响应不应伪造失败日期')
+
+  const scheduledStatisticsSource = readFileSync(
+    join(process.cwd(), 'src/pages/System/ScheduledStatistics/index.tsx'),
+    'utf8',
+  )
+  assert(scheduledStatisticsSource.includes('后台补算异常日期'), '页面按钮应改为后台补算语义')
+  assert(scheduledStatisticsSource.includes('后台补算任务已提交'), '提交成功提示应改为后台提交语义')
+  assert(!scheduledStatisticsSource.includes('补算任务已完成'), '页面不应再提示同步补算已完成')
+  assert(!scheduledStatisticsSource.includes('补算完成但存在失败日期'), '页面失败提示不应再使用同步完成语义')
 
   console.log('salesStatisticsManagementService.test: ok')
 } finally {

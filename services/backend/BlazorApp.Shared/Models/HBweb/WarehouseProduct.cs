@@ -23,10 +23,10 @@ namespace BlazorApp.Shared.Models
         public decimal? DomesticPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         [SugarColumn(IsNullable = true)]
-        [Display(Name = "贴牌价格")]
+        [Display(Name = "零售价")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>

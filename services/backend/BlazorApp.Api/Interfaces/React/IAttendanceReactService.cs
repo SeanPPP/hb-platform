@@ -17,6 +17,8 @@ namespace BlazorApp.Api.Interfaces.React
         Task<ApiResponse<AttendanceAvailabilityDto>> UpdateMyAvailabilityAsync(string availabilityGuid, UpdateAttendanceAvailabilityDto request);
         Task<ApiResponse<bool>> CancelMyAvailabilityAsync(string availabilityGuid);
         Task<ApiResponse<AttendancePunchDto>> PunchAsync(AttendancePunchRequestDto request);
+        Task<ApiResponse<AttendanceLocationSampleDto>> CreateLocationSampleAsync(AttendanceLocationSampleRequestDto request);
+        Task<ApiResponse<List<AttendanceLocationSampleDto>>> GetLocationSamplesAsync(AttendanceLocationSampleQueryDto query);
         Task<ApiResponse<List<AttendanceLeaveRequestDto>>> GetMyLeaveRequestsAsync();
         Task<ApiResponse<AttendanceLeaveRequestDto>> CreateMyLeaveRequestAsync(CreateAttendanceLeaveRequestDto request);
         Task<ApiResponse<bool>> CancelMyLeaveRequestAsync(string leaveGuid);

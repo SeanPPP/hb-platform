@@ -38,12 +38,12 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPriceMax { get; set; }
 
         /// <summary>
-        /// 贴牌价格-最小值
+        /// 零售价-最小值
         /// </summary>
         public decimal? OEMPriceMin { get; set; }
 
         /// <summary>
-        /// 贴牌价格-最大值
+        /// 零售价-最大值
         /// </summary>
         public decimal? OEMPriceMax { get; set; }
 
@@ -103,4 +103,3 @@ namespace BlazorApp.Shared.DTOs
         public string? SortOrder { get; set; }
     }
 }
-

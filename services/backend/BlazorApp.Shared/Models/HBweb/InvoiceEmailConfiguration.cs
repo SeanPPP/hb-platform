@@ -13,6 +13,12 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(IsPrimaryKey = true, Length = 50)]
         public string Id { get; set; } = DefaultId;
 
+        [SugarColumn(Length = 100, IsNullable = false)]
+        public string Name { get; set; } = "默认发件账号";
+
+        [SugarColumn(IsNullable = false)]
+        public bool IsDefault { get; set; } = true;
+
         [SugarColumn(Length = 200, IsNullable = false)]
         public string Host { get; set; } = string.Empty;
 
@@ -28,6 +34,9 @@ namespace BlazorApp.Shared.Models.HBweb
         [SugarColumn(Length = 200, IsNullable = true)]
         public string? Username { get; set; }
 
+        /// <summary>
+        /// SMTP 密码存储字段。历史字段名保留，当前按明文保存。
+        /// </summary>
         [SugarColumn(Length = 2000, IsNullable = true)]
         public string? EncryptedPassword { get; set; }
 
@@ -42,6 +51,5 @@ namespace BlazorApp.Shared.Models.HBweb
 
         [SugarColumn(IsNullable = false)]
         public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
-
     }
 }

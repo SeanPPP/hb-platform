@@ -2,10 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   activateDevice,
   disableDevice,
+  fetchAppDeviceStatuses,
+  fetchAppDeviceStatusSummary,
   fetchDeviceManagementDevices,
   lockDevice,
 } from "@/modules/device-management/api";
 import type {
+  AppDeviceStatusQuery,
   DeviceManagementActionPayload,
   DeviceManagementListViewResult,
   DeviceManagementQuery,
@@ -15,10 +18,34 @@ export function deviceManagementQueryKey(query: DeviceManagementQuery = {}) {
   return ["deviceManagement", query] as const;
 }
 
-export function useDeviceManagementDevices(query: DeviceManagementQuery = {}) {
+export function useDeviceManagementDevices(query: DeviceManagementQuery = {}, enabled = true) {
   return useQuery({
     queryKey: deviceManagementQueryKey(query),
+    enabled,
     queryFn: () => fetchDeviceManagementDevices(query),
+  });
+}
+
+export function appDeviceStatusQueryKey(query: AppDeviceStatusQuery = {}) {
+  return ["appDeviceStatus", query] as const;
+}
+
+export function useAppDeviceStatuses(query: AppDeviceStatusQuery = {}, enabled = true) {
+  return useQuery({
+    queryKey: appDeviceStatusQueryKey(query),
+    enabled,
+    queryFn: () => fetchAppDeviceStatuses(query),
+  });
+}
+
+export function useAppDeviceStatusSummary(
+  query: Omit<AppDeviceStatusQuery, "onlineState" | "pageNumber" | "pageSize"> = {},
+  enabled = true
+) {
+  return useQuery({
+    queryKey: ["appDeviceStatusSummary", query] as const,
+    enabled,
+    queryFn: () => fetchAppDeviceStatusSummary(query),
   });
 }
 

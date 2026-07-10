@@ -1321,7 +1321,7 @@ namespace BlazorApp.Api.Services
                         $"   - 最小订货量: {productWithStock.库存信息.H最小订货量}"
                     );
                     _logger.LogInformation(
-                        $"   - 贴牌价格: {productWithStock.库存信息.H贴牌价格:C2}"
+                        $"   - 零售价: {productWithStock.库存信息.H贴牌价格:C2}"
                     );
                 }
                 else

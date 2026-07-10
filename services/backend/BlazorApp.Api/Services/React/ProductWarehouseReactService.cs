@@ -79,6 +79,11 @@ namespace BlazorApp.Api.Services.React
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct()
                 .ToList();
+            var supplierCodes = items
+                .Select(i => i.SupplierCode)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct()
+                .ToList();
             var barcodes = items
                 .Select(i => i.Barcode)
                 .Where(b => !string.IsNullOrWhiteSpace(b))
@@ -114,15 +119,44 @@ namespace BlazorApp.Api.Services.React
             }
             if (itemNumbers.Any())
             {
-                wpList.AddRange(
-                    await SelectWarehouseSnapshotsAsync(
-                        BuildWarehouseDetectionQuery()
-                            .Where(
-                                (w, p) =>
-                                    p.ItemNumber != null && itemNumbers.Contains(p.ItemNumber)
-                            )
-                    )
-                );
+                var scopedItemNumbers = items
+                    .Where(i => !string.IsNullOrWhiteSpace(i.ItemNumber) && !string.IsNullOrWhiteSpace(i.SupplierCode))
+                    .Select(i => i.ItemNumber!)
+                    .Distinct()
+                    .ToList();
+                var unscopedItemNumbers = items
+                    .Where(i => !string.IsNullOrWhiteSpace(i.ItemNumber) && string.IsNullOrWhiteSpace(i.SupplierCode))
+                    .Select(i => i.ItemNumber!)
+                    .Distinct()
+                    .ToList();
+                if (scopedItemNumbers.Any() && supplierCodes.Any())
+                {
+                    // 前端传供应商时，货号候选必须限定在该本地供应商下，避免同货号跨供应商误匹配。
+                    wpList.AddRange(
+                        await SelectWarehouseSnapshotsAsync(
+                            BuildWarehouseDetectionQuery()
+                                .Where(
+                                    (w, p) =>
+                                        p.ItemNumber != null
+                                        && scopedItemNumbers.Contains(p.ItemNumber)
+                                        && p.LocalSupplierCode != null
+                                        && supplierCodes.Contains(p.LocalSupplierCode)
+                                )
+                        )
+                    );
+                }
+                if (unscopedItemNumbers.Any())
+                {
+                    wpList.AddRange(
+                        await SelectWarehouseSnapshotsAsync(
+                            BuildWarehouseDetectionQuery()
+                                .Where(
+                                    (w, p) =>
+                                        p.ItemNumber != null && unscopedItemNumbers.Contains(p.ItemNumber)
+                                )
+                        )
+                    );
+                }
             }
             if (barcodes.Any())
             {
@@ -151,18 +185,49 @@ namespace BlazorApp.Api.Services.React
             }
             if (itemNumbers.Any())
             {
-                domesticList.AddRange(
-                    await SelectDomesticSnapshotsAsync(
-                        _context
-                            .Db.Queryable<DomesticProduct>()
-                            .Where(
-                                dp =>
-                                    !dp.IsDeleted
-                                    && dp.HBProductNo != null
-                                    && itemNumbers.Contains(dp.HBProductNo)
-                            )
-                    )
-                );
+                var scopedItemNumbers = items
+                    .Where(i => !string.IsNullOrWhiteSpace(i.ItemNumber) && !string.IsNullOrWhiteSpace(i.SupplierCode))
+                    .Select(i => i.ItemNumber!)
+                    .Distinct()
+                    .ToList();
+                var unscopedItemNumbers = items
+                    .Where(i => !string.IsNullOrWhiteSpace(i.ItemNumber) && string.IsNullOrWhiteSpace(i.SupplierCode))
+                    .Select(i => i.ItemNumber!)
+                    .Distinct()
+                    .ToList();
+                if (scopedItemNumbers.Any() && supplierCodes.Any())
+                {
+                    // 国内商品货号候选同样必须限定供应商，避免同货号不同供应商串到错误国内编码。
+                    domesticList.AddRange(
+                        await SelectDomesticSnapshotsAsync(
+                            _context
+                                .Db.Queryable<DomesticProduct>()
+                                .Where(
+                                    dp =>
+                                        !dp.IsDeleted
+                                        && dp.HBProductNo != null
+                                        && scopedItemNumbers.Contains(dp.HBProductNo)
+                                        && dp.SupplierCode != null
+                                        && supplierCodes.Contains(dp.SupplierCode)
+                                )
+                        )
+                    );
+                }
+                if (unscopedItemNumbers.Any())
+                {
+                    domesticList.AddRange(
+                        await SelectDomesticSnapshotsAsync(
+                            _context
+                                .Db.Queryable<DomesticProduct>()
+                                .Where(
+                                    dp =>
+                                        !dp.IsDeleted
+                                        && dp.HBProductNo != null
+                                        && unscopedItemNumbers.Contains(dp.HBProductNo)
+                                )
+                        )
+                    );
+                }
             }
             if (barcodes.Any())
             {
@@ -192,6 +257,11 @@ namespace BlazorApp.Api.Services.React
                 .Where(x => !string.IsNullOrWhiteSpace(x.ItemNumber))
                 .GroupBy(x => x.ItemNumber!)
                 .ToDictionary(g => g.Key, g => g.First());
+            var bySupplierItem = wpList
+                .Select(x => new { Key = BuildSupplierItemMatchKey(x.SupplierCode, x.ItemNumber), Item = x })
+                .Where(x => x.Key != null)
+                .GroupBy(x => x.Key!)
+                .ToDictionary(g => g.Key, g => g.First().Item);
             var byBarcode = wpList
                 .Where(x => !string.IsNullOrWhiteSpace(x.Barcode))
                 .GroupBy(x => x.Barcode!)
@@ -205,6 +275,11 @@ namespace BlazorApp.Api.Services.React
                 .Where(x => !string.IsNullOrWhiteSpace(x.ItemNumber))
                 .GroupBy(x => x.ItemNumber!)
                 .ToDictionary(g => g.Key, g => g.First());
+            var domesticBySupplierItem = domesticList
+                .Select(x => new { Key = BuildSupplierItemMatchKey(x.SupplierCode, x.ItemNumber), Item = x })
+                .Where(x => x.Key != null)
+                .GroupBy(x => x.Key!)
+                .ToDictionary(g => g.Key, g => g.First().Item);
             var domesticByBarcode = domesticList
                 .Where(x => !string.IsNullOrWhiteSpace(x.Barcode))
                 .GroupBy(x => x.Barcode!)
@@ -222,10 +297,20 @@ namespace BlazorApp.Api.Services.React
                 var itemMatch =
                     (
                         !string.IsNullOrWhiteSpace(item.ItemNumber)
-                        && byItem.TryGetValue(item.ItemNumber!, out var wpByItem)
+                        && !string.IsNullOrWhiteSpace(item.SupplierCode)
+                        && bySupplierItem.TryGetValue(
+                            BuildSupplierItemMatchKey(item.SupplierCode, item.ItemNumber)!,
+                            out var wpBySupplierItem
+                        )
                     )
-                        ? wpByItem
-                        : null;
+                        ? wpBySupplierItem
+                        : (
+                            string.IsNullOrWhiteSpace(item.SupplierCode)
+                            && !string.IsNullOrWhiteSpace(item.ItemNumber)
+                            && byItem.TryGetValue(item.ItemNumber!, out var wpByItem)
+                        )
+                            ? wpByItem
+                            : null;
                 var barcodeMatch =
                     (
                         !string.IsNullOrWhiteSpace(item.Barcode)
@@ -249,9 +334,20 @@ namespace BlazorApp.Api.Services.React
                 var domesticSource = FindDomesticMatch(
                     item,
                     domesticByCode,
+                    domesticBySupplierItem,
                     domesticByItem,
                     domesticByBarcode
                 );
+                var localProductCode = warehouseSource?.ProductCode;
+                var domesticProductCode = domesticSource?.ProductCode ?? item.ProductCode;
+                var hasProductCodeConflict =
+                    !string.IsNullOrWhiteSpace(localProductCode)
+                    && !string.IsNullOrWhiteSpace(domesticProductCode)
+                    && !string.Equals(
+                        localProductCode.Trim(),
+                        domesticProductCode.Trim(),
+                        StringComparison.OrdinalIgnoreCase
+                    );
                 var effectiveOemPrice = HasPositivePrice(warehouseSource?.OEMPrice)
                     ? warehouseSource?.OEMPrice
                     : domesticSource?.OEMPrice;
@@ -260,8 +356,16 @@ namespace BlazorApp.Api.Services.React
                     {
                         ProductCode = item.ProductCode ?? warehouseSource?.ProductCode ?? domesticSource?.ProductCode,
                         ItemNumber = item.ItemNumber ?? warehouseSource?.ItemNumber ?? domesticSource?.ItemNumber,
+                        SupplierCode = item.SupplierCode ?? warehouseSource?.SupplierCode,
                         Exists = exists,
                         MatchType = matchType,
+                        LocalProductCode = localProductCode,
+                        DomesticProductCode = domesticProductCode,
+                        HasProductCodeConflict = hasProductCodeConflict,
+                        // 国内编码和本地主档编码不一致时，只能作为候选，必须由货柜页人工确认后再对齐。
+                        ConflictReason = hasProductCodeConflict
+                            ? "国内商品编码与本地主档商品编码不一致"
+                            : null,
                         ProductName = domesticSource?.ProductName ?? warehouseSource?.ProductName,
                         EnglishName = domesticSource?.EnglishName ?? warehouseSource?.EnglishName,
                         WarehouseDomesticPrice = warehouseSource?.DomesticPrice,
@@ -298,6 +402,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             ProductCode = w.ProductCode,
                             ItemNumber = p.ItemNumber,
+                            SupplierCode = p.LocalSupplierCode,
                             Barcode = p.Barcode,
                             ProductName = p.ProductName,
                             EnglishName = p.EnglishName,
@@ -323,6 +428,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             ProductCode = dp.ProductCode,
                             ItemNumber = dp.HBProductNo,
+                            SupplierCode = dp.SupplierCode,
                             Barcode = dp.Barcode,
                             ProductName = dp.ProductName,
                             EnglishName = dp.EnglishProductName,
@@ -464,6 +570,7 @@ namespace BlazorApp.Api.Services.React
         private static DetectionDomesticSnapshot? FindDomesticMatch(
             DetectionItemDto item,
             Dictionary<string, DetectionDomesticSnapshot> byCode,
+            Dictionary<string, DetectionDomesticSnapshot> bySupplierItem,
             Dictionary<string, DetectionDomesticSnapshot> byItem,
             Dictionary<string, DetectionDomesticSnapshot> byBarcode
         )
@@ -478,6 +585,19 @@ namespace BlazorApp.Api.Services.React
 
             if (
                 !string.IsNullOrWhiteSpace(item.ItemNumber)
+                && !string.IsNullOrWhiteSpace(item.SupplierCode)
+                && bySupplierItem.TryGetValue(
+                    BuildSupplierItemMatchKey(item.SupplierCode, item.ItemNumber)!,
+                    out var supplierItemMatch
+                )
+            )
+            {
+                return supplierItemMatch;
+            }
+
+            if (
+                string.IsNullOrWhiteSpace(item.SupplierCode)
+                && !string.IsNullOrWhiteSpace(item.ItemNumber)
                 && byItem.TryGetValue(item.ItemNumber!, out var itemMatch)
             )
             {
@@ -495,10 +615,21 @@ namespace BlazorApp.Api.Services.React
             return null;
         }
 
+        private static string? BuildSupplierItemMatchKey(string? supplierCode, string? itemNumber)
+        {
+            var normalizedSupplierCode = supplierCode?.Trim().ToUpperInvariant();
+            var normalizedItemNumber = itemNumber?.Trim().ToUpperInvariant();
+            return !string.IsNullOrWhiteSpace(normalizedSupplierCode)
+                && !string.IsNullOrWhiteSpace(normalizedItemNumber)
+                ? $"{normalizedSupplierCode}:{normalizedItemNumber}"
+                : null;
+        }
+
         private sealed class DetectionWarehouseSnapshot
         {
             public string? ProductCode { get; set; }
             public string? ItemNumber { get; set; }
+            public string? SupplierCode { get; set; }
             public string? Barcode { get; set; }
             public string? ProductName { get; set; }
             public string? EnglishName { get; set; }
@@ -520,6 +651,7 @@ namespace BlazorApp.Api.Services.React
         {
             public string? ProductCode { get; set; }
             public string? ItemNumber { get; set; }
+            public string? SupplierCode { get; set; }
             public string? Barcode { get; set; }
             public string? ProductName { get; set; }
             public string? EnglishName { get; set; }
@@ -1040,7 +1172,7 @@ namespace BlazorApp.Api.Services.React
                     }
                     if (item.OEMPrice <= 0)
                     {
-                        result.Errors.Add($"OEM price must be greater than 0: {item.ItemNumber}");
+                        result.Errors.Add($"RRP must be greater than 0: {item.ItemNumber}");
                         result.FailedCount++;
                         continue;
                     }
@@ -3043,7 +3175,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (request.OEMPrice <= 0)
                 {
-                    response.Message = "贴牌价格必须大于0";
+                    response.Message = "零售价必须大于0";
                     return response;
                 }
                 if (request.ImportPrice <= 0)
@@ -4007,7 +4139,7 @@ namespace BlazorApp.Api.Services.React
                     )
                     {
                         result.Success = false;
-                        result.Message = "国内价、贴牌价、进口价必须大于 0";
+                        result.Message = "国内价、零售价、进口价必须大于 0";
                         response.Results.Add(result);
                         response.FailedCount++;
                         continue;
@@ -5282,7 +5414,7 @@ namespace BlazorApp.Api.Services.React
                 dto.RetailPrice,
                 dto.OEMPrice,
                 "零售价",
-                "OEM价"
+                "RRP"
             );
             var shouldSyncStorePurchasePrice = syncedPurchasePrice.HasValue;
             var shouldSyncStoreRetailPrice = dto.SyncStoreRetailPrices == true

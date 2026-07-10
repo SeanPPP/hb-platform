@@ -1,10 +1,16 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -35,11 +41,224 @@ public sealed class DomesticProductReactServiceTests : IDisposable
         _localDb = new SqlSugarClient(CreateConnectionConfig(_localConnection.ConnectionString));
         _hbSalesDb = new SqlSugarScope(CreateConnectionConfig(_hbSalesConnection.ConnectionString));
 
-        _localDb.CodeFirst.InitTables(typeof(DomesticProduct), typeof(DomesticSetProduct));
+        _localDb.CodeFirst.InitTables(typeof(DomesticProduct), typeof(DomesticSetProduct), typeof(Product));
         _hbSalesDb.CodeFirst.InitTables(
             typeof(CPT_DIC_商品信息字典表),
             typeof(CPT_DIC_商品套装信息表)
         );
+    }
+
+    [Fact]
+    public async Task HbwebProductNames_按货号更新ProductName且不改其它字段()
+    {
+        await _localDb.Insertable(new Product
+        {
+            UUID = "product-hb001",
+            ProductCode = "PC-HB001",
+            ItemNumber = "HB001",
+            ProductName = "旧商品名",
+            EnglishName = "Existing English",
+            Barcode = "9300000000011",
+            PurchasePrice = 1.23m,
+            RetailPrice = 4.56m,
+            ProductImage = "old.jpg",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateHbwebProductNamesAsync(new BatchUpdateHbwebProductNamesDto
+        {
+            Products = new List<HbwebProductNameUpdateItemDto>
+            {
+                new() { ItemNumber = "HB001", ProductName = "NEW MASTER NAME" },
+                new() { ItemNumber = "MISSING", ProductName = "MISSING NAME" },
+            },
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(1, result.Data!.UpdatedCount);
+        Assert.Equal(new[] { "MISSING" }, result.Data.MissingItemNumbers);
+
+        var product = await _localDb.Queryable<Product>().SingleAsync(p => p.ItemNumber == "HB001");
+        Assert.Equal("NEW MASTER NAME", product.ProductName);
+        Assert.Equal("Existing English", product.EnglishName);
+        Assert.Equal("9300000000011", product.Barcode);
+        Assert.Equal(1.23m, product.PurchasePrice);
+        Assert.Equal(4.56m, product.RetailPrice);
+        Assert.Equal("old.jpg", product.ProductImage);
+        Assert.Equal("System", product.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task HbwebProductNames_请求内同货号不同名称时不写库()
+    {
+        await _localDb.Insertable(new Product
+        {
+            UUID = "product-conflict",
+            ProductCode = "PC-CONFLICT",
+            ItemNumber = "HB-CONFLICT",
+            ProductName = "原名称",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateHbwebProductNamesAsync(new BatchUpdateHbwebProductNamesDto
+        {
+            Products = new List<HbwebProductNameUpdateItemDto>
+            {
+                new() { ItemNumber = "HB-CONFLICT", ProductName = "NAME A" },
+                new() { ItemNumber = "HB-CONFLICT", ProductName = "NAME B" },
+            },
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("DUPLICATE_ITEM_NUMBER_NAMES", result.ErrorCode);
+
+        var product = await _localDb.Queryable<Product>().SingleAsync(p => p.ItemNumber == "HB-CONFLICT");
+        Assert.Equal("原名称", product.ProductName);
+    }
+
+    [Fact]
+    public async Task HbwebProductNames_请求内空货号或空名称时不写库()
+    {
+        await _localDb.Insertable(new Product
+        {
+            UUID = "product-invalid",
+            ProductCode = "PC-INVALID",
+            ItemNumber = "HB-INVALID",
+            ProductName = "原名称",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateHbwebProductNamesAsync(new BatchUpdateHbwebProductNamesDto
+        {
+            Products = new List<HbwebProductNameUpdateItemDto>
+            {
+                new() { ItemNumber = "HB-INVALID", ProductName = "NEW NAME" },
+                new() { ItemNumber = " ", ProductName = "HAS NAME" },
+                new() { ItemNumber = "HB-NO-NAME", ProductName = " " },
+            },
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("INVALID_HBWEB_PRODUCT_NAMES", result.ErrorCode);
+        Assert.NotNull(result.Details);
+        var details = Assert.IsType<BatchUpdateHbwebProductNamesResultDto>(result.Details);
+        Assert.Contains(details.Errors, error => error.Contains("货号不能为空"));
+        Assert.Contains(details.Errors, error => error.Contains("商品名称不能为空"));
+
+        var product = await _localDb.Queryable<Product>().SingleAsync(p => p.ItemNumber == "HB-INVALID");
+        Assert.Equal("原名称", product.ProductName);
+    }
+
+    [Fact]
+    public async Task HbwebProductNames_Hbweb主表货号重复时跳过该货号()
+    {
+        await _localDb.Insertable(new[]
+        {
+            new Product { UUID = "product-dup-1", ProductCode = "PC-DUP-1", ItemNumber = "HB-DUP", ProductName = "原名称1", IsDeleted = false },
+            new Product { UUID = "product-dup-2", ProductCode = "PC-DUP-2", ItemNumber = "HB-DUP", ProductName = "原名称2", IsDeleted = false },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateHbwebProductNamesAsync(new BatchUpdateHbwebProductNamesDto
+        {
+            Products = new List<HbwebProductNameUpdateItemDto>
+            {
+                new() { ItemNumber = "HB-DUP", ProductName = "NEW NAME" },
+            },
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(0, result.Data!.UpdatedCount);
+        Assert.Contains(result.Data.Errors, error => error.Contains("货号重复"));
+
+        var products = await _localDb.Queryable<Product>().Where(p => p.ItemNumber == "HB-DUP").OrderBy(p => p.ProductCode).ToListAsync();
+        Assert.Equal("原名称1", products[0].ProductName);
+        Assert.Equal("原名称2", products[1].ProductName);
+    }
+
+    [Fact]
+    public void HbwebProductNames_控制器使用国内采购商品管理权限()
+    {
+        var method = typeof(ReactDomesticProductsController).GetMethod(
+            nameof(ReactDomesticProductsController.BatchUpdateHbwebProductNames)
+        );
+
+        Assert.NotNull(method);
+        var route = method!.GetCustomAttribute<HttpPutAttribute>();
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.Equal("product-master-names", route?.Template);
+        Assert.Equal(Permissions.DomesticPurchase.ManageProducts, authorize?.Policy);
+    }
+
+    [Fact]
+    public async Task HbwebProductNames_控制器失败响应透传错误码和结果()
+    {
+        var data = new BatchUpdateHbwebProductNamesResultDto();
+        data.Errors.Add("同一货号存在多个商品名称: HB-CONFLICT");
+        var service = new Mock<IDomesticProductReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.BatchUpdateHbwebProductNamesAsync(It.IsAny<BatchUpdateHbwebProductNamesDto>()))
+            .ReturnsAsync(ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                "同一货号存在多个商品名称，请先修正后再更新",
+                "DUPLICATE_ITEM_NUMBER_NAMES",
+                data
+            ));
+        var controller = new ReactDomesticProductsController(
+            service.Object,
+            NullLogger<ReactDomesticProductsController>.Instance
+        );
+
+        var actionResult = await controller.BatchUpdateHbwebProductNames(new BatchUpdateHbwebProductNamesDto
+        {
+            Products = new List<HbwebProductNameUpdateItemDto>
+            {
+                new() { ItemNumber = "HB-CONFLICT", ProductName = "NAME A" },
+            },
+        });
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult);
+        var response = badRequest.Value!;
+        Assert.Equal("DUPLICATE_ITEM_NUMBER_NAMES", response.GetType().GetProperty("errorCode")?.GetValue(response));
+        var responseData = response.GetType().GetProperty("data")?.GetValue(response);
+        var result = Assert.IsType<BatchUpdateHbwebProductNamesResultDto>(responseData);
+        Assert.Contains(result.Errors, error => error.Contains("HB-CONFLICT"));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task HbwebProductNames_控制器空货号空名称走服务层统一错误()
+    {
+        var data = new BatchUpdateHbwebProductNamesResultDto();
+        data.Errors.Add("商品名称不能为空: HB-NO-NAME");
+        var service = new Mock<IDomesticProductReactService>(MockBehavior.Strict);
+        service
+            .Setup(item => item.BatchUpdateHbwebProductNamesAsync(It.IsAny<BatchUpdateHbwebProductNamesDto>()))
+            .ReturnsAsync(ApiResponse<BatchUpdateHbwebProductNamesResultDto>.Error(
+                "存在无效货号或商品名称，请先修正后再更新",
+                "INVALID_HBWEB_PRODUCT_NAMES",
+                data
+            ));
+        var controller = new ReactDomesticProductsController(
+            service.Object,
+            NullLogger<ReactDomesticProductsController>.Instance
+        );
+
+        var actionResult = await controller.BatchUpdateHbwebProductNames(new BatchUpdateHbwebProductNamesDto
+        {
+            Products = new List<HbwebProductNameUpdateItemDto>
+            {
+                new() { ItemNumber = "HB-NO-NAME", ProductName = string.Empty },
+            },
+        });
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult);
+        var response = badRequest.Value!;
+        Assert.Equal("INVALID_HBWEB_PRODUCT_NAMES", response.GetType().GetProperty("errorCode")?.GetValue(response));
+        var responseData = response.GetType().GetProperty("data")?.GetValue(response);
+        var result = Assert.IsType<BatchUpdateHbwebProductNamesResultDto>(responseData);
+        Assert.Contains(result.Errors, error => error.Contains("HB-NO-NAME"));
+        service.VerifyAll();
     }
 
     [Fact]

@@ -1,16 +1,31 @@
 export interface InvoiceEmailSettingsDto {
-  host: string
+  accounts: InvoiceEmailAccountDto[]
+}
+
+export interface InvoiceEmailAccountDto {
+  id: string
+  name: string
+  host: string | null
   port: number
   useSsl: boolean
   checkCertificateRevocation: boolean
-  username: string
+  username?: string | null
   hasPassword: boolean
-  fromEmail: string
-  fromName: string
+  fromEmail: string | null
+  fromName?: string | null
   maxAttachmentBytes: number
+  isDefault: boolean
+  updatedAtUtc?: string
+  updatedBy?: string
 }
 
 export interface InvoiceEmailSettingsSaveRequest {
+  accounts: InvoiceEmailAccountSaveRequest[]
+}
+
+export interface InvoiceEmailAccountSaveRequest {
+  id?: string
+  name: string
   host: string
   port: number
   useSsl: boolean
@@ -21,9 +36,10 @@ export interface InvoiceEmailSettingsSaveRequest {
   fromEmail: string
   fromName: string
   maxAttachmentBytes: number
+  isDefault: boolean
 }
 
-export interface InvoiceEmailSettingsTestRequest extends InvoiceEmailSettingsSaveRequest {
+export interface InvoiceEmailSettingsTestRequest extends InvoiceEmailAccountSaveRequest {
   testToEmail: string
 }
 

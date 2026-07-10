@@ -1,6 +1,7 @@
 import {
   getVisibleTabRouteNames,
   expandAttendanceRouteNames,
+  filterAccountTabRouteNames,
   resolveDefaultTabRoute,
   resolveTabRouteCorrection,
   TAB_PATHS,
@@ -68,12 +69,12 @@ assertEqual(
 
 assertEqual(
   getVisibleTabRouteNames({
-    routeNames: ["home", "attendance", "device-management", "settings"],
+    routeNames: ["home", "attendance", "device-management", "reports", "settings"],
     isDeviceMode: true,
     canViewAttendanceManagement: true,
   }).join(","),
   "home,attendance-personal,settings",
-  "shared visible routes expand legacy attendance and hide management-only routes in device mode"
+  "shared visible routes expand legacy attendance and hide management-only/report routes in device mode"
 );
 
 assertEqual(
@@ -84,6 +85,32 @@ assertEqual(
   }).join(","),
   "home,attendance-personal,attendance-management,settings",
   "shared visible routes expand legacy attendance to management for users with management permission"
+);
+
+assertEqual(
+  filterAccountTabRouteNames(["home", "orders", "cart", "settings"], {
+    canCreateOrder: true,
+    isWarehouseStaffOnly: true,
+  }).join(","),
+  "home,orders,cart,settings",
+  "pure WarehouseStaff with Orders.Create keeps cart for dedicated warehouse cart"
+);
+
+assertEqual(
+  filterAccountTabRouteNames(["home", "orders", "cart", "settings"], {
+    canCreateOrder: false,
+    isWarehouseStaffOnly: true,
+  }).join(","),
+  "home,orders,settings",
+  "pure WarehouseStaff without Orders.Create removes cart even when app menu returns it"
+);
+
+assertEqual(
+  filterAccountTabRouteNames(["home", "orders", "cart", "settings"], {
+    isWarehouseStaffOnly: false,
+  }).join(","),
+  "home,orders,cart,settings",
+  "normal account menu keeps cart visible"
 );
 
 assertEqual(
@@ -107,10 +134,10 @@ assertEqual(
 assertEqual(
   resolveDefaultTabRoute({
     isDeviceMode: true,
-    routeNames: ["device-management", "settings"],
+    routeNames: ["device-management", "reports", "settings"],
   }),
   "/(tabs)/settings",
-  "device mode never defaults to device management"
+  "device mode never defaults to device management or report routes"
 );
 
 assertEqual(
@@ -131,6 +158,17 @@ assertEqual(
   }),
   "/(tabs)/settings",
   "device mode redirects away from device management"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "reports",
+    hasAppliedDefaultRoute: false,
+    isDeviceMode: true,
+    routeNames: ["reports", "settings"],
+  }),
+  "/(tabs)/settings",
+  "device mode redirects away from reports"
 );
 
 assertEqual(
@@ -166,6 +204,28 @@ assertEqual(
 
 assertEqual(
   resolveTabRouteCorrection({
+    currentRouteName: "containers",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["warehouse", "attendance-personal", "settings"],
+  }),
+  null,
+  "root stack container list is not redirected by tab default correction"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "container-guid-001",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["warehouse", "attendance-personal", "settings"],
+  }),
+  null,
+  "root stack container detail is not redirected by tab default correction"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
     currentRouteName: "home",
     hasAppliedDefaultRoute: true,
     isDeviceMode: false,
@@ -197,6 +257,12 @@ assertEqual(
   TAB_PATHS.promotions,
   "/(tabs)/promotions",
   "promotions route is registered as a valid tab path"
+);
+
+assertEqual(
+  TAB_PATHS.reports,
+  "/(tabs)/reports",
+  "reports route is registered as a valid tab path"
 );
 
 assertEqual(
@@ -253,6 +319,17 @@ assertEqual(
   }),
   null,
   "promotions route is allowed when app menu exposes it"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "reports",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "reports", "settings"],
+  }),
+  null,
+  "reports route is allowed when app menu exposes it for account sessions"
 );
 
 assertEqual(

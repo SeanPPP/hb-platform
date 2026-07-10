@@ -1112,9 +1112,13 @@ async function main() {
   if (storeRecordColumnSorterFailure) failures.push(storeRecordColumnSorterFailure)
 
   const pushToHqFailure = await runTest('选中商品发送到 HQ 应复用选择、权限和防重复提交保护', () => {
+    const pushToHqHandlerStart = pageSource.indexOf('const handlePushToHq = async () => {')
+    const pushToHqHandlerEnd = pageSource.indexOf('const handleSyncSelectedFromHq', pushToHqHandlerStart)
+    const pushToHqHandlerSource = pageSource.slice(pushToHqHandlerStart, pushToHqHandlerEnd)
     assert(
       typeSource.includes('PushProductsToHqRequest') &&
         typeSource.includes('productCodes: string[]') &&
+        typeSource.includes('updateFields?: PushProductsToHqUpdateField[]') &&
         typeSource.includes('PushProductsToHqResult'),
       '类型层应声明发送到 HQ 的请求和结果契约',
     )
@@ -1126,10 +1130,24 @@ async function main() {
     )
     assert(
       pageSource.includes('handlePushToHq') &&
-        pageSource.includes('selectedRowKeys.map(String)') &&
+        pageSource.includes('const productCodes = selectedRowKeys.map(String)') &&
+        pageSource.includes('const updateFields = await confirmPushToHqUpdateFields(productCodes.length)') &&
+        pageSource.includes('updateFields,') &&
         pageSource.includes('pushProductsToHq({') &&
         pageSource.includes('showPushToHqResult(result)'),
-      '页面应把当前选中商品编码发送到 HQ，并展示成功和错误明细',
+      '页面应把当前选中商品编码和勾选字段发送到 HQ，并展示成功和错误明细',
+    )
+    assert(
+      typeSource.includes('export const pushProductsToHqUpdateFieldOptions = [') &&
+        typeSource.includes('type MissingPushProductsToHqUpdateFieldOption = Exclude<PushProductsToHqUpdateField, PushProductsToHqUpdateFieldOptionValue>') &&
+        typeSource.includes('const assertAllPushProductsToHqUpdateFieldsCovered: Record<MissingPushProductsToHqUpdateFieldOption, never> = {}') &&
+        typeSource.includes('export const defaultPushProductsToHqUpdateFields') &&
+        pageSource.includes('pushProductsToHqUpdateFieldOptions.map') &&
+        pageSource.includes('defaultPushProductsToHqUpdateFields') &&
+        pageSource.includes('<Checkbox.Group') &&
+        pageSource.includes("message.warning(t('containers.updateFields.selectAtLeastOne', '请至少选择一个更新字段'))") &&
+        pageSource.includes("'containers.updateFields.hqCreateHint'"),
+      '发送到 HQ 前端应提供和字段类型匹配的勾选更新字段弹窗',
     )
     assert(
       pageSource.includes('extractPushToHqErrorResult(error)') &&
@@ -1167,6 +1185,12 @@ async function main() {
         pageSource.includes('pushToHqLoadingRef.current = false') &&
         pageSource.includes('disabled={!selectedRowKeys.length || pushToHqLoading}'),
       '发送到 HQ 应使用 ref 锁和 loading 状态防止连续点击重复提交',
+    )
+    assertSourceOrder(
+      pushToHqHandlerSource,
+      'pushToHqLoadingRef.current = true',
+      'const updateFields = await confirmPushToHqUpdateFields(productCodes.length)',
+      '发送到 HQ 应在字段确认弹窗前占用锁，避免连续点击打开多个确认框',
     )
   })
   if (pushToHqFailure) failures.push(pushToHqFailure)

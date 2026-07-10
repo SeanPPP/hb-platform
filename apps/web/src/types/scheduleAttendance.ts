@@ -25,6 +25,7 @@ export interface AttendanceQuery {
   weekStartDate?: string
   fromDate?: string
   toDate?: string
+  storeTimeZone?: string
   status?: string
   keyword?: string
 }
@@ -85,6 +86,27 @@ export interface AttendancePunchDto {
   deviceId?: string
   source?: string
   remark?: string
+  locationLatitude?: number
+  locationLongitude?: number
+  locationAccuracy?: number
+  locationPermissionStatus?: string
+  locationCapturedAtUtc?: string
+  createdAt?: string
+}
+
+export interface AttendanceLocationSampleDto {
+  sampleGuid: string
+  userGuid: string
+  storeCode?: string
+  hardwareId?: string
+  systemDeviceNumber?: string
+  deviceSystem?: string
+  eventType: string
+  locationLatitude: number
+  locationLongitude: number
+  locationAccuracy?: number
+  locationPermissionStatus?: string
+  locationCapturedAtUtc: string
   createdAt?: string
 }
 

@@ -3,15 +3,20 @@ import { useTranslation } from 'react-i18next'
 import {
   Button,
   Card,
+  Col,
   Descriptions,
   Form,
   Input,
   Modal,
+  Row,
+  Segmented,
   Select,
   Space,
   Spin,
+  Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -19,6 +24,8 @@ import type { ColumnsType } from 'antd/es/table'
 import {
   activateDevice,
   disableDevice,
+  getAppDeviceStatuses,
+  getAppDeviceStatusSummary,
   getDeviceRegistrationDetail,
   getDeviceRegistrations,
   getStoreOptions,
@@ -27,6 +34,9 @@ import {
   updateDeviceRegistration,
 } from '../../../services/deviceRegistrationService'
 import type {
+  AppDeviceOnlineState,
+  AppDeviceStatus,
+  AppDeviceStatusSummary,
   DeviceRegistrationDetail,
   DeviceRegistrationItem,
   StoreOption,
@@ -44,6 +54,11 @@ const STATUS_COLOR_MAP: Record<number, string> = {
 
 const DEVICE_TYPE_OPTIONS = ['Mobile', 'PDA', 'POS', 'Admin']
 const DEVICE_SYSTEM_OPTIONS = ['Android', 'iOS', 'Windows', 'Mac']
+const APP_ONLINE_STATE_OPTIONS: AppDeviceOnlineState[] = ['all', 'online', 'offline']
+const APP_USAGE_PAGE_SIZE = 200
+const EMPTY_VALUE = '--'
+
+type DeviceRegistrationViewMode = 'registered' | 'appUsage'
 
 const DEVICE_TYPE_COLOR_MAP: Record<string, string> = {
   mobile: 'blue',
@@ -57,6 +72,12 @@ const DEVICE_SYSTEM_COLOR_MAP: Record<string, string> = {
   ios: 'magenta',
   windows: 'geekblue',
   mac: 'cyan',
+}
+
+const APP_UPDATE_SOURCE_COLOR_MAP: Record<string, string> = {
+  ota: 'green',
+  embedded: 'blue',
+  unknown: 'default',
 }
 
 function formatDateTime(value?: string | null) {
@@ -81,7 +102,73 @@ function renderDeviceTypeTag(value?: string | null) {
 }
 
 function renderDeviceSystemTag(value?: string | null) {
-  return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : '--'
+  return value ? <Tag color={getTagColor(value, DEVICE_SYSTEM_COLOR_MAP)}>{value}</Tag> : EMPTY_VALUE
+}
+
+function getUpdateTail(updateId?: string | null) {
+  const value = updateId?.trim()
+  if (!value) {
+    return EMPTY_VALUE
+  }
+  return value.length <= 10 ? value : `...${value.slice(-10)}`
+}
+
+function renderAppUpdateId(value?: string | null) {
+  const updateId = value?.trim()
+  if (!updateId) {
+    return EMPTY_VALUE
+  }
+
+  return (
+    <Tooltip title={updateId}>
+      <Typography.Text copyable={{ text: updateId }}>
+        {getUpdateTail(updateId)}
+      </Typography.Text>
+    </Tooltip>
+  )
+}
+
+function getAppUpdateSourceLabel(
+  value: string | null | undefined,
+  t: (key: string) => string
+) {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) {
+    return EMPTY_VALUE
+  }
+
+  if (normalized === 'ota' || normalized === 'embedded' || normalized === 'unknown') {
+    return t(`posAdmin.devices.appUpdateSources.${normalized}`)
+  }
+
+  return value?.trim() || EMPTY_VALUE
+}
+
+function renderAppUpdateSourceTag(
+  value: string | null | undefined,
+  t: (key: string) => string
+) {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) {
+    return EMPTY_VALUE
+  }
+
+  return (
+    <Tag color={APP_UPDATE_SOURCE_COLOR_MAP[normalized] ?? 'default'}>
+      {getAppUpdateSourceLabel(value, t)}
+    </Tag>
+  )
+}
+
+function getAppPackageVersion(item: AppDeviceStatus) {
+  if (item.appVersion && item.appBuildVersion) {
+    return `${item.appVersion} (${item.appBuildVersion})`
+  }
+  return item.appVersion || item.appBuildVersion || EMPTY_VALUE
+}
+
+function getAppDeviceUser(item: AppDeviceStatus, fallback: string) {
+  return item.lastSeenUserFullName || item.lastSeenUsername || item.lastSeenUserGuid || fallback
 }
 
 function renderRuntimeStatus(record: DeviceRegistrationItem, t: ReturnType<typeof useTranslation>['t']) {
@@ -121,12 +208,25 @@ export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
   const [editForm] = Form.useForm<DeviceEditFormValues>()
+  const [viewMode, setViewMode] = useState<DeviceRegistrationViewMode>('registered')
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
+  const [appItems, setAppItems] = useState<AppDeviceStatus[]>([])
+  const [appSummary, setAppSummary] = useState<AppDeviceStatusSummary>({
+    total: 0,
+    online: 0,
+    offline: 0,
+    android: 0,
+    ios: 0,
+    unknownSystem: 0,
+  })
   const [stores, setStores] = useState<StoreOption[]>([])
   const [loading, setLoading] = useState(false)
+  const [appLoading, setAppLoading] = useState(false)
   const [selectedStoreCode, setSelectedStoreCode] = useState<string>()
   const [selectedDeviceType, setSelectedDeviceType] = useState<string>()
   const [selectedDeviceSystem, setSelectedDeviceSystem] = useState<string>()
+  const [selectedAppOnlineState, setSelectedAppOnlineState] = useState<AppDeviceOnlineState>('all')
+  const [appKeyword, setAppKeyword] = useState('')
   const [actionDeviceId, setActionDeviceId] = useState<number | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
@@ -166,18 +266,56 @@ export default function DeviceRegistrationPage() {
     }
   }
 
+  async function loadAppDevices() {
+    setAppLoading(true)
+    try {
+      const [list, summary] = await Promise.all([
+        getAppDeviceStatuses({
+          page: 1,
+          pageSize: APP_USAGE_PAGE_SIZE,
+          storeCode: selectedStoreCode,
+          deviceSystem: selectedDeviceSystem,
+          onlineState: selectedAppOnlineState,
+          keyword: appKeyword,
+        }),
+        getAppDeviceStatusSummary({
+          storeCode: selectedStoreCode,
+          deviceSystem: selectedDeviceSystem,
+          keyword: appKeyword,
+        }),
+      ])
+      setAppItems(list.devices)
+      setAppSummary(summary)
+    } catch (error) {
+      console.error(t('posAdmin.devices.appUsageLoadFailed'), error)
+      message.error(t('posAdmin.devices.appUsageLoadFailed'))
+    } finally {
+      setAppLoading(false)
+    }
+  }
+
   useEffect(() => {
     void loadStores()
   }, [])
 
   useEffect(() => {
+    if (viewMode !== 'registered') {
+      return
+    }
+
     void loadDevices()
     const intervalId = window.setInterval(() => {
       void loadDevices(false)
     }, 15_000)
 
     return () => window.clearInterval(intervalId)
-  }, [selectedStoreCode, selectedDeviceType, selectedDeviceSystem])
+  }, [viewMode, selectedStoreCode, selectedDeviceType, selectedDeviceSystem])
+
+  useEffect(() => {
+    if (viewMode === 'appUsage') {
+      void loadAppDevices()
+    }
+  }, [viewMode, selectedStoreCode, selectedDeviceSystem, selectedAppOnlineState, appKeyword])
 
   async function runAction(
     item: DeviceRegistrationItem,
@@ -389,15 +527,120 @@ export default function DeviceRegistrationPage() {
     ]
   }, [access.canManageDeviceRegistration, actionDeviceId, storeNameMap, t])
 
+  const appColumns = useMemo<ColumnsType<AppDeviceStatus>>(() => [
+    {
+      title: t('posAdmin.devices.deviceNo'),
+      dataIndex: 'systemDeviceNumber',
+      width: 190,
+      render: (_value: string | undefined, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{record.systemDeviceNumber || record.hardwareId}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {record.hardwareId}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: t('column.store'),
+      dataIndex: 'storeCode',
+      width: 180,
+      render: (value: string | undefined) =>
+        value ? `${value}${storeNameMap[value] ? ` / ${storeNameMap[value]}` : ''}` : EMPTY_VALUE,
+    },
+    {
+      title: t('posAdmin.devices.appUsageStatus'),
+      dataIndex: 'isOnline',
+      width: 100,
+      render: (value: boolean) => (
+        <Tag color={value ? 'green' : 'default'}>
+          {t(value ? 'posAdmin.devices.appOnline' : 'posAdmin.devices.appOffline')}
+        </Tag>
+      ),
+    },
+    {
+      title: t('posAdmin.devices.deviceSystem'),
+      dataIndex: 'deviceSystem',
+      width: 110,
+      render: (_value: string | undefined, record) => renderDeviceSystemTag(record.deviceSystem || record.platform),
+    },
+    {
+      title: t('posAdmin.devices.appPackageVersion'),
+      width: 170,
+      render: (_value, record) => getAppPackageVersion(record),
+    },
+    {
+      title: t('posAdmin.devices.appRuntime'),
+      dataIndex: 'runtimeVersion',
+      width: 150,
+      ellipsis: true,
+      render: (value: string | undefined) => value || EMPTY_VALUE,
+    },
+    {
+      title: t('posAdmin.devices.appChannel'),
+      dataIndex: 'channel',
+      width: 130,
+      ellipsis: true,
+      render: (value: string | undefined) => value || EMPTY_VALUE,
+    },
+    {
+      title: t('posAdmin.devices.appUpdateSource'),
+      dataIndex: 'updateSource',
+      width: 120,
+      render: (value: string | undefined) => renderAppUpdateSourceTag(value, t),
+    },
+    {
+      title: t('posAdmin.devices.appUpdateId'),
+      dataIndex: 'updateId',
+      width: 160,
+      render: (value: string | undefined) => renderAppUpdateId(value),
+    },
+    {
+      title: t('posAdmin.devices.appLastUser'),
+      width: 160,
+      ellipsis: true,
+      render: (_value, record) => getAppDeviceUser(record, t('posAdmin.devices.appNoRecentUser')),
+    },
+    {
+      title: t('posAdmin.devices.appAuthMode'),
+      dataIndex: 'lastAuthMode',
+      width: 120,
+      render: (value: string | undefined) => value || EMPTY_VALUE,
+    },
+    {
+      title: t('posAdmin.devices.appLastSeen'),
+      dataIndex: 'lastSeenAtUtc',
+      width: 180,
+      render: (value: string | undefined) => formatDateTime(value),
+    },
+  ], [storeNameMap, t])
+
   const renderStore = (device: DeviceRegistrationDetail) =>
     device.storeCode ? `${device.storeCode}${device.storeName ? ` / ${device.storeName}` : ''}` : '--'
+
+  const refreshCurrentView = () => {
+    if (viewMode === 'appUsage') {
+      void loadAppDevices()
+      return
+    }
+
+    void loadDevices()
+  }
 
   return (
     <>
       <Card
-        title={t('posAdmin.devices.title')}
+        title={t(viewMode === 'appUsage' ? 'posAdmin.devices.appUsageTitle' : 'posAdmin.devices.title')}
         extra={
           <Space wrap>
+            <Segmented<DeviceRegistrationViewMode>
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { label: t('posAdmin.devices.viewRegistered'), value: 'registered' },
+                { label: t('posAdmin.devices.viewAppUsage'), value: 'appUsage' },
+              ]}
+            />
             <Select
               allowClear
               placeholder={t('posAdmin.devices.filterByStore')}
@@ -409,17 +652,19 @@ export default function DeviceRegistrationPage() {
                 value: store.storeCode,
               }))}
             />
-            <Select
-              allowClear
-              placeholder={t('posAdmin.devices.filterByDeviceType')}
-              style={{ width: 160 }}
-              value={selectedDeviceType}
-              onChange={(value) => setSelectedDeviceType(value)}
-              options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
-                label: renderDeviceTypeTag(deviceType),
-                value: deviceType,
-              }))}
-            />
+            {viewMode === 'registered' ? (
+              <Select
+                allowClear
+                placeholder={t('posAdmin.devices.filterByDeviceType')}
+                style={{ width: 160 }}
+                value={selectedDeviceType}
+                onChange={(value) => setSelectedDeviceType(value)}
+                options={DEVICE_TYPE_OPTIONS.map((deviceType) => ({
+                  label: renderDeviceTypeTag(deviceType),
+                  value: deviceType,
+                }))}
+              />
+            ) : null}
             <Select
               allowClear
               placeholder={t('posAdmin.devices.filterByDeviceSystem')}
@@ -431,23 +676,78 @@ export default function DeviceRegistrationPage() {
                 value: deviceSystem,
               }))}
             />
-            <Button onClick={() => void loadDevices()}>{t('common.refresh')}</Button>
+            {viewMode === 'appUsage' ? (
+              <>
+                <Select<AppDeviceOnlineState>
+                  placeholder={t('posAdmin.devices.filterByOnline')}
+                  style={{ width: 140 }}
+                  value={selectedAppOnlineState}
+                  onChange={(value) => setSelectedAppOnlineState(value)}
+                  options={APP_ONLINE_STATE_OPTIONS.map((onlineState) => ({
+                    label: t(`posAdmin.devices.appOnlineFilters.${onlineState}`),
+                    value: onlineState,
+                  }))}
+                />
+                <Input.Search
+                  allowClear
+                  placeholder={t('posAdmin.devices.appSearchPlaceholder')}
+                  style={{ width: 220 }}
+                  onSearch={(value) => setAppKeyword(value.trim())}
+                  onChange={(event) => {
+                    if (!event.target.value) {
+                      setAppKeyword('')
+                    }
+                  }}
+                />
+              </>
+            ) : null}
+            <Button onClick={refreshCurrentView}>{t('common.refresh')}</Button>
           </Space>
         }
       >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Typography.Text type="secondary">
-            {t('posAdmin.devices.deviceNote')}
-          </Typography.Text>
-          <Table<DeviceRegistrationItem>
-            rowKey="id"
-            loading={loading}
-            columns={columns}
-            dataSource={items}
-            scroll={{ x: access.canManageDeviceRegistration ? 1650 : 1350 }}
-            pagination={false}
-          />
-        </Space>
+        {viewMode === 'appUsage' ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">
+              {t('posAdmin.devices.appUsageNote')}
+            </Typography.Text>
+            <Row gutter={[12, 12]}>
+              <Col xs={12} md={6}>
+                <Statistic title={t('posAdmin.devices.appSummaryTotal')} value={appSummary.total} />
+              </Col>
+              <Col xs={12} md={6}>
+                <Statistic title={t('posAdmin.devices.appSummaryOnline')} value={appSummary.online} />
+              </Col>
+              <Col xs={12} md={6}>
+                <Statistic title={t('posAdmin.devices.appSummaryAndroid')} value={appSummary.android} />
+              </Col>
+              <Col xs={12} md={6}>
+                <Statistic title={t('posAdmin.devices.appSummaryIos')} value={appSummary.ios} />
+              </Col>
+            </Row>
+            <Table<AppDeviceStatus>
+              rowKey={(record) => record.id || record.hardwareId}
+              loading={appLoading}
+              columns={appColumns}
+              dataSource={appItems}
+              scroll={{ x: 1600 }}
+              pagination={false}
+            />
+          </Space>
+        ) : (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">
+              {t('posAdmin.devices.deviceNote')}
+            </Typography.Text>
+            <Table<DeviceRegistrationItem>
+              rowKey="id"
+              loading={loading}
+              columns={columns}
+              dataSource={items}
+              scroll={{ x: access.canManageDeviceRegistration ? 1650 : 1350 }}
+              pagination={false}
+            />
+          </Space>
+        )}
       </Card>
 
       <Modal

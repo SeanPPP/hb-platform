@@ -1135,6 +1135,153 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task DetectAsync_货号候选编码不一致_应返回商品编码冲突字段()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-local-align",
+                ProductCode = "LOCAL-CODE-001",
+                ProductName = "本地主档商品",
+                ItemNumber = "ITEM-ALIGN-001",
+                LocalSupplierCode = "200",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-local-align-other",
+                ProductCode = "OTHER-CODE-001",
+                ProductName = "其他供应商同货号商品",
+                ItemNumber = "ITEM-ALIGN-001",
+                LocalSupplierCode = "999",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "LOCAL-CODE-001",
+                OEMPrice = 6.99m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "OTHER-CODE-001",
+                OEMPrice = 9.99m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "DOM-CODE-001",
+                HBProductNo = "ITEM-ALIGN-001",
+                SupplierCode = "200",
+                ProductName = "国内旧编码商品",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticProduct
+            {
+                ProductCode = "DOM-CODE-999",
+                HBProductNo = "ITEM-ALIGN-001",
+                SupplierCode = "999",
+                ProductName = "其他供应商国内商品",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var service = CreateService();
+
+            var result = await service.DetectAsync(new List<DetectionItemDto>
+            {
+                new() { ProductCode = "DOM-CODE-001", ItemNumber = "ITEM-ALIGN-001", SupplierCode = "200" },
+            });
+
+            var item = Assert.Single(result);
+            Assert.True(item.Exists);
+            Assert.Equal("item_number", item.MatchType);
+            Assert.Equal("200", item.SupplierCode);
+            Assert.Equal("LOCAL-CODE-001", item.LocalProductCode);
+            Assert.Equal("DOM-CODE-001", item.DomesticProductCode);
+            Assert.True(item.HasProductCodeConflict);
+            Assert.Equal("国内商品编码与本地主档商品编码不一致", item.ConflictReason);
+        }
+
+        [Fact]
+        public async Task DetectAsync_同货号不同供应商_国内候选应按供应商代码筛选()
+        {
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-supplier-item-200",
+                ProductCode = "LOCAL-SUP-200",
+                ProductName = "供应商200本地主档",
+                ItemNumber = "ITEM-SHARED",
+                LocalSupplierCode = "200",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Product
+            {
+                UUID = "product-uuid-supplier-item-999",
+                ProductCode = "LOCAL-SUP-999",
+                ProductName = "供应商999本地主档",
+                ItemNumber = "ITEM-SHARED",
+                LocalSupplierCode = "999",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new List<WarehouseProduct>
+            {
+                new()
+                {
+                    ProductCode = "LOCAL-SUP-200",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    ProductCode = "LOCAL-SUP-999",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new List<DomesticProduct>
+            {
+                new()
+                {
+                    ProductCode = "DOM-SUP-999",
+                    HBProductNo = "ITEM-SHARED",
+                    SupplierCode = "999",
+                    ProductName = "供应商999国内商品",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    ProductCode = "DOM-SUP-200",
+                    HBProductNo = "ITEM-SHARED",
+                    SupplierCode = "200",
+                    ProductName = "供应商200国内商品",
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+
+            var service = CreateService();
+
+            var result = await service.DetectAsync(new List<DetectionItemDto>
+            {
+                new() { ProductCode = "DOM-MISSING", ItemNumber = "ITEM-SHARED", SupplierCode = "200" },
+            });
+
+            var item = Assert.Single(result);
+            Assert.True(item.Exists);
+            Assert.Equal("LOCAL-SUP-200", item.LocalProductCode);
+            Assert.Equal("DOM-SUP-200", item.DomesticProductCode);
+            Assert.Equal("供应商200国内商品", item.ProductName);
+        }
+
+        [Fact]
         public async Task LookupMobileProductsAsync_ReturnsWarehouseFieldsUsedByMobileUi()
         {
             await _db.Insertable(new ChinaSupplier
@@ -1901,7 +2048,7 @@ namespace BlazorApp.Api.Tests
                 )
             );
 
-            Assert.Equal("零售价和OEM价不一致", error.Message);
+            Assert.Equal("零售价和RRP不一致", error.Message);
         }
 
         [Fact]

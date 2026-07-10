@@ -100,6 +100,16 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> Punch([FromBody] AttendancePunchRequestDto request) =>
             Ok(await _service.PunchAsync(request));
 
+        [HttpPost("location-samples")]
+        [Authorize(Policy = Permissions.Attendance.Punch.Self)]
+        public async Task<IActionResult> CreateLocationSample([FromBody] AttendanceLocationSampleRequestDto request) =>
+            Ok(await _service.CreateLocationSampleAsync(request));
+
+        [HttpGet("location-samples")]
+        [Authorize(Policy = Permissions.Attendance.Punch.ViewManagedStore)]
+        public async Task<IActionResult> GetLocationSamples([FromQuery] AttendanceLocationSampleQueryDto query) =>
+            Ok(await _service.GetLocationSamplesAsync(query));
+
         [HttpGet("my/leave-requests")]
         [Authorize(Policy = Permissions.Attendance.Leave.ApplySelf)]
         public async Task<IActionResult> GetMyLeaveRequests() =>

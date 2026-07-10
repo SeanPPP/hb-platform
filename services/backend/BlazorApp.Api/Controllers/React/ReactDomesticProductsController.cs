@@ -479,6 +479,65 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 批量更新 HBweb 商品主表 Product.ProductName（React 商品导入专用）
+        /// </summary>
+        /// <param name="dto">批量更新 DTO</param>
+        /// <returns>更新结果</returns>
+        [HttpPut("product-master-names")]
+        [Authorize(Policy = Permissions.DomesticPurchase.ManageProducts)]
+        public async Task<IActionResult> BatchUpdateHbwebProductNames(
+            [FromBody] BatchUpdateHbwebProductNamesDto dto
+        )
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    var errors = ModelState.Values.SelectMany(v =>
+                        v.Errors.Select(e => e.ErrorMessage)
+                    );
+                    return BadRequest(
+                        new
+                        {
+                            success = false,
+                            message = $"输入验证失败: {string.Join(", ", errors)}",
+                        }
+                    );
+                }
+
+                var result = await _domesticProductReactService.BatchUpdateHbwebProductNamesAsync(
+                    dto
+                );
+                if (result.Success)
+                {
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = result.Data,
+                            message = result.Message,
+                        }
+                    );
+                }
+
+                return BadRequest(
+                    new
+                    {
+                        success = false,
+                        data = result.Data ?? result.Details,
+                        message = result.Message,
+                        errorCode = result.ErrorCode,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新 HBweb 商品主表商品名称失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 批量删除商品（React专用）
         /// </summary>
         /// <param name="request">批量删除请求</param>

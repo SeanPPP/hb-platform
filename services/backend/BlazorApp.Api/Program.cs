@@ -181,6 +181,8 @@ builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
 builder.Services.AddScoped<ScheduledTaskRetryService>();
 builder.Services.AddScoped<ScheduledTaskRuntimeControlService>();
+builder.Services.AddScoped<ScheduledTaskLeaseService>();
+builder.Services.AddScoped<SalesStatisticsAlignmentService>();
 builder.Services.Configure<ScheduledTaskOptions>(
     builder.Configuration.GetSection("ScheduledTasks")
 );
@@ -537,6 +539,14 @@ builder.Services.AddScoped<
 >();
 builder.Services.AddSingleton<IWarehouseProductHqSyncJobService, WarehouseProductHqSyncJobService>();
 builder.Services.AddScoped<IDeviceRegistrationService, DeviceRegistrationService>(); // POSM设备注册管理服务
+builder.Services.AddScoped<MobileAppDeviceStatusService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    var deviceRegistrationService = sp.GetRequiredService<IDeviceRegistrationService>();
+    var logger = sp.GetRequiredService<ILogger<MobileAppDeviceStatusService>>();
+    return new MobileAppDeviceStatusService(context.Db, deviceRegistrationService, logger);
+}); // Expo App 设备版本与在线快照服务
+builder.Services.AddScoped<UserLoginDeviceAuditService>(); // App 登录设备与定位审计
 builder.Services.AddScoped<IProductSyncService, ProductSyncService>(); // 货柜商品同步服务（检测、批量创建、批量更新）
 builder.Services.AddScoped<IProductIntegrityService, ProductIntegrityService>(); // 商品数据一致性校验与修复服务
 builder.Services.AddScoped<IWarehouseProductBatchService, WarehouseProductBatchService>(); // 仓库商品批量管理服务
@@ -652,6 +662,7 @@ builder.Services.AddScoped<
 >();
 
 builder.Services.AddScoped<SalesStatisticsJobService>();
+builder.Services.AddScoped<SalesStatisticsAlignmentBackgroundRecalculateService>();
 
 builder.Services.AddSingleton<
     BlazorApp.Api.Interfaces.React.IOrderNumberGenerator,

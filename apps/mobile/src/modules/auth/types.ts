@@ -2,6 +2,15 @@ export interface LoginRequest {
   username: string;
   password: string;
   passwordFormat?: "raw" | "clientSha256";
+  hardwareId?: string;
+  systemDeviceNumber?: string;
+  deviceSystem?: string;
+  storeCode?: string;
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationAccuracy?: number;
+  locationPermissionStatus?: string;
+  locationCapturedAtUtc?: string;
 }
 
 export interface TokenResponse {
@@ -11,6 +20,8 @@ export interface TokenResponse {
   refreshTokenExpiry: string;
   success: boolean;
   message: string;
+  isDeviceSwitched?: boolean;
+  isCommonDevice?: boolean;
 }
 
 export interface RefreshTokenRequest {
@@ -46,12 +57,15 @@ export interface AccessControl {
   isManager: boolean;
   isUser: boolean;
   isWarehouseStaff: boolean;
+  isWarehouseStaffOnly: boolean;
   isWarehouseManager: boolean;
   isStoreStaff: boolean;
   isStoreManager: boolean;
   isStoreLevelManager: boolean;
   onlyOrder: boolean;
   canReadOrder: boolean;
+  canCreateOrder: boolean;
+  canEditOrder: boolean;
   canWriteOrder: boolean;
   canDeleteOrder: boolean;
   canReadProduct: boolean;
@@ -67,6 +81,10 @@ export interface AccessControl {
   canWriteStore: boolean;
   canDeleteStore: boolean;
   canManageWarehouse: boolean;
+  canViewContainers: boolean;
+  canCreateContainer: boolean;
+  canEditContainer: boolean;
+  canDeleteContainer: boolean;
   canManageStore: boolean;
   canViewReports: boolean;
   canExportData: boolean;

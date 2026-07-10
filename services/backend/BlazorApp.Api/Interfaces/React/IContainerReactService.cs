@@ -66,12 +66,19 @@ namespace BlazorApp.Api.Interfaces.React
         Task<int> BatchUpdateDetailsAsync(List<UpdateContainerDetailDto> updates);
 
         /// <summary>
+        /// 人工确认后，将国内商品编码反向对齐到本地主档商品编码。
+        /// </summary>
+        Task<AlignDomesticProductCodeResultDto> AlignDomesticProductCodeAsync(
+            AlignDomesticProductCodeRequestDto request
+        );
+
+        /// <summary>
         /// 按当前筛选范围批量调浮率并重算成本。
         /// </summary>
         Task<int> ApplyFloatRateByScopeAsync(string containerGuid, ContainerDetailApplyFloatRateRequestDto request);
 
         /// <summary>
-        /// 按当前筛选范围批量改进口价/贴牌价。
+        /// 按当前筛选范围批量改进口价/零售价。
         /// </summary>
         Task<int> ApplyPricesByScopeAsync(string containerGuid, ContainerDetailApplyPricesRequestDto request);
 

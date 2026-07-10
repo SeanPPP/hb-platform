@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import Constants from "expo-constants";
 import {
   View,
   StyleSheet,
@@ -32,8 +33,14 @@ import {
   type LoginErrorDescriptor,
 } from "@/modules/auth/login-errors";
 import { prepareDeviceLoginSession } from "@/modules/auth/device-login-session";
+import {
+  collectLoginDeviceLocation,
+  collectOptionalLoginDeviceLocation,
+  isRequiredLocationError,
+} from "@/modules/attendance/required-location";
 import { resolveDefaultTabRoute } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
+import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-build-profile";
 import { checkLoginUpdateRestartPrompt } from "@/modules/updates/login-update-restart-prompt";
 import { checkAndDownloadAppUpdate, reloadAppToApplyUpdate } from "@/modules/updates/app-update-runtime";
 import { i18n, setAppLanguage } from "@/shared/i18n/i18n";
@@ -170,6 +177,10 @@ export default function Login() {
   }, []);
 
   useEffect(() => {
+    if (!shouldRunAutomaticAppUpdatesForProfile(Constants.expoConfig?.extra?.nativeAppBuildProfile)) {
+      return;
+    }
+
     let mounted = true;
 
     async function checkLoginUpdate() {
@@ -274,7 +285,8 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await loginFn({ username, password });
+      const auditPayload = await collectOptionalLoginDeviceLocation(registeredDevice);
+      await loginFn({ username, password, ...auditPayload });
       router.replace(
         resolveDefaultTabRoute({
           isDeviceMode: false,
@@ -282,7 +294,11 @@ export default function Login() {
         }) as Parameters<typeof router.replace>[0]
       );
     } catch (err) {
-      setError(translateLoginError(getFriendlyLoginErrorDescriptor(err)));
+      setError(
+        isRequiredLocationError(err)
+          ? t("errors.locationRequired")
+          : translateLoginError(getFriendlyLoginErrorDescriptor(err)),
+      );
       setSnackbarVisible(true);
     } finally {
       setLoading(false);
@@ -297,10 +313,11 @@ export default function Login() {
     setError("");
     setDeviceLoginLoading(true);
     try {
+      const auditPayload = await collectLoginDeviceLocation(registeredDevice);
       const isReady = await prepareDeviceLoginSession(registeredDevice, {
         clearAccountSession: clearLocalAuthSession,
         syncDeviceFromProfile,
-        validateDevice,
+        validateDevice: () => validateDevice(auditPayload),
       });
       if (isReady) {
         router.replace(
@@ -315,7 +332,11 @@ export default function Login() {
       setError(t("device.notReadyMessage"));
       setSnackbarVisible(true);
     } catch (err) {
-      setError(translateLoginError(getFriendlyDeviceLoginErrorDescriptor(err)));
+      setError(
+        isRequiredLocationError(err)
+          ? t("errors.locationRequired")
+          : translateLoginError(getFriendlyDeviceLoginErrorDescriptor(err)),
+      );
       setSnackbarVisible(true);
     } finally {
       setDeviceLoginLoading(false);

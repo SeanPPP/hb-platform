@@ -1,5 +1,9 @@
 import type { ApiResponse } from '../types/api'
 import type {
+  AppDeviceOnlineState,
+  AppDeviceStatus,
+  AppDeviceStatusPagedResult,
+  AppDeviceStatusSummary,
   DeviceRegistrationDetail,
   DeviceRegistrationItem,
   DeviceRegistrationPagedResult,
@@ -12,6 +16,7 @@ import request, { unwrapApiData } from '../utils/request'
 const DEVICE_API_BASE = '/api'
 const REACT_API_BASE = '/api/react/v1/device-registration'
 export const DEVICE_RUNTIME_ONLINE_STALE_MS = 45_000
+const APP_DEVICE_API_BASE = '/api/mobile/app-device-status'
 
 function getString(raw: Record<string, unknown>, ...keys: string[]) {
   for (const key of keys) {
@@ -56,6 +61,58 @@ export function isDeviceRuntimeOnline(
 
   const heartbeatTime = Date.parse(item.lastHeartbeatAt)
   return !Number.isNaN(heartbeatTime) && now - heartbeatTime <= DEVICE_RUNTIME_ONLINE_STALE_MS
+}
+
+function pick(raw: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    if (raw[key] !== undefined && raw[key] !== null) {
+      return raw[key]
+    }
+  }
+  return undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function asString(value: unknown) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed || undefined
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return undefined
+}
+
+function asNumber(value: unknown, fallback: number) {
+  const numericValue = typeof value === 'string' && value.trim() ? Number(value) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : fallback
+}
+
+function asOptionalNumber(value: unknown) {
+  const numericValue = typeof value === 'string' && value.trim() ? Number(value) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : undefined
+}
+
+function asBoolean(value: unknown, fallback = false) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', '1', 'yes'].includes(normalized)) {
+      return true
+    }
+    if (['false', '0', 'no'].includes(normalized)) {
+      return false
+    }
+  }
+  return fallback
 }
 
 function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
@@ -109,6 +166,94 @@ function normalizeItem(raw: Record<string, unknown>): DeviceRegistrationItem {
       '当前收银员姓名'
     ),
     cashierLoginAt: getNullableString(raw, 'cashierLoginAt', 'CashierLoginAt', '收银员登录时间'),
+  }
+}
+
+function normalizeAppDeviceStatus(raw: unknown): AppDeviceStatus | null {
+  const record = asRecord(raw)
+  if (!record) {
+    return null
+  }
+
+  const hardwareId = asString(pick(record, 'hardwareId', 'HardwareId'))
+  const id = asString(pick(record, 'id', 'Id')) ?? hardwareId
+  if (!id || !hardwareId) {
+    return null
+  }
+
+  return {
+    id,
+    hardwareId,
+    systemDeviceNumber: asString(pick(record, 'systemDeviceNumber', 'SystemDeviceNumber')),
+    deviceSystem: asString(pick(record, 'deviceSystem', 'DeviceSystem')),
+    platform: asString(pick(record, 'platform', 'Platform')),
+    storeCode: asString(pick(record, 'storeCode', 'StoreCode')),
+    appVersion: asString(pick(record, 'appVersion', 'AppVersion')),
+    appBuildVersion: asString(pick(record, 'appBuildVersion', 'AppBuildVersion')),
+    runtimeVersion: asString(pick(record, 'runtimeVersion', 'RuntimeVersion')),
+    channel: asString(pick(record, 'channel', 'Channel')),
+    updateId: asString(pick(record, 'updateId', 'UpdateId')),
+    updateSource: asString(pick(record, 'updateSource', 'UpdateSource')),
+    lastSeenAtUtc: asString(pick(record, 'lastSeenAtUtc', 'LastSeenAtUtc', 'lastSeenAt', 'LastSeenAt')),
+    isOnline: asBoolean(pick(record, 'isOnline', 'IsOnline')),
+    lastAuthMode: asString(pick(record, 'lastAuthMode', 'LastAuthMode')),
+    lastSeenUserGuid: asString(pick(record, 'lastSeenUserGuid', 'LastSeenUserGuid')),
+    lastSeenUsername: asString(pick(record, 'lastSeenUsername', 'LastSeenUsername')),
+    lastSeenUserFullName: asString(pick(record, 'lastSeenUserFullName', 'LastSeenUserFullName')),
+    registeredDeviceId: asOptionalNumber(pick(record, 'registeredDeviceId', 'RegisteredDeviceId')),
+  }
+}
+
+export function normalizeAppDeviceStatusListResponse(payload: unknown): AppDeviceStatusPagedResult {
+  const data = unwrapApiData(payload as ApiResponse<unknown> | unknown)
+  const record = asRecord(data) ?? {}
+  const itemsPayload = pick(record, 'items', 'Items', 'devices', 'Devices', 'data', 'Data')
+  const total = asNumber(pick(record, 'total', 'Total', 'totalCount', 'TotalCount'), 0)
+  const page = asNumber(pick(record, 'page', 'Page', 'pageIndex', 'PageIndex'), 1)
+  const pageSize = asNumber(pick(record, 'pageSize', 'PageSize'), 20)
+
+  return {
+    devices: Array.isArray(itemsPayload)
+      ? itemsPayload.map(normalizeAppDeviceStatus).filter((item): item is AppDeviceStatus => Boolean(item))
+      : [],
+    total,
+    page,
+    pageSize,
+    totalPages: asNumber(
+      pick(record, 'totalPages', 'TotalPages'),
+      pageSize > 0 ? Math.ceil(total / pageSize) : 0
+    ),
+  }
+}
+
+export function normalizeAppDeviceStatusSummary(payload: unknown): AppDeviceStatusSummary {
+  const data = unwrapApiData(payload as ApiResponse<unknown> | unknown)
+  const record = asRecord(data) ?? {}
+  return {
+    total: asNumber(pick(record, 'total', 'Total'), 0),
+    online: asNumber(pick(record, 'online', 'Online'), 0),
+    offline: asNumber(pick(record, 'offline', 'Offline'), 0),
+    android: asNumber(pick(record, 'android', 'Android'), 0),
+    ios: asNumber(pick(record, 'ios', 'Ios', 'iOS', 'IOS'), 0),
+    unknownSystem: asNumber(pick(record, 'unknownSystem', 'UnknownSystem'), 0),
+  }
+}
+
+function buildAppDeviceStatusParams(params?: {
+  page?: number
+  pageSize?: number
+  storeCode?: string
+  deviceSystem?: string
+  onlineState?: AppDeviceOnlineState
+  keyword?: string
+}) {
+  return {
+    page: params?.page,
+    pageSize: params?.pageSize,
+    storeCode: params?.storeCode,
+    deviceSystem: params?.deviceSystem,
+    onlineState: params?.onlineState && params.onlineState !== 'all' ? params.onlineState : undefined,
+    keyword: params?.keyword?.trim() || undefined,
   }
 }
 
@@ -195,6 +340,35 @@ export async function getDeviceRegistrations(params?: {
     pageSize: Number(pagination.pageSize ?? params?.pageSize ?? 50),
     totalPages: Number(pagination.totalPages ?? 1),
   }
+}
+
+export async function getAppDeviceStatuses(params?: {
+  page?: number
+  pageSize?: number
+  storeCode?: string
+  deviceSystem?: string
+  onlineState?: AppDeviceOnlineState
+  keyword?: string
+}): Promise<AppDeviceStatusPagedResult> {
+  const response = await request.get<ApiResponse<unknown>>(`${APP_DEVICE_API_BASE}/paged`, {
+    params: buildAppDeviceStatusParams(params),
+  })
+  return normalizeAppDeviceStatusListResponse(response)
+}
+
+export async function getAppDeviceStatusSummary(params?: {
+  storeCode?: string
+  deviceSystem?: string
+  keyword?: string
+}): Promise<AppDeviceStatusSummary> {
+  const response = await request.get<ApiResponse<unknown>>(`${APP_DEVICE_API_BASE}/summary`, {
+    params: {
+      storeCode: params?.storeCode,
+      deviceSystem: params?.deviceSystem,
+      keyword: params?.keyword?.trim() || undefined,
+    },
+  })
+  return normalizeAppDeviceStatusSummary(response)
 }
 
 export async function activateDevice(id: number) {

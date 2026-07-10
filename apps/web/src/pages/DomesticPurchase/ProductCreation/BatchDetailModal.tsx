@@ -160,7 +160,7 @@ export default function BatchDetailModal({ visible, batch, onClose }: BatchDetai
     { title: t('domesticProducts.barcode', '条码'), dataIndex: 'barcode', key: 'barcode', width: 120, render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span> },
     { title: t('domesticProducts.productName', '商品名称'), dataIndex: 'productName', key: 'productName', width: 180 },
     {
-      title: t('productCreation.privateLabelPrice', '贴牌价格'),
+      title: t('productCreation.privateLabelPrice', '零售价'),
       dataIndex: 'privateLabelPrice',
       key: 'privateLabelPrice',
       width: 100,

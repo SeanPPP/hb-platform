@@ -255,6 +255,41 @@ namespace BlazorApp.Shared.DTOs
         /// </summary>
         [Required(ErrorMessage = "授权码不能为空")]
         public string AuthCode { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 后台注册设备号，App 端可直接带回便于登录审计。
+        /// </summary>
+        public string? SystemDeviceNumber { get; set; }
+
+        /// <summary>
+        /// 设备系统，例如 iOS 或 Android。
+        /// </summary>
+        public string? DeviceSystem { get; set; }
+
+        /// <summary>
+        /// 设备登录时采集的纬度。
+        /// </summary>
+        public double? LocationLatitude { get; set; }
+
+        /// <summary>
+        /// 设备登录时采集的经度。
+        /// </summary>
+        public double? LocationLongitude { get; set; }
+
+        /// <summary>
+        /// 设备登录时采集的位置精度，单位米。
+        /// </summary>
+        public double? LocationAccuracy { get; set; }
+
+        /// <summary>
+        /// 设备登录时定位权限状态，服务端要求为 granted。
+        /// </summary>
+        public string? LocationPermissionStatus { get; set; }
+
+        /// <summary>
+        /// 设备登录时定位采集时间。
+        /// </summary>
+        public DateTime? LocationCapturedAtUtc { get; set; }
     }
 
     /// <summary>

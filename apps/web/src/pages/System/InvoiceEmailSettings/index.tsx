@@ -1,4 +1,12 @@
-import { MailOutlined, ReloadOutlined, SaveOutlined, SendOutlined } from '@ant-design/icons'
+import {
+  CheckCircleOutlined,
+  DeleteOutlined,
+  MailOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+  SendOutlined,
+} from '@ant-design/icons'
 import {
   Alert,
   Button,
@@ -28,9 +36,15 @@ import {
   buildInvoiceEmailSettingsSavePayload,
   buildInvoiceEmailSettingsTestPayload,
   createInvoiceEmailSettingsFormValues,
+  createNewInvoiceEmailAccountFormValue,
+  ensureInvoiceEmailDefaultAccount,
   resolveInvoiceEmailSettingsErrorMessage,
+  setInvoiceEmailDefaultAccount,
+  type InvoiceEmailAccountFormValues,
   type InvoiceEmailSettingsFormValues,
 } from './pageLogic'
+
+const EMAIL_REGEXP = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 function PasswordStateTag({ hasPassword }: { hasPassword: boolean }) {
   const { t } = useTranslation()
@@ -47,10 +61,13 @@ export default function InvoiceEmailSettingsPage() {
   const access = useAuthStore((state) => state.access)
   const canManageSettings = access.hasPermission('System.ManageSettings')
   const [form] = Form.useForm<InvoiceEmailSettingsFormValues>()
+  const watchedAccounts = Form.useWatch('accounts', form) as InvoiceEmailAccountFormValues[] | undefined
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [testing, setTesting] = useState(false)
+  const [testingAccountIndex, setTestingAccountIndex] = useState<number | null>(null)
   const [settings, setSettings] = useState<InvoiceEmailSettingsDto | null>(null)
+
+  const getAccountValues = () => (form.getFieldValue('accounts') ?? []) as InvoiceEmailAccountFormValues[]
 
   const loadSettings = async () => {
     setLoading(true)
@@ -71,7 +88,10 @@ export default function InvoiceEmailSettingsPage() {
   }, [])
 
   const handleSave = async () => {
-    const values = await form.validateFields()
+    await form.validateFields()
+    const values: InvoiceEmailSettingsFormValues = {
+      accounts: getAccountValues(),
+    }
     setSaving(true)
     try {
       const result = await saveInvoiceEmailSettings(buildInvoiceEmailSettingsSavePayload(values))
@@ -86,19 +106,75 @@ export default function InvoiceEmailSettingsPage() {
     }
   }
 
-  const handleSendTest = async () => {
-    const values = await form.validateFields()
-    setTesting(true)
+  const handleAddAccount = () => {
+    const accounts = getAccountValues()
+    form.setFieldsValue({
+      accounts: [
+        ...accounts,
+        createNewInvoiceEmailAccountFormValue(accounts.length, {
+          defaultName: t('invoiceEmailSettings.defaultAccountName'),
+          accountNamePrefix: t('invoiceEmailSettings.accountNamePrefix'),
+        }),
+      ],
+    })
+  }
+
+  const handleRemoveAccount = (index: number) => {
+    const accounts = getAccountValues()
+    if (accounts.length <= 1) {
+      message.warning(t('invoiceEmailSettings.keepOneAccount'))
+      return
+    }
+
+    const nextAccounts = accounts.filter((_, accountIndex) => accountIndex !== index)
+    form.setFieldsValue({
+      accounts: ensureInvoiceEmailDefaultAccount(nextAccounts, 0),
+    })
+  }
+
+  const handleSetDefaultAccount = (index: number) => {
+    form.setFieldsValue({
+      accounts: setInvoiceEmailDefaultAccount(getAccountValues(), index),
+    })
+  }
+
+  const validateAccountForTest = async (index: number) => {
+    const field = (name: string) => ['accounts', index, name] as const
+    await form.validateFields([
+      field('name'),
+      field('host'),
+      field('port'),
+      field('fromEmail'),
+      field('maxAttachmentMegabytes'),
+    ])
+
+    const account = getAccountValues()[index]
+    const testToEmail = account?.testToEmail?.trim()
+    if (!testToEmail) {
+      throw new Error(t('invoiceEmailSettings.validation.testToEmail'))
+    }
+    if (!EMAIL_REGEXP.test(testToEmail)) {
+      throw new Error(t('invoiceEmailSettings.validation.email'))
+    }
+
+    return account
+  }
+
+  const handleSendTest = async (index: number) => {
+    setTestingAccountIndex(index)
     try {
-      const result = await sendInvoiceEmailSettingsTestEmail(buildInvoiceEmailSettingsTestPayload(values))
+      const account = await validateAccountForTest(index)
+      const result = await sendInvoiceEmailSettingsTestEmail(buildInvoiceEmailSettingsTestPayload(account))
       message.success(result.message || t('invoiceEmailSettings.testSuccess'))
     } catch (error) {
       console.error(error)
       message.error(resolveInvoiceEmailSettingsErrorMessage(error, t('invoiceEmailSettings.testFailed')))
     } finally {
-      setTesting(false)
+      setTestingAccountIndex(null)
     }
   }
+
+  const accountCount = watchedAccounts?.length ?? settings?.accounts.length ?? 0
 
   return (
     <PageContainer
@@ -132,129 +208,208 @@ export default function InvoiceEmailSettingsPage() {
 
       <Card loading={loading}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Space size={12}>
+          <Space size={12} wrap>
             <MailOutlined />
-            <Typography.Text strong>{t('invoiceEmailSettings.passwordStatus')}</Typography.Text>
-            <PasswordStateTag hasPassword={settings?.hasPassword ?? false} />
+            <Typography.Text strong>{t('invoiceEmailSettings.accountCount')}</Typography.Text>
+            <Tag>{accountCount}</Tag>
+            <Typography.Text type="secondary">{t('invoiceEmailSettings.defaultAccountHint')}</Typography.Text>
           </Space>
+
+          <Alert
+            showIcon
+            type="info"
+            message={t('invoiceEmailSettings.passwordHint')}
+          />
 
           <Form
             form={form}
             layout="vertical"
             disabled={loading}
             initialValues={{
-              port: 25,
-              useSsl: true,
-              checkCertificateRevocation: true,
-              clearPassword: false,
-              maxAttachmentBytes: 10485760,
-              testToEmail: '',
+              accounts: [createNewInvoiceEmailAccountFormValue(0, {
+                defaultName: t('invoiceEmailSettings.defaultAccountName'),
+                accountNamePrefix: t('invoiceEmailSettings.accountNamePrefix'),
+              })],
             }}
           >
-            <Row gutter={16}>
-              <Col xs={24} md={12}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.host')}
-                  name="host"
-                  rules={[{ required: true, message: t('invoiceEmailSettings.validation.host') }]}
-                >
-                  <Input />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.port')}
-                  name="port"
-                  rules={[{ required: true, message: t('invoiceEmailSettings.validation.port') }]}
-                >
-                  <InputNumber min={1} max={65535} style={{ width: '100%' }} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item label={t('invoiceEmailSettings.username')} name="username">
-                  <Input autoComplete="off" />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item label={t('invoiceEmailSettings.password')} name="password">
-                  <Input.Password autoComplete="new-password" />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.fromEmail')}
-                  name="fromEmail"
-                  rules={[
-                    { required: true, message: t('invoiceEmailSettings.validation.fromEmail') },
-                    { type: 'email', message: t('invoiceEmailSettings.validation.email') },
-                  ]}
-                >
-                  <Input />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item label={t('invoiceEmailSettings.fromName')} name="fromName">
-                  <Input />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.maxAttachmentBytes')}
-                  name="maxAttachmentBytes"
-                  rules={[{ required: true, message: t('invoiceEmailSettings.validation.maxAttachmentBytes') }]}
-                >
-                  <InputNumber min={1} style={{ width: '100%' }} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={12}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.testToEmail')}
-                  name="testToEmail"
-                  rules={[
-                    { required: true, message: t('invoiceEmailSettings.validation.testToEmail') },
-                    { type: 'email', message: t('invoiceEmailSettings.validation.email') },
-                  ]}
-                >
-                  <Input />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.useSsl')}
-                  name="useSsl"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.checkCertificateRevocation')}
-                  name="checkCertificateRevocation"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item
-                  label={t('invoiceEmailSettings.clearPassword')}
-                  name="clearPassword"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              </Col>
-            </Row>
+            <Form.List name="accounts">
+              {(fields) => (
+                <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                  {fields.map((field, index) => {
+                    const account = getAccountValues()[index]
+                    const isDefault = Boolean(account?.isDefault)
+                    const hasPassword = Boolean(account?.hasPassword)
 
-            <Alert
-              showIcon
-              type="info"
-              message={t('invoiceEmailSettings.passwordHint')}
-              style={{ marginBottom: 16 }}
-            />
+                    return (
+                      <div
+                        key={field.key}
+                        style={{
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 8,
+                          padding: 16,
+                        }}
+                      >
+                        <Form.Item name={[field.name, 'id']} hidden>
+                          <Input />
+                        </Form.Item>
 
-            <Space>
+                        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                          <Row gutter={[16, 8]} align="middle">
+                            <Col flex="auto">
+                              <Space size={8} wrap>
+                                <Typography.Text strong>
+                                  {t('invoiceEmailSettings.accountTitle', { index: index + 1 })}
+                                </Typography.Text>
+                                {isDefault ? <Tag color="blue">{t('invoiceEmailSettings.defaultAccount')}</Tag> : null}
+                                <PasswordStateTag hasPassword={hasPassword} />
+                              </Space>
+                            </Col>
+                            <Col>
+                              <Space wrap>
+                                <Button
+                                  icon={<CheckCircleOutlined />}
+                                  onClick={() => handleSetDefaultAccount(index)}
+                                  disabled={!canManageSettings || isDefault}
+                                >
+                                  {t('invoiceEmailSettings.setDefault')}
+                                </Button>
+                                <Button
+                                  icon={<SendOutlined />}
+                                  onClick={() => void handleSendTest(index)}
+                                  loading={testingAccountIndex === index}
+                                  disabled={!canManageSettings}
+                                >
+                                  {t('invoiceEmailSettings.sendTest')}
+                                </Button>
+                                <Button
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  onClick={() => handleRemoveAccount(index)}
+                                  disabled={!canManageSettings || fields.length <= 1}
+                                >
+                                  {t('common.delete')}
+                                </Button>
+                              </Space>
+                            </Col>
+                          </Row>
+
+                          <Row gutter={16}>
+                            <Col xs={24} md={12}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.accountName')}
+                                name={[field.name, 'name']}
+                                rules={[{ required: true, message: t('invoiceEmailSettings.validation.accountName') }]}
+                              >
+                                <Input />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={12}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.host')}
+                                name={[field.name, 'host']}
+                                rules={[{ required: true, message: t('invoiceEmailSettings.validation.host') }]}
+                              >
+                                <Input />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.port')}
+                                name={[field.name, 'port']}
+                                rules={[{ required: true, message: t('invoiceEmailSettings.validation.port') }]}
+                              >
+                                <InputNumber min={1} max={65535} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item label={t('invoiceEmailSettings.username')} name={[field.name, 'username']}>
+                                <Input autoComplete="off" />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item label={t('invoiceEmailSettings.password')} name={[field.name, 'password']}>
+                                <Input.Password autoComplete="new-password" />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={12}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.fromEmail')}
+                                name={[field.name, 'fromEmail']}
+                                rules={[
+                                  { required: true, message: t('invoiceEmailSettings.validation.fromEmail') },
+                                  { type: 'email', message: t('invoiceEmailSettings.validation.email') },
+                                ]}
+                              >
+                                <Input />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={12}>
+                              <Form.Item label={t('invoiceEmailSettings.fromName')} name={[field.name, 'fromName']}>
+                                <Input />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.maxAttachmentBytes')}
+                                name={[field.name, 'maxAttachmentMegabytes']}
+                                rules={[{ required: true, message: t('invoiceEmailSettings.validation.maxAttachmentBytes') }]}
+                              >
+                                <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.testToEmail')}
+                                name={[field.name, 'testToEmail']}
+                              >
+                                <Input />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.useSsl')}
+                                name={[field.name, 'useSsl']}
+                                valuePropName="checked"
+                              >
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.checkCertificateRevocation')}
+                                name={[field.name, 'checkCertificateRevocation']}
+                                valuePropName="checked"
+                              >
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} md={8}>
+                              <Form.Item
+                                label={t('invoiceEmailSettings.clearPassword')}
+                                name={[field.name, 'clearPassword']}
+                                valuePropName="checked"
+                              >
+                                <Switch />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                        </Space>
+                      </div>
+                    )
+                  })}
+
+                  <Button
+                    icon={<PlusOutlined />}
+                    onClick={handleAddAccount}
+                    disabled={!canManageSettings}
+                  >
+                    {t('invoiceEmailSettings.addAccount')}
+                  </Button>
+                </Space>
+              )}
+            </Form.List>
+
+            <Space style={{ marginTop: 16 }}>
               <Button
                 type="primary"
                 icon={<SaveOutlined />}
@@ -263,14 +418,6 @@ export default function InvoiceEmailSettingsPage() {
                 disabled={!canManageSettings}
               >
                 {t('common.save')}
-              </Button>
-              <Button
-                icon={<SendOutlined />}
-                onClick={() => void handleSendTest()}
-                loading={testing}
-                disabled={!canManageSettings}
-              >
-                {t('invoiceEmailSettings.sendTest')}
               </Button>
             </Space>
           </Form>

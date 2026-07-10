@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -93,6 +94,39 @@ namespace BlazorApp.Api.Controllers.React
 
             // 返回用户关联的分店代码
             return user.Data.Stores?.Select(s => s.StoreCode).ToList();
+        }
+
+        private async Task<(bool HasAccess, List<string>? BranchCodes)> ResolveTargetBranchCodesAsync(
+            List<string>? branchCodes
+        )
+        {
+            var requestedBranchCodes = NormalizeBranchCodes(branchCodes);
+            if (branchCodes != null && requestedBranchCodes.Count == 0)
+                return (false, new List<string>());
+
+            if (IsAdmin())
+                return (true, branchCodes != null ? requestedBranchCodes : null);
+
+            var userBranchCodes = NormalizeBranchCodes(await GetUserBranchCodesAsync());
+            if (userBranchCodes.Count == 0)
+                return (false, new List<string>());
+
+            if (requestedBranchCodes.Count == 0)
+                return (true, userBranchCodes);
+
+            // 普通用户只能查询自己关联分店与请求分店的交集。
+            var allowedBranchCodes = requestedBranchCodes.Intersect(userBranchCodes).ToList();
+            return (allowedBranchCodes.Count > 0, allowedBranchCodes);
+        }
+
+        private static List<string> NormalizeBranchCodes(IEnumerable<string>? branchCodes)
+        {
+            return branchCodes?
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct()
+                    .ToList()
+                ?? new List<string>();
         }
 
         /// <summary>
@@ -231,27 +265,10 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                // 获取用户可访问的分店代码
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                // 权限校验：取请求分店与用户可访问分店的交集
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -266,7 +283,7 @@ namespace BlazorApp.Api.Controllers.React
                 // 调用服务获取分店销售排行
                 var result = await _service.GetStoreSalesRankAsync(
                     dateRange,
-                    targetBranchCodes,
+                    branchScope.BranchCodes,
                     topN
                 );
                 return Ok(new { success = true, data = result });
@@ -292,6 +309,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="supplierCode">供应商代码（可选，用于联动过滤）</param>
         /// <returns>供应商销售排行列表</returns>
         [HttpGet("supplier-sales-rank")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetSupplierSalesRank(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -305,27 +323,10 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                // 获取用户可访问的分店代码
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                // 权限校验：取请求分店与用户可访问分店的交集
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -340,7 +341,7 @@ namespace BlazorApp.Api.Controllers.React
                 // 调用服务获取供应商销售排行
                 var result = await _service.GetSupplierSalesRankAsync(
                     dateRange,
-                    targetBranchCodes,
+                    branchScope.BranchCodes,
                     topN,
                     supplierCode
                 );
@@ -367,6 +368,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="supplierCode">供应商代码（可选，用于联动过滤）</param>
         /// <returns>中国供应商销售排行列表</returns>
         [HttpGet("china-supplier-sales-rank")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetChinaSupplierSalesRankAsync(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -380,27 +382,10 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                // 获取用户可访问的分店代码
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                // 权限校验：取请求分店与用户可访问分店的交集
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -415,7 +400,7 @@ namespace BlazorApp.Api.Controllers.React
                 // 调用服务获取中国供应商销售排行
                 var result = await _service.GetChinaSupplierSalesRankAsync(
                     dateRange,
-                    targetBranchCodes,
+                    branchScope.BranchCodes,
                     topN,
                     supplierCode
                 );
@@ -441,6 +426,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>供应商分店销售数据列表</returns>
         [HttpGet("supplier-store-sales")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetSupplierStoreSales(
             [FromQuery] List<string> supplierCodes,
             [FromQuery] DateTime startDate,
@@ -459,27 +445,10 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "供应商代码不能为空" });
                 }
 
-                // 获取用户可访问的分店代码
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                // 权限校验：取请求分店与用户可访问分店的交集
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -495,7 +464,7 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetSupplierStoreSalesAsync(
                     dateRange,
                     supplierCodes,
-                    targetBranchCodes
+                    branchScope.BranchCodes
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -594,6 +563,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>中国供应商分店销售数据列表</returns>
         [HttpGet("china-supplier-store-sales")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetChinaSupplierStoreSales(
             [FromQuery] List<string> supplierCodes,
             [FromQuery] DateTime startDate,
@@ -611,25 +581,10 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "供应商代码不能为空" });
                 }
 
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 var dateRange = new DateRangeDto
                 {
@@ -643,7 +598,7 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetChinaSupplierStoreSalesAsync(
                     dateRange,
                     supplierCodes,
-                    targetBranchCodes
+                    branchScope.BranchCodes
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -664,6 +619,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="supplierCodes">供应商代码列表（可选）</param>
         /// <returns>澳洲供应商分店销售明细列表</returns>
         [HttpGet("australian-supplier-store-sales-details")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetAustralianSupplierStoreSalesDetails(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -673,31 +629,16 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 var dateRange = new DateRangeDto { StartDate = startDate, EndDate = endDate };
 
                 var result = await _service.GetAustralianSupplierStoreSalesDetailsAsync(
                     dateRange,
-                    targetBranchCodes,
+                    branchScope.BranchCodes,
                     supplierCodes
                 );
                 return Ok(new { success = true, data = result });
@@ -719,6 +660,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="supplierCodes">供应商代码列表（可选）</param>
         /// <returns>中国供应商分店销售明细列表</returns>
         [HttpGet("china-supplier-store-sales-details")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetChinaSupplierStoreSalesDetails(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -728,31 +670,16 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                if (branchCodes != null && branchCodes.Any())
-                {
-                    if (userBranchCodes != null)
-                    {
-                        targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                        if (!targetBranchCodes.Any())
-                        {
-                            return Ok(new { success = true, data = new List<object>() });
-                        }
-                    }
-                    else
-                    {
-                        targetBranchCodes = branchCodes;
-                    }
-                }
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 var dateRange = new DateRangeDto { StartDate = startDate, EndDate = endDate };
 
                 var result = await _service.GetChinaSupplierStoreSalesDetailsAsync(
                     dateRange,
-                    targetBranchCodes,
+                    branchScope.BranchCodes,
                     supplierCodes
                 );
                 return Ok(new { success = true, data = result });
@@ -819,7 +746,7 @@ namespace BlazorApp.Api.Controllers.React
                         );
                     }
                 }
-                else
+                else if (userBranchCodes == null)
                 {
                     targetBranchCodes = branchCodes;
                 }
@@ -865,8 +792,10 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="chinaSupplierCodes">中国供应商代码列表（可选）</param>
         /// <param name="pageIndex">页码（从1开始）</param>
         /// <param name="pageSize">每页记录数</param>
+        /// <param name="productSearch">货号或条码查询（可选）</param>
         /// <returns>分页增强版销售商品明细</returns>
         [HttpGet("enhanced-sales-product-details")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetEnhancedSalesProductDetails(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -877,43 +806,32 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] List<string>? localSupplierCodes = null,
             [FromQuery] List<string>? chinaSupplierCodes = null,
             [FromQuery] int pageIndex = 1,
-            [FromQuery] int pageSize = 100
+            [FromQuery] int pageSize = 100,
+            [FromQuery] string? productSearch = null
         )
         {
             try
             {
-                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}",
-                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize);
+                _logger.LogInformation("[GetEnhancedSalesProductDetails] Received request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, CompareMode={CompareMode}, PageIndex={PageIndex}, PageSize={PageSize}, HasProductSearch={HasProductSearch}",
+                    startDate, endDate, compareStartDate, compareEndDate, compareMode, pageIndex, pageSize, !string.IsNullOrWhiteSpace(productSearch));
 
-                // 获取用户可访问的分店代码
-                var userBranchCodes = await GetUserBranchCodesAsync();
-                List<string>? targetBranchCodes = userBranchCodes;
-
-                // 权限校验：取请求分店与用户可访问分店的交集
-                if (userBranchCodes != null && branchCodes != null && branchCodes.Any())
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
                 {
-                    targetBranchCodes = branchCodes.Intersect(userBranchCodes).ToList();
-
-                    if (!targetBranchCodes.Any())
-                    {
-                        return Ok(
-                            new
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = new PagedSalesProductDetailWithDiscountDto
                             {
-                                success = true,
-                                data = new PagedSalesProductDetailWithDiscountDto
-                                {
-                                    Data = new List<SalesProductDetailWithDiscountDto>(),
-                                    Total = 0,
-                                    PageIndex = pageIndex,
-                                    PageSize = pageSize,
-                                },
-                            }
-                        );
-                    }
-                }
-                else
-                {
-                    targetBranchCodes = branchCodes;
+                                Data = new List<SalesProductDetailWithDiscountDto>(),
+                                Total = 0,
+                                PageIndex = pageIndex,
+                                PageSize = pageSize,
+                            },
+                        }
+                    );
                 }
 
                 // 构建日期范围DTO
@@ -929,11 +847,12 @@ namespace BlazorApp.Api.Controllers.React
                 // 调用服务获取增强版销售商品明细
                 var result = await _service.GetEnhancedSalesProductDetailsAsync(
                     dateRange,
-                    targetBranchCodes,
+                    branchScope.BranchCodes,
                     localSupplierCodes,
                     chinaSupplierCodes,
                     pageIndex,
-                    pageSize
+                    pageSize,
+                    productSearch
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -954,15 +873,18 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="compareEndDate">对比结束日期（可选）</param>
         /// <param name="compareMode">对比模式</param>
         /// <param name="productCode">商品代码</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>商品在各分店的销售数据</returns>
         [HttpGet("product-sales-by-branches")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetProductSalesByAllBranches(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
             [FromQuery] DateTime? compareStartDate = null,
             [FromQuery] DateTime? compareEndDate = null,
             [FromQuery] CompareMode compareMode = CompareMode.ByDate,
-            [FromQuery] string productCode = ""
+            [FromQuery] string productCode = "",
+            [FromQuery] List<string>? branchCodes = null
         )
         {
             try
@@ -970,6 +892,11 @@ namespace BlazorApp.Api.Controllers.React
                 // 校验商品代码不能为空
                 if (string.IsNullOrEmpty(productCode))
                     return BadRequest(new { success = false, message = "商品代码不能为空" });
+
+                // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -984,7 +911,8 @@ namespace BlazorApp.Api.Controllers.React
                 // 调用服务获取商品在各分店的销售数据
                 var result = await _service.GetProductSalesByAllBranchesAsync(
                     dateRange,
-                    productCode
+                    productCode,
+                    branchScope.BranchCodes
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -1057,18 +985,23 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>分店业绩排名列表</returns>
         [HttpGet("executive-branch-performance")]
+        [Authorize(Policy = Permissions.Reports.ProductMovementView)]
         public async Task<IActionResult> GetExecutiveBranchPerformance(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
             [FromQuery] DateTime? compareStartDate = null,
             [FromQuery] DateTime? compareEndDate = null,
             [FromQuery] CompareMode compareMode = CompareMode.ByDate,
-            [FromQuery] int topN = 100,
+            [FromQuery] int? topN = null,
             [FromQuery] List<string>? branchCodes = null
         )
         {
             try
             {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
                 {
@@ -1083,7 +1016,7 @@ namespace BlazorApp.Api.Controllers.React
                 var result = await _service.GetExecutiveBranchPerformanceAsync(
                     dateRange,
                     topN,
-                    branchCodes
+                    branchScope.BranchCodes
                 );
                 return Ok(new { success = true, data = result });
             }
@@ -1106,6 +1039,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>每小时流量密度列表</returns>
         [HttpGet("executive-hourly-traffic")]
+        [Authorize(Policy = Permissions.Reports.View)]
         public async Task<IActionResult> GetExecutiveHourlyTraffic(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -1117,6 +1051,10 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
                 {
@@ -1128,12 +1066,65 @@ namespace BlazorApp.Api.Controllers.React
                 };
 
                 // 调用服务获取 Executive 每小时流量
-                var result = await _service.GetExecutiveHourlyTrafficAsync(dateRange, branchCodes);
+                var result = await _service.GetExecutiveHourlyTrafficAsync(
+                    dateRange,
+                    branchScope.BranchCodes
+                );
                 return Ok(new { success = true, data = result });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetExecutiveHourlyTraffic failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 获取分店每日营业额
+        /// GET api/react/v1/dashboard/branch-daily-performance
+        /// </summary>
+        /// <param name="startDate">开始日期</param>
+        /// <param name="endDate">结束日期</param>
+        /// <param name="compareStartDate">对比开始日期（可选）</param>
+        /// <param name="compareEndDate">对比结束日期（可选）</param>
+        /// <param name="compareMode">对比模式</param>
+        /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <returns>分店每日营业额列表</returns>
+        [HttpGet("branch-daily-performance")]
+        [Authorize(Policy = Permissions.Reports.View)]
+        public async Task<IActionResult> GetBranchDailyPerformance(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] DateTime? compareStartDate = null,
+            [FromQuery] DateTime? compareEndDate = null,
+            [FromQuery] CompareMode compareMode = CompareMode.ByDate,
+            [FromQuery] List<string>? branchCodes = null
+        )
+        {
+            try
+            {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new { success = true, data = new List<object>() });
+
+                var dateRange = new DateRangeDto
+                {
+                    StartDate = startDate,
+                    EndDate = endDate,
+                    CompareStartDate = compareStartDate,
+                    CompareEndDate = compareEndDate,
+                    CompareMode = compareMode,
+                };
+
+                var result = await _service.GetBranchDailyPerformanceAsync(
+                    dateRange,
+                    branchScope.BranchCodes
+                );
+                return Ok(new { success = true, data = result });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetBranchDailyPerformance failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

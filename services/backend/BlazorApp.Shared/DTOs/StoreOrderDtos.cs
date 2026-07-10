@@ -21,7 +21,7 @@ namespace BlazorApp.Shared.DTOs
     public string? DomesticSupplierName { get; set; }
 
     /// <summary>
-    /// 贴牌价格 (订货价格)
+    /// 零售价 (订货价格)
     /// </summary>
     public decimal? OEMPrice { get; set; }
 
@@ -203,9 +203,14 @@ namespace BlazorApp.Shared.DTOs
     public int TotalQuantity { get; set; }
 
     /// <summary>
-    /// 总进口金额
+    /// 总订货进口金额
     /// </summary>
     public decimal TotalImportAmount { get; set; }
+
+    /// <summary>
+    /// 总发货/发票进口金额
+    /// </summary>
+    public decimal TotalAllocatedImportAmount { get; set; }
 
     /// <summary>
     /// 总体积 (m³)
@@ -568,9 +573,14 @@ namespace BlazorApp.Shared.DTOs
     public decimal ImportPrice { get; set; }
 
     /// <summary>
-    /// 进口金额
+    /// 订货进口金额
     /// </summary>
     public decimal ImportAmount { get; set; }
+
+    /// <summary>
+    /// 发货/发票进口金额
+    /// </summary>
+    public decimal AllocatedImportAmount { get; set; }
 
     /// <summary>
     /// 单件体积 (m³)

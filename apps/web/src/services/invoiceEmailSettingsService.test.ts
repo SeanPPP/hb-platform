@@ -17,7 +17,10 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
 }
 
 function readBody(call: { init?: RequestInit }) {
-  return JSON.parse(String(call.init?.body)) as Record<string, unknown>
+  return JSON.parse(String(call.init?.body)) as {
+    accounts?: Array<Record<string, unknown>>
+    [key: string]: unknown
+  }
 }
 
 const originalFetch = globalThis.fetch
@@ -45,15 +48,22 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       JSON.stringify({
         success: true,
         data: {
-          host: 'smtp.changed.test',
-          port: 587,
-          useSsl: true,
-          checkCertificateRevocation: false,
-          username: 'changed-user',
-          hasPassword: true,
-          fromEmail: 'invoice@test.com',
-          fromName: 'HB Invoice',
-          maxAttachmentBytes: 10485760,
+          accounts: [
+            {
+              id: 'primary',
+              name: 'Primary',
+              host: 'smtp.changed.test',
+              port: 587,
+              useSsl: true,
+              checkCertificateRevocation: false,
+              username: 'changed-user',
+              hasPassword: true,
+              fromEmail: 'invoice@test.com',
+              fromName: 'HB Invoice',
+              maxAttachmentBytes: 10485760,
+              isDefault: true,
+            },
+          ],
         },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
@@ -64,15 +74,22 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     JSON.stringify({
       success: true,
       data: {
-        host: 'smtp.initial.test',
-        port: 465,
-        useSsl: true,
-        checkCertificateRevocation: true,
-        username: 'initial-user',
-        hasPassword: true,
-        fromEmail: 'from@test.com',
-        fromName: 'Initial Sender',
-        maxAttachmentBytes: 2097152,
+        accounts: [
+          {
+            id: 'primary',
+            name: 'Primary',
+            host: 'smtp.initial.test',
+            port: 465,
+            useSsl: true,
+            checkCertificateRevocation: true,
+            username: 'initial-user',
+            hasPassword: true,
+            fromEmail: 'from@test.com',
+            fromName: 'Initial Sender',
+            maxAttachmentBytes: 2097152,
+            isDefault: true,
+          },
+        ],
       },
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
@@ -83,28 +100,37 @@ try {
   const current = await getInvoiceEmailSettings()
   assertEqual(calls[0]?.url, '/api/react/v1/invoice-email-settings', '读取配置接口路径应正确')
   assertEqual(calls[0]?.init?.method, 'GET', '读取配置接口应使用 GET')
-  assertEqual(current.host, 'smtp.initial.test', '读取配置应返回 host')
-  assertEqual(current.hasPassword, true, '读取配置应返回 hasPassword')
+  assertEqual(current.accounts[0]?.host, 'smtp.initial.test', '读取配置应返回账号 host')
+  assertEqual(current.accounts[0]?.hasPassword, true, '读取配置应返回账号 hasPassword')
 
   const saved = await saveInvoiceEmailSettings({
-    host: 'smtp.changed.test',
-    port: 587,
-    useSsl: true,
-    checkCertificateRevocation: false,
-    username: 'changed-user',
-    password: '',
-    clearPassword: false,
-    fromEmail: 'invoice@test.com',
-    fromName: 'HB Invoice',
-    maxAttachmentBytes: 10485760,
+    accounts: [
+      {
+        id: 'primary',
+        name: 'Primary',
+        host: 'smtp.changed.test',
+        port: 587,
+        useSsl: true,
+        checkCertificateRevocation: false,
+        username: 'changed-user',
+        password: '',
+        clearPassword: false,
+        fromEmail: 'invoice@test.com',
+        fromName: 'HB Invoice',
+        maxAttachmentBytes: 10485760,
+        isDefault: true,
+      },
+    ],
   })
   assertEqual(calls[1]?.url, '/api/react/v1/invoice-email-settings', '保存配置接口路径应正确')
   assertEqual(calls[1]?.init?.method, 'PUT', '保存配置接口应使用 PUT')
-  assertEqual(readBody(calls[1]).host, 'smtp.changed.test', '保存配置应传递 host')
-  assertEqual(readBody(calls[1]).password, '', '保存配置应保留前端传入的 password 值')
-  assertEqual(saved.host, 'smtp.changed.test', '保存配置应返回最新 host')
+  assertEqual(readBody(calls[1]).accounts?.[0]?.host, 'smtp.changed.test', '保存配置应传递账号 host')
+  assertEqual(readBody(calls[1]).accounts?.[0]?.password, '', '保存配置应保留前端传入的 password 值')
+  assertEqual(saved.accounts[0]?.host, 'smtp.changed.test', '保存配置应返回最新账号 host')
 
   const sendResult = await sendInvoiceEmailSettingsTestEmail({
+    id: 'primary',
+    name: 'Primary',
     host: 'smtp.changed.test',
     port: 587,
     useSsl: true,
@@ -115,6 +141,7 @@ try {
     fromEmail: 'invoice@test.com',
     fromName: 'HB Invoice',
     maxAttachmentBytes: 10485760,
+    isDefault: true,
     testToEmail: 'qa@test.com',
   })
   assertEqual(calls[2]?.url, '/api/react/v1/invoice-email-settings/test', '测试邮件接口路径应正确')

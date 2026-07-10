@@ -182,7 +182,7 @@ assertDeepEqual(
     productImage: 'https://example.com/a.png',
     isActive: true,
   },
-  '仅同步国内价时应保留主码当前贴牌价，避免覆盖为空',
+  '仅同步国内价时应保留主码当前零售价，避免覆盖为空',
 )
 
 assertDeepEqual(
@@ -210,7 +210,7 @@ assertDeepEqual(
     productImage: 'https://example.com/a.png',
     isActive: true,
   },
-  '仅同步贴牌价时应保留主码当前国内价，避免覆盖为空',
+  '仅同步零售价时应保留主码当前国内价，避免覆盖为空',
 )
 
 assertEqual(

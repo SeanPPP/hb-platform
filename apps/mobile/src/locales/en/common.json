@@ -40,6 +40,8 @@
     "installmentOrders": "Installments",
     "advertisements": "Advertisements",
     "promotions": "Promotions",
+    "reports": "Reports",
+    "productReport": "Product Report",
     "storeVouchers": "Vouchers",
     "seasonalCards": "Seasonal Cards",
     "attendance": "Attendance",
@@ -63,6 +65,7 @@
     "recentOrder": "Last order",
     "minOrder": "Min",
     "addToCart": "Add to cart",
+    "editCartQuantity": "Edit order quantity {{quantity}}",
     "autoAddShort": "Auto add",
     "scanResults": "Scan results",
     "currentStore": "Current store",
@@ -97,5 +100,125 @@
     "multipleCart": "Multiple products matched the barcode. Choose one to add.",
     "failed": "Failed to process the scan",
     "selected": "Matched product selected"
+  },
+  "reports": {
+    "title": "Reports",
+    "sections": {
+      "revenue": "Revenue Report",
+      "product": "Product Report"
+    },
+    "periods": {
+      "day": "Day",
+      "date": "Date",
+      "week": "Week",
+      "month": "Month"
+    },
+    "weekdaysShort": {
+      "0": "Sun",
+      "1": "Mon",
+      "2": "Tue",
+      "3": "Wed",
+      "4": "Thu",
+      "5": "Fri",
+      "6": "Sat"
+    },
+    "actions": {
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "shortcuts": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "thisWeek": "This week",
+      "lastWeek": "Last week",
+      "thisMonth": "This month",
+      "lastMonth": "Last month"
+    },
+    "metrics": {
+      "current": "Current",
+      "compare": "LY",
+      "revenue": "Revenue",
+      "growthRate": "Growth",
+      "newGrowth": "New",
+      "transactions": "Txns",
+      "averageTransaction": "AOV"
+    },
+    "states": {
+      "empty": "No revenue data",
+      "errorTitle": "Failed to load revenue data"
+    },
+    "accessibility": {
+      "openHourlyDetail": "View hourly revenue details for {{branch}}",
+      "openDailyDetail": "View daily revenue details for {{branch}}"
+    },
+    "transactions": "{{count}} txns",
+    "compareRevenue": "LY {{value}}"
+  },
+  "productReport": {
+    "title": "Product Report",
+    "tabs": {
+      "australia": "Australian Suppliers",
+      "china": "China Suppliers"
+    },
+    "filters": {
+      "store": "Store",
+      "allStores": "All stores",
+      "startDate": "Start date",
+      "endDate": "End date",
+      "productSearch": "Item or barcode"
+    },
+    "shortcuts": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "thisWeek": "This week",
+      "lastWeek": "Last week",
+      "thisMonth": "This month",
+      "lastMonth": "Last month"
+    },
+    "sections": {
+      "suppliers": "Suppliers",
+      "products": "Product Details"
+    },
+    "columns": {
+      "itemNumber": "Item",
+      "image": "Image",
+      "product": "Item / Name",
+      "name": "Name",
+      "quantity": "Qty",
+      "amount": "Amount",
+      "averagePrice": "Avg"
+    },
+    "metrics": {
+      "revenue": "Revenue",
+      "totalShare": "Total share",
+      "supplierShare": "Revenue share",
+      "chinaShare": "China share",
+      "orders": "Txns",
+      "aov": "AOV",
+      "growthRate": "Growth",
+      "newGrowth": "New",
+      "compare": "LY"
+    },
+    "actions": {
+      "branchDetail": "Branches",
+      "clearSupplier": "Clear supplier",
+      "searchProduct": "Search",
+      "clearProductSearch": "Clear search",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "states": {
+      "invalidDate": "Use YYYY-MM-DD dates and keep the start date before the end date.",
+      "emptySuppliers": "No supplier data",
+      "emptyProducts": "No product details",
+      "emptySupplierBranches": "No supplier branch data",
+      "emptyProductSearch": "No matching product details",
+      "loading": "Loading...",
+      "error": "Failed to load. Please try again."
+    },
+    "drilldown": {
+      "supplier": "Supplier Branch Data",
+      "product": "Product Branch Data"
+    }
   }
 }

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Claims;
 using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
@@ -110,6 +111,87 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal("P001", item.ProductCode);
         Assert.Equal("B", item.Grade);
         Assert.Equal(1, result.Total);
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_HomeSearchMatchesItemNumberAndBarcodeWithinChildCategoryAndGrade()
+    {
+        await SeedWarehouseCategoryAsync("CAT-PARENT", "Parent");
+        await SeedWarehouseCategoryAsync("CAT-CHILD", "Child", "CAT-PARENT");
+        await SeedWarehouseCategoryAsync("CAT-OTHER", "Other");
+        await SeedProductAsync(
+            "P-HOME-ITEM",
+            "HB-HOME-001",
+            barcode: "BAR-OTHER",
+            warehouseCategoryGuid: "CAT-CHILD"
+        );
+        await SeedWarehouseProductAsync("P-HOME-ITEM");
+        await SeedProductGradeAsync("P-HOME-ITEM", "A");
+        await SeedProductAsync(
+            "P-HOME-BAR",
+            "ZZ-001",
+            barcode: "BAR-HOME-001",
+            warehouseCategoryGuid: "CAT-CHILD"
+        );
+        await SeedWarehouseProductAsync("P-HOME-BAR");
+        await SeedProductGradeAsync("P-HOME-BAR", "A");
+        await SeedProductAsync(
+            "P-HOME-WRONG-GRADE",
+            "HB-HOME-002",
+            barcode: "BAR-HOME-002",
+            warehouseCategoryGuid: "CAT-CHILD"
+        );
+        await SeedWarehouseProductAsync("P-HOME-WRONG-GRADE");
+        await SeedProductGradeAsync("P-HOME-WRONG-GRADE", "B");
+        await SeedProductAsync(
+            "P-HOME-WRONG-CAT",
+            "HB-HOME-003",
+            barcode: "BAR-HOME-003",
+            warehouseCategoryGuid: "CAT-OTHER"
+        );
+        await SeedWarehouseProductAsync("P-HOME-WRONG-CAT");
+        await SeedProductGradeAsync("P-HOME-WRONG-CAT", "A");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "HOME",
+            CategoryGUID = "CAT-PARENT",
+            Grade = "A",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        });
+
+        Assert.Equal(2, result.Total);
+        Assert.Equal(
+            new[] { "P-HOME-BAR", "P-HOME-ITEM" },
+            result.Items.Select(item => item.ProductCode).OrderBy(code => code).ToArray()
+        );
+        Assert.All(result.Items, item => Assert.Equal("A", item.Grade));
+    }
+
+    [Fact]
+    public async Task GetPagedListAsync_HomeTwoStepPagingPreservesDefaultSortOrder()
+    {
+        await SeedProductAsync("P-SORT-003", "SORT-003");
+        await SeedWarehouseProductAsync("P-SORT-003");
+        await SeedProductAsync("P-SORT-001", "SORT-001");
+        await SeedWarehouseProductAsync("P-SORT-001");
+        await SeedProductAsync("P-SORT-002", "SORT-002");
+        await SeedWarehouseProductAsync("P-SORT-002");
+
+        var result = await CreateService().GetPagedListAsync(new StoreOrderFilterDto
+        {
+            ItemNumber = "SORT",
+            PageNumber = 2,
+            PageSize = 1,
+            SortBy = "Default",
+        });
+
+        Assert.Equal(3, result.Total);
+        var item = Assert.Single(result.Items);
+        // 二段式查询先取分页 ProductCode，再回查展示字段，必须保留原分页排序。
+        Assert.Equal("P-SORT-002", item.ProductCode);
     }
 
     [Fact]
@@ -1168,7 +1250,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(11m, rows.Single(row => row.ProductCode == "P-APPEND").AllocQuantity);
         Assert.Equal(7m, rows.Single(row => row.ProductCode == "P-SKIP").AllocQuantity);
         Assert.Equal(0m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").AllocQuantity);
-        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").ImportAmount);
+        Assert.Equal(8m, rows.Single(row => row.ProductCode == "P-ZERO-EXISTING").ImportAmount);
         Assert.DoesNotContain(rows, row => row.ProductCode == "P-ZERO-DELETE");
         Assert.DoesNotContain(rows, row => row.ProductCode == "P-NEW-ZERO");
         Assert.Equal(8m, rows.Single(row => row.ProductCode == "P-NEW-VALID").AllocQuantity);
@@ -1229,12 +1311,12 @@ public sealed class StoreOrderProductListTests : IDisposable
             .FirstAsync();
         Assert.False(row.IsDeleted);
         Assert.Equal(3m, row.AllocQuantity);
-        Assert.Equal(6m, row.ImportAmount);
+        Assert.Equal(8m, row.ImportAmount);
 
         var order = await _db.Queryable<WareHouseOrder>()
             .Where(item => item.OrderGUID == "ORDER-PASTE-RESTORE")
             .FirstAsync();
-        Assert.Equal(6m, order.ImportTotalAmount);
+        Assert.Equal(8m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -1293,7 +1375,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(0m, rows.Single(row => row.ProductCode == "P004").AllocQuantity);
         Assert.Equal(2m, rows.Single(row => row.ProductCode == "P005").AllocQuantity);
         Assert.Equal(9.5m, rows.Single(row => row.ProductCode == "P005").ImportPrice);
-        Assert.Equal(19m, rows.Single(row => row.ProductCode == "P005").ImportAmount);
+        Assert.Equal(0m, rows.Single(row => row.ProductCode == "P005").ImportAmount);
 
         Assert.True(
             _sqlLogs.Count <= 30,
@@ -1323,13 +1405,13 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(detail);
         Assert.Equal(1m, detail.AllocQuantity);
         Assert.Equal(4m, detail.OEMAmount);
-        Assert.Equal(2.5m, detail.ImportAmount);
+        Assert.Equal(0m, detail.ImportAmount);
 
         var order = await _db.Queryable<WareHouseOrder>()
             .Where(item => item.OrderGUID == "ORDER-PICKING-ADD")
             .FirstAsync();
         Assert.Equal(4m, order.OEMTotalAmount);
-        Assert.Equal(2.5m, order.ImportTotalAmount);
+        Assert.Equal(0m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -1357,7 +1439,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(detail);
         Assert.Equal(7m, detail.AllocQuantity);
         Assert.Equal(35m, detail.OEMAmount);
-        Assert.Equal(21m, detail.ImportAmount);
+        Assert.Equal(0m, detail.ImportAmount);
     }
 
     [Fact]
@@ -1677,6 +1759,180 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Fact]
+    public async Task WarehouseStaffDedicatedCart_同店按当前仓库员工隔离()
+    {
+        await SeedProductAsync("P-SCOPE", "ITEM-SCOPE");
+        await SeedWarehouseProductAsync("P-SCOPE", oemPrice: 3m, importPrice: 2m);
+
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SCOPE",
+            Quantity = 3,
+        });
+        await CreateService("warehouse-a", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SCOPE",
+            Quantity = 1,
+        });
+        await CreateService("warehouse-b", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SCOPE",
+            Quantity = 2,
+        });
+
+        var activeCarts = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.StoreCode == "S001" && item.FlowStatus == 0 && !item.IsDeleted)
+            .ToListAsync();
+        Assert.Equal(3, activeCarts.Count);
+        Assert.Contains(activeCarts, item => string.IsNullOrWhiteSpace(item.CartOwnerUserGuid));
+        Assert.Contains(activeCarts, item => item.CartOwnerUserGuid == "warehouse-a");
+        Assert.Contains(activeCarts, item => item.CartOwnerUserGuid == "warehouse-b");
+        var cartQuantities = await _db.Queryable<WareHouseOrderDetails>()
+            .InnerJoin<WareHouseOrder>((detail, order) => detail.OrderGUID == order.OrderGUID)
+            .Where((detail, order) => order.StoreCode == "S001" && order.FlowStatus == 0 && !detail.IsDeleted)
+            .Select((detail, order) => new
+            {
+                order.CartOwnerUserGuid,
+                Quantity = detail.Quantity ?? 0,
+            })
+            .ToListAsync();
+        Assert.Contains(cartQuantities, item => string.IsNullOrWhiteSpace(item.CartOwnerUserGuid) && item.Quantity == 3m);
+        Assert.Contains(cartQuantities, item => item.CartOwnerUserGuid == "warehouse-a" && item.Quantity == 1m);
+        Assert.Contains(cartQuantities, item => item.CartOwnerUserGuid == "warehouse-b" && item.Quantity == 2m);
+
+        var storeCart = await CreateService("store-user").GetActiveCartAsync("S001");
+        var staffACart = await CreateService("warehouse-a", "WarehouseStaff").GetActiveCartAsync("S001");
+        var staffBCart = await CreateService("warehouse-b", "WarehouseStaff").GetActiveCartAsync("S001");
+
+        Assert.Equal(3, storeCart.Data?.TotalQuantity);
+        Assert.Equal(1, staffACart.Data?.TotalQuantity);
+        Assert.Equal(2, staffBCart.Data?.TotalQuantity);
+    }
+
+    [Fact]
+    public async Task SubmitOrderAsync_仓库员工只提交自己的专用购物车()
+    {
+        await SeedProductAsync("P-SUBMIT", "ITEM-SUBMIT");
+        await SeedWarehouseProductAsync("P-SUBMIT", oemPrice: 3m, importPrice: 2m);
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SUBMIT",
+            Quantity = 3,
+        });
+        await CreateService("warehouse-a", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SUBMIT",
+            Quantity = 1,
+        });
+        await CreateService("warehouse-b", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-SUBMIT",
+            Quantity = 2,
+        });
+
+        var submitResult = await CreateService("warehouse-a", "WarehouseStaff")
+            .SubmitOrderAsync(new SubmitStoreOrderRequestDto
+            {
+                StoreCode = "S001",
+                Remarks = "warehouse-a submit",
+            });
+
+        Assert.True(submitResult.Success, submitResult.Message);
+        var orders = await _db.Queryable<WareHouseOrder>()
+            .Where(item => item.StoreCode == "S001" && !item.IsDeleted)
+            .ToListAsync();
+        var storeCart = Assert.Single(orders, item => string.IsNullOrWhiteSpace(item.CartOwnerUserGuid));
+        var staffAOrder = Assert.Single(orders, item => item.CartOwnerUserGuid == "warehouse-a");
+        var staffBCart = Assert.Single(orders, item => item.CartOwnerUserGuid == "warehouse-b");
+
+        Assert.Equal(0, storeCart.FlowStatus);
+        Assert.Equal(1, staffAOrder.FlowStatus);
+        Assert.Equal("warehouse-a submit", staffAOrder.Remarks);
+        Assert.Equal("ORD-warehouse-a", staffAOrder.OrderNo);
+        Assert.Equal(0, staffBCart.FlowStatus);
+    }
+
+    [Fact]
+    public async Task RemoveFromCartAsync_不会用请求门店删除其他分店购物车明细()
+    {
+        await SeedProductAsync("P-REMOVE", "ITEM-REMOVE");
+        await SeedWarehouseProductAsync("P-REMOVE", oemPrice: 3m, importPrice: 2m);
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-REMOVE",
+            Quantity = 1,
+        });
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S002",
+            ProductCode = "P-REMOVE",
+            Quantity = 2,
+        });
+        var otherStoreDetail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.StoreCode == "S002" && item.ProductCode == "P-REMOVE" && !item.IsDeleted)
+            .FirstAsync();
+
+        var result = await CreateService("store-user").RemoveFromCartAsync(new RemoveFromCartRequestDto
+        {
+            StoreCode = "S001",
+            DetailGUID = otherStoreDetail.DetailGUID,
+        });
+
+        Assert.False(result.Success);
+        var stillActiveDetail = await _db.Queryable<WareHouseOrderDetails>()
+            .Where(item => item.DetailGUID == otherStoreDetail.DetailGUID)
+            .FirstAsync();
+        Assert.False(stillActiveDetail.IsDeleted);
+    }
+
+    [Fact]
+    public async Task GetProductsDynamicDataAsync_仓库员工只返回自己的购物车数量()
+    {
+        await SeedProductAsync("P-DYNAMIC", "ITEM-DYNAMIC");
+        await SeedWarehouseProductAsync("P-DYNAMIC", oemPrice: 3m, importPrice: 2m);
+        await CreateService("store-user").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-DYNAMIC",
+            Quantity = 3,
+        });
+        await CreateService("warehouse-a", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-DYNAMIC",
+            Quantity = 1,
+        });
+        await CreateService("warehouse-b", "WarehouseStaff").AddToCartMutationAsync(new AddToCartRequestDto
+        {
+            StoreCode = "S001",
+            ProductCode = "P-DYNAMIC",
+            Quantity = 2,
+        });
+        var request = new StoreOrderDynamicDataRequestDto
+        {
+            StoreCode = "S001",
+            ProductCodes = new List<string> { "P-DYNAMIC" },
+        };
+
+        var storeResult = await CreateService("store-user").GetProductsDynamicDataAsync(request);
+        var staffAResult = await CreateService("warehouse-a", "WarehouseStaff")
+            .GetProductsDynamicDataAsync(request);
+        var staffBResult = await CreateService("warehouse-b", "WarehouseStaff")
+            .GetProductsDynamicDataAsync(request);
+
+        Assert.Equal(3m, Assert.Single(storeResult.Data!).CartQuantity);
+        Assert.Equal(1m, Assert.Single(staffAResult.Data!).CartQuantity);
+        Assert.Equal(2m, Assert.Single(staffBResult.Data!).CartQuantity);
+    }
+
+    [Fact]
     public async Task GetActiveCartSummaryAsync_ReturnsTotalsWithoutItems()
     {
         await SeedStoreOrderAsync("ORDER-CART-SUMMARY", flowStatus: 0);
@@ -1960,6 +2216,40 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.Equal(24, result.Data.TotalAllocQuantity);
         Assert.Equal(3, result.Data.TotalSKU);
         Assert.Equal(new[] { "ITEM-001", "ITEM-002" }, result.Data.Items.Select(item => item.ItemNumber));
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_SeparatesOrderAndAllocatedImportAmountsWhenStoredImportAmountIsStale()
+    {
+        await SeedStoreOrderAsync("ORDER-INVOICE-SUBTOTAL");
+        await SeedProductAsync("P001", "ITEM-001");
+        await SeedWarehouseProductAsync("P001", importPrice: 0.46m);
+        await SeedDomesticProductAsync("P001", unitVolume: 1m, packingQuantity: 1);
+        await _db.Insertable(new WareHouseOrderDetails
+        {
+            DetailGUID = "ORDER-INVOICE-SUBTOTAL-P001",
+            OrderGUID = "ORDER-INVOICE-SUBTOTAL",
+            StoreCode = "S001",
+            ProductCode = "P001",
+            Quantity = 12m,
+            AllocQuantity = 0m,
+            ImportPrice = 0.46m,
+            ImportAmount = 5.52m,
+            OEMPrice = 1m,
+            OEMAmount = 12m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().GetOrderDetailAsync("ORDER-INVOICE-SUBTOTAL");
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        Assert.Equal(5.52m, result.Data!.TotalImportAmount);
+        Assert.Equal(0m, result.Data.TotalAllocatedImportAmount);
+        var item = Assert.Single(result.Data.Items);
+        Assert.Equal(0m, item.AllocQuantity);
+        Assert.Equal(5.52m, item.ImportAmount);
+        Assert.Equal(0m, item.AllocatedImportAmount);
     }
 
     [Fact]
@@ -2376,6 +2666,145 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.NotNull(result.Data);
         Assert.Equal(3, result.Data.ItemsTotal);
         Assert.Equal(expectedFirstProductCode, Assert.Single(result.Data.Items).ProductCode);
+    }
+
+    [Fact]
+    public async Task GetOrderDetailAsync_SortsOrderAndAllocatedImportAmountsSeparately()
+    {
+        await SeedStoreOrderAsync("ORDER-DETAIL-SORT-IMPORT-AMOUNT");
+        await SeedProductAsync("P-COMPUTED-LOW", "A-ITEM");
+        await SeedWarehouseProductAsync("P-COMPUTED-LOW", importPrice: 10m);
+        await SeedDomesticProductAsync("P-COMPUTED-LOW", unitVolume: 1m, packingQuantity: 1);
+        await SeedProductAsync("P-COMPUTED-HIGH", "B-ITEM");
+        await SeedWarehouseProductAsync("P-COMPUTED-HIGH", importPrice: 1m);
+        await SeedDomesticProductAsync("P-COMPUTED-HIGH", unitVolume: 1m, packingQuantity: 1);
+        await _db.Insertable(new[]
+        {
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT-LOW",
+                OrderGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+                StoreCode = "S001",
+                ProductCode = "P-COMPUTED-LOW",
+                Quantity = 12m,
+                AllocQuantity = 0m,
+                ImportPrice = 10m,
+                ImportAmount = 99m,
+                OEMPrice = 1m,
+                OEMAmount = 12m,
+                IsDeleted = false,
+            },
+            new WareHouseOrderDetails
+            {
+                DetailGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT-HIGH",
+                OrderGUID = "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+                StoreCode = "S001",
+                ProductCode = "P-COMPUTED-HIGH",
+                Quantity = 2m,
+                AllocQuantity = 2m,
+                ImportPrice = 1m,
+                ImportAmount = 1m,
+                OEMPrice = 1m,
+                OEMAmount = 2m,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var allocatedSortResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = "allocatedImportAmount",
+                SortDescending = false,
+            }
+        );
+
+        Assert.True(allocatedSortResult.Success, allocatedSortResult.Message);
+        Assert.NotNull(allocatedSortResult.Data);
+        var allocatedSortItem = Assert.Single(allocatedSortResult.Data!.Items);
+        Assert.Equal("P-COMPUTED-LOW", allocatedSortItem.ProductCode);
+        Assert.Equal(99m, allocatedSortItem.ImportAmount);
+        Assert.Equal(0m, allocatedSortItem.AllocatedImportAmount);
+
+        var orderSortResult = await CreateService().GetOrderDetailAsync(
+            "ORDER-DETAIL-SORT-IMPORT-AMOUNT",
+            new StoreOrderDetailQueryDto
+            {
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = "importAmount",
+                SortDescending = false,
+            }
+        );
+
+        Assert.True(orderSortResult.Success, orderSortResult.Message);
+        Assert.NotNull(orderSortResult.Data);
+        var orderSortItem = Assert.Single(orderSortResult.Data!.Items);
+        Assert.Equal("P-COMPUTED-HIGH", orderSortItem.ProductCode);
+        Assert.Equal(1m, orderSortItem.ImportAmount);
+        Assert.Equal(2m, orderSortItem.AllocatedImportAmount);
+    }
+
+    [Fact]
+    public void GetOrderDetailAsync_ImportAmountSqlServerExpressionsCanBeTranslated()
+    {
+        using var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=127.0.0.1;Database=HB;User Id=test;Password=test;TrustServerCertificate=True;",
+            DbType = DbType.SqlServer,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
+
+        var detailQuery = sqlServerDb.Queryable<WareHouseOrderDetails>()
+            .LeftJoin<Product>((d, p) => d.ProductCode == p.ProductCode)
+            .LeftJoin<WarehouseProduct>((d, p, wp) => d.ProductCode == wp.ProductCode)
+            .LeftJoin<DomesticProduct>((d, p, wp, dp) => wp.ProductCode == dp.ProductCode)
+            .Where(d => d.OrderGUID == "ORDER-SQLSERVER" && !d.IsDeleted);
+
+        var orderImportSortSql = detailQuery
+            .OrderBy(
+                (d, p, wp, dp) =>
+                    d.ImportAmount
+                    ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0)),
+                OrderByType.Asc
+            )
+            .ToSql()
+            .Key;
+        var allocatedImportSortSql = detailQuery
+            .OrderBy(
+                (d, p, wp, dp) => (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0),
+                OrderByType.Asc
+            )
+            .ToSql()
+            .Key;
+        var summarySql = detailQuery
+            .Select(
+                (d, p, wp, dp) =>
+                    new
+                    {
+                        TotalImportAmount = SqlFunc.AggregateSum(
+                            d.ImportAmount
+                                ?? ((d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.Quantity ?? 0))
+                        ),
+                        TotalAllocatedImportAmount = SqlFunc.AggregateSum(
+                            (d.ImportPrice ?? (wp.ImportPrice ?? 0)) * (d.AllocQuantity ?? 0)
+                        ),
+                    }
+            )
+            .ToSql()
+            .Key;
+
+        Assert.Contains("ORDER BY", orderImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ImportAmount", orderImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Quantity", orderImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AllocQuantity", allocatedImportSortSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SUM", summarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ImportAmount", summarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Quantity", summarySql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AllocQuantity", summarySql, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -3007,11 +3436,11 @@ public sealed class StoreOrderProductListTests : IDisposable
             .FirstAsync();
 
         Assert.Equal(5m, refreshed.ImportPrice);
-        Assert.Equal(20m, refreshed.ImportAmount);
+        Assert.Equal(15m, refreshed.ImportAmount);
         Assert.Equal(2m, correctedAmount.ImportPrice);
-        Assert.Equal(12m, correctedAmount.ImportAmount);
+        Assert.Equal(10m, correctedAmount.ImportAmount);
         Assert.Equal(2m, skipped.ImportPrice);
-        Assert.Equal(48m, order.ImportTotalAmount);
+        Assert.Equal(39m, order.ImportTotalAmount);
     }
 
     [Fact]
@@ -3045,7 +3474,7 @@ public sealed class StoreOrderProductListTests : IDisposable
 
         Assert.Equal(2m, untouched.ImportPrice);
         Assert.Equal(5m, refreshed.ImportPrice);
-        Assert.Equal(20m, refreshed.ImportAmount);
+        Assert.Equal(15m, refreshed.ImportAmount);
     }
 
     public void Dispose()
@@ -3084,7 +3513,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         decimal? purchasePrice = null,
         bool isActive = true,
         bool isDeleted = false,
-        string? productName = null
+        string? productName = null,
+        string? warehouseCategoryGuid = null
     )
     {
         await _db.Insertable(new Product
@@ -3098,6 +3528,34 @@ public sealed class StoreOrderProductListTests : IDisposable
             PurchasePrice = purchasePrice,
             IsActive = isActive,
             IsDeleted = isDeleted,
+            WarehouseCategoryGUID = warehouseCategoryGuid,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedWarehouseCategoryAsync(
+        string categoryGuid,
+        string categoryName,
+        string? parentGuid = null
+    )
+    {
+        await _db.Insertable(new WarehouseCategory
+        {
+            CategoryGUID = categoryGuid,
+            CategoryName = categoryName,
+            ParentGUID = parentGuid,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedProductGradeAsync(string productCode, string grade)
+    {
+        await _db.Insertable(new ProductGrade
+        {
+            Id = $"{productCode}-{grade}",
+            ProductCode = productCode,
+            Grade = grade,
+            IsDeleted = false,
         }).ExecuteCommandAsync();
     }
 
@@ -3133,7 +3591,8 @@ public sealed class StoreOrderProductListTests : IDisposable
         string? remarks = null,
         DateTime? createdAt = null,
         string? updatedBy = null,
-        DateTime? updatedAt = null
+        DateTime? updatedAt = null,
+        string? cartOwnerUserGuid = null
     )
     {
         if (insertStore)
@@ -3153,6 +3612,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             CreatedAt = createdAt ?? new DateTime(2026, 6, 1),
             UpdatedBy = updatedBy,
             UpdatedAt = updatedAt,
+            CartOwnerUserGuid = cartOwnerUserGuid,
             IsDeleted = false,
         }).ExecuteCommandAsync();
     }
@@ -3246,7 +3706,7 @@ public sealed class StoreOrderProductListTests : IDisposable
             Quantity = quantity,
             AllocQuantity = allocQuantity,
             ImportPrice = importPrice,
-            ImportAmount = allocQuantity * importPrice,
+            ImportAmount = quantity * importPrice,
             OEMPrice = 3m,
             OEMAmount = quantity * 3m,
             IsDeleted = isDeleted,
@@ -3467,7 +3927,10 @@ public sealed class StoreOrderProductListTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private StoreOrderReactService CreateService()
+    private StoreOrderReactService CreateService(
+        string userGuid = "user-1",
+        params string[] roleNames
+    )
     {
         var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(typeof(SqlSugarContext));
         var dbField = typeof(SqlSugarContext).GetField(
@@ -3476,11 +3939,37 @@ public sealed class StoreOrderProductListTests : IDisposable
         );
         dbField!.SetValue(context, _db);
 
+        var httpContextAccessor = new HttpContextAccessor();
+        if (roleNames.Length > 0)
+        {
+            var claims = new List<Claim>
+            {
+                new("userId", userGuid),
+                new("userGuid", userGuid),
+                new(ClaimTypes.NameIdentifier, userGuid),
+                new(ClaimTypes.Name, userGuid),
+            };
+            claims.AddRange(roleNames.Select(roleName => new Claim(ClaimTypes.Role, roleName)));
+            httpContextAccessor.HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth")),
+            };
+        }
+        else
+        {
+            httpContextAccessor.HttpContext = null;
+        }
+
+        var orderNumberGenerator = new Mock<IOrderNumberGenerator>();
+        orderNumberGenerator
+            .Setup(item => item.GetNextOrderNoAsync())
+            .ReturnsAsync($"ORD-{userGuid}");
+
         var service = new StoreOrderReactService(
             context,
             NullLogger<StoreOrderReactService>.Instance,
-            new HttpContextAccessor(),
-            Mock.Of<IOrderNumberGenerator>(),
+            httpContextAccessor,
+            orderNumberGenerator.Object,
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
             Mock.Of<IInvoiceEmailService>()

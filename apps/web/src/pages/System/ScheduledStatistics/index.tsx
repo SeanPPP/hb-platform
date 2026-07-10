@@ -46,6 +46,13 @@ import {
   type ScheduledStatisticsJobResult,
 } from '../../../services/scheduledStatisticsService'
 import {
+  getDailyStatisticsAlignment,
+  recalculateDailyStatisticsAlignment,
+  type DailyStatisticsAlignmentResponse,
+  type DailyStatisticsAlignmentRow,
+  type DailyStatisticsAlignmentTableDetail,
+} from '../../../services/salesStatisticsManagementService'
+import {
   getScheduledTaskDetail,
   getScheduledTaskList,
   retryScheduledTask,
@@ -102,6 +109,7 @@ const taskTypeOptions = [
   { label: '全量刷新前一天', value: 'FullRefreshPreviousDay' },
   { label: '全量刷新当天', value: 'FullRefreshCurrentDay' },
   { label: '并发全量刷新', value: 'BatchFullRefreshConcurrent' },
+  { label: '数据对齐后台补算', value: 'RecalculateDailyStatisticsAlignment' },
 ]
 
 const taskStatusOptions = [
@@ -158,6 +166,9 @@ function buildSubmitMessage(result: ScheduledStatisticsJobResult, fallback: stri
   if (result.failedDates?.length) {
     parts.push(`失败日期：${result.failedDates.join(', ')}`)
   }
+  if (result.skippedDates?.length) {
+    parts.push(`跳过日期：${result.skippedDates.join(', ')}`)
+  }
   if (result.jobId) {
     parts.push(`任务ID：${result.jobId}`)
   }
@@ -172,6 +183,378 @@ function getDateRangePayload(dateRange?: DateRangeValue) {
     startDate: dateRange[0].format('YYYY-MM-DD'),
     endDate: dateRange[1].format('YYYY-MM-DD'),
   }
+}
+
+function formatDateOnly(value?: string) {
+  if (!value) {
+    return '--'
+  }
+  const parsed = dayjs(value)
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD') : value
+}
+
+function formatMoney(value?: number) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '--'
+}
+
+function getAlignmentStatusColor(status?: string) {
+  switch ((status ?? '').toLowerCase()) {
+    case 'aligned':
+      return 'green'
+    case 'running':
+      return 'processing'
+    case 'stale':
+      return 'orange'
+    case 'mismatch':
+      return 'volcano'
+    case 'missing':
+    case 'failed':
+      return 'red'
+    default:
+      return 'default'
+  }
+}
+
+function isAlignmentAbnormal(status?: string) {
+  return (status ?? '').toLowerCase() !== 'aligned'
+}
+
+function DailyAlignmentPanel({
+  canRecalculate,
+  onAfterRecalculate,
+}: {
+  canRecalculate: boolean
+  onAfterRecalculate?: () => void
+}) {
+  const [dateRange, setDateRange] = useState<DateRangeValue>([dayjs().subtract(29, 'day'), dayjs()])
+  const [onlyAbnormal, setOnlyAbnormal] = useState(false)
+  const [maxConcurrency, setMaxConcurrency] = useState(3)
+  const [loading, setLoading] = useState(false)
+  const [recalculating, setRecalculating] = useState(false)
+  const [alignment, setAlignment] = useState<DailyStatisticsAlignmentResponse | null>(null)
+
+  const loadAlignment = async () => {
+    const payload = getDateRangePayload(dateRange)
+    if (!payload) {
+      message.warning('请选择日期范围')
+      return
+    }
+
+    setLoading(true)
+    try {
+      setAlignment(await getDailyStatisticsAlignment(payload))
+    } catch (error) {
+      console.error(error)
+      message.error('加载数据对齐状态失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadAlignment()
+  }, [])
+
+  const visibleRows = useMemo(() => {
+    const rows = alignment?.rows ?? []
+    return onlyAbnormal
+      ? rows.filter((row) => isAlignmentAbnormal(row.overallStatus))
+      : rows
+  }, [alignment, onlyAbnormal])
+
+  const abnormalDates = useMemo(() => {
+    return (alignment?.rows ?? [])
+      .filter((row) => isAlignmentAbnormal(row.overallStatus) && row.overallStatus !== 'Running')
+      .map((row) => formatDateOnly(row.date))
+  }, [alignment])
+
+  const handleRecalculateAbnormal = () => {
+    if (!canRecalculate) {
+      message.warning('补算统计需要管理员角色')
+      return
+    }
+    if (!abnormalDates.length) {
+      message.info('当前没有需要补算的异常日期')
+      return
+    }
+
+    Modal.confirm({
+      title: `确认提交 ${abnormalDates.length} 天异常统计后台补算？`,
+      content: '提交后会在后台按日期抢占数据库租约，运行中的日期会自动跳过。',
+      onOk: async () => {
+        setRecalculating(true)
+        try {
+          const result = await recalculateDailyStatisticsAlignment({
+            dates: abnormalDates,
+            maxConcurrency,
+          })
+          if (result.success === false || result.failedDates.length) {
+            const failedDateText = result.failedDates.length ? `：${result.failedDates.join(', ')}` : ''
+            message.error(`${result.message ?? '后台补算提交失败'}${failedDateText}`)
+          } else {
+            message.success(result.message ?? '后台补算任务已提交')
+          }
+          await loadAlignment()
+          onAfterRecalculate?.()
+        } catch (error) {
+          console.error(error)
+          message.error('提交后台补算失败')
+        } finally {
+          setRecalculating(false)
+        }
+      },
+    })
+  }
+
+  const detailColumns: ColumnsType<DailyStatisticsAlignmentTableDetail> = [
+    {
+      title: '统计表',
+      dataIndex: 'displayName',
+      width: 180,
+      render: (value, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{value}</Typography.Text>
+          <Typography.Text type="secondary">{record.tableName}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 110,
+      render: (value) => <Tag color={getAlignmentStatusColor(value)}>{value}</Tag>,
+    },
+    {
+      title: '行数',
+      dataIndex: 'rowCount',
+      width: 90,
+    },
+    {
+      title: '金额',
+      dataIndex: 'totalAmount',
+      width: 120,
+      render: (value) => formatMoney(value),
+    },
+    {
+      title: '数量',
+      dataIndex: 'totalQuantity',
+      width: 100,
+    },
+    {
+      title: '订单数',
+      dataIndex: 'orderCount',
+      width: 100,
+    },
+    {
+      title: '金额差异',
+      dataIndex: 'amountDifference',
+      width: 120,
+      render: (value) => formatMoney(value),
+    },
+    {
+      title: '数量差异',
+      dataIndex: 'quantityDifference',
+      width: 100,
+    },
+    {
+      title: '水位',
+      dataIndex: 'sourceWatermark',
+      width: 170,
+      render: formatDateTime,
+    },
+    {
+      title: '最后统计',
+      dataIndex: 'lastAggregatedAtUtc',
+      width: 170,
+      render: formatDateTime,
+    },
+    {
+      title: '失败原因',
+      dataIndex: 'errorMessage',
+      render: (value) => value || '--',
+    },
+    {
+      title: '具体原因',
+      dataIndex: 'reason',
+      width: 220,
+      render: (value) => value || '--',
+    },
+    {
+      title: '补救措施',
+      dataIndex: 'remediation',
+      width: 260,
+      render: (value) => value || '--',
+    },
+  ]
+
+  const columns: ColumnsType<DailyStatisticsAlignmentRow> = [
+    {
+      title: '日期',
+      dataIndex: 'date',
+      width: 130,
+      render: formatDateOnly,
+    },
+    {
+      title: '总体状态',
+      dataIndex: 'overallStatus',
+      width: 120,
+      render: (value) => <Tag color={getAlignmentStatusColor(value)}>{value}</Tag>,
+    },
+    {
+      title: '基准金额',
+      dataIndex: 'baselineAmount',
+      width: 130,
+      render: (value) => formatMoney(value),
+    },
+    {
+      title: '基准数量',
+      dataIndex: 'baselineQuantity',
+      width: 110,
+    },
+    {
+      title: '订单数',
+      dataIndex: 'baselineOrderCount',
+      width: 100,
+    },
+    {
+      title: '异常表',
+      dataIndex: 'abnormalTables',
+      render: (tables: string[]) => tables.length
+        ? (
+          <Space wrap size={[4, 4]}>
+            {tables.map((table) => <Tag key={table}>{table}</Tag>)}
+          </Space>
+        )
+        : '--',
+    },
+    {
+      title: '原因',
+      dataIndex: 'reason',
+      width: 220,
+      render: (value) => value || '--',
+    },
+    {
+      title: '补救措施',
+      dataIndex: 'remediation',
+      width: 260,
+      render: (value) => value || '--',
+    },
+    {
+      title: 'POSM水位',
+      dataIndex: 'latestSourceWatermark',
+      width: 170,
+      render: formatDateTime,
+    },
+    {
+      title: '最后检查',
+      dataIndex: 'lastCheckedAtUtc',
+      width: 170,
+      render: formatDateTime,
+    },
+  ]
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Form layout="vertical">
+        <Row gutter={16} align="bottom">
+          <Col xs={24} md={8}>
+            <Form.Item label="日期范围">
+              <RangePicker
+                value={dateRange}
+                style={{ width: '100%' }}
+                allowClear={false}
+                onChange={(value) => setDateRange(value as DateRangeValue)}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={12} md={4}>
+            <Form.Item label="只看异常">
+              <Switch checked={onlyAbnormal} onChange={setOnlyAbnormal} />
+            </Form.Item>
+          </Col>
+          <Col xs={12} md={4}>
+            <Form.Item label="补算并发">
+              <InputNumber min={1} max={10} value={maxConcurrency} onChange={(value) => setMaxConcurrency(value ?? 3)} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item label=" ">
+              <Space wrap>
+                <Button type="primary" icon={<SearchOutlined />} loading={loading} onClick={() => void loadAlignment()}>
+                  查询
+                </Button>
+                <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void loadAlignment()}>
+                  刷新
+                </Button>
+                <Button
+                  danger
+                  disabled={!canRecalculate}
+                  loading={recalculating}
+                  onClick={handleRecalculateAbnormal}
+                >
+                  后台补算异常日期
+                </Button>
+              </Space>
+            </Form.Item>
+          </Col>
+        </Row>
+      </Form>
+
+      <Row gutter={[16, 16]}>
+        <Col xs={12} md={5}>
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>
+            <Statistic title="已对齐天数" value={alignment?.overview.alignedDays ?? 0} />
+          </div>
+        </Col>
+        <Col xs={12} md={5}>
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>
+            <Statistic title="异常天数" value={alignment?.overview.abnormalDays ?? 0} valueStyle={{ color: '#cf1322' }} />
+          </div>
+        </Col>
+        <Col xs={12} md={5}>
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>
+            <Statistic title="缺失表数" value={alignment?.overview.missingTableCount ?? 0} />
+          </div>
+        </Col>
+        <Col xs={12} md={5}>
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>
+            <Statistic title="最大金额差异" value={alignment?.overview.maxAmountDifference ?? 0} precision={2} />
+          </div>
+        </Col>
+        <Col xs={24} md={4}>
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, minHeight: 75 }}>
+            <Typography.Text type="secondary">最新 POSM 水位</Typography.Text>
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              {formatDateTime(alignment?.overview.latestSourceWatermark)}
+            </Typography.Paragraph>
+          </div>
+        </Col>
+      </Row>
+
+      <Table<DailyStatisticsAlignmentRow>
+        rowKey={(row) => formatDateOnly(row.date)}
+        loading={loading}
+        columns={columns}
+        dataSource={visibleRows}
+        scroll={{ x: 1700 }}
+        expandable={{
+          expandedRowRender: (row) => (
+            <Table<DailyStatisticsAlignmentTableDetail>
+              rowKey="statisticType"
+              size="small"
+              columns={detailColumns}
+              dataSource={row.details}
+              pagination={false}
+              scroll={{ x: 1800 }}
+            />
+          ),
+        }}
+        pagination={{ pageSize: 20, showSizeChanger: true }}
+      />
+    </Space>
+  )
 }
 
 export default function ScheduledStatisticsPage() {
@@ -204,6 +587,8 @@ export default function ScheduledStatisticsPage() {
       value: instance.instanceId,
       label: `${instance.instanceId}${instance.isCurrent ? ' (当前)' : ''}`,
     })) ?? []
+  const currentSchedulerInstance = schedulerStatus?.knownInstances.find((instance) => instance.isCurrent)
+  const activeSchedulerInstance = schedulerStatus?.knownInstances.find((instance) => instance.isActive)
 
   const loadSchedulerStatus = async () => {
     setSchedulerLoading(true)
@@ -640,7 +1025,7 @@ export default function ScheduledStatisticsPage() {
         ) : null}
 
         <Card
-          title="调度运行控制"
+          title="调度状态"
           extra={
             <Button
               icon={<ReloadOutlined />}
@@ -663,23 +1048,18 @@ export default function ScheduledStatisticsPage() {
               />
             </Col>
             <Col xs={24} md={6}>
-              <Typography.Text type="secondary">当前实例</Typography.Text>
+              <Typography.Text type="secondary">Active 实例</Typography.Text>
               <Typography.Paragraph copyable style={{ marginBottom: 0 }}>
-                {schedulerStatus?.currentInstanceId ?? '-'}
+                {schedulerStatus?.activeInstanceId ?? '-'}
               </Typography.Paragraph>
             </Col>
-            <Col xs={24} md={7}>
-              <Typography.Text type="secondary">调度实例</Typography.Text>
-              <Select
-                loading={schedulerLoading}
-                disabled={!schedulerStatus || schedulerSaving || !canManageScheduledTasks}
-                value={schedulerStatus?.activeInstanceId}
-                options={schedulerInstanceOptions}
-                style={{ width: '100%', marginTop: 4 }}
-                onChange={(value) => void handleUpdateScheduler({ activeInstanceId: value })}
-              />
+            <Col xs={24} md={6}>
+              <Typography.Text type="secondary">Active 最后心跳</Typography.Text>
+              <Typography.Paragraph style={{ marginBottom: 0 }}>
+                {formatDateTime(activeSchedulerInstance?.lastSeenAtUtc)}
+              </Typography.Paragraph>
             </Col>
-            <Col xs={24} md={5}>
+            <Col xs={24} md={6}>
               <Typography.Text type="secondary">调度开关</Typography.Text>
               <div style={{ marginTop: 8 }}>
                 <Switch
@@ -696,11 +1076,67 @@ export default function ScheduledStatisticsPage() {
               ) : null}
             </Col>
           </Row>
+          {/* 低频运维控制默认收起，避免挤占数据对齐首屏。 */}
+          <Collapse
+            style={{ marginTop: 16 }}
+            items={[
+              {
+                key: 'advanced',
+                label: '高级运行控制',
+                children: (
+                  <Row gutter={[16, 16]}>
+                    <Col xs={24} md={6}>
+                      <Typography.Text type="secondary">当前实例</Typography.Text>
+                      <Typography.Paragraph copyable style={{ marginBottom: 0 }}>
+                        {schedulerStatus?.currentInstanceId ?? '-'}
+                      </Typography.Paragraph>
+                    </Col>
+                    <Col xs={24} md={7}>
+                      <Typography.Text type="secondary">调度实例</Typography.Text>
+                      <Select
+                        loading={schedulerLoading}
+                        disabled={!schedulerStatus || schedulerSaving || !canManageScheduledTasks}
+                        value={schedulerStatus?.activeInstanceId}
+                        options={schedulerInstanceOptions}
+                        style={{ width: '100%', marginTop: 4 }}
+                        onChange={(value) => void handleUpdateScheduler({ activeInstanceId: value })}
+                      />
+                    </Col>
+                    <Col xs={24} md={5}>
+                      <Typography.Text type="secondary">当前实例心跳</Typography.Text>
+                      <Typography.Paragraph style={{ marginBottom: 0 }}>
+                        {formatDateTime(currentSchedulerInstance?.lastSeenAtUtc)}
+                      </Typography.Paragraph>
+                    </Col>
+                    <Col xs={12} md={3}>
+                      <Statistic title="运行中租约" value={schedulerStatus?.runningLeaseCount ?? 0} />
+                    </Col>
+                    <Col xs={12} md={3}>
+                      <Statistic title="重复跳过" value={schedulerStatus?.recentDuplicateSkipCount ?? 0} />
+                    </Col>
+                  </Row>
+                ),
+              },
+            ]}
+          />
         </Card>
 
         <Card>
           <Tabs
             items={[
+              {
+                key: 'alignment',
+                label: '数据对齐',
+                children: (
+                  <DailyAlignmentPanel
+                    canRecalculate={canTriggerStatisticsTasks}
+                    onAfterRecalculate={() => {
+                      void loadSchedulerStatus()
+                      void loadTaskLogs(1, taskPageSize)
+                    }}
+                  />
+                ),
+              },
               {
                 key: 'store',
                 label: '分店统计',

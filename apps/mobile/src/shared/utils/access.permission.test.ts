@@ -238,3 +238,173 @@ assertEqual(
   "1004",
   "managedStoreCodes keeps only isPrimary manageable stores"
 );
+
+const warehouseStaffCreateAccess = buildAccess(
+  createUser(["Orders.Create"], ["WarehouseStaff"])
+);
+
+assertEqual(
+  warehouseStaffCreateAccess.isWarehouseStaffOnly,
+  true,
+  "pure WarehouseStaff is marked separately from warehouse managers and admins"
+);
+
+assertEqual(
+  warehouseStaffCreateAccess.canCreateOrder,
+  true,
+  "Orders.Create enables official order creation capability"
+);
+
+assertEqual(
+  warehouseStaffCreateAccess.canEditOrder,
+  false,
+  "Orders.Create alone does not enable official order line maintenance"
+);
+
+const warehouseStaffEditAccess = buildAccess(
+  createUser(["Orders.Edit"], ["仓库员工"])
+);
+
+assertEqual(
+  warehouseStaffEditAccess.isWarehouseStaffOnly,
+  true,
+  "Chinese WarehouseStaff role is treated as pure warehouse staff"
+);
+
+assertEqual(
+  warehouseStaffEditAccess.canCreateOrder,
+  false,
+  "Orders.Edit alone does not enable official order creation capability"
+);
+
+assertEqual(
+  warehouseStaffEditAccess.canEditOrder,
+  true,
+  "Orders.Edit enables official order line maintenance capability"
+);
+
+const warehouseStaffLegacyManageAccess = buildAccess(
+  createUser(["Warehouse.Manage"], ["WarehouseStaff"])
+);
+
+assertEqual(
+  warehouseStaffLegacyManageAccess.canCreateOrder,
+  false,
+  "legacy Warehouse.Manage alone does not grant official order creation"
+);
+
+assertEqual(
+  warehouseStaffLegacyManageAccess.canEditOrder,
+  false,
+  "legacy Warehouse.Manage alone does not grant official order line maintenance"
+);
+
+const warehouseManagerAccess = buildAccess(
+  createUser(["Orders.Create", "Orders.Edit"], ["WarehouseManager"])
+);
+
+assertEqual(
+  warehouseManagerAccess.isWarehouseStaffOnly,
+  false,
+  "WarehouseManager is not treated as pure WarehouseStaff"
+);
+
+assertEqual(
+  warehouseManagerAccess.canViewContainers,
+  false,
+  "WarehouseManager role alone does not enable container visibility"
+);
+
+assertEqual(
+  warehouseManagerAccess.canCreateContainer,
+  false,
+  "WarehouseManager role alone does not enable container creation"
+);
+
+assertEqual(
+  warehouseManagerAccess.canEditContainer,
+  false,
+  "WarehouseManager role alone does not enable container editing"
+);
+
+assertEqual(
+  warehouseManagerAccess.canDeleteContainer,
+  false,
+  "WarehouseManager role alone does not enable container deletion"
+);
+
+const adminAccess = buildAccess(
+  createUser(["Orders.Create", "Orders.Edit"], ["Admin"])
+);
+
+assertEqual(
+  adminAccess.isWarehouseStaffOnly,
+  false,
+  "Admin is not treated as pure WarehouseStaff"
+);
+
+assertEqual(
+  adminAccess.canViewContainers,
+  true,
+  "Admin can view container list and detail"
+);
+
+assertEqual(
+  adminAccess.canCreateContainer,
+  true,
+  "Admin can create containers"
+);
+
+assertEqual(
+  adminAccess.canEditContainer,
+  true,
+  "Admin can edit containers"
+);
+
+assertEqual(
+  adminAccess.canDeleteContainer,
+  true,
+  "Admin can delete containers"
+);
+
+const containerViewAccess = buildAccess(
+  createUser([PERMISSIONS.Container.View])
+);
+
+assertEqual(
+  containerViewAccess.canViewContainers,
+  true,
+  "Container.View enables container list and detail visibility"
+);
+
+assertEqual(
+  containerViewAccess.canCreateContainer,
+  false,
+  "Container.View alone does not enable container creation"
+);
+
+const containerMutationAccess = buildAccess(
+  createUser([
+    PERMISSIONS.Container.Create,
+    PERMISSIONS.Container.Edit,
+    PERMISSIONS.Container.Delete,
+  ])
+);
+
+assertEqual(
+  containerMutationAccess.canCreateContainer,
+  true,
+  "Container.Create enables container creation"
+);
+
+assertEqual(
+  containerMutationAccess.canEditContainer,
+  true,
+  "Container.Edit enables container editing"
+);
+
+assertEqual(
+  containerMutationAccess.canDeleteContainer,
+  true,
+  "Container.Delete enables container deletion"
+);

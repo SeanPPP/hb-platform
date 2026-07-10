@@ -75,12 +75,13 @@ namespace BlazorApp.Api.Cache
         public static string SupplierRank(
             DateRangeDto dateRange,
             List<string>? branchCodes,
-            int topN
+            int topN,
+            string? supplierCode = null
         )
         {
-            var key = $"{PREFIX}:SupplierRank:{Hash(dateRange, branchCodes, topN)}";
+            var key = $"{PREFIX}:SupplierRank:{Hash(dateRange, branchCodes, topN, supplierCode)}";
             _activeKeys.Add(key);
-            LogKeyGenerated("SupplierRank", key, dateRange, branchCodes, topN);
+            LogKeyGenerated("SupplierRank", key, dateRange, branchCodes, topN, supplierCode);
             return key;
         }
 
@@ -90,12 +91,13 @@ namespace BlazorApp.Api.Cache
         public static string ChinaSupplierRank(
             DateRangeDto dateRange,
             List<string>? branchCodes,
-            int topN
+            int topN,
+            string? supplierCode = null
         )
         {
-            var key = $"{PREFIX}:ChinaSupplierRank:{Hash(dateRange, branchCodes, topN)}";
+            var key = $"{PREFIX}:ChinaSupplierRank:{Hash(dateRange, branchCodes, topN, supplierCode)}";
             _activeKeys.Add(key);
-            LogKeyGenerated("ChinaSupplierRank", key, dateRange, branchCodes, topN);
+            LogKeyGenerated("ChinaSupplierRank", key, dateRange, branchCodes, topN, supplierCode);
             return key;
         }
 
@@ -111,6 +113,21 @@ namespace BlazorApp.Api.Cache
             var key = $"{PREFIX}:SupplierStore:{Hash(dateRange, supplierCodes, branchCodes)}";
             _activeKeys.Add(key);
             LogKeyGenerated("SupplierStore", key, dateRange, supplierCodes, branchCodes);
+            return key;
+        }
+
+        /// <summary>
+        /// 生成中国供应商分店销售数据缓存键
+        /// </summary>
+        public static string ChinaSupplierStore(
+            DateRangeDto dateRange,
+            List<string> supplierCodes,
+            List<string>? branchCodes
+        )
+        {
+            var key = $"{PREFIX}:ChinaSupplierStore:{Hash(dateRange, supplierCodes, branchCodes)}";
+            _activeKeys.Add(key);
+            LogKeyGenerated("ChinaSupplierStore", key, dateRange, supplierCodes, branchCodes);
             return key;
         }
 
@@ -155,23 +172,31 @@ namespace BlazorApp.Api.Cache
             List<string>? localSupplierCodes,
             List<string>? chinaSupplierCodes,
             int pageIndex,
-            int pageSize
+            int pageSize,
+            string? productSearch = null
         )
         {
-            var key = $"{PREFIX}:EnhancedProductDetail:{Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize)}";
+            var normalizedProductSearch = string.IsNullOrWhiteSpace(productSearch) ? null : productSearch.Trim();
+            var key = $"{PREFIX}:EnhancedProductDetail:{Hash(dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, normalizedProductSearch)}";
             _activeKeys.Add(key);
-            LogKeyGenerated("EnhancedProductDetail", key, dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize);
+            // 搜索词可能包含货号/条码，缓存隔离要参与 hash，但日志只能记录是否有搜索。
+            LogKeyGenerated("EnhancedProductDetail", key, dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes, pageIndex, pageSize, $"HasProductSearch={normalizedProductSearch is not null}");
             return key;
         }
 
         /// <summary>
         /// 生成产品各分店销售数据缓存键
         /// </summary>
-        public static string ProductBranch(DateRangeDto dateRange, string productCode)
+        public static string ProductBranch(
+            DateRangeDto dateRange,
+            string productCode,
+            List<string>? branchCodes
+        )
         {
-            var key = $"{PREFIX}:ProductBranch:{Hash(dateRange, productCode)}";
+            // 商品分店下钻必须把分店范围放进缓存键，避免不同权限/过滤条件串数据。
+            var key = $"{PREFIX}:ProductBranch:{Hash(dateRange, productCode, branchCodes)}";
             _activeKeys.Add(key);
-            LogKeyGenerated("ProductBranch", key, dateRange, productCode);
+            LogKeyGenerated("ProductBranch", key, dateRange, productCode, branchCodes);
             return key;
         }
 
@@ -240,10 +265,10 @@ namespace BlazorApp.Api.Cache
 
             if (_logger != null)
             {
+                // 参数原文可能含搜索词、商品编码等业务标识，调试日志只输出 hash 结果。
                 _logger.LogDebug(
-                    "生成缓存键哈希: 输入=[{InputParts}], 组合字符串=[{Combined}], 哈希值=[{Hash}]",
-                    string.Join(", ", parts),
-                    combined,
+                    "生成缓存键哈希: 参数数量=[{InputCount}], 哈希值=[{Hash}]",
+                    values.Length,
                     hash
                 );
             }

@@ -2283,12 +2283,12 @@ namespace BlazorApp.Api.Services
                         }
                     }
 
-                    // 验证贴牌价格
+                    // 验证零售价
                     if (product.OEMPrice.HasValue)
                     {
                         if (product.OEMPrice.Value < 0)
                         {
-                            errors.Add("oemPrice", new List<string> { "贴牌价格必须为非负数" });
+                            errors.Add("oemPrice", new List<string> { "零售价必须为非负数" });
                         }
                     }
 
@@ -3174,7 +3174,7 @@ namespace BlazorApp.Api.Services
                                     }
                                 }
 
-                                // 贴牌价格
+                                // 零售价
                                 if (
                                     updateDto.OEMPrice.HasValue
                                     && existingProduct.OEMPrice != updateDto.OEMPrice
@@ -3183,7 +3183,7 @@ namespace BlazorApp.Api.Services
                                     if (updateDto.OEMPrice.Value < 0)
                                     {
                                         result.Errors.Add(
-                                            $"更新商品失败: 贴牌价格不能为负 (ProductCode: {updateDto.ProductCode})"
+                                            $"更新商品失败: 零售价不能为负 (ProductCode: {updateDto.ProductCode})"
                                         );
                                     }
                                     else

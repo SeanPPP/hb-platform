@@ -34,6 +34,11 @@
     "submitTitle": "Submit cart",
     "submitMessage": "Submit the cart for the current store?"
   },
+  "remarks": {
+    "label": "Order remarks (optional)",
+    "placeholder": "Optional remarks for warehouse",
+    "counter": "{{count}} / {{max}}"
+  },
   "pagination": {
     "previous": "Previous",
     "next": "Next",

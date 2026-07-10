@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getProductDynamicData, getProducts } from "@/modules/shop/api";
 import type { ProductDynamicDataMap, StoreOrderProductQuery } from "@/modules/shop/types";
 
@@ -8,6 +8,7 @@ export function useProducts(query: StoreOrderProductQuery) {
     queryKey: ["shopProducts", query],
     enabled: Boolean(query.storeCode),
     staleTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData,
     retry: false,
     queryFn: () => getProducts(query),
   });

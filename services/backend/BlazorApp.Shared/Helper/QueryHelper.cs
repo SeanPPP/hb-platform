@@ -289,7 +289,7 @@ namespace BlazorApp.Shared.Helper
                 new BlazorApp.Shared.DTOs.FieldInfo
                 {
                     FieldName = "OEMPrice",
-                    DisplayName = "贴牌价格",
+                    DisplayName = "零售价",
                     FieldType = FieldType.Decimal,
                     SupportedOperators = GetSupportedOperators(FieldType.Decimal),
                     ExampleValue = "75.00"

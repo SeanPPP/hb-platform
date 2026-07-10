@@ -107,14 +107,14 @@ namespace BlazorApp.Api.Services.React
             var invoiceDate = FormatInvoiceDate(order);
 
             worksheet.Cell(1, 1).Value = "INVOICE";
-            var titleRange = worksheet.Range(1, 1, 1, 8).Merge();
+            var titleRange = worksheet.Range(1, 1, 1, 9).Merge();
             titleRange.Style.Font.Bold = true;
             titleRange.Style.Font.FontSize = 14;
 
             worksheet.Cell(2, 1).Value = $"INVOICE NO. {order.OrderNo ?? order.OrderGUID}";
             worksheet.Range(2, 1, 2, 4).Merge();
             worksheet.Cell(2, 5).Value = $"INVOICE DATE: {invoiceDate}";
-            worksheet.Range(2, 5, 2, 8).Merge();
+            worksheet.Range(2, 5, 2, 9).Merge();
             worksheet.Cell(3, 1).Value = "CUSTOMER:";
             worksheet.Cell(3, 2).Value = order.StoreName ?? order.StoreCode ?? "--";
             worksheet.Cell(4, 1).Value = "CUSTOMER CONTACT:";
@@ -130,10 +130,11 @@ namespace BlazorApp.Api.Services.React
             worksheet.Cell(headerRowIndex, 3).Value = "Name";
             worksheet.Cell(headerRowIndex, 4).Value = "Barcode";
             worksheet.Cell(headerRowIndex, 5).Value = "Cost";
-            worksheet.Cell(headerRowIndex, 6).Value = "Order Qty";
-            worksheet.Cell(headerRowIndex, 7).Value = "Ship Qty";
-            worksheet.Cell(headerRowIndex, 8).Value = "Subtotal";
-            worksheet.Range(headerRowIndex, 1, headerRowIndex, 8).Style.Font.Bold = true;
+            worksheet.Cell(headerRowIndex, 6).Value = "RRP";
+            worksheet.Cell(headerRowIndex, 7).Value = "Order Qty";
+            worksheet.Cell(headerRowIndex, 8).Value = "Ship Qty";
+            worksheet.Cell(headerRowIndex, 9).Value = "Subtotal";
+            worksheet.Range(headerRowIndex, 1, headerRowIndex, 9).Style.Font.Bold = true;
 
             var rowIndex = headerRowIndex + 1;
             var itemIndex = 1;
@@ -141,34 +142,38 @@ namespace BlazorApp.Api.Services.React
             {
                 var orderQuantity = item.Quantity;
                 var allocQuantity = item.AllocQuantity ?? 0m;
-                var subtotal = decimal.Round(allocQuantity * item.ImportPrice, 2);
+                var subtotal = decimal.Round(item.AllocatedImportAmount, 2);
 
                 worksheet.Cell(rowIndex, 1).Value = itemIndex;
                 worksheet.Cell(rowIndex, 2).Value = item.ItemNumber ?? string.Empty;
                 worksheet.Cell(rowIndex, 3).Value = item.ProductName ?? string.Empty;
                 worksheet.Cell(rowIndex, 4).Value = item.Barcode ?? item.ProductCode;
                 worksheet.Cell(rowIndex, 5).Value = item.ImportPrice;
-                worksheet.Cell(rowIndex, 6).Value = orderQuantity;
-                worksheet.Cell(rowIndex, 7).Value = allocQuantity;
-                worksheet.Cell(rowIndex, 8).Value = subtotal;
+                if (item.RRP.HasValue)
+                {
+                    worksheet.Cell(rowIndex, 6).Value = item.RRP.Value;
+                }
+                worksheet.Cell(rowIndex, 7).Value = orderQuantity;
+                worksheet.Cell(rowIndex, 8).Value = allocQuantity;
+                worksheet.Cell(rowIndex, 9).Value = subtotal;
                 rowIndex += 1;
                 itemIndex += 1;
             }
 
-            var subTotal = order.TotalImportAmount;
+            var subTotal = order.TotalAllocatedImportAmount;
             var gst = decimal.Round(subTotal * 0.1m, 2);
             var freight = order.ShippingFee ?? 0m;
             var total = decimal.Round(subTotal + gst + freight, 2);
 
             rowIndex += 1;
             worksheet.Cell(rowIndex++, 3).Value = "Sub-Total:";
-            worksheet.Cell(rowIndex - 1, 8).Value = subTotal;
+            worksheet.Cell(rowIndex - 1, 9).Value = subTotal;
             worksheet.Cell(rowIndex++, 3).Value = "GST 10%:";
-            worksheet.Cell(rowIndex - 1, 8).Value = gst;
+            worksheet.Cell(rowIndex - 1, 9).Value = gst;
             worksheet.Cell(rowIndex++, 3).Value = "Freight:";
-            worksheet.Cell(rowIndex - 1, 8).Value = freight;
+            worksheet.Cell(rowIndex - 1, 9).Value = freight;
             worksheet.Cell(rowIndex++, 3).Value = "Total:";
-            worksheet.Cell(rowIndex - 1, 8).Value = total;
+            worksheet.Cell(rowIndex - 1, 9).Value = total;
             worksheet.Cell(rowIndex + 1, 3).Value = "Remarks";
             worksheet.Cell(rowIndex + 1, 4).Value = string.IsNullOrWhiteSpace(order.Remarks)
                 ? "Image for reference only, actual product may vary"
@@ -176,7 +181,8 @@ namespace BlazorApp.Api.Services.React
 
             worksheet.Columns().AdjustToContents();
             worksheet.Column(5).Style.NumberFormat.Format = "$#,##0.00";
-            worksheet.Column(8).Style.NumberFormat.Format = "$#,##0.00";
+            worksheet.Column(6).Style.NumberFormat.Format = "$#,##0.00";
+            worksheet.Column(9).Style.NumberFormat.Format = "$#,##0.00";
 
             using var stream = new MemoryStream();
             workbook.SaveAs(stream);
@@ -235,8 +241,8 @@ namespace BlazorApp.Api.Services.React
             AddValueCell(infoTable, string.Empty, englishBodyFont);
             document.Add(infoTable);
 
-            var detailTable = new PdfPTable(8) { WidthPercentage = 100, SpacingAfter = 10 };
-            detailTable.SetWidths(new float[] { 0.5f, 1.2f, 1.6f, 3.2f, 1f, 1f, 1f, 1.2f });
+            var detailTable = new PdfPTable(9) { WidthPercentage = 100, SpacingAfter = 10 };
+            detailTable.SetWidths(new float[] { 0.45f, 1.05f, 1.45f, 2.9f, 0.85f, 0.85f, 0.85f, 0.85f, 1.1f });
             foreach (var header in new[]
                      {
                          "#",
@@ -244,6 +250,7 @@ namespace BlazorApp.Api.Services.React
                          "Barcode",
                          "Name",
                          "Cost",
+                         "RRP",
                          "Order Qty",
                          "Ship Qty",
                          "Subtotal",
@@ -256,12 +263,13 @@ namespace BlazorApp.Api.Services.React
             foreach (var item in SortItems(order.Items))
             {
                 var allocQuantity = item.AllocQuantity ?? 0m;
-                var subtotal = decimal.Round(allocQuantity * item.ImportPrice, 2);
+                var subtotal = decimal.Round(item.AllocatedImportAmount, 2);
                 AddValueCell(detailTable, itemIndex.ToString(), bodyFont);
                 AddValueCell(detailTable, item.ItemNumber ?? string.Empty, bodyFont);
                 AddValueCell(detailTable, item.Barcode ?? item.ProductCode, bodyFont);
                 AddValueCell(detailTable, item.ProductName ?? string.Empty, bodyFont);
                 AddValueCell(detailTable, FormatCurrency(item.ImportPrice), bodyFont);
+                AddValueCell(detailTable, FormatOptionalCurrency(item.RRP), bodyFont);
                 AddValueCell(detailTable, item.Quantity.ToString("0.##"), bodyFont);
                 AddValueCell(detailTable, allocQuantity.ToString("0.##"), bodyFont);
                 AddValueCell(detailTable, FormatCurrency(subtotal), bodyFont);
@@ -269,7 +277,7 @@ namespace BlazorApp.Api.Services.React
             }
             document.Add(detailTable);
 
-            var subTotal = order.TotalImportAmount;
+            var subTotal = order.TotalAllocatedImportAmount;
             var gst = decimal.Round(subTotal * 0.1m, 2);
             var freight = order.ShippingFee ?? 0m;
             var total = decimal.Round(subTotal + gst + freight, 2);
@@ -536,6 +544,12 @@ namespace BlazorApp.Api.Services.React
         private static string FormatCurrency(decimal value)
         {
             return $"${value:0.00}";
+        }
+
+        private static string FormatOptionalCurrency(decimal? value)
+        {
+            // RRP 为空代表商品主数据缺失，附件里留空比显示 $0.00 更安全。
+            return value.HasValue ? FormatCurrency(value.Value) : string.Empty;
         }
 
         private static void AddHeaderCell(PdfPTable table, string text, iTextSharp.text.Font font)

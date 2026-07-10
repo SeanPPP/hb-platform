@@ -19,7 +19,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
         
         /// <summary>
-        /// OEM价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -136,7 +136,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
         
         /// <summary>
-        /// OEM价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -244,7 +244,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DomesticPrice { get; set; }
         
         /// <summary>
-        /// OEM价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 

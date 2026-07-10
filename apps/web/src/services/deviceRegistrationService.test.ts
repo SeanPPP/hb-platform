@@ -2,9 +2,13 @@ import {
   activateDevice,
   buildUpdateDeviceRegistrationPayload,
   disableDevice,
+  getAppDeviceStatuses,
+  getAppDeviceStatusSummary,
   getDeviceRegistrations,
   isDeviceRuntimeOnline,
   lockDevice,
+  normalizeAppDeviceStatusListResponse,
+  normalizeAppDeviceStatusSummary,
   normalizeDeviceRegistrationDetail,
 } from './deviceRegistrationService'
 
@@ -156,15 +160,111 @@ assertDeepEqual(
   'Update payload should only include editable Chinese DTO fields',
 )
 
+const normalizedAppDevices = normalizeAppDeviceStatusListResponse({
+  success: true,
+  data: {
+    items: [{
+      Id: 'F53AF6E9-A4C6-4C31-9B19-83E93B120D93',
+      HardwareId: 'HW-APP-01',
+      SystemDeviceNumber: 'DEV202607080001',
+      DeviceSystem: 'Android',
+      AppVersion: '1.2.3',
+      AppBuildVersion: '45',
+      RuntimeVersion: '1.2.3',
+      Channel: 'production',
+      UpdateId: '12345678-90ab-cdef-1234-567890abcdef',
+      UpdateSource: 'ota',
+      LastSeenAtUtc: '2026-07-08T09:00:00Z',
+      IsOnline: 'true',
+      LastSeenUsername: 'ada',
+    }],
+    Total: 1,
+    Page: 1,
+    PageSize: 20,
+  },
+})
+
+assertEqual(normalizedAppDevices.total, 1, 'Should normalize App device total')
+assertEqual(normalizedAppDevices.devices[0]?.hardwareId, 'HW-APP-01', 'Should normalize App hardware ID')
+assertEqual(normalizedAppDevices.devices[0]?.isOnline, true, 'Should normalize App online state')
+assertEqual(normalizedAppDevices.devices[0]?.appVersion, '1.2.3', 'Should normalize App package version')
+assertEqual(normalizedAppDevices.devices[0]?.appBuildVersion, '45', 'Should normalize App build version')
+assertEqual(normalizedAppDevices.devices[0]?.runtimeVersion, '1.2.3', 'Should normalize App runtime version')
+assertEqual(normalizedAppDevices.devices[0]?.channel, 'production', 'Should normalize App channel')
+assertEqual(
+  normalizedAppDevices.devices[0]?.updateId,
+  '12345678-90ab-cdef-1234-567890abcdef',
+  'Should preserve full App update ID',
+)
+assertEqual(normalizedAppDevices.devices[0]?.updateSource, 'ota', 'Should normalize App update source')
+assertEqual(normalizedAppDevices.devices[0]?.lastSeenUsername, 'ada', 'Should normalize App recent user')
+
+assertDeepEqual(
+  normalizeAppDeviceStatusSummary({
+    success: true,
+    data: {
+      Total: 3,
+      Online: 1,
+      Offline: 2,
+      Android: 2,
+      Ios: 1,
+      UnknownSystem: 0,
+    },
+  }),
+  {
+    total: 3,
+    online: 1,
+    offline: 2,
+    android: 2,
+    ios: 1,
+    unknownSystem: 0,
+  },
+  'Should normalize App device summary',
+)
+
 const originalFetch = globalThis.fetch
 const calls: Array<{ url: string; method?: string; body?: string }> = []
 
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = String(input)
   calls.push({
-    url: String(input),
+    url,
     method: init?.method,
     body: typeof init?.body === 'string' ? init.body : undefined,
   })
+
+  if (url.includes('/api/mobile/app-device-status/paged')) {
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        items: [{ id: 'app-1', hardwareId: 'HW-APP-URL', isOnline: true }],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  if (url.includes('/api/mobile/app-device-status/summary')) {
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        total: 1,
+        online: 1,
+        offline: 0,
+        android: 1,
+        ios: 0,
+        unknownSystem: 0,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   return new Response(JSON.stringify({
     success: true,
     data: {
@@ -193,6 +293,19 @@ try {
   await activateDevice(12)
   await disableDevice(12)
   await lockDevice(12)
+  await getAppDeviceStatuses({
+    page: 1,
+    pageSize: 20,
+    storeCode: 'S01',
+    deviceSystem: 'Android',
+    onlineState: 'online',
+    keyword: 'Ada',
+  })
+  await getAppDeviceStatusSummary({
+    storeCode: 'S01',
+    deviceSystem: 'Android',
+    keyword: 'Ada',
+  })
 
   assertEqual(
     calls[0]?.url,
@@ -216,6 +329,18 @@ try {
     '/api/12/lock',
     'Device lock should use legacy device API base path',
   )
+  assertEqual(
+    calls[4]?.url,
+    '/api/mobile/app-device-status/paged?page=1&pageSize=20&storeCode=S01&deviceSystem=Android&onlineState=online&keyword=Ada',
+    'App device list should use mobile app-device-status paged API',
+  )
+  assertEqual(calls[4]?.method, 'GET', 'App device list should use GET')
+  assertEqual(
+    calls[5]?.url,
+    '/api/mobile/app-device-status/summary?storeCode=S01&deviceSystem=Android&keyword=Ada',
+    'App device summary should use mobile app-device-status summary API',
+  )
+  assertEqual(calls[5]?.method, 'GET', 'App device summary should use GET')
 } finally {
   globalThis.fetch = originalFetch
 }

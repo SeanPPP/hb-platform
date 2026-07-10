@@ -34,11 +34,13 @@ namespace BlazorApp.Api.Services.Background
         /// <param name="taskType">任务类型</param>
         /// <param name="parameters">任务参数</param>
         /// <param name="triggeredBy">触发方式（默认为定时触发）</param>
+        /// <param name="canRetry">是否允许重试（默认为 true）</param>
         /// <returns>任务日志记录</returns>
         public async Task<ScheduledTaskLog> LogTaskStartAsync(
             string taskType,
             TaskParameters parameters,
-            string triggeredBy = TaskTrigger.Scheduled
+            string triggeredBy = TaskTrigger.Scheduled,
+            bool canRetry = true
         )
         {
             try
@@ -51,7 +53,7 @@ namespace BlazorApp.Api.Services.Background
                     StartedAt = DateTime.UtcNow,
                     ScheduledTime = DateTime.UtcNow,
                     TriggeredBy = triggeredBy,
-                    CanRetry = true,
+                    CanRetry = canRetry,
                     ErrorMessage = string.Empty,
                 };
 
@@ -79,7 +81,7 @@ namespace BlazorApp.Api.Services.Background
                     StartedAt = DateTime.UtcNow,
                     ScheduledTime = DateTime.UtcNow,
                     TriggeredBy = triggeredBy,
-                    CanRetry = true,
+                    CanRetry = canRetry,
                     ErrorMessage = string.Empty,
                 };
             }

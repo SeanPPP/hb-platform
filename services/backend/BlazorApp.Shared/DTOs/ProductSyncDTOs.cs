@@ -36,7 +36,7 @@ namespace BlazorApp.Shared.DTOs
         public string DetectionResult { get; set; } = string.Empty;
 
         /// <summary>
-        /// 仓库商品的贴牌价格（如果存在）
+        /// 仓库商品的零售价（如果存在）
         /// </summary>
         public decimal? WarehouseOEMPrice { get; set; }
 
@@ -161,10 +161,10 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格（必填）
+        /// 零售价（必填）
         /// </summary>
-        [Required(ErrorMessage = "贴牌价格不能为空")]
-        [Range(0.01, double.MaxValue, ErrorMessage = "贴牌价格必须大于0")]
+        [Required(ErrorMessage = "零售价不能为空")]
+        [Range(0.01, double.MaxValue, ErrorMessage = "零售价必须大于0")]
         public decimal OEMPrice { get; set; }
 
         /// <summary>
@@ -226,7 +226,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         public decimal? OEMPrice { get; set; }
 
@@ -241,9 +241,9 @@ namespace BlazorApp.Shared.DTOs
         public int? PackingQuantity { get; set; }
 
         /// <summary>
-        /// 上架状态
+        /// 上架状态；未传时保留仓库商品原状态。
         /// </summary>
-        public bool IsActive { get; set; } = true;
+        public bool? IsActive { get; set; }
     }
 
     #endregion
@@ -460,7 +460,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格。
+        /// 零售价。
         /// </summary>
         public decimal? OemPrice { get; set; }
 

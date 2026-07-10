@@ -14,6 +14,45 @@ namespace BlazorApp.Api.Services
     {
         private readonly ILogger<ContainerExportService> _logger;
         private readonly HttpClient _httpClient;
+        private static readonly List<string> DefaultExportColumns = new()
+        {
+            "image",
+            "itemNumber",
+            "barcode",
+            "englishName",
+            "importPrice",
+            "oemPrice",
+            "loadingQuantity",
+        };
+        private static readonly Dictionary<string, string> ExportColumnAliases = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["productImage"] = "image",
+            ["barcodeImage"] = "barcode",
+            ["productName"] = "chineseName",
+            ["containerPieces"] = "loadingPieces",
+            ["containerQuantity"] = "loadingQuantity",
+            ["middlePackQuantity"] = "packingQuantity",
+        };
+        private static readonly Dictionary<string, string> ExportColumnHeaders = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["index"] = "序号",
+            ["image"] = "商品图片",
+            ["itemNumber"] = "货号",
+            ["barcode"] = "条码",
+            ["chineseName"] = "中文名称",
+            ["englishName"] = "英文名称",
+            ["domesticPrice"] = "国内价格",
+            ["transportCost"] = "运输成本",
+            ["adjustmentRate"] = "调整浮率",
+            ["importPrice"] = "进口价格",
+            ["oemPrice"] = "零售价",
+            ["packingQuantity"] = "单件装箱数",
+            ["loadingPieces"] = "件数",
+            ["loadingQuantity"] = "总数量",
+            ["unitVolume"] = "单件体积",
+            ["totalVolume"] = "总体积",
+            ["remarks"] = "备注",
+        };
 
         public ContainerExportService(
             ILogger<ContainerExportService> logger,
@@ -35,9 +74,7 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                // 使用固定导出列：图片、货号、条码、英文名称、进口价格、贴牌价格、装柜数量
-                var fixedExportColumns = new List<string> { "image", "itemNumber", "barcode", "englishName", "importPrice", "oemPrice", "loadingQuantity" };
-                exportColumns = fixedExportColumns;
+                var selectedColumns = ResolveExportColumns(exportColumns);
 
                 using var workbook = new XLWorkbook();
                 var worksheet = workbook.Worksheets.Add($"货柜明细_{container.ContainerNumber}");
@@ -74,17 +111,11 @@ namespace BlazorApp.Api.Services
                 int headerRow = row;
                 int col = 1;
 
-                // 设置固定导出列的表头
-                var columnMapping = new Dictionary<string, (string Header, int Index)>
-                {
-                    ["image"] = ("商品图片", col++),
-                    ["itemNumber"] = ("货号", col++),
-                    ["barcode"] = ("条码", col++),
-                    ["englishName"] = ("英文名称", col++),
-                    ["importPrice"] = ("进口价格", col++),
-                    ["oemPrice"] = ("贴牌价格", col++),
-                    ["loadingQuantity"] = ("装柜数量", col++)
-                };
+                var columnMapping = selectedColumns.ToDictionary(
+                    column => column,
+                    column => (Header: ExportColumnHeaders[column], Index: col++),
+                    StringComparer.OrdinalIgnoreCase
+                );
 
                 // 设置表头
                 foreach (var column in columnMapping)
@@ -101,7 +132,7 @@ namespace BlazorApp.Api.Services
 
                 // 如果包含图片列，批量下载图片
                 Dictionary<string, byte[]>? imageDict = null;
-                if (exportColumns.Contains("image"))
+                if (selectedColumns.Contains("image", StringComparer.OrdinalIgnoreCase))
                 {
                     var imageUrls = details
                         .Where(d => !string.IsNullOrEmpty(d.Product?.ImageUrl))
@@ -122,57 +153,45 @@ namespace BlazorApp.Api.Services
 
                 // 填充数据
                 row = headerRow + 1;
+                var rowIndex = 1;
                 foreach (var detail in sortedDetails)
                 {
-                    // 图片列
-                    await InsertImageToCell(worksheet, row, columnMapping["image"].Index, detail.Product?.ImageUrl, imageDict);
-
-                    // 货号
-                    worksheet.Cell(row, columnMapping["itemNumber"].Index).Value = detail.Product?.ItemNumber;
-
-                    // 条码
-                    var barcodeCell = worksheet.Cell(row, columnMapping["barcode"].Index);
-                    if (!string.IsNullOrEmpty(detail.Product?.Barcode))
+                    foreach (var column in selectedColumns)
                     {
-                        barcodeCell.Style.NumberFormat.Format = "@"; // 设置为文本格式
-                        barcodeCell.Value = detail.Product.Barcode;
+                        var cell = worksheet.Cell(row, columnMapping[column].Index);
+                        if (column.Equals("image", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await InsertImageToCell(worksheet, row, columnMapping[column].Index, detail.Product?.ImageUrl, imageDict);
+                            continue;
+                        }
+
+                        if (column.Equals("barcode", StringComparison.OrdinalIgnoreCase))
+                        {
+                            cell.Style.NumberFormat.Format = "@";
+                        }
+
+                        cell.Value = GetExportCellValue(detail, column, rowIndex);
                     }
-                    else
-                    {
-                        barcodeCell.Value = "--";
-                    }
-
-                    // 英文名称
-                    worksheet.Cell(row, columnMapping["englishName"].Index).Value = detail.Product?.EnglishName;
-
-                    // 进口价格
-                    worksheet.Cell(row, columnMapping["importPrice"].Index).Value = detail.ImportPrice;
-
-                    // 贴牌价格
-                    worksheet.Cell(row, columnMapping["oemPrice"].Index).Value = detail.OEMPrice;
-
-                    // 装柜数量
-                    worksheet.Cell(row, columnMapping["loadingQuantity"].Index).Value = detail.LoadingQuantity;
 
                     // 设置数据行居中对齐
                     var dataRange = worksheet.Range(row, 1, row, columnMapping.Count);
                     dataRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
                     dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
 
-                    // 设置图片行高 - 调整为70以适配60像素的图片
-                    worksheet.Row(row).Height = 70;
+                    if (selectedColumns.Contains("image", StringComparer.OrdinalIgnoreCase))
+                    {
+                        worksheet.Row(row).Height = 70;
+                    }
 
                     row++;
+                    rowIndex++;
                 }
 
                 // 调整列宽
-                worksheet.Column(columnMapping["image"].Index).Width = 12; // 图片列 - 调整为12避免过宽
-                worksheet.Column(columnMapping["itemNumber"].Index).Width = 15; // 货号
-                worksheet.Column(columnMapping["barcode"].Index).Width = 15; // 条码
-                worksheet.Column(columnMapping["englishName"].Index).Width = 25; // 英文名称
-                worksheet.Column(columnMapping["importPrice"].Index).Width = 12; // 进口价格
-                worksheet.Column(columnMapping["oemPrice"].Index).Width = 12; // 贴牌价格
-                worksheet.Column(columnMapping["loadingQuantity"].Index).Width = 12; // 装柜数量
+                foreach (var column in selectedColumns)
+                {
+                    worksheet.Column(columnMapping[column].Index).Width = GetExcelColumnWidth(column);
+                }
 
 
                 // 转换为字节数组
@@ -201,9 +220,7 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                // 使用固定导出列：图片、货号、条码、英文名称、进口价格、贴牌价格、装柜数量
-                var fixedExportColumns = new List<string> { "image", "itemNumber", "barcode", "englishName", "importPrice", "oemPrice", "loadingQuantity" };
-                exportColumns = fixedExportColumns;
+                var selectedColumns = ResolveExportColumns(exportColumns);
 
                 using var stream = new MemoryStream();
                 var document = new Document(PageSize.A4.Rotate(), 20, 20, 30, 30);
@@ -248,7 +265,7 @@ namespace BlazorApp.Api.Services
 
                 // 如果包含图片列，批量下载图片
                 Dictionary<string, byte[]>? imageDict = null;
-                if (exportColumns.Contains("image"))
+                if (selectedColumns.Contains("image", StringComparer.OrdinalIgnoreCase))
                 {
                     var imageUrls = details
                         .Where(d => !string.IsNullOrEmpty(d.Product?.ImageUrl))
@@ -265,13 +282,13 @@ namespace BlazorApp.Api.Services
                 }
 
                 // 明细表格
-                var columnCount = exportColumns.Count;
+                var columnCount = selectedColumns.Count;
                 var detailTable = new PdfPTable(columnCount);
                 detailTable.WidthPercentage = 100;
 
                 // 设置列宽（根据列的类型调整）
                 var widths = new List<float>();
-                foreach (var column in exportColumns)
+                foreach (var column in selectedColumns)
                 {
                     widths.Add(column switch
                     {
@@ -285,28 +302,9 @@ namespace BlazorApp.Api.Services
                 detailTable.SetWidths(widths.ToArray());
 
                 // 表头
-                foreach (var column in exportColumns)
+                foreach (var column in selectedColumns)
                 {
-                    var headerText = column switch
-                    {
-                        "image" => "图片",
-                        "itemNumber" => "货号",
-                        "barcode" => "条码",
-                        "chineseName" => "中文名称",
-                        "englishName" => "英文名称",
-                        "domesticPrice" => "国内价格",
-                        "transportCost" => "运输成本",
-                        "adjustmentRate" => "调整浮率",
-                        "importPrice" => "进口价格",
-                        "oemPrice" => "贴牌价格",
-                        "packingQuantity" => "单件装箱数",
-                        "loadingPieces" => "件数",
-                        "loadingQuantity" => "总数量",
-                        "unitVolume" => "单件体积",
-                        "totalVolume" => "总体积",
-                        "remarks" => "备注",
-                        _ => column
-                    };
+                    var headerText = ExportColumnHeaders[column];
 
                     detailTable.AddCell(new PdfPCell(new Phrase(headerText, headerFont))
                     {
@@ -320,9 +318,10 @@ namespace BlazorApp.Api.Services
                 var sortedDetails = details.OrderBy(d => d.Product?.ItemNumber).ToList();
 
                 // 数据行
+                var rowIndex = 1;
                 foreach (var detail in sortedDetails)
                 {
-                    foreach (var column in exportColumns)
+                    foreach (var column in selectedColumns)
                     {
                         PdfPCell cell;
 
@@ -334,25 +333,7 @@ namespace BlazorApp.Api.Services
                         else
                         {
                             // 处理其他列
-                            var cellValue = column switch
-                            {
-                                "itemNumber" => detail.Product?.ItemNumber ?? "",
-                                "barcode" => detail.Product?.Barcode ?? "--",
-                                "chineseName" => detail.Product?.ChineseName ?? "",
-                                "englishName" => detail.Product?.EnglishName ?? "",
-                                "domesticPrice" => detail.DomesticPrice?.ToString("N2") ?? "",
-                                "transportCost" => detail.TransportCost?.ToString("N2") ?? "",
-                                "adjustmentRate" => detail.AdjustmentRate?.ToString("N2") ?? "",
-                                "importPrice" => detail.ImportPrice?.ToString("N2") ?? "",
-                                "oemPrice" => detail.OEMPrice?.ToString("N2") ?? "",
-                                "packingQuantity" => detail.PackingQuantity?.ToString("N0") ?? "",
-                                "loadingPieces" => detail.LoadingPieces?.ToString("N2") ?? "",
-                                "loadingQuantity" => detail.LoadingQuantity?.ToString("N0") ?? "",
-                                "unitVolume" => detail.UnitVolume?.ToString("N3") ?? "",
-                                "totalVolume" => detail.TotalVolume?.ToString("N3") ?? "",
-                                "remarks" => detail.Remarks ?? "",
-                                _ => ""
-                            };
+                            var cellValue = GetExportCellValue(detail, column, rowIndex);
 
                             cell = new PdfPCell(new Phrase(cellValue, normalFont))
                             {
@@ -363,6 +344,7 @@ namespace BlazorApp.Api.Services
 
                         detailTable.AddCell(cell);
                     }
+                    rowIndex++;
                 }
 
                 document.Add(detailTable);
@@ -385,6 +367,78 @@ namespace BlazorApp.Api.Services
         /// 图片计数器，用于生成唯一的短名称
         /// </summary>
         private static int _imageCounter = 0;
+
+        private static List<string> ResolveExportColumns(List<string>? exportColumns)
+        {
+            var sourceColumns = exportColumns?.Count > 0 ? exportColumns : DefaultExportColumns;
+            var selectedColumns = new List<string>();
+            foreach (var requestedColumn in sourceColumns)
+            {
+                var normalized = requestedColumn?.Trim();
+                if (string.IsNullOrWhiteSpace(normalized))
+                {
+                    continue;
+                }
+
+                if (ExportColumnAliases.TryGetValue(normalized, out var alias))
+                {
+                    normalized = alias;
+                }
+
+                // 导出列来自前端，必须通过白名单过滤并规范化，避免大小写不同导致空列。
+                var canonicalColumn = ExportColumnHeaders.Keys.FirstOrDefault(column =>
+                    string.Equals(column, normalized, StringComparison.OrdinalIgnoreCase)
+                );
+                if (
+                    canonicalColumn != null
+                    && !selectedColumns.Contains(canonicalColumn, StringComparer.OrdinalIgnoreCase)
+                )
+                {
+                    selectedColumns.Add(canonicalColumn);
+                }
+            }
+
+            return selectedColumns.Count > 0 ? selectedColumns : DefaultExportColumns.ToList();
+        }
+
+        private static double GetExcelColumnWidth(string column)
+        {
+            return column switch
+            {
+                "index" => 8,
+                "image" => 12,
+                "itemNumber" => 15,
+                "barcode" => 18,
+                "chineseName" => 24,
+                "englishName" => 25,
+                "remarks" => 24,
+                _ => 12,
+            };
+        }
+
+        private static string GetExportCellValue(YiwuContainerDetailDto detail, string column, int rowIndex)
+        {
+            return column switch
+            {
+                "index" => rowIndex.ToString(),
+                "itemNumber" => detail.Product?.ItemNumber ?? "",
+                "barcode" => detail.Product?.Barcode ?? "--",
+                "chineseName" => detail.Product?.ChineseName ?? "",
+                "englishName" => detail.Product?.EnglishName ?? "",
+                "domesticPrice" => detail.DomesticPrice?.ToString("N2") ?? "",
+                "transportCost" => detail.TransportCost?.ToString("N2") ?? "",
+                "adjustmentRate" => detail.AdjustmentRate?.ToString("N2") ?? "",
+                "importPrice" => detail.ImportPrice?.ToString("N2") ?? "",
+                "oemPrice" => detail.OEMPrice?.ToString("N2") ?? "",
+                "packingQuantity" => detail.PackingQuantity?.ToString("N0") ?? "",
+                "loadingPieces" => detail.LoadingPieces?.ToString("N2") ?? "",
+                "loadingQuantity" => detail.LoadingQuantity?.ToString("N0") ?? "",
+                "unitVolume" => detail.UnitVolume?.ToString("N3") ?? "",
+                "totalVolume" => detail.TotalVolume?.ToString("N3") ?? "",
+                "remarks" => detail.Remarks ?? "",
+                _ => "",
+            };
+        }
 
         /// <summary>
         /// 插入图片到Excel单元格（参考YiwuOrderService实现）

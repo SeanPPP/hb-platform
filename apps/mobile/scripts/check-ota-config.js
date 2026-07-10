@@ -63,6 +63,10 @@ function main() {
     failures.push("Android Manifest 缺少 EXPO_RUNTIME_VERSION");
   }
 
+  if (!androidManifest.includes('android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="NEVER"')) {
+    failures.push("Android Manifest 必须禁用 expo-updates 原生启动自动检查，由 JS 层按 profile 控制自动更新");
+  }
+
   if (failures.length) {
     console.error("OTA config check failed:");
     failures.forEach((failure) => console.error(`- ${failure}`));

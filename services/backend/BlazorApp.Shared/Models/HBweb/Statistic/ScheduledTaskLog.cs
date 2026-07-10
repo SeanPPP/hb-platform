@@ -98,8 +98,11 @@ namespace BlazorApp.Shared.Models.HBweb
         public const string FullRefreshCurrentDay = "FullRefreshCurrentDay";
         public const string FullRefreshCurrentWeek = "FullRefreshCurrentWeek";
         public const string FullRefreshPreviousMonth = "FullRefreshPreviousMonth";
+        public const string FullRefreshCurrentMonth = "FullRefreshCurrentMonth";
+        public const string FullRefreshCurrentQuarter = "FullRefreshCurrentQuarter";
         public const string BatchFullRefreshByMonths = "BatchFullRefreshByMonths";
         public const string BatchFullRefreshConcurrent = "BatchFullRefreshConcurrent";
+        public const string RecalculateDailyStatisticsAlignment = "RecalculateDailyStatisticsAlignment";
         public const string SyncPosmProductSupplierMappingsIncremental = "SyncPosmProductSupplierMappingsIncremental";
         public const string WarmUpStoreOrderCache = "WarmUpStoreOrderCache";
         public const string SyncStoreLocalSupplierInvoices = "SyncStoreLocalSupplierInvoices";

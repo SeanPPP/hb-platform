@@ -1,6 +1,25 @@
-import request from '../utils/request'
+import request, { RequestError } from '../utils/request'
 
 const API_BASE = '/api/react/v1/domestic-products'
+
+export interface HbwebProductNameUpdateItem {
+  ItemNumber: string
+  ProductName: string
+}
+
+export interface UpdateHbwebProductNamesResult {
+  updatedCount: number
+  unchangedCount: number
+  missingItemNumbers: string[]
+  errors: string[]
+}
+
+export interface UpdateHbwebProductNamesResponse {
+  success: boolean
+  data?: UpdateHbwebProductNamesResult
+  message?: string
+  errorCode?: string
+}
 
 export async function batchDetectProducts(data: { SupplierCode: string; Products: Array<Record<string, unknown>> }): Promise<{ success: boolean; data: any[]; message?: string }> {
   const response: any = await request(`${API_BASE}/batch-detect`, {
@@ -27,6 +46,22 @@ export async function batchUpdateDomesticProducts(data: { Products: Array<Record
   })
   if (response && typeof response === 'object' && 'success' in response) return response
   return response?.data ?? response
+}
+
+export async function updateHbwebProductNames(data: { Products: HbwebProductNameUpdateItem[] }): Promise<UpdateHbwebProductNamesResponse> {
+  try {
+    const response: any = await request(`${API_BASE}/product-master-names`, {
+      method: 'PUT',
+      data,
+    })
+    if (response && typeof response === 'object' && 'success' in response) return response
+    return response?.data ?? response
+  } catch (error) {
+    if (error instanceof RequestError && error.payload && typeof error.payload === 'object' && 'success' in error.payload) {
+      return error.payload as UpdateHbwebProductNamesResponse
+    }
+    throw error
+  }
 }
 
 export async function fixProductImage(productCode: string, imageUrl: string): Promise<{ success: boolean; message?: string }> {

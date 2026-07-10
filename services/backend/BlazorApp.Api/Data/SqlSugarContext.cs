@@ -329,6 +329,8 @@ namespace BlazorApp.Api.Data
         // 定时任务日志实体
         public SimpleClient<ScheduledTaskLog> ScheduledTaskLogDb =>
             new SimpleClient<ScheduledTaskLog>(_db);
+        public SimpleClient<ScheduledTaskLease> ScheduledTaskLeaseDb =>
+            new SimpleClient<ScheduledTaskLease>(_db);
 
         // 发票邮件 SMTP 配置实体
         public SimpleClient<InvoiceEmailConfiguration> InvoiceEmailConfigurationDb =>
@@ -338,6 +340,8 @@ namespace BlazorApp.Api.Data
         public SimpleClient<ApplicationLog> ApplicationLogDb => new SimpleClient<ApplicationLog>(_db);
         public SimpleClient<MobileAppBuild> MobileAppBuildDb =>
             new SimpleClient<MobileAppBuild>(_db);
+        public SimpleClient<MobileAppDeviceStatus> MobileAppDeviceStatusDb =>
+            new SimpleClient<MobileAppDeviceStatus>(_db);
         public SimpleClient<MobileAppOtaUpdate> MobileAppOtaUpdateDb =>
             new SimpleClient<MobileAppOtaUpdate>(_db);
         public SimpleClient<ServiceApiToken> ServiceApiTokenDb =>
@@ -375,6 +379,7 @@ namespace BlazorApp.Api.Data
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
+                EnsureInvoiceEmailConfigurationMultiAccountSchema();
                 EnsureContainerDetailSchemaColumns();
                 CreateNormalIndexes();
                 EnsureStoreLocalSupplierInvoiceBusinessUniqueIndex();
@@ -476,19 +481,23 @@ namespace BlazorApp.Api.Data
                 typeof(ScheduledTaskLog),
                 typeof(ScheduledTaskRuntimeControl),
                 typeof(ScheduledTaskInstanceState),
+                typeof(ScheduledTaskLease),
                 typeof(InvoiceEmailConfiguration),
                 typeof(StoreOrderInvoiceEmailSendRecord),
                 typeof(ApplicationLog),
                 typeof(MobileAppBuild),
+                typeof(MobileAppDeviceStatus),
                 typeof(MobileAppOtaUpdate),
                 typeof(ServiceApiToken),
                 typeof(HolidayProduct),
                 typeof(ProductCategory),
                 typeof(ProductGrade),
                 typeof(EmployeeProfile),
+                typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
@@ -761,6 +770,108 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "RequestedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "StartedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
+        }
+
+        private void EnsureInvoiceEmailConfigurationMultiAccountSchema()
+        {
+            var tableName = _db.EntityMaintenance.GetTableName(typeof(InvoiceEmailConfiguration));
+            if (!IsKnownTable(tableName))
+            {
+                return;
+            }
+
+            // 发票邮箱配置从单账号升级为多账号，老库启动时只补列和回填默认账号，不重建表。
+            EnsureColumn(tableName, "Name", "nvarchar(100)", "varchar(100)", "varchar(100)");
+            EnsureColumn(tableName, "IsDefault", "bit", "boolean", "integer");
+            BackfillInvoiceEmailConfigurationNames(tableName);
+            BackfillInvoiceEmailConfigurationDefaultFlags(tableName);
+            EnsureInvoiceEmailConfigurationDefaultAccount();
+        }
+
+        private void BackfillInvoiceEmailConfigurationNames(string tableName)
+        {
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [Name] = CASE WHEN COALESCE([FromEmail], '') <> '' THEN [FromEmail] ELSE N'默认发件账号' END WHERE [Name] IS NULL OR LTRIM(RTRIM([Name])) = ''"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE \"{tableName}\" SET \"Name\" = COALESCE(NULLIF(TRIM(\"FromEmail\"), ''), '默认发件账号') WHERE \"Name\" IS NULL OR TRIM(\"Name\") = ''"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [Name] = COALESCE(NULLIF(TRIM([FromEmail]), ''), '默认发件账号') WHERE [Name] IS NULL OR TRIM([Name]) = ''"
+                );
+            }
+        }
+
+        private void BackfillInvoiceEmailConfigurationDefaultFlags(string tableName)
+        {
+            if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [IsDefault] = 0 WHERE [IsDefault] IS NULL"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.PostgreSQL)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE \"{tableName}\" SET \"IsDefault\" = false WHERE \"IsDefault\" IS NULL"
+                );
+                return;
+            }
+
+            if (_db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                _db.Ado.ExecuteCommand(
+                    $"UPDATE [{tableName}] SET [IsDefault] = 0 WHERE [IsDefault] IS NULL"
+                );
+            }
+        }
+
+        private void EnsureInvoiceEmailConfigurationDefaultAccount()
+        {
+            var rows = _db.Queryable<InvoiceEmailConfiguration>().ToList();
+            if (rows.Count == 0 || rows.Count(row => row.IsDefault) == 1)
+            {
+                return;
+            }
+
+            // 默认账号异常时优先沿用历史 default 行，否则取最早账号，保证发送链路始终有唯一默认账号。
+            var selectedId = rows.FirstOrDefault(
+                    row => string.Equals(
+                        row.Id,
+                        InvoiceEmailConfiguration.DefaultId,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )?.Id
+                ?? rows
+                    .OrderBy(row => row.CreatedAt)
+                    .ThenBy(row => row.Id)
+                    .First()
+                    .Id;
+            var rowIds = rows.Select(row => row.Id).ToList();
+
+            _db.Updateable<InvoiceEmailConfiguration>()
+                .SetColumns(row => row.IsDefault == false)
+                .Where(row => rowIds.Contains(row.Id))
+                .ExecuteCommand();
+            _db.Updateable<InvoiceEmailConfiguration>()
+                .SetColumns(row => row.IsDefault == true)
+                .Where(row => row.Id == selectedId)
+                .ExecuteCommand();
+            Console.WriteLine($"✓ {nameof(InvoiceEmailConfiguration)} 默认发件账号已回填");
         }
 
         private void EnsureContainerDetailSchemaColumns()
@@ -1073,9 +1184,12 @@ namespace BlazorApp.Api.Data
             Console.WriteLine("✓ EmployeeProfile表创建成功");
 
             _db.CodeFirst.InitTables(
+                typeof(MobileAppDeviceStatus),
+                typeof(UserLoginDeviceRecord),
                 typeof(AttendanceSchedule),
                 typeof(AttendanceAvailability),
                 typeof(AttendancePunch),
+                typeof(AttendanceLocationSample),
                 typeof(AttendanceApproval),
                 typeof(AttendanceStoreHoliday),
                 typeof(AttendanceLeaveRequest),
@@ -1151,6 +1265,8 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_LocalSupplier_Code_Unique\" ON \"LocalSupplier\" (\"LocalSupplierCode\")",
                 ["IX_WareHouseOrder_OrderNo_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_WareHouseOrder_OrderNo_Unique\" ON \"WareHouseOrder\" (\"OrderNo\") WHERE \"OrderNo\" IS NOT NULL",
+                ["IX_WareHouseOrder_CartScope"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_WareHouseOrder_CartScope\" ON \"WareHouseOrder\" (\"StoreCode\", \"FlowStatus\", \"IsDeleted\", \"CartOwnerUserGuid\")",
                 ["IX_StoreLocalSupplierInvoice_Business_Unique"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_StoreLocalSupplierInvoice_Business_Unique\" ON \"StoreLocalSupplierInvoice\" (\"StoreCode\", \"SupplierCode\", \"InvoiceNo\") WHERE \"IsDeleted\" = false AND \"StoreCode\" IS NOT NULL AND \"SupplierCode\" IS NOT NULL AND \"InvoiceNo\" IS NOT NULL AND \"InvoiceNo\" <> ''",
 
@@ -1245,6 +1361,12 @@ namespace BlazorApp.Api.Data
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppBuild_EasBuildId\" ON \"MobileAppBuild\" (\"EasBuildId\")",
                 ["IX_MobileAppBuild_Profile_CompletedAt"] =
                     "CREATE INDEX IF NOT EXISTS \"IX_MobileAppBuild_Profile_CompletedAt\" ON \"MobileAppBuild\" (\"BuildProfile\", \"Platform\", \"Status\", \"CompletedAt\")",
+                ["IX_MobileAppDeviceStatus_HardwareId"] =
+                    "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppDeviceStatus_HardwareId\" ON \"MobileAppDeviceStatus\" (\"HardwareId\")",
+                ["IX_MobileAppDeviceStatus_LastSeen"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppDeviceStatus_LastSeen\" ON \"MobileAppDeviceStatus\" (\"LastSeenAtUtc\")",
+                ["IX_MobileAppDeviceStatus_System_LastSeen"] =
+                    "CREATE INDEX IF NOT EXISTS \"IX_MobileAppDeviceStatus_System_LastSeen\" ON \"MobileAppDeviceStatus\" (\"DeviceSystem\", \"LastSeenAtUtc\")",
                 ["IX_MobileAppOtaUpdate_Group_Platform"] =
                     "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_MobileAppOtaUpdate_Group_Platform\" ON \"MobileAppOtaUpdate\" (\"UpdateGroupId\", \"Platform\")",
                 ["IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt"] =
@@ -1370,6 +1492,8 @@ namespace BlazorApp.Api.Data
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_ProductCode' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_ProductCode ON [CartItem](ProductCode)",
                 ["IX_CartItem_AddedAt"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_CartItem_AddedAt' AND object_id = OBJECT_ID('CartItem')) CREATE INDEX IX_CartItem_AddedAt ON [CartItem](AddedAt)",
+                ["IX_WareHouseOrder_CartScope"] =
+                    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_CartScope' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid])",
                 ["IX_LocalSupplier_Status"] =
                     "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_LocalSupplier_Status' AND object_id = OBJECT_ID('LocalSupplier')) CREATE INDEX IX_LocalSupplier_Status ON [LocalSupplier](Status)",
                 ["IX_LocalSupplier_Name"] =
@@ -1632,6 +1756,7 @@ namespace BlazorApp.Api.Data
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Product_Search' AND object_id = OBJECT_ID('Product')) CREATE INDEX IX_Product_Search ON [Product](ProductName, ProductCode, ItemNumber, Barcode)",
                 // 扫码加购热路径：快速定位当前门店购物车和订单明细，避免大表回表扫描。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_StoreCode_FlowStatus_IsDeleted' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_StoreCode_FlowStatus_IsDeleted] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted])",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrder_CartScope' AND object_id = OBJECT_ID('WareHouseOrder')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrder_CartScope] ON [WareHouseOrder] ([StoreCode], [FlowStatus], [IsDeleted], [CartOwnerUserGuid])",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_WareHouseOrderDetails_OrderGUID_IsDeleted_ProductCode' AND object_id = OBJECT_ID('WareHouseOrderDetails')) CREATE NONCLUSTERED INDEX [IX_WareHouseOrderDetails_OrderGUID_IsDeleted_ProductCode] ON [WareHouseOrderDetails] ([OrderGUID], [IsDeleted], [ProductCode])",
                 // ProductLocation 活跃映射覆盖索引，支撑订货明细货位排序的 ProductLocation -> Location 聚合。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_ProductLocation_ProductCode_Active' AND object_id = OBJECT_ID('ProductLocation')) CREATE INDEX IX_ProductLocation_ProductCode_Active ON [ProductLocation]([ProductCode]) INCLUDE([LocationGuid]) WHERE [IsDeleted] = 0 AND [ProductCode] IS NOT NULL AND [LocationGuid] IS NOT NULL",
@@ -1679,6 +1804,10 @@ namespace BlazorApp.Api.Data
                 // MobileAppBuild表的索引，支撑 EAS buildId 幂等和最新 APK 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_EasBuildId' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE UNIQUE INDEX IX_MobileAppBuild_EasBuildId ON [MobileAppBuild](EasBuildId)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppBuild_Profile_CompletedAt' AND object_id = OBJECT_ID('MobileAppBuild')) CREATE INDEX IX_MobileAppBuild_Profile_CompletedAt ON [MobileAppBuild](BuildProfile, Platform, Status, CompletedAt)",
+                // MobileAppDeviceStatus表的索引，支撑 hardwareId 幂等快照和在线/系统统计。
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppDeviceStatus_HardwareId' AND object_id = OBJECT_ID('MobileAppDeviceStatus')) CREATE UNIQUE INDEX IX_MobileAppDeviceStatus_HardwareId ON [MobileAppDeviceStatus](HardwareId)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppDeviceStatus_LastSeen' AND object_id = OBJECT_ID('MobileAppDeviceStatus')) CREATE INDEX IX_MobileAppDeviceStatus_LastSeen ON [MobileAppDeviceStatus](LastSeenAtUtc)",
+                "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppDeviceStatus_System_LastSeen' AND object_id = OBJECT_ID('MobileAppDeviceStatus')) CREATE INDEX IX_MobileAppDeviceStatus_System_LastSeen ON [MobileAppDeviceStatus](DeviceSystem, LastSeenAtUtc)",
                 // MobileAppOtaUpdate表的索引，支撑 OTA group 幂等登记和渠道/runtime 查询。
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Group_Platform' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE UNIQUE INDEX IX_MobileAppOtaUpdate_Group_Platform ON [MobileAppOtaUpdate](UpdateGroupId, Platform)",
                 "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt' AND object_id = OBJECT_ID('MobileAppOtaUpdate')) CREATE INDEX IX_MobileAppOtaUpdate_Channel_Runtime_PublishedAt ON [MobileAppOtaUpdate](Channel, RuntimeVersion, PublishedAt)",

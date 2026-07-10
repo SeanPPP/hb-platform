@@ -9,6 +9,33 @@
     "lock": "Lock",
     "refresh": "Refresh"
   },
+  "views": {
+    "registered": "Device Registry",
+    "appUsage": "App Usage"
+  },
+  "appUsage": {
+    "subtitle": "{{count}} app devices",
+    "online": "Online",
+    "offline": "Offline",
+    "noRecentUser": "No user yet",
+    "packageVersion": "Package: {{value}}",
+    "runtimeValue": "Runtime: {{value}}",
+    "channelValue": "Channel: {{value}}",
+    "updateIdValue": "UpdateId: {{value}}",
+    "lastUserValue": "Recent user: {{value}}",
+    "lastSeenValue": "Last seen: {{value}}",
+    "onlineFilters": {
+      "all": "All",
+      "online": "Online",
+      "offline": "Offline"
+    },
+    "summary": {
+      "total": "Total",
+      "online": "Online",
+      "android": "Android",
+      "ios": "iOS"
+    }
+  },
   "currentStore": {
     "allStores": "All stores"
   },
@@ -33,14 +60,31 @@
     "button": "Filters",
     "buttonWithCount": "Filters ({{count}})",
     "clear": "Clear",
-    "current": "{{store}} · {{status}}",
+    "currentApp": "{{store}} · {{system}} · {{online}}",
+    "current": "{{store}} · {{status}} · {{system}} · {{type}}",
     "disabled": "Disabled",
     "keyword": "Keyword",
     "locked": "Locked",
     "pendingConfirmation": "Pending",
     "status": "Status",
     "store": "Store",
+    "systemTitle": "System type",
     "title": "Filter devices",
+    "typeTitle": "Device type",
+    "systemOptions": {
+      "all": "All systems",
+      "Android": "Android",
+      "iOS": "iOS",
+      "Windows": "Windows",
+      "Mac": "Mac"
+    },
+    "typeOptions": {
+      "all": "All types",
+      "Mobile": "Mobile",
+      "PDA": "PDA",
+      "POS": "POS",
+      "Admin": "Admin"
+    },
     "unregistered": "Unregistered"
   },
   "messages": {
@@ -49,7 +93,7 @@
     "disableFailed": "Failed to disable device",
     "disableSuccess": "Device disabled",
     "emptyDescription": "No registered devices yet.",
-    "emptySearchDescription": "Try another keyword, status, or store.",
+    "emptySearchDescription": "Try another keyword, status, store, system, or device type.",
     "emptySearchTitle": "No matching devices",
     "emptyTitle": "No devices",
     "loadFailedDescription": "Please try again later.",

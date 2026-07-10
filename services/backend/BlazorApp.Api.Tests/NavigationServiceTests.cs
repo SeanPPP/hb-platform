@@ -227,6 +227,19 @@ public class NavigationServiceTests
     }
 
     [Fact]
+    public void BuildMenu_ShowsWarehouseContainerWithContainerViewPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Container.View));
+
+        var menu = _service.BuildMenu(user);
+
+        var warehouse = Assert.Single(menu, item => item.Path == "/warehouse");
+        var item = Assert.Single(warehouse.Children!);
+        Assert.Equal("/warehouse/containers", item.Path);
+        Assert.Equal(Permissions.Container.View, item.Permission);
+    }
+
+    [Fact]
     public void BuildMenu_DoesNotUnlockNavigationForWarehouseManagerRoleWithoutPermissionClaims()
     {
         var user = CreateUser(new Claim(ClaimTypes.Role, "WarehouseManager"));
@@ -443,10 +456,11 @@ public class NavigationServiceTests
 
         var menu = _service.BuildAppMenu(user);
 
-        Assert.Equal(18, menu.Count);
+        Assert.Equal(19, menu.Count);
         Assert.Contains(menu, item => item.RouteName == "users");
         Assert.Contains(menu, item => item.RouteName == "employee-profile");
         Assert.Contains(menu, item => item.RouteName == "device-management");
+        Assert.Contains(menu, item => item.RouteName == "reports");
         Assert.Contains(menu, item => item.RouteName == "attendance-personal");
         Assert.Contains(menu, item => item.RouteName == "attendance-management");
         Assert.Contains(menu, item => item.RouteName == "seasonal-cards");
@@ -455,6 +469,17 @@ public class NavigationServiceTests
         Assert.DoesNotContain(menu, item => item.RouteName == "attendance");
         Assert.Contains(menu, item => item.RouteName == "local-supplier-invoices");
         Assert.Contains(menu, item => item.RouteName == "warehouse");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsWarehouseWithContainerViewPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Container.View));
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, item => item.RouteName == "warehouse");
+        Assert.Equal(Permissions.Warehouse.ManageProducts, item.Permission);
     }
 
     [Fact]
@@ -498,6 +523,32 @@ public class NavigationServiceTests
         var menu = _service.BuildAppMenu(user);
 
         Assert.DoesNotContain(menu, item => item.RouteName == "local-supplier-invoices");
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsReportsWithReportsViewPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Reports.View));
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, item => item.RouteName == "reports");
+        Assert.Equal("tabs.reports", item.TitleKey);
+        Assert.Equal("chart-box-outline", item.Icon);
+        Assert.Equal(Permissions.Reports.ProductMovementView, item.Permission);
+    }
+
+    [Fact]
+    public void BuildAppMenu_ShowsReportsWithProductMovementPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.Reports.ProductMovementView));
+
+        var menu = _service.BuildAppMenu(user);
+
+        var item = Assert.Single(menu, item => item.RouteName == "reports");
+        Assert.Equal("tabs.reports", item.TitleKey);
+        Assert.Equal("chart-box-outline", item.Icon);
+        Assert.Equal(Permissions.Reports.ProductMovementView, item.Permission);
     }
 
     [Fact]
@@ -609,6 +660,14 @@ public class NavigationServiceTests
         var menu = _service.BuildDeviceAppMenu("Mobile");
 
         Assert.DoesNotContain(menu, item => item.RouteName == "local-supplier-invoices");
+    }
+
+    [Fact]
+    public void BuildDeviceAppMenu_HidesReportsForDeviceMode()
+    {
+        var menu = _service.BuildDeviceAppMenu("Mobile");
+
+        Assert.DoesNotContain(menu, item => item.RouteName == "reports");
     }
 
     [Fact]

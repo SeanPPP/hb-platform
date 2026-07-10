@@ -22,7 +22,8 @@ import {
   getContainerDetailCategoryName,
   getContainerDetailCategoryTooltipRecord,
   getContainerDetailImportPriceTrend,
-  resolveContainerDetailOemPrice,
+  getContainerDetailReadonlyOemPrice,
+  getContainerDetailVisibleOemPrice,
   type ContainerDetailSortField,
 } from './containerDetailLogic'
 
@@ -44,7 +45,7 @@ export function renderNumericCell(value: ReactNode) {
   return <span className="container-detail-nowrap container-detail-numeric-cell">{value}</span>
 }
 
-/** 贴牌价格只读单元格：显示货柜明细自身业务价。 */
+/** 零售价只读单元格：新商品显示明细价，已有商品显示仓库实时价。 */
 export function renderOemPriceCell(row: ContainerDetail) {
   const className = [
     'container-detail-nowrap',
@@ -52,7 +53,18 @@ export function renderOemPriceCell(row: ContainerDetail) {
     'container-detail-oem-price-cell',
   ].filter(Boolean).join(' ')
 
-  return <span className={className}>{formatCurrency(resolveContainerDetailOemPrice(row), '$')}</span>
+  return <span className={className}>{formatCurrency(getContainerDetailVisibleOemPrice(row), '$')}</span>
+}
+
+/** 只读零售价快览：显示后端按新/已有商品分流后的来源价。 */
+export function renderReadonlyOemPriceCell(row: ContainerDetail) {
+  const className = [
+    'container-detail-nowrap',
+    'container-detail-numeric-cell',
+    'container-detail-oem-price-cell',
+  ].filter(Boolean).join(' ')
+
+  return <span className={className}>{formatCurrency(getContainerDetailReadonlyOemPrice(row), '$')}</span>
 }
 
 /** 进口价格趋势图标（只读指示器，不参与业务逻辑）。 */

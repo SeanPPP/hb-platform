@@ -155,13 +155,13 @@ namespace BlazorApp.Shared.Models
         public decimal? ImportPrice { get; set; }
 
         /// <summary>
-        /// 贴牌价格
-        /// 说明：商品的贴牌销售价格（人民币/单位）
+        /// 零售价
+        /// 说明：商品的零售销售价格（人民币/单位）
         /// 精度：2位小数，标准货币精度
-        /// 用途：贴牌业务、价格管理、利润分析
+        /// 用途：零售定价、价格管理、利润分析
         /// </summary>
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
-        [Display(Name = "贴牌价格")]
+        [Display(Name = "零售价")]
         public decimal? OEMPrice { get; set; }
 
         /// <summary>
@@ -174,12 +174,12 @@ namespace BlazorApp.Shared.Models
         public decimal? LastImportPrice { get; set; }
 
         /// <summary>
-        /// 上次贴牌价格
-        /// 说明：商品加入货柜或手动回填时，从仓库商品表快照下来的贴牌价。
+        /// 上次零售价
+        /// 说明：商品加入货柜或手动回填时，从仓库商品表快照下来的零售价。
         /// 注意：已有快照不随仓库商品价格变化自动覆盖。
         /// </summary>
         [SugarColumn(IsNullable = true, DecimalDigits = 2)]
-        [Display(Name = "上次贴牌价格")]
+        [Display(Name = "上次零售价")]
         public decimal? LastOEMPrice { get; set; }
 
         /// <summary>
@@ -301,6 +301,14 @@ namespace BlazorApp.Shared.Models
         [Navigate(NavigateType.OneToOne, nameof(ProductCode), nameof(Product.ProductCode))]
         [SugarColumn(IsIgnore = true)]
         public Product? LocalProduct { get; set; }
+
+        /// <summary>
+        /// 关联仓库商品
+        /// 说明：用于旧 AutoMapper 查询路径补齐实时仓库进货价和实时零售价。
+        /// </summary>
+        [Navigate(NavigateType.OneToOne, nameof(ProductCode), nameof(WarehouseProduct.ProductCode))]
+        [SugarColumn(IsIgnore = true)]
+        public WarehouseProduct? WarehouseProduct { get; set; }
 
         #endregion
 

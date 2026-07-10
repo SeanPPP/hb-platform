@@ -179,6 +179,56 @@ public sealed class ScheduledTaskServiceTests : IDisposable
         );
     }
 
+    [Fact]
+    public void CalculateNextMonthlyRun_默认31号时_二月取月末()
+    {
+        var service = CreateScheduledTaskService(
+            CreateScopeFactory(CreateScope(new Dictionary<Type, object?>())).Object,
+            NullLogger<ScheduledTaskService>.Instance
+        );
+        var method = typeof(ScheduledTaskService).GetMethod(
+            "CalculateNextMonthlyRun",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        var now = new DateTime(2026, 2, 27, 12, 0, 0);
+
+        var delay = (TimeSpan)method!.Invoke(service, new object[] { now })!;
+
+        Assert.Equal(new DateTime(2026, 2, 28, 23, 59, 0), now.Add(delay));
+    }
+
+    [Fact]
+    public void CalculateNextWeeklyRun_默认Jitter开启时_不跨到下周()
+    {
+        var service = CreateScheduledTaskService(
+            CreateScopeFactory(CreateScope(new Dictionary<Type, object?>())).Object,
+            NullLogger<ScheduledTaskService>.Instance
+        );
+        var method = typeof(ScheduledTaskService).GetMethod(
+            "CalculateNextWeeklyRun",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        var now = new DateTime(2026, 7, 5, 23, 58, 0);
+
+        var delay = (TimeSpan)method!.Invoke(service, new object[] { now })!;
+
+        Assert.Equal(new DateTime(2026, 7, 5, 23, 59, 0), now.Add(delay));
+    }
+
+    [Fact]
+    public void GetCurrentWeekMonday_周日执行时_返回刚结束本周周一()
+    {
+        var method = typeof(ScheduledTaskService).GetMethod(
+            "GetCurrentWeekMonday",
+            BindingFlags.Static | BindingFlags.NonPublic
+        );
+        var sunday = new DateTime(2026, 7, 5, 23, 59, 0);
+
+        var monday = (DateTime)method!.Invoke(null, new object[] { sunday })!;
+
+        Assert.Equal(new DateTime(2026, 6, 29), monday);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -224,7 +274,8 @@ public sealed class ScheduledTaskServiceTests : IDisposable
 
     private static ScheduledTaskService CreateScheduledTaskService(
         IServiceScopeFactory scopeFactory,
-        ILogger<ScheduledTaskService> logger
+        ILogger<ScheduledTaskService> logger,
+        ScheduledTaskOptions? options = null
     )
     {
         var service = (ScheduledTaskService)RuntimeHelpers.GetUninitializedObject(
@@ -239,7 +290,7 @@ public sealed class ScheduledTaskServiceTests : IDisposable
             .SetValue(service, logger);
         typeof(ScheduledTaskService)
             .GetField("_options", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(service, new ScheduledTaskOptions());
+            .SetValue(service, options ?? new ScheduledTaskOptions());
         typeof(ScheduledTaskService)
             .GetField("_sydneyTimeZone", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(service, CreateAllowedTimeZone());

@@ -3,6 +3,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Http;
@@ -428,7 +429,23 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<AttendancePunchDto>.Error(access.Message, access.ErrorCode);
             }
 
-            var storeTimeZone = NormalizeStoreTimeZone(request.StoreTimeZone);
+            var locationValidation = RequiredLocationValidator.Validate(
+                request.LocationLatitude,
+                request.LocationLongitude,
+                request.LocationPermissionStatus,
+                request.LocationCapturedAtUtc,
+                "打卡需要位置信息",
+                TimeSpan.FromMinutes(5)
+            );
+            if (!locationValidation.Success)
+            {
+                return ApiResponse<AttendancePunchDto>.Error(
+                    locationValidation.Message,
+                    locationValidation.ErrorCode
+                );
+            }
+
+            var storeTimeZone = await ResolveStoreTimeZoneAsync(storeCode, request.StoreTimeZone);
             var punchUtc = DateTime.SpecifyKind(request.PunchTimeUtc ?? DateTime.UtcNow, DateTimeKind.Utc);
             var punchLocal = ConvertUtcToStoreLocal(punchUtc, storeTimeZone);
             var workDate = punchLocal.Date;
@@ -464,6 +481,11 @@ namespace BlazorApp.Api.Services.React
                 PunchTimeLocal = punchLocal,
                 Status = status,
                 DeviceId = request.DeviceId,
+                LocationLatitude = request.LocationLatitude,
+                LocationLongitude = request.LocationLongitude,
+                LocationAccuracyMeters = request.LocationAccuracy,
+                LocationPermissionStatus = NormalizeOptional(request.LocationPermissionStatus, 30),
+                LocationCapturedAtUtc = NormalizeUtc(request.LocationCapturedAtUtc),
                 Source = "App",
                 Remark = request.Remark,
                 CreatedAt = now,
@@ -477,6 +499,66 @@ namespace BlazorApp.Api.Services.React
             }
 
             return ApiResponse<AttendancePunchDto>.OK(ToDto(punch), "打卡已保存");
+        }
+
+        public async Task<ApiResponse<AttendanceLocationSampleDto>> CreateLocationSampleAsync(
+            AttendanceLocationSampleRequestDto request
+        )
+        {
+            var userGuid = ResolveCurrentUserGuid();
+            var storeCode = request.StoreCode?.Trim();
+            if (string.IsNullOrWhiteSpace(storeCode))
+            {
+                return ApiResponse<AttendanceLocationSampleDto>.Error("请选择分店后再上传定位", "STORE_REQUIRED");
+            }
+
+            var access = await ResolveRelatedStoreAccessAsync(userGuid, storeCode);
+            if (!access.Success)
+            {
+                return ApiResponse<AttendanceLocationSampleDto>.Error(access.Message, access.ErrorCode);
+            }
+
+            var locationValidation = RequiredLocationValidator.Validate(
+                request.LocationLatitude,
+                request.LocationLongitude,
+                request.LocationPermissionStatus,
+                request.LocationCapturedAtUtc,
+                "班中定位需要位置信息",
+                TimeSpan.FromMinutes(30)
+            );
+            if (!locationValidation.Success)
+            {
+                return ApiResponse<AttendanceLocationSampleDto>.Error(
+                    locationValidation.Message,
+                    locationValidation.ErrorCode
+                );
+            }
+
+            var capturedAt = NormalizeUtc(request.LocationCapturedAtUtc)!.Value;
+            var locationLatitude = request.LocationLatitude!.Value;
+            var locationLongitude = request.LocationLongitude!.Value;
+            var now = DateTime.UtcNow;
+            var sample = new AttendanceLocationSample
+            {
+                SampleGuid = Guid.NewGuid().ToString(),
+                UserGuid = userGuid,
+                StoreCode = storeCode,
+                HardwareId = NormalizeOptional(request.HardwareId, 100),
+                SystemDeviceNumber = NormalizeOptional(request.SystemDeviceNumber, 100),
+                DeviceSystem = NormalizeOptional(request.DeviceSystem, 30),
+                EventType = NormalizeOptional(request.EventType, 30) ?? "ShiftInterval",
+                LocationLatitude = locationLatitude,
+                LocationLongitude = locationLongitude,
+                LocationAccuracyMeters = request.LocationAccuracy,
+                LocationPermissionStatus = NormalizeOptional(request.LocationPermissionStatus, 30),
+                LocationCapturedAtUtc = capturedAt,
+                CreatedAt = now,
+                CreatedBy = _currentUserService.GetCurrentUsername(),
+            };
+
+            // 关键位置：班中定位样本按追加写入，不反向修改打卡记录，避免轨迹和打卡状态耦合。
+            await _db.Insertable(sample).ExecuteCommandAsync();
+            return ApiResponse<AttendanceLocationSampleDto>.OK(ToDto(sample), "定位已保存");
         }
 
         public async Task<ApiResponse<List<AttendanceLeaveRequestDto>>> GetMyLeaveRequestsAsync()
@@ -678,6 +760,50 @@ namespace BlazorApp.Api.Services.React
                 .OrderByDescending(item => item.PunchTimeUtc)
                 .ToListAsync();
             return ApiResponse<List<AttendancePunchDto>>.OK(rows.Select(ToDto).ToList());
+        }
+
+        public async Task<ApiResponse<List<AttendanceLocationSampleDto>>> GetLocationSamplesAsync(
+            AttendanceLocationSampleQueryDto query
+        )
+        {
+            var storeAccess = await ResolveManagedStoreAccessAsync(query.StoreCode);
+            if (!storeAccess.Success)
+            {
+                return ApiResponse<List<AttendanceLocationSampleDto>>.Error(storeAccess.Message, storeAccess.ErrorCode);
+            }
+
+            // 管理端定位查询默认只看门店本地当天，传入本地日期时转成 UTC 边界，避免澳洲早班样本被漏掉。
+            var storeTimeZone = await ResolveStoreTimeZoneAsync(query.StoreCode, query.StoreTimeZone);
+            var fromDate = query.FromDate?.Date ?? ConvertUtcToStoreLocal(DateTime.UtcNow, storeTimeZone).Date;
+            var toDate = query.ToDate?.Date ?? fromDate;
+            if (toDate < fromDate)
+            {
+                return ApiResponse<List<AttendanceLocationSampleDto>>.Error(
+                    "结束日期不能早于开始日期",
+                    "INVALID_DATE_RANGE"
+                );
+            }
+            if ((toDate - fromDate).TotalDays > 31)
+            {
+                return ApiResponse<List<AttendanceLocationSampleDto>>.Error(
+                    "定位样本查询范围不能超过31天",
+                    "DATE_RANGE_TOO_LARGE"
+                );
+            }
+            var fromUtc = ConvertStoreLocalToUtc(fromDate, storeTimeZone);
+            var toExclusiveUtc = ConvertStoreLocalToUtc(toDate.AddDays(1), storeTimeZone);
+
+            var rows = await _db.Queryable<AttendanceLocationSample>()
+                .Where(item => !item.IsDeleted)
+                .WhereIF(!string.IsNullOrWhiteSpace(query.StoreCode), item => item.StoreCode == query.StoreCode!.Trim())
+                .WhereIF(string.IsNullOrWhiteSpace(query.StoreCode) && storeAccess.StoreCodes.Count > 0, item => item.StoreCode != null && storeAccess.StoreCodes.Contains(item.StoreCode))
+                .WhereIF(!string.IsNullOrWhiteSpace(query.UserGuid), item => item.UserGuid == query.UserGuid!.Trim())
+                .Where(item => item.LocationCapturedAtUtc >= fromUtc)
+                .Where(item => item.LocationCapturedAtUtc < toExclusiveUtc)
+                .OrderByDescending(item => item.LocationCapturedAtUtc)
+                .Take(1000)
+                .ToListAsync();
+            return ApiResponse<List<AttendanceLocationSampleDto>>.OK(rows.Select(ToDto).ToList());
         }
 
         public async Task<ApiResponse<List<AttendanceApprovalDto>>> GetApprovalsAsync(
@@ -1479,6 +1605,80 @@ namespace BlazorApp.Api.Services.React
                 : DefaultStoreTimeZone;
         }
 
+        private async Task<string> ResolveStoreTimeZoneAsync(string? storeCode, string? fallbackTimeZone)
+        {
+            // 关键位置：优先用门店信息推导时区，避免 Brisbane 在夏令时被默认当成 Sydney。
+            var resolved = await ResolveStoreTimeZoneFromStoreAsync(storeCode);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                return resolved;
+            }
+
+            return NormalizeStoreTimeZone(fallbackTimeZone);
+        }
+
+        private async Task<string?> ResolveStoreTimeZoneFromStoreAsync(string? storeCode)
+        {
+            var normalizedStoreCode = storeCode?.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedStoreCode))
+            {
+                return null;
+            }
+
+            var store = await _db.Queryable<Store>()
+                .FirstAsync(item => !item.IsDeleted && item.StoreCode == normalizedStoreCode);
+            return store == null ? null : ResolveStoreTimeZoneFromStore(store);
+        }
+
+        private static string? ResolveStoreTimeZoneFromStore(Store store)
+        {
+            var postcode = PublicHolidaySyncHelper.ExtractPostcodeFromAddress(store.Address);
+            var jurisdiction = PublicHolidaySyncHelper.ResolveJurisdictionFromPostcode(postcode);
+            if (jurisdiction == "QLD")
+            {
+                return "Australia/Brisbane";
+            }
+
+            if (jurisdiction == "NSW")
+            {
+                return DefaultStoreTimeZone;
+            }
+
+            var storeText = $"{store.StoreCode} {store.StoreName} {store.Address}".ToUpperInvariant();
+            if (storeText.Contains("BRI") || storeText.Contains("BRISBANE") || storeText.Contains("QLD") || storeText.Contains("QUEENSLAND"))
+            {
+                return "Australia/Brisbane";
+            }
+
+            if (storeText.Contains("MEL") || storeText.Contains("MELBOURNE") || storeText.Contains("VIC") || storeText.Contains("VICTORIA"))
+            {
+                return "Australia/Melbourne";
+            }
+
+            if (storeText.Contains("SYD") || storeText.Contains("SYDNEY") || storeText.Contains("NSW") || storeText.Contains("NEW SOUTH WALES"))
+            {
+                return DefaultStoreTimeZone;
+            }
+
+            return null;
+        }
+
+        private static string? NormalizeOptional(string? value, int maxLength)
+        {
+            var normalized = value?.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return null;
+            }
+
+            return normalized.Length > maxLength ? normalized[..maxLength] : normalized;
+        }
+
+        private static DateTime? NormalizeUtc(DateTime? value)
+        {
+            return value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : null;
+        }
+
         private static DateTime ConvertUtcToStoreLocal(DateTime utc, string storeTimeZone)
         {
             try
@@ -1490,6 +1690,31 @@ namespace BlazorApp.Api.Services.React
             {
                 var timezone = TimeZoneInfo.FindSystemTimeZoneById(DefaultStoreTimeZone);
                 return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), timezone);
+            }
+            catch (InvalidTimeZoneException)
+            {
+                var timezone = TimeZoneInfo.FindSystemTimeZoneById(DefaultStoreTimeZone);
+                return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), timezone);
+            }
+        }
+
+        private static DateTime ConvertStoreLocalToUtc(DateTime local, string storeTimeZone)
+        {
+            var localUnspecified = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+            try
+            {
+                var timezone = TimeZoneInfo.FindSystemTimeZoneById(storeTimeZone);
+                return TimeZoneInfo.ConvertTimeToUtc(localUnspecified, timezone);
+            }
+            catch (TimeZoneNotFoundException)
+            {
+                var timezone = TimeZoneInfo.FindSystemTimeZoneById(DefaultStoreTimeZone);
+                return TimeZoneInfo.ConvertTimeToUtc(localUnspecified, timezone);
+            }
+            catch (InvalidTimeZoneException)
+            {
+                var timezone = TimeZoneInfo.FindSystemTimeZoneById(DefaultStoreTimeZone);
+                return TimeZoneInfo.ConvertTimeToUtc(localUnspecified, timezone);
             }
         }
 
@@ -1611,8 +1836,30 @@ namespace BlazorApp.Api.Services.React
             PunchTimeLocal = item.PunchTimeLocal,
             Status = item.Status,
             DeviceId = item.DeviceId,
+            LocationLatitude = item.LocationLatitude,
+            LocationLongitude = item.LocationLongitude,
+            LocationAccuracy = item.LocationAccuracyMeters,
+            LocationPermissionStatus = item.LocationPermissionStatus,
+            LocationCapturedAtUtc = item.LocationCapturedAtUtc,
             Source = item.Source,
             Remark = item.Remark,
+        };
+
+        private static AttendanceLocationSampleDto ToDto(AttendanceLocationSample item) => new()
+        {
+            SampleGuid = item.SampleGuid,
+            UserGuid = item.UserGuid,
+            StoreCode = item.StoreCode,
+            HardwareId = item.HardwareId,
+            SystemDeviceNumber = item.SystemDeviceNumber,
+            DeviceSystem = item.DeviceSystem,
+            EventType = item.EventType,
+            LocationLatitude = item.LocationLatitude,
+            LocationLongitude = item.LocationLongitude,
+            LocationAccuracy = item.LocationAccuracyMeters,
+            LocationPermissionStatus = item.LocationPermissionStatus,
+            LocationCapturedAtUtc = item.LocationCapturedAtUtc,
+            CreatedAt = item.CreatedAt,
         };
 
         private static AttendanceApprovalDto ToDto(AttendanceApproval item) => new()

@@ -121,7 +121,7 @@
 
 **支持的数字字段**:
 - `domesticPrice` - 国内价格
-- `labelPrice` - 贴牌价格
+- `labelPrice` - 零售价
 - `importPrice` - 进口价格
 - `packingQty` - 装箱数
 - `volume` - 单件体积
@@ -526,7 +526,7 @@ curl -X DELETE http://localhost:5001/api/v1/domestic-products/batch-delete \
 | `specs` | `Specifications` | `Specifications` | 商品规格 |
 | `productType` | `ProductType` | `ProductType` | 商品类型（枚举） |
 | `domesticPrice` | `DomesticPrice` | `DomesticPrice` | 国内价格 |
-| `labelPrice` | `LabelPrice` | `LabelPrice` | 贴牌价格 |
+| `labelPrice` | `LabelPrice` | `LabelPrice` | 零售价 |
 | `importPrice` | `ImportPrice` | `ImportPrice` | 进口价格 |
 | `packingQty` | `PackingQuantity` | `PackingQuantity` | 装箱数 |
 | `volume` | `UnitVolume` | `UnitVolume` | 单件体积 |
@@ -640,4 +640,3 @@ public async Task<IActionResult> GetStatistics()
 **文档版本**: v1.0.0  
 **创建时间**: 2025-01-21  
 **状态**: ✅ 已完成并测试通过
-

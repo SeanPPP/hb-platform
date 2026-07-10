@@ -23,6 +23,7 @@ namespace BlazorApp.Api.Controllers
         private readonly IUserService _userService;
         private readonly ILogger<AuthController> _logger;
         private readonly IClientIpResolver _clientIpResolver;
+        private readonly UserLoginDeviceAuditService? _loginDeviceAuditService;
 
         /// <summary>
         /// 构造函数 - 依赖注入认证服务、数据库上下文和角色服务
@@ -33,13 +34,15 @@ namespace BlazorApp.Api.Controllers
         /// <param name="userService">用户服务</param>
         /// <param name="logger">日志记录器</param>
         /// <param name="clientIpResolver">客户端公网 IP 解析器</param>
+        /// <param name="loginDeviceAuditService">App 登录设备与定位审计服务</param>
         public AuthController(
             IAuthService authService,
             SqlSugarContext dbContext,
             IRoleService roleService,
             IUserService userService,
             ILogger<AuthController> logger,
-            IClientIpResolver? clientIpResolver = null
+            IClientIpResolver? clientIpResolver = null,
+            UserLoginDeviceAuditService? loginDeviceAuditService = null
         )
         {
             _authService = authService;
@@ -48,6 +51,7 @@ namespace BlazorApp.Api.Controllers
             _userService = userService;
             _logger = logger;
             _clientIpResolver = clientIpResolver ?? new ClientIpResolver(new ConfigurationBuilder().Build());
+            _loginDeviceAuditService = loginDeviceAuditService;
         }
 
         /// <summary>
@@ -78,6 +82,8 @@ namespace BlazorApp.Api.Controllers
             {
                 return ApiResponse<TokenResponse>.Error("请求数据格式无效");
             }
+
+            NormalizeOptionalLoginLocation(request);
 
             var tokenResponse = await AuthenticateAndIssueTokensAsync(request);
             if (tokenResponse == null)
@@ -454,7 +460,68 @@ namespace BlazorApp.Api.Controllers
                 .UpdateColumns(item => new { item.LastLoginAt, item.LastLoginIp, item.UpdatedAt })
                 .ExecuteCommandAsync();
 
-            return await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
+            var tokenResponse = await _authService.GenerateTokensAsync(user, ipAddress, userAgent);
+            if (_loginDeviceAuditService != null)
+            {
+                var audit = await _loginDeviceAuditService.RecordAsync(user, new LoginDeviceAuditInput(
+                    LoginSource: "AppLogin",
+                    HardwareId: request.HardwareId,
+                    SystemDeviceNumber: request.SystemDeviceNumber,
+                    DeviceSystem: request.DeviceSystem,
+                    StoreCode: request.StoreCode,
+                    LoginIp: ipAddress,
+                    UserAgent: userAgent,
+                    LocationLatitude: request.LocationLatitude,
+                    LocationLongitude: request.LocationLongitude,
+                    LocationAccuracy: request.LocationAccuracy,
+                    LocationCapturedAtUtc: request.LocationCapturedAtUtc
+                ));
+                tokenResponse.IsDeviceSwitched = audit.IsDeviceSwitched;
+                tokenResponse.IsCommonDevice = audit.IsCommonDevice;
+            }
+            return tokenResponse;
+        }
+
+        private void NormalizeOptionalLoginLocation(LoginRequest request)
+        {
+            if (!HasLoginLocationPayload(request))
+            {
+                return;
+            }
+
+            var locationValidation = RequiredLocationValidator.Validate(
+                request.LocationLatitude,
+                request.LocationLongitude,
+                request.LocationPermissionStatus,
+                request.LocationCapturedAtUtc,
+                "登录需要位置信息",
+                TimeSpan.FromMinutes(5)
+            );
+            if (locationValidation.Success)
+            {
+                return;
+            }
+
+            // 普通账号密码登录不能因为 Android 定位服务不可用失败；无效定位只是不写入登录审计。
+            _logger.LogWarning(
+                "App账号登录定位审计无效，已忽略。ErrorCode={ErrorCode}, Message={Message}, Username={Username}",
+                locationValidation.ErrorCode,
+                locationValidation.Message,
+                request.Username
+            );
+            request.LocationLatitude = null;
+            request.LocationLongitude = null;
+            request.LocationAccuracy = null;
+            request.LocationPermissionStatus = null;
+            request.LocationCapturedAtUtc = null;
+        }
+
+        private static bool HasLoginLocationPayload(LoginRequest request)
+        {
+            return request.LocationLatitude.HasValue
+                || request.LocationLongitude.HasValue
+                || request.LocationCapturedAtUtc.HasValue
+                || !string.IsNullOrWhiteSpace(request.LocationPermissionStatus);
         }
 
         private async Task<List<string>> GetDirectUserPermissionCodesAsync(string userGuid)
@@ -486,6 +553,8 @@ namespace BlazorApp.Api.Controllers
             {
                 AccessTokenExpiry = tokenResponse.AccessTokenExpiry,
                 RefreshTokenExpiry = tokenResponse.RefreshTokenExpiry,
+                IsDeviceSwitched = tokenResponse.IsDeviceSwitched,
+                IsCommonDevice = tokenResponse.IsCommonDevice,
             };
         }
     }

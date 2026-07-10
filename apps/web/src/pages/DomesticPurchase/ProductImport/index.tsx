@@ -1,4 +1,4 @@
-import { ClearOutlined, DeleteOutlined, PlusOutlined, TranslationOutlined } from '@ant-design/icons'
+import { ClearOutlined, DeleteOutlined, EditOutlined, PlusOutlined, TranslationOutlined, WarningOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Image, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -6,10 +6,11 @@ import { useTranslation } from 'react-i18next'
 import PageContainer from '../../../components/PageContainer'
 import { getActiveChinaSuppliers } from '../../../services/chinaSupplierService'
 import { assignProductsToContainer, checkContainerConflicts, getContainerList } from '../../../services/containerService'
-import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales } from '../../../services/domesticProductImportService'
+import { batchDetectProducts, batchImportConfirm, batchUpdateDomesticProducts, fixProductImage, sendToHq, syncToHBSales, updateHbwebProductNames } from '../../../services/domesticProductImportService'
 import { batchTranslate } from '../../../services/translationService'
+import { isValidEAN13 } from '../../../utils/barcode'
 import type { ProductImportItem, DuplicateGroup, PageState } from './types'
-import { applyProductImportNameTranslations, buildAssignContainerItems, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, parseProductImportPasteText, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
+import { applyProductImportNameTranslations, buildAssignContainerItems, buildHbwebProductNameUpdates, calculateStatistics, containsChineseText, createEmptyProduct, detectDuplicates, findInvalidAssignContainerItems, generateImageUrl, mergeDuplicateProducts, parseProductImportPasteText, stripAssignContainerItemsForRequest, summarizeAssignProductsResult, updateCalculatedFields, validateProduct } from './utils'
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
 import { DuplicateDialog } from './DuplicateDialog'
 import './styles.css'
@@ -276,6 +277,72 @@ export default function ProductImportPage() {
     }
   }, [state.products, state.selectedIds, t])
 
+  const handleUpdateHbwebProductNames = useCallback(() => {
+    if (state.detecting || state.saving || translating) {
+      return
+    }
+
+    if (state.selectedIds.length === 0) {
+      message.warning(t('productImport.selectProductsFirst', '请先选择商品'))
+      return
+    }
+
+    const updatePayload = buildHbwebProductNameUpdates(state.products, state.selectedIds)
+    if (updatePayload.missingItemNumbers.length > 0) {
+      message.error(t('productImport.missingHbwebNameItemNumbers', '已选商品存在空货号，请先补齐货号'))
+      return
+    }
+    if (updatePayload.missingProductNames.length > 0) {
+      message.warning(t('productImport.missingHbwebProductNames', '以下货号缺少英文名称：{{items}}', { items: updatePayload.missingProductNames.join(', ') }))
+      return
+    }
+    if (updatePayload.conflictItemNumbers.length > 0) {
+      message.error(t('productImport.conflictHbwebProductNames', '以下货号存在多个英文名称，请先修正：{{items}}', { items: updatePayload.conflictItemNumbers.join(', ') }))
+      return
+    }
+    if (updatePayload.products.length === 0) {
+      message.warning(t('productImport.noHbwebProductNamesToUpdate', '没有可更新的商品主表名称'))
+      return
+    }
+
+    Modal.confirm({
+      title: t('productImport.updateHbwebProductNamesTitle', '更新商品主表名称'),
+      content: (
+        <div>
+          <div>{t('productImport.updateHbwebProductNamesConfirm', '将把选中 {{count}} 个货号的英文名称写入 HBweb 商品主表 Product.ProductName。', { count: updatePayload.products.length })}</div>
+          <div style={{ marginTop: 8, color: '#8c8c8c' }}>{t('productImport.updateHbwebProductNamesScope', '只更新商品名称字段，不改英文名、价格、条码、图片和分店价格。')}</div>
+        </div>
+      ),
+      okText: t('productImport.confirmUpdateHbwebProductNames', '确认更新'),
+      cancelText: t('common.cancel', '取消'),
+      onOk: async () => {
+        setState((prev) => ({ ...prev, saving: true }))
+        try {
+          const response = await updateHbwebProductNames({ Products: updatePayload.products })
+          if (!response.success) {
+            const errors = response.data?.errors?.filter(Boolean) ?? []
+            const detail = errors.length > 0 ? `：${errors.join('; ')}` : ''
+            throw new Error(`${response.message || t('productImport.updateHbwebProductNamesFailed', '更新商品主表名称失败')}${detail}`)
+          }
+
+          const data = response.data
+          message.success(t('productImport.updateHbwebProductNamesSuccess', '商品主表名称更新完成：更新 {{updated}}，无变化 {{unchanged}}，未找到 {{missing}}', {
+            updated: data?.updatedCount ?? 0,
+            unchanged: data?.unchangedCount ?? 0,
+            missing: data?.missingItemNumbers?.length ?? 0,
+          }))
+          if (data?.errors?.length) {
+            message.warning(t('productImport.updateHbwebProductNamesSkipped', '有 {{count}} 条被跳过：{{items}}', { count: data.errors.length, items: data.errors.join('; ') }))
+          }
+        } catch (error: any) {
+          message.error(error?.message || t('productImport.updateHbwebProductNamesFailed', '更新商品主表名称失败'))
+        } finally {
+          setState((prev) => ({ ...prev, saving: false }))
+        }
+      },
+    })
+  }, [state.detecting, state.products, state.saving, state.selectedIds, t, translating])
+
   const handleBatchCreate = useCallback(async () => {
     const newProducts = state.products.filter((p) => p.status === 'new')
     if (newProducts.length === 0) { message.warning(t('productImport.noNewProducts', '没有新商品需要创建')); return }
@@ -489,7 +556,7 @@ export default function ProductImportPage() {
         <div>
           <p>{t('productImport.sendConfirmText', '确定要将选中的 {{count}} 个商品发送到HQ数据库吗？', { count: productCodes.length })}</p>
           <p style={{ fontSize: 12, color: '#888' }}>{t('productImport.sendHint', '将先同步到 HBSales（含商品图片），再写入 HQ 的 DIC_商品信息字典表、DIC_商品零售价表 和 CBP_DIC_商品库存表')}</p>
-          <p style={{ fontSize: 12, color: '#f97316' }}>{t('productImport.sendPriceWarning', '⚠️ 要求商品必须有进口价格和贴牌价格')}</p>
+          <p style={{ fontSize: 12, color: '#f97316' }}>{t('productImport.sendPriceWarning', '⚠️ 要求商品必须有进口价格和零售价')}</p>
         </div>
       ),
       okText: t('productImport.confirmSend', '确定发送'),
@@ -743,10 +810,33 @@ export default function ProductImportPage() {
         title: t('domesticProducts.barcode', '条码'),
         dataIndex: ['newProduct', 'barcode'],
         key: 'barcode',
-        width: 130,
+        width: 150,
         onHeaderCell: () => ({ onClick: (e: React.MouseEvent) => handleHeaderClick('barcode', e) } as any),
         className: selectedColumnKey === 'barcode' ? 'col-selected' : undefined,
-        render: (_, record) => renderEditable('barcode', 'text', record),
+        render: (_, record) => {
+          const barcode = record.newProduct.barcode?.trim()
+          // 非 EAN13 只做醒目标识，检测和保存仍按原流程放行。
+          const isNonEan13Barcode = Boolean(barcode && !isValidEAN13(barcode))
+          const isDiff = record.diffFields?.includes('barcode')
+          const isColSelected = selectedColumnEditableKey === 'barcode'
+          return (
+            <Input
+              value={record.newProduct.barcode}
+              onChange={(e) => updateProduct(record.id, 'barcode', e.target.value)}
+              style={{
+                ...(isDiff ? { backgroundColor: '#fef3c7' } : {}),
+                ...(isColSelected ? { backgroundColor: '#e6f7ff' } : {}),
+              }}
+              status={isNonEan13Barcode ? 'warning' : undefined}
+              suffix={isNonEan13Barcode ? (
+                <Tooltip title={t('productImport.notEan13Barcode', '不是 EAN13 条码')}>
+                  <WarningOutlined style={{ color: '#f59e0b' }} />
+                </Tooltip>
+              ) : undefined}
+              size="small"
+            />
+          )
+        },
       },
       {
         title: t('domesticProducts.productName', '商品名称'),
@@ -776,7 +866,7 @@ export default function ProductImportPage() {
         render: (_, record) => renderEditable('domesticPrice', 'number', record, { precision: 2 }),
       },
       {
-        title: t('productImport.oemPriceCol', '贴牌价格'),
+        title: t('productImport.oemPriceCol', '零售价'),
         dataIndex: ['newProduct', 'oemPrice'],
         key: 'oemPrice',
         width: 90,
@@ -813,7 +903,7 @@ export default function ProductImportPage() {
       },
     ]
     if (showStatistics) {
-      const fieldNameMap: Record<string, string> = { productName: t('domesticProducts.productName', '商品名称'), englishProductName: t('domesticProducts.englishName', '英文名称'), barcode: t('domesticProducts.barcode', '条码'), domesticPrice: '国内价格', oemPrice: '贴牌价格', packingQuantity: '单件装箱数', unitVolume: '单件体积', middlePackQuantity: '中包数' }
+      const fieldNameMap: Record<string, string> = { productName: t('domesticProducts.productName', '商品名称'), englishProductName: t('domesticProducts.englishName', '英文名称'), barcode: t('domesticProducts.barcode', '条码'), domesticPrice: '国内价格', oemPrice: '零售价', packingQuantity: '单件装箱数', unitVolume: '单件体积', middlePackQuantity: '中包数' }
       base.push(
         { title: t('productImport.matchStatus', '匹配状态'), key: 'matchStatus', width: 100, fixed: 'right', render: (_, record) => {
           const map: Record<string, { color: string; text: string }> = { new: { color: 'green', text: t('productImport.statusNew', '✨ 新商品') }, updated: { color: 'orange', text: '📝 需更新' }, unchanged: { color: 'blue', text: '✅ 无变化' }, duplicate: { color: 'default', text: '⚠️ 重复' }, dbDuplicate: { color: 'purple', text: '⚠️ DB重复' }, error: { color: 'red', text: '❌ 错误' } }
@@ -834,7 +924,7 @@ export default function ProductImportPage() {
           if (!old) return <span style={{ color: '#ccc' }}>-</span>
           return <span style={hasDiff ? { color: '#f97316', fontWeight: 600 } : {}}>{old.toFixed(2)}{hasDiff && record.newProduct.domesticPrice ? ` → ${record.newProduct.domesticPrice.toFixed(2)}` : ''}</span>
         }},
-        { title: t('productImport.oldOemPrice', '旧贴牌价格'), key: 'matchedOemPrice', width: 100, render: (_, record) => {
+        { title: t('productImport.oldOemPrice', '旧零售价'), key: 'matchedOemPrice', width: 100, render: (_, record) => {
           const old = record.matchedProduct?.oemPrice
           const hasDiff = record.diffFields?.includes('oemPrice')
           if (!old) return <span style={{ color: '#ccc' }}>-</span>
@@ -913,6 +1003,9 @@ export default function ProductImportPage() {
           <Button onClick={deleteSelectedRows} disabled={state.selectedIds.length === 0}>{t('productImport.deleteSelected', '删除选中')}</Button>
           <Button danger icon={<DeleteOutlined />} onClick={deleteAllRows} disabled={state.products.length === 0}>{t('productImport.deleteAll', '删除全部')}</Button>
           <Button icon={<TranslationOutlined />} onClick={handleBatchTranslate} disabled={translating || state.products.length === 0} loading={translating}>{t('productImport.batchTranslate', '批量翻译')}</Button>
+          <Tooltip title={t('productImport.updateHbwebProductNamesTooltip', '把已选行英文名称写入 HBweb 商品主表 Product.ProductName')}>
+            <Button icon={<EditOutlined />} onClick={handleUpdateHbwebProductNames} disabled={state.selectedIds.length === 0 || state.saving || state.detecting || translating} loading={state.saving}>{t('productImport.updateHbwebProductNames', '更新主表名称')}</Button>
+          </Tooltip>
           <Button type="primary" onClick={handleDetect} disabled={state.detecting || !state.supplier} loading={state.detecting}>{t('productImport.detectMatch', '检测匹配')}</Button>
           {!state.needsDetection && (
             <>

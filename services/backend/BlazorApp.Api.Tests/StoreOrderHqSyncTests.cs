@@ -954,6 +954,37 @@ public sealed class StoreOrderHqSyncTests : IDisposable
         );
     }
 
+    [Fact]
+    public async Task GetUsedBranchesAsync_HQ外购客户连接失败时_仍返回本地分店()
+    {
+        var externalCustomerGuid = "669C0A86-31BC-4EDF-9D4C-216E9E312CB1";
+        var now = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        await SeedStoreAsync("store-guid-s001", "S001", "Lakehaven");
+        await SeedLocalOrderAsync("order-store", "S001", now, isDeleted: false);
+        await SeedLocalOrderAsync("order-external", externalCustomerGuid, now, isDeleted: false);
+
+        var service = CreateService();
+        var factoryField = typeof(StoreOrderReactService).GetField(
+            "_createHqConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic
+        );
+        factoryField!.SetValue(
+            service,
+            (Func<ISqlSugarClient>)(() => throw new SqlSugarException(
+                "Connection open error . A network-related or instance-specific error occurred while establishing a connection to SQL Server."
+            ))
+        );
+
+        var result = await service.GetUsedBranchesAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(result.Data);
+        var branch = Assert.Single(result.Data!);
+        Assert.Equal("S001", branch.Code);
+        Assert.Equal("Lakehaven", branch.Name);
+        Assert.DoesNotContain(result.Data!, item => item.Code == externalCustomerGuid);
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();

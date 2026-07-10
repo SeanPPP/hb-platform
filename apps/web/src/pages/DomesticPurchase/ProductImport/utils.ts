@@ -38,6 +38,18 @@ export interface AssignProductsResultSummary {
   }>
 }
 
+export interface HbwebProductNameUpdate {
+  ItemNumber: string
+  ProductName: string
+}
+
+export interface BuildHbwebProductNameUpdatesResult {
+  products: HbwebProductNameUpdate[]
+  missingItemNumbers: string[]
+  missingProductNames: string[]
+  conflictItemNumbers: string[]
+}
+
 export type AssignContainerValidationItem = AssignContainerItem & {
   domesticPrice?: number
   oemPrice?: number
@@ -296,6 +308,51 @@ export function findInvalidAssignContainerItems(items: AssignContainerValidation
       return { hbProductNo: item.hbProductNo, productCode: item.productCode, fields, reasons }
     })
     .filter((item) => item.fields.length > 0)
+}
+
+export function buildHbwebProductNameUpdates(products: ProductImportItem[], selectedIds: string[]): BuildHbwebProductNameUpdatesResult {
+  const selectedSet = new Set(selectedIds)
+  const nameByItemNumber = new Map<string, string>()
+  const updates: HbwebProductNameUpdate[] = []
+  const missingItemNumbers: string[] = []
+  const missingProductNames: string[] = []
+  const conflictItemNumbers = new Set<string>()
+
+  products.forEach((product) => {
+    if (!selectedSet.has(product.id)) return
+
+    const itemNumber = product.newProduct.productCode?.trim() ?? ''
+    const productName = product.newProduct.englishName?.trim() ?? ''
+
+    if (!itemNumber) {
+      missingItemNumbers.push(product.id)
+      return
+    }
+
+    if (!productName) {
+      missingProductNames.push(itemNumber)
+      return
+    }
+
+    const existingName = nameByItemNumber.get(itemNumber)
+    if (existingName === undefined) {
+      // 商品导入页货号对应 HBweb Product.ItemNumber，这里只构建主表商品名称更新项。
+      nameByItemNumber.set(itemNumber, productName)
+      updates.push({ ItemNumber: itemNumber, ProductName: productName })
+      return
+    }
+
+    if (existingName !== productName) {
+      conflictItemNumbers.add(itemNumber)
+    }
+  })
+
+  return {
+    products: updates,
+    missingItemNumbers,
+    missingProductNames,
+    conflictItemNumbers: Array.from(conflictItemNumbers),
+  }
 }
 
 export function summarizeAssignProductsResult(

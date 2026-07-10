@@ -34,6 +34,8 @@ const invoiceSource = readSource(invoiceFile)
 const printCssSource = readSource(printCssFile)
 const zhSource = readSource(zhFile)
 const enSource = readSource(enFile)
+const zhMessages = JSON.parse(zhSource)
+const enMessages = JSON.parse(enSource)
 
 function readCssRule(source: string, selector: string) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -102,6 +104,8 @@ async function main() {
 
   const excelHeaderFailure = await runTest('发票 Excel 导出应在明细前添加订单基础信息页头', () => {
     assert(invoiceSource.includes("const titleRow = worksheet.addRow(['INVOICE'])"), 'Excel 应添加 INVOICE 标题行')
+    assert(invoiceSource.includes('worksheet.mergeCells(titleRow.number, 1, titleRow.number, 9)'), 'Excel 标题行应覆盖新增 RRP 后的 9 列')
+    assert(invoiceSource.includes('worksheet.mergeCells(2, 5, 2, 9)'), 'Excel 日期页头应覆盖新增 RRP 后的右侧 5 列')
     assert(invoiceSource.includes("t('warehouse.invoice.invoiceNo'"), 'Excel 页头应包含发票号')
     assert(invoiceSource.includes("t('warehouse.invoice.invoiceDate'"), 'Excel 页头应包含发票日期')
     assert(invoiceSource.includes("t('warehouse.invoice.customer')"), 'Excel 页头应包含客户')
@@ -113,6 +117,18 @@ async function main() {
     )
   })
   if (excelHeaderFailure) failures.push(excelHeaderFailure)
+
+  const invoiceRrpFailure = await runTest('发票页面和 Excel 应在成本后展示 RRP 列', () => {
+    assert(invoiceSource.includes("t('warehouse.invoice.excel.rrp')"), 'Excel 明细表头应包含 RRP 翻译键')
+    assert(invoiceSource.includes("t('column.rrp')"), '发票页面表头应复用通用 RRP 翻译')
+    assert(invoiceSource.includes("{ key: 'rrp', width: 12 }"), 'Excel columns 应在成本后声明 RRP 列')
+    assert(invoiceSource.includes('rrp: item.rrp ?? null'), 'Excel 明细应读取 item.rrp，缺失时留空')
+    assert(invoiceSource.includes('<th className="col-rrp">{t(\'column.rrp\')}</th>'), '发票表格应新增 RRP 表头')
+    assert(invoiceSource.includes('<td className="col-rrp">{formatOptionalCurrency(item.rrp)}</td>'), '发票表格 RRP 缺失时应显示 --')
+    assert(invoiceSource.includes("worksheet.getColumn('rrp').numFmt = '$#,##0.00'"), 'Excel RRP 列应使用货币格式')
+    assert(invoiceSource.includes("return value === undefined || value === null ? '--' : formatCurrency(value)"), 'RRP 空值不应被格式化为 $0.00')
+  })
+  if (invoiceRrpFailure) failures.push(invoiceRrpFailure)
 
   const invoicePdfBreakFailure = await runTest('发票 PDF 导出应按明细行和页脚边界切页', () => {
     assert(invoiceSource.includes('collectElementBreakOffsets'), '发票页应引入 PDF 行边界收集工具')
@@ -141,12 +157,25 @@ async function main() {
   })
   if (emailDefaultFailure) failures.push(emailDefaultFailure)
 
+  const invoiceAmountFailure = await runTest('发票金额应读取发货金额字段而不是订货金额字段', () => {
+    assert(
+      invoiceSource.includes('order.totalAllocatedImportAmount ?? order.totalImportAmount'),
+      '发票整单小计应优先读取 totalAllocatedImportAmount，并只用 totalImportAmount 兼容旧响应',
+    )
+    assert(
+      invoiceSource.includes('item.allocatedImportAmount ?? allocQuantity * Number(item.importPrice || 0)'),
+      '发票明细小计应优先读取 allocatedImportAmount，并按发货数量兜底',
+    )
+  })
+  if (invoiceAmountFailure) failures.push(invoiceAmountFailure)
+
   const invoiceCssFailure = await runTest('发票 print.css 应只调整发票规则且避免横向溢出', () => {
     const paperRule = readCssRule(printCssSource, '.store-order-invoice-paper')
     const tableRule = readCssRule(printCssSource, '.store-order-invoice-table')
     const thRule = readCssRule(printCssSource, '.store-order-invoice-table th')
     const tdRule = readCssRule(printCssSource, '.store-order-invoice-table td')
     const barcodeRule = readCssRule(printCssSource, '.store-order-invoice-table .col-barcode')
+    const rrpRule = readCssRule(printCssSource, '.store-order-invoice-table .col-rrp')
 
     assert(/padding:\s*\d+mm\s+\d+mm/.test(paperRule), '发票纸张 padding 应收窄到更紧凑的毫米级设置')
     assert(/table-layout:\s*fixed/.test(tableRule), '发票表格应使用固定列布局防止撑宽')
@@ -154,6 +183,8 @@ async function main() {
     assert(/padding:\s*[45]px/.test(thRule), '发票表头内边距应缩小')
     assert(/padding:\s*[45]px/.test(tdRule), '发票单元格内边距应缩小')
     assert(/overflow:\s*hidden/.test(barcodeRule) || /word-break:\s*break-all/.test(barcodeRule), '条码列应限制溢出')
+    assert(/width:\s*58px/.test(rrpRule), 'RRP 列应使用紧凑价格列宽度')
+    assert(/text-align:\s*right/.test(rrpRule), 'RRP 列应右对齐方便价格扫描')
     assert(!printCssSource.includes('.store-order-detail-table'), 'print.css 不应污染详情页紧凑样式')
     assert(!printCssSource.includes('.store-order-list-table'), 'print.css 不应污染列表页紧凑样式')
   })
@@ -185,6 +216,8 @@ async function main() {
       assert(zhSource.includes(`\"${key}\"`), `中文翻译缺少 ${key}`)
       assert(enSource.includes(`\"${key}\"`), `英文翻译缺少 ${key}`)
     }
+    assert(zhMessages?.warehouse?.invoice?.excel?.rrp === 'RRP', '中文发票 Excel 翻译缺少 warehouse.invoice.excel.rrp')
+    assert(enMessages?.warehouse?.invoice?.excel?.rrp === 'RRP', '英文发票 Excel 翻译缺少 warehouse.invoice.excel.rrp')
   })
   if (translationFailure) failures.push(translationFailure)
 

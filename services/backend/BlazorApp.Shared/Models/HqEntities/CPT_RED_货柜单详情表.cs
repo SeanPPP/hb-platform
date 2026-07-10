@@ -92,7 +92,7 @@ namespace BlazorApp.Shared.Models.HqEntities
         public decimal? 进口价格 { get; set; }
 
         /// <summary>
-        /// 贴牌价格
+        /// 零售价
         /// </summary>
         [SugarColumn(IsNullable = true)]
         public decimal? 贴牌价格 { get; set; }

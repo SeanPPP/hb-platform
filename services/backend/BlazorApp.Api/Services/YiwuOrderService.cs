@@ -514,7 +514,7 @@ namespace BlazorApp.Api.Services
                 worksheet.Cell(row, 2).Value = "条形码";
                 worksheet.Cell(row, 3).Value = "英文名称";
                 worksheet.Cell(row, 4).Value = "国内价格";
-                worksheet.Cell(row, 5).Value = "贴牌价格";
+                worksheet.Cell(row, 5).Value = "零售价";
                 worksheet.Cell(row, 6).Value = "订货数量";
                 worksheet.Cell(row, 7).Value = "订货箱数";
                 worksheet.Cell(row, 8).Value = "订货金额";

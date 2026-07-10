@@ -1,7 +1,9 @@
 import {
   buildOrderListRequest,
   filterOrderDetailLinesByItemNumber,
+  getOrderDetailLineAllocatedImportAmount,
   formatOrderDate,
+  getOrderDetailTotalAllocatedImportAmount,
   getOrderRowNumber,
 } from "./order-list-display";
 import type { StoreOrderDetailLine } from "./types";
@@ -74,3 +76,26 @@ assertCodes(filterOrderDetailLinesByItemNumber(lines, " hb-001 "), ["P001"], "�
 assertCodes(filterOrderDetailLinesByItemNumber(lines, "bar-002"), ["P002"], "货号为空时使用条码兜底");
 assertCodes(filterOrderDetailLinesByItemNumber(lines, "bar-match"), [], "存在货号时不使用条码覆盖匹配");
 assertCodes(filterOrderDetailLinesByItemNumber(lines, "missing"), [], "无匹配时返回空数组");
+
+const staleAmountLine = makeLine("P004", {
+  allocQuantity: 2,
+  importPrice: 7,
+  importAmount: 55,
+});
+assertEqual(
+  getOrderDetailLineAllocatedImportAmount(staleAmountLine),
+  14,
+  "旧响应缺少发货金额时明细应按发货数量和进口价兜底"
+);
+assertEqual(
+  getOrderDetailTotalAllocatedImportAmount({
+    orderGUID: "ORDER-001",
+    totalAmount: 0,
+    totalQuantity: 10,
+    totalImportAmount: 55,
+    totalVolume: 0,
+    items: [staleAmountLine],
+  }),
+  14,
+  "旧响应缺少发货总额时不应回退订货金额"
+);

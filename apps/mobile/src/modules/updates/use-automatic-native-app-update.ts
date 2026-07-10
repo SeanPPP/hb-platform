@@ -187,6 +187,7 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         getFileInfo: FileSystem.getInfoAsync,
         downloadFile: FileSystem.downloadAsync,
         deleteFile: (fileUri) => FileSystem.deleteAsync(fileUri, { idempotent: true }),
+        readDirectory: FileSystem.readDirectoryAsync,
       });
 
       if (result.status !== "downloaded" || promptedBuildIdRef.current === result.build.easBuildId) {

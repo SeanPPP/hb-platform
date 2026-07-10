@@ -1036,12 +1036,12 @@ namespace BlazorApp.Api.Services
                 queryable = queryable.Where(wp => wp.StockQuantity <= query.MaxStockQuantity.Value);
             }
 
-            // 6. 价格范围过滤（支持多种价格类型：OEM价、进口价、国内价）
+            // 6. 价格范围过滤（支持多种价格类型：零售价、进口价、国内价）
             if (query.MinPrice.HasValue || query.MaxPrice.HasValue)
             {
                 switch (query.PriceType?.ToLower())
                 {
-                    case "oemprice": // OEM价格筛选
+                    case "oemprice": // 零售价筛选，保留 oemprice 兼容字段
                         if (query.MinPrice.HasValue)
                             queryable = queryable.Where(wp => wp.OEMPrice >= query.MinPrice.Value);
                         if (query.MaxPrice.HasValue)
