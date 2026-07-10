@@ -226,6 +226,32 @@ public sealed class InstallmentCenterViewModelTests
         Assert.Equal("客户改主意", service.LastVoidReason);
     }
 
+    [Fact]
+    public async Task ConfirmPickupCommand_follows_button_state_and_invokes_service()
+    {
+        var targetOrder = CreateOrder("IO-002", "李四", "0400222333", "待提货", canConfirmPickup: true);
+        var service = new FakeInstallmentOrderService { Orders = [targetOrder] };
+        var viewModel = new InstallmentCenterViewModel(
+            service,
+            CreateSession(),
+            _ => Task.CompletedTask,
+            () => { });
+
+        await viewModel.LoadAsync();
+
+        Assert.True(viewModel.IsConfirmPickupEnabled);
+        Assert.True(viewModel.ConfirmPickupCommand.CanExecute(null));
+
+        await viewModel.ConfirmPickupCommand.ExecuteAsync(null);
+
+        Assert.Equal(targetOrder.OrderId, service.LastConfirmPickupOrderId);
+
+        viewModel.Prepare(CreateSession() with { IsOnline = false }, null);
+
+        Assert.False(viewModel.IsConfirmPickupEnabled);
+        Assert.False(viewModel.ConfirmPickupCommand.CanExecute(null));
+    }
+
     private static InstallmentOrderSummary CreateOrder(
         string orderNumber,
         string customerName,
@@ -290,6 +316,8 @@ public sealed class InstallmentCenterViewModelTests
         public Guid LastVoidOrderId { get; private set; }
 
         public string? LastVoidReason { get; private set; }
+
+        public Guid? LastConfirmPickupOrderId { get; private set; }
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
@@ -370,6 +398,7 @@ public sealed class InstallmentCenterViewModelTests
 
         public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
         {
+            LastConfirmPickupOrderId = orderId;
             return Task.FromResult(new InstallmentOrderActionResult(true, "已确认提货"));
         }
     }

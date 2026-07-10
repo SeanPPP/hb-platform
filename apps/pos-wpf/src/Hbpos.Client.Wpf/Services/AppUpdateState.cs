@@ -83,7 +83,8 @@ public sealed partial class AppUpdateState : ObservableObject
 
     public void ShowForceUpdateDownloading(AppUpdateCheckResponse update)
     {
-        IsForceUpdateRequired = true;
+        // 中文注释：强更下载期间不阻断收银流程，安装包就绪后再切到强更遮罩。
+        IsForceUpdateRequired = false;
         IsForceUpdatePendingInstall = false;
         IsForceUpdateError = false;
         IsOptionalUpdateReady = false;

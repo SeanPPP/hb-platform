@@ -97,18 +97,20 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
-    public async Task CheckForUpdatesAsync_downloads_optional_update_after_prompt_confirmation()
+    public async Task CheckForUpdatesAsync_downloads_optional_update_before_install_confirmation()
     {
         var release = CreateRelease(force: false);
         var state = new AppUpdateState();
-        var prompt = new CapturingPromptService(confirm: true);
+        var events = new List<string>();
+        var prompt = new CapturingPromptService(confirm: true, events);
         var installer = new CapturingInstallerLauncher();
-        var download = new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe"));
+        var download = new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe"), events);
         var coordinator = CreateCoordinator(release, download, installer, prompt, state);
 
         var result = await coordinator.CheckForUpdatesAsync(manual: false);
 
         Assert.Equal(AppUpdateCoordinatorStatus.Installed, result.Status);
+        Assert.Equal(["download", "prompt"], events);
         Assert.False(state.IsForceUpdateBlocking);
         Assert.False(state.IsOptionalUpdateReady);
         Assert.False(state.IsInstallerReady);
@@ -122,20 +124,22 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
-    public async Task CheckForUpdatesAsync_optional_decline_does_not_download()
+    public async Task CheckForUpdatesAsync_optional_decline_after_download_does_not_install()
     {
         var release = CreateRelease(force: false);
         var state = new AppUpdateState();
         var prompt = new CapturingPromptService(confirm: false);
         var download = new StaticDownloadService(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe"));
-        var coordinator = CreateCoordinator(release, download, new CapturingInstallerLauncher(), prompt, state);
+        var installer = new CapturingInstallerLauncher();
+        var coordinator = CreateCoordinator(release, download, installer, prompt, state);
 
         var result = await coordinator.CheckForUpdatesAsync(manual: true);
 
         Assert.Equal(AppUpdateCoordinatorStatus.OptionalDeclined, result.Status);
         Assert.Equal("settings.status.appUpdateOptionalDeclined", result.StatusKey);
         Assert.True(prompt.OptionalPromptShown);
-        Assert.Equal(0, download.CallCount);
+        Assert.Equal(1, download.CallCount);
+        Assert.Equal(0, installer.LaunchCallCount);
         Assert.False(state.IsOptionalUpdateReady);
     }
 
@@ -168,6 +172,34 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
+    public async Task CheckForUpdatesAsync_force_update_downloads_without_blocking_until_ready()
+    {
+        var release = CreateRelease(force: true);
+        var state = new AppUpdateState();
+        var download = new BlockingDownloadService();
+        var coordinator = CreateCoordinator(
+            release,
+            download,
+            new CapturingInstallerLauncher(),
+            new CapturingPromptService(),
+            state);
+
+        var checkTask = coordinator.CheckForUpdatesAsync(manual: false);
+        await download.WaitUntilStartedAsync();
+
+        Assert.False(state.IsForceUpdateBlocking);
+        Assert.True(state.IsDownloading);
+        Assert.Equal("appUpdate.force.downloading", state.StatusKey);
+
+        download.Complete(AppUpdateDownloadResult.Succeeded(@"C:\Temp\hbpos.exe"));
+        var result = await checkTask;
+
+        Assert.Equal(AppUpdateCoordinatorStatus.ForceReady, result.Status);
+        Assert.True(state.IsForceUpdateBlocking);
+        Assert.True(state.IsInstallerReady);
+    }
+
+    [Fact]
     public async Task CheckForUpdatesAsync_force_update_with_active_transaction_stays_nonblocking_until_safe()
     {
         var release = CreateRelease(force: true);
@@ -190,19 +222,11 @@ public sealed class AppUpdateCoordinatorTests
         Assert.True(state.IsForceUpdatePendingInstall);
         Assert.True(state.InstallUpdateCommand.CanExecute(null));
         Assert.Equal("appUpdate.install.activeTransaction", state.StatusKey);
-        Assert.False(state.IsInstallerReady);
-        Assert.Equal(0, download.CallCount);
-        Assert.Equal(0, installer.LaunchCallCount);
-
-        guard.CanInstall = true;
-        await state.InstallUpdateCommand.ExecuteAsync(null);
-
-        Assert.True(state.IsForceUpdateBlocking);
-        Assert.False(state.IsForceUpdatePendingInstall);
         Assert.True(state.IsInstallerReady);
         Assert.Equal(1, download.CallCount);
         Assert.Equal(0, installer.LaunchCallCount);
 
+        guard.CanInstall = true;
         await state.InstallUpdateCommand.ExecuteAsync(null);
 
         Assert.Equal(@"C:\Temp\hbpos.exe", installer.FilePath);
@@ -210,7 +234,7 @@ public sealed class AppUpdateCoordinatorTests
     }
 
     [Fact]
-    public async Task CheckForUpdatesAsync_force_update_pending_resume_reports_download_failure()
+    public async Task CheckForUpdatesAsync_force_update_download_failure_reports_error_even_when_install_not_safe()
     {
         var release = CreateRelease(force: true);
         var state = new AppUpdateState();
@@ -224,17 +248,13 @@ public sealed class AppUpdateCoordinatorTests
             state,
             guard: guard);
 
-        await coordinator.CheckForUpdatesAsync(manual: false);
-        var resumeInstallAsync = GetPendingInstallAsync(state);
-        guard.CanInstall = true;
+        var result = await coordinator.CheckForUpdatesAsync(manual: false);
 
-        var result = await resumeInstallAsync();
-
-        Assert.False(result.Success);
-        Assert.Equal("settings.status.appUpdateDownloadFailed", result.StatusKey);
-        Assert.Equal(["network failed"], result.StatusArgs);
+        Assert.Equal(AppUpdateCoordinatorStatus.DownloadFailed, result.Status);
         Assert.True(state.IsForceUpdateError);
         Assert.Equal("appUpdate.force.downloadFailed", state.StatusKey);
+        Assert.False(state.IsForceUpdatePendingInstall);
+        Assert.False(state.IsInstallerReady);
         Assert.Equal(1, download.CallCount);
     }
 
@@ -677,7 +697,9 @@ public sealed class AppUpdateCoordinatorTests
         public string CurrentChannel => channel;
     }
 
-    private sealed class StaticDownloadService(AppUpdateDownloadResult result) : IAppUpdateDownloadService
+    private sealed class StaticDownloadService(
+        AppUpdateDownloadResult result,
+        List<string>? events = null) : IAppUpdateDownloadService
     {
         public int CallCount { get; private set; }
 
@@ -687,6 +709,7 @@ public sealed class AppUpdateCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             CallCount++;
+            events?.Add("download");
             return Task.FromResult(result);
         }
     }
@@ -768,7 +791,9 @@ public sealed class AppUpdateCoordinatorTests
         }
     }
 
-    private sealed class CapturingPromptService(bool confirm = false) : IAppUpdatePromptService
+    private sealed class CapturingPromptService(
+        bool confirm = false,
+        List<string>? events = null) : IAppUpdatePromptService
     {
         public bool OptionalPromptShown { get; private set; }
 
@@ -780,6 +805,7 @@ public sealed class AppUpdateCoordinatorTests
         {
             OptionalPromptShown = true;
             Update = update;
+            events?.Add("prompt");
             return Task.FromResult(confirm);
         }
     }

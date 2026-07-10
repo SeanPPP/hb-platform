@@ -5,7 +5,7 @@ namespace BlazorApp.Shared.Models.POSM;
 [SugarTable("StoreVoucher"), Tenant("HBPOSM")]
 public class StoreVoucher
 {
-    [SugarColumn(IsPrimaryKey = true)]
+    [SugarColumn(IsPrimaryKey = true, IsIdentity = true)]
     public int ID { get; set; }
 
     [SugarColumn(IsNullable = true)]

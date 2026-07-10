@@ -73,10 +73,11 @@ public sealed class CashierSessionContext : ICashierSessionContext
 
     public static CashierSessionDto CreateEmergencyOverride(string storeCode, string deviceCode, DateOnly businessDate)
     {
+        // 小票和历史直接使用 CashierName，超级密码只保留权限标记，名称使用固定用户标识。
         return new CashierSessionDto(
             "EMERGENCY",
             "EMERGENCY",
-            $"超级密码 {businessDate:yyyyMMdd}",
+            "EMERGENCY",
             storeCode,
             deviceCode,
             ["EmergencyOverride"],

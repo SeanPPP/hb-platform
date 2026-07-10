@@ -119,6 +119,356 @@ public sealed class DeviceRegistrationTests
     }
 
     [Fact]
+    public async Task DeviceRegistrationViewModel_ManualVerifyResultAfterStoreChangeDoesNotPersistOrActivate()
+    {
+        var pendingVerifyResult = new TaskCompletionSource<DeviceRegistrationActionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true), new StoreSelectionItem("1003", "Zillmere", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                "POS-OLD",
+                false,
+                "Verify the device approval status."),
+            PendingVerifyResult = pendingVerifyResult
+        };
+        var viewModel = new DeviceRegistrationViewModel(workflow);
+        DeviceActivatedEventArgs? activated = null;
+        viewModel.DeviceActivated += (_, args) => activated = args;
+
+        await viewModel.InitializeAsync(cachedDevice: null);
+        var verifyTask = viewModel.VerifyCommand.ExecuteAsync(null);
+        await workflow.WaitForVerifyStartedAsync();
+        viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
+
+        var oldResultPersistenceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        pendingVerifyResult.SetResult(new DeviceRegistrationActionResult(
+            "POS-OLD",
+            "1002",
+            "Lutwyche",
+            "HW-001",
+            false,
+            "Device is enabled.",
+            "AUTH-OLD",
+            true,
+            false)
+        {
+            PersistAsync = _ =>
+            {
+                oldResultPersistenceStarted.TrySetResult();
+                return Task.CompletedTask;
+            }
+        });
+        await verifyTask;
+
+        Assert.Null(activated);
+        Assert.False(oldResultPersistenceStarted.Task.IsCompleted);
+        Assert.Equal("1003", viewModel.SelectedStore?.StoreCode);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_RegisterPending_StartsPollingAndActivatesWithoutManualVerify()
+    {
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                string.Empty,
+                false,
+                "Select a store and submit this register for approval."),
+            RegisterResult = new DeviceRegistrationActionResult(
+                "POS-001",
+                "1002",
+                "Lutwyche",
+                "HW-001",
+                true,
+                "Pending approval",
+                null,
+                false,
+                false),
+            VerifyResult = new DeviceRegistrationActionResult(
+                "POS-001",
+                "1002",
+                "Lutwyche",
+                "HW-001",
+                false,
+                "Device is enabled.",
+                "AUTH-001",
+                true,
+                false)
+        };
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.Zero,
+            delayAsync: (_, _) => Task.CompletedTask);
+        DeviceActivatedEventArgs? activated = null;
+        viewModel.DeviceActivated += (_, args) => activated = args;
+
+        await viewModel.InitializeAsync(cachedDevice: null);
+        await viewModel.RegisterCommand.ExecuteAsync(null);
+        await workflow.WaitForVerifyStartedAsync();
+
+        Assert.NotNull(activated);
+        Assert.Equal("POS-001", activated.DeviceCode);
+        Assert.Equal("AUTH-001", activated.AuthorizationCode);
+        Assert.Equal(1, workflow.VerifyCallCount);
+        Assert.Equal("POS-001", workflow.LastVerifyDeviceCode);
+        Assert.Equal("1002", workflow.LastVerifyStoreCode);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_InitializeWithPendingCache_StartsPollingAndActivates()
+    {
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                "POS-001",
+                true,
+                "Pending approval"),
+            VerifyResult = new DeviceRegistrationActionResult(
+                "POS-001",
+                "1002",
+                "Lutwyche",
+                "HW-001",
+                false,
+                "Device is enabled.",
+                "AUTH-001",
+                true,
+                false)
+        };
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.Zero,
+            delayAsync: (_, _) => Task.CompletedTask);
+        var cached = new LocalDeviceCache("POS-001", "1002", "Lutwyche", "HW-001", -1, false, "Pending approval", DateTimeOffset.UtcNow);
+        DeviceActivatedEventArgs? activated = null;
+        viewModel.DeviceActivated += (_, args) => activated = args;
+
+        await viewModel.InitializeAsync(cached);
+        await workflow.WaitForVerifyStartedAsync();
+
+        Assert.NotNull(activated);
+        Assert.Equal("POS-001", activated.DeviceCode);
+        Assert.Equal("AUTH-001", activated.AuthorizationCode);
+        Assert.Equal(1, workflow.VerifyCallCount);
+        Assert.Equal("POS-001", workflow.LastVerifyDeviceCode);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_RejectedRegister_DoesNotStartPolling()
+    {
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                string.Empty,
+                false,
+                "Select a store and submit this register for approval."),
+            RegisterResult = new DeviceRegistrationActionResult(
+                "POS-001",
+                "1002",
+                "Lutwyche",
+                "HW-001",
+                false,
+                "Device registration was rejected.",
+                null,
+                false,
+                false)
+        };
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.Zero,
+            delayAsync: (_, _) => Task.CompletedTask);
+
+        await viewModel.InitializeAsync(cachedDevice: null);
+        await viewModel.RegisterCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, workflow.VerifyCallCount);
+        Assert.False(viewModel.HasPendingRegistration);
+        Assert.Empty(viewModel.DeviceCode);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_RegisterResultAfterStoreChangeDoesNotPersistOrApply()
+    {
+        var pendingRegisterResult = new TaskCompletionSource<DeviceRegistrationActionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true), new StoreSelectionItem("1003", "Zillmere", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                string.Empty,
+                false,
+                "Select a store and submit this register for approval."),
+            PendingRegisterResult = pendingRegisterResult
+        };
+        var viewModel = new DeviceRegistrationViewModel(workflow);
+
+        await viewModel.InitializeAsync(cachedDevice: null);
+        var registerTask = viewModel.RegisterCommand.ExecuteAsync(null);
+        await workflow.WaitForRegisterStartedAsync();
+        viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
+
+        var oldResultPersistenceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        pendingRegisterResult.SetResult(new DeviceRegistrationActionResult(
+            "POS-OLD",
+            "1002",
+            "Lutwyche",
+            "HW-001",
+            true,
+            "Pending approval",
+            null,
+            false,
+            false)
+        {
+            PersistAsync = _ =>
+            {
+                oldResultPersistenceStarted.TrySetResult();
+                return Task.CompletedTask;
+            }
+        });
+        await registerTask;
+
+        Assert.False(oldResultPersistenceStarted.Task.IsCompleted);
+        Assert.Equal("1003", viewModel.SelectedStore?.StoreCode);
+        Assert.Empty(viewModel.DeviceCode);
+        Assert.False(viewModel.HasPendingRegistration);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_SwitchingStoreCancelsPendingPollingBeforeNewSubmit()
+    {
+        var pollingDelayCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task DelayUntilCancelled(TimeSpan _, CancellationToken cancellationToken)
+        {
+            cancellationToken.Register(() => pollingDelayCancelled.TrySetResult());
+            return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true), new StoreSelectionItem("1003", "Zillmere", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                "POS-OLD",
+                true,
+                "Pending approval"),
+            RegisterResult = new DeviceRegistrationActionResult(
+                "POS-NEW",
+                "1003",
+                "Zillmere",
+                "HW-001",
+                true,
+                "Pending approval",
+                null,
+                false,
+                false)
+        };
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.FromMinutes(1),
+            delayAsync: DelayUntilCancelled);
+        var cached = new LocalDeviceCache("POS-OLD", "1002", "Lutwyche", "HW-001", -1, false, "Pending approval", DateTimeOffset.UtcNow);
+
+        await viewModel.InitializeAsync(cached);
+        viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
+        await pollingDelayCancelled.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await viewModel.RegisterCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, workflow.VerifyCallCount);
+        Assert.Equal("1003", workflow.LastRegisterStoreCode);
+        Assert.Equal("POS-NEW", viewModel.DeviceCode);
+        Assert.DoesNotContain("POS-OLD", workflow.VerifiedDeviceCodes);
+    }
+
+    [Fact]
+    public async Task DeviceRegistrationViewModel_InFlightOldPollingResultDoesNotOverrideNewPendingRegistration()
+    {
+        var pendingOldVerifyResult = new TaskCompletionSource<DeviceRegistrationActionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delayCount = 0;
+        Task DelayFirstPollOnly(TimeSpan _, CancellationToken cancellationToken)
+        {
+            return Interlocked.Increment(ref delayCount) == 1
+                ? Task.CompletedTask
+                : Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        var workflow = new FakeDeviceRegistrationWorkflowService
+        {
+            HardwareId = "HW-001",
+            LoadResult = new DeviceRegistrationLoadResult(
+                [new StoreSelectionItem("1002", "Lutwyche", true), new StoreSelectionItem("1003", "Zillmere", true)],
+                new StoreSelectionItem("1002", "Lutwyche", true),
+                "POS-OLD",
+                true,
+                "Pending approval"),
+            RegisterResult = new DeviceRegistrationActionResult(
+                "POS-NEW",
+                "1003",
+                "Zillmere",
+                "HW-001",
+                true,
+                "Pending approval",
+                null,
+                false,
+                false),
+            PendingVerifyResult = pendingOldVerifyResult
+        };
+        var viewModel = new DeviceRegistrationViewModel(
+            workflow,
+            approvalPollingInterval: TimeSpan.Zero,
+            delayAsync: DelayFirstPollOnly);
+        var cached = new LocalDeviceCache("POS-OLD", "1002", "Lutwyche", "HW-001", -1, false, "Pending approval", DateTimeOffset.UtcNow);
+        DeviceActivatedEventArgs? activated = null;
+        viewModel.DeviceActivated += (_, args) => activated = args;
+
+        await viewModel.InitializeAsync(cached);
+        await workflow.WaitForVerifyStartedAsync();
+        var oldPollingTask = viewModel.ApprovalPollingTask;
+        Assert.NotNull(oldPollingTask);
+        viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
+        await viewModel.RegisterCommand.ExecuteAsync(null);
+
+        var oldResultPersistenceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        pendingOldVerifyResult.SetResult(new DeviceRegistrationActionResult(
+            "POS-OLD",
+            "1002",
+            "Lutwyche",
+            "HW-001",
+            false,
+            "Device is enabled.",
+            "AUTH-OLD",
+            true,
+            false)
+        {
+            PersistAsync = _ =>
+            {
+                oldResultPersistenceStarted.TrySetResult();
+                return Task.CompletedTask;
+            }
+        });
+        await oldPollingTask.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Null(activated);
+        Assert.False(oldResultPersistenceStarted.Task.IsCompleted);
+        Assert.Equal("POS-NEW", viewModel.DeviceCode);
+        Assert.True(viewModel.HasPendingRegistration);
+        Assert.Equal("Pending approval", viewModel.StatusMessage);
+
+        viewModel.Prepare(cachedDevice: null);
+    }
+
+    [Fact]
     public async Task DeviceRegistrationViewModel_PendingRegistration_AllowsSwitchingStoreBeforeSubmit()
     {
         var workflow = new FakeDeviceRegistrationWorkflowService
@@ -449,9 +799,19 @@ public sealed class DeviceRegistrationTests
 
         public DeviceRegistrationActionResult ReregisterResult { get; init; } = new(string.Empty, string.Empty, string.Empty, string.Empty, false, string.Empty, null, false, false);
 
+        public TaskCompletionSource<DeviceRegistrationActionResult>? PendingRegisterResult { get; init; }
+
         public TaskCompletionSource<DeviceRegistrationActionResult>? PendingReregisterResult { get; init; }
 
+        public TaskCompletionSource<DeviceRegistrationActionResult>? PendingVerifyResult { get; init; }
+
+        private TaskCompletionSource RegisterStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private TaskCompletionSource ReregisterStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private TaskCompletionSource VerifyStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly List<string> _verifiedDeviceCodes = [];
 
         public string? LastLoadExcludedStoreCode { get; private set; }
 
@@ -464,6 +824,10 @@ public sealed class DeviceRegistrationTests
         public string? LastVerifyDeviceCode { get; private set; }
 
         public string? LastReregisterStoreCode { get; private set; }
+
+        public int VerifyCallCount { get; private set; }
+
+        public IReadOnlyList<string> VerifiedDeviceCodes => _verifiedDeviceCodes;
 
         public string GetHardwareId() => HardwareId;
 
@@ -484,7 +848,8 @@ public sealed class DeviceRegistrationTests
         {
             LastRegisterStoreCode = selectedStore.StoreCode;
             LastRegisterHardwareId = hardwareId;
-            return Task.FromResult(RegisterResult);
+            RegisterStarted.TrySetResult();
+            return PendingRegisterResult?.Task ?? Task.FromResult(RegisterResult);
         }
 
         public Task<DeviceRegistrationActionResult> VerifyAsync(
@@ -495,7 +860,10 @@ public sealed class DeviceRegistrationTests
         {
             LastVerifyStoreCode = selectedStore.StoreCode;
             LastVerifyDeviceCode = deviceCode;
-            return Task.FromResult(VerifyResult);
+            VerifyCallCount++;
+            _verifiedDeviceCodes.Add(deviceCode);
+            VerifyStarted.TrySetResult();
+            return PendingVerifyResult?.Task ?? Task.FromResult(VerifyResult);
         }
 
         public Task<DeviceRegistrationActionResult> ReregisterAsync(
@@ -509,6 +877,10 @@ public sealed class DeviceRegistrationTests
         }
 
         public Task WaitForReregisterStartedAsync() => ReregisterStarted.Task;
+
+        public Task WaitForRegisterStartedAsync() => RegisterStarted.Task;
+
+        public Task WaitForVerifyStartedAsync() => VerifyStarted.Task;
     }
 
     private sealed class FakeAuthorizationProtector : IDeviceAuthorizationProtector

@@ -328,6 +328,19 @@ public sealed record IssuedVoucherCreateModel(
     string? CustomerCode,
     string? Reason);
 
+internal static class StoreVoucherQueryableExtensions
+{
+    internal static ISugarQueryable<StoreVoucher> OrderByExactStoreFirst(
+        this ISugarQueryable<StoreVoucher> query,
+        string storeCode)
+    {
+        // SQL Server 不支持在 ORDER BY 中直接使用比较谓词，必须转换为可排序的标量值。
+        return query.OrderBy(
+            x => SqlFunc.IIF(x.StoreCode == storeCode, 1, 0),
+            OrderByType.Desc);
+    }
+}
+
 public sealed class SqlSugarStoreVoucherRepository(HbposSqlSugarContext dbContext) : IStoreVoucherRepository
 {
     public async Task<StoreVoucher?> FindAvailableAsync(
@@ -343,7 +356,7 @@ public sealed class SqlSugarStoreVoucherRepository(HbposSqlSugarContext dbContex
             .Where(x => x.RemainingAmount != null && x.RemainingAmount > 0)
             .Where(x => x.ExpiredDate == null || x.ExpiredDate > now)
             .Where(x => x.StoreCode == null || x.StoreCode == string.Empty || x.StoreCode == storeCode)
-            .OrderBy(x => x.StoreCode == storeCode, OrderByType.Desc)
+            .OrderByExactStoreFirst(storeCode)
             .FirstAsync(cancellationToken);
         return voucher;
     }
@@ -407,7 +420,7 @@ public sealed class SqlSugarStoreVoucherRepository(HbposSqlSugarContext dbContex
         var voucher = await db.Queryable<StoreVoucher>()
             .Where(x => x.VoucherCode == voucherCode)
             .Where(x => x.StoreCode == null || x.StoreCode == string.Empty || x.StoreCode == storeCode)
-            .OrderBy(x => x.StoreCode == storeCode, OrderByType.Desc)
+            .OrderByExactStoreFirst(storeCode)
             .FirstAsync(cancellationToken)
             ?? throw new InvalidOperationException($"Voucher {voucherCode} was not found.");
         ValidateVoucherForRedemption(voucher, storeCode);
@@ -779,7 +792,7 @@ public sealed class SqlSugarStoreVoucherReservationService(
                 .Where(x => x.RemainingAmount != null && x.RemainingAmount > 0)
                 .Where(x => x.ExpiredDate == null || x.ExpiredDate > nowUtc)
                 .Where(x => x.StoreCode == null || x.StoreCode == string.Empty || x.StoreCode == normalizedStoreCode)
-                .OrderBy(x => x.StoreCode == normalizedStoreCode, OrderByType.Desc)
+                .OrderByExactStoreFirst(normalizedStoreCode)
                 .FirstAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Voucher is unavailable.");
             var reservedAmount = await db.Queryable<StoreVoucherReservationEntity>()

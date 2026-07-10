@@ -200,16 +200,6 @@ public sealed class AppUpdateCoordinator(
         bool manual,
         CancellationToken cancellationToken)
     {
-        if (!await promptService.ConfirmOptionalDownloadAndInstallAsync(update, cancellationToken))
-        {
-            if (manual)
-            {
-                state.SetStatus("settings.status.appUpdateOptionalDeclined");
-            }
-
-            return AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.OptionalDeclined);
-        }
-
         var progress = new AppUpdateProgressSink(state.UpdateDownloadProgress);
         var download = await downloadService.DownloadAsync(update, progress, cancellationToken);
         if (!download.Success || string.IsNullOrWhiteSpace(download.FilePath))
@@ -222,6 +212,17 @@ public sealed class AppUpdateCoordinator(
             return AppUpdateCoordinatorResult.FromStatus(
                 AppUpdateCoordinatorStatus.DownloadFailed,
                 download.ErrorMessage ?? string.Empty);
+        }
+
+        // 中文注释：可选更新先后台下载，确认弹窗只负责决定是否立即拉起已下载的安装器。
+        if (!await promptService.ConfirmOptionalDownloadAndInstallAsync(update, cancellationToken))
+        {
+            if (manual)
+            {
+                state.SetStatus("settings.status.appUpdateOptionalDeclined");
+            }
+
+            return AppUpdateCoordinatorResult.FromStatus(AppUpdateCoordinatorStatus.OptionalDeclined);
         }
 
         // 中文注释：可选更新安装动作晚于检查流程，不能捕获检查流程的取消令牌。
@@ -245,46 +246,15 @@ public sealed class AppUpdateCoordinator(
         AppUpdateCheckResponse update,
         CancellationToken cancellationToken)
     {
-        if (!installSafetyGuard.CanInstallUpdate(out var statusKey, out var statusArgs))
-        {
-            // 中文注释：交易未清空时不能进入全局阻断遮罩，否则用户无法完成或取消当前交易。
-            state.ShowForceUpdatePendingInstall(
-                update,
-                string.Empty,
-                ResumeForceUpdateAfterTransactionAsync,
-                statusKey,
-                statusArgs);
-            return new AppUpdateCoordinatorResult(
-                AppUpdateCoordinatorStatus.ForcePendingInstall,
-                statusKey,
-                statusArgs);
-        }
-
+        // 中文注释：强制更新也先后台下载，只有安装包就绪后才进入阻断或待安装状态。
         return await DownloadForceUpdateAsync(update, cancellationToken);
-
-        async Task<ProcessLaunchResult> ResumeForceUpdateAfterTransactionAsync()
-        {
-            if (!installSafetyGuard.CanInstallUpdate(out var resumeStatusKey, out var resumeStatusArgs))
-            {
-                state.ShowForceUpdatePendingInstall(
-                    update,
-                    string.Empty,
-                    ResumeForceUpdateAfterTransactionAsync,
-                    resumeStatusKey,
-                    resumeStatusArgs);
-                return ProcessLaunchResult.Fail(null, resumeStatusKey, resumeStatusArgs);
-            }
-
-            var downloadResult = await DownloadForceUpdateAsync(update, CancellationToken.None);
-            return ToProcessLaunchResult(downloadResult);
-        }
     }
 
     private async Task<AppUpdateCoordinatorResult> DownloadForceUpdateAsync(
         AppUpdateCheckResponse update,
         CancellationToken cancellationToken)
     {
-        // 中文注释：只有安装安全守卫放行后才进入阻断式下载，避免强更状态把活动交易锁死。
+        // 中文注释：下载阶段保持非阻断，让用户能继续完成或取消当前交易。
         state.ShowForceUpdateDownloading(update);
         var progress = new AppUpdateProgressSink(state.UpdateDownloadProgress);
         var download = await downloadService.DownloadAsync(update, progress, cancellationToken);

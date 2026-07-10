@@ -182,9 +182,23 @@
   <data name="payment.method.refundVoucher" xml:space="preserve"><value>Refund Voucher</value></data>
   <data name="payment.method.account" xml:space="preserve"><value>Credit Account</value></data>
   <data name="payment.method.installment" xml:space="preserve"><value>Installment</value></data>
+  <data name="payment.installment.switchHelp" xml:space="preserve"><value>Collect a deposit and customer details</value></data>
   <data name="payment.installment.customerName" xml:space="preserve"><value>Customer name *</value></data>
+  <data name="payment.installment.customerNamePlaceholder" xml:space="preserve"><value>Enter customer name</value></data>
   <data name="payment.installment.customerPhone" xml:space="preserve"><value>Customer phone *</value></data>
+  <data name="payment.installment.customerPhonePlaceholder" xml:space="preserve"><value>Enter phone number</value></data>
+  <data name="payment.installment.customerInfo" xml:space="preserve"><value>Customer information</value></data>
+  <data name="payment.installment.customerMissingName" xml:space="preserve"><value>Customer name required</value></data>
+  <data name="payment.installment.customerMissingPhone" xml:space="preserve"><value>Customer phone required</value></data>
+  <data name="payment.installment.editCustomer" xml:space="preserve"><value>Edit</value></data>
+  <data name="payment.installment.customerDialogTitle" xml:space="preserve"><value>Edit customer information</value></data>
+  <data name="payment.installment.customerDialogHelp" xml:space="preserve"><value>Enter the required customer name and phone for this installment order.</value></data>
+  <data name="payment.installment.saveCustomer" xml:space="preserve"><value>Save customer</value></data>
   <data name="payment.installment.outstanding" xml:space="preserve"><value>Outstanding</value></data>
+  <data name="payment.installment.confirmFullFirstPayment.title" xml:space="preserve"><value>Confirm installment order</value></data>
+  <data name="payment.installment.confirmFullFirstPayment.message" xml:space="preserve"><value>The first installment payment covers the full order amount. Continue creating an installment order?</value></data>
+  <data name="payment.installment.confirmPickupAfterPaidOff.title" xml:space="preserve"><value>Confirm pickup</value></data>
+  <data name="payment.installment.confirmPickupAfterPaidOff.message" xml:space="preserve"><value>This installment order is fully paid. Confirm customer pickup now?</value></data>
   <data name="payment.installment.status.onlineRequired" xml:space="preserve"><value>Installment payment requires online mode.</value></data>
   <data name="payment.installment.status.customerRequired" xml:space="preserve"><value>Customer name and phone are required.</value></data>
   <data name="payment.installment.status.firstPaymentBelowMinimum" xml:space="preserve"><value>First installment payment must be at least $20.00.</value></data>
@@ -195,6 +209,8 @@
   <data name="payment.installment.status.actionFailed" xml:space="preserve"><value>Installment payment failed.</value></data>
   <data name="payment.installment.status.created" xml:space="preserve"><value>Installment order created.</value></data>
   <data name="payment.installment.status.repaymentRecorded" xml:space="preserve"><value>Installment repayment recorded.</value></data>
+  <data name="payment.installment.status.fullFirstPaymentCancelled" xml:space="preserve"><value>Full first-payment installment confirmation cancelled.</value></data>
+  <data name="payment.installment.status.pickupConfirmFailed" xml:space="preserve"><value>Pickup confirmation failed; receipt printed as pending pickup. {0}</value></data>
   <data name="payment.action.addCash" xml:space="preserve"><value>Add Cash Tender</value></data>
   <data name="payment.voucher.code" xml:space="preserve"><value>Voucher code</value></data>
   <data name="payment.voucher.dialogTitle" xml:space="preserve"><value>Voucher payment</value></data>
@@ -542,14 +558,14 @@
   <data name="returns.status.noReceiptMode" xml:space="preserve"><value>No-receipt return enabled. Scan a product to add it.</value></data>
   <data name="returns.status.receiptMode" xml:space="preserve"><value>Receipt return mode enabled. Scan an order number.</value></data>
   <data name="returns.status.lookupPrompt" xml:space="preserve"><value>Scan order number to start a receipt return.</value></data>
-  <data name="returns.status.loadedOnline" xml:space="preserve"><value>Loaded order {0} from online order history.</value></data>
+  <data name="returns.status.loadedOnline" xml:space="preserve"><value>Loaded online order and return records.</value></data>
   <data name="returns.status.lookupFailed" xml:space="preserve"><value>Order lookup failed: {0}</value></data>
-  <data name="returns.status.loadedLocalStaleWithError" xml:space="preserve"><value>Loaded local order {0}; online lookup failed. {1}</value></data>
+  <data name="returns.status.loadedLocalStaleWithError" xml:space="preserve"><value>Loaded local order; online lookup failed. {0}</value></data>
   <data name="returns.status.scanProduct" xml:space="preserve"><value>Scan a product code to add a no-receipt return line.</value></data>
-  <data name="returns.status.productNotFound" xml:space="preserve"><value>Product {0} was not found in the local catalog.</value></data>
+  <data name="returns.status.productNotFound" xml:space="preserve"><value>Product was not found in the local catalog.</value></data>
   <data name="returns.status.addedNoReceipt" xml:space="preserve"><value>Added {0} for no-receipt return.</value></data>
-  <data name="returns.status.orderNotFound" xml:space="preserve"><value>Order {0} was not found.</value></data>
-  <data name="returns.status.loadedLocalStale" xml:space="preserve"><value>Loaded local order {0}; online order history is not available.</value></data>
+  <data name="returns.status.orderNotFound" xml:space="preserve"><value>Order was not found.</value></data>
+  <data name="returns.status.loadedLocalStale" xml:space="preserve"><value>Loaded local order; online order history is not available.</value></data>
   <data name="returns.status.addedReceiptLine" xml:space="preserve"><value>Added {0} to refund cart.</value></data>
   <data name="returns.status.openItemPrompt" xml:space="preserve"><value>Enter a no-barcode item name and retail price.</value></data>
   <data name="returns.status.openItemNameRequired" xml:space="preserve"><value>Enter an item name.</value></data>

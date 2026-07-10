@@ -1,0 +1,119 @@
+using System.Globalization;
+using Hbpos.Client.Wpf.Models;
+using Hbpos.Contracts.Installments;
+using Hbpos.Contracts.Orders;
+
+namespace Hbpos.Client.Wpf.Services;
+
+internal static class InstallmentReceiptMapper
+{
+    public static ReceiptDetails CreateReceipt(LocalInstallmentOrder order)
+    {
+        var recordedPayments = order.Payments
+            .Where(payment => payment.Status == InstallmentPaymentStatus.Recorded)
+            .OrderBy(payment => payment.RecordedAt)
+            .ToList();
+        var payments = recordedPayments
+            .Select(payment => new ReceiptPaymentLine(
+                payment.Method,
+                payment.Amount,
+                payment.Reference,
+                payment.CardTransactions))
+            .ToList();
+        var extraInfoLines = new List<string>
+        {
+            $"Installment No: {order.InstallmentNumber}",
+            $"Customer: {order.CustomerName}",
+            $"Phone: {order.CustomerPhone}",
+            $"Deposit paid: {Money(order.DownPaymentAmount)}",
+            $"Balance due: {Money(order.BalanceAmount)}"
+        };
+
+        AddPickupInfo(extraInfoLines, order);
+
+        if (recordedPayments.Count > 0)
+        {
+            // 分期补录打印要展示完整还款历史；时间只存在于分期 payment DTO，不能放到通用 ReceiptPaymentLine。
+            extraInfoLines.Add("Payment history:");
+            extraInfoLines.AddRange(recordedPayments.Select(FormatPaymentHistoryLine));
+        }
+
+        return new ReceiptDetails(
+            order.OrderGuid,
+            order.StoreCode,
+            order.DeviceCode,
+            order.CashierName,
+            order.CreatedAt,
+            order.TotalAmount,
+            0m,
+            order.TotalAmount,
+            order.Lines.Select(line => new ReceiptPreviewLine(
+                line.DisplayName,
+                line.LookupCode,
+                line.Quantity,
+                line.UnitPrice,
+                line.DiscountAmount,
+                line.ActualAmount)).ToList(),
+            payments,
+            StatusText: GetStatusText(order),
+            OrderDisplay: order.InstallmentNumber,
+            ExtraInfoLines: extraInfoLines);
+    }
+
+    private static void AddPickupInfo(List<string> extraInfoLines, LocalInstallmentOrder order)
+    {
+        if (order.PickupInfo is { } pickupInfo)
+        {
+            extraInfoLines.Add("Pickup: Confirmed");
+            extraInfoLines.Add($"Picked up at: {pickupInfo.PickedUpAt.ToLocalTime():yyyy-MM-dd HH:mm}");
+            extraInfoLines.Add($"Picked up by: {pickupInfo.PickedUpBy}");
+            if (!string.IsNullOrWhiteSpace(pickupInfo.Note))
+            {
+                extraInfoLines.Add($"Pickup note: {pickupInfo.Note}");
+            }
+
+            return;
+        }
+
+        if (order.Status == InstallmentStatus.PaidOff)
+        {
+            extraInfoLines.Add("Pickup: Pending");
+        }
+    }
+
+    private static string GetStatusText(LocalInstallmentOrder order)
+    {
+        // 分期付清后小票必须明确提货状态，避免把待提货误看成已交付。
+        if (order.PickupInfo is not null || order.Status == InstallmentStatus.PickedUp)
+        {
+            return "*** Paid - Picked Up ***";
+        }
+
+        if (order.Status == InstallmentStatus.Cancelled)
+        {
+            return "*** Installment Cancelled ***";
+        }
+
+        if (order.Status == InstallmentStatus.PaidOff)
+        {
+            return "*** Paid - Pickup Pending ***";
+        }
+
+        return "*** Deposit Received ***";
+    }
+
+    private static string FormatPaymentHistoryLine(InstallmentPaymentDto payment)
+    {
+        var timeText = payment.RecordedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var paymentLine = new ReceiptPaymentLine(payment.Method, payment.Amount, payment.Reference, payment.CardTransactions);
+        var line = $"{timeText} {paymentLine.MethodLabel} {Money(payment.Amount)}";
+        return string.IsNullOrWhiteSpace(paymentLine.DisplayReference)
+            ? line
+            : $"{line} Ref: {paymentLine.DisplayReference}";
+    }
+
+    private static string Money(decimal amount)
+    {
+        return string.Create(CultureInfo.InvariantCulture, $"${amount:0.00}");
+    }
+}

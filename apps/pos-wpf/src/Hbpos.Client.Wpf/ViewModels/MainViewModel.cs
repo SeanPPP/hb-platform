@@ -11,6 +11,7 @@ using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
 using Microsoft.Extensions.DependencyInjection;
@@ -608,6 +609,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _checkForAppUpdateAsync,
             BeginDeviceReregistrationAsync,
             () => _cardRecoveryPresenter!.RecoverActiveCardPaymentSessionFromPaymentAsync(),
+            OnInstallmentOrderCreatedAsync,
             setScreen: OnScreenChanged,
             onPaymentCreated: vm =>
             {
@@ -1842,12 +1844,160 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
         }
 
-        if (MainReceiptCoordinator.ContainsCardPayment(e.Order))
+        // 中文注释：普通销售成功后不再自动打印；卡退款仍保留自动收据，便于退款凭证留存。
+        if (IsPureVoucherRefund(e.Order))
+        {
+            var receipt = ReceiptQueryService.CreateReceipt(e.Order);
+            if (receipt.RefundVoucher is not null)
+            {
+                // 中文注释：发券引用已落库后才自动打印独立券面，打印失败不能回滚已成功的退款。
+                await PrintReceiptWithShellPermissionAsync(receipt, ReceiptPrintReason.VoucherRefundAuto);
+                return;
+            }
+        }
+
+        if (MainReceiptCoordinator.ContainsCardPayment(e.Order) && e.Order.ActualAmount < 0m)
         {
             await PrintReceiptWithShellPermissionAsync(
                 ReceiptQueryService.CreateReceipt(e.Order),
                 ReceiptPrintReason.CardAuto);
+            return;
         }
+
+        if (e.Order.ActualAmount >= 0m)
+        {
+            await PrintVoucherBalancesAsync(e.Order);
+        }
+    }
+
+    private static bool IsPureVoucherRefund(LocalOrder order) =>
+        order.ActualAmount < 0m &&
+        order.Payments.Count == 1 &&
+        order.Payments[0].Method == PaymentMethodKind.Voucher &&
+        order.Payments[0].Amount < 0m;
+
+    private async Task PrintVoucherBalancesAsync(LocalOrder order)
+    {
+        var receipt = ReceiptQueryService.CreateReceipt(order);
+        var balances = receipt.Payments
+            .Where(payment => payment.Method == PaymentMethodKind.Voucher && payment.Amount > 0m)
+            .Select(payment => new
+            {
+                VoucherCode = payment.DisplayReference?.Trim(),
+                RemainingBalance = payment.VoucherRemainingBalance
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.VoucherCode) && item.RemainingBalance is > 0m)
+            .GroupBy(item => item.VoucherCode!, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                // 中文注释：保持券码首次出现顺序，但余额必须采用同券最后一笔兑换后的最终值。
+                VoucherCode = group.First().VoucherCode,
+                RemainingBalance = group.Last().RemainingBalance
+            })
+            .ToList();
+
+        (string VoucherCode, ReceiptPrintResult Result)? firstFailure = null;
+        foreach (var balance in balances)
+        {
+            var voucherCode = balance.VoucherCode!;
+            // 中文注释：每张余额券独立尝试打印；单张失败不能阻断其余券，也不能回滚已完成交易。
+            var result = await PrintReceiptWithShellPermissionAsync(
+                receipt with
+                {
+                    RefundVoucher = null,
+                    VoucherBalance = new VoucherBalanceReceipt(voucherCode, balance.RemainingBalance!.Value)
+                },
+                ReceiptPrintReason.VoucherBalanceAuto);
+            firstFailure ??= result.Succeeded ? null : (voucherCode, result);
+        }
+
+        if (firstFailure is { } failure)
+        {
+            StatusMessage = string.Format(
+                _localization.CurrentCulture,
+                _localization.T("receipt.print.failed"),
+                $"{failure.VoucherCode}: {failure.Result.Message}");
+        }
+    }
+
+    private async Task OnInstallmentOrderCreatedAsync(InstallmentOrderSummary order)
+    {
+        try
+        {
+            var localOrder = await _installmentOrderService.GetLocalOrderAsync(order.OrderId);
+            if (localOrder is not null)
+            {
+                localOrder = await ConfirmInstallmentPickupAfterPaidOffAsync(order, localOrder);
+                await PrintReceiptWithShellPermissionAsync(
+                    InstallmentReceiptMapper.CreateReceipt(localOrder),
+                    ReceiptPrintReason.InstallmentAuto);
+            }
+        }
+        finally
+        {
+            // 分期首单完成后无论打印结果如何都回到 POS，避免收银员继续在已清空的付款页操作。
+            CashPayment?.PrepareForEntry(Session);
+            _screenNavigator.ResetForNewTransaction();
+            PosTerminal?.RefreshCart();
+        }
+    }
+
+    private async Task<LocalInstallmentOrder> ConfirmInstallmentPickupAfterPaidOffAsync(
+        InstallmentOrderSummary order,
+        LocalInstallmentOrder localOrder)
+    {
+        if (!ShouldConfirmInstallmentPickupAfterPaidOff(order, localOrder))
+        {
+            return localOrder;
+        }
+
+        var confirmed = _confirmationDialogService.ConfirmInstallmentPickupAfterPaidOff(
+            _localization.T("payment.installment.confirmPickupAfterPaidOff.title"),
+            _localization.T("payment.installment.confirmPickupAfterPaidOff.message"));
+        if (!confirmed)
+        {
+            return localOrder;
+        }
+
+        try
+        {
+            // 分期付清后先确认提货，确认成功后重新读取本地快照，确保自动小票打印真实提货状态。
+            var result = await _installmentOrderService.ConfirmPickupAsync(order.OrderId, Session);
+            if (!result.Succeeded)
+            {
+                SetInstallmentPickupConfirmFailedStatus(result.Message);
+                return localOrder;
+            }
+
+            return await _installmentOrderService.GetLocalOrderAsync(order.OrderId) ?? localOrder;
+        }
+        catch (Exception ex)
+        {
+            SetInstallmentPickupConfirmFailedStatus(ex.Message);
+            return localOrder;
+        }
+    }
+
+    private static bool ShouldConfirmInstallmentPickupAfterPaidOff(
+        InstallmentOrderSummary order,
+        LocalInstallmentOrder localOrder)
+    {
+        if (localOrder.PickupInfo is not null)
+        {
+            return false;
+        }
+
+        var localPaidOff = localOrder.Status == InstallmentStatus.PaidOff && localOrder.BalanceAmount <= 0m;
+        var summaryPaidOff = order.CanConfirmPickup && order.OutstandingAmount <= 0m;
+        return localPaidOff || summaryPaidOff;
+    }
+
+    private void SetInstallmentPickupConfirmFailedStatus(string? message)
+    {
+        StatusMessage = string.Format(
+            _localization.CurrentCulture,
+            _localization.T("payment.installment.status.pickupConfirmFailed"),
+            string.IsNullOrWhiteSpace(message) ? _localization.T("payment.installment.status.actionFailed") : message);
     }
 
     private async Task<ReceiptPrintResult> PrintLatestReceiptAsync() =>
@@ -1869,7 +2019,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task<ReceiptPrintResult> PrintReceiptWithShellPermissionAsync(ReceiptDetails receipt, ReceiptPrintReason reason)
     {
         // 关键逻辑：自动卡支付/恢复小票是系统完成交易流程，不等同于人工补打上一张。
-        if (reason != ReceiptPrintReason.CardAuto &&
+        if (reason is not ReceiptPrintReason.CardAuto and
+            not ReceiptPrintReason.InstallmentAuto and
+            not ReceiptPrintReason.VoucherRefundAuto and
+            not ReceiptPrintReason.VoucherBalanceAuto &&
             !TryRequireShellPermission(Permissions.PosTerminal.Receipt.PrintLast))
         {
             return new ReceiptPrintResult(false, StatusMessage, receipt.OrderGuid);

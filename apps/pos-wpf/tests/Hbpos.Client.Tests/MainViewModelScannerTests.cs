@@ -14,6 +14,7 @@ using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Devices;
+using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
@@ -289,7 +290,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_payment_completion_auto_prints_receipt_after_success_screen()
+    public async Task Card_payment_completion_does_not_auto_print_receipt_after_success_screen()
     {
         var printService = new RecordingReceiptPrintService();
         var cashDrawerService = new RecordingCashDrawerService();
@@ -302,10 +303,9 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
-        var call = Assert.Single(printService.Calls);
-        Assert.Equal(order.OrderGuid, call.OrderGuid);
-        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
         Assert.Equal(0, cashDrawerService.OpenCallCount);
     }
 
@@ -343,7 +343,206 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Card_payment_completion_auto_prints_without_receipt_permission()
+    public async Task Mixed_card_and_voucher_refund_keeps_card_refund_receipt()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Card, PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -10m,
+            ActualAmount = -10m,
+            Payments =
+            [
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Card, -6m, "CARD-REFUND-123"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, -4m, "VOUCHER_REFUND:RF123")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.Null(call.Receipt!.RefundVoucher);
+        var document = new ReceiptTextFormatter().Build(call.Receipt, ReceiptPrinterSettings.Default, order.SoldAt);
+        Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);
+        Assert.DoesNotContain("REFUND VOUCHER", document.PlainText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Voucher_refund_completion_auto_prints_voucher_after_success_screen()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -8m,
+            ActualAmount = -8m,
+            Payments =
+            [
+                new LocalPayment(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Voucher,
+                    -8m,
+                    "VOUCHER_REFUND:RF123")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(order.OrderGuid, call.OrderGuid);
+        Assert.Equal("VoucherRefundAuto", call.Reason.ToString());
+        Assert.Equal("RF123", call.Receipt!.RefundVoucher!.VoucherCode);
+        Assert.Equal(8m, call.Receipt.RefundVoucher.Amount);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
+    }
+
+    [Fact]
+    public async Task Pending_voucher_refund_completion_does_not_auto_print()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            TotalAmount = -8m,
+            ActualAmount = -8m,
+            Payments =
+            [
+                new LocalPayment(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Voucher,
+                    -8m,
+                    "VOUCHER_REFUND_PENDING")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
+    }
+
+    [Fact]
+    public async Task Voucher_payment_with_remaining_balance_auto_prints_standalone_balance_without_permission()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var cashierContext = new CashierSessionContext();
+        cashierContext.SetCurrent(CreateCashierSession(Permissions.PosTerminal.Sales.AddItem));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            cashierSessionContext: cashierContext,
+            enforceCashierPermissions: true);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            Payments = [new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:VC200:LOCK-1:12.34")]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(ReceiptPrintReason.VoucherBalanceAuto, call.Reason);
+        Assert.Equal("VC200", call.Receipt!.VoucherBalance!.VoucherCode);
+        Assert.Equal(12.34m, call.Receipt.VoucherBalance.RemainingBalance);
+        Assert.Null(call.Receipt.RefundVoucher);
+        Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
+    }
+
+    [Fact]
+    public async Task Multiple_voucher_balances_print_once_per_normalized_unique_code()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            Payments =
+            [
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 4m, "VOUCHER:VC200:LOCK-1:12.34"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 3m, "VOUCHER: vc200 :LOCK-2:9.00"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 3m, "VOUCHER:VC201:LOCK-3:5.67")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 2);
+        Assert.All(printService.Calls, call => Assert.Equal(ReceiptPrintReason.VoucherBalanceAuto, call.Reason));
+        Assert.Equal(["VC200", "VC201"], printService.Calls.Select(call => call.Receipt!.VoucherBalance!.VoucherCode).ToArray());
+        Assert.Equal(9.00m, printService.Calls[0].Receipt!.VoucherBalance!.RemainingBalance);
+    }
+
+    [Fact]
+    public async Task Voucher_balance_auto_print_skips_invalid_zero_and_refund_payments()
+    {
+        var cases = new[]
+        {
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:VC200:LOCK-1:0.00"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:VC200:LOCK-1:not-money"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 10m, "VOUCHER:  :LOCK-1:12.34"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, -10m, "VOUCHER:VC200:LOCK-1:12.34"),
+            new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Cash, 10m, "VOUCHER:VC200:LOCK-1:12.34")
+        };
+
+        foreach (var payment in cases)
+        {
+            var printService = new RecordingReceiptPrintService();
+            var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+            await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+            var order = CreateReceiptPrintOrder(payment.Method) with { Payments = [payment] };
+
+            InvokePaymentCompleted(viewModel, order);
+
+            await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+            await Task.Delay(30);
+            Assert.Empty(printService.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task Voucher_balance_auto_print_continues_after_failure_and_restores_first_error()
+    {
+        var printService = new RecordingReceiptPrintService();
+        printService.PrintReceiptResults.Enqueue(new ReceiptPrintResult(false, "printer offline"));
+        printService.PrintReceiptResults.Enqueue(new ReceiptPrintResult(true, "printed"));
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService(), printService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var order = CreateReceiptPrintOrder(PaymentMethodKind.Voucher) with
+        {
+            Payments =
+            [
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 5m, "VOUCHER:VC200:LOCK-1:12.34"),
+                new LocalPayment(Guid.NewGuid(), PaymentMethodKind.Voucher, 5m, "VOUCHER:VC201:LOCK-2:5.67")
+            ]
+        };
+
+        InvokePaymentCompleted(viewModel, order);
+
+        await WaitUntilAsync(() => printService.Calls.Count == 2);
+        Assert.Contains("VC200", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("printer offline", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Card_payment_completion_does_not_auto_print_without_receipt_permission()
     {
         var printService = new RecordingReceiptPrintService();
         var cashierContext = new CashierSessionContext();
@@ -358,10 +557,9 @@ public sealed class MainViewModelScannerTests
 
         InvokePaymentCompleted(viewModel, order);
 
-        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && printService.Calls.Count == 1);
-        var call = Assert.Single(printService.Calls);
-        Assert.Equal(order.OrderGuid, call.OrderGuid);
-        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen));
+        await Task.Delay(50);
+        Assert.Empty(printService.Calls);
         Assert.False(cashierContext.RequirePermission(Permissions.PosTerminal.Receipt.PrintLast, out _));
     }
 
@@ -386,7 +584,216 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task Mixed_cash_card_payment_completion_opens_cash_drawer_and_auto_prints_receipt()
+    public async Task Payment_page_new_installment_auto_prints_receipt_and_returns_to_pos()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-INST-AUTO", "930INST") with { RetailPrice = 80m });
+        var printService = new RecordingReceiptPrintService();
+        var installmentService = new RecordingInstallmentOrderService();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            cart: cart,
+            installmentOrderService: installmentService);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await InvokeRefreshOnlineStateAsync(viewModel);
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = viewModel.CashPayment!;
+        payment.IsInstallmentPaymentEnabled = true;
+        payment.InstallmentCustomerName = "Alice";
+        payment.InstallmentCustomerPhone = "0400111222";
+        payment.TenderAmountText = "20";
+
+        await payment.SelectCashCommand.ExecuteAsync(null);
+        await payment.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PosTerminal, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(installmentService.CreatedLocalOrder!.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.InstallmentAuto, call.Reason);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(payment.PaymentTenders);
+        Assert.False(payment.IsInstallmentPaymentEnabled);
+        Assert.False(payment.IsInstallmentSwitchLocked);
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_returns_to_pos_when_auto_print_fails()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-INST-PRINT-FAIL", "930INSF") with { RetailPrice = 80m });
+        var printService = new RecordingReceiptPrintService
+        {
+            PrintReceiptResult = new ReceiptPrintResult(false, "printer offline")
+        };
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            cart: cart,
+            installmentOrderService: new RecordingInstallmentOrderService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await InvokeRefreshOnlineStateAsync(viewModel);
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = viewModel.CashPayment!;
+        payment.IsInstallmentPaymentEnabled = true;
+        payment.InstallmentCustomerName = "Alice";
+        payment.InstallmentCustomerPhone = "0400111222";
+        payment.TenderAmountText = "20";
+
+        await payment.SelectCashCommand.ExecuteAsync(null);
+        await payment.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PosTerminal, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        Assert.Contains("printer offline", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_auto_prints_receipt_and_returns_to_pos()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var installmentService = new RecordingInstallmentOrderService();
+        var confirmationDialog = new FakeConfirmationDialogService();
+        var order = installmentService.SeedRepaymentOrder();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            installmentOrderService: installmentService,
+            confirmationDialogService: confirmationDialog);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await InvokeRefreshOnlineStateAsync(viewModel);
+
+        await InvokeShowInstallmentRepaymentAsync(viewModel, order);
+        var payment = viewModel.CashPayment!;
+        payment.TenderAmountText = "30";
+
+        await payment.SelectCashCommand.ExecuteAsync(null);
+        await payment.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PosTerminal, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(installmentService.CreatedLocalOrder!.OrderGuid, call.OrderGuid);
+        Assert.Equal(ReceiptPrintReason.InstallmentAuto, call.Reason);
+        Assert.Equal(0, confirmationDialog.ConfirmInstallmentPickupAfterPaidOffCallCount);
+        Assert.Empty(payment.PaymentTenders);
+        Assert.False(payment.IsInstallmentPaymentEnabled);
+        Assert.False(payment.IsInstallmentSwitchLocked);
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_paid_off_confirms_pickup_before_auto_print()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var installmentService = new RecordingInstallmentOrderService();
+        var confirmationDialog = new FakeConfirmationDialogService { ConfirmInstallmentPickupAfterPaidOffResult = true };
+        var order = installmentService.SeedRepaymentOrder();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            installmentOrderService: installmentService,
+            confirmationDialogService: confirmationDialog);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await InvokeRefreshOnlineStateAsync(viewModel);
+
+        await InvokeShowInstallmentRepaymentAsync(viewModel, order);
+        var payment = viewModel.CashPayment!;
+        payment.TenderAmountText = "60";
+
+        await payment.SelectCashCommand.ExecuteAsync(null);
+        await payment.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PosTerminal, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(1, confirmationDialog.ConfirmInstallmentPickupAfterPaidOffCallCount);
+        Assert.Equal(1, installmentService.ConfirmPickupCallCount);
+        Assert.Equal(order.OrderId, installmentService.LastConfirmPickupOrderId);
+        Assert.Equal("*** Paid - Picked Up ***", call.Receipt!.StatusText);
+        Assert.Contains("Pickup: Confirmed", call.Receipt.ExtraInfoLines!);
+        var pickedUpAtText = new DateTimeOffset(2026, 7, 4, 13, 0, 0, TimeSpan.Zero)
+            .ToLocalTime()
+            .ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        Assert.Contains($"Picked up at: {pickedUpAtText}", call.Receipt.ExtraInfoLines!);
+        Assert.Contains("Picked up by: Alice", call.Receipt.ExtraInfoLines!);
+        Assert.Contains("Pickup note: Picked up at POS", call.Receipt.ExtraInfoLines!);
+    }
+
+    [Fact]
+    public async Task Payment_page_installment_repayment_paid_off_cancelled_pickup_prints_pending_receipt()
+    {
+        var printService = new RecordingReceiptPrintService();
+        var installmentService = new RecordingInstallmentOrderService();
+        var confirmationDialog = new FakeConfirmationDialogService { ConfirmInstallmentPickupAfterPaidOffResult = false };
+        var order = installmentService.SeedRepaymentOrder();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            installmentOrderService: installmentService,
+            confirmationDialogService: confirmationDialog);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await InvokeRefreshOnlineStateAsync(viewModel);
+
+        await InvokeShowInstallmentRepaymentAsync(viewModel, order);
+        var payment = viewModel.CashPayment!;
+        payment.TenderAmountText = "60";
+
+        await payment.SelectCashCommand.ExecuteAsync(null);
+        await payment.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PosTerminal, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(1, confirmationDialog.ConfirmInstallmentPickupAfterPaidOffCallCount);
+        Assert.Equal(0, installmentService.ConfirmPickupCallCount);
+        Assert.Equal("*** Paid - Pickup Pending ***", call.Receipt!.StatusText);
+        Assert.Contains("Pickup: Pending", call.Receipt.ExtraInfoLines!);
+    }
+
+    [Fact]
+    public async Task Payment_page_new_installment_full_first_payment_confirms_pickup_after_create()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-INST-FULL-PICKUP", "930INFP") with { RetailPrice = 80m });
+        var printService = new RecordingReceiptPrintService();
+        var installmentService = new RecordingInstallmentOrderService();
+        var confirmationDialog = new FakeConfirmationDialogService
+        {
+            ConfirmInstallmentFullFirstPaymentResult = true,
+            ConfirmInstallmentPickupAfterPaidOffResult = true
+        };
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            connectivityApiClient: new FakeConnectivityApiClient(true),
+            cart: cart,
+            installmentOrderService: installmentService,
+            confirmationDialogService: confirmationDialog);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await InvokeRefreshOnlineStateAsync(viewModel);
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = viewModel.CashPayment!;
+        payment.IsInstallmentPaymentEnabled = true;
+        payment.InstallmentCustomerName = "Alice";
+        payment.InstallmentCustomerPhone = "0400111222";
+        payment.TenderAmountText = "100";
+
+        await payment.SelectCashCommand.ExecuteAsync(null);
+        await payment.ConfirmPaymentCommand.ExecuteAsync(null);
+
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.PosTerminal, viewModel.CurrentScreen) && printService.Calls.Count == 1);
+        var call = Assert.Single(printService.Calls);
+        Assert.Equal(1, confirmationDialog.ConfirmInstallmentFullFirstPaymentCallCount);
+        Assert.Equal(1, confirmationDialog.ConfirmInstallmentPickupAfterPaidOffCallCount);
+        Assert.Equal(1, installmentService.ConfirmPickupCallCount);
+        Assert.Equal(80m, installmentService.CreatedLocalOrder!.DownPaymentAmount);
+        Assert.Equal(InstallmentStatus.PickedUp, installmentService.CreatedLocalOrder.Status);
+        Assert.Contains("Pickup: Confirmed", call.Receipt!.ExtraInfoLines!);
+    }
+
+    [Fact]
+    public async Task Mixed_cash_card_payment_completion_opens_cash_drawer_and_does_not_auto_print_receipt()
     {
         var printService = new RecordingReceiptPrintService();
         var cashDrawerService = new RecordingCashDrawerService();
@@ -401,13 +808,11 @@ public sealed class MainViewModelScannerTests
 
         await WaitUntilAsync(() =>
             ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) &&
-            cashDrawerService.OpenCallCount == 1 &&
-            printService.Calls.Count == 1);
+            cashDrawerService.OpenCallCount == 1);
 
+        await Task.Delay(50);
         Assert.Equal(1, cashDrawerService.OpenCallCount);
-        var call = Assert.Single(printService.Calls);
-        Assert.Equal(order.OrderGuid, call.OrderGuid);
-        Assert.Equal(ReceiptPrintReason.CardAuto, call.Reason);
+        Assert.Empty(printService.Calls);
     }
 
     [Fact]
@@ -3480,6 +3885,7 @@ public sealed class MainViewModelScannerTests
         ICashierLoginService? cashierLoginService = null,
         IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
+        IInstallmentOrderService? installmentOrderService = null,
         bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -3529,6 +3935,7 @@ public sealed class MainViewModelScannerTests
                 reloadCatalogAsync),
             orderUploadExecutionService: orderUploadExecutionService,
             cashDrawerService: cashDrawerService,
+            installmentOrderService: installmentOrderService,
             cashierSessionContext: cashierSessionContext,
             cashierLoginService: cashierLoginService,
             runtimeStatusApiClient: runtimeStatusApiClient,
@@ -3635,6 +4042,18 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(method);
         var task = (Task<bool>)method!.Invoke(viewModel, [CancellationToken.None, autoRetryOrders])!;
         return await task;
+    }
+
+    private static async Task InvokeShowInstallmentRepaymentAsync(MainViewModel viewModel, InstallmentOrderSummary order)
+    {
+        var navigatorField = typeof(MainViewModel).GetField("_screenNavigator", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(navigatorField);
+        var navigator = navigatorField!.GetValue(viewModel);
+        Assert.NotNull(navigator);
+        var method = navigator!.GetType().GetMethod("ShowInstallmentRepaymentAsync", BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(method);
+        var task = (Task)method!.Invoke(navigator, [order])!;
+        await task;
     }
 
     private static MainViewModel CreateAuthorizedMainViewModelWithPaymentWorkflow(
@@ -4523,15 +4942,261 @@ public sealed class MainViewModelScannerTests
         }
     }
 
+    private sealed class RecordingInstallmentOrderService : IInstallmentOrderService
+    {
+        public LocalInstallmentOrder? CreatedLocalOrder { get; private set; }
+
+        public int ConfirmPickupCallCount { get; private set; }
+
+        public Guid? LastConfirmPickupOrderId { get; private set; }
+
+        public InstallmentOrderSummary SeedRepaymentOrder()
+        {
+            var guid = Guid.NewGuid();
+            var createdAt = new DateTimeOffset(2026, 7, 4, 12, 30, 0, TimeSpan.Zero);
+            CreatedLocalOrder = new LocalInstallmentOrder(
+                guid,
+                guid,
+                "IO-REPAY",
+                "1042",
+                "POS-01",
+                "C001",
+                "Alice",
+                "Bob",
+                "0400222333",
+                createdAt,
+                createdAt,
+                80m,
+                20m,
+                20m,
+                20m,
+                60m,
+                InstallmentStatus.Active,
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-INST-REPAY",
+                        null,
+                        "Repayment Tea",
+                        "930REP",
+                        1m,
+                        80m,
+                        0m,
+                        80m,
+                        "SKU-INST-REPAY")
+                ],
+                [
+                    new InstallmentPaymentDto(
+                        Guid.NewGuid(),
+                        PaymentMethodKind.Cash,
+                        20m,
+                        null,
+                        InstallmentPaymentStatus.Recorded,
+                        createdAt,
+                        "C001",
+                        "POS-01",
+                        null,
+                        "SEED")
+                ],
+                null);
+            return ToSummary(CreatedLocalOrder);
+        }
+
+        private static InstallmentOrderSummary ToSummary(LocalInstallmentOrder order)
+        {
+            return new InstallmentOrderSummary(
+                order.InstallmentGuid,
+                order.InstallmentNumber,
+                order.CustomerName,
+                order.CustomerPhone,
+                order.TotalAmount,
+                order.DownPaymentAmount,
+                order.PaidAmount,
+                order.BalanceAmount,
+                0,
+                order.BalanceAmount > 0m,
+                order.BalanceAmount == 0m && order.PickupInfo is null,
+                order.BalanceAmount > 0m,
+                order.BalanceAmount > 0m,
+                order.PickupInfo is not null ? "Picked up" : order.BalanceAmount > 0m ? "Pending repayment" : "Ready for pickup",
+                order.DeviceCode,
+                order.UpdatedAt);
+        }
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<InstallmentOrderSummary>>([]);
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> SearchAsync(PosSessionState session, string? keyword, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<InstallmentOrderSummary>>([]);
+
+        public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
+            Task.FromResult(CreatedLocalOrder?.InstallmentGuid == installmentGuid ? CreatedLocalOrder : null);
+
+        public Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentWriteResult<InstallmentAppendPaymentResponse>> AppendPaymentAsync(PosSessionState session, InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentWriteResult<InstallmentConfirmPickupResponse>> ConfirmPickupAsync(PosSessionState session, InstallmentConfirmPickupRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentWriteResult<InstallmentCancelResponse>> CancelWithRefundAsync(PosSessionState session, InstallmentCancelRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentWriteResult<InstallmentVoidResponse>> VoidCancelAsync(PosSessionState session, InstallmentVoidRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentOrderCreateResult> CreateOrderAsync(InstallmentOrderCreateRequest request, CancellationToken cancellationToken = default)
+        {
+            var guid = Guid.NewGuid();
+            var paidAmount = request.DownPaymentAmount;
+            var balanceAmount = request.CartSnapshot.ActualAmount - paidAmount;
+            var status = balanceAmount <= 0m ? InstallmentStatus.PaidOff : InstallmentStatus.Active;
+            CreatedLocalOrder = new LocalInstallmentOrder(
+                guid,
+                guid,
+                "IO-AUTO",
+                request.Session.StoreCode,
+                request.Session.DeviceCode,
+                request.Session.CashierId,
+                request.Session.CashierName,
+                request.CustomerName,
+                request.CustomerPhone,
+                new DateTimeOffset(2026, 7, 4, 12, 30, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 7, 4, 12, 30, 0, TimeSpan.Zero),
+                request.CartSnapshot.ActualAmount,
+                20m,
+                paidAmount,
+                paidAmount,
+                balanceAmount,
+                status,
+                request.CartSnapshot.Lines.Select(line => new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    line.ProductCode,
+                    line.ReferenceCode,
+                    line.DisplayName,
+                    line.LookupCode,
+                    line.Quantity,
+                    line.UnitPrice,
+                    line.DiscountAmount,
+                    line.ActualAmount,
+                    line.ItemNumber)).ToList(),
+                [
+                    new InstallmentPaymentDto(
+                        request.DownPayment.PaymentGuid,
+                        request.DownPayment.Method,
+                        paidAmount,
+                        request.DownPayment.Reference,
+                        InstallmentPaymentStatus.Recorded,
+                        new DateTimeOffset(2026, 7, 4, 12, 30, 0, TimeSpan.Zero),
+                        request.Session.CashierId,
+                        request.Session.DeviceCode,
+                        request.DownPayment.CardTransactions,
+                        request.DownPayment.IdempotencyKey)
+                ],
+                null);
+
+            return Task.FromResult(new InstallmentOrderCreateResult(
+                true,
+                "分期单已创建。",
+                new InstallmentOrderSummary(
+                    guid,
+                    CreatedLocalOrder.InstallmentNumber,
+                    CreatedLocalOrder.CustomerName,
+                    CreatedLocalOrder.CustomerPhone,
+                    CreatedLocalOrder.TotalAmount,
+                    CreatedLocalOrder.DownPaymentAmount,
+                    CreatedLocalOrder.PaidAmount,
+                    CreatedLocalOrder.BalanceAmount,
+                    0,
+                    CreatedLocalOrder.BalanceAmount > 0m,
+                    CreatedLocalOrder.BalanceAmount == 0m,
+                    CreatedLocalOrder.BalanceAmount > 0m,
+                    CreatedLocalOrder.BalanceAmount > 0m,
+                    CreatedLocalOrder.BalanceAmount > 0m ? "待补款" : "待提货",
+                    CreatedLocalOrder.DeviceCode,
+                    CreatedLocalOrder.UpdatedAt)));
+        }
+
+        public Task<InstallmentOrderActionResult> AddRepaymentAsync(InstallmentOrderRepaymentRequest request, CancellationToken cancellationToken = default)
+        {
+            if (CreatedLocalOrder is null || CreatedLocalOrder.InstallmentGuid != request.InstallmentGuid)
+            {
+                return Task.FromResult(new InstallmentOrderActionResult(false, "分期单不存在。"));
+            }
+
+            var recordedAt = new DateTimeOffset(2026, 7, 4, 12, 45, 0, TimeSpan.Zero);
+            var paidAmount = CreatedLocalOrder.PaidAmount + request.Payment.Amount;
+            var balanceAmount = Math.Max(0m, CreatedLocalOrder.TotalAmount - paidAmount);
+            CreatedLocalOrder = CreatedLocalOrder with
+            {
+                UpdatedAt = recordedAt,
+                PaidAmount = paidAmount,
+                BalanceAmount = balanceAmount,
+                Status = balanceAmount == 0m ? InstallmentStatus.PaidOff : InstallmentStatus.Active,
+                Payments =
+                [
+                    .. CreatedLocalOrder.Payments,
+                    new InstallmentPaymentDto(
+                        request.Payment.PaymentGuid,
+                        request.Payment.Method,
+                        request.Payment.Amount,
+                        request.Payment.Reference,
+                        InstallmentPaymentStatus.Recorded,
+                        recordedAt,
+                        request.Session.CashierId,
+                        request.Session.DeviceCode,
+                        request.Payment.CardTransactions,
+                        request.Payment.IdempotencyKey)
+                ]
+            };
+
+            return Task.FromResult(new InstallmentOrderActionResult(true, "补款已记录。", ToSummary(CreatedLocalOrder)));
+        }
+
+        public Task<InstallmentOrderActionResult> CancelWithRefundAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentOrderActionResult> VoidCancelAsync(Guid orderId, PosSessionState session, string? reason = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<InstallmentOrderActionResult> ConfirmPickupAsync(Guid orderId, PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            ConfirmPickupCallCount++;
+            LastConfirmPickupOrderId = orderId;
+            if (CreatedLocalOrder is null || CreatedLocalOrder.InstallmentGuid != orderId)
+            {
+                return Task.FromResult(new InstallmentOrderActionResult(false, "分期单不存在。"));
+            }
+
+            CreatedLocalOrder = CreatedLocalOrder with
+            {
+                UpdatedAt = new DateTimeOffset(2026, 7, 4, 13, 0, 0, TimeSpan.Zero),
+                Status = InstallmentStatus.PickedUp,
+                PickupInfo = new InstallmentPickupInfoDto(
+                    new DateTimeOffset(2026, 7, 4, 13, 0, 0, TimeSpan.Zero),
+                    session.CashierName,
+                    "Picked up at POS")
+            };
+
+            return Task.FromResult(new InstallmentOrderActionResult(true, "已确认提货。", ToSummary(CreatedLocalOrder)));
+        }
+    }
+
     private sealed class RecordingReceiptPrintService : IReceiptPrintService
     {
         public List<ReceiptPrintCall> Calls { get; } = [];
+
+        public ReceiptPrintResult? PrintReceiptResult { get; init; }
+
+        public Queue<ReceiptPrintResult> PrintReceiptResults { get; } = new();
 
         public Task<ReceiptPrintResult> PrintLatestReceiptAsync(
             ReceiptPrintReason reason = ReceiptPrintReason.LastReceipt,
             CancellationToken cancellationToken = default)
         {
-            Calls.Add(new ReceiptPrintCall(null, reason));
+            Calls.Add(new ReceiptPrintCall(null, reason, null));
             return Task.FromResult(new ReceiptPrintResult(true, "printed"));
         }
 
@@ -4540,8 +5205,8 @@ public sealed class MainViewModelScannerTests
             ReceiptPrintReason reason = ReceiptPrintReason.Manual,
             CancellationToken cancellationToken = default)
         {
-            Calls.Add(new ReceiptPrintCall(orderGuid, reason));
-            return Task.FromResult(new ReceiptPrintResult(true, "printed", orderGuid));
+            Calls.Add(new ReceiptPrintCall(orderGuid, reason, null));
+            return Task.FromResult(PrintReceiptResult ?? new ReceiptPrintResult(true, "printed", orderGuid));
         }
 
         public Task<ReceiptPrintResult> PrintReceiptAsync(
@@ -4549,13 +5214,16 @@ public sealed class MainViewModelScannerTests
             ReceiptPrintReason reason = ReceiptPrintReason.Manual,
             CancellationToken cancellationToken = default)
         {
-            Calls.Add(new ReceiptPrintCall(receipt.OrderGuid, reason));
-            return Task.FromResult(new ReceiptPrintResult(true, "printed", receipt.OrderGuid));
+            Calls.Add(new ReceiptPrintCall(receipt.OrderGuid, reason, receipt));
+            var result = PrintReceiptResults.Count > 0
+                ? PrintReceiptResults.Dequeue()
+                : PrintReceiptResult ?? new ReceiptPrintResult(true, "printed", receipt.OrderGuid);
+            return Task.FromResult(result);
         }
 
         public Task<ReceiptPrintResult> TestPrinterAsync(CancellationToken cancellationToken = default)
         {
-            Calls.Add(new ReceiptPrintCall(null, ReceiptPrintReason.Test));
+            Calls.Add(new ReceiptPrintCall(null, ReceiptPrintReason.Test, null));
             return Task.FromResult(new ReceiptPrintResult(true, "tested"));
         }
     }
@@ -4607,7 +5275,15 @@ public sealed class MainViewModelScannerTests
     {
         public bool ConfirmExitApplicationResult { get; init; }
 
+        public bool ConfirmInstallmentFullFirstPaymentResult { get; init; }
+
+        public bool ConfirmInstallmentPickupAfterPaidOffResult { get; init; }
+
         public int ConfirmExitApplicationCallCount { get; private set; }
+
+        public int ConfirmInstallmentFullFirstPaymentCallCount { get; private set; }
+
+        public int ConfirmInstallmentPickupAfterPaidOffCallCount { get; private set; }
 
         public bool ConfirmExitApplication()
         {
@@ -4619,9 +5295,21 @@ public sealed class MainViewModelScannerTests
         {
             return false;
         }
+
+        public bool ConfirmInstallmentFullFirstPayment(string title, string message)
+        {
+            ConfirmInstallmentFullFirstPaymentCallCount++;
+            return ConfirmInstallmentFullFirstPaymentResult;
+        }
+
+        public bool ConfirmInstallmentPickupAfterPaidOff(string title, string message)
+        {
+            ConfirmInstallmentPickupAfterPaidOffCallCount++;
+            return ConfirmInstallmentPickupAfterPaidOffResult;
+        }
     }
 
-    private sealed record ReceiptPrintCall(Guid? OrderGuid, ReceiptPrintReason Reason);
+    private sealed record ReceiptPrintCall(Guid? OrderGuid, ReceiptPrintReason Reason, ReceiptDetails? Receipt);
 
     private sealed record BankReceiptPrintCall(
         string Environment,

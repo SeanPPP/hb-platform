@@ -831,6 +831,61 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    // 兼容早期 CodeFirst 建出的旧结构：生命周期列要可空，卡交易 JSON 在 SQL Server 上保留无长度上限。
+    internal const string EnsureNullableLifecycleColumnsSql = """
+        IF OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U') IS NOT NULL
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM sys.columns
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
+                  AND [name] = N'PickedUpAt'
+                  AND [is_nullable] = 0)
+            BEGIN
+                ALTER TABLE [dbo].[InstallmentOrder]
+                    ALTER COLUMN [PickedUpAt] DATETIME2 NULL;
+            END;
+
+            IF EXISTS (
+                SELECT 1
+                FROM sys.columns
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
+                  AND [name] = N'CancellationKind'
+                  AND [is_nullable] = 0)
+            BEGIN
+                ALTER TABLE [dbo].[InstallmentOrder]
+                    ALTER COLUMN [CancellationKind] INT NULL;
+            END;
+
+            IF EXISTS (
+                SELECT 1
+                FROM sys.columns
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
+                  AND [name] = N'CancelledAt'
+                  AND [is_nullable] = 0)
+            BEGIN
+                ALTER TABLE [dbo].[InstallmentOrder]
+                    ALTER COLUMN [CancelledAt] DATETIME2 NULL;
+            END;
+        END;
+
+        IF OBJECT_ID(N'[dbo].[InstallmentPayment]', N'U') IS NOT NULL
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM sys.columns
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentPayment]', N'U')
+                  AND [name] = N'CardTransactionsJson'
+                  AND ([system_type_id] <> TYPE_ID(N'nvarchar')
+                       OR [max_length] <> -1
+                       OR [is_nullable] = 0))
+            BEGIN
+                ALTER TABLE [dbo].[InstallmentPayment]
+                    ALTER COLUMN [CardTransactionsJson] NVARCHAR(MAX) NULL;
+            END;
+        END;
+        """;
+
     public async Task CreateAsync(InstallmentDetailsDto details, CancellationToken cancellationToken)
     {
         var db = dbContext.PosmDb;
@@ -880,13 +935,15 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
     {
         var db = dbContext.PosmDb;
         await EnsureTablesAsync(db, cancellationToken);
+        var installmentGuidText = installmentGuid.ToString("D");
+        var paymentGuidText = payment.PaymentGuid.ToString("D");
         await db.Ado.BeginTranAsync();
         try
         {
             var current = await GetDetailsInsideTransactionAsync(db, installmentGuid, cancellationToken)
                 ?? throw new InvalidOperationException("Installment was not found.");
             var existingPayment = await db.Queryable<InstallmentPaymentEntity>()
-                .AnyAsync(x => x.PaymentGuid == payment.PaymentGuid.ToString("D"), cancellationToken);
+                .AnyAsync(x => x.PaymentGuid == paymentGuidText, cancellationToken);
             if (!existingPayment)
             {
                 if (payment.Method == PaymentMethodKind.Voucher)
@@ -914,7 +971,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             }
 
             var paidAmount = RoundCurrency(await db.Queryable<InstallmentPaymentEntity>()
-                .Where(x => x.InstallmentGuid == installmentGuid.ToString("D") && x.Status == (int)InstallmentPaymentStatus.Recorded)
+                .Where(x => x.InstallmentGuid == installmentGuidText && x.Status == (int)InstallmentPaymentStatus.Recorded)
                 .SumAsync(x => x.Amount));
             var balanceAmount = RoundCurrency(Math.Max(0m, current.TotalAmount - paidAmount));
             var status = balanceAmount == 0m ? InstallmentStatus.PaidOff : InstallmentStatus.Active;
@@ -923,7 +980,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
                 .SetColumns(x => x.BalanceAmount == balanceAmount)
                 .SetColumns(x => x.Status == (int)status)
                 .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-                .Where(x => x.InstallmentGuid == installmentGuid.ToString("D"))
+                .Where(x => x.InstallmentGuid == installmentGuidText)
                 .ExecuteCommandAsync(cancellationToken);
             await db.Ado.CommitTranAsync();
             return await GetDetailsAsync(installmentGuid, cancellationToken)
@@ -945,13 +1002,14 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
     {
         var db = dbContext.PosmDb;
         await EnsureTablesAsync(db, cancellationToken);
+        var installmentGuidText = installmentGuid.ToString("D");
         await db.Updateable<InstallmentOrderEntity>()
             .SetColumns(x => x.Status == (int)InstallmentStatus.PickedUp)
             .SetColumns(x => x.PickedUpAt == pickedUpAt.UtcDateTime)
             .SetColumns(x => x.PickedUpBy == pickedUpBy)
             .SetColumns(x => x.PickupNote == note)
             .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-            .Where(x => x.InstallmentGuid == installmentGuid.ToString("D"))
+            .Where(x => x.InstallmentGuid == installmentGuidText)
             .ExecuteCommandAsync(cancellationToken);
         return await GetDetailsAsync(installmentGuid, cancellationToken)
             ?? throw new InvalidOperationException("Installment was not found.");
@@ -965,13 +1023,15 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
     {
         var db = dbContext.PosmDb;
         await EnsureTablesAsync(db, cancellationToken);
+        var installmentGuidText = installmentGuid.ToString("D");
         await db.Ado.BeginTranAsync();
         try
         {
             foreach (var refund in refunds)
             {
+                var refundPaymentGuidText = refund.PaymentGuid.ToString("D");
                 var existingPayment = await db.Queryable<InstallmentPaymentEntity>()
-                    .AnyAsync(x => x.PaymentGuid == refund.PaymentGuid.ToString("D"), cancellationToken);
+                    .AnyAsync(x => x.PaymentGuid == refundPaymentGuidText, cancellationToken);
                 if (!existingPayment)
                 {
                     await db.Insertable(MapPayment(installmentGuid, refund)).ExecuteCommandAsync(cancellationToken);
@@ -979,7 +1039,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             }
 
             var paidAmount = RoundCurrency(await db.Queryable<InstallmentPaymentEntity>()
-                .Where(x => x.InstallmentGuid == installmentGuid.ToString("D") && x.Status == (int)InstallmentPaymentStatus.Recorded)
+                .Where(x => x.InstallmentGuid == installmentGuidText && x.Status == (int)InstallmentPaymentStatus.Recorded)
                 .SumAsync(x => x.Amount));
             await db.Updateable<InstallmentOrderEntity>()
                 .SetColumns(x => x.PaidAmount == paidAmount)
@@ -991,7 +1051,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
                 .SetColumns(x => x.CancellationReason == cancellationInfo.Reason)
                 .SetColumns(x => x.CancellationIdempotencyKey == cancellationInfo.IdempotencyKey)
                 .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-                .Where(x => x.InstallmentGuid == installmentGuid.ToString("D"))
+                .Where(x => x.InstallmentGuid == installmentGuidText)
                 .ExecuteCommandAsync(cancellationToken);
             await db.Ado.CommitTranAsync();
             return await GetDetailsAsync(installmentGuid, cancellationToken)
@@ -1011,6 +1071,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
     {
         var db = dbContext.PosmDb;
         await EnsureTablesAsync(db, cancellationToken);
+        var installmentGuidText = installmentGuid.ToString("D");
         await db.Updateable<InstallmentOrderEntity>()
             .SetColumns(x => x.Status == (int)InstallmentStatus.Cancelled)
             .SetColumns(x => x.CancellationKind == (int)cancellationInfo.Kind)
@@ -1019,7 +1080,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             .SetColumns(x => x.CancellationReason == cancellationInfo.Reason)
             .SetColumns(x => x.CancellationIdempotencyKey == cancellationInfo.IdempotencyKey)
             .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
-            .Where(x => x.InstallmentGuid == installmentGuid.ToString("D"))
+            .Where(x => x.InstallmentGuid == installmentGuidText)
             .ExecuteCommandAsync(cancellationToken);
         return await GetDetailsAsync(installmentGuid, cancellationToken)
             ?? throw new InvalidOperationException("Installment was not found.");
@@ -1031,8 +1092,9 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
     {
         var db = dbContext.PosmDb;
         await EnsureTablesAsync(db, cancellationToken);
+        var paymentGuidText = paymentGuid.ToString("D");
         var entity = await db.Queryable<InstallmentPaymentEntity>()
-            .FirstAsync(x => x.PaymentGuid == paymentGuid.ToString("D"), cancellationToken);
+            .FirstAsync(x => x.PaymentGuid == paymentGuidText, cancellationToken);
         return entity is null ? null : new InstallmentPaymentLookup(ParseGuid(entity.InstallmentGuid), MapPayment(entity));
     }
 
@@ -1130,6 +1192,11 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
     {
         cancellationToken.ThrowIfCancellationRequested();
         db.CodeFirst.InitTables<InstallmentOrderEntity, InstallmentOrderLineEntity, InstallmentPaymentEntity>();
+        if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            db.Ado.ExecuteCommand(EnsureNullableLifecycleColumnsSql);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -1351,6 +1418,7 @@ public sealed class InstallmentOrderEntity
 
     public DateTime UpdatedAt { get; set; }
 
+    [SugarColumn(IsNullable = true)]
     public DateTime? PickedUpAt { get; set; }
 
     [SugarColumn(Length = 100, IsNullable = true)]
@@ -1362,8 +1430,10 @@ public sealed class InstallmentOrderEntity
     [SugarColumn(Length = 500, IsNullable = true)]
     public string? PickupNote { get; set; }
 
+    [SugarColumn(IsNullable = true)]
     public int? CancellationKind { get; set; }
 
+    [SugarColumn(IsNullable = true)]
     public DateTime? CancelledAt { get; set; }
 
     [SugarColumn(Length = 100, IsNullable = true)]
@@ -1435,7 +1505,7 @@ public sealed class InstallmentPaymentEntity
     [SugarColumn(Length = 50)]
     public string DeviceCode { get; set; } = string.Empty;
 
-    [SugarColumn(ColumnDataType = "nvarchar(max)", IsNullable = true)]
+    [SugarColumn(IsNullable = true)]
     public string? CardTransactionsJson { get; set; }
 
     [SugarColumn(Length = 100, IsNullable = true)]

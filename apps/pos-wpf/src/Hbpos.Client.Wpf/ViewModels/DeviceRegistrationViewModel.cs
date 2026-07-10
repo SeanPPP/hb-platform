@@ -10,11 +10,19 @@ namespace Hbpos.Client.Wpf.ViewModels;
 public sealed partial class DeviceRegistrationViewModel : ObservableObject
 {
     private const int PendingDeviceStatus = -1;
+    private static readonly TimeSpan DefaultApprovalPollingInterval = TimeSpan.FromSeconds(5);
 
     private readonly IDeviceRegistrationWorkflowService _workflowService;
     private readonly ILocalizationService? _localization;
+    private readonly TimeSpan _approvalPollingInterval;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private string? _excludedStoreCode;
     private PendingRegistrationState? _pendingRegistration;
+    private CancellationTokenSource? _approvalPollingCancellation;
+    private CancellationTokenSource? _manualVerificationCancellation;
+    private CancellationTokenSource? _registrationActionCancellation;
+    private Task? _approvalPollingTask;
+    private long _registrationSessionVersion;
     private bool _isReregisterCancelRequested;
 
     [ObservableProperty]
@@ -45,17 +53,27 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         IDeviceApiClient deviceApiClient,
         ILocalDeviceRepository deviceRepository,
         IDeviceFingerprintService fingerprintService,
-        ILocalizationService? localization = null)
-        : this(new DeviceRegistrationWorkflowService(deviceApiClient, deviceRepository, fingerprintService, localization), localization)
+        ILocalizationService? localization = null,
+        TimeSpan? approvalPollingInterval = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        : this(
+            new DeviceRegistrationWorkflowService(deviceApiClient, deviceRepository, fingerprintService, localization),
+            localization,
+            approvalPollingInterval,
+            delayAsync)
     {
     }
 
     public DeviceRegistrationViewModel(
         IDeviceRegistrationWorkflowService workflowService,
-        ILocalizationService? localization = null)
+        ILocalizationService? localization = null,
+        TimeSpan? approvalPollingInterval = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
         _workflowService = workflowService;
         _localization = localization;
+        _approvalPollingInterval = approvalPollingInterval ?? DefaultApprovalPollingInterval;
+        _delayAsync = delayAsync ?? Task.Delay;
         if (_localization is not null)
         {
             _localization.CultureChanged += (_, _) => RaiseLocalizedProperties();
@@ -73,6 +91,8 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
     public IAsyncRelayCommand VerifyCommand { get; }
 
     public IRelayCommand CancelCommand { get; }
+
+    internal Task? ApprovalPollingTask => _approvalPollingTask;
 
     public string TitleText => IsReregisterMode
         ? T("deviceRegistration.title.reregister", "Reregister Device to Another Store")
@@ -106,6 +126,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     public void Prepare(LocalDeviceCache? cachedDevice)
     {
+        StopApprovalPolling();
         IsReregisterMode = false;
         CanCancel = false;
         _isReregisterCancelRequested = false;
@@ -139,6 +160,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     public void PrepareReregister(string currentStoreCode)
     {
+        StopApprovalPolling();
         IsReregisterMode = true;
         CanCancel = true;
         _isReregisterCancelRequested = false;
@@ -182,6 +204,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     partial void OnSelectedStoreChanged(StoreSelectionItem? value)
     {
+        StopApprovalPolling();
         ApplyPendingRegistrationSelection(value);
         OnPropertyChanged(nameof(RegisterButtonText));
         NotifyCommandState();
@@ -215,19 +238,49 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
             return;
         }
 
+        var selectedStore = SelectedStore;
+        StopApprovalPolling();
+        var actionCancellation = new CancellationTokenSource();
+        var actionToken = actionCancellation.Token;
+        _registrationActionCancellation = actionCancellation;
+        var sessionVersion = _registrationSessionVersion;
         IsBusy = true;
         try
         {
             StatusMessage = T("deviceRegistration.status.submitting", "Submitting device registration...");
-            var result = await _workflowService.RegisterAsync(SelectedStore, HardwareId);
+            var result = await _workflowService.RegisterAsync(selectedStore, HardwareId, actionToken);
+            if (!IsCurrentRegistrationAction(sessionVersion, actionCancellation, selectedStore))
+            {
+                return;
+            }
+
+            await PersistResultAsync(result, actionToken);
+            if (!IsCurrentRegistrationAction(sessionVersion, actionCancellation, selectedStore))
+            {
+                return;
+            }
+
             await ApplyActionResultAsync(result, clearDeviceCodeWhenRejected: true);
+        }
+        catch (OperationCanceledException) when (actionToken.IsCancellationRequested)
+        {
+            // 已切换门店或重置流程的注册提交不应覆盖当前注册状态。
         }
         catch (Exception ex)
         {
-            StatusMessage = ex.Message;
+            if (IsCurrentRegistrationAction(sessionVersion, actionCancellation, selectedStore))
+            {
+                StatusMessage = ex.Message;
+            }
         }
         finally
         {
+            if (ReferenceEquals(_registrationActionCancellation, actionCancellation))
+            {
+                _registrationActionCancellation = null;
+                actionCancellation.Dispose();
+            }
+
             IsBusy = false;
         }
     }
@@ -239,22 +292,38 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
             return;
         }
 
+        var selectedStore = SelectedStore;
+        StopApprovalPolling();
+        var actionCancellation = new CancellationTokenSource();
+        var actionToken = actionCancellation.Token;
+        _registrationActionCancellation = actionCancellation;
+        var sessionVersion = _registrationSessionVersion;
         IsBusy = true;
         try
         {
             StatusMessage = T("deviceRegistration.status.submittingReregister", "Submitting device reregistration...");
-            var result = await _workflowService.ReregisterAsync(SelectedStore, HardwareId);
-            if (_isReregisterCancelRequested)
+            var result = await _workflowService.ReregisterAsync(selectedStore, HardwareId, actionToken);
+            if (_isReregisterCancelRequested || !IsCurrentRegistrationAction(sessionVersion, actionCancellation, selectedStore))
             {
                 // 用户已放弃本次更换分店流程，忽略后台返回，避免关闭后的弹窗继续改写界面状态。
                 return;
             }
 
+            await PersistResultAsync(result, actionToken);
+            if (_isReregisterCancelRequested || !IsCurrentRegistrationAction(sessionVersion, actionCancellation, selectedStore))
+            {
+                return;
+            }
+
             await ApplyActionResultAsync(result);
+        }
+        catch (OperationCanceledException) when (actionToken.IsCancellationRequested)
+        {
+            // 已取消的重新注册提交不应覆盖当前授权分店。
         }
         catch (Exception ex)
         {
-            if (_isReregisterCancelRequested)
+            if (_isReregisterCancelRequested || !IsCurrentRegistrationAction(sessionVersion, actionCancellation, selectedStore))
             {
                 // 取消后不再把后台错误显示到已关闭流程，当前授权分店继续保持不变。
                 return;
@@ -264,6 +333,12 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         }
         finally
         {
+            if (ReferenceEquals(_registrationActionCancellation, actionCancellation))
+            {
+                _registrationActionCancellation = null;
+                actionCancellation.Dispose();
+            }
+
             IsBusy = false;
         }
     }
@@ -275,19 +350,50 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
             return;
         }
 
+        var selectedStore = SelectedStore;
+        var deviceCode = DeviceCode;
+        StopApprovalPolling();
+        var verificationCancellation = new CancellationTokenSource();
+        var verificationToken = verificationCancellation.Token;
+        _manualVerificationCancellation = verificationCancellation;
+        var sessionVersion = _registrationSessionVersion;
         IsBusy = true;
         try
         {
             StatusMessage = T("deviceRegistration.status.checkingApproval", "Checking device approval...");
-            var result = await _workflowService.VerifyAsync(SelectedStore, DeviceCode, HardwareId);
+            var result = await _workflowService.VerifyAsync(selectedStore, deviceCode, HardwareId, verificationToken);
+            if (!IsCurrentManualVerification(sessionVersion, verificationCancellation, selectedStore, deviceCode))
+            {
+                return;
+            }
+
+            await PersistResultAsync(result, verificationToken);
+            if (!IsCurrentManualVerification(sessionVersion, verificationCancellation, selectedStore, deviceCode))
+            {
+                return;
+            }
+
             await ApplyActionResultAsync(result);
+        }
+        catch (OperationCanceledException) when (verificationToken.IsCancellationRequested)
+        {
+            // 已切换门店或重置流程的手动验证不应覆盖当前注册状态。
         }
         catch (Exception ex)
         {
-            StatusMessage = ex.Message;
+            if (IsCurrentManualVerification(sessionVersion, verificationCancellation, selectedStore, deviceCode))
+            {
+                StatusMessage = ex.Message;
+            }
         }
         finally
         {
+            if (ReferenceEquals(_manualVerificationCancellation, verificationCancellation))
+            {
+                _manualVerificationCancellation = null;
+                verificationCancellation.Dispose();
+            }
+
             IsBusy = false;
         }
     }
@@ -319,7 +425,8 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
 
     private async Task ApplyActionResultAsync(
         DeviceRegistrationActionResult result,
-        bool clearDeviceCodeWhenRejected = false)
+        bool clearDeviceCodeWhenRejected = false,
+        bool restartPollingWhenPending = true)
     {
         var shouldClearRejectedDeviceCode = clearDeviceCodeWhenRejected
             && !result.HasPendingRegistration
@@ -346,6 +453,15 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
             {
                 _pendingRegistration = null;
             }
+        }
+
+        if (result.ShouldRaiseActivated || result.ShouldRaiseReregistered || !result.HasPendingRegistration || shouldClearRejectedDeviceCode)
+        {
+            StopApprovalPolling();
+        }
+        else if (restartPollingWhenPending)
+        {
+            RestartApprovalPollingIfNeeded();
         }
 
         if (result.ShouldRaiseReregistered)
@@ -402,9 +518,11 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
             DeviceCode = _pendingRegistration.DeviceCode;
             HasPendingRegistration = true;
             StatusMessage = _pendingRegistration.StatusMessage;
+            RestartApprovalPollingIfNeeded();
             return;
         }
 
+        StopApprovalPolling();
         DeviceCode = string.Empty;
         HasPendingRegistration = false;
         StatusMessage = T(
@@ -430,10 +548,160 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject
         return _localization?.T(key) ?? fallback;
     }
 
+    private void RestartApprovalPollingIfNeeded()
+    {
+        StopApprovalPolling();
+        if (IsReregisterMode || !HasPendingRegistration || SelectedStore is null || string.IsNullOrWhiteSpace(DeviceCode))
+        {
+            return;
+        }
+
+        var store = SelectedStore;
+        var deviceCode = DeviceCode;
+        var hardwareId = HardwareId;
+        var pollingCancellation = new CancellationTokenSource();
+        var sessionVersion = _registrationSessionVersion;
+        _approvalPollingCancellation = pollingCancellation;
+        _approvalPollingTask = PollApprovalAsync(store, deviceCode, hardwareId, pollingCancellation, sessionVersion);
+    }
+
+    private void StopApprovalPolling()
+    {
+        _registrationSessionVersion++;
+        var pollingCancellation = _approvalPollingCancellation;
+        _approvalPollingCancellation = null;
+        CancelAndDispose(pollingCancellation);
+
+        var manualVerificationCancellation = _manualVerificationCancellation;
+        _manualVerificationCancellation = null;
+        CancelAndDispose(manualVerificationCancellation);
+
+        var registrationActionCancellation = _registrationActionCancellation;
+        _registrationActionCancellation = null;
+        CancelAndDispose(registrationActionCancellation);
+    }
+
+    private static void CancelAndDispose(CancellationTokenSource? cancellation)
+    {
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        cancellation.Cancel();
+        cancellation.Dispose();
+    }
+
+    private bool IsCurrentApprovalPolling(CancellationTokenSource pollingCancellation, long sessionVersion)
+    {
+        // 取消令牌是协作式的，旧请求仍可能晚于新轮询返回，因此必须确认结果归属当前会话。
+        return ReferenceEquals(_approvalPollingCancellation, pollingCancellation)
+            && sessionVersion == _registrationSessionVersion
+            && !pollingCancellation.IsCancellationRequested;
+    }
+
+    private bool IsCurrentManualVerification(
+        long sessionVersion,
+        CancellationTokenSource verificationCancellation,
+        StoreSelectionItem selectedStore,
+        string deviceCode)
+    {
+        return ReferenceEquals(_manualVerificationCancellation, verificationCancellation)
+            && sessionVersion == _registrationSessionVersion
+            && !verificationCancellation.IsCancellationRequested
+            && string.Equals(SelectedStore?.StoreCode, selectedStore.StoreCode, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(DeviceCode, deviceCode, StringComparison.Ordinal);
+    }
+
+    private bool IsCurrentRegistrationAction(
+        long sessionVersion,
+        CancellationTokenSource actionCancellation,
+        StoreSelectionItem selectedStore)
+    {
+        return ReferenceEquals(_registrationActionCancellation, actionCancellation)
+            && sessionVersion == _registrationSessionVersion
+            && !actionCancellation.IsCancellationRequested
+            && string.Equals(SelectedStore?.StoreCode, selectedStore.StoreCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Task PersistResultAsync(
+        DeviceRegistrationActionResult result,
+        CancellationToken cancellationToken)
+    {
+        return result.PersistAsync?.Invoke(cancellationToken) ?? Task.CompletedTask;
+    }
+
+    private async Task PollApprovalAsync(
+        StoreSelectionItem store,
+        string deviceCode,
+        string hardwareId,
+        CancellationTokenSource pollingCancellation,
+        long sessionVersion)
+    {
+        var cancellationToken = pollingCancellation.Token;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    // 待审批注册没有服务端推送，按固定间隔轻量检查，直到后台启用或返回终态。
+                    await _delayAsync(_approvalPollingInterval, cancellationToken);
+                    if (!IsCurrentApprovalPolling(pollingCancellation, sessionVersion))
+                    {
+                        return;
+                    }
+
+                    StatusMessage = T("deviceRegistration.status.checkingApproval", "Checking device approval...");
+                    var result = await _workflowService.VerifyAsync(store, deviceCode, hardwareId, cancellationToken);
+                    if (!IsCurrentApprovalPolling(pollingCancellation, sessionVersion))
+                    {
+                        return;
+                    }
+
+                    await PersistResultAsync(result, cancellationToken);
+                    if (!IsCurrentApprovalPolling(pollingCancellation, sessionVersion))
+                    {
+                        return;
+                    }
+
+                    await ApplyActionResultAsync(result, restartPollingWhenPending: false);
+                    if (!result.HasPendingRegistration || result.ShouldRaiseActivated || result.ShouldRaiseReregistered)
+                    {
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (!IsCurrentApprovalPolling(pollingCancellation, sessionVersion))
+                    {
+                        return;
+                    }
+
+                    // 单次轮询失败只提示错误，保留注册页并继续下一轮重试。
+                    StatusMessage = ex.Message;
+                }
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_approvalPollingCancellation, pollingCancellation))
+            {
+                _approvalPollingCancellation = null;
+                pollingCancellation.Dispose();
+            }
+        }
+    }
+
     private void Cancel()
     {
         if (CanExecuteCancel())
         {
+            StopApprovalPolling();
             if (IsReregisterMode)
             {
                 _isReregisterCancelRequested = true;

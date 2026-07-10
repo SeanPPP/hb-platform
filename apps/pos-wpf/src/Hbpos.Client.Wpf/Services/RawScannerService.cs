@@ -35,9 +35,50 @@ public sealed class RawBarcodeScannedEventArgs(string barcode, string devicePath
     public DateTimeOffset ScannedAt { get; } = scannedAt;
 }
 
+internal interface IScannerInputDeduplicator
+{
+    bool TryAcceptScanDelivery(string barcode, string source, DateTimeOffset timestamp);
+}
+
+internal sealed class ScannerInputDuplicateGuard
+{
+    private static readonly TimeSpan CrossSourceDuplicateWindow = TimeSpan.FromMilliseconds(100);
+    private readonly object _gate = new();
+    private string? _lastBarcode;
+    private string? _lastSource;
+    private DateTimeOffset _lastAcceptedAt = DateTimeOffset.MinValue;
+
+    public bool TryAccept(string barcode, string source, DateTimeOffset timestamp)
+    {
+        var normalizedBarcode = barcode.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedBarcode))
+        {
+            return true;
+        }
+
+        lock (_gate)
+        {
+            var isCrossSourceDuplicate =
+                !string.Equals(_lastSource, source, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(_lastBarcode, normalizedBarcode, StringComparison.OrdinalIgnoreCase) &&
+                (timestamp - _lastAcceptedAt).Duration() <= CrossSourceDuplicateWindow;
+            if (isCrossSourceDuplicate)
+            {
+                return false;
+            }
+
+            // 同一来源的连续扫码必须保留；只消除 Raw Input 与键盘兜底产生的同一次跨来源提交。
+            _lastBarcode = normalizedBarcode;
+            _lastSource = source;
+            _lastAcceptedAt = timestamp;
+            return true;
+        }
+    }
+}
+
 public sealed class RawScannerService(
     IScannerBindingService bindingService,
-    RawScannerInputProcessor inputProcessor) : IRawScannerService
+    RawScannerInputProcessor inputProcessor) : IRawScannerService, IScannerInputDeduplicator
 {
     private const int RidInput = 0x10000003;
     private const int RidiDevicename = 0x20000007;
@@ -49,6 +90,7 @@ public sealed class RawScannerService(
 
     private readonly Dictionary<string, Action<RawBarcodeScannedEventArgs>> _handlers = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _flushTimer = new() { Interval = TimeSpan.FromMilliseconds(40) };
+    private readonly ScannerInputDuplicateGuard _duplicateGuard = new();
     private string? _activePageId;
     private string? _boundDevicePath;
     private string? _lastRejectedDevicePath;
@@ -58,6 +100,11 @@ public sealed class RawScannerService(
     private bool _loggedEmptyDevicePath;
 
     public bool IsActive { get; private set; }
+
+    bool IScannerInputDeduplicator.TryAcceptScanDelivery(
+        string barcode,
+        string source,
+        DateTimeOffset timestamp) => _duplicateGuard.TryAccept(barcode, source, timestamp);
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -269,6 +316,14 @@ public sealed class RawScannerService(
 
         var dispatchAt = DateTimeOffset.Now;
         var completedAt = result.CompletedAt == default ? dispatchAt : result.CompletedAt;
+        if (!_duplicateGuard.TryAccept(result.Barcode, "raw", completedAt))
+        {
+            ConsoleLog.Write(
+                "RawScanner",
+                $"scan duplicate suppressed source=raw barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(result.Barcode)} activePage={_activePageId}");
+            return;
+        }
+
         var dispatchDelayMs = Math.Max(0, (dispatchAt - completedAt).TotalMilliseconds);
         ConsoleLog.Write(
             "RawScanner",

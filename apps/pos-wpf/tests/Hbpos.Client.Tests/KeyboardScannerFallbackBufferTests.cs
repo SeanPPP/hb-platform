@@ -1,5 +1,6 @@
 using System.Windows.Input;
 using Hbpos.Client.Wpf;
+using Hbpos.Client.Wpf.Services;
 
 namespace Hbpos.Client.Tests;
 
@@ -30,6 +31,41 @@ public sealed class KeyboardScannerFallbackBufferTests
         var barcode = buffer.Process(Key.Enter, now.AddMilliseconds(160));
 
         Assert.Null(barcode);
+    }
+
+    [Fact]
+    public void Process_UsesImeProcessedKeyForScannerCharacters()
+    {
+        var buffer = new KeyboardScannerFallbackBuffer();
+        var now = DateTimeOffset.UtcNow;
+
+        Assert.Null(buffer.Process(Key.ImeProcessed, now, Key.A));
+        Assert.Null(buffer.Process(Key.ImeProcessed, now.AddMilliseconds(10), Key.B));
+        Assert.Null(buffer.Process(Key.ImeProcessed, now.AddMilliseconds(20), Key.C));
+        var barcode = buffer.Process(Key.Enter, now.AddMilliseconds(30));
+
+        Assert.Equal("ABC", barcode);
+    }
+
+    [Fact]
+    public void DuplicateGuard_suppresses_same_barcode_from_different_input_sources()
+    {
+        var guard = new ScannerInputDuplicateGuard();
+        var now = DateTimeOffset.UtcNow;
+
+        Assert.True(guard.TryAccept("ABC123", "raw", now));
+        Assert.False(guard.TryAccept("ABC123", "keyboard-fallback", now.AddMilliseconds(10)));
+    }
+
+    [Fact]
+    public void DuplicateGuard_allows_repeated_scans_from_same_source_and_delayed_source_changes()
+    {
+        var guard = new ScannerInputDuplicateGuard();
+        var now = DateTimeOffset.UtcNow;
+
+        Assert.True(guard.TryAccept("ABC123", "raw", now));
+        Assert.True(guard.TryAccept("ABC123", "raw", now.AddMilliseconds(10)));
+        Assert.True(guard.TryAccept("ABC123", "keyboard-fallback", now.AddMilliseconds(250)));
     }
 
     [Theory]
@@ -141,5 +177,46 @@ public sealed class KeyboardScannerFallbackBufferTests
         string expected)
     {
         Assert.Equal(expected, MainWindow.ApplyCashierBarcodeKeyboardInput(current, key));
+    }
+
+    [Fact]
+    public void VoucherEntryTextBox_disables_ime_for_scanner_input()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PaymentView.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+        var textBoxStart = xaml.IndexOf("<TextBox x:Name=\"VoucherEntryTextBox\"", StringComparison.Ordinal);
+
+        Assert.True(textBoxStart >= 0);
+        var textBoxEnd = xaml.IndexOf("/>", textBoxStart, StringComparison.Ordinal);
+        Assert.True(textBoxEnd > textBoxStart);
+        var textBoxMarkup = xaml[textBoxStart..textBoxEnd];
+        Assert.Contains("InputMethod.IsInputMethodEnabled=\"False\"", textBoxMarkup, StringComparison.Ordinal);
+        Assert.Contains("InputMethod.PreferredImeState=\"Off\"", textBoxMarkup, StringComparison.Ordinal);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (Directory.Exists(Path.Combine(current.FullName, ".git")) ||
+                File.Exists(Path.Combine(current.FullName, ".git")) ||
+                File.Exists(Path.Combine(current.FullName, "hb-platform.sln")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Unable to find repository root.");
     }
 }

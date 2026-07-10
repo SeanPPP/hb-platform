@@ -480,14 +480,56 @@
   <data name="payment.method.installment" xml:space="preserve">
     <value>分期付款</value>
   </data>
+  <data name="payment.installment.switchHelp" xml:space="preserve">
+    <value>收取首付款并记录顾客信息</value>
+  </data>
   <data name="payment.installment.customerName" xml:space="preserve">
     <value>顾客姓名 *</value>
+  </data>
+  <data name="payment.installment.customerNamePlaceholder" xml:space="preserve">
+    <value>请输入顾客姓名</value>
   </data>
   <data name="payment.installment.customerPhone" xml:space="preserve">
     <value>顾客电话 *</value>
   </data>
+  <data name="payment.installment.customerPhonePlaceholder" xml:space="preserve">
+    <value>请输入顾客电话</value>
+  </data>
+  <data name="payment.installment.customerInfo" xml:space="preserve">
+    <value>顾客信息</value>
+  </data>
+  <data name="payment.installment.customerMissingName" xml:space="preserve">
+    <value>顾客姓名必填</value>
+  </data>
+  <data name="payment.installment.customerMissingPhone" xml:space="preserve">
+    <value>顾客电话必填</value>
+  </data>
+  <data name="payment.installment.editCustomer" xml:space="preserve">
+    <value>编辑</value>
+  </data>
+  <data name="payment.installment.customerDialogTitle" xml:space="preserve">
+    <value>编辑顾客信息</value>
+  </data>
+  <data name="payment.installment.customerDialogHelp" xml:space="preserve">
+    <value>请输入本次分期订单必填的顾客姓名和电话。</value>
+  </data>
+  <data name="payment.installment.saveCustomer" xml:space="preserve">
+    <value>保存顾客信息</value>
+  </data>
   <data name="payment.installment.outstanding" xml:space="preserve">
     <value>未付余额</value>
+  </data>
+  <data name="payment.installment.confirmFullFirstPayment.title" xml:space="preserve">
+    <value>确认创建分期单</value>
+  </data>
+  <data name="payment.installment.confirmFullFirstPayment.message" xml:space="preserve">
+    <value>分期首付款已覆盖整单金额。是否仍要创建分期单？</value>
+  </data>
+  <data name="payment.installment.confirmPickupAfterPaidOff.title" xml:space="preserve">
+    <value>确认提货</value>
+  </data>
+  <data name="payment.installment.confirmPickupAfterPaidOff.message" xml:space="preserve">
+    <value>该分期单已付清。是否现在确认顾客已提货？</value>
   </data>
   <data name="payment.installment.status.onlineRequired" xml:space="preserve">
     <value>分期付款需要在线模式。</value>
@@ -518,6 +560,12 @@
   </data>
   <data name="payment.installment.status.repaymentRecorded" xml:space="preserve">
     <value>分期补款已记录。</value>
+  </data>
+  <data name="payment.installment.status.fullFirstPaymentCancelled" xml:space="preserve">
+    <value>已取消本次全额首付分期确认。</value>
+  </data>
+  <data name="payment.installment.status.pickupConfirmFailed" xml:space="preserve">
+    <value>确认提货失败，小票已按待提货打印。{0}</value>
   </data>
   <data name="payment.action.addCash" xml:space="preserve">
     <value>添加现金</value>
@@ -1582,28 +1630,28 @@
     <value>请扫描订单号开始小票退货。</value>
   </data>
   <data name="returns.status.loadedOnline" xml:space="preserve">
-    <value>已从线上订单历史加载订单 {0}。</value>
+    <value>已从线上订单历史加载订单和退货记录。</value>
   </data>
   <data name="returns.status.lookupFailed" xml:space="preserve">
     <value>订单查询失败：{0}</value>
   </data>
   <data name="returns.status.loadedLocalStaleWithError" xml:space="preserve">
-    <value>已加载本地订单 {0}；线上查询失败。{1}</value>
+    <value>已加载本地订单；线上查询失败。{0}</value>
   </data>
   <data name="returns.status.scanProduct" xml:space="preserve">
     <value>请扫描商品编码添加无小票退货行。</value>
   </data>
   <data name="returns.status.productNotFound" xml:space="preserve">
-    <value>未在本地目录中找到商品 {0}。</value>
+    <value>未在本地目录中找到商品。</value>
   </data>
   <data name="returns.status.addedNoReceipt" xml:space="preserve">
     <value>已添加 {0} 到无小票退货。</value>
   </data>
   <data name="returns.status.orderNotFound" xml:space="preserve">
-    <value>未找到订单 {0}。</value>
+    <value>未找到订单。</value>
   </data>
   <data name="returns.status.loadedLocalStale" xml:space="preserve">
-    <value>已加载本地订单 {0}；线上订单历史不可用。</value>
+    <value>已加载本地订单；线上订单历史不可用。</value>
   </data>
   <data name="returns.status.addedReceiptLine" xml:space="preserve">
     <value>已将 {0} 加入退款购物车。</value>

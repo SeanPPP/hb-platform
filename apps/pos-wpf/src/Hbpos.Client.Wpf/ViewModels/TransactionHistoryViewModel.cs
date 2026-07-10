@@ -6,6 +6,8 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Installments;
+using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
@@ -38,6 +40,7 @@ public sealed record HistoryOrderListItem(
     InstallmentOrderSummary? InstallmentOrder = null,
     bool IsInstallmentOrder = false,
     bool CanContinueInstallmentPayment = false,
+    bool CanConfirmInstallmentPickup = false,
     string CustomerPhone = "")
 {
     public string ShortOrderId => OrderGuid.ToString("N")[..8].ToUpperInvariant();
@@ -199,6 +202,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         RecallSelectedCommand = new AsyncRelayCommand(RecallSelectedAsync, CanRecallSelected);
         RecallOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(RecallOrderAsync, CanRecallOrder);
         ContinueInstallmentPaymentCommand = new AsyncRelayCommand<HistoryOrderListItem>(ContinueInstallmentPaymentAsync, CanContinueInstallmentPayment);
+        ConfirmInstallmentPickupCommand = new AsyncRelayCommand<HistoryOrderListItem>(ConfirmInstallmentPickupAsync, CanConfirmInstallmentPickup);
         ReprintCommand = new RelayCommand(ReprintSelected, CanReprintSelected);
         RefundCommand = new RelayCommand(() => { }, () => false);
     }
@@ -227,6 +231,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     public IAsyncRelayCommand<HistoryOrderListItem> ContinueInstallmentPaymentCommand { get; }
 
+    public IAsyncRelayCommand<HistoryOrderListItem> ConfirmInstallmentPickupCommand { get; }
+
     public IRelayCommand ReprintCommand { get; }
 
     public IRelayCommand RefundCommand { get; }
@@ -238,6 +244,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public bool IsReprintVisible => CanReprintSelected();
 
     public bool IsContinueInstallmentPaymentVisible => CanContinueInstallmentPayment(SelectedOrder);
+
+    public bool IsConfirmInstallmentPickupVisible => CanConfirmInstallmentPickup(SelectedOrder);
 
     public bool IsLocalSourceSelected
     {
@@ -338,10 +346,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsInstallmentSourceSelected));
         OnPropertyChanged(nameof(IsStandardSourceSelected));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         ReprintCommand?.NotifyCanExecuteChanged();
         RecallSelectedCommand?.NotifyCanExecuteChanged();
         RecallOrderCommand?.NotifyCanExecuteChanged();
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
+        ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
         if (!_suppressSourceAutoLoad)
         {
             _ = LoadAsync(CancellationToken.None);
@@ -354,9 +364,11 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         RecallSelectedCommand?.NotifyCanExecuteChanged();
         RecallOrderCommand?.NotifyCanExecuteChanged();
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
+        ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsRecallVisible));
         OnPropertyChanged(nameof(IsReprintVisible));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
 
         if (_suppressSelectedOrderLoad)
         {
@@ -375,6 +387,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
         StoreFilterText = $"{value.StoreName} ({value.StoreCode})";
         RefreshTerminalOptions(SelectedTerminalOption?.DeviceCode is null);
+        ConfirmInstallmentPickupCommand?.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
     }
 
     partial void OnSelectedTerminalOptionChanged(TerminalFilterOption? value)
@@ -521,6 +535,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 InstallmentOrder: order,
                 IsInstallmentOrder: true,
                 CanContinueInstallmentPayment: order.CanAddRepayment,
+                CanConfirmInstallmentPickup: order.CanConfirmPickup,
                 CustomerPhone: order.CustomerPhone))
             .ToList();
     }
@@ -535,10 +550,28 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
         if (SelectedOrder.IsInstallmentOrder)
         {
-            // 中文注释：分期来源没有普通小票明细，右侧预览显示分期金额摘要。
+            // 中文注释：分期历史只更新屏幕预览，不触发实际打印。
+            var installmentDetails = await LoadInstallmentPreviewDetailsAsync(SelectedOrder.OrderGuid, cancellationToken);
+            if (installmentDetails is not null)
+            {
+                // 中文注释：有本地分期快照时复用正式小票映射，右侧预览才能显示正常抬头和提货信息。
+                var installmentReceipt = InstallmentReceiptMapper.CreateReceipt(installmentDetails);
+                ReceiptLines.ReplaceWith(installmentReceipt.Lines);
+                Payments.ReplaceWith(installmentReceipt.Payments);
+                ReceiptPreviewRows.ReplaceWith(BuildPreviewRows(
+                    installmentReceipt,
+                    await LoadPreviewSettingsAsync(cancellationToken)));
+                PreviewSubtotal = installmentReceipt.TotalAmount;
+                PreviewDiscount = installmentReceipt.DiscountAmount;
+                PreviewTotal = installmentReceipt.ActualAmount;
+                PreviewOrderId = installmentReceipt.TransactionIdDisplay;
+                PreviewSoldAt = installmentReceipt.SoldAtDisplay;
+                return;
+            }
+
             ReceiptLines.Clear();
             Payments.Clear();
-            ReceiptPreviewRows.Clear();
+            ReceiptPreviewRows.ReplaceWith(BuildInstallmentPreviewRows(SelectedOrder, installmentDetails));
             PreviewSubtotal = SelectedOrder.TotalAmount;
             PreviewDiscount = SelectedOrder.InstallmentOrder?.PaidAmount ?? 0m;
             PreviewTotal = SelectedOrder.ActualAmount;
@@ -603,6 +636,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             order.CanContinueInstallmentPayment;
     }
 
+    private bool CanConfirmInstallmentPickup(HistoryOrderListItem? order)
+    {
+        return Session.IsOnline &&
+            order?.InstallmentOrder is not null &&
+            order.CanConfirmInstallmentPickup;
+    }
+
     private bool CanReprintSelected()
     {
         return SelectedOrder is { IsSuspendedOrder: false, Source: TransactionHistorySource.LocalOrders };
@@ -641,6 +681,71 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
+    private async Task<LocalInstallmentOrder?> LoadInstallmentPreviewDetailsAsync(Guid installmentGuid, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _installmentOrderService.GetLocalOrderAsync(installmentGuid, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private IReadOnlyList<ReceiptPreviewRow> BuildInstallmentPreviewRows(HistoryOrderListItem order, LocalInstallmentOrder? details)
+    {
+        var summary = order.InstallmentOrder;
+        var totalAmount = details?.TotalAmount ?? summary?.TotalAmount ?? order.TotalAmount;
+        var paidAmount = details?.PaidAmount ?? summary?.PaidAmount ?? 0m;
+        var outstandingAmount = details?.BalanceAmount ?? summary?.OutstandingAmount ?? order.ActualAmount;
+        var customerName = details?.CustomerName ?? summary?.CustomerName ?? order.CashierName;
+        var customerPhone = details?.CustomerPhone ?? summary?.CustomerPhone ?? order.CustomerPhone;
+        var status = summary?.Status ?? order.StatusLabel;
+
+        var rows = new List<ReceiptPreviewRow>
+        {
+            new(ReceiptPreviewRowKind.Text, "===== TAX INVOICE =====", ReceiptPrintAlignment.Center, true),
+            new(ReceiptPreviewRowKind.Text, FitPreviewColumns(T("installment.center.column.orderNumber"), order.DisplayOrderId), ReceiptPrintAlignment.Left, true),
+            new(ReceiptPreviewRowKind.Text, $"{T("Customer")}: {customerName}"),
+            new(ReceiptPreviewRowKind.Text, $"{T("Phone")}: {customerPhone}"),
+            new(ReceiptPreviewRowKind.Separator, new string('-', 42))
+        };
+
+        if (details?.Lines.Count > 0)
+        {
+            foreach (var line in details.Lines)
+            {
+                rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(line.DisplayName, FormatMoney(line.ActualAmount))));
+                rows.Add(new ReceiptPreviewRow(
+                    ReceiptPreviewRowKind.Text,
+                    $"  {line.Quantity.ToString("0.##", CultureInfo.InvariantCulture)} x {FormatMoney(line.UnitPrice)}"));
+            }
+
+            rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Separator, new string('-', 42)));
+        }
+
+        rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(T("Total"), FormatMoney(totalAmount)), ReceiptPrintAlignment.Left, true));
+        rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(T("history.installment.paid"), FormatMoney(paidAmount)), ReceiptPrintAlignment.Left, true));
+        rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(T("payment.installment.outstanding"), FormatMoney(outstandingAmount)), ReceiptPrintAlignment.Left, true));
+        rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(T("common.status"), status)));
+
+        var recordedPayments = details?.Payments
+            .Where(payment => payment.Status == InstallmentPaymentStatus.Recorded)
+            .ToList();
+        if (recordedPayments is { Count: > 0 })
+        {
+            rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Separator, new string('-', 42)));
+            rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, "Payments", ReceiptPrintAlignment.Center, true));
+            foreach (var payment in recordedPayments)
+            {
+                rows.Add(new ReceiptPreviewRow(ReceiptPreviewRowKind.Text, FitPreviewColumns(GetPaymentMethodLabel(payment.Method), FormatMoney(payment.Amount))));
+            }
+        }
+
+        return rows;
+    }
+
     private async Task ContinueInstallmentPaymentAsync(HistoryOrderListItem? order)
     {
         if (!CanContinueInstallmentPayment(order) || _continueInstallmentPaymentAsync is null)
@@ -649,6 +754,32 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
 
         await _continueInstallmentPaymentAsync(order!.InstallmentOrder!);
+    }
+
+    private async Task ConfirmInstallmentPickupAsync(HistoryOrderListItem? order)
+    {
+        if (!CanConfirmInstallmentPickup(order))
+        {
+            return;
+        }
+
+        if (!TryRequirePermission(Permissions.PosTerminal.Installments.ConfirmPickup))
+        {
+            return;
+        }
+
+        // 中文注释：历史页提货入口复用分期中心同一接口，成功后刷新列表和右侧预览状态。
+        var result = await _installmentOrderService.ConfirmPickupAsync(order!.InstallmentOrder!.OrderId, Session);
+        StatusMessage = result.Message;
+        if (result.Succeeded)
+        {
+            var message = result.Message;
+            await LoadAsync();
+            if (string.IsNullOrWhiteSpace(StatusMessage))
+            {
+                StatusMessage = message;
+            }
+        }
     }
 
     private void ReprintSelected()
@@ -815,12 +946,45 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             "history.source.local" => "Local",
             "history.source.online" => "Online",
             "history.source.installments" => "Installments",
+            "Customer" => "Customer",
+            "Phone" => "Phone",
+            "Total" => "Total",
+            "common.status" => "Status",
+            "payment.installment.outstanding" => "Outstanding",
             "history.installment.paid" => "Paid",
             "history.installment.continuePayment" => "Continue payment",
             "history.payment.suspended" => "Suspended",
             "history.status.pendingRecall" => "Pending recall",
+            "installment.center.column.orderNumber" => "Order No.",
+            "payment.method.cash" => "Cash",
+            "payment.method.card" => "Credit/Debit Card",
+            "payment.method.voucher" => "Voucher",
             _ => key
         };
+    }
+
+    private string GetPaymentMethodLabel(PaymentMethodKind method)
+    {
+        return method switch
+        {
+            PaymentMethodKind.Cash => T("payment.method.cash"),
+            PaymentMethodKind.Card => T("payment.method.card"),
+            PaymentMethodKind.Voucher => T("payment.method.voucher"),
+            _ => method.ToString()
+        };
+    }
+
+    private static string FormatMoney(decimal amount)
+    {
+        return string.Create(CultureInfo.InvariantCulture, $"${amount:0.00}");
+    }
+
+    private static string FitPreviewColumns(string left, string right)
+    {
+        const int lineWidth = 42;
+        left = left.Length > 24 ? left[..24] : left;
+        right = right.Length > 16 ? right[..16] : right;
+        return left + new string(' ', Math.Max(1, lineWidth - left.Length - right.Length)) + right;
     }
 
     private static DateTimeOffset? ParseDateFrom(DateTime? value)

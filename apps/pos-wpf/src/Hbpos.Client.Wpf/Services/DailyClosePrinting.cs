@@ -140,7 +140,13 @@ public static class DailyCloseTextFormatter
         builder.Blank();
         builder.Text($"Daily Close Date: {report.BusinessDate:yyyy-MM-dd}");
         builder.Text($"Archive: {archive.ShortArchiveId}");
-        builder.Text($"Store: {Fallback(report.StoreCode)}");
+        // 中文注释：门店名称与代码共用显示规则，并按纸宽换行，保证手动打印和重打预览一致。
+        foreach (var storeLine in WrapByWord(
+                     $"Store: {FormatStoreDisplay(settings.StoreName, report.StoreCode)}",
+                     LineWidth))
+        {
+            builder.Text(storeLine);
+        }
         builder.Text($"Terminal: {Fallback(report.DeviceCode)}");
         builder.Text($"Cashier: {Fallback(report.CashierName)}");
         builder.Text($"Saved: {archive.SavedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
@@ -255,6 +261,25 @@ public static class DailyCloseTextFormatter
     private static string FirstNonBlank(params string[] values)
     {
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+    }
+
+    private static string FormatStoreDisplay(string? storeName, string? storeCode)
+    {
+        var name = storeName?.Trim() ?? string.Empty;
+        var code = storeCode?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+        {
+            return code.Length == 0 ? "-" : code;
+        }
+
+        if (code.Length == 0)
+        {
+            return name;
+        }
+
+        return string.Equals(name, code, StringComparison.OrdinalIgnoreCase)
+            ? code
+            : $"{name} ({code})";
     }
 
     private static string Fallback(string? value)

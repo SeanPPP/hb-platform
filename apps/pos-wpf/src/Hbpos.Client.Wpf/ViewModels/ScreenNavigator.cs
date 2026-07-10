@@ -23,6 +23,7 @@ internal sealed class ScreenNavigator
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
     private readonly Func<Task<DeviceReregistrationStartResult>> _beginDeviceReregistrationAsync;
     private readonly Func<Task<bool>>? _recoverActiveCardPaymentSessionFromPaymentAsync;
+    private readonly Func<InstallmentOrderSummary, Task> _onInstallmentOrderCreatedAsync;
 
     // Callbacks provided by MainViewModel for integration points.
     private readonly Action<object?> _setScreen;
@@ -65,6 +66,7 @@ internal sealed class ScreenNavigator
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync,
         Func<Task<DeviceReregistrationStartResult>> beginDeviceReregistrationAsync,
         Func<Task<bool>>? recoverActiveCardPaymentSessionFromPaymentAsync,
+        Func<InstallmentOrderSummary, Task> onInstallmentOrderCreatedAsync,
         Action<object?> setScreen,
         Action<PaymentViewModel> onPaymentCreated,
         Action<PaymentViewModel> onPaymentDisposed,
@@ -87,6 +89,7 @@ internal sealed class ScreenNavigator
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
         _beginDeviceReregistrationAsync = beginDeviceReregistrationAsync;
         _recoverActiveCardPaymentSessionFromPaymentAsync = recoverActiveCardPaymentSessionFromPaymentAsync;
+        _onInstallmentOrderCreatedAsync = onInstallmentOrderCreatedAsync;
         _setScreen = setScreen;
         _onPaymentCreated = onPaymentCreated;
         _onPaymentDisposed = onPaymentDisposed;
@@ -416,7 +419,9 @@ internal sealed class ScreenNavigator
                 ShowPos,
                 ShowInstallmentCenter,
                 _recoverActiveCardPaymentSessionFromPaymentAsync,
-                _linklyFallbackPromptCoordinator);
+                _linklyFallbackPromptCoordinator,
+                _onInstallmentOrderCreatedAsync,
+                ConfirmInstallmentFullFirstPayment);
             _onPaymentCreated(CashPayment);
         }
 
@@ -426,6 +431,13 @@ internal sealed class ScreenNavigator
         }
 
         _cachedCashPaymentScreen = CashPayment;
+    }
+
+    private bool ConfirmInstallmentFullFirstPayment()
+    {
+        return _confirmationDialogService.ConfirmInstallmentFullFirstPayment(
+            _localization.T("payment.installment.confirmFullFirstPayment.title"),
+            _localization.T("payment.installment.confirmFullFirstPayment.message"));
     }
 
     public void PrepareCachedSpecialProductsScreen()
@@ -637,14 +649,7 @@ internal sealed class ScreenNavigator
     {
         return _factory.CreateInstallmentCreateViewModel(
             Session,
-            async order =>
-            {
-                InstallmentCenter ??= CreateInstallmentCenterViewModel();
-                InstallmentCenter.Prepare(Session, CreateCurrentCartSnapshot());
-                InstallmentCenter.AppendOrUpdateOrder(order);
-                SetCurrentScreen(InstallmentCenter);
-                await InstallmentCenter.LoadAsync();
-            },
+            _onInstallmentOrderCreatedAsync,
             () =>
             {
                 InstallmentCenter ??= CreateInstallmentCenterViewModel();

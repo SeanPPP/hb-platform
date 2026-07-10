@@ -12,6 +12,44 @@ namespace Hbpos.Api.Tests;
 public sealed class StoreVoucherServiceTests
 {
     [Fact]
+    public void StoreVoucher_identity_key_is_mapped_as_database_generated()
+    {
+        var idColumn = typeof(StoreVoucher)
+            .GetProperty(nameof(StoreVoucher.ID))!
+            .GetCustomAttribute<SugarColumn>();
+
+        Assert.NotNull(idColumn);
+        Assert.True(idColumn!.IsIdentity);
+    }
+
+    [Fact]
+    public void OrderByExactStoreFirst_UsesSqlServerScalarExpression()
+    {
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=localhost;Database=hbpos;Trusted_Connection=True;TrustServerCertificate=True",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            IsAutoCloseConnection = true
+        });
+
+        var sql = db.Queryable<StoreVoucher>()
+            .OrderByExactStoreFirst("S01")
+            .ToSqlString();
+
+        var orderByIndex = sql.IndexOf("ORDER BY", StringComparison.OrdinalIgnoreCase);
+        Assert.True(orderByIndex >= 0, sql);
+        var orderBySql = sql[orderByIndex..];
+        Assert.True(
+            orderBySql.Contains("IIF", StringComparison.OrdinalIgnoreCase)
+            || orderBySql.Contains("CASE", StringComparison.OrdinalIgnoreCase),
+            orderBySql);
+        Assert.DoesNotMatch(
+            @"(?i)ORDER\s+BY\s*\(?\s*(?:\[[^\]]+\]\.)?\[?StoreCode\]?\s*=",
+            orderBySql);
+    }
+
+    [Fact]
     public async Task QueryAsync_ReturnsFoundVoucher()
     {
         var voucher = CreateVoucher(remainingAmount: 12.5m);
@@ -25,6 +63,23 @@ public sealed class StoreVoucherServiceTests
         Assert.NotNull(response.Voucher);
         Assert.Equal("V001", response.Voucher.VoucherCode);
         Assert.Equal(12.5m, response.Voucher.RemainingAmount);
+    }
+
+    [Fact]
+    public async Task FindAvailableAsync_PrefersStoreVoucherOverGlobalVoucher()
+    {
+        await using var fixture = await StoreVoucherSqliteFixture.CreateAsync();
+        var globalVoucher = CreateVoucher(remainingAmount: 30m);
+        globalVoucher.StoreCode = null;
+        await fixture.SeedVoucherAsync(globalVoucher);
+        await fixture.SeedVoucherAsync(CreateVoucher(remainingAmount: 10m));
+        var repository = new SqlSugarStoreVoucherRepository(fixture.DbContext);
+
+        var voucher = await repository.FindAvailableAsync("S01", "V001", CancellationToken.None);
+
+        Assert.NotNull(voucher);
+        Assert.Equal("S01", voucher!.StoreCode);
+        Assert.Equal(10m, voucher.RemainingAmount);
     }
 
     [Fact]
@@ -45,6 +100,23 @@ public sealed class StoreVoucherServiceTests
         Assert.Equal(4m, first.RemainingAmountAfterLock);
         Assert.Equal(0m, second.RemainingAmountAfterLock);
         Assert.NotEqual(first.ReservationToken, second.ReservationToken);
+    }
+
+    [Fact]
+    public async Task Reservation_ReserveAsync_PrefersStoreVoucherOverGlobalVoucher()
+    {
+        await using var fixture = await StoreVoucherSqliteFixture.CreateAsync();
+        var timeProvider = new MutableFakeTimeProvider(DateTimeOffset.Parse("2026-05-26T10:00:00Z"));
+        var globalVoucher = CreateVoucher(remainingAmount: 30m);
+        globalVoucher.StoreCode = null;
+        await fixture.SeedVoucherAsync(globalVoucher);
+        await fixture.SeedVoucherAsync(CreateVoucher(remainingAmount: 10m));
+        var service = new SqlSugarStoreVoucherReservationService(fixture.DbContext, timeProvider);
+
+        var reservation = await service.ReserveAsync(" S01 ", "V001", 4m, 30m, CancellationToken.None);
+
+        Assert.Equal(4m, reservation.LockedAmount);
+        Assert.Equal(6m, reservation.RemainingAmountAfterLock);
     }
 
     [Fact]
@@ -198,6 +270,23 @@ public sealed class StoreVoucherServiceTests
         Assert.NotNull(voucher);
         Assert.Equal(4m, voucher!.RemainingAmount);
         Assert.Equal("1", voucher.Status);
+    }
+
+    [Fact]
+    public async Task RedeemInsideTransactionAsync_PrefersStoreVoucherOverGlobalVoucher()
+    {
+        await using var fixture = await StoreVoucherSqliteFixture.CreateAsync();
+        var globalVoucher = CreateVoucher(remainingAmount: 30m);
+        globalVoucher.StoreCode = null;
+        await fixture.SeedVoucherAsync(globalVoucher);
+        await fixture.SeedVoucherAsync(CreateVoucher(remainingAmount: 10m));
+
+        await RedeemVoucherAsync(fixture, 4m);
+
+        var storeVoucher = await fixture.GetVoucherAsync("V001", "S01");
+        var persistedGlobalVoucher = await fixture.GetVoucherAsync("V001", null);
+        Assert.Equal(6m, storeVoucher?.RemainingAmount);
+        Assert.Equal(30m, persistedGlobalVoucher?.RemainingAmount);
     }
 
     [Fact]
@@ -575,6 +664,16 @@ public sealed class StoreVoucherServiceTests
             return await client.Queryable<StoreVoucher>()
                 .Where(x => x.VoucherCode == voucherCode)
                 .FirstAsync();
+        }
+
+        public async Task<StoreVoucher?> GetVoucherAsync(string voucherCode, string? storeCode)
+        {
+            var query = client.Queryable<StoreVoucher>()
+                .Where(x => x.VoucherCode == voucherCode);
+            query = storeCode is null
+                ? query.Where(x => x.StoreCode == null || x.StoreCode == string.Empty)
+                : query.Where(x => x.StoreCode == storeCode);
+            return await query.FirstAsync();
         }
 
         public async Task<StoreVoucherReservationEntity?> GetReservationEntityAsync(string token)

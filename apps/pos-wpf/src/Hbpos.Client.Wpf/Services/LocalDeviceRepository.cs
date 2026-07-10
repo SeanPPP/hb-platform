@@ -102,7 +102,9 @@ public sealed class LocalDeviceRepository(
         CancellationToken cancellationToken)
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO DeviceCache (DeviceCode, StoreCode, StoreName, HardwareId, DeviceStatus, IsAllowed, Message, AuthorizationCodeProtected, UpdatedAt)
             VALUES ($DeviceCode, $StoreCode, $StoreName, $HardwareId, $DeviceStatus, $IsAllowed, $Message, $AuthorizationCodeProtected, $UpdatedAt)
@@ -127,6 +129,9 @@ public sealed class LocalDeviceRepository(
         command.Parameters.AddWithValue("$UpdatedAt", DateTimeOffset.UtcNow.ToString("O"));
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+        // 写入期间若已取消则不提交事务，避免旧认证结果成为最新本地设备缓存。
+        cancellationToken.ThrowIfCancellationRequested();
+        transaction.Commit();
     }
 
     private static string ReadString(Microsoft.Data.Sqlite.SqliteDataReader reader, string name)

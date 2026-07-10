@@ -26,6 +26,56 @@ public sealed class AppUpdateDownloadServiceTests
     }
 
     [Fact]
+    public async Task DownloadAsync_keeps_current_package_and_four_newest_cached_installers()
+    {
+        var payload = Encoding.UTF8.GetBytes("installer");
+        var response = CreateRelease(payload, Sha256(payload)) with { FileName = "hbpos-current.exe" };
+        await using var sandbox = TempDirectory.Create();
+        var oldFiles = new[]
+        {
+            "hbpos-1.0.0.exe",
+            "hbpos-1.0.1.msi",
+            "hbpos-1.0.2.exe",
+            "hbpos-1.0.3.exe",
+            "hbpos-1.0.4.exe"
+        };
+
+        for (var index = 0; index < oldFiles.Length; index++)
+        {
+            var path = Path.Combine(sandbox.Path, oldFiles[index]);
+            await File.WriteAllTextAsync(path, oldFiles[index]);
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(index - 10));
+        }
+
+        var readmePath = Path.Combine(sandbox.Path, "readme.txt");
+        await File.WriteAllTextAsync(readmePath, "not an installer");
+        var service = new AppUpdateDownloadService(
+            new HttpClient(new BytesHandler(payload)),
+            new FixedDownloadDirectoryProvider(sandbox.Path));
+
+        var result = await service.DownloadAsync(response);
+
+        Assert.True(result.Success);
+        var remainingInstallers = Directory
+            .GetFiles(sandbox.Path)
+            .Where(path => path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".msi", StringComparison.OrdinalIgnoreCase))
+            .Select(Path.GetFileName)
+            .OrderBy(name => name)
+            .ToArray();
+        Assert.Equal(
+            [
+                "hbpos-1.0.1.msi",
+                "hbpos-1.0.2.exe",
+                "hbpos-1.0.3.exe",
+                "hbpos-1.0.4.exe",
+                "hbpos-current.exe"
+            ],
+            remainingInstallers);
+        Assert.True(File.Exists(readmePath));
+    }
+
+    [Fact]
     public async Task DownloadAsync_reports_progress_to_100_percent()
     {
         var payload = Encoding.UTF8.GetBytes("installer");

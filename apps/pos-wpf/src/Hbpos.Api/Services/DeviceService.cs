@@ -40,8 +40,28 @@ public interface IDeviceRegistrationRepository
         string hardwareId,
         CancellationToken cancellationToken);
 
+    Task<DeviceRegistrationRecord?> FindLatestByHardwareIdAndStoreCodeAsync(
+        string hardwareId,
+        string storeCode,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<DeviceRegistrationRecord>> FindAllByHardwareIdForRegistrationAsync(
+        string hardwareId,
+        CancellationToken cancellationToken);
+
     Task<int> DisablePendingRegistrationAsync(
         DeviceRegistrationDisableRequest request,
+        CancellationToken cancellationToken);
+
+    Task<int> DisableActiveRegistrationAsync(
+        string hardwareId,
+        string deviceCode,
+        string storeCode,
+        string remarkSuffix,
+        CancellationToken cancellationToken);
+
+    Task<int> ResetRegistrationForReregisterAsync(
+        DeviceRegistrationResetForReregisterRequest request,
         CancellationToken cancellationToken);
 
     Task CreateRegistrationAsync(
@@ -68,6 +88,8 @@ public sealed record DeviceStoreInfo(
 
 public sealed class DeviceRegistrationRecord
 {
+    public int Id { get; set; }
+
     public string? DeviceCode { get; set; }
 
     public string? StoreCode { get; set; }
@@ -111,6 +133,29 @@ public sealed class DeviceRegistrationCreateRequest
     public string DeviceType { get; init; } = "POS";
 
     public string DeviceSystem { get; init; } = "Windows";
+}
+
+public sealed class DeviceRegistrationResetForReregisterRequest
+{
+    public int RegistrationId { get; init; }
+
+    public string HardwareId { get; init; } = string.Empty;
+
+    public string StoreCode { get; init; } = string.Empty;
+
+    public string DeviceCode { get; init; } = string.Empty;
+
+    public int ExpectedDeviceStatus { get; init; }
+
+    public string? ExpectedAuthorizationCode { get; init; }
+
+    public string AuthorizationCode { get; init; } = string.Empty;
+
+    public string RemarkSuffix { get; init; } = string.Empty;
+
+    public DateTime ModifiedAt { get; init; }
+
+    public string ModifiedBy { get; init; } = string.Empty;
 }
 
 public sealed record DeviceRuntimeStatusUpdateRequest(
@@ -180,109 +225,147 @@ public sealed class DeviceService : IDeviceService
             return CreateRegisterResponse(string.Empty, storeCode, string.Empty, UnregisteredStatus, "Store was not found or inactive.");
         }
 
-        var existing = await deviceRegistrationRepository.FindLatestByHardwareIdAsync(hardwareId, cancellationToken);
-        if (existing is not null)
-        {
-            if (!string.Equals(existing.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
+        var now = nowProvider();
+        DeviceRegisterResponse? response = null;
+
+        // 关键逻辑：匿名注册的全量检查、旧待确认禁用与目标重置/新建必须在同一锁定事务中完成。
+        await deviceRegistrationRepository.ExecuteInTransactionAsync(
+            async token =>
             {
-                if (existing.DeviceStatus != PendingStatus)
+                var registrations = await deviceRegistrationRepository
+                    .FindAllByHardwareIdForRegistrationAsync(hardwareId, token);
+
+                // 关键逻辑：同一硬件任意启用或锁定记录都会阻止匿名注册，且不得产生任何写入。
+                var blockingRegistration = registrations.FirstOrDefault(static registration =>
+                    registration.DeviceStatus is EnabledStatus or LockedStatus);
+                if (blockingRegistration is not null)
                 {
-                    return CreateRegisterResponse(
-                        existing.DeviceCode ?? string.Empty,
-                        existing.StoreCode ?? storeCode,
-                        string.Empty,
-                        existing.DeviceStatus,
-                        "Device hardware is already registered to another store.");
+                    response = CreateRegisterResponse(
+                        blockingRegistration.DeviceCode ?? string.Empty,
+                        blockingRegistration.StoreCode ?? storeCode,
+                        string.Equals(blockingRegistration.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase)
+                            ? store.StoreName
+                            : string.Empty,
+                        blockingRegistration.DeviceStatus,
+                        "Device hardware is already registered and cannot be registered anonymously.");
+                    return;
                 }
 
-                var activeOrLockedRegistration = await deviceRegistrationRepository
-                    .FindActiveOrLockedRegistrationAsync(hardwareId, cancellationToken);
-                if (activeOrLockedRegistration is not null)
+                var targetRegistration = registrations.FirstOrDefault(registration =>
+                    string.Equals(registration.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase));
+
+                // 关键逻辑：所有目标状态与设备号校验必须先于任何写入，拒绝请求不得顺带清理其他待确认记录。
+                if (targetRegistration is not null
+                    && targetRegistration.DeviceStatus is not PendingStatus and not DisabledStatus and not UnregisteredStatus)
                 {
-                    return CreateRegisterResponse(
-                        activeOrLockedRegistration.DeviceCode ?? existing.DeviceCode ?? string.Empty,
-                        activeOrLockedRegistration.StoreCode ?? existing.StoreCode ?? storeCode,
-                        string.Empty,
-                        activeOrLockedRegistration.DeviceStatus,
-                        "Device hardware is already registered to another store.");
+                    response = CreateRegisterResponse(
+                        targetRegistration.DeviceCode ?? string.Empty,
+                        storeCode,
+                        store.StoreName,
+                        targetRegistration.DeviceStatus,
+                        "Device registration cannot be reused anonymously in its current status.");
+                    return;
                 }
 
-                var now = DateTime.Now;
-                var pendingRegistration = CreatePendingRegistration(
+                if (targetRegistration is not null && string.IsNullOrWhiteSpace(targetRegistration.DeviceCode))
+                {
+                    response = CreateRegisterResponse(
+                        string.Empty,
+                        storeCode,
+                        store.StoreName,
+                        targetRegistration.DeviceStatus == PendingStatus
+                            ? DisabledStatus
+                            : targetRegistration.DeviceStatus,
+                        "Existing device registration has no reusable device code.");
+                    return;
+                }
+
+                // 关键逻辑：只保留目标店最新的待确认记录，其余同硬件待确认记录必须逐条条件禁用。
+                foreach (var pendingRegistration in registrations.Where(registration =>
+                             registration.DeviceStatus == PendingStatus
+                             && (targetRegistration?.DeviceStatus != PendingStatus
+                                 || registration.Id != targetRegistration.Id)))
+                {
+                    var disabledCount = await deviceRegistrationRepository.DisablePendingRegistrationAsync(
+                        new DeviceRegistrationDisableRequest
+                        {
+                            HardwareId = hardwareId,
+                            StoreCode = pendingRegistration.StoreCode ?? string.Empty,
+                            DeviceCode = pendingRegistration.DeviceCode ?? string.Empty,
+                            RemarkSuffix = $" | Disabled by registration switch to {storeCode} at {now:O}"
+                        },
+                        token);
+                    if (disabledCount != 1)
+                    {
+                        throw new InvalidOperationException("Pending device registration changed during registration.");
+                    }
+                }
+
+                if (targetRegistration?.DeviceStatus == PendingStatus)
+                {
+                    response = new DeviceRegisterResponse(
+                        targetRegistration.DeviceCode ?? string.Empty,
+                        storeCode,
+                        store.StoreName,
+                        PendingStatus,
+                        false,
+                        GetStatusMessage(PendingStatus),
+                        null);
+                    return;
+                }
+
+                if (targetRegistration is not null)
+                {
+                    var authorizationCode = Guid.NewGuid().ToString("N");
+                    var resetCount = await deviceRegistrationRepository.ResetRegistrationForReregisterAsync(
+                        new DeviceRegistrationResetForReregisterRequest
+                        {
+                            RegistrationId = targetRegistration.Id,
+                            HardwareId = targetRegistration.HardwareId ?? hardwareId,
+                            StoreCode = targetRegistration.StoreCode ?? storeCode,
+                            DeviceCode = targetRegistration.DeviceCode!,
+                            ExpectedDeviceStatus = targetRegistration.DeviceStatus,
+                            ExpectedAuthorizationCode = targetRegistration.AuthorizationCode,
+                            AuthorizationCode = authorizationCode,
+                            RemarkSuffix = $" | Reset by anonymous registration at {now:O}",
+                            ModifiedAt = now,
+                            ModifiedBy = "HBPOS_CLIENT"
+                        },
+                        token);
+                    if (resetCount != 1)
+                    {
+                        throw new InvalidOperationException("Target device registration changed during registration.");
+                    }
+
+                    response = new DeviceRegisterResponse(
+                        targetRegistration.DeviceCode,
+                        storeCode,
+                        store.StoreName,
+                        PendingStatus,
+                        false,
+                        GetStatusMessage(PendingStatus),
+                        null);
+                    return;
+                }
+
+                var newRegistration = CreatePendingRegistration(
                     hardwareId,
                     storeCode,
                     terminalName,
                     now);
-
-                var disableRequest = new DeviceRegistrationDisableRequest
-                {
-                    HardwareId = hardwareId,
-                    StoreCode = existing.StoreCode ?? string.Empty,
-                    DeviceCode = existing.DeviceCode ?? string.Empty,
-                    RemarkSuffix = $" | Disabled by registration switch to {storeCode} at {now:O}"
-                };
-
-                var switchSubmitted = false;
-                await deviceRegistrationRepository.ExecuteInTransactionAsync(
-                    async token =>
-                    {
-                        var disabledCount = await deviceRegistrationRepository.DisablePendingRegistrationAsync(disableRequest, token);
-                        if (disabledCount != 1)
-                        {
-                            return;
-                        }
-
-                        await deviceRegistrationRepository.CreateRegistrationAsync(pendingRegistration, token);
-                        switchSubmitted = true;
-                    },
-                    cancellationToken);
-
-                if (!switchSubmitted)
-                {
-                    return CreateRegisterResponse(
-                        existing.DeviceCode ?? string.Empty,
-                        existing.StoreCode ?? storeCode,
-                        string.Empty,
-                        DisabledStatus,
-                        "Pending device registration changed. Please reload stores and try again.");
-                }
-
-                return new DeviceRegisterResponse(
-                    pendingRegistration.DeviceCode,
+                await deviceRegistrationRepository.CreateRegistrationAsync(newRegistration, token);
+                response = new DeviceRegisterResponse(
+                    newRegistration.DeviceCode,
                     storeCode,
                     store.StoreName,
                     PendingStatus,
                     false,
                     GetStatusMessage(PendingStatus),
                     null);
-            }
+            },
+            cancellationToken);
 
-            return new DeviceRegisterResponse(
-                existing.DeviceCode ?? string.Empty,
-                storeCode,
-                store.StoreName,
-                existing.DeviceStatus,
-                existing.DeviceStatus == EnabledStatus,
-                GetStatusMessage(existing.DeviceStatus),
-                existing.DeviceStatus == EnabledStatus ? existing.AuthorizationCode : null);
-        }
-
-        var newRegistration = CreatePendingRegistration(
-            hardwareId,
-            storeCode,
-            terminalName,
-            DateTime.Now);
-
-        await deviceRegistrationRepository.CreateRegistrationAsync(newRegistration, cancellationToken);
-
-        return new DeviceRegisterResponse(
-            newRegistration.DeviceCode,
-            storeCode,
-            store.StoreName,
-            PendingStatus,
-            false,
-            GetStatusMessage(PendingStatus),
-            null);
+        return response ?? throw new InvalidOperationException("Device registration did not produce a response.");
     }
 
     public async Task<DeviceVerifyResponse> VerifyAsync(
@@ -359,64 +442,70 @@ public sealed class DeviceService : IDeviceService
             return CreateReregisterResponse(string.Empty, targetStoreCode, string.Empty, UnregisteredStatus, "Store was not found or inactive.");
         }
 
-        var deviceCode = CreateDeviceCode(targetStoreCode, DateTime.Now);
+        var now = nowProvider();
         var authorizationCode = Guid.NewGuid().ToString("N");
-        var now = DateTime.Now;
-        var remark = string.IsNullOrWhiteSpace(terminalName)
-            ? $"HBPOS client reregistration from {currentStoreCode}/{currentDeviceCode}"
-            : $"HBPOS client reregistration from {currentStoreCode}/{currentDeviceCode}: {terminalName}";
+        var deviceCode = string.Empty;
+        var disableRemark = $" | Disabled by reregistration to {targetStoreCode} at {now:O}";
+        var resetRemark = string.IsNullOrWhiteSpace(terminalName)
+            ? $" | Reset by reregistration from {currentStoreCode}/{currentDeviceCode} at {now:O}"
+            : $" | Reset by reregistration from {currentStoreCode}/{currentDeviceCode}: {terminalName} at {now:O}";
 
-        var context = dbContext ?? throw new InvalidOperationException("Db context is required for device reregistration.");
+        // 关键逻辑：目标记录查询、当前设备禁用及目标记录重置/创建必须处于同一事务，任一步并发失配都整体回滚。
+        await deviceRegistrationRepository.ExecuteInTransactionAsync(
+            async token =>
+            {
+                var targetRegistration = await deviceRegistrationRepository
+                    .FindLatestByHardwareIdAndStoreCodeAsync(hardwareId, targetStoreCode, token);
 
-        await context.PosmDb.Ado.BeginTranAsync();
-        try
-        {
-            const string disableSql = """
-                UPDATE [POSM_设备注册信息表]
-                SET [设备状态] = @DisabledStatus,
-                    [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix)
-                WHERE [系统设备编号] = @CurrentDeviceCode
-                  AND [分店代码] = @CurrentStoreCode
-                  AND [设备硬件识别码] = @HardwareId
-                  AND [设备状态] = @EnabledStatus;
-                """;
+                var disabledCount = await deviceRegistrationRepository.DisableActiveRegistrationAsync(
+                    hardwareId,
+                    currentDeviceCode,
+                    currentStoreCode,
+                    disableRemark,
+                    token);
+                if (disabledCount != 1)
+                {
+                    throw new InvalidOperationException("Current device registration changed during reregistration.");
+                }
 
-            await context.PosmDb.Ado.ExecuteCommandAsync(
-                disableSql,
-                new SugarParameter("@DisabledStatus", DisabledStatus),
-                new SugarParameter("@RemarkSuffix", $" | Disabled by reregistration to {targetStoreCode} at {now:O}"),
-                new SugarParameter("@CurrentDeviceCode", currentDeviceCode),
-                new SugarParameter("@CurrentStoreCode", currentStoreCode),
-                new SugarParameter("@HardwareId", hardwareId),
-                new SugarParameter("@EnabledStatus", EnabledStatus));
+                if (targetRegistration is not null && !string.IsNullOrWhiteSpace(targetRegistration.DeviceCode))
+                {
+                    // 关键逻辑：目标分店已有记录时保留原设备号，只刷新授权并重置为待确认状态。
+                    var resetCount = await deviceRegistrationRepository.ResetRegistrationForReregisterAsync(
+                        new DeviceRegistrationResetForReregisterRequest
+                        {
+                            RegistrationId = targetRegistration.Id,
+                            HardwareId = targetRegistration.HardwareId ?? hardwareId,
+                            StoreCode = targetRegistration.StoreCode ?? targetStoreCode,
+                            DeviceCode = targetRegistration.DeviceCode,
+                            ExpectedDeviceStatus = targetRegistration.DeviceStatus,
+                            ExpectedAuthorizationCode = targetRegistration.AuthorizationCode,
+                            AuthorizationCode = authorizationCode,
+                            RemarkSuffix = resetRemark,
+                            ModifiedAt = now,
+                            ModifiedBy = "HBPOS_CLIENT"
+                        },
+                        token);
+                    if (resetCount != 1)
+                    {
+                        throw new InvalidOperationException("Target device registration changed during reregistration.");
+                    }
 
-            const string insertSql = """
-                INSERT INTO [POSM_设备注册信息表]
-                    ([设备硬件识别码], [系统设备编号], [分店代码], [设备类型], [设备系统], [设备状态], [设备授权码], [备注], [创建时间], [创建人])
-                VALUES
-                    (@HardwareId, @DeviceCode, @StoreCode, @DeviceType, @DeviceSystem, @DeviceStatus, @AuthorizationCode, @Remark, @CreatedAt, @CreatedBy);
-                """;
+                    deviceCode = targetRegistration.DeviceCode;
+                    return;
+                }
 
-            await context.PosmDb.Ado.ExecuteCommandAsync(
-                insertSql,
-                new SugarParameter("@HardwareId", hardwareId),
-                new SugarParameter("@DeviceCode", deviceCode),
-                new SugarParameter("@StoreCode", targetStoreCode),
-                new SugarParameter("@DeviceType", "POS"),
-                new SugarParameter("@DeviceSystem", "Windows"),
-                new SugarParameter("@DeviceStatus", PendingStatus),
-                new SugarParameter("@AuthorizationCode", authorizationCode),
-                new SugarParameter("@Remark", remark),
-                new SugarParameter("@CreatedAt", now),
-                new SugarParameter("@CreatedBy", "HBPOS_CLIENT"));
-
-            await context.PosmDb.Ado.CommitTranAsync();
-        }
-        catch
-        {
-            await context.PosmDb.Ado.RollbackTranAsync();
-            throw;
-        }
+                // 关键逻辑：只有目标分店没有可复用设备号时，才生成新的待确认设备记录和设备号。
+                var pendingRegistration = CreatePendingRegistration(
+                    hardwareId,
+                    targetStoreCode,
+                    terminalName,
+                    now,
+                    authorizationCode);
+                await deviceRegistrationRepository.CreateRegistrationAsync(pendingRegistration, token);
+                deviceCode = pendingRegistration.DeviceCode;
+            },
+            cancellationToken);
 
         return new DeviceReregisterResponse(
             deviceCode,
@@ -481,7 +570,8 @@ public sealed class DeviceService : IDeviceService
         string hardwareId,
         string storeCode,
         string terminalName,
-        DateTime createdAt)
+        DateTime createdAt,
+        string? authorizationCode = null)
     {
         return new DeviceRegistrationCreateRequest
         {
@@ -489,7 +579,7 @@ public sealed class DeviceService : IDeviceService
             DeviceCode = CreateDeviceCode(storeCode, createdAt),
             StoreCode = storeCode,
             DeviceStatus = PendingStatus,
-            AuthorizationCode = Guid.NewGuid().ToString("N"),
+            AuthorizationCode = authorizationCode ?? Guid.NewGuid().ToString("N"),
             Remark = string.IsNullOrWhiteSpace(terminalName)
                 ? "HBPOS client registration"
                 : $"HBPOS client registration: {terminalName}",
@@ -555,6 +645,56 @@ public sealed class DeviceService : IDeviceService
 
 public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext dbContext) : IDeviceRegistrationRepository
 {
+    internal const string FindAllByHardwareIdForRegistrationSql = """
+        SELECT
+            [ID] AS Id,
+            [系统设备编号] AS DeviceCode,
+            [分店代码] AS StoreCode,
+            [设备硬件识别码] AS HardwareId,
+            [设备状态] AS DeviceStatus,
+            [设备授权码] AS AuthorizationCode
+        FROM [POSM_设备注册信息表] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [设备硬件识别码] = @HardwareId
+        ORDER BY [ID] DESC;
+        """;
+
+    internal const string FindLatestByHardwareIdAndStoreCodeSql = """
+        SELECT TOP 1
+            [ID] AS Id,
+            [系统设备编号] AS DeviceCode,
+            [分店代码] AS StoreCode,
+            [设备硬件识别码] AS HardwareId,
+            [设备状态] AS DeviceStatus,
+            [设备授权码] AS AuthorizationCode
+        FROM [POSM_设备注册信息表] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [设备硬件识别码] = @HardwareId
+          AND [分店代码] = @StoreCode
+        ORDER BY [ID] DESC;
+        """;
+
+    internal const string ResetRegistrationForReregisterSql = """
+        UPDATE [POSM_设备注册信息表]
+        SET [设备状态] = @PendingStatus,
+            [设备授权码] = @AuthorizationCode,
+            [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix),
+            [最后修改时间] = @ModifiedAt,
+            [最后修改人] = @ModifiedBy,
+            [是否在线] = 0,
+            [最后心跳时间] = NULL,
+            [当前收银员ID] = NULL,
+            [当前收银员姓名] = NULL,
+            [收银员登录时间] = NULL
+        WHERE [ID] = @RegistrationId
+          AND [设备硬件识别码] = @HardwareId
+          AND [分店代码] = @StoreCode
+          AND [系统设备编号] = @DeviceCode
+          AND [设备状态] = @ExpectedDeviceStatus
+          AND (
+              [设备授权码] = @ExpectedAuthorizationCode
+              OR ([设备授权码] IS NULL AND @ExpectedAuthorizationCode IS NULL)
+          );
+        """;
+
     public async Task<DeviceRegistrationRecord?> FindLatestByHardwareIdAsync(
         string hardwareId,
         CancellationToken cancellationToken)
@@ -626,6 +766,27 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
         return record;
     }
 
+    public async Task<DeviceRegistrationRecord?> FindLatestByHardwareIdAndStoreCodeAsync(
+        string hardwareId,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<DeviceRegistrationRecord>(
+            FindLatestByHardwareIdAndStoreCodeSql,
+            new SugarParameter("@HardwareId", hardwareId),
+            new SugarParameter("@StoreCode", storeCode));
+    }
+
+    public async Task<IReadOnlyList<DeviceRegistrationRecord>> FindAllByHardwareIdForRegistrationAsync(
+        string hardwareId,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：锁定同一硬件的完整键范围，直到匿名注册事务提交或回滚，避免并发插入绕过状态检查。
+        return await dbContext.PosmDb.Ado.SqlQueryAsync<DeviceRegistrationRecord>(
+            FindAllByHardwareIdForRegistrationSql,
+            new SugarParameter("@HardwareId", hardwareId));
+    }
+
     public Task<int> DisablePendingRegistrationAsync(
         DeviceRegistrationDisableRequest request,
         CancellationToken cancellationToken)
@@ -648,6 +809,54 @@ public sealed class SqlSugarDeviceRegistrationRepository(HbposSqlSugarContext db
             new SugarParameter("@StoreCode", request.StoreCode),
             new SugarParameter("@HardwareId", request.HardwareId),
             new SugarParameter("@PendingStatus", -1));
+    }
+
+    public Task<int> DisableActiveRegistrationAsync(
+        string hardwareId,
+        string deviceCode,
+        string storeCode,
+        string remarkSuffix,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：状态条件固定为启用，避免并发状态变化时误禁用非当前授权记录。
+        const string sql = """
+            UPDATE [POSM_设备注册信息表]
+            SET [设备状态] = @DisabledStatus,
+                [备注] = CONCAT(ISNULL([备注], ''), @RemarkSuffix)
+            WHERE [系统设备编号] = @DeviceCode
+              AND [分店代码] = @StoreCode
+              AND [设备硬件识别码] = @HardwareId
+              AND [设备状态] = @EnabledStatus;
+            """;
+
+        return dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            sql,
+            new SugarParameter("@DisabledStatus", 0),
+            new SugarParameter("@RemarkSuffix", remarkSuffix),
+            new SugarParameter("@DeviceCode", deviceCode),
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@HardwareId", hardwareId),
+            new SugarParameter("@EnabledStatus", 1));
+    }
+
+    public Task<int> ResetRegistrationForReregisterAsync(
+        DeviceRegistrationResetForReregisterRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 关键逻辑：同时匹配查询快照的身份、状态和旧授权码，任何并发变化都以 0 行更新触发事务回滚。
+        return dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            ResetRegistrationForReregisterSql,
+            new SugarParameter("@PendingStatus", -1),
+            new SugarParameter("@AuthorizationCode", request.AuthorizationCode),
+            new SugarParameter("@RemarkSuffix", request.RemarkSuffix),
+            new SugarParameter("@ModifiedAt", request.ModifiedAt),
+            new SugarParameter("@ModifiedBy", request.ModifiedBy),
+            new SugarParameter("@RegistrationId", request.RegistrationId),
+            new SugarParameter("@HardwareId", request.HardwareId),
+            new SugarParameter("@StoreCode", request.StoreCode),
+            new SugarParameter("@DeviceCode", request.DeviceCode),
+            new SugarParameter("@ExpectedDeviceStatus", request.ExpectedDeviceStatus),
+            new SugarParameter("@ExpectedAuthorizationCode", request.ExpectedAuthorizationCode));
     }
 
     public Task CreateRegistrationAsync(

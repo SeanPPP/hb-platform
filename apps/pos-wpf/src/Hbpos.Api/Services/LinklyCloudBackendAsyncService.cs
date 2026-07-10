@@ -2613,11 +2613,13 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
             SerializeDebugJson(tokenRequest));
 
         var stopwatch = Stopwatch.StartNew();
-        using var response = await httpClient.PostAsJsonAsync(
-            requestUri,
-            tokenRequest,
-            JsonOptions,
-            cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = JsonContent.Create(tokenRequest, options: JsonOptions)
+        };
+        // Linkly Cloud 要求请求结束后释放 socket；明确要求服务端不要复用本次连接。
+        request.Headers.ConnectionClose = true;
+        using var response = await httpClient.SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         stopwatch.Stop();
         LogTokenHttpResponse(
@@ -3252,6 +3254,8 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
             new Uri(GetBaseUri(restBaseUrl), $"sessions/{Uri.EscapeDataString(sessionId)}/{endpointSegment}?async={asyncMode.ToString().ToLowerInvariant()}"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        // 每次 Linkly Cloud API 调用结束后都主动关闭底层连接，避免旧 socket 继续停留。
+        request.Headers.ConnectionClose = true;
         if (body is not null)
         {
             request.Content = JsonContent.Create(body, options: JsonOptions);
