@@ -1,4 +1,5 @@
 export interface ApplicationLogIngestItem {
+  clientEventId?: string
   level: string
   message: string
   timestampUtc: string
@@ -7,6 +8,9 @@ export interface ApplicationLogIngestItem {
   sourceType: string
   serviceName?: string
   instanceId?: string
+  storeCode?: string
+  deviceCode?: string
+  appVersion?: string
   category?: string
   eventId?: string
   traceId?: string
@@ -29,6 +33,12 @@ export interface ApplicationLogIngestRequest {
 export interface ApplicationLogIngestResult {
   acceptedCount: number
   rejectedCount: number
+  duplicateCount?: number
+  results?: Array<{
+    clientEventId?: string
+    status: 'accepted' | 'duplicate' | 'rejected'
+    errorCode?: string
+  }>
 }
 
 export interface ApplicationLogQueryParams {
@@ -40,6 +50,10 @@ export interface ApplicationLogQueryParams {
   category?: string
   requestPath?: string
   traceId?: string
+  storeCode?: string
+  deviceCode?: string
+  appVersion?: string
+  instanceId?: string
   userId?: string
   userName?: string
   keyword?: string
@@ -73,6 +87,13 @@ export interface ApplicationLogItem {
   userName?: string
   clientIp?: string
   propertiesJson?: string
+  clientEventId?: string
+  eventId?: string
+  storeCode?: string
+  deviceCode?: string
+  appVersion?: string
+  instanceId?: string
+  createdAtUtc: string
 }
 
 export interface ApplicationLogSummaryGroup {

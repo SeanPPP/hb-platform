@@ -3,6 +3,7 @@ using System.Windows;
 using System.Globalization;
 using System.Reflection;
 using System.Windows.Media.Imaging;
+using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Constants;
 using Hbpos.Client.Wpf;
 using Hbpos.Client.Wpf.Converters;
@@ -65,6 +66,129 @@ public sealed class MainViewModelScannerTests
         Assert.False(report.IsOnline);
         Assert.Equal("CASHIER-1", report.CashierId);
         Assert.Equal("Alice", report.CashierName);
+    }
+
+    [Fact]
+    public async Task Cashier_login_and_shutdown_logout_record_operation_audits()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FakeCashierLoginService(cashierSession),
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.CashierBarcodeInput = "BAR-1";
+        await viewModel.LoginCashierCommand.ExecuteAsync(null);
+        await viewModel.ReportOfflineForShutdownAsync();
+
+        Assert.Collection(
+            auditLogger.Events,
+            auditEvent =>
+            {
+                Assert.Equal("CASHIER_LOGIN", auditEvent.OperationType);
+                Assert.Equal("Succeeded", auditEvent.Outcome);
+                Assert.Equal("CASHIER-1", auditEvent.CashierId);
+            },
+            auditEvent =>
+            {
+                Assert.Equal("CASHIER_LOGOUT", auditEvent.OperationType);
+                Assert.Equal("Succeeded", auditEvent.Outcome);
+            });
+    }
+
+    [Fact]
+    public async Task Cashier_login_denied_without_established_session_does_not_use_placeholder_employee()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FailedCashierLoginService(),
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.LoginCashierByBarcodeAsync("EMPLOYEE-BARCODE-SECRET");
+
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("CASHIER_LOGIN", auditEvent.OperationType);
+        Assert.Equal("Denied", auditEvent.Outcome);
+        Assert.True(string.IsNullOrEmpty(auditEvent.CashierId));
+        Assert.True(string.IsNullOrEmpty(auditEvent.UserGuid));
+        Assert.True(string.IsNullOrEmpty(auditEvent.CashierName));
+        Assert.DoesNotContain("EMPLOYEE-BARCODE-SECRET", auditEvent.SafeMessage ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cashier_login_exception_without_established_session_does_not_use_placeholder_employee()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cashierLoginService: new FailedCashierLoginService(new InvalidOperationException("login unavailable")),
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => viewModel.LoginCashierByBarcodeAsync("EMPLOYEE-BARCODE-SECRET"));
+
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("CASHIER_LOGIN", auditEvent.OperationType);
+        Assert.Equal("Failed", auditEvent.Outcome);
+        Assert.True(string.IsNullOrEmpty(auditEvent.CashierId));
+        Assert.True(string.IsNullOrEmpty(auditEvent.UserGuid));
+        Assert.True(string.IsNullOrEmpty(auditEvent.CashierName));
+        Assert.False(string.IsNullOrWhiteSpace(auditEvent.TraceId));
+        Assert.False(string.IsNullOrWhiteSpace(auditEvent.CorrelationId));
+    }
+
+    [Theory]
+    [InlineData(true, "Succeeded")]
+    [InlineData(false, "Failed")]
+    public async Task History_reprint_records_actual_print_result(bool printSucceeded, string expectedOutcome)
+    {
+        var orderGuid = Guid.NewGuid();
+        var auditLogger = new RecordingOperationAuditLogger();
+        var printService = new RecordingReceiptPrintService
+        {
+            PrintReceiptResult = new ReceiptPrintResult(
+                printSucceeded,
+                printSucceeded ? "printed" : "printer offline",
+                orderGuid)
+        };
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            printService,
+            operationAuditLogger: auditLogger);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        var history = Assert.IsType<TransactionHistoryViewModel>(viewModel.TransactionHistory);
+        history.SelectedOrder = new HistoryOrderListItem(
+            orderGuid,
+            TransactionHistorySource.LocalOrders,
+            "1042",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            10m,
+            0m,
+            10m,
+            1,
+            "Cash",
+            "Synced");
+
+        history.ReprintCommand.Execute(null);
+        await WaitUntilAsync(() => auditLogger.Events.Any(auditEvent => auditEvent.OperationType == "RECEIPT_REPRINT"));
+
+        var auditEvent = Assert.Single(auditLogger.Events, auditEvent => auditEvent.OperationType == "RECEIPT_REPRINT");
+        Assert.Equal(expectedOutcome, auditEvent.Outcome);
+        Assert.Equal("HISTORY", auditEvent.ReasonCode);
+        Assert.Equal(orderGuid.ToString("D"), auditEvent.OrderGuid);
+        Assert.Equal(printSucceeded ? null : "printer offline", auditEvent.SafeMessage);
+        var printCall = Assert.Single(printService.Calls);
+        Assert.Equal(ReceiptPrintReason.Reprint, printCall.Reason);
     }
 
     [Fact]
@@ -874,10 +998,12 @@ public sealed class MainViewModelScannerTests
     [Fact]
     public async Task Cash_refund_completion_opens_cash_drawer()
     {
+        var auditLogger = new RecordingOperationAuditLogger();
         var cashDrawerService = new RecordingCashDrawerService();
         var viewModel = CreateAuthorizedMainViewModel(
             new FakeCustomerDisplayWindowService(),
-            cashDrawerService: cashDrawerService);
+            cashDrawerService: cashDrawerService,
+            operationAuditLogger: auditLogger);
         await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
         var order = CreateReceiptPrintOrder(PaymentMethodKind.Cash) with
         {
@@ -891,6 +1017,10 @@ public sealed class MainViewModelScannerTests
         await WaitUntilAsync(() => ReferenceEquals(viewModel.PaymentSuccess, viewModel.CurrentScreen) && cashDrawerService.OpenCallCount == 1);
 
         Assert.Equal(1, cashDrawerService.OpenCallCount);
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("CASH_DRAWER_OPEN", auditEvent.OperationType);
+        Assert.Equal("Succeeded", auditEvent.Outcome);
+        Assert.Equal("PAYMENT_COMPLETE", auditEvent.ReasonCode);
     }
 
     [Fact]
@@ -3886,6 +4016,7 @@ public sealed class MainViewModelScannerTests
         IPosRuntimeStatusApiClient? runtimeStatusApiClient = null,
         ILinklyBankReceiptPrinter? linklyBankReceiptPrinter = null,
         IInstallmentOrderService? installmentOrderService = null,
+        IOperationAuditLogger? operationAuditLogger = null,
         bool enforceCashierPermissions = false)
     {
         var priceIndex = new LocalSellableItemIndex();
@@ -3939,6 +4070,7 @@ public sealed class MainViewModelScannerTests
             cashierSessionContext: cashierSessionContext,
             cashierLoginService: cashierLoginService,
             runtimeStatusApiClient: runtimeStatusApiClient,
+            operationAuditLogger: operationAuditLogger,
             enforceCashierPermissions: enforceCashierPermissions);
     }
 
@@ -3995,6 +4127,16 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(method);
         var task = (Task<bool>)method!.Invoke(viewModel, [navigateToPaymentOnDraft])!;
         return await task;
+    }
+
+    private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
+    {
+        public List<OperationAuditEventDto> Events { get; } = [];
+
+        public void Record(OperationAuditEventDto auditEvent)
+        {
+            Events.Add(auditEvent);
+        }
     }
 
     private static async Task<bool> InvokeRecoverActiveCardPaymentSessionFromPaymentAsync(MainViewModel viewModel)
@@ -4388,6 +4530,23 @@ public sealed class MainViewModelScannerTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(CashierLoginResult.Success(session));
+        }
+    }
+
+    private sealed class FailedCashierLoginService(Exception? exception = null) : ICashierLoginService
+    {
+        public Task<CashierLoginResult> LoginAsync(
+            string storeCode,
+            string deviceCode,
+            string userBarcode,
+            CancellationToken cancellationToken = default)
+        {
+            if (exception is not null)
+            {
+                return Task.FromException<CashierLoginResult>(exception);
+            }
+
+            return Task.FromResult(CashierLoginResult.Fail("Login denied"));
         }
     }
 

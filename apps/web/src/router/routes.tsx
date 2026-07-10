@@ -56,6 +56,7 @@ import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement
 import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
 import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
 import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
+import PosAdminOperationLogsPage from '../pages/PosAdmin/OperationLogs'
 import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
 import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
 import LocalSupplierInvoiceSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'
@@ -586,6 +587,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageStoreOps',
         },
         element: <PosAdminCashRegisterUsersPage />,
+      },
+      {
+        path: '/pos-admin/operation-logs',
+        meta: {
+          title: 'menu.operationLogs',
+          icon: 'FileTextOutlined',
+          keepAlive: true,
+          accessKey: 'canViewOperationAudits',
+        },
+        element: <PosAdminOperationLogsPage />,
       },
       {
         path: '/pos-admin/sales-orders',

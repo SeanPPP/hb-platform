@@ -15,6 +15,10 @@ namespace BlazorApp.Shared.DTOs
         public string SourceType { get; set; } = string.Empty;
         public string? ServiceName { get; set; }
         public string? InstanceId { get; set; }
+        public Guid? ClientEventId { get; set; }
+        public string? StoreCode { get; set; }
+        public string? DeviceCode { get; set; }
+        public string? AppVersion { get; set; }
         public string? Category { get; set; }
         public string? EventId { get; set; }
         public string? TraceId { get; set; }
@@ -34,6 +38,15 @@ namespace BlazorApp.Shared.DTOs
     {
         public int AcceptedCount { get; set; }
         public int RejectedCount { get; set; }
+        public int DuplicateCount { get; set; }
+        public List<ApplicationLogIngestItemResultDto> Results { get; set; } = new();
+    }
+
+    public class ApplicationLogIngestItemResultDto
+    {
+        public Guid? ClientEventId { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string? ErrorCode { get; set; }
     }
 
     public class ApplicationLogQueryDto
@@ -48,6 +61,11 @@ namespace BlazorApp.Shared.DTOs
         public string? TraceId { get; set; }
         public string? UserId { get; set; }
         public string? UserName { get; set; }
+        public string? StoreCode { get; set; }
+        public string? DeviceCode { get; set; }
+        public string? AppVersion { get; set; }
+        public string? InstanceId { get; set; }
+        public string? EventId { get; set; }
         public string? Keyword { get; set; }
         public DateTime? StartUtc { get; set; }
         public DateTime? EndUtc { get; set; }
@@ -66,8 +84,14 @@ namespace BlazorApp.Shared.DTOs
         public string Environment { get; set; } = string.Empty;
         public string SourceType { get; set; } = string.Empty;
         public string? ServiceName { get; set; }
+        public string? InstanceId { get; set; }
+        public Guid? ClientEventId { get; set; }
+        public string? StoreCode { get; set; }
+        public string? DeviceCode { get; set; }
+        public string? AppVersion { get; set; }
         public string Level { get; set; } = string.Empty;
         public string? Category { get; set; }
+        public string? EventId { get; set; }
         public string Message { get; set; } = string.Empty;
         public string? ExceptionType { get; set; }
         public string? ExceptionMessage { get; set; }
@@ -80,6 +104,7 @@ namespace BlazorApp.Shared.DTOs
         public string? UserName { get; set; }
         public string? ClientIp { get; set; }
         public string? PropertiesJson { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
     }
 
     public class ApplicationLogSummaryDto

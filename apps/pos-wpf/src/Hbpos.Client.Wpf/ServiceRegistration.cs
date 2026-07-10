@@ -1,14 +1,20 @@
 using System.IO;
+using System.Net.Http;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Client.Wpf.ViewModels;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Hbpos.Client.Wpf;
 
 public static class ServiceRegistration
 {
+    private const string ApplicationLogUploadClientName = "HbposApplicationLogUpload";
+    private const string OperationAuditUploadClientName = "HbposOperationAuditUpload";
+
     public static IServiceCollection AddHbposClientServices(
         this IServiceCollection services,
         AppStartupOptions startupOptions)
@@ -32,6 +38,48 @@ public static class ServiceRegistration
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
         services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
+        services.AddSingleton(_ => new ClientLogOutboxStore(GetLogDatabasePath(startupOptions)));
+        services.AddSingleton(_ => ClientLogIdentity.CreateCurrent());
+        services.AddSingleton(sp =>
+        {
+            var configuration = sp.GetService<IConfiguration>() ?? new ConfigurationBuilder().Build();
+            return ApplicationLogOptions.FromConfiguration(configuration, GetApiBaseAddress());
+        });
+        services.AddSingleton(sp => OperationAuditUploadOptions.FromConfiguration(
+            sp.GetService<IConfiguration>() ?? new ConfigurationBuilder().Build()));
+        services.AddSingleton(sp => new ClientLogOutboxWriter(
+            sp.GetRequiredService<ClientLogOutboxStore>(),
+            sp.GetRequiredService<DeviceAuthorizationState>(),
+            sp.GetRequiredService<ICashierSessionContext>(),
+            sp.GetRequiredService<ClientLogIdentity>(),
+            sp.GetRequiredService<ApplicationLogOptions>().QueueCapacity));
+        services.AddSingleton<IApplicationLogSink>(sp => sp.GetRequiredService<ClientLogOutboxWriter>());
+        services.AddSingleton<IOperationAuditLogger>(sp => sp.GetRequiredService<ClientLogOutboxWriter>());
+        services.AddHttpClient(ApplicationLogUploadClientName, client =>
+        {
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        });
+        services.AddHttpClient(OperationAuditUploadClientName, client =>
+        {
+            client.BaseAddress = GetApiBaseAddress();
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        })
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddSingleton(sp => new ApplicationLogUploadService(
+            sp.GetRequiredService<ClientLogOutboxStore>(),
+            sp.GetRequiredService<ApplicationLogOptions>(),
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(ApplicationLogUploadClientName),
+            TimeProvider.System));
+        services.AddSingleton(sp => new OperationAuditUploadService(
+            sp.GetRequiredService<ClientLogOutboxStore>(),
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(OperationAuditUploadClientName),
+            TimeProvider.System,
+            sp.GetRequiredService<OperationAuditUploadOptions>(),
+            sp.GetRequiredService<DeviceAuthorizationState>()));
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ApplicationLogUploadService>());
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<OperationAuditUploadService>());
+        // Generic Host 按注册逆序停止：writer 最后注册，退出时先落库，再由 uploader 做最终上传。
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ClientLogOutboxWriter>());
         services.AddSingleton<EmergencyOverridePasswordService>();
         services.AddSingleton<ICashierLoginService, CashierLoginService>();
         services.AddSingleton<IScannerBindingService, ScannerBindingService>();
@@ -331,7 +379,8 @@ public static class ServiceRegistration
             cashierLoginService: sp.GetRequiredService<ICashierLoginService>(),
             emergencyOverridePasswordService: sp.GetRequiredService<EmergencyOverridePasswordService>(),
             runtimeStatusApiClient: sp.GetRequiredService<IPosRuntimeStatusApiClient>(),
-            enforceCashierPermissions: true));
+            enforceCashierPermissions: true,
+            operationAuditLogger: sp.GetRequiredService<IOperationAuditLogger>()));
         services.AddSingleton<MainWindow>();
 
         return services;
@@ -350,5 +399,18 @@ public static class ServiceRegistration
         }
 
         return new Uri(baseUrl, UriKind.Absolute);
+    }
+
+    private static string GetLogDatabasePath(AppStartupOptions startupOptions)
+    {
+        if (startupOptions.PreviewMode)
+        {
+            return Path.Combine(Path.GetTempPath(), $"hbpos-logs-preview-{Environment.ProcessId}-{Guid.NewGuid():N}.db");
+        }
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Hbpos.Client",
+            "hbpos_logs.db");
     }
 }

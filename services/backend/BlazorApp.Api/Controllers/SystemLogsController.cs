@@ -45,7 +45,18 @@ namespace BlazorApp.Api.Controllers
 
             try
             {
-                var result = await _service.IngestAsync(project.ProjectCode, request);
+                // 外部请求声明的 ClientIp 不可信，统一使用服务端连接信息入库。
+                var trustedClientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+                foreach (var log in request.Logs)
+                {
+                    // 即使连接地址不可用也必须清空客户端自报值，不能回退信任请求体。
+                    log.ClientIp = null;
+                }
+                var result = await _service.IngestAsync(
+                    project.ProjectCode,
+                    request,
+                    trustedClientIp
+                );
                 return Ok(ApiResponse<ApplicationLogIngestResultDto>.OK(result, "日志写入成功"));
             }
             catch (InvalidOperationException ex)

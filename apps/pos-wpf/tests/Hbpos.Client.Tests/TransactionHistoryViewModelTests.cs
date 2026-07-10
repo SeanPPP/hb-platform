@@ -1,3 +1,4 @@
+using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
@@ -211,6 +212,7 @@ public sealed class TransactionHistoryViewModelTests
     [Fact]
     public async Task Recall_order_command_uses_row_parameter_refreshes_list_and_invokes_callback()
     {
+        var auditLogger = new RecordingOperationAuditLogger();
         var recalled = false;
         var suspendedOrderGuid = Guid.NewGuid();
         var suspendedOrders = new CapturingSuspendedOrderService
@@ -239,7 +241,8 @@ public sealed class TransactionHistoryViewModelTests
             {
                 recalled = true;
                 return Task.CompletedTask;
-            });
+            },
+            operationAuditLogger: auditLogger);
 
         await viewModel.LoadAsync();
         var suspendedOrder = Assert.Single(viewModel.Orders);
@@ -251,6 +254,13 @@ public sealed class TransactionHistoryViewModelTests
         Assert.True(recalled);
         Assert.Equal(suspendedOrderGuid, suspendedOrders.RecalledOrderGuid);
         Assert.Empty(viewModel.Orders);
+        var auditEvent = Assert.Single(auditLogger.Events);
+        Assert.Equal("ORDER_RECALL", auditEvent.OperationType);
+        Assert.Equal("Succeeded", auditEvent.Outcome);
+        Assert.Equal(suspendedOrderGuid.ToString("D"), auditEvent.OrderGuid);
+        Assert.Equal(0m, auditEvent.BeforeActual);
+        Assert.Equal(10m, auditEvent.AfterActual);
+        Assert.Equal(10m, auditEvent.AmountDelta);
     }
 
     [Fact]
@@ -726,6 +736,16 @@ public sealed class TransactionHistoryViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new OrderReturnRecordCreateResponse(request.ReturnOrderGuid, []));
+        }
+    }
+
+    private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
+    {
+        public List<OperationAuditEventDto> Events { get; } = [];
+
+        public void Record(OperationAuditEventDto auditEvent)
+        {
+            Events.Add(auditEvent);
         }
     }
 

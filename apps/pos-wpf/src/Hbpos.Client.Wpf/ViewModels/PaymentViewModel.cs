@@ -23,6 +23,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly PaymentNavigationActions _navigationActions;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
 
     internal PaymentNavigationActions NavigationActions => _navigationActions;
     private readonly PaymentTenderController _tenderController = new();
@@ -126,7 +127,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
-        Func<bool>? confirmInstallmentFullFirstPayment = null)
+        Func<bool>? confirmInstallmentFullFirstPayment = null,
+        IOperationAuditLogger? operationAuditLogger = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -140,7 +142,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             enforcePermissionsWhenNoCashier,
             installmentOrderService,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPayment)
+            confirmInstallmentFullFirstPayment,
+            operationAuditLogger)
     {
     }
 
@@ -157,7 +160,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         bool enforcePermissionsWhenNoCashier = false,
         IInstallmentOrderService? installmentOrderService = null,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
-        Func<bool>? confirmInstallmentFullFirstPayment = null)
+        Func<bool>? confirmInstallmentFullFirstPayment = null,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _cart = cart;
         _workflowService = workflowService;
@@ -166,6 +170,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _localization = localization;
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
+        _operationAuditLogger = operationAuditLogger;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -829,7 +834,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
-        if (!TryRequirePermission(GetTenderPermission(method)))
+        var permissionAttemptedAmount = ResolveAttemptedPaymentAmount(ResolveTenderAmountText(method));
+        if (!TryRequirePermission(GetTenderPermission(method), method, permissionAttemptedAmount))
         {
             return;
         }
@@ -867,6 +873,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancellationTokenSource? cardPaymentCts = null;
         var cardPaymentWasManuallyCancelled = false;
         var isCard = method == PaymentMethodKind.Card;
+        var attemptedPaymentAmount = ResolveAttemptedPaymentAmount(amountText);
         var paymentEntryVersion = _paymentEntryVersion;
         try
         {
@@ -897,11 +904,34 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 cardPaymentWasManuallyCancelled = _cardSession.IsManualCancellation(cardPaymentCts);
             }
         }
-        catch (OperationCanceledException) when (isCard)
+        catch (OperationCanceledException ex) when (isCard)
         {
             if (!IsCurrentPaymentEntry(paymentEntryVersion))
             {
                 return;
+            }
+
+            var wasManuallyCancelled = _cardSession.IsManualCancellation(cardPaymentCts);
+            if (!wasManuallyCancelled)
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.PaymentTenderAdd,
+                    "Failed",
+                    Session,
+                    OperationAuditEvents.CaptureCart(_cart.Lines),
+                    reasonCode: "CARD_TIMEOUT",
+                    safeMessage: ex.GetType().Name,
+                    paymentMethod: PaymentMethodKind.Card.ToString(),
+                    paymentAmount: attemptedPaymentAmount,
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "OperationAudit",
+                    $"card tender cancelled without manual request error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
             }
 
             _cardSession.HandleOperationCanceledException(cardPaymentCts, paymentEntryVersion);
@@ -915,9 +945,71 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentTenderAdd,
+                "Failed",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "CARD_EXCEPTION",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: PaymentMethodKind.Card.ToString(),
+                paymentAmount: attemptedPaymentAmount,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"card tender failed error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             _cardSession.HandleUnexpectedException(ex, paymentEntryVersion);
             await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
+        }
+        catch (OperationCanceledException ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentTenderAdd,
+                "Failed",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "TENDER_CANCELLED",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: method.ToString(),
+                paymentAmount: attemptedPaymentAmount,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"tender cancelled unexpectedly method={method} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentTenderAdd,
+                "Failed",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "TENDER_EXCEPTION",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: method.ToString(),
+                paymentAmount: attemptedPaymentAmount,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"tender failed method={method} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
         }
         finally
         {
@@ -952,6 +1044,16 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         if (!result.Succeeded || result.Tender is null)
         {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentTenderAdd,
+                "Failed",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: result.StatusKey,
+                safeMessage: result.StatusMessage,
+                paymentMethod: method.ToString(),
+                paymentAmount: attemptedPaymentAmount);
             if (IsRefundMode && isCard)
             {
                 ConsoleLog.Write(
@@ -983,6 +1085,15 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         PaymentTenders.Add(result.Tender);
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.PaymentTenderAdd,
+            "Succeeded",
+            Session,
+            OperationAuditEvents.CaptureCart(_cart.Lines),
+            reasonCode: IsRefundMode ? "REFUND" : "SALE",
+            paymentMethod: result.Tender.Method.ToString(),
+            paymentAmount: result.Tender.Amount);
         if (method == PaymentMethodKind.Voucher)
         {
             VoucherCodeText = string.Empty;
@@ -1053,14 +1164,61 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         foreach (var tender in voucherTenders)
         {
-            if (!await _workflowService.ReleaseVoucherTenderAsync(tender, Session))
+            bool released;
+            try
+            {
+                released = await _workflowService.ReleaseVoucherTenderAsync(tender, Session);
+            }
+            catch (Exception ex)
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.PaymentTenderRemove,
+                    "Failed",
+                    Session,
+                    OperationAuditEvents.CaptureCart(_cart.Lines),
+                    reasonCode: "CARD_FAILURE_RELEASE_EXCEPTION",
+                    safeMessage: ex.GetType().Name,
+                    paymentMethod: tender.Method.ToString(),
+                    paymentAmount: tender.Amount,
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "OperationAudit",
+                    $"automatic voucher release failed error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+                throw;
+            }
+
+            if (!released)
             {
                 SetStatus("payment.status.voucherReleaseFailed");
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.PaymentTenderRemove,
+                    "Failed",
+                    Session,
+                    OperationAuditEvents.CaptureCart(_cart.Lines),
+                    reasonCode: "CARD_FAILURE_RELEASE_FAILED",
+                    safeMessage: StatusMessage,
+                    paymentMethod: tender.Method.ToString(),
+                    paymentAmount: tender.Amount);
                 NotifyPaymentCommandStates();
                 return false;
             }
 
             PaymentTenders.Remove(tender);
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentTenderRemove,
+                "Succeeded",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "CARD_FAILURE_AUTO_RELEASE",
+                paymentMethod: tender.Method.ToString(),
+                paymentAmount: tender.Amount);
         }
 
         RecalculateTenderSummary();
@@ -1072,7 +1230,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task RemoveTenderAsync(PaymentTender? tender)
     {
-        if (!TryRequirePermission(Permissions.PosTerminal.Payment.RemoveTender))
+        if (!TryRequirePermission(
+                Permissions.PosTerminal.Payment.RemoveTender,
+                tender?.Method,
+                tender?.Amount))
         {
             return;
         }
@@ -1096,18 +1257,71 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         if (IsPaymentMode && tender.Method == PaymentMethodKind.Voucher)
         {
-            if (!await _workflowService.ReleaseVoucherTenderAsync(tender, Session))
+            bool released;
+            try
+            {
+                released = await _workflowService.ReleaseVoucherTenderAsync(tender, Session);
+            }
+            catch (Exception ex)
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.PaymentTenderRemove,
+                    "Failed",
+                    Session,
+                    OperationAuditEvents.CaptureCart(_cart.Lines),
+                    reasonCode: "VOUCHER_RELEASE_EXCEPTION",
+                    safeMessage: ex.GetType().Name,
+                    paymentMethod: tender.Method.ToString(),
+                    paymentAmount: tender.Amount,
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "OperationAudit",
+                    $"manual voucher release failed error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+                throw;
+            }
+
+            if (!released)
             {
                 SetStatus("payment.status.voucherReleaseFailed");
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.PaymentTenderRemove,
+                    "Failed",
+                    Session,
+                    OperationAuditEvents.CaptureCart(_cart.Lines),
+                    reasonCode: "VOUCHER_RELEASE_FAILED",
+                    safeMessage: StatusMessage,
+                    paymentMethod: tender.Method.ToString(),
+                    paymentAmount: tender.Amount);
                 NotifyPaymentCommandStates();
                 return;
             }
 
             RemoveTenderFromList(tender, "payment.status.voucherReleased");
+            RecordTenderRemoved(tender);
             return;
         }
 
         RemoveTenderFromList(tender, "payment.status.tenderRemoved");
+        RecordTenderRemoved(tender);
+    }
+
+    private void RecordTenderRemoved(PaymentTender tender)
+    {
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.PaymentTenderRemove,
+            "Succeeded",
+            Session,
+            OperationAuditEvents.CaptureCart(_cart.Lines),
+            reasonCode: IsRefundMode ? "REFUND" : "SALE",
+            paymentMethod: tender.Method.ToString(),
+            paymentAmount: tender.Amount);
     }
 
     private void RemoveTenderFromList(PaymentTender tender, string statusKey)
@@ -1191,7 +1405,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var cashTenderedAmount = PaymentTenders
+        var before = OperationAuditEvents.CaptureCart(_cart.Lines);
+        var tenderSnapshot = PaymentTenders.ToList();
+        var isRefundMode = IsRefundMode;
+        var operationType = isRefundMode
+            ? OperationAuditTypes.ReturnRefundComplete
+            : OperationAuditTypes.SaleComplete;
+        var cashTenderedAmount = tenderSnapshot
             .Where(tender => tender.Method == PaymentMethodKind.Cash)
             .Sum(tender => tender.Amount);
         CashPaymentWorkflowResult result;
@@ -1200,11 +1420,31 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             result = await _workflowService.CompletePaymentAsync(
                 _cart,
                 Session,
-                PaymentTenders.ToList(),
+                tenderSnapshot,
                 cashTenderedAmount);
         }
         catch (PaymentUploadFailedException ex)
         {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            // 付款未完成时购物车没有变化，但失败审计仍必须保留完整商品和有符号金额快照。
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Failed",
+                Session,
+                before,
+                reasonCode: "UPLOAD_FAILED",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                paymentAmount: ex.TenderedAmount,
+                orderGuid: ex.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"payment completion upload failed operation={operationType} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             _pendingVoucherUploadOrderGuid = ex.OrderGuid;
             _pendingVoucherTenderedAmount = ex.TenderedAmount;
             _pendingVoucherChangeAmount = ex.ChangeAmount;
@@ -1212,7 +1452,39 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             NotifyPaymentCommandStates();
             return;
         }
+        catch (Exception ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Failed",
+                Session,
+                before,
+                reasonCode: "TECHNICAL_FAILURE",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                paymentAmount: tenderSnapshot.Sum(tender => tender.Amount),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"payment completion failed operation={operationType} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
+        }
 
+        OperationAuditEvents.RecordCartChange(
+            _operationAuditLogger,
+            operationType,
+            Session,
+            before,
+            OperationAuditEvents.CaptureCart(_cart.Lines),
+            reasonCode: isRefundMode ? "REFUND" : "SALE",
+            paymentMethod: FormatPaymentMethods(tenderSnapshot),
+            paymentAmount: result.TenderedAmount,
+            orderGuid: result.Order.OrderGuid.ToString("D"));
         CompleteSuccessfulPayment(result);
     }
 
@@ -1225,23 +1497,73 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         IsPaymentInteractionLocked = true;
+        var auditCart = OperationAuditEvents.CaptureCart(_cart.Lines);
         try
         {
             var appliedTender = GetInstallmentAppliedTender(tender);
             if (_installmentRepaymentOrder is { } repaymentOrder)
             {
-                var repaymentResult = await _installmentOrderService.AddRepaymentAsync(
-                    new InstallmentOrderRepaymentRequest(
-                        repaymentOrder.OrderId,
+                InstallmentOrderActionResult repaymentResult;
+                try
+                {
+                    repaymentResult = await _installmentOrderService.AddRepaymentAsync(
+                        new InstallmentOrderRepaymentRequest(
+                            repaymentOrder.OrderId,
+                            Session,
+                            CreateInstallmentPaymentDraft(appliedTender)));
+                }
+                catch (Exception ex)
+                {
+                    var correlation = OperationAuditEvents.CreateCorrelation();
+                    OperationAuditEvents.RecordAction(
+                        _operationAuditLogger,
+                        OperationAuditTypes.InstallmentRepaymentComplete,
+                        "Failed",
                         Session,
-                        CreateInstallmentPaymentDraft(appliedTender)));
+                        auditCart,
+                        reasonCode: "REPAYMENT",
+                        safeMessage: ex.GetType().Name,
+                        paymentMethod: appliedTender.Method.ToString(),
+                        paymentAmount: appliedTender.Amount,
+                        orderGuid: repaymentOrder.OrderId.ToString("D"),
+                        correlationId: correlation.CorrelationId,
+                        traceId: correlation.TraceId);
+                    ConsoleLog.WriteError(
+                        "InstallmentAudit",
+                        $"installment repayment submission failed error={ex.GetType().Name}",
+                        new ApplicationLogContext(TraceId: correlation.TraceId),
+                        ex);
+                    throw;
+                }
+
                 if (!repaymentResult.Succeeded)
                 {
+                    OperationAuditEvents.RecordAction(
+                        _operationAuditLogger,
+                        OperationAuditTypes.InstallmentRepaymentComplete,
+                        "Failed",
+                        Session,
+                        auditCart,
+                        reasonCode: "REPAYMENT",
+                        safeMessage: repaymentResult.Message,
+                        paymentMethod: appliedTender.Method.ToString(),
+                        paymentAmount: appliedTender.Amount,
+                        orderGuid: repaymentOrder.OrderId.ToString("D"));
                     SetStatus("payment.installment.status.actionFailed", repaymentResult.Message);
                     return;
                 }
 
                 var completedOrder = repaymentResult.Order ?? repaymentOrder;
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.InstallmentRepaymentComplete,
+                    "Succeeded",
+                    Session,
+                    OperationAuditEvents.CaptureCart(_cart.Lines),
+                    reasonCode: "REPAYMENT",
+                    paymentMethod: appliedTender.Method.ToString(),
+                    paymentAmount: appliedTender.Amount,
+                    orderGuid: completedOrder.OrderId.ToString("D"));
                 PaymentTenders.Clear();
                 _installmentRepaymentOrder = completedOrder;
                 TenderAmountText = string.Empty;
@@ -1266,26 +1588,82 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             if (appliedTender.Amount >= GetPaymentTargetAmount() &&
                 _navigationActions.ConfirmInstallmentFullFirstPayment?.Invoke() == false)
             {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.InstallmentRepaymentCancel,
+                    "Succeeded",
+                    Session,
+                    auditCart,
+                    reasonCode: "FULL_FIRST_PAYMENT_CANCELLED",
+                    paymentMethod: appliedTender.Method.ToString(),
+                    paymentAmount: appliedTender.Amount);
                 // 中文注释：首付已可结清整单时先二次确认；确认后仍按分期创建，取消则保留当前收款状态。
                 SetStatus("payment.installment.status.fullFirstPaymentCancelled");
                 return;
             }
 
-            var createResult = await _installmentOrderService.CreateOrderAsync(
-                new InstallmentOrderCreateRequest(
+            InstallmentOrderCreateResult createResult;
+            try
+            {
+                createResult = await _installmentOrderService.CreateOrderAsync(
+                    new InstallmentOrderCreateRequest(
+                        Session,
+                        cartSnapshot,
+                        InstallmentCustomerName.Trim(),
+                        InstallmentCustomerPhone.Trim(),
+                        appliedTender.Amount,
+                        CreateInstallmentPaymentDraft(appliedTender),
+                        string.Empty));
+            }
+            catch (Exception ex)
+            {
+                var correlation = OperationAuditEvents.CreateCorrelation();
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.SaleComplete,
+                    "Failed",
                     Session,
-                    cartSnapshot,
-                    InstallmentCustomerName.Trim(),
-                    InstallmentCustomerPhone.Trim(),
-                    appliedTender.Amount,
-                    CreateInstallmentPaymentDraft(appliedTender),
-                    string.Empty));
+                    auditCart,
+                    reasonCode: "INSTALLMENT_CREATE",
+                    safeMessage: ex.GetType().Name,
+                    paymentMethod: $"Installment+{appliedTender.Method}",
+                    paymentAmount: appliedTender.Amount,
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                ConsoleLog.WriteError(
+                    "InstallmentAudit",
+                    $"installment order submission failed error={ex.GetType().Name}",
+                    new ApplicationLogContext(TraceId: correlation.TraceId),
+                    ex);
+                throw;
+            }
+
             if (!createResult.Succeeded)
             {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    OperationAuditTypes.SaleComplete,
+                    "Failed",
+                    Session,
+                    auditCart,
+                    reasonCode: "INSTALLMENT_CREATE",
+                    safeMessage: createResult.Message,
+                    paymentMethod: $"Installment+{appliedTender.Method}",
+                    paymentAmount: appliedTender.Amount);
                 SetStatus("payment.installment.status.actionFailed", createResult.Message);
                 return;
             }
 
+            OperationAuditEvents.RecordCartChange(
+                _operationAuditLogger,
+                OperationAuditTypes.SaleComplete,
+                Session,
+                auditCart,
+                new OperationAuditCartSnapshot(0m, 0m, 0m, []),
+                reasonCode: "INSTALLMENT_CREATE",
+                paymentMethod: $"Installment+{appliedTender.Method}",
+                paymentAmount: appliedTender.Amount,
+                orderGuid: createResult.Order?.OrderId.ToString("D"));
             PaymentTenders.Clear();
             _cart.Clear();
             TenderAmountText = string.Empty;
@@ -1428,6 +1806,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var before = OperationAuditEvents.CaptureCart(_cart.Lines);
+        var tenderSnapshot = PaymentTenders.ToList();
+        var isRefundMode = IsRefundMode;
+        var operationType = isRefundMode
+            ? OperationAuditTypes.ReturnRefundComplete
+            : OperationAuditTypes.SaleComplete;
         try
         {
             var result = await _workflowService.RetryVoucherUploadAsync(
@@ -1436,14 +1820,66 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 Session,
                 _pendingVoucherTenderedAmount,
                 _pendingVoucherChangeAmount);
+            OperationAuditEvents.RecordCartChange(
+                _operationAuditLogger,
+                operationType,
+                Session,
+                before,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "UPLOAD_RETRY_SUCCEEDED",
+                paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                paymentAmount: result.TenderedAmount,
+                orderGuid: result.Order.OrderGuid.ToString("D"));
             CompleteSuccessfulPayment(result);
         }
         catch (PaymentUploadFailedException ex)
         {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Failed",
+                Session,
+                before,
+                reasonCode: "UPLOAD_RETRY_FAILED",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                paymentAmount: ex.TenderedAmount,
+                orderGuid: ex.OrderGuid.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"payment upload retry failed operation={operationType} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
             _pendingVoucherUploadOrderGuid = ex.OrderGuid;
             _pendingVoucherTenderedAmount = ex.TenderedAmount;
             _pendingVoucherChangeAmount = ex.ChangeAmount;
             SetStatus("payment.status.uploadFailed", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Failed",
+                Session,
+                before,
+                reasonCode: "UPLOAD_RETRY_FAILED",
+                safeMessage: ex.GetType().Name,
+                paymentMethod: FormatPaymentMethods(tenderSnapshot),
+                paymentAmount: _pendingVoucherTenderedAmount,
+                orderGuid: _pendingVoucherUploadOrderGuid.Value.ToString("D"),
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"payment upload retry technical failure operation={operationType} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
         }
     }
 
@@ -1640,6 +2076,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         return amount > 0m ? amount.ToString("0.00") : string.Empty;
     }
 
+    private decimal? ResolveAttemptedPaymentAmount(string? amountText)
+    {
+        if (!_workflowService.TryParseTenderedAmount(amountText, out var amount) || amount <= 0m)
+        {
+            return null;
+        }
+
+        // UI 输入始终为正数；退款审计必须恢复 POS 现有的有符号金额语义。
+        return IsRefundMode ? -Math.Abs(amount) : Math.Abs(amount);
+    }
+
     private decimal GetExternalRemainingAmount()
     {
         var tenderedAmount = PaymentTenders.Sum(tender => tender.Amount);
@@ -1738,14 +2185,39 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         if (IsCardPaymentInProgress)
         {
             _cardSession.Cancel();
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentCancel,
+                "Succeeded",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "CARD_MANUAL_CANCEL",
+                paymentMethod: PaymentMethodKind.Card.ToString());
             return;
         }
 
         if (_cardSession.IsAwaitingLateResult)
         {
             _cardSession.ShouldDiscardLateResult = true;
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                OperationAuditTypes.PaymentCancel,
+                "Succeeded",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "CARD_LATE_RESULT_DISCARD",
+                paymentMethod: PaymentMethodKind.Card.ToString());
             NotifyPaymentCommandStates();
         }
+    }
+
+    private static string? FormatPaymentMethods(IReadOnlyList<PaymentTender> tenders)
+    {
+        var methods = tenders
+            .Select(tender => tender.Method.ToString())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return methods.Length == 0 ? null : string.Join('+', methods);
     }
 
     private bool CanCancelPayment()
@@ -2164,7 +2636,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(StatusMessage));
     }
 
-    private bool TryRequirePermission(string permissionCode)
+    private bool TryRequirePermission(
+        string permissionCode,
+        PaymentMethodKind? requestedPaymentMethod = null,
+        decimal? requestedPaymentAmount = null)
     {
         if ((!_enforcePermissions && _cashierSessionContext.CurrentSession is null && Session.CashierSession is null) ||
             _cashierSessionContext.RequirePermission(permissionCode, out var message))
@@ -2173,9 +2648,106 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         // 中文注释：付款命令必须在执行前复核当前收银员权限。
+        var (operationType, paymentMethod, paymentAmount, orderGuid) = GetDeniedAuditOperation(
+            permissionCode,
+            requestedPaymentMethod,
+            requestedPaymentAmount);
+        if (operationType is not null)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Denied",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "PERMISSION_DENIED",
+                safeMessage: message,
+                paymentMethod: paymentMethod,
+                paymentAmount: paymentAmount,
+                orderGuid: orderGuid);
+        }
+
         SetStatus("payment.status.permissionDenied", message);
         NotifyPaymentCommandStates();
         return false;
+    }
+
+    private (string? OperationType, string? PaymentMethod, decimal? PaymentAmount, string? OrderGuid) GetDeniedAuditOperation(
+        string permissionCode,
+        PaymentMethodKind? requestedPaymentMethod,
+        decimal? requestedPaymentAmount)
+    {
+        if (permissionCode == Permissions.PosTerminal.Payment.TakeCash)
+        {
+            return (
+                OperationAuditTypes.PaymentTenderAdd,
+                (requestedPaymentMethod ?? PaymentMethodKind.Cash).ToString(),
+                requestedPaymentAmount,
+                null);
+        }
+
+        if (permissionCode == Permissions.PosTerminal.Payment.TakeCard)
+        {
+            return (
+                OperationAuditTypes.PaymentTenderAdd,
+                (requestedPaymentMethod ?? PaymentMethodKind.Card).ToString(),
+                requestedPaymentAmount,
+                null);
+        }
+
+        if (permissionCode == Permissions.PosTerminal.Payment.TakeVoucher)
+        {
+            return (
+                OperationAuditTypes.PaymentTenderAdd,
+                (requestedPaymentMethod ?? PaymentMethodKind.Voucher).ToString(),
+                requestedPaymentAmount,
+                null);
+        }
+
+        if (permissionCode == Permissions.PosTerminal.Payment.RemoveTender)
+        {
+            return (
+                OperationAuditTypes.PaymentTenderRemove,
+                requestedPaymentMethod?.ToString(),
+                requestedPaymentAmount,
+                null);
+        }
+
+        if (permissionCode == Permissions.PosTerminal.Payment.Confirm)
+        {
+            var tenders = PaymentTenders.ToList();
+            var tender = tenders.FirstOrDefault();
+            if (_installmentRepaymentOrder is { } repaymentOrder)
+            {
+                return (
+                    OperationAuditTypes.InstallmentRepaymentComplete,
+                    tender?.Method.ToString(),
+                    tender is null ? null : GetInstallmentAppliedPaymentAmount(tender),
+                    repaymentOrder.OrderId.ToString("D"));
+            }
+
+            if (IsInstallmentPaymentEnabled)
+            {
+                return (
+                    OperationAuditTypes.SaleComplete,
+                    tender is null ? "Installment" : $"Installment+{tender.Method}",
+                    tender is null ? null : GetInstallmentAppliedPaymentAmount(tender),
+                    null);
+            }
+
+            decimal? paymentAmount = _pendingVoucherUploadOrderGuid is not null
+                ? _pendingVoucherTenderedAmount
+                : tenders.Count == 0
+                    ? null
+                    : tenders.Sum(item => item.Amount);
+            return (
+                IsRefundMode ? OperationAuditTypes.ReturnRefundComplete : OperationAuditTypes.SaleComplete,
+                FormatPaymentMethods(tenders),
+                paymentAmount,
+                _pendingVoucherUploadOrderGuid?.ToString("D"));
+        }
+
+        return (null, null, null, null);
     }
 
     private static string GetTenderPermission(PaymentMethodKind method)

@@ -101,6 +101,7 @@ function createEmptyAccess(): AccessControl {
     canEditAttendanceSettings: false,
     canViewEmployeeProfiles: false,
     canViewSystemLogs: false,
+    canViewOperationAudits: false,
     canManageSystemSettings: false,
     canManageScheduledTasks: false,
     canViewAppDownloads: false,
@@ -129,7 +130,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const hasRole = (role: string) =>
     currentUser.roleNames?.some((item) => item.toLowerCase() === role.toLowerCase()) ?? false
 
-  const isAdmin = hasRole('Admin') || hasRole('管理员')
+  const isAdmin =
+    hasRole('Admin') ||
+    hasRole('管理员') ||
+    hasRole('SuperAdmin') ||
+    hasRole('超级管理员')
   const isWarehouseManager = hasRole('WarehouseManager') || hasRole('仓库经理')
   const currentPermissionSet = new Set((currentUser.permissions ?? []).map((item) => item.toLowerCase()))
 
@@ -301,6 +306,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canEditAttendanceSettings = isAdmin || hasPermission(P.Attendance.SettingsEdit)
   const canViewEmployeeProfiles = isAdmin || hasPermission(P.EmployeeProfiles.View)
   const canViewSystemLogs = isAdmin || hasPermission(P.System.ViewLogs)
+  const canViewOperationAudits = isAdmin || hasPermission(P.PosTerminal.AuditView)
   const canManageScheduledTasks = isAdmin || hasPermission(P.System.ManageScheduledTasks)
   const canManageSystemSettings = isAdmin || hasPermission(P.System.ManageSettings)
   // OTA 登记和回撤命令属于发布管理动作，和只读下载页权限分开控制。
@@ -388,6 +394,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canEditAttendanceSettings,
     canViewEmployeeProfiles,
     canViewSystemLogs,
+    canViewOperationAudits,
     canManageScheduledTasks,
     canManageSystemSettings,
     canViewAppDownloads,

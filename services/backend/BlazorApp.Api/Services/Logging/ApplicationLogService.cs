@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Extensions.Options;
@@ -19,6 +20,47 @@ namespace BlazorApp.Api.Services.Logging
             "Mobile",
             "POS",
         };
+        private static readonly Regex BearerTokenPattern = new(
+            @"\bBearer\s+[^\s,;]+",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled
+        );
+        private static readonly Regex SensitiveAssignmentPattern = new(
+            @"\b(authorization(?:code)?|password|pin|api[-_]?key|token|secret|credential|cvv|pan|cardnumber|voucher[-_]?code|employee[-_]?barcode)\b\s*[:=]\s*[^\s,;]+",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled
+        );
+        private static readonly Regex PanPattern = new(
+            @"(?<!\d)(?:\d[ -]?){13,19}(?!\d)",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled
+        );
+        private static readonly Regex UrlQueryPattern = new(
+            @"(?<url>(?:https?://|/)[^\s?]+)\?[^\s]*",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled
+        );
+        private static readonly string[] SensitiveKeyFragments =
+        [
+            "authorization",
+            "bearer",
+            "password",
+            "pin",
+            "apikey",
+            "token",
+            "secret",
+            "credential",
+            "cvv",
+            "pan",
+            "cardnumber",
+            "vouchercode",
+            "employeebarcode",
+            "customeremail",
+            "customerphone",
+            "customeraddress",
+            "customername",
+            "requestbody",
+            "responsebody",
+            "rawrequest",
+            "rawresponse",
+        ];
+        private const string RedactedValue = "[REDACTED]";
 
         private readonly ISqlSugarClient _db;
         private readonly ApplicationLoggingOptions _options;
@@ -61,31 +103,85 @@ namespace BlazorApp.Api.Services.Logging
 
         public async Task<ApplicationLogIngestResultDto> IngestAsync(
             string projectCode,
-            ApplicationLogIngestRequestDto request
+            ApplicationLogIngestRequestDto request,
+            string? trustedClientIp = null
         )
         {
             if (request.Logs.Count > _options.MaxBatchSize)
                 throw new InvalidOperationException($"单次最多写入 {_options.MaxBatchSize} 条日志");
 
             var project = FindProject(projectCode);
-            var logs = request
-                .Logs.Where(item =>
-                    !string.IsNullOrWhiteSpace(item.Level)
-                    && !string.IsNullOrWhiteSpace(item.Message)
-                    && !string.IsNullOrWhiteSpace(item.Environment)
-                    && !string.IsNullOrWhiteSpace(item.SourceType)
-                    && AllowedSourceTypes.Contains(item.SourceType.Trim())
-                )
-                .Select(item => BuildEntity(project, projectCode, item))
+            var itemResults = request
+                .Logs.Select(item => new ApplicationLogIngestItemResultDto
+                {
+                    ClientEventId = item.ClientEventId,
+                })
                 .ToList();
+            var legacyLogs = new List<(int Index, ApplicationLog Entity)>();
+            var idempotentLogs = new List<(int Index, ApplicationLog Entity)>();
 
-            if (logs.Count > 0)
-                await _db.Insertable(logs).ExecuteCommandAsync();
+            for (var index = 0; index < request.Logs.Count; index++)
+            {
+                var item = request.Logs[index];
+                if (!IsValidIngestItem(item))
+                {
+                    itemResults[index].Status = "rejected";
+                    itemResults[index].ErrorCode = "INVALID_LOG_ITEM";
+                    continue;
+                }
+
+                var entity = BuildEntity(project, projectCode, item, trustedClientIp);
+                if (entity.ClientEventId.HasValue)
+                    idempotentLogs.Add((index, entity));
+                else
+                    legacyLogs.Add((index, entity));
+            }
+
+            // 旧客户端没有幂等键，继续保持一次批量写入，避免改变既有吞吐表现。
+            if (legacyLogs.Count > 0)
+            {
+                await _db.Insertable(legacyLogs.Select(item => item.Entity).ToList()).ExecuteCommandAsync();
+                foreach (var item in legacyLogs)
+                    itemResults[item.Index].Status = "accepted";
+            }
+
+            var batchEventIds = new HashSet<Guid>();
+            foreach (var item in idempotentLogs)
+            {
+                var clientEventId = item.Entity.ClientEventId!.Value;
+                if (!batchEventIds.Add(clientEventId) || await ClientEventExistsAsync(item.Entity))
+                {
+                    itemResults[item.Index].Status = "duplicate";
+                    continue;
+                }
+
+                try
+                {
+                    await _db.Insertable(item.Entity).ExecuteCommandAsync();
+                    itemResults[item.Index].Status = "accepted";
+                }
+                catch (Exception ex)
+                {
+                    // 并发请求可能同时通过预检查，唯一索引是最终幂等边界。
+                    if (!await ClientEventExistsAsync(item.Entity))
+                        throw;
+
+                    _logger.LogDebug(
+                        ex,
+                        "中心日志并发重复写入已按幂等处理: {ProjectCode}/{ClientEventId}",
+                        item.Entity.ProjectCode,
+                        clientEventId
+                    );
+                    itemResults[item.Index].Status = "duplicate";
+                }
+            }
 
             return new ApplicationLogIngestResultDto
             {
-                AcceptedCount = logs.Count,
-                RejectedCount = request.Logs.Count - logs.Count,
+                AcceptedCount = itemResults.Count(item => item.Status == "accepted"),
+                RejectedCount = itemResults.Count(item => item.Status == "rejected"),
+                DuplicateCount = itemResults.Count(item => item.Status == "duplicate"),
+                Results = itemResults,
             };
         }
 
@@ -169,7 +265,7 @@ namespace BlazorApp.Api.Services.Logging
                 var cutoff = nowUtc.AddDays(-retentionDays);
                 deleted += await _db
                     .Deleteable<ApplicationLog>()
-                    .Where(x => x.ProjectCode == project.ProjectCode && x.TimestampUtc < cutoff)
+                    .Where(x => x.ProjectCode == project.ProjectCode && x.CreatedAt < cutoff)
                     .ExecuteCommandAsync();
             }
 
@@ -241,6 +337,16 @@ namespace BlazorApp.Api.Services.Logging
                 dbQuery = dbQuery.Where(x => x.UserId == query.UserId);
             if (!string.IsNullOrWhiteSpace(query.UserName))
                 dbQuery = dbQuery.Where(x => x.UserName != null && x.UserName.Contains(query.UserName));
+            if (!string.IsNullOrWhiteSpace(query.StoreCode))
+                dbQuery = dbQuery.Where(x => x.StoreCode == query.StoreCode);
+            if (!string.IsNullOrWhiteSpace(query.DeviceCode))
+                dbQuery = dbQuery.Where(x => x.DeviceCode == query.DeviceCode);
+            if (!string.IsNullOrWhiteSpace(query.AppVersion))
+                dbQuery = dbQuery.Where(x => x.AppVersion == query.AppVersion);
+            if (!string.IsNullOrWhiteSpace(query.InstanceId))
+                dbQuery = dbQuery.Where(x => x.InstanceId == query.InstanceId);
+            if (!string.IsNullOrWhiteSpace(query.EventId))
+                dbQuery = dbQuery.Where(x => x.EventId == query.EventId);
             if (query.StartUtc.HasValue)
                 dbQuery = dbQuery.Where(x => x.TimestampUtc >= query.StartUtc.Value);
             if (query.EndUtc.HasValue)
@@ -261,7 +367,8 @@ namespace BlazorApp.Api.Services.Logging
         private ApplicationLog BuildEntity(
             ApplicationLoggingProjectOptions? project,
             string authenticatedProjectCode,
-            ApplicationLogIngestItemDto item
+            ApplicationLogIngestItemDto item,
+            string? trustedClientIp = null
         )
         {
             var projectCode = project?.ProjectCode ?? authenticatedProjectCode;
@@ -277,22 +384,45 @@ namespace BlazorApp.Api.Services.Logging
                 SourceType = Truncate(item.SourceType, 60) ?? _options.DefaultSourceType,
                 ServiceName = Truncate(item.ServiceName, 120),
                 InstanceId = Truncate(item.InstanceId, 120),
+                ClientEventId = item.ClientEventId,
+                StoreCode = Truncate(item.StoreCode, 80),
+                DeviceCode = Truncate(item.DeviceCode, 120),
+                AppVersion = Truncate(item.AppVersion, 60),
                 Level = Truncate(item.Level, 30) ?? LogLevel.Information.ToString(),
                 Category = Truncate(item.Category, 240),
                 EventId = Truncate(item.EventId, 80),
-                Message = Truncate(item.Message, _options.MaxMessageLength) ?? string.Empty,
+                Message = Truncate(SanitizeText(item.Message), _options.MaxMessageLength) ?? string.Empty,
                 ExceptionType = Truncate(item.ExceptionType, 240),
-                ExceptionMessage = Truncate(item.ExceptionMessage, _options.MaxMessageLength),
-                StackTrace = Truncate(item.StackTrace, _options.MaxStackTraceLength),
-                RequestPath = Truncate(item.RequestPath, 500),
+                ExceptionMessage = Truncate(SanitizeText(item.ExceptionMessage), _options.MaxMessageLength),
+                StackTrace = Truncate(SanitizeText(item.StackTrace), _options.MaxStackTraceLength),
+                RequestPath = Truncate(SanitizeRequestPath(item.RequestPath), 500),
                 RequestMethod = Truncate(item.RequestMethod, 20),
                 StatusCode = item.StatusCode,
                 TraceId = Truncate(item.TraceId, 120),
                 UserId = Truncate(item.UserId, 120),
                 UserName = Truncate(item.UserName, 120),
-                ClientIp = Truncate(item.ClientIp, 80),
+                ClientIp = Truncate(trustedClientIp ?? item.ClientIp, 80),
                 PropertiesJson = Truncate(SerializeSafeProperties(item.Properties), _options.MaxPropertiesLength),
+                CreatedAt = DateTime.UtcNow,
             };
+        }
+
+        private async Task<bool> ClientEventExistsAsync(ApplicationLog entity)
+        {
+            return await _db
+                .Queryable<ApplicationLog>()
+                .AnyAsync(x =>
+                    x.ProjectCode == entity.ProjectCode && x.ClientEventId == entity.ClientEventId
+                );
+        }
+
+        private static bool IsValidIngestItem(ApplicationLogIngestItemDto item)
+        {
+            return !string.IsNullOrWhiteSpace(item.Level)
+                && !string.IsNullOrWhiteSpace(item.Message)
+                && !string.IsNullOrWhiteSpace(item.Environment)
+                && !string.IsNullOrWhiteSpace(item.SourceType)
+                && AllowedSourceTypes.Contains(item.SourceType.Trim());
         }
 
         private ApplicationLoggingProjectOptions? FindProject(string? projectCode)
@@ -368,14 +498,20 @@ namespace BlazorApp.Api.Services.Logging
             return new ApplicationLogDto
             {
                 Id = entity.Id,
-                TimestampUtc = entity.TimestampUtc,
+                TimestampUtc = AsUtc(entity.TimestampUtc),
                 ProjectCode = entity.ProjectCode,
                 ProjectName = entity.ProjectName,
                 Environment = entity.Environment,
                 SourceType = entity.SourceType,
                 ServiceName = entity.ServiceName,
+                InstanceId = entity.InstanceId,
+                ClientEventId = entity.ClientEventId,
+                StoreCode = entity.StoreCode,
+                DeviceCode = entity.DeviceCode,
+                AppVersion = entity.AppVersion,
                 Level = entity.Level,
                 Category = entity.Category,
+                EventId = entity.EventId,
                 Message = entity.Message,
                 ExceptionType = entity.ExceptionType,
                 ExceptionMessage = entity.ExceptionMessage,
@@ -388,8 +524,16 @@ namespace BlazorApp.Api.Services.Logging
                 UserName = entity.UserName,
                 ClientIp = entity.ClientIp,
                 PropertiesJson = entity.PropertiesJson,
+                CreatedAtUtc = AsUtc(entity.CreatedAt),
             };
         }
+
+        private static DateTime AsUtc(DateTime value) => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+        };
 
         private static string ComputeSha256(string value)
         {
@@ -420,21 +564,24 @@ namespace BlazorApp.Api.Services.Logging
 
             var safeProperties = properties.ToDictionary(
                 item => item.Key,
-                item => ToJsonSafeValue(item.Value)
+                item => ToJsonSafeValue(item.Value, key: item.Key)
             );
             return JsonSerializer.Serialize(safeProperties);
         }
 
-        private static object? ToJsonSafeValue(object? value, int depth = 0)
+        private static object? ToJsonSafeValue(object? value, int depth = 0, string? key = null)
         {
+            if (IsSensitiveKey(key))
+                return RedactedValue;
             if (value == null)
                 return null;
             if (depth >= 4)
-                return value.ToString();
+                return SanitizeText(value.ToString());
 
             return value switch
             {
-                string or bool or char => value,
+                string stringValue => SanitizeText(stringValue),
+                bool or char => value,
                 byte or sbyte or short or ushort or int or uint or long or ulong => value,
                 double doubleValue => double.IsFinite(doubleValue)
                     ? doubleValue
@@ -447,25 +594,35 @@ namespace BlazorApp.Api.Services.Logging
                 DateTimeOffset dateTimeOffset => dateTimeOffset.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
                 Guid guid => guid.ToString(),
                 Enum enumValue => enumValue.ToString(),
-                JsonElement jsonElement => ToJsonSafeValueFromElement(jsonElement, depth),
+                JsonElement jsonElement => ToJsonSafeValueFromElement(jsonElement, depth, key),
                 IDictionary dictionary => dictionary
-                    .Cast<DictionaryEntry>()
+                    .Keys.Cast<object?>()
                     .ToDictionary(
-                        entry => entry.Key?.ToString() ?? string.Empty,
-                        entry => ToJsonSafeValue(entry.Value, depth + 1)
+                        dictionaryKey => dictionaryKey?.ToString() ?? string.Empty,
+                        dictionaryKey => ToJsonSafeValue(
+                            dictionaryKey == null ? null : dictionary[dictionaryKey],
+                            depth + 1,
+                            dictionaryKey?.ToString()
+                        )
                     ),
                 IEnumerable enumerable when value is not string => enumerable
                     .Cast<object?>()
                     .Select(item => ToJsonSafeValue(item, depth + 1))
                     .ToList(),
-                _ => value.ToString(),
+                _ => SanitizeText(value.ToString()),
             };
         }
 
-        private static object? ToJsonSafeValueFromElement(JsonElement element, int depth)
+        private static object? ToJsonSafeValueFromElement(
+            JsonElement element,
+            int depth,
+            string? key = null
+        )
         {
+            if (IsSensitiveKey(key))
+                return RedactedValue;
             if (depth >= 4)
-                return element.ToString();
+                return SanitizeText(element.ToString());
 
             return element.ValueKind switch
             {
@@ -473,20 +630,53 @@ namespace BlazorApp.Api.Services.Logging
                     .EnumerateObject()
                     .ToDictionary(
                         property => property.Name,
-                        property => ToJsonSafeValueFromElement(property.Value, depth + 1)
+                        property => ToJsonSafeValueFromElement(
+                            property.Value,
+                            depth + 1,
+                            property.Name
+                        )
                     ),
                 JsonValueKind.Array => element
                     .EnumerateArray()
                     .Select(item => ToJsonSafeValueFromElement(item, depth + 1))
                     .ToList(),
-                JsonValueKind.String => element.GetString(),
+                JsonValueKind.String => SanitizeText(element.GetString()),
                 JsonValueKind.Number when element.TryGetInt64(out var longValue) => longValue,
                 JsonValueKind.Number when element.TryGetDecimal(out var decimalValue) => decimalValue,
                 JsonValueKind.True => true,
                 JsonValueKind.False => false,
                 JsonValueKind.Null => null,
-                _ => element.ToString(),
+                _ => SanitizeText(element.ToString()),
             };
+        }
+
+        private static bool IsSensitiveKey(string? key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                return false;
+
+            var normalized = new string(key.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+            return SensitiveKeyFragments.Any(normalized.Contains);
+        }
+
+        private static string? SanitizeRequestPath(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return value;
+
+            var queryIndex = value.IndexOfAny(new[] { '?', '#' });
+            return queryIndex < 0 ? value : value[..queryIndex];
+        }
+
+        private static string? SanitizeText(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return value;
+
+            var sanitized = UrlQueryPattern.Replace(value, "${url}");
+            sanitized = BearerTokenPattern.Replace(sanitized, RedactedValue);
+            sanitized = SensitiveAssignmentPattern.Replace(sanitized, "$1=[REDACTED]");
+            return PanPattern.Replace(sanitized, "[REDACTED_CARD]");
         }
     }
 }

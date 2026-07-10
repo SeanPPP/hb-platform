@@ -167,6 +167,20 @@ public class NavigationServiceTests
         Assert.Contains(posAdminMenu.Children!, item => item.Path == "/pos-admin/local-supplier-invoices");
     }
 
+    [Theory]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public void BuildMenu_ShowsFullMenuForSuperAdminAliases(string roleName)
+    {
+        var user = CreateUser(new Claim(ClaimTypes.Role, roleName));
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
+        Assert.Contains(posAdmin.Children!, item => item.Path == "/pos-admin/operation-logs");
+        Assert.Contains(menu, item => item.Path == "/system");
+    }
+
     [Fact]
     public void BuildMenu_ShowsDashboardAndAuthorizedModuleWithDashboardPermission()
     {
@@ -224,6 +238,21 @@ public class NavigationServiceTests
                 item.Path == "/pos-admin/advertisements"
                 && item.Permission == Permissions.Advertisements.View
         );
+    }
+
+    [Fact]
+    public void BuildMenu_ShowsOperationLogsWithAuditViewPermission()
+    {
+        var user = CreateUser(new Claim("permission", Permissions.PosTerminal.Audit.View));
+
+        var menu = _service.BuildMenu(user);
+
+        var posAdmin = Assert.Single(menu, item => item.Path == "/pos-admin");
+        var operationLogs = Assert.Single(
+            posAdmin.Children!,
+            item => item.Path == "/pos-admin/operation-logs"
+        );
+        Assert.Equal(Permissions.PosTerminal.Audit.View, operationLogs.Permission);
     }
 
     [Fact]

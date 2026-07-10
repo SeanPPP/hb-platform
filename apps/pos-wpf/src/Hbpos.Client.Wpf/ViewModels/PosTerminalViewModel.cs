@@ -40,6 +40,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private readonly Func<CancellationToken, Task<IReadOnlyList<SellableItemDto>>>? _resetCatalogAsync;
     private readonly Func<CancellationToken, Task<bool>>? _refreshOnlineAsync;
     private readonly Func<string, CancellationToken, Task<bool>>? _tryLoginCashierFromScannerFallbackAsync;
+    private readonly IOperationAuditLogger? _operationAuditLogger;
     private string _statusKey = "pos.status.ready";
     private object[] _statusArgs = [];
     private string? _statusText;
@@ -109,12 +110,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         Func<string, CancellationToken, Task<bool>>? tryLoginCashierFromScannerFallbackAsync = null,
         ICashierSessionContext? cashierSessionContext = null,
         bool enforcePermissionsWhenNoCashier = false,
-        IPromotionEvaluationService? promotionEvaluationService = null)
+        IPromotionEvaluationService? promotionEvaluationService = null,
+        IOperationAuditLogger? operationAuditLogger = null)
     {
         _priceIndex = priceIndex;
         _cart = cart;
         _workflowService = workflowService ?? new PosTerminalWorkflowService(priceIndex, cart, remoteLookupRefreshAsync, reloadCatalogAsync);
         _promotionEvaluationService = promotionEvaluationService;
+        _operationAuditLogger = operationAuditLogger;
         _actions = PosTerminalActions.FromLegacyCallbacks(
             onOpenPayment,
             onOpenReturns,
@@ -460,11 +463,69 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         string reason,
         Func<PosTerminalWorkflowResult> operation)
     {
+        var before = OperationAuditEvents.CaptureCart(_cart.Lines);
+        var operationType = MapCartOperationType(reason, IsWholeOrderOperation);
         var previousSequence = _cartChangedSequence;
-        var result = operation();
+        PosTerminalWorkflowResult result;
+        try
+        {
+            result = operation();
+        }
+        catch (Exception ex)
+        {
+            var correlation = OperationAuditEvents.CreateCorrelation();
+            OperationAuditEvents.RecordCartChange(
+                _operationAuditLogger,
+                operationType,
+                Session,
+                before,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                outcome: "Failed",
+                reasonCode: reason,
+                safeMessage: ex.GetType().Name,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"cart operation failed operation={reason} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
+        }
+
         ApplyWorkflowResult(result);
         QueuePromotionEvaluationIfCartChanged(previousSequence, reason);
+        var after = OperationAuditEvents.CaptureCart(_cart.Lines);
+        if (OperationAuditEvents.HasChanged(before, after))
+        {
+            // 只在购物车真实变化后记录成功，促销后台重算不会单独生成员工操作事件。
+            OperationAuditEvents.RecordCartChange(
+                _operationAuditLogger,
+                operationType,
+                Session,
+                before,
+                after,
+                reasonCode: reason);
+        }
+
         return result;
+    }
+
+    private static string MapCartOperationType(string reason, bool isWholeOrderOperation)
+    {
+        return reason switch
+        {
+            "add-open-item" or "manual-add-selected" or "manual-select-match" => OperationAuditTypes.CartItemAdd,
+            "remove-line" => OperationAuditTypes.CartItemRemove,
+            "increase-line" or "decrease-line" or "modify-quantity" => OperationAuditTypes.CartItemQuantityChange,
+            "modify-price" => OperationAuditTypes.CartItemPriceChange,
+            "manual-discount-amount" or "manual-discount-percent" or "quick-discount-percent" =>
+                isWholeOrderOperation
+                    ? OperationAuditTypes.CartOrderDiscountChange
+                    : OperationAuditTypes.CartLineDiscountChange,
+            "clear-cart" => OperationAuditTypes.CartClear,
+            _ => OperationAuditTypes.CartItemAdd
+        };
     }
 
     private void QueuePromotionEvaluationIfCartChanged(long previousSequence, string reason)
@@ -1005,7 +1066,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         if (_actions.HoldOrderAsync is not null)
         {
-            await _actions.HoldOrderAsync();
+            var snapshot = OperationAuditEvents.CaptureCart(_cart.Lines);
+            await RecordActionCallbackAsync(
+                OperationAuditTypes.OrderHold,
+                _actions.HoldOrderAsync,
+                snapshot,
+                "HOLD");
         }
     }
 
@@ -1018,6 +1084,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         if (_actions.RecallOrderAsync is not null)
         {
+            // 这里仅导航到暂存订单列表，真实取单成功由 TransactionHistoryViewModel 记录。
             await _actions.RecallOrderAsync();
         }
     }
@@ -1085,6 +1152,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         SetStatusText(T("receipt.print.printing"));
         var result = await _actions.PrintLastReceiptAsync();
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.ReceiptReprint,
+            result.Succeeded ? "Succeeded" : "Failed",
+            Session,
+            OperationAuditEvents.CaptureCart(_cart.Lines),
+            reasonCode: "LAST_RECEIPT",
+            safeMessage: result.Succeeded ? null : result.Message);
         SetStatusText(
             result.Message,
             result.Succeeded ? StatusFeedbackKind.Success : StatusFeedbackKind.Error,
@@ -1105,10 +1180,75 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         SetStatusText(T("cashDrawer.opening"));
         var result = await _actions.OpenCashDrawerAsync();
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashDrawerOpen,
+            result.Succeeded ? "Succeeded" : "Failed",
+            Session,
+            OperationAuditEvents.CaptureCart(_cart.Lines),
+            reasonCode: "MANUAL",
+            safeMessage: result.Succeeded ? null : result.Message);
         SetStatusText(
             result.Succeeded ? T("cashDrawer.opened") : result.Message,
             result.Succeeded ? StatusFeedbackKind.Success : StatusFeedbackKind.Error,
             result.Succeeded ? null : UserFeedbackCue.OperationError);
+    }
+
+    private async Task RecordActionCallbackAsync(
+        string operationType,
+        Func<Task> callback,
+        OperationAuditCartSnapshot snapshot,
+        string reasonCode)
+    {
+        var correlation = OperationAuditEvents.CreateCorrelation();
+        try
+        {
+            await callback();
+            var after = OperationAuditEvents.CaptureCart(_cart.Lines);
+            if (!OperationAuditEvents.HasChanged(snapshot, after))
+            {
+                OperationAuditEvents.RecordAction(
+                    _operationAuditLogger,
+                    operationType,
+                    "Failed",
+                    Session,
+                    snapshot,
+                    reasonCode: $"{reasonCode}_NO_STATE_CHANGE",
+                    safeMessage: "NO_STATE_CHANGE",
+                    correlationId: correlation.CorrelationId,
+                    traceId: correlation.TraceId);
+                return;
+            }
+
+            OperationAuditEvents.RecordCartChange(
+                _operationAuditLogger,
+                operationType,
+                Session,
+                snapshot,
+                after,
+                reasonCode: reasonCode,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+        }
+        catch (Exception ex)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                operationType,
+                "Failed",
+                Session,
+                snapshot,
+                reasonCode: reasonCode,
+                safeMessage: ex.GetType().Name,
+                correlationId: correlation.CorrelationId,
+                traceId: correlation.TraceId);
+            ConsoleLog.WriteError(
+                "OperationAudit",
+                $"operation failed operation={operationType} error={ex.GetType().Name}",
+                new ApplicationLogContext(TraceId: correlation.TraceId),
+                ex);
+            throw;
+        }
     }
 
     private async Task ExitApplicationAsync()
@@ -1182,6 +1322,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
                 return;
             }
 
+            var auditBefore = OperationAuditEvents.CaptureCart(_cart.Lines);
             var previousSequence = _cartChangedSequence;
             result = await _workflowService.ProcessScanAsync(
                 Session,
@@ -1208,6 +1349,18 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             ApplyWorkflowResult(result, statusTextOverrideFactory?.Invoke(result));
             applyStopwatch.Stop();
             QueuePromotionEvaluationIfCartChanged(previousSequence, "scan");
+            var auditAfter = OperationAuditEvents.CaptureCart(_cart.Lines);
+            if (OperationAuditEvents.HasChanged(auditBefore, auditAfter))
+            {
+                OperationAuditEvents.RecordCartChange(
+                    _operationAuditLogger,
+                    OperationAuditTypes.CartItemAdd,
+                    Session,
+                    auditBefore,
+                    auditAfter,
+                    reasonCode: "SCAN",
+                    traceId: plan.TraceId);
+            }
         }
         finally
         {
@@ -1463,8 +1616,40 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         // 中文注释：命令执行前二次校验，避免只靠按钮可用状态保护高风险操作。
+        var deniedOperationType = GetDeniedAuditOperationType(permissionCode);
+        if (deniedOperationType is not null)
+        {
+            OperationAuditEvents.RecordAction(
+                _operationAuditLogger,
+                deniedOperationType,
+                "Denied",
+                Session,
+                OperationAuditEvents.CaptureCart(_cart.Lines),
+                reasonCode: "PERMISSION_DENIED",
+                safeMessage: message);
+        }
+
         SetStatusText(message, StatusFeedbackKind.Error, UserFeedbackCue.OperationError);
         return false;
+    }
+
+    private static string? GetDeniedAuditOperationType(string permissionCode)
+    {
+        return permissionCode switch
+        {
+            Permissions.PosTerminal.Sales.AddItem or Permissions.PosTerminal.Sales.AddOpenItem => OperationAuditTypes.CartItemAdd,
+            Permissions.PosTerminal.Sales.RemoveLine => OperationAuditTypes.CartItemRemove,
+            Permissions.PosTerminal.Sales.ChangeQuantity => OperationAuditTypes.CartItemQuantityChange,
+            Permissions.PosTerminal.Sales.ChangePrice => OperationAuditTypes.CartItemPriceChange,
+            Permissions.PosTerminal.Sales.LineDiscount => OperationAuditTypes.CartLineDiscountChange,
+            Permissions.PosTerminal.Sales.OrderDiscount => OperationAuditTypes.CartOrderDiscountChange,
+            Permissions.PosTerminal.Sales.ClearCart => OperationAuditTypes.CartClear,
+            Permissions.PosTerminal.Sales.HoldOrder => OperationAuditTypes.OrderHold,
+            Permissions.PosTerminal.Sales.RecallOrder => OperationAuditTypes.OrderRecall,
+            Permissions.PosTerminal.CashDrawer.Open => OperationAuditTypes.CashDrawerOpen,
+            Permissions.PosTerminal.Receipt.PrintLast => OperationAuditTypes.ReceiptReprint,
+            _ => null
+        };
     }
 
     private void ApplyStatusFeedback(StatusFeedbackKind feedbackKind, UserFeedbackCue? cue)

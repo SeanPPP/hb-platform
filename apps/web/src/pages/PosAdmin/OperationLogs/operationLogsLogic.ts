@@ -1,0 +1,132 @@
+export interface OperationAuditQueryState {
+  startUtc: string
+  endUtc: string
+  storeCode: string
+  cashierKeyword: string
+  deviceCode: string
+  operationType: string
+  outcome: string
+  productKeyword: string
+  orderGuid: string
+  keyword: string
+  page: number
+  pageSize: number
+}
+
+export interface OperationAuditQueryParams {
+  fromUtc: string
+  toUtc: string
+  storeCode?: string
+  cashierKeyword?: string
+  deviceCode?: string
+  operationType?: string
+  outcome?: string
+  productKeyword?: string
+  orderGuid?: string
+  keyword?: string
+  pageNumber: number
+  pageSize: number
+}
+
+export const OPERATION_TYPE_KEYS: Record<string, string> = {
+  CASHIER_LOGIN: 'operationLogs.operations.cashierLogin',
+  CASHIER_LOGOUT: 'operationLogs.operations.cashierLogout',
+  CART_ITEM_ADD: 'operationLogs.operations.cartItemAdd',
+  CART_ITEM_REMOVE: 'operationLogs.operations.cartItemRemove',
+  CART_ITEM_QUANTITY_CHANGE: 'operationLogs.operations.cartItemQuantityChange',
+  CART_ITEM_PRICE_CHANGE: 'operationLogs.operations.cartItemPriceChange',
+  CART_LINE_DISCOUNT_CHANGE: 'operationLogs.operations.cartLineDiscountChange',
+  CART_ORDER_DISCOUNT_CHANGE: 'operationLogs.operations.cartOrderDiscountChange',
+  CART_CLEAR: 'operationLogs.operations.cartClear',
+  ORDER_HOLD: 'operationLogs.operations.orderHold',
+  ORDER_RECALL: 'operationLogs.operations.orderRecall',
+  ORDER_CANCEL: 'operationLogs.operations.orderCancel',
+  CASH_DRAWER_OPEN: 'operationLogs.operations.cashDrawerOpen',
+  PAYMENT_TENDER_ADD: 'operationLogs.operations.paymentTenderAdd',
+  PAYMENT_TENDER_REMOVE: 'operationLogs.operations.paymentTenderRemove',
+  PAYMENT_CANCEL: 'operationLogs.operations.paymentCancel',
+  SALE_COMPLETE: 'operationLogs.operations.saleComplete',
+  RETURN_REFUND_COMPLETE: 'operationLogs.operations.returnRefundComplete',
+  SALE_VOID: 'operationLogs.operations.saleVoid',
+  RECEIPT_REPRINT: 'operationLogs.operations.receiptReprint',
+  INSTALLMENT_REPAYMENT_COMPLETE: 'operationLogs.operations.installmentRepaymentComplete',
+  INSTALLMENT_REPAYMENT_CANCEL: 'operationLogs.operations.installmentRepaymentCancel',
+  DAILY_CLOSE_SAVE: 'operationLogs.operations.dailyCloseSave',
+  DAILY_CLOSE_REPRINT: 'operationLogs.operations.dailyCloseReprint',
+}
+
+export function normalizeOperationAuditPage<T>(payload: {
+  items?: T[]
+  total?: number
+  totalCount?: number
+  pageNumber?: number
+  page?: number
+  pageIndex?: number
+  pageSize?: number
+}) {
+  return {
+    items: payload.items ?? [],
+    total: payload.total ?? payload.totalCount ?? 0,
+    pageNumber: payload.pageNumber ?? payload.page ?? payload.pageIndex ?? 1,
+    pageSize: payload.pageSize ?? 20,
+  }
+}
+
+export function buildOperationAuditQuery(_state: OperationAuditQueryState): OperationAuditQueryParams {
+  const trim = (value: string) => value.trim() || undefined
+  return {
+    fromUtc: _state.startUtc,
+    toUtc: _state.endUtc,
+    storeCode: trim(_state.storeCode),
+    cashierKeyword: trim(_state.cashierKeyword),
+    deviceCode: trim(_state.deviceCode),
+    operationType: trim(_state.operationType),
+    outcome: trim(_state.outcome),
+    productKeyword: trim(_state.productKeyword),
+    orderGuid: trim(_state.orderGuid),
+    keyword: trim(_state.keyword),
+    pageNumber: _state.page,
+    pageSize: _state.pageSize,
+  }
+}
+
+export function formatSignedMoney(_value: number | null | undefined, _currencyCode: string): string {
+  if (_value === null || _value === undefined || Number.isNaN(_value)) return '-'
+  const symbol = _currencyCode.toUpperCase() === 'AUD' ? '$' : `${_currencyCode.toUpperCase()} `
+  const sign = _value > 0 ? '+' : _value < 0 ? '-' : ''
+  return `${sign}${symbol}${Math.abs(_value).toFixed(2)}`
+}
+
+export function formatMoney(_value: number | null | undefined, _currencyCode: string): string {
+  if (_value === null || _value === undefined || Number.isNaN(_value)) return '-'
+  const symbol = _currencyCode.toUpperCase() === 'AUD' ? '$' : `${_currencyCode.toUpperCase()} `
+  const sign = _value < 0 ? '-' : ''
+  return `${sign}${symbol}${Math.abs(_value).toFixed(2)}`
+}
+
+export function summarizeProducts(_summary: {
+  productCount: number
+  primaryProductName?: string | null
+  primaryProduct?: string | null
+} | null | undefined, _fallback = 'Product'): string {
+  if (!_summary || _summary.productCount <= 0) return '-'
+  const primary = _summary.primaryProductName?.trim() || _summary.primaryProduct?.trim() || _fallback
+  const remaining = Math.max(0, _summary.productCount - 1)
+  return remaining > 0 ? `${primary} +${remaining}` : primary
+}
+
+export function buildSystemLogLink(_input: {
+  deviceCode?: string | null
+  traceId?: string | null
+  occurredAtUtc: string
+}): string {
+  const occurredAt = new Date(_input.occurredAtUtc)
+  const params = new URLSearchParams({ projectCode: 'hbpos_win' })
+  if (_input.deviceCode?.trim()) params.set('deviceCode', _input.deviceCode.trim())
+  if (_input.traceId?.trim()) params.set('traceId', _input.traceId.trim())
+  if (!Number.isNaN(occurredAt.valueOf())) {
+    params.set('fromUtc', new Date(occurredAt.valueOf() - 5 * 60 * 1000).toISOString())
+    params.set('toUtc', new Date(occurredAt.valueOf() + 5 * 60 * 1000).toISOString())
+  }
+  return `/system/center-logs?${params.toString()}`
+}

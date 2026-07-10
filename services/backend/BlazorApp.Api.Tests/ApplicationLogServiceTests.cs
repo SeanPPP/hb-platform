@@ -125,6 +125,10 @@ public class ApplicationLogServiceTests : IDisposable
 
         Assert.Equal(1, result.AcceptedCount);
         Assert.Equal(0, result.RejectedCount);
+        Assert.Equal(0, result.DuplicateCount);
+        var itemResult = Assert.Single(result.Results);
+        Assert.Null(itemResult.ClientEventId);
+        Assert.Equal("accepted", itemResult.Status);
         var saved = await _db.Queryable<ApplicationLog>().SingleAsync();
         Assert.Equal("HbwebExpo", saved.ProjectCode);
         Assert.Equal("移动端", saved.ProjectName);
@@ -134,6 +138,162 @@ public class ApplicationLogServiceTests : IDisposable
         Assert.Equal("/api/react/warehouse-products/mobile/HB001", saved.RequestPath);
         Assert.Equal("InvalidOperationException", saved.ExceptionType);
         Assert.Contains("productCode", saved.PropertiesJson);
+    }
+
+    [Fact]
+    public async Task IngestAsync_同一项目重复ClientEventId_仅保存一次并返回逐条状态()
+    {
+        var service = CreateService();
+        var clientEventId = Guid.NewGuid();
+        var request = new ApplicationLogIngestRequestDto
+        {
+            Logs =
+            [
+                CreateIngestItem("第一次上报", clientEventId),
+                CreateIngestItem("重复上报", clientEventId),
+            ],
+        };
+
+        var result = await service.IngestAsync("HBBBackend", request);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.DuplicateCount);
+        Assert.Equal(0, result.RejectedCount);
+        Assert.Collection(
+            result.Results,
+            item =>
+            {
+                Assert.Equal(clientEventId, item.ClientEventId);
+                Assert.Equal("accepted", item.Status);
+                Assert.Null(item.ErrorCode);
+            },
+            item =>
+            {
+                Assert.Equal(clientEventId, item.ClientEventId);
+                Assert.Equal("duplicate", item.Status);
+                Assert.Null(item.ErrorCode);
+            }
+        );
+        var saved = await _db.Queryable<ApplicationLog>().SingleAsync();
+        Assert.Equal(clientEventId, saved.ClientEventId);
+        Assert.Equal("第一次上报", saved.Message);
+    }
+
+    [Fact]
+    public async Task IngestAsync_旧客户端相同EventId仍按原语义逐条写入()
+    {
+        var service = CreateService();
+        var first = CreateIngestItem("旧客户端第一次");
+        first.EventId = "legacy-event";
+        var second = CreateIngestItem("旧客户端第二次");
+        second.EventId = "legacy-event";
+
+        var result = await service.IngestAsync(
+            "HBBBackend",
+            new ApplicationLogIngestRequestDto { Logs = [first, second] }
+        );
+
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Equal(0, result.DuplicateCount);
+        Assert.Equal(2, await _db.Queryable<ApplicationLog>().CountAsync());
+    }
+
+    [Fact]
+    public async Task IngestAsync_并发上报相同ClientEventId_数据库只保存一次()
+    {
+        var clientEventId = Guid.NewGuid();
+        using var secondDb = CreateSqliteClient();
+        var firstService = CreateService(_db);
+        var secondService = CreateService(secondDb);
+
+        var results = await Task.WhenAll(
+            firstService.IngestAsync(
+                "HBBBackend",
+                new ApplicationLogIngestRequestDto
+                {
+                    Logs = [CreateIngestItem("并发一", clientEventId)],
+                }
+            ),
+            secondService.IngestAsync(
+                "HBBBackend",
+                new ApplicationLogIngestRequestDto
+                {
+                    Logs = [CreateIngestItem("并发二", clientEventId)],
+                }
+            )
+        );
+
+        Assert.Equal(1, results.Sum(result => result.AcceptedCount));
+        Assert.Equal(1, results.Sum(result => result.DuplicateCount));
+        Assert.Equal(1, await _db.Queryable<ApplicationLog>().CountAsync());
+    }
+
+    [Fact]
+    public async Task IngestAsync_Wpf字段和可信客户端Ip_入库前完成脱敏()
+    {
+        var service = CreateService();
+        var clientEventId = Guid.NewGuid();
+        var result = await service.IngestAsync(
+            "HBBBackend",
+            new ApplicationLogIngestRequestDto
+            {
+                Logs =
+                [
+                    new ApplicationLogIngestItemDto
+                    {
+                        ClientEventId = clientEventId,
+                        Level = "Error",
+                        Message = "Authorization: Bearer top-secret-token card 4111111111111111 " +
+                            "/api/pay?customer=alice&token=query-secret " +
+                            "voucher_code=full-voucher employee-barcode=staff-secret",
+                        TimestampUtc = DateTime.UtcNow,
+                        ProjectCode = "HBBBackend",
+                        Environment = "Production",
+                        SourceType = "POS",
+                        StoreCode = "S001",
+                        DeviceCode = "POS-01",
+                        AppVersion = "2.5.0",
+                        InstanceId = "instance-1",
+                        EventId = "event-7",
+                        ClientIp = "198.51.100.99",
+                        RequestPath = "/api/orders?authorizationCode=secret-code",
+                        Properties = new Dictionary<string, object?>
+                        {
+                            ["productCode"] = "HB001",
+                            ["Authorization"] = "Bearer property-secret",
+                            ["customerEmail"] = "private@example.test",
+                            ["requestBody"] = "{\"voucherCode\":\"full-voucher\"}",
+                            ["nested"] = new Dictionary<string, object?>
+                            {
+                                ["password"] = "password-secret",
+                            },
+                        },
+                    },
+                ],
+            },
+            "203.0.113.10"
+        );
+
+        Assert.Equal(1, result.AcceptedCount);
+        var saved = await _db.Queryable<ApplicationLog>().SingleAsync();
+        Assert.Equal(clientEventId, saved.ClientEventId);
+        Assert.Equal("S001", saved.StoreCode);
+        Assert.Equal("POS-01", saved.DeviceCode);
+        Assert.Equal("2.5.0", saved.AppVersion);
+        Assert.Equal("203.0.113.10", saved.ClientIp);
+        Assert.Equal("/api/orders", saved.RequestPath);
+        Assert.DoesNotContain("top-secret-token", saved.Message);
+        Assert.DoesNotContain("4111111111111111", saved.Message);
+        Assert.DoesNotContain("?customer=", saved.Message);
+        Assert.DoesNotContain("query-secret", saved.Message);
+        Assert.DoesNotContain("full-voucher", saved.Message);
+        Assert.DoesNotContain("staff-secret", saved.Message);
+        Assert.DoesNotContain("property-secret", saved.PropertiesJson);
+        Assert.DoesNotContain("password-secret", saved.PropertiesJson);
+        Assert.DoesNotContain("private@example.test", saved.PropertiesJson);
+        Assert.DoesNotContain("full-voucher", saved.PropertiesJson);
+        Assert.Contains("HB001", saved.PropertiesJson);
+        Assert.Contains("[REDACTED]", saved.PropertiesJson);
     }
 
     [Fact]
@@ -225,6 +385,10 @@ public class ApplicationLogServiceTests : IDisposable
 
         Assert.Equal(0, result.AcceptedCount);
         Assert.Equal(1, result.RejectedCount);
+        Assert.Equal(0, result.DuplicateCount);
+        var itemResult = Assert.Single(result.Results);
+        Assert.Equal("rejected", itemResult.Status);
+        Assert.Equal("INVALID_LOG_ITEM", itemResult.ErrorCode);
         Assert.Equal(0, await _db.Queryable<ApplicationLog>().CountAsync());
     }
 
@@ -352,6 +516,74 @@ public class ApplicationLogServiceTests : IDisposable
         Assert.DoesNotContain(result.Items!, item => item.ProjectCode == "hbweb_rv");
         Assert.Contains(result.Items!, item => item.ProjectCode == "HBBBackend");
         Assert.Contains(result.Items!, item => item.ProjectCode == "HbwebExpo");
+    }
+
+    [Fact]
+    public async Task QueryAsync_按Wpf维度筛选_返回事件标识实例和服务端接收时间()
+    {
+        var receivedAtUtc = new DateTime(2026, 7, 10, 1, 2, 3, DateTimeKind.Utc);
+        await _db.Insertable(
+                new ApplicationLog
+                {
+                    ClientEventId = Guid.NewGuid(),
+                    ProjectCode = "hbpos_win",
+                    ProjectName = "WPF POS",
+                    Environment = "Production",
+                    SourceType = "POS",
+                    StoreCode = "S001",
+                    DeviceCode = "POS-01",
+                    AppVersion = "2.5.0",
+                    InstanceId = "instance-1",
+                    EventId = "event-1",
+                    Level = "Error",
+                    Category = "Payment",
+                    Message = "支付失败",
+                    TimestampUtc = receivedAtUtc.AddMinutes(-5),
+                    CreatedAt = receivedAtUtc,
+                }
+            )
+            .ExecuteCommandAsync();
+        await _db.Insertable(
+                new ApplicationLog
+                {
+                    ProjectCode = "hbpos_win",
+                    ProjectName = "WPF POS",
+                    Environment = "Production",
+                    SourceType = "POS",
+                    StoreCode = "S002",
+                    DeviceCode = "POS-02",
+                    AppVersion = "2.4.0",
+                    InstanceId = "instance-2",
+                    EventId = "event-2",
+                    Level = "Warning",
+                    Message = "其他终端",
+                    TimestampUtc = receivedAtUtc,
+                    CreatedAt = receivedAtUtc,
+                }
+            )
+            .ExecuteCommandAsync();
+
+        var result = await CreateService().QueryAsync(
+            new ApplicationLogQueryDto
+            {
+                StoreCode = "S001",
+                DeviceCode = "POS-01",
+                AppVersion = "2.5.0",
+                InstanceId = "instance-1",
+                EventId = "event-1",
+            }
+        );
+
+        var item = Assert.Single(result.Items!);
+        Assert.Equal("S001", item.StoreCode);
+        Assert.Equal("POS-01", item.DeviceCode);
+        Assert.Equal("2.5.0", item.AppVersion);
+        Assert.Equal("instance-1", item.InstanceId);
+        Assert.Equal("event-1", item.EventId);
+        Assert.NotNull(item.ClientEventId);
+        Assert.Equal(receivedAtUtc, item.CreatedAtUtc);
+        Assert.Equal(DateTimeKind.Utc, item.TimestampUtc.Kind);
+        Assert.Equal(DateTimeKind.Utc, item.CreatedAtUtc.Kind);
     }
 
     [Fact]
@@ -499,7 +731,81 @@ public class ApplicationLogServiceTests : IDisposable
         Assert.Equal("new", item.TraceId);
     }
 
+    [Fact]
+    public async Task CleanupExpiredLogsAsync_客户端时间很旧但服务端刚接收_不删除日志()
+    {
+        var now = new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc);
+        await InsertLogAsync(
+            "hbpos_win",
+            "Error",
+            "/api/wpf",
+            "离线后补传",
+            "wpf-delayed",
+            now.AddDays(-60),
+            now.AddDays(-1)
+        );
+        var service = CreateService(
+            new ApplicationLoggingProjectOptions
+            {
+                ProjectCode = "hbpos_win",
+                ApiKeyHash = Sha256("wpf-secret"),
+                RetentionDays = 30,
+                Enabled = true,
+            }
+        );
+
+        var deleted = await service.CleanupExpiredLogsAsync(now);
+
+        Assert.Equal(0, deleted);
+        Assert.Equal(1, await _db.Queryable<ApplicationLog>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CleanupExpiredLogsAsync_恰好30天边界保留_更早一刻删除()
+    {
+        var now = new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc);
+        await InsertLogAsync(
+            "hbpos_win",
+            "Information",
+            "/api/wpf",
+            "边界日志",
+            "boundary",
+            now.AddDays(-30),
+            now.AddDays(-30));
+        await InsertLogAsync(
+            "hbpos_win",
+            "Information",
+            "/api/wpf",
+            "已过期日志",
+            "expired",
+            now.AddDays(-30).AddTicks(-1),
+            now.AddDays(-30).AddTicks(-1));
+        var service = CreateService(
+            new ApplicationLoggingProjectOptions
+            {
+                ProjectCode = "hbpos_win",
+                ApiKeyHash = Sha256("wpf-secret"),
+                RetentionDays = 30,
+                Enabled = true,
+            }
+        );
+
+        var deleted = await service.CleanupExpiredLogsAsync(now);
+
+        Assert.Equal(1, deleted);
+        var remaining = Assert.Single(await _db.Queryable<ApplicationLog>().ToListAsync());
+        Assert.Equal("boundary", remaining.TraceId);
+    }
+
     private ApplicationLogService CreateService(params ApplicationLoggingProjectOptions[] projects)
+    {
+        return CreateService(_db, projects);
+    }
+
+    private static ApplicationLogService CreateService(
+        ISqlSugarClient db,
+        params ApplicationLoggingProjectOptions[] projects
+    )
     {
         var options = Options.Create(
             new ApplicationLoggingOptions
@@ -523,7 +829,7 @@ public class ApplicationLogServiceTests : IDisposable
             }
         );
 
-        return new ApplicationLogService(_db, options, NullLogger<ApplicationLogService>.Instance);
+        return new ApplicationLogService(db, options, NullLogger<ApplicationLogService>.Instance);
     }
 
     private async Task InsertLogAsync(
@@ -532,7 +838,8 @@ public class ApplicationLogServiceTests : IDisposable
         string path,
         string message,
         string traceId,
-        DateTime? timestampUtc = null
+        DateTime? timestampUtc = null,
+        DateTime? createdAtUtc = null
     )
     {
         await _db.Insertable(
@@ -548,6 +855,7 @@ public class ApplicationLogServiceTests : IDisposable
                     RequestPath = path,
                     TraceId = traceId,
                     TimestampUtc = timestampUtc ?? DateTime.UtcNow,
+                    CreatedAt = createdAtUtc ?? timestampUtc ?? DateTime.UtcNow,
                 }
             )
             .ExecuteCommandAsync();
@@ -557,6 +865,38 @@ public class ApplicationLogServiceTests : IDisposable
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static ApplicationLogIngestItemDto CreateIngestItem(
+        string message,
+        Guid? clientEventId = null
+    )
+    {
+        return new ApplicationLogIngestItemDto
+        {
+            ClientEventId = clientEventId,
+            Level = "Error",
+            Message = message,
+            TimestampUtc = DateTime.UtcNow,
+            ProjectCode = "HBBBackend",
+            Environment = "Development",
+            SourceType = "Backend",
+        };
+    }
+
+    private ISqlSugarClient CreateSqliteClient()
+    {
+        var db = new SqlSugarClient(
+            new ConnectionConfig
+            {
+                ConnectionString = $"DataSource={_dbPath}",
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+            }
+        );
+        db.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        return db;
     }
 
     private void CreateApplicationLogTable()
@@ -572,6 +912,10 @@ public class ApplicationLogServiceTests : IDisposable
                 SourceType TEXT NOT NULL,
                 ServiceName TEXT NULL,
                 InstanceId TEXT NULL,
+                ClientEventId TEXT NULL,
+                StoreCode TEXT NULL,
+                DeviceCode TEXT NULL,
+                AppVersion TEXT NULL,
                 Level TEXT NOT NULL,
                 Category TEXT NULL,
                 EventId TEXT NULL,
@@ -595,6 +939,10 @@ public class ApplicationLogServiceTests : IDisposable
             )
             """
         );
+        _db.Ado.ExecuteCommand(
+            "CREATE UNIQUE INDEX IX_ApplicationLog_ProjectCode_ClientEventId ON ApplicationLog(ProjectCode, ClientEventId) WHERE ClientEventId IS NOT NULL"
+        );
+        _db.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
     }
 
     public void Dispose()

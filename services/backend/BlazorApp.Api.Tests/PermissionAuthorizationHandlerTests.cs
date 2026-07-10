@@ -201,6 +201,35 @@ public class PermissionAuthorizationHandlerTests
         );
     }
 
+    [Theory]
+    [InlineData("SuperAdmin")]
+    [InlineData("超级管理员")]
+    public async Task SuperAdminAliases_AllowOperationAuditPermissionWithoutExplicitGrant(string roleName)
+    {
+        var roleService = new Mock<IRoleService>();
+        var handler = CreateHandler(roleService);
+        roleService
+            .Setup(service => service.UserHasRoleAsync("user-1", roleName))
+            .ReturnsAsync(ApiResponse<bool>.OK(true));
+        roleService
+            .Setup(service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()))
+            .ReturnsAsync(ApiResponse<bool>.OK(false));
+        var requirement = new PermissionRequirement(Permissions.PosTerminal.Audit.View);
+        var context = new AuthorizationHandlerContext(
+            new[] { requirement },
+            CreateUser(),
+            resource: null
+        );
+
+        await handler.HandleAsync(context);
+
+        Assert.True(context.HasSucceeded);
+        roleService.Verify(
+            service => service.UserHasPermissionAsync("user-1", It.IsAny<string>()),
+            Times.Never
+        );
+    }
+
     [Fact]
     public async Task ServiceApiTokenScope_AllowsMatchingAppDownloadPermissionWithoutRoleLookup()
     {
